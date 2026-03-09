@@ -414,11 +414,14 @@ local function render()
     return false
   end
 
-  -- Collect profiles to show: configured (cache) OR currently running OR explicit
+  -- Collect profiles to show: configured (cache) OR currently running OR active profile
   local configured_profiles = {}
   local configured_set = {}
   for profile_key, _ in pairs(all_profiles) do
-    if is_profile_configured(profile_key, all_profiles, ws.cache, config_sets) or is_profile_running(profile_key) then
+    local dominated = is_profile_configured(profile_key, all_profiles, ws.cache, config_sets)
+        or is_profile_running(profile_key)
+        or profile_key == active_profile_key
+    if dominated then
       configured_profiles[#configured_profiles + 1] = profile_key
       configured_set[profile_key] = true
     end
