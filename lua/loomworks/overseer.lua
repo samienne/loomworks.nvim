@@ -31,7 +31,8 @@ function M.register()
 
       local templates = {}
 
-      for key, proj in pairs(active_set.projects) do
+      local projects = loomworks.get_projects()
+      for key, proj in pairs(projects) do
         if proj.orphaned then goto continue end
 
         local mod = modules.get(proj.type)
@@ -40,18 +41,7 @@ function M.register()
         local active_config = proj.configuration
         if not active_config then goto continue end
 
-        -- Build project context for the module's tasks() function
-        local project_ctx = {
-          name = key,
-          path = proj.path or key,
-          type = proj.type,
-          configuration = active_config,
-          configuration_key = proj.configuration_key,
-          configurations = proj.configurations,
-          kit = proj.kit,
-          workspace_root = ws.root,
-          env = proj.kit and proj.kit.env or {},
-        }
+        local project_ctx = proj:to_module_context(ws.root)
 
         local mod_tasks = mod.tasks(project_ctx, active_config)
         for _, task in ipairs(mod_tasks) do

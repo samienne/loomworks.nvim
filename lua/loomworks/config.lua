@@ -7,7 +7,7 @@ local NON_TYPE_KEYS = { path = true, depends_on = true }
 
 --- Extract project type from the project definition table.
 --- Type is implicit from the inner key: {"cmake": {}} -> type = "cmake"
---- @param project_def table
+--- @param project_def table raw JSON project definition
 --- @return string|nil type, table|nil type_config, string|nil err
 function M._extract_type(project_def)
   local found_type, found_config
@@ -27,9 +27,9 @@ function M._extract_type(project_def)
 end
 
 --- Validate raw decoded JSON and normalize into a config structure.
---- @param raw table
+--- @param raw table raw decoded JSON
 --- @param root string workspace root for resolving paths
---- @return table|nil config, string|nil err
+--- @return loomworks.Config|nil config, string|nil err
 function M.validate(raw, root)
   if type(raw.projects) ~= "table" then
     return nil, "missing or invalid 'projects' field"
@@ -112,7 +112,7 @@ end
 
 --- Load and validate loomworks.json from a workspace root.
 --- @param root string
---- @return table|nil config, string|nil err, string|nil raw_content
+--- @return loomworks.Config|nil config, string|nil err, string|nil raw_content
 function M.load(root)
   local path = root .. "/loomworks.json"
 

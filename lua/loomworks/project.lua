@@ -1,0 +1,128 @@
+--- loomworks/project.lua — Project object wrapping merged project data.
+--- Provides query methods for running/deleting/cached state.
+
+--- @class loomworks.Project
+--- @field key string project key
+--- @field type string module type ("cmake", "ets", "typescript")
+--- @field path? string relative path from workspace root
+--- @field configuration? string active configuration name
+--- @field configuration_key? string cache key for active configuration
+--- @field kit_id? string
+--- @field kit? loomworks.CmakeKit
+--- @field status loomworks.Status
+--- @field orphaned boolean
+--- @field needs_refresh boolean
+--- @field refresh_reasons string[]
+--- @field configurations table<string, loomworks.ConfigurationInfo>
+--- @field cached? loomworks.CachedConfig active configuration's cached state
+--- @field cached_configurations table<string, loomworks.CachedConfig>
+--- @field cmake? loomworks.ProjectCmakeInfo
+local Project = {}
+Project.__index = Project
+
+--- Create a new Project object.
+--- @param core loomworks.Core
+--- @param key string project key
+--- @param data loomworks.MergedProjectData
+--- @return loomworks.Project
+function Project.new(core, key, data)
+  local self = setmetatable({}, Project)
+  self._core = core
+  self._generation = core._generation
+  self.key = key
+  self.type = data.type
+  self.path = data.path
+  self.configuration = data.configuration
+  self.configuration_key = data.configuration_key
+  self.kit_id = data.kit_id
+  self.kit = data.kit
+  self.status = data.status
+  self.orphaned = data.orphaned or false
+  self.needs_refresh = data.needs_refresh or false
+  self.refresh_reasons = data.refresh_reasons or {}
+  self.configurations = data.configurations or {}
+  self.cached = data.cached
+  self.cached_configurations = data.cached_configurations or {}
+  self.cmake = data.cmake
+  return self
+end
+
+function Project:__tostring()
+  return "Project(" .. self.key .. ")"
+end
+
+--- Check if this object's data may be outdated.
+--- @return boolean
+function Project:is_stale()
+  return self._generation ~= self._core._generation
+end
+
+--- Get the running action for this project (any config).
+--- @return string|nil action ("configure" or "build")
+function Project:running_action()
+  return self._core:get_project_running_action(self.key)
+end
+
+--- Compute the cache key for a configuration name, accounting for kit_id.
+--- @param config_name string
+--- @return string
+function Project:config_cache_key(config_name)
+  if self.kit_id then
+    return config_name .. ":" .. self.kit_id
+  end
+  return config_name
+end
+
+--- Check if a specific configuration is being deleted.
+--- @param config_name string
+--- @return boolean
+function Project:is_deleting_config(config_name)
+  return self._core:is_deleting(self.key, self:config_cache_key(config_name))
+end
+
+--- Get the running action for a specific configuration.
+--- @param config_name string
+--- @return string|nil action
+function Project:config_running_action(config_name)
+  return self._core:get_running_action(self.key, self:config_cache_key(config_name))
+end
+
+--- Resolve the cached state for a configuration.
+--- Checks kit-qualified key first, then bare name.
+--- @param config_name string
+--- @return loomworks.CachedConfig|nil
+function Project:cached_config(config_name)
+  if not self.cached_configurations then return nil end
+  if self.kit_id then
+    local cached = self.cached_configurations[config_name .. ":" .. self.kit_id]
+    if cached then return cached end
+  end
+  return self.cached_configurations[config_name]
+end
+
+--- Get absolute path to this project.
+--- @return string
+function Project:abs_path()
+  local ws = self._core:get_workspace()
+  if not ws then return self.path or self.key end
+  return ws.root .. "/" .. (self.path or self.key)
+end
+
+--- Build the module context table used by module.tasks().
+--- @param ws_root string workspace root path
+--- @return loomworks.ModuleContext
+function Project:to_module_context(ws_root)
+  return {
+    name = self.key,
+    path = self.path or self.key,
+    type = self.type,
+    configuration = self.configuration,
+    configuration_key = self.configuration_key,
+    configurations = self.configurations,
+    kit = self.kit,
+    workspace_root = ws_root,
+    env = self.kit and self.kit.env or {},
+  }
+end
+
+return Project

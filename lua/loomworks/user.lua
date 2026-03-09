@@ -12,7 +12,7 @@ function M.filepath(root)
 end
 
 --- Return a default (empty) UserData structure.
---- @return table
+--- @return loomworks.UserData
 function M.default()
   return { _meta = { version = CURRENT_VERSION } }
 end
@@ -20,7 +20,7 @@ end
 --- Load user preferences for a workspace.
 --- Returns defaults if file doesn't exist.
 --- @param root string
---- @return table
+--- @return loomworks.UserData
 function M.load(root)
   local data, err = io_mod.read_json(M.filepath(root))
   if not data then
@@ -37,7 +37,7 @@ end
 
 --- Save user preferences for a workspace.
 --- @param root string
---- @param data table
+--- @param data loomworks.UserData
 --- @return boolean ok, string|nil err
 function M.save(root, data)
   data._meta = { version = CURRENT_VERSION }

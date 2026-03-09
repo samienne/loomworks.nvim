@@ -9,11 +9,11 @@ local Core = require("loomworks.core")
 local events = require("loomworks.events")
 
 --- The singleton core instance. Created at module load time.
---- @type table
+--- @type loomworks.Core
 local core = Core.new()
 
 --- Access the underlying core instance (for advanced use / testing).
---- @return table
+--- @return loomworks.Core
 function M._core()
   return core
 end
@@ -32,13 +32,13 @@ function M.setup(opts)
 end
 
 --- Get the merged active configuration set.
---- @return table|nil
+--- @return loomworks.ActiveSet|nil
 function M.get_active_configuration_set()
   return core:get_active_configuration_set()
 end
 
 --- Get the active workspace.
---- @return table|nil
+--- @return loomworks.Workspace|nil
 function M.get_workspace()
   return core:get_workspace()
 end
@@ -48,6 +48,36 @@ end
 --- @param fn function
 function M.on(event, fn)
   events.on(event, fn)
+end
+
+-- ---------------------------------------------------------------------------
+-- Object factories
+-- ---------------------------------------------------------------------------
+
+--- Get a Profile object by key.
+--- @param key string profile key
+--- @return loomworks.Profile|nil
+function M.get_profile(key)
+  return core:get_profile(key)
+end
+
+--- Get all Profile objects as a dict.
+--- @return table<string, loomworks.Profile>
+function M.get_profiles()
+  return core:get_profiles()
+end
+
+--- Get a Project object by key (from the active set).
+--- @param key string project key
+--- @return loomworks.Project|nil
+function M.get_project(key)
+  return core:get_project(key)
+end
+
+--- Get all Project objects from the active set as a dict.
+--- @return table<string, loomworks.Project>
+function M.get_projects()
+  return core:get_projects()
 end
 
 -- ---------------------------------------------------------------------------
@@ -77,7 +107,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Register a running task for live status display.
---- @param info table { task_id, project_key, action, configuration_key }
+--- @param info { task_id: number, project_key: string, action: string, configuration_key: string }
 function M.register_running_task(info)
   core:register_running_task(info)
 end
@@ -114,7 +144,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Record a task result and update the cache.
---- @param result table { project_key, action, configuration_key, build_dir?, cmake?, success }
+--- @param result loomworks.TaskResult
 function M.record_task_result(result)
   core:record_task_result(result)
 end
@@ -143,23 +173,16 @@ function M.after_deletions(fn)
   core:after_deletions(fn)
 end
 
---- Plan a profile deletion (query only, no side effects).
---- @param profile_key string
---- @return table plan
-function M.plan_profile_deletion(profile_key)
-  return core:plan_profile_deletion(profile_key)
-end
-
 --- Plan a config deletion (query only, no side effects).
 --- @param project_key string
 --- @param config_key string
---- @return table plan
+--- @return loomworks.DeletionPlan
 function M.plan_config_deletion(project_key, config_key)
   return core:plan_config_deletion(project_key, config_key)
 end
 
 --- Execute a deletion plan.
---- @param plan table
+--- @param plan loomworks.DeletionPlan
 --- @param opts? { deactivate_profile?: string }
 --- @param on_done? function
 function M.execute_deletion(plan, opts, on_done)
@@ -181,51 +204,22 @@ function M.delete_config(project_key, config_key, on_done)
   core:delete_config(project_key, config_key, on_done)
 end
 
+--- Find running task IDs that match a list of project+config items.
+--- @param items loomworks.DeletionItem[]
+--- @return table<number, loomworks.RunningTaskInfo>
+function M.find_running_tasks_for_items(items)
+  return core:find_running_tasks_for_items(items)
+end
+
 -- ---------------------------------------------------------------------------
 -- Queries
 -- ---------------------------------------------------------------------------
 
 --- Find the project containing a buffer's file.
 --- @param bufnr number
---- @return string|nil project_key, table|nil project_data
+--- @return string|nil project_key, loomworks.Project|nil
 function M.project_for_buf(bufnr)
   return core:project_for_buf(bufnr)
-end
-
---- Check if a profile has any configured entries in cache.
---- @param profile_key string
---- @return boolean
-function M.is_profile_configured(profile_key)
-  return core:is_profile_configured(profile_key)
-end
-
---- Compute aggregate status for a profile.
---- @param profile_key string
---- @return string label, string hl_group
-function M.resolve_profile_status(profile_key)
-  return core:resolve_profile_status(profile_key)
-end
-
---- Check if a profile has any running tasks.
---- @param profile_key string
---- @return boolean
-function M.is_profile_running(profile_key)
-  return core:is_profile_running(profile_key)
-end
-
---- Resolve cached state for a configuration within a project.
---- @param proj table project data from merge
---- @param cname string configuration name
---- @return table|nil cached_state
-function M.resolve_cached_config(proj, cname)
-  return core:resolve_cached_config(proj, cname)
-end
-
---- Find running task IDs that match a list of project+config items.
---- @param items table[]
---- @return table<number, table>
-function M.find_running_tasks_for_items(items)
-  return core:find_running_tasks_for_items(items)
 end
 
 -- ---------------------------------------------------------------------------

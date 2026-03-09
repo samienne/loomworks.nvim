@@ -2,8 +2,18 @@
 --- Uses a constructor pattern for testability: Core.new(deps) returns an
 --- isolated instance with injectable dependencies and clean state.
 
+--- @class loomworks.Core
+--- @field _deps table injected dependencies
+--- @field _active_set loomworks.ActiveSet|nil
+--- @field _running_tasks table<number, loomworks.RunningTaskInfo>
+--- @field _deleting table<string, boolean> "project\0config" -> true
+--- @field _delete_waiters function[]
+--- @field _generation number incremented on every remerge
 local Core = {}
 Core.__index = Core
+
+local Profile = require("loomworks.profile").Profile
+local Project = require("loomworks.project")
 
 --- Default dependency table. Tests override individual entries.
 local DEFAULT_DEPS = {
@@ -35,7 +45,7 @@ local DEFAULT_DEPS = {
 
 --- Create a new Core instance.
 --- @param deps? table override individual dependencies for testing
---- @return table core instance
+--- @return loomworks.Core
 function Core.new(deps)
   local self = setmetatable({}, Core)
   if deps then
@@ -47,6 +57,7 @@ function Core.new(deps)
   self._running_tasks = {}
   self._deleting = {}
   self._delete_waiters = {}
+  self._generation = 0
   return self
 end
 
@@ -67,6 +78,7 @@ function Core:setup(opts)
 
   local ws = self._deps.workspace.get()
   self._active_set = self._deps.merge.merge(ws)
+  self._generation = self._generation + 1
   self._deps.events.emit("workspace_changed", ws)
   self._deps.events.emit("active_set_changed", self._active_set)
 
@@ -79,19 +91,105 @@ function Core:remerge()
   local ws = self._deps.workspace.get()
   if not ws then return end
   self._active_set = self._deps.merge.merge(ws)
+  self._generation = self._generation + 1
   self._deps.events.emit("active_set_changed", self._active_set)
 end
 
 --- Get the merged active configuration set.
---- @return table|nil
+--- @return loomworks.ActiveSet|nil
 function Core:get_active_configuration_set()
   return self._active_set
 end
 
 --- Get the active workspace.
---- @return table|nil
+--- @return loomworks.Workspace|nil
 function Core:get_workspace()
   return self._deps.workspace.get()
+end
+
+-- ---------------------------------------------------------------------------
+-- Object factories
+-- ---------------------------------------------------------------------------
+
+--- Resolve a kit object from kit_id.
+--- @param kit_id string|nil
+--- @return loomworks.CmakeKit|nil
+local function resolve_kit(kit_id)
+  if not kit_id then return nil end
+  local ok, cmake_kits_mod = pcall(require, "loomworks.cmake_kits")
+  if not ok then return nil end
+  return cmake_kits_mod.get_by_id(kit_id)
+end
+
+--- Get a Profile object by key.
+--- @param key string profile key
+--- @return loomworks.Profile|nil
+function Core:get_profile(key)
+  local ws = self._deps.workspace.get()
+  if not ws then return nil end
+
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
+  local data = all_profiles[key]
+  if not data then return nil end
+
+  local config_sets = ws.config.configuration_sets
+  local mappings = data.configuration_set and config_sets
+      and config_sets[data.configuration_set] or nil
+
+  return Profile.new(self, key, {
+    configuration_set = data.configuration_set,
+    kit_id = data.kit_id,
+    kit = resolve_kit(data.kit_id),
+    explicit = data.explicit or false,
+    auto_generated = data.auto_generated or false,
+    mappings = mappings,
+  })
+end
+
+--- Get all Profile objects as a dict.
+--- @return table<string, loomworks.Profile>
+function Core:get_profiles()
+  local ws = self._deps.workspace.get()
+  if not ws then return {} end
+
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
+  local config_sets = ws.config.configuration_sets
+  local result = {}
+
+  for key, data in pairs(all_profiles) do
+    local mappings = data.configuration_set and config_sets
+        and config_sets[data.configuration_set] or nil
+
+    result[key] = Profile.new(self, key, {
+      configuration_set = data.configuration_set,
+      kit_id = data.kit_id,
+      kit = resolve_kit(data.kit_id),
+      explicit = data.explicit or false,
+      auto_generated = data.auto_generated or false,
+      mappings = mappings,
+    })
+  end
+
+  return result
+end
+
+--- Get a Project object by key (from the active set).
+--- @param key string project key
+--- @return loomworks.Project|nil
+function Core:get_project(key)
+  if not self._active_set or not self._active_set.projects[key] then return nil end
+  return Project.new(self, key, self._active_set.projects[key])
+end
+
+--- Get all Project objects from the active set as a dict.
+--- @return table<string, loomworks.Project>
+function Core:get_projects()
+  if not self._active_set then return {} end
+  local result = {}
+  for key, data in pairs(self._active_set.projects) do
+    result[key] = Project.new(self, key, data)
+  end
+  return result
 end
 
 -- ---------------------------------------------------------------------------
@@ -162,7 +260,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Register a running task for live status display.
---- @param info table { task_id, project_key, action, configuration_key }
+--- @param info { task_id: number, project_key: string, action: string, configuration_key: string }
 function Core:register_running_task(info)
   self._running_tasks[info.task_id] = {
     project_key = info.project_key,
@@ -212,8 +310,8 @@ function Core:has_running_tasks()
 end
 
 --- Find running task IDs that match a list of project+config items.
---- @param items table[] list of { project_key: string, config_key: string }
---- @return table<number, table> task_id -> running task info
+--- @param items loomworks.DeletionItem[]
+--- @return table<number, loomworks.RunningTaskInfo>
 function Core:find_running_tasks_for_items(items)
   local matches = {}
   for task_id, info in pairs(self._running_tasks) do
@@ -263,7 +361,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Record a task result and update the cache.
---- @param result table { project_key, action, configuration_key, build_dir?, cmake?, success }
+--- @param result loomworks.TaskResult
 function Core:record_task_result(result)
   local ws = self._deps.workspace.get()
   if not ws then return end
@@ -363,96 +461,30 @@ function Core:after_deletions(fn)
 end
 
 -- ---------------------------------------------------------------------------
--- Deletion: plan
+-- Deletion: plan (config-level)
 -- ---------------------------------------------------------------------------
 
---- Collect all config items for a profile, with shared-config analysis.
---- @param profile_key string
---- @return table plan { items, profile_key, defined_in_config }
-function Core:plan_profile_deletion(profile_key)
-  local ws = self._deps.workspace.get()
-  local empty = { items = {}, profile_key = profile_key, defined_in_config = false }
-  if not ws then return empty end
-
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
-  local profile = all_profiles[profile_key]
-  if not profile then return empty end
-
-  local config_sets = ws.config.configuration_sets
-  if not profile.configuration_set or not config_sets then return empty end
-
-  local mappings = config_sets[profile.configuration_set]
-  if not mappings then return empty end
-
-  -- Build a lookup of which other profiles reference each config key
-  local config_key_profiles = {}
-  for pkey, prof in pairs(all_profiles) do
-    if pkey ~= profile_key and prof.configuration_set and config_sets[prof.configuration_set] then
-      local other_mappings = config_sets[prof.configuration_set]
-      for proj_name, variant in pairs(other_mappings) do
-        local ck = prof.kit_id and (variant .. ":" .. prof.kit_id) or variant
-        local lookup = proj_name .. "\0" .. ck
-        config_key_profiles[lookup] = config_key_profiles[lookup] or {}
-        config_key_profiles[lookup][#config_key_profiles[lookup] + 1] = pkey
-      end
-    end
-  end
-
-  local items = {}
-  for proj_name, variant in pairs(mappings) do
-    local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
-    local lookup = proj_name .. "\0" .. config_key
-
-    local build_dir = nil
-    if ws.cache.projects and ws.cache.projects[proj_name] then
-      local cached = ws.cache.projects[proj_name].configurations
-      if cached and cached[config_key] then
-        build_dir = cached[config_key].build_dir
-      end
-    end
-
-    items[#items + 1] = {
-      project_key = proj_name,
-      config_key = config_key,
-      build_dir = build_dir,
-      shared_by = config_key_profiles[lookup],
-    }
-  end
-
-  table.sort(items, function(a, b) return a.project_key < b.project_key end)
-
-  local defined_in_config = ws.config.profiles and ws.config.profiles[profile_key] or false
-
-  return {
-    items = items,
-    profile_key = profile_key,
-    defined_in_config = defined_in_config and true or false,
-  }
-end
-
---- Collect a single config item for deletion.
+--- Plan a single config deletion.
 --- @param project_key string
 --- @param config_key string
---- @return table plan { items, project_key, config_key, defined_in_config }
+--- @return loomworks.DeletionPlan
 function Core:plan_config_deletion(project_key, config_key)
   local ws = self._deps.workspace.get()
   if not ws then
     return { items = {}, project_key = project_key, config_key = config_key, defined_in_config = false }
   end
 
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
+  local all_profiles = self:get_profiles()
   local config_sets = ws.config.configuration_sets
 
   -- Find all profiles that reference this config key (informational warning)
   local affected = {}
   if config_sets then
-    for pkey, prof in pairs(all_profiles) do
-      if prof.configuration_set and config_sets[prof.configuration_set] then
-        local other_mappings = config_sets[prof.configuration_set]
-        for proj_name, variant in pairs(other_mappings) do
-          local ck = prof.kit_id and (variant .. ":" .. prof.kit_id) or variant
-          if proj_name == project_key and ck == config_key then
-            affected[#affected + 1] = pkey
+    for _, profile in pairs(all_profiles) do
+      if profile.mappings then
+        for proj_name, variant in pairs(profile.mappings) do
+          if proj_name == project_key and profile:config_key(variant) == config_key then
+            affected[#affected + 1] = profile.key
           end
         end
       end
@@ -489,7 +521,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Delete cached configurations and their build directories (synchronous part).
---- @param items table[] list of { project_key: string, config_key: string }
+--- @param items loomworks.DeletionItem[]
 function Core:delete_cached_configs(items)
   local ws = self._deps.workspace.get()
   if not ws then return end
@@ -532,7 +564,7 @@ end
 
 --- Execute a deletion plan asynchronously.
 --- Marks items as deleting, stops running tasks, cleans cache + build dirs.
---- @param plan table from plan_profile_deletion or plan_config_deletion
+--- @param plan loomworks.DeletionPlan
 --- @param opts? { deactivate_profile?: string }
 --- @param on_done? function called when deletion is complete
 function Core:execute_deletion(plan, opts, on_done)
@@ -598,12 +630,12 @@ end
 --- @param profile_key string
 --- @param on_done? function
 function Core:delete_profile(profile_key, on_done)
-  local plan = self:plan_profile_deletion(profile_key)
-  if #plan.items == 0 then
+  local profile = self:get_profile(profile_key)
+  if not profile then
     if on_done then on_done() end
     return
   end
-  self:execute_deletion(plan, { deactivate_profile = profile_key }, on_done)
+  profile:delete(on_done)
 end
 
 --- Convenience: delete a single config without UI confirmation.
@@ -625,7 +657,7 @@ end
 
 --- Find the project containing a buffer's file.
 --- @param bufnr number
---- @return string|nil project_key, table|nil project_data
+--- @return string|nil project_key, loomworks.Project|nil
 function Core:project_for_buf(bufnr)
   local ws = self._deps.workspace.get()
   if not ws then return nil, nil end
@@ -634,205 +666,19 @@ function Core:project_for_buf(bufnr)
   if buf_path == "" then return nil, nil end
   buf_path = self._deps.normalize(buf_path)
 
-  local best_key, best_data, best_len = nil, nil, 0
+  local best_key, best_len = nil, 0
   for key, project in pairs(ws.config.projects) do
     local project_abs = self._deps.normalize(ws.root .. "/" .. project.path)
     if buf_path:sub(1, #project_abs) == project_abs and #project_abs > best_len then
       best_key = key
-      best_data = self._active_set and self._active_set.projects[key] or nil
       best_len = #project_abs
     end
   end
 
-  return best_key, best_data
-end
-
---- Check if a profile has any configured entries in cache.
---- @param profile_key string
---- @return boolean
-function Core:is_profile_configured(profile_key)
-  local ws = self._deps.workspace.get()
-  if not ws then return false end
-
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
-  local profile = all_profiles[profile_key]
-  if not profile then return false end
-  if not ws.cache.projects then return false end
-
-  local config_sets = ws.config.configuration_sets
-  local valid_variants = {}
-  if profile.configuration_set and config_sets then
-    local mappings = config_sets[profile.configuration_set]
-    if mappings then
-      for _, variant in pairs(mappings) do
-        valid_variants[variant] = true
-      end
-    end
+  if best_key then
+    return best_key, self:get_project(best_key)
   end
-
-  for _, cached_proj in pairs(ws.cache.projects) do
-    if cached_proj.configurations then
-      for config_key, _ in pairs(cached_proj.configurations) do
-        local variant, kit_id = self._deps.merge.parse_profile_key(config_key)
-        if kit_id == profile.kit_id and valid_variants[variant] then
-          return true
-        end
-        if not profile.kit_id and not kit_id and valid_variants[variant] then
-          return true
-        end
-      end
-    end
-  end
-  return false
-end
-
---- Compute aggregate status for a profile from its constituent project states.
---- @param profile_key string
---- @return string label, string hl_group
-function Core:resolve_profile_status(profile_key)
-  local ws = self._deps.workspace.get()
-  if not ws then return "unconfigured", "Comment" end
-
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
-  local profile = all_profiles[profile_key]
-  if not profile then return "unconfigured", "Comment" end
-
-  local config_sets = ws.config.configuration_sets
-  if not profile.configuration_set or not config_sets then
-    return "unconfigured", "Comment"
-  end
-
-  local mappings = config_sets[profile.configuration_set]
-  if not mappings then return "unconfigured", "Comment" end
-
-  local STATUS_HL = {
-    unconfigured     = "Comment",
-    configured       = "DiagnosticInfo",
-    built            = "DiagnosticOk",
-    failed_configure = "DiagnosticError",
-    failed_build     = "DiagnosticError",
-  }
-
-  local total = 0
-  local counts = {
-    unconfigured = 0,
-    configured = 0,
-    built = 0,
-    failed_configure = 0,
-    failed_build = 0,
-    configuring = 0,
-    building = 0,
-    deleting = 0,
-  }
-
-  for pname, variant in pairs(mappings) do
-    total = total + 1
-    local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
-
-    if self:is_deleting(pname, config_key) then
-      counts.deleting = counts.deleting + 1
-    else
-      local running_action = self:get_running_action(pname, config_key)
-      if running_action then
-        local state = running_action == "configure" and "configuring" or "building"
-        counts[state] = counts[state] + 1
-      else
-        local state = "unconfigured"
-        if ws.cache.projects and ws.cache.projects[pname] and ws.cache.projects[pname].configurations then
-          local cached = ws.cache.projects[pname].configurations[config_key]
-          if cached and cached.state then
-            state = cached.state
-          end
-        end
-        counts[state] = (counts[state] or 0) + 1
-      end
-    end
-  end
-
-  if total == 0 then return "empty", "Comment" end
-
-  if counts.deleting > 0 then
-    return "deleting " .. counts.deleting .. "/" .. total, "DiagnosticError"
-  end
-
-  local running = counts.configuring + counts.building
-  local failed = counts.failed_configure + counts.failed_build
-
-  if running > 0 then
-    local parts = {}
-    if counts.configuring > 0 then parts[#parts + 1] = "configuring " .. counts.configuring end
-    if counts.building > 0 then parts[#parts + 1] = "building " .. counts.building end
-    if failed > 0 then parts[#parts + 1] = failed .. " failed" end
-    return table.concat(parts, ", "), "DiagnosticWarn"
-  end
-
-  if counts.built == total then return "built", STATUS_HL.built end
-  if counts.configured == total then return "configured", STATUS_HL.configured end
-  if counts.unconfigured == total then return "unconfigured", STATUS_HL.unconfigured end
-
-  if failed > 0 then
-    local parts = {}
-    if counts.failed_configure > 0 then
-      parts[#parts + 1] = counts.failed_configure .. " failed configure"
-    end
-    if counts.failed_build > 0 then
-      parts[#parts + 1] = counts.failed_build .. " failed build"
-    end
-    local ok_count = counts.built + counts.configured
-    if ok_count > 0 then
-      parts[#parts + 1] = ok_count .. "/" .. total .. " ok"
-    end
-    return table.concat(parts, ", "), "DiagnosticError"
-  end
-
-  local parts = {}
-  if counts.built > 0 then parts[#parts + 1] = counts.built .. " built" end
-  if counts.configured > 0 then parts[#parts + 1] = counts.configured .. " configured" end
-  if counts.unconfigured > 0 then parts[#parts + 1] = counts.unconfigured .. " unconfigured" end
-  return table.concat(parts, ", "), "DiagnosticInfo"
-end
-
---- Check if a profile has any running tasks.
---- @param profile_key string
---- @return boolean
-function Core:is_profile_running(profile_key)
-  local ws = self._deps.workspace.get()
-  if not ws then return false end
-
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
-  local profile = all_profiles[profile_key]
-  if not profile then return false end
-
-  local config_sets = ws.config.configuration_sets
-  local set_mappings = profile.configuration_set
-      and config_sets and config_sets[profile.configuration_set]
-  if not set_mappings then return false end
-
-  local profile_variants = {}
-  for _, variant in pairs(set_mappings) do
-    profile_variants[variant] = true
-  end
-
-  for _, info in pairs(self._running_tasks) do
-    local task_variant, task_kit = self._deps.merge.parse_profile_key(info.configuration_key)
-    if profile_variants[task_variant] and task_kit == profile.kit_id then
-      return true
-    end
-  end
-  return false
-end
-
---- Resolve the cached state for a configuration within a project.
---- @param proj table project data from merge
---- @param cname string configuration name
---- @return table|nil cached_state
-function Core:resolve_cached_config(proj, cname)
-  if not proj.cached_configurations then return nil end
-  if proj.kit_id then
-    local cached = proj.cached_configurations[cname .. ":" .. proj.kit_id]
-    if cached then return cached end
-  end
-  return proj.cached_configurations[cname]
+  return nil, nil
 end
 
 return Core

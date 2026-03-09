@@ -119,7 +119,7 @@ end
 --- Check if the path+config is valid.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
---- @return { valid: boolean, warnings: string[] }
+--- @return loomworks.ModuleValidation
 function M.validate(path, config)
   local warnings = {}
 
@@ -145,7 +145,7 @@ end
 --- Return what the module knows about the project from its own files.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
---- @return table info
+--- @return loomworks.ModuleInfo
 function M.info(path, config)
   local configurations = {}
 
@@ -233,10 +233,10 @@ end
 --- Single-config generators get per-config per-kit dirs.
 --- @param project_name string
 --- @param config_name string|nil only used for single-config
---- @param config_info table|nil configuration info from info()
+--- @param config_info loomworks.ConfigurationInfo|nil
 --- @param workspace_root string
 --- @param multi_config boolean
---- @param kit table|nil cmake kit
+--- @param kit loomworks.CmakeKit|nil
 --- @return string absolute build directory path
 local function resolve_build_dir(project_name, config_name, config_info, workspace_root, multi_config, kit)
   if config_info and config_info.binary_dir then
@@ -262,7 +262,7 @@ local function resolve_build_dir(project_name, config_name, config_info, workspa
 end
 
 --- Return overseer task templates for a project.
---- @param project table { name, path, type, configuration, configurations, kit, workspace_root, env }
+--- @param project loomworks.ModuleContext
 --- @param active_config string active configuration name
 --- @return table[] tasks
 function M.tasks(project, active_config)
@@ -422,8 +422,8 @@ end
 --- Compare current config/files against cache.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
---- @param cached table cached configurations for this project (config_key -> config_data)
---- @return { needs_refresh: boolean, reasons: string[], notes: string[] }
+--- @param cached table<string, loomworks.CachedConfig> cached configurations for this project
+--- @return loomworks.ModuleInspection
 function M.inspect(path, config, cached)
   local reasons = {}
   local notes = {}

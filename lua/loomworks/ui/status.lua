@@ -52,7 +52,7 @@ local function spinner()
 end
 
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
---- @param projects table
+--- @param projects table<string, loomworks.Project>
 --- @return string[]
 local function sorted_project_keys(projects)
   local normal, orphaned = {}, {}
@@ -73,95 +73,64 @@ end
 
 --- Render profile details when expanded.
 --- @param add function
---- @param profile_key string
---- @param profile table
---- @param config_sets table|nil
---- @param detected_kits table
---- @param cache table
-local function render_profile_details(add, profile_key, profile, config_sets, detected_kits, cache)
-  local lw = require("loomworks")
-
+--- @param profile loomworks.Profile
+local function render_profile_details(add, profile)
   if profile.configuration_set then
     add("      Set: " .. profile.configuration_set, "Comment")
   end
 
   -- Kit info
-  if profile.kit_id then
-    for _, kit in ipairs(detected_kits) do
-      if kit.id == profile.kit_id then
-        add("      Kit: " .. kit.display, "Comment")
-        add("      Generator: " .. kit.generator, "Comment")
-        if kit.compiler_id then
-          add("      Compiler: " .. kit.compiler_id, "Comment")
-        end
-        break
-      end
+  if profile.kit then
+    add("      Kit: " .. profile.kit.display, "Comment")
+    if profile.kit.generator then
+      add("      Generator: " .. profile.kit.generator, "Comment")
+    end
+    if profile.kit.compiler_id then
+      add("      Compiler: " .. profile.kit.compiler_id, "Comment")
     end
   end
 
-  -- Project mappings from configuration set, foldable with config details
-  if profile.configuration_set and config_sets then
-    local mappings = config_sets[profile.configuration_set]
-    if mappings then
-      add("      Projects:", "Comment")
-      local proj_names = {}
-      for name in pairs(mappings) do
-        proj_names[#proj_names + 1] = name
+  -- Project mappings via ProfileProject objects
+  local pps = profile:projects()
+  if #pps > 0 then
+    add("      Projects:", "Comment")
+
+    for _, pp in ipairs(pps) do
+      local config_status = pp:status()
+      local status_icon
+      if config_status == "deleting" or config_status == "configuring" or config_status == "building" then
+        status_icon = spinner()
+      else
+        status_icon = STATUS_ICONS[config_status] or "  "
       end
-      table.sort(proj_names)
+      local status_hl = STATUS_HL[config_status] or "Comment"
 
-      for _, pname in ipairs(proj_names) do
-        local variant = mappings[pname]
-        local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
+      local fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key
+      local folded = M._folds[fold_key] ~= false
 
-        -- Look up cached state
-        local cached_state = nil
-        if cache.projects and cache.projects[pname] and cache.projects[pname].configurations then
-          cached_state = cache.projects[pname].configurations[config_key]
-        end
+      local fold_char = folded and "▶" or "▼"
+      add("        " .. fold_char .. " " .. status_icon .. pp.project_key .. " → " .. pp.variant, status_hl,
+        { kind = "profile_project", key = pp.project_key, project = profile.key })
 
-        -- Check deleting/running state
-        local config_status
-        local status_icon
-        if lw.is_deleting(pname, config_key) then
-          config_status = "deleting"
-          status_icon = spinner()
-        else
-          local running_action = lw.get_running_action(pname, config_key)
-          if running_action then
-            config_status = running_action == "configure" and "configuring" or "building"
-            status_icon = spinner()
-          else
-            config_status = cached_state and cached_state.state or "unconfigured"
-            status_icon = STATUS_ICONS[config_status] or "  "
+      if not folded then
+        local cached = pp:cached_state()
+        if cached then
+          add("            Status: " .. (cached.state or "unconfigured"), status_hl)
+          if cached.build_dir then
+            add("            Build dir: " .. cached.build_dir, "Comment")
           end
-        end
-        local status_hl = STATUS_HL[config_status] or "Comment"
-
-        local fold_key = "profile_proj:" .. profile_key .. ":" .. pname
-        local folded = M._folds[fold_key] ~= false
-
-        local fold_char = folded and "▶" or "▼"
-        add("        " .. fold_char .. " " .. status_icon .. pname .. " → " .. variant, status_hl,
-          { kind = "profile_project", key = pname, project = profile_key })
-
-        if not folded and cached_state then
-          add("            Status: " .. (cached_state.state or "unconfigured"), status_hl)
-          if cached_state.build_dir then
-            add("            Build dir: " .. cached_state.build_dir, "Comment")
+          if cached.last_configured then
+            add("            Last configured: " .. cached.last_configured, "Comment")
           end
-          if cached_state.last_configured then
-            add("            Last configured: " .. cached_state.last_configured, "Comment")
+          if cached.last_built then
+            add("            Last built: " .. cached.last_built, "Comment")
           end
-          if cached_state.last_built then
-            add("            Last built: " .. cached_state.last_built, "Comment")
-          end
-          if cached_state.cmake then
-            if cached_state.cmake.generator then
-              add("            Generator: " .. cached_state.cmake.generator, "Comment")
+          if cached.cmake then
+            if cached.cmake.generator then
+              add("            Generator: " .. cached.cmake.generator, "Comment")
             end
-            if cached_state.cmake.compiler then
-              add("            Compiler: " .. cached_state.cmake.compiler, "Comment")
+            if cached.cmake.compiler then
+              add("            Compiler: " .. cached.cmake.compiler, "Comment")
             end
           end
         end
@@ -173,15 +142,11 @@ end
 --- Render configuration set details when expanded.
 --- @param add function
 --- @param set_name string
---- @param mappings table
---- @param detected_kits table
---- @param all_profiles table
+--- @param mappings table<string, string> project_key -> variant
+--- @param detected_kits loomworks.CmakeKit[]
+--- @param all_profiles table<string, loomworks.Profile>
 --- @param active_profile_key string
---- @param cache table
---- @param config_sets table|nil
-local function render_set_details(add, set_name, mappings, detected_kits, all_profiles, active_profile_key, cache, config_sets)
-  local lw = require("loomworks")
-
+local function render_set_details(add, set_name, mappings, detected_kits, all_profiles, active_profile_key)
   -- Project mappings
   add("      Projects:", "Comment")
   local proj_names = {}
@@ -199,7 +164,8 @@ local function render_set_details(add, set_name, mappings, detected_kits, all_pr
     for _, kit in ipairs(detected_kits) do
       local profile_key = merge.profile_key(set_name, kit.id)
       local is_active = profile_key == active_profile_key
-      local already_configured = lw.is_profile_configured(profile_key)
+      local profile = all_profiles[profile_key]
+      local already_configured = profile and profile:is_configured() or false
       local marker = is_active and "●" or "○"
       local kit_hl = is_active and "DiagnosticOk" or (already_configured and "DiagnosticInfo" or "Comment")
 
@@ -255,7 +221,7 @@ local function render()
   add("  Root:      " .. ws.root, "Comment")
   add("")
 
-  local all_profiles = active_set.all_profiles or {}
+  local all_profiles = lw.get_profiles()
   local active_profile_key = active_set.name or ""
   local config_sets = active_set.configuration_sets
   local detected_kits = active_set.detected_kits or {}
@@ -263,9 +229,9 @@ local function render()
   -- Collect profiles to show: configured (cache) OR currently running OR active profile
   local configured_profiles = {}
   local configured_set = {}
-  for profile_key, _ in pairs(all_profiles) do
-    local dominated = lw.is_profile_configured(profile_key)
-        or lw.is_profile_running(profile_key)
+  for profile_key, profile in pairs(all_profiles) do
+    local dominated = profile:is_configured()
+        or profile:is_running()
         or profile_key == active_profile_key
     if dominated then
       configured_profiles[#configured_profiles + 1] = profile_key
@@ -291,7 +257,7 @@ local function render()
     local function render_profile_line(profile_key)
       local profile = all_profiles[profile_key]
       local is_active = profile_key == active_profile_key
-      local profile_running = lw.is_profile_running(profile_key)
+      local profile_running = profile:is_running()
 
       local marker
       if profile_running then
@@ -311,7 +277,7 @@ local function render()
       end
 
       -- Aggregate profile status
-      local status_label, status_hl = lw.resolve_profile_status(profile_key)
+      local status_label, status_hl = profile:status()
       display = display .. " (" .. status_label .. ")"
       if not hl then
         hl = status_hl
@@ -320,7 +286,7 @@ local function render()
       add("   " .. marker .. fold_char .. display, hl, { kind = "profile", key = profile_key })
 
       if not folded then
-        render_profile_details(add, profile_key, profile, config_sets, detected_kits, ws.cache)
+        render_profile_details(add, profile)
       end
     end
 
@@ -358,7 +324,7 @@ local function render()
 
       if not set_folded then
         render_set_details(add, set_name, config_sets[set_name], detected_kits,
-          all_profiles, active_profile_key, ws.cache, config_sets)
+          all_profiles, active_profile_key)
       end
     end
     add("")
@@ -374,9 +340,10 @@ local function render()
   add("  Projects", "Title")
   add("")
 
-  local sorted = sorted_project_keys(active_set.projects)
+  local projects = lw.get_projects()
+  local sorted = sorted_project_keys(projects)
   for _, key in ipairs(sorted) do
-    local proj = active_set.projects[key]
+    local proj = projects[key]
     local proj_fold_key = "project:" .. key
     local proj_folded = M._folds[proj_fold_key] ~= false
 
@@ -386,7 +353,7 @@ local function render()
     end
 
     -- Check if any task is running for this project
-    local proj_running = lw.get_project_running_action(key)
+    local proj_running = proj:running_action()
     local proj_status = proj.status
     local proj_icon
     if proj_running then
@@ -424,23 +391,17 @@ local function render()
 
         for _, cname in ipairs(config_names) do
           local cdata = proj.configurations[cname]
-          local cached_state = lw.resolve_cached_config(proj, cname)
-
-          -- Resolve the config key for running/deleting task lookup
-          local config_cache_key = cname
-          if proj.kit_id then
-            config_cache_key = cname .. ":" .. proj.kit_id
-          end
+          local cached_state = proj:cached_config(cname)
 
           local config_status
           local status_icon
           local status_hl
-          if lw.is_deleting(key, config_cache_key) then
+          if proj:is_deleting_config(cname) then
             config_status = "deleting"
             status_icon = spinner()
             status_hl = STATUS_HL.deleting
           else
-            local running_action = lw.get_running_action(key, config_cache_key)
+            local running_action = proj:config_running_action(cname)
             if running_action then
               config_status = running_action == "configure" and "configuring" or "building"
               status_icon = spinner()
@@ -728,8 +689,8 @@ end
 
 --- Show a confirmation dialog for deleting configurations.
 --- @param title string dialog title
---- @param plan table from plan_profile_deletion or plan_config_deletion
---- @param on_confirm function called with plan to execute
+--- @param plan loomworks.DeletionPlan
+--- @param on_confirm fun(plan: loomworks.DeletionPlan)
 local function show_delete_confirmation(title, plan, on_confirm)
   local lw = require("loomworks")
   local items = plan.items
@@ -886,16 +847,17 @@ local function on_delete()
 
   -- Case 1: cursor on a profile line
   if meta and meta.kind == "profile" then
-    local profile_key = meta.key
-    local plan = lw.plan_profile_deletion(profile_key)
+    local profile = lw.get_profile(meta.key)
+    if not profile then return end
+    local plan = profile:plan_deletion()
     if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
       return
     end
 
-    show_delete_confirmation("Delete profile: " .. profile_key, plan, function(p)
-      lw.execute_deletion(p, { deactivate_profile = profile_key }, function()
-        vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+    show_delete_confirmation("Delete profile: " .. profile.key, plan, function(p)
+      lw.execute_deletion(p, { deactivate_profile = profile.key }, function()
+        vim.notify("loomworks: profile '" .. profile.key .. "' cleaned", vim.log.levels.INFO)
       end)
     end)
     return
@@ -906,12 +868,9 @@ local function on_delete()
     local project_key = meta.project
     local config_name = meta.key
 
-    local active_set = lw.get_active_configuration_set()
-    local proj = active_set and active_set.projects[project_key]
-    local config_key = config_name
-    if proj and proj.kit_id then
-      config_key = config_name .. ":" .. proj.kit_id
-    end
+    local proj = lw.get_project(project_key)
+    if not proj then return end
+    local config_key = proj:config_cache_key(config_name)
 
     local plan = lw.plan_config_deletion(project_key, config_key)
     if #plan.items == 0 then
@@ -932,26 +891,18 @@ local function on_delete()
     local profile_key = meta.project
     local project_key = meta.key
 
-    local ws = lw.get_workspace()
-    if not ws then return end
-    local all_profiles = merge.get_all_profiles(ws.config)
-    local profile = all_profiles[profile_key]
+    local profile = lw.get_profile(profile_key)
     if not profile then return end
+    local pp = profile:project(project_key)
+    if not pp then return end
 
-    local config_sets = ws.config.configuration_sets
-    local mappings = profile.configuration_set and config_sets and config_sets[profile.configuration_set]
-    if not mappings or not mappings[project_key] then return end
-
-    local variant = mappings[project_key]
-    local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
-
-    local plan = lw.plan_config_deletion(project_key, config_key)
+    local plan = lw.plan_config_deletion(project_key, pp.config_key)
     if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
       return
     end
 
-    show_delete_confirmation("Delete: " .. project_key .. " / " .. config_key, plan, function(p)
+    show_delete_confirmation("Delete: " .. project_key .. " / " .. pp.config_key, plan, function(p)
       lw.execute_deletion(p, nil, function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
@@ -962,7 +913,9 @@ local function on_delete()
   -- Case 4: try to resolve enclosing profile
   local profile_key = resolve_profile_at_cursor()
   if profile_key then
-    local plan = lw.plan_profile_deletion(profile_key)
+    local profile = lw.get_profile(profile_key)
+    if not profile then return end
+    local plan = profile:plan_deletion()
     if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
       return
@@ -987,7 +940,10 @@ end
 --- @param profile_key string
 function M.delete_profile(profile_key)
   local lw = require("loomworks")
-  local plan = lw.plan_profile_deletion(profile_key)
+  local profile = lw.get_profile(profile_key)
+  if not profile then return end
+
+  local plan = profile:plan_deletion()
   if #plan.items == 0 then
     vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
     return

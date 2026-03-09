@@ -20,7 +20,7 @@ function M.compute_hash(config_content)
 end
 
 --- Return a default (empty) CacheData structure.
---- @return table
+--- @return loomworks.CacheData
 function M.default()
   return {
     _meta = { version = CURRENT_VERSION, loomworks_hash = "", cached_at = "" },
@@ -31,7 +31,7 @@ end
 --- Load cache for a workspace.
 --- Returns defaults if file doesn't exist.
 --- @param root string
---- @return table
+--- @return loomworks.CacheData
 function M.load(root)
   local data, err = io_mod.read_json(M.filepath(root))
   if not data then
@@ -51,7 +51,7 @@ end
 
 --- Save cache for a workspace.
 --- @param root string
---- @param data table
+--- @param data loomworks.CacheData
 --- @return boolean ok, string|nil err
 function M.save(root, data)
   data._meta = data._meta or {}

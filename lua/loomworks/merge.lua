@@ -25,8 +25,8 @@ function M.parse_profile_key(key)
 end
 
 --- Determine project status from cache entry.
---- @param cache_entry table|nil
---- @return string status enum
+--- @param cache_entry loomworks.CachedConfig|nil
+--- @return loomworks.Status
 local function resolve_status(cache_entry)
   if not cache_entry then return "unconfigured" end
   if cache_entry.state then return cache_entry.state end
@@ -34,7 +34,7 @@ local function resolve_status(cache_entry)
 end
 
 --- Check if any cmake project exists in config.
---- @param config table
+--- @param config loomworks.Config
 --- @return boolean
 local function has_cmake_projects(config)
   for _, project in pairs(config.projects) do
@@ -44,8 +44,8 @@ local function has_cmake_projects(config)
 end
 
 --- Auto-generate profiles from configuration_sets × detected kits.
---- @param config table workspace config
---- @return table<string, table> profile_key -> profile definition
+--- @param config loomworks.Config
+--- @return table<string, loomworks.ProfileDef>
 local function generate_auto_profiles(config)
   local profiles = {}
 
@@ -91,8 +91,8 @@ end
 
 --- Get all available profiles (auto-generated + explicit from loomworks.json).
 --- Explicit profiles override auto-generated ones with the same key.
---- @param config table workspace config
---- @return table<string, table> all profiles
+--- @param config loomworks.Config
+--- @return table<string, loomworks.ProfileDef>
 function M.get_all_profiles(config)
   local profiles = generate_auto_profiles(config)
 
@@ -113,7 +113,7 @@ end
 
 --- Resolve a kit object from kit_id.
 --- @param kit_id string|nil
---- @return table|nil kit
+--- @return loomworks.CmakeKit|nil
 local function resolve_kit(kit_id)
   if not kit_id then return nil end
   local ok, cmake_kits_mod = pcall(require, "loomworks.cmake_kits")
@@ -122,8 +122,8 @@ local function resolve_kit(kit_id)
 end
 
 --- Merge all three files into the active profile projection.
---- @param workspace table the active workspace { root, config, user, cache }
---- @return table merged active profile data
+--- @param workspace loomworks.Workspace
+--- @return loomworks.ActiveSet
 function M.merge(workspace)
   local config = workspace.config
   local user = workspace.user
@@ -272,9 +272,9 @@ end
 
 --- Resolve project contexts for a specific profile without changing the active profile.
 --- Used for running tasks against a non-active profile.
---- @param ws table workspace { root, config, cache }
+--- @param ws loomworks.Workspace
 --- @param profile_key string
---- @return table|nil projects { key -> { type, path, configuration, configuration_key, kit, configurations, ... } }
+--- @return table<string, loomworks.MergedProjectData>|nil
 function M.resolve_profile_projects(ws, profile_key)
   local all_profiles = M.get_all_profiles(ws.config)
   local profile = all_profiles[profile_key]

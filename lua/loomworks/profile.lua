@@ -1,0 +1,363 @@
+--- loomworks/profile.lua — Profile and ProfileProject objects.
+--- Profile represents a configuration_set × kit combination.
+--- ProfileProject represents a single project within a profile.
+
+local merge = require("loomworks.merge")
+
+-- ========================== ProfileProject ==========================
+
+--- @class loomworks.ProfileProject
+--- @field project_key string
+--- @field variant string configuration variant name
+--- @field config_key string precomputed cache key (variant or variant:kit_id)
+local ProfileProject = {}
+ProfileProject.__index = ProfileProject
+
+--- Create a ProfileProject.
+--- @param profile loomworks.Profile parent Profile
+--- @param project_key string
+--- @param variant string configuration variant name
+--- @return loomworks.ProfileProject
+function ProfileProject.new(profile, project_key, variant)
+  local self = setmetatable({}, ProfileProject)
+  self._profile = profile
+  self._core = profile._core
+  self.project_key = project_key
+  self.variant = variant
+  self.config_key = profile:config_key(variant)
+  return self
+end
+
+function ProfileProject:__tostring()
+  return "ProfileProject(" .. self.project_key .. " @ " .. self._profile.key .. ")"
+end
+
+--- Get the resolved status for this project-in-profile.
+--- @return loomworks.Status|"configuring"|"building"|"deleting" status
+function ProfileProject:status()
+  if self._core:is_deleting(self.project_key, self.config_key) then
+    return "deleting"
+  end
+  local action = self._core:get_running_action(self.project_key, self.config_key)
+  if action then
+    return action == "configure" and "configuring" or "building"
+  end
+  local cached = self:cached_state()
+  return cached and cached.state or "unconfigured"
+end
+
+--- Get the running action for this project-in-profile.
+--- @return string|nil action
+function ProfileProject:running_action()
+  return self._core:get_running_action(self.project_key, self.config_key)
+end
+
+--- Check if this project-in-profile is being deleted.
+--- @return boolean
+function ProfileProject:is_deleting()
+  return self._core:is_deleting(self.project_key, self.config_key)
+end
+
+--- Get cached state from the workspace cache.
+--- @return loomworks.CachedConfig|nil
+function ProfileProject:cached_state()
+  local ws = self._core:get_workspace()
+  if not ws or not ws.cache.projects then return nil end
+  local proj = ws.cache.projects[self.project_key]
+  if not proj or not proj.configurations then return nil end
+  return proj.configurations[self.config_key]
+end
+
+--- Get the build directory from cache.
+--- @return string|nil
+function ProfileProject:build_dir()
+  local cached = self:cached_state()
+  return cached and cached.build_dir
+end
+
+-- ========================== Profile ==========================
+
+--- @class loomworks.Profile
+--- @field key string profile key
+--- @field configuration_set string
+--- @field kit_id? string
+--- @field kit? loomworks.CmakeKit
+--- @field explicit boolean
+--- @field auto_generated boolean
+--- @field mappings? table<string, string> project_key -> variant name
+local Profile = {}
+Profile.__index = Profile
+
+-- Status highlight groups (semantic severity levels)
+local STATUS_HL = {
+  unconfigured     = "Comment",
+  configured       = "DiagnosticInfo",
+  built            = "DiagnosticOk",
+  failed_configure = "DiagnosticError",
+  failed_build     = "DiagnosticError",
+  configuring      = "DiagnosticWarn",
+  building         = "DiagnosticWarn",
+  deleting         = "DiagnosticError",
+}
+
+--- Create a new Profile object.
+--- @param core loomworks.Core
+--- @param key string profile key
+--- @param data { configuration_set: string, kit_id?: string, kit?: loomworks.CmakeKit, explicit?: boolean, auto_generated?: boolean, mappings?: table<string, string> }
+--- @return loomworks.Profile
+function Profile.new(core, key, data)
+  local self = setmetatable({}, Profile)
+  self._core = core
+  self._generation = core._generation
+  self.key = key
+  self.configuration_set = data.configuration_set
+  self.kit_id = data.kit_id
+  self.kit = data.kit
+  self.explicit = data.explicit or false
+  self.auto_generated = data.auto_generated or false
+  self.mappings = data.mappings
+
+  -- Precompute valid variants for is_configured checks
+  self._valid_variants = {}
+  if self.mappings then
+    for _, variant in pairs(self.mappings) do
+      self._valid_variants[variant] = true
+    end
+  end
+
+  return self
+end
+
+function Profile:__tostring()
+  return "Profile(" .. self.key .. ")"
+end
+
+function Profile:__eq(other)
+  return self.key == other.key
+end
+
+--- Check if this object's data may be outdated.
+--- @return boolean
+function Profile:is_stale()
+  return self._generation ~= self._core._generation
+end
+
+--- Compute the cache key for a variant, accounting for kit_id.
+--- @param variant string
+--- @return string
+function Profile:config_key(variant)
+  if self.kit_id then
+    return variant .. ":" .. self.kit_id
+  end
+  return variant
+end
+
+-- ---------------------------------------------------------------------------
+-- Child access
+-- ---------------------------------------------------------------------------
+
+--- Get a ProfileProject for a specific project in this profile.
+--- @param project_key string
+--- @return loomworks.ProfileProject|nil
+function Profile:project(project_key)
+  if not self.mappings or not self.mappings[project_key] then return nil end
+  return ProfileProject.new(self, project_key, self.mappings[project_key])
+end
+
+--- Get all ProfileProjects in this profile, sorted by project_key.
+--- @return loomworks.ProfileProject[]
+function Profile:projects()
+  if not self.mappings then return {} end
+  local result = {}
+  for pname, variant in pairs(self.mappings) do
+    result[#result + 1] = ProfileProject.new(self, pname, variant)
+  end
+  table.sort(result, function(a, b) return a.project_key < b.project_key end)
+  return result
+end
+
+-- ---------------------------------------------------------------------------
+-- Actions
+-- ---------------------------------------------------------------------------
+
+--- Activate this profile.
+function Profile:activate()
+  self._core:activate_profile(self.key)
+end
+
+--- Deactivate this profile if it is currently active.
+function Profile:deactivate()
+  self._core:deactivate_profile(self.key)
+end
+
+--- Build all projects in this profile via overseer.
+function Profile:build()
+  require("loomworks.overseer").run_profile_action(self.key, "build")
+end
+
+--- Configure all projects in this profile via overseer.
+function Profile:configure()
+  require("loomworks.overseer").run_profile_action(self.key, "configure")
+end
+
+-- ---------------------------------------------------------------------------
+-- Queries
+-- ---------------------------------------------------------------------------
+
+--- Check if this profile has any configured entries in cache.
+--- @return boolean
+function Profile:is_configured()
+  local ws = self._core:get_workspace()
+  if not ws or not ws.cache.projects then return false end
+
+  for _, cached_proj in pairs(ws.cache.projects) do
+    if cached_proj.configurations then
+      for config_key, _ in pairs(cached_proj.configurations) do
+        local variant, kit_id = merge.parse_profile_key(config_key)
+        if kit_id == self.kit_id and self._valid_variants[variant] then
+          return true
+        end
+        if not self.kit_id and not kit_id and self._valid_variants[variant] then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+--- Check if this profile has any running tasks.
+--- @return boolean
+function Profile:is_running()
+  if not self.mappings then return false end
+  for _, pp in ipairs(self:projects()) do
+    if pp:running_action() then return true end
+  end
+  return false
+end
+
+--- Compute aggregate status label and highlight group for UI display.
+--- @return string label, string hl_group vim highlight group name
+function Profile:status()
+  local pps = self:projects()
+  if #pps == 0 then return "empty", "Comment" end
+
+  local total = #pps
+  local counts = {
+    unconfigured = 0,
+    configured = 0,
+    built = 0,
+    failed_configure = 0,
+    failed_build = 0,
+    configuring = 0,
+    building = 0,
+    deleting = 0,
+  }
+
+  for _, pp in ipairs(pps) do
+    local s = pp:status()
+    counts[s] = (counts[s] or 0) + 1
+  end
+
+  if counts.deleting > 0 then
+    return "deleting " .. counts.deleting .. "/" .. total, STATUS_HL.deleting
+  end
+
+  local running = counts.configuring + counts.building
+  local failed = counts.failed_configure + counts.failed_build
+
+  if running > 0 then
+    local parts = {}
+    if counts.configuring > 0 then parts[#parts + 1] = "configuring " .. counts.configuring end
+    if counts.building > 0 then parts[#parts + 1] = "building " .. counts.building end
+    if failed > 0 then parts[#parts + 1] = failed .. " failed" end
+    return table.concat(parts, ", "), STATUS_HL.configuring
+  end
+
+  if counts.built == total then return "built", STATUS_HL.built end
+  if counts.configured == total then return "configured", STATUS_HL.configured end
+  if counts.unconfigured == total then return "unconfigured", STATUS_HL.unconfigured end
+
+  if failed > 0 then
+    local parts = {}
+    if counts.failed_configure > 0 then
+      parts[#parts + 1] = counts.failed_configure .. " failed configure"
+    end
+    if counts.failed_build > 0 then
+      parts[#parts + 1] = counts.failed_build .. " failed build"
+    end
+    local ok_count = counts.built + counts.configured
+    if ok_count > 0 then
+      parts[#parts + 1] = ok_count .. "/" .. total .. " ok"
+    end
+    return table.concat(parts, ", "), STATUS_HL.failed_configure
+  end
+
+  local parts = {}
+  if counts.built > 0 then parts[#parts + 1] = counts.built .. " built" end
+  if counts.configured > 0 then parts[#parts + 1] = counts.configured .. " configured" end
+  if counts.unconfigured > 0 then parts[#parts + 1] = counts.unconfigured .. " unconfigured" end
+  return table.concat(parts, ", "), STATUS_HL.configured
+end
+
+-- ---------------------------------------------------------------------------
+-- Deletion
+-- ---------------------------------------------------------------------------
+
+--- Plan a deletion of this profile's cached configs.
+--- Returns a plan object with items, shared analysis, and metadata.
+--- @return loomworks.DeletionPlan
+function Profile:plan_deletion()
+  local ws = self._core:get_workspace()
+  local empty = { items = {}, profile_key = self.key, defined_in_config = false }
+  if not ws then return empty end
+  if not self.mappings then return empty end
+
+  -- Build lookup of other profiles' config keys for shared detection
+  local all_profiles = self._core:get_profiles()
+  local config_key_profiles = {}
+  for _, other in pairs(all_profiles) do
+    if other.key ~= self.key and other.mappings then
+      for proj_name, variant in pairs(other.mappings) do
+        local ck = other:config_key(variant)
+        local lookup = proj_name .. "\0" .. ck
+        config_key_profiles[lookup] = config_key_profiles[lookup] or {}
+        config_key_profiles[lookup][#config_key_profiles[lookup] + 1] = other.key
+      end
+    end
+  end
+
+  local items = {}
+  for _, pp in ipairs(self:projects()) do
+    local lookup = pp.project_key .. "\0" .. pp.config_key
+    items[#items + 1] = {
+      project_key = pp.project_key,
+      config_key = pp.config_key,
+      build_dir = pp:build_dir(),
+      shared_by = config_key_profiles[lookup],
+    }
+  end
+
+  table.sort(items, function(a, b) return a.project_key < b.project_key end)
+
+  local defined_in_config = ws.config.profiles and ws.config.profiles[self.key] or false
+
+  return {
+    items = items,
+    profile_key = self.key,
+    defined_in_config = defined_in_config and true or false,
+  }
+end
+
+--- Delete this profile (plan + execute, no UI confirmation).
+--- @param on_done? function
+function Profile:delete(on_done)
+  local plan = self:plan_deletion()
+  if #plan.items == 0 then
+    if on_done then on_done() end
+    return
+  end
+  self._core:execute_deletion(plan, { deactivate_profile = self.key }, on_done)
+end
+
+return { Profile = Profile, ProfileProject = ProfileProject }

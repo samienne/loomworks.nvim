@@ -5,7 +5,7 @@ local user_mod = require("loomworks.user")
 local cache_mod = require("loomworks.cache")
 local modules = require("loomworks.modules")
 
---- @type { root: string, name: string, config: table, user: table, cache: table }|nil
+--- @type loomworks.Workspace|nil
 M._active = nil
 
 --- Normalize a path to absolute with forward slashes.
@@ -71,7 +71,7 @@ function M.init(path)
 end
 
 --- Get the active workspace, or nil if none set.
---- @return table|nil
+--- @return loomworks.Workspace|nil
 function M.get()
   return M._active
 end
