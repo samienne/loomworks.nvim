@@ -30,6 +30,7 @@ local STATUS_ICONS = {
   failed_build     = "  ",
   configuring      = "  ",
   building         = "  ",
+  deleting         = "  ",
 }
 
 local STATUS_HL = {
@@ -40,6 +41,7 @@ local STATUS_HL = {
   failed_build     = "DiagnosticError",
   configuring      = "DiagnosticWarn",
   building         = "DiagnosticWarn",
+  deleting         = "DiagnosticError",
 }
 
 --- Get the current spinner character.
@@ -146,30 +148,41 @@ local function resolve_profile_status(profile_key, profile, config_sets, cache)
     failed_build = 0,
     configuring = 0,
     building = 0,
+    deleting = 0,
   }
 
   for pname, variant in pairs(mappings) do
     total = total + 1
     local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
 
-    -- Check running state first
-    local running_action = lw.get_running_action(pname, config_key)
-    if running_action then
-      local state = running_action == "configure" and "configuring" or "building"
-      counts[state] = counts[state] + 1
+    -- Deleting takes highest priority
+    if lw.is_deleting(pname, config_key) then
+      counts.deleting = counts.deleting + 1
     else
-      local state = "unconfigured"
-      if cache.projects and cache.projects[pname] and cache.projects[pname].configurations then
-        local cached = cache.projects[pname].configurations[config_key]
-        if cached and cached.state then
-          state = cached.state
+      -- Check running state
+      local running_action = lw.get_running_action(pname, config_key)
+      if running_action then
+        local state = running_action == "configure" and "configuring" or "building"
+        counts[state] = counts[state] + 1
+      else
+        local state = "unconfigured"
+        if cache.projects and cache.projects[pname] and cache.projects[pname].configurations then
+          local cached = cache.projects[pname].configurations[config_key]
+          if cached and cached.state then
+            state = cached.state
+          end
         end
+        counts[state] = (counts[state] or 0) + 1
       end
-      counts[state] = (counts[state] or 0) + 1
     end
   end
 
   if total == 0 then return "empty", "Comment" end
+
+  -- Deleting takes highest priority
+  if counts.deleting > 0 then
+    return "deleting " .. counts.deleting .. "/" .. total, "DiagnosticError"
+  end
 
   local running = counts.configuring + counts.building
   local failed = counts.failed_configure + counts.failed_build
@@ -261,17 +274,21 @@ local function render_profile_details(add, profile_key, profile, config_sets, de
           cached_state = cache.projects[pname].configurations[config_key]
         end
 
-        -- Check running state
-        local running_action = lw.get_running_action(pname, config_key)
-
+        -- Check deleting/running state
         local config_status
         local status_icon
-        if running_action then
-          config_status = running_action == "configure" and "configuring" or "building"
+        if lw.is_deleting(pname, config_key) then
+          config_status = "deleting"
           status_icon = spinner()
         else
-          config_status = cached_state and cached_state.state or "unconfigured"
-          status_icon = STATUS_ICONS[config_status] or "  "
+          local running_action = lw.get_running_action(pname, config_key)
+          if running_action then
+            config_status = running_action == "configure" and "configuring" or "building"
+            status_icon = spinner()
+          else
+            config_status = cached_state and cached_state.state or "unconfigured"
+            status_icon = STATUS_ICONS[config_status] or "  "
+          end
         end
         local status_hl = STATUS_HL[config_status] or "Comment"
 
@@ -583,24 +600,30 @@ local function render()
           local cdata = proj.configurations[cname]
           local cached_state = resolve_cached_config(proj, cname)
 
-          -- Resolve the config key for running task lookup
+          -- Resolve the config key for running/deleting task lookup
           local config_cache_key = cname
           if proj.kit_id then
             config_cache_key = cname .. ":" .. proj.kit_id
           end
-          local running_action = loomworks.get_running_action(key, config_cache_key)
 
           local config_status
           local status_icon
           local status_hl
-          if running_action then
-            config_status = running_action == "configure" and "configuring" or "building"
+          if loomworks.is_deleting(key, config_cache_key) then
+            config_status = "deleting"
             status_icon = spinner()
-            status_hl = STATUS_HL[config_status] or "DiagnosticWarn"
+            status_hl = STATUS_HL.deleting
           else
-            config_status = cached_state and cached_state.state or "unconfigured"
-            status_icon = STATUS_ICONS[config_status] or "  "
-            status_hl = STATUS_HL[config_status] or "Comment"
+            local running_action = loomworks.get_running_action(key, config_cache_key)
+            if running_action then
+              config_status = running_action == "configure" and "configuring" or "building"
+              status_icon = spinner()
+              status_hl = STATUS_HL[config_status] or "DiagnosticWarn"
+            else
+              config_status = cached_state and cached_state.state or "unconfigured"
+              status_icon = STATUS_ICONS[config_status] or "  "
+              status_hl = STATUS_HL[config_status] or "Comment"
+            end
           end
 
           local active_marker = cname == proj.configuration and "●" or "○"
@@ -1014,14 +1037,7 @@ local function show_delete_confirmation(title, items, defined_in_config, on_conf
   if #to_delete > 0 then
     vim.keymap.set("n", "y", function()
       close()
-      if #running_task_ids > 0 then
-        vim.notify("loomworks: stopping " .. #running_task_ids .. " running task(s)...", vim.log.levels.INFO)
-        lw.stop_tasks_then(running_task_ids, function()
-          on_confirm(to_delete)
-        end)
-      else
-        on_confirm(to_delete)
-      end
+      on_confirm(to_delete)
     end, map_opts)
   end
 end
@@ -1051,8 +1067,9 @@ local function on_delete()
       defined_in_config,
       function(to_delete)
         lw.deactivate_profile(profile_key)
-        lw.delete_cached_configs(to_delete)
-        vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+        lw.delete_async(to_delete, function()
+          vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+        end)
       end
     )
     return
@@ -1086,8 +1103,9 @@ local function on_delete()
       items,
       defined_in_config,
       function(to_delete)
-        lw.delete_cached_configs(to_delete)
-        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+        lw.delete_async(to_delete, function()
+          vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+        end)
       end
     )
     return
@@ -1123,8 +1141,9 @@ local function on_delete()
       items,
       defined_in_config,
       function(to_delete)
-        lw.delete_cached_configs(to_delete)
-        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+        lw.delete_async(to_delete, function()
+          vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+        end)
       end
     )
     return
@@ -1148,8 +1167,9 @@ local function on_delete()
       defined_in_config,
       function(to_delete)
         lw.deactivate_profile(profile_key)
-        lw.delete_cached_configs(to_delete)
-        vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+        lw.delete_async(to_delete, function()
+          vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+        end)
       end
     )
     return

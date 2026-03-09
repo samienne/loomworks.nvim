@@ -15,6 +15,14 @@ M._active_set = nil
 --- Maps overseer task id -> running task info
 M._running_tasks = {}
 
+--- @type table<string, boolean>
+--- Set of "project_key\0config_key" currently being deleted.
+M._deleting = {}
+
+--- @type function[]
+--- Callbacks waiting for all pending deletions to finish.
+M._delete_waiters = {}
+
 --- Initialize loomworks workspace.
 --- @param opts? { root?: string }
 function M.setup(opts)
@@ -309,6 +317,82 @@ function M.stop_tasks_then(task_ids, on_done)
       check_done()
     end
   end
+end
+
+--- Check if a project+config is currently being deleted.
+--- @param project_key string
+--- @param config_key string
+--- @return boolean
+function M.is_deleting(project_key, config_key)
+  return M._deleting[project_key .. "\0" .. config_key] == true
+end
+
+--- Check if any items are currently being deleted.
+--- @return boolean
+function M.has_pending_deletions()
+  return next(M._deleting) ~= nil
+end
+
+--- Wait for all pending deletions to finish, then call fn.
+--- If nothing is pending, calls fn immediately.
+--- @param fn function
+function M.after_deletions(fn)
+  if not next(M._deleting) then
+    fn()
+    return
+  end
+  M._delete_waiters[#M._delete_waiters + 1] = fn
+end
+
+--- Mark items as deleting, stop any running tasks, then clean cache + build dirs.
+--- Returns immediately — deletion happens asynchronously.
+--- @param items table[] list of { project_key: string, config_key: string }
+--- @param on_done? function called when deletion is complete
+function M.delete_async(items, on_done)
+  -- Mark items as deleting
+  for _, item in ipairs(items) do
+    M._deleting[item.project_key .. "\0" .. item.config_key] = true
+  end
+
+  -- Start spinner for deleting state
+  local status_ok, status_ui = pcall(require, "loomworks.ui.status")
+  if status_ok then
+    status_ui.start_spinner()
+    status_ui.refresh()
+  end
+
+  -- Find and stop running tasks for these items
+  local running = M.find_running_tasks_for_items(items)
+  local task_ids = {}
+  for task_id in pairs(running) do
+    task_ids[#task_ids + 1] = task_id
+  end
+
+  M.stop_tasks_then(task_ids, function()
+    -- Now safe to delete
+    M.delete_cached_configs(items)
+
+    -- Unmark deleting state
+    for _, item in ipairs(items) do
+      M._deleting[item.project_key .. "\0" .. item.config_key] = nil
+    end
+
+    -- Notify waiters if no more pending deletions
+    if not next(M._deleting) then
+      local waiters = M._delete_waiters
+      M._delete_waiters = {}
+      for _, fn in ipairs(waiters) do
+        fn()
+      end
+    end
+
+    -- Refresh UI
+    if status_ok then
+      status_ui.refresh()
+    end
+
+    if on_done then on_done() end
+  end)
 end
 
 --- Delete cached configurations and their build directories.

@@ -239,43 +239,55 @@ function M.run_profile_action(profile_key, action)
     return
   end
 
-  local all_tasks = collect_profile_tasks(profile_key)
-  if not all_tasks then return end
+  local loomworks = require("loomworks")
 
-  if action == "configure" then
-    local launched = launch_tasks(overseer, all_tasks.configure)
-    if launched == 0 then
-      vim.notify("loomworks: no configure tasks found for profile", vim.log.levels.WARN)
+  local function do_action()
+    -- Re-collect tasks after potential deletion completed (cache may have changed)
+    local all_tasks = collect_profile_tasks(profile_key)
+    if not all_tasks then return end
+
+    if action == "configure" then
+      local launched = launch_tasks(overseer, all_tasks.configure)
+      if launched == 0 then
+        vim.notify("loomworks: no configure tasks found for profile", vim.log.levels.WARN)
+      end
+      return
     end
-    return
-  end
 
-  if action == "build" then
-    -- Check if any projects need configuring first
-    local needs_configure = filter_unconfigured_tasks(all_tasks)
+    if action == "build" then
+      local needs_configure = filter_unconfigured_tasks(all_tasks)
 
-    if #needs_configure > 0 then
-      vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
-      launch_tasks(overseer, needs_configure, function(all_succeeded)
-        if not all_succeeded then
-          vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
-          return
-        end
-        local build_launched = launch_tasks(overseer, all_tasks.build)
-        if build_launched == 0 then
+      if #needs_configure > 0 then
+        vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
+        launch_tasks(overseer, needs_configure, function(all_succeeded)
+          if not all_succeeded then
+            vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
+            return
+          end
+          local build_launched = launch_tasks(overseer, all_tasks.build)
+          if build_launched == 0 then
+            vim.notify("loomworks: no build tasks found for profile", vim.log.levels.WARN)
+          end
+        end)
+      else
+        local launched = launch_tasks(overseer, all_tasks.build)
+        if launched == 0 then
           vim.notify("loomworks: no build tasks found for profile", vim.log.levels.WARN)
         end
-      end)
-    else
-      local launched = launch_tasks(overseer, all_tasks.build)
-      if launched == 0 then
-        vim.notify("loomworks: no build tasks found for profile", vim.log.levels.WARN)
       end
+      return
     end
-    return
+
+    vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
   end
 
-  vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
+  -- Wait for pending deletions before starting
+  if loomworks.has_pending_deletions() then
+    vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
+    loomworks.after_deletions(do_action)
+  else
+    do_action()
+  end
 end
 
 return M
