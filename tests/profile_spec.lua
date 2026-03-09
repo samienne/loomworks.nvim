@@ -103,6 +103,209 @@ describe("Profile", function()
       assert.is_true(p1 == p2)
     end)
   end)
+
+  describe("is_configured", function()
+    it("returns false when no workspace", function()
+      local p = make_profile()
+      assert.is_false(p:is_configured())
+    end)
+
+    it("returns true when cache has matching variant", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              projects = {
+                App = {
+                  configurations = {
+                    Debug = { state = "configured" },
+                  },
+                },
+              },
+            },
+          }
+        end,
+      })
+      assert.is_true(p:is_configured())
+    end)
+
+    it("returns false when cache has no matching variant", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              projects = {
+                App = {
+                  configurations = {
+                    Release = { state = "configured" },
+                  },
+                },
+              },
+            },
+          }
+        end,
+      })
+      assert.is_false(p:is_configured())
+    end)
+  end)
+
+  describe("is_running", function()
+    it("returns false when nothing running", function()
+      local p = make_profile()
+      assert.is_false(p:is_running())
+    end)
+
+    it("returns true when a project has running action", function()
+      local p = make_profile(nil, {
+        get_running_action = function(_, proj, key)
+          if proj == "App" and key == "Debug" then return "build" end
+          return nil
+        end,
+      })
+      assert.is_true(p:is_running())
+    end)
+  end)
+
+  describe("status (aggregate)", function()
+    it("returns empty for profile with no mappings", function()
+      local core = h.make_mock_core()
+      local p = Profile.new(core, "empty", { configuration_set = "debug" })
+      local label, hl = p:status()
+      assert.equals("empty", label)
+      assert.equals("Comment", hl)
+    end)
+
+    it("returns unconfigured when all unconfigured", function()
+      local p = make_profile()
+      local label, hl = p:status()
+      assert.equals("unconfigured", label)
+      assert.equals("Comment", hl)
+    end)
+
+    it("returns built when all built", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              projects = {
+                App = { configurations = { Debug = { state = "built" } } },
+                Lib = { configurations = { Debug = { state = "built" } } },
+              },
+            },
+          }
+        end,
+      })
+      local label, hl = p:status()
+      assert.equals("built", label)
+      assert.equals("DiagnosticOk", hl)
+    end)
+
+    it("returns mixed status label", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              projects = {
+                App = { configurations = { Debug = { state = "built" } } },
+              },
+            },
+          }
+        end,
+      })
+      local label, _ = p:status()
+      -- App is built, Lib is unconfigured => mixed
+      assert.matches("built", label)
+      assert.matches("unconfigured", label)
+    end)
+
+    it("shows failure info", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              projects = {
+                App = { configurations = { Debug = { state = "failed_build" } } },
+                Lib = { configurations = { Debug = { state = "built" } } },
+              },
+            },
+          }
+        end,
+      })
+      local label, hl = p:status()
+      assert.matches("failed", label)
+      assert.equals("DiagnosticError", hl)
+    end)
+
+    it("shows running status", function()
+      local p = make_profile(nil, {
+        get_running_action = function(_, proj, key)
+          if proj == "App" and key == "Debug" then return "build" end
+          return nil
+        end,
+      })
+      local label, hl = p:status()
+      assert.matches("building", label)
+      assert.equals("DiagnosticWarn", hl)
+    end)
+
+    it("shows deleting status", function()
+      local p = make_profile(nil, {
+        is_deleting = function(_, proj, key)
+          return proj == "App" and key == "Debug"
+        end,
+      })
+      local label, hl = p:status()
+      assert.matches("deleting", label)
+      assert.equals("DiagnosticError", hl)
+    end)
+  end)
+
+  describe("plan_deletion", function()
+    it("returns empty when no workspace", function()
+      local p = make_profile()
+      local plan = p:plan_deletion()
+      assert.are.same({}, plan.items)
+    end)
+
+    it("returns items for each mapped project", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            config = { projects = { App = {}, Lib = {} } },
+            cache = { projects = {} },
+          }
+        end,
+        get_profiles = function()
+          return {} -- no other profiles
+        end,
+      })
+      -- Need to override get_profiles on core too
+      local plan = p:plan_deletion()
+      assert.equals(2, #plan.items)
+      assert.equals("App", plan.items[1].project_key)
+      assert.equals("Lib", plan.items[2].project_key)
+    end)
+  end)
+
+  describe("activate / deactivate", function()
+    it("activate delegates to core", function()
+      local activated = nil
+      local p = make_profile(nil, {
+        activate_profile = function(_, key) activated = key end,
+      })
+      p:activate()
+      assert.equals("debug", activated)
+    end)
+
+    it("deactivate delegates to core", function()
+      local deactivated = nil
+      local p = make_profile(nil, {
+        deactivate_profile = function(_, key) deactivated = key end,
+      })
+      p:deactivate()
+      assert.equals("debug", deactivated)
+    end)
+  end)
 end)
 
 describe("ProfileProject", function()
@@ -164,6 +367,102 @@ describe("ProfileProject", function()
         end,
       })
       assert.equals("building", pp:status())
+    end)
+  end)
+
+  describe("running_action", function()
+    it("returns nil when nothing running", function()
+      local pp = make_pp(nil)
+      assert.is_nil(pp:running_action())
+    end)
+
+    it("delegates to core", function()
+      local pp = make_pp(nil, {
+        get_running_action = function(_, proj, key)
+          if proj == "App" and key == "Debug" then return "build" end
+          return nil
+        end,
+      })
+      assert.equals("build", pp:running_action())
+    end)
+  end)
+
+  describe("is_deleting", function()
+    it("returns false by default", function()
+      local pp = make_pp(nil)
+      assert.is_false(pp:is_deleting())
+    end)
+
+    it("returns true when core marks it", function()
+      local pp = make_pp(nil, {
+        is_deleting = function(_, proj, key)
+          return proj == "App" and key == "Debug"
+        end,
+      })
+      assert.is_true(pp:is_deleting())
+    end)
+  end)
+
+  describe("cached_state", function()
+    it("returns nil when no workspace", function()
+      local pp = make_pp(nil)
+      assert.is_nil(pp:cached_state())
+    end)
+
+    it("returns cached config when present", function()
+      local pp = make_pp(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              projects = {
+                App = {
+                  configurations = {
+                    Debug = { state = "built", last_built = "2025-01-01" },
+                  },
+                },
+              },
+            },
+          }
+        end,
+      })
+      local cached = pp:cached_state()
+      assert.is_not_nil(cached)
+      assert.equals("built", cached.state)
+    end)
+
+    it("returns nil for unknown project", function()
+      local pp = make_pp(nil, {
+        get_workspace = function()
+          return { cache = { projects = {} } }
+        end,
+      })
+      assert.is_nil(pp:cached_state())
+    end)
+  end)
+
+  describe("build_dir", function()
+    it("returns nil when no cached state", function()
+      local pp = make_pp(nil)
+      assert.is_nil(pp:build_dir())
+    end)
+
+    it("returns build_dir from cached state", function()
+      local pp = make_pp(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              projects = {
+                App = {
+                  configurations = {
+                    Debug = { state = "configured", build_dir = "/root/.nvim/build/App/Debug" },
+                  },
+                },
+              },
+            },
+          }
+        end,
+      })
+      assert.equals("/root/.nvim/build/App/Debug", pp:build_dir())
     end)
   end)
 

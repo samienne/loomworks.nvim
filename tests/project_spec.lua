@@ -176,6 +176,32 @@ describe("Project", function()
     end)
   end)
 
+  describe("abs_path", function()
+    it("combines workspace root and project path", function()
+      local p = make_project(nil, {
+        get_workspace = function()
+          return { root = "/workspace" }
+        end,
+      })
+      assert.equals("/workspace/App", p:abs_path())
+    end)
+
+    it("falls back to path when no workspace", function()
+      local p = make_project()
+      -- default mock returns nil for get_workspace
+      assert.equals("App", p:abs_path())
+    end)
+
+    it("uses key when no path", function()
+      local p = make_project({ path = nil }, {
+        get_workspace = function()
+          return { root = "/workspace" }
+        end,
+      })
+      assert.equals("/workspace/App", p:abs_path())
+    end)
+  end)
+
   describe("__tostring", function()
     it("includes project key", function()
       local p = make_project()
