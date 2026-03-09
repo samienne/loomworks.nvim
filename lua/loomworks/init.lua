@@ -78,6 +78,22 @@ function M.activate_profile(profile_key)
   events.emit("active_set_changed", M._active_set)
 end
 
+--- Deactivate a profile if it is currently active.
+--- Clears the active_profile in user.json so the profile no longer pins in the UI.
+--- @param profile_key string
+function M.deactivate_profile(profile_key)
+  local ws = workspace.get()
+  if not ws then return end
+
+  if ws.user.active_profile == profile_key then
+    ws.user.active_profile = nil
+    user_mod.save(ws.root, ws.user)
+
+    M._active_set = merge.merge(ws)
+    events.emit("active_set_changed", M._active_set)
+  end
+end
+
 --- Activate a named configuration set (legacy convenience wrapper).
 --- If cmake projects exist and a kit is active, preserves the kit.
 --- @param name string

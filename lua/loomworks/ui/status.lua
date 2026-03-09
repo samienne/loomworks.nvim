@@ -1050,6 +1050,7 @@ local function on_delete()
       items,
       defined_in_config,
       function(to_delete)
+        lw.deactivate_profile(profile_key)
         lw.delete_cached_configs(to_delete)
         vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
       end
@@ -1146,6 +1147,7 @@ local function on_delete()
       items,
       defined_in_config,
       function(to_delete)
+        lw.deactivate_profile(profile_key)
         lw.delete_cached_configs(to_delete)
         vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
       end
