@@ -842,11 +842,291 @@ end
 local function on_configure()
   local profile_key = resolve_profile_at_cursor()
   if not profile_key then
-    -- Also check if we're on a set_kit line (configure new profile from set/kit)
     vim.notify("loomworks: no profile or kit under cursor", vim.log.levels.WARN)
     return
   end
   require("loomworks.overseer").run_profile_action(profile_key, "configure")
+end
+
+--- Show a confirmation dialog for deleting configurations.
+--- @param title string dialog title
+--- @param items table[] from collect_profile_delete_items or collect_config_delete_items
+--- @param defined_in_config boolean whether the profile/config is defined in loomworks.json
+--- @param on_confirm function called with items to delete
+local function show_delete_confirmation(title, items, defined_in_config, on_confirm)
+  local lines = {}
+  local highlights = {}
+
+  local function add(text, hl)
+    lines[#lines + 1] = text
+    if hl then
+      highlights[#highlights + 1] = { line = #lines, hl_group = hl }
+    end
+  end
+
+  -- Make paths relative to workspace root for readability
+  local ws = workspace.get()
+  local ws_root = ws and vim.fs.normalize(ws.root) or nil
+  local function rel_path(abs)
+    if not abs or not ws_root then return abs end
+    local normalized = vim.fs.normalize(abs)
+    if normalized:sub(1, #ws_root) == ws_root then
+      local rel = normalized:sub(#ws_root + 1)
+      if rel:sub(1, 1) == "/" then rel = rel:sub(2) end
+      return rel ~= "" and rel or "."
+    end
+    return abs
+  end
+
+  add("  " .. title, "DiagnosticWarn")
+  add("")
+
+  -- Separate shared (blocked) from deletable, and collect affected-profile warnings
+  local to_delete = {}
+  local shared = {}
+
+  for _, item in ipairs(items) do
+    if item.shared_by and #item.shared_by > 0 then
+      -- Profile deletion: shared configs are blocked
+      shared[#shared + 1] = item
+    else
+      to_delete[#to_delete + 1] = item
+    end
+  end
+
+  if #to_delete > 0 then
+    add("  Will clean:", "Title")
+    for _, item in ipairs(to_delete) do
+      add("    " .. item.project_key .. "  " .. item.config_key, "DiagnosticError")
+      if item.build_dir then
+        add("      " .. rel_path(item.build_dir), "Comment")
+      else
+        add("      (no build directory)", "Comment")
+      end
+      -- Show affected profiles as warning for single-config deletions
+      if item.affected_profiles and #item.affected_profiles > 0 then
+        add("      affects profiles: " .. table.concat(item.affected_profiles, ", "), "DiagnosticWarn")
+      end
+    end
+    add("")
+  end
+
+  if #shared > 0 then
+    add("  Shared (kept):", "Title")
+    for _, item in ipairs(shared) do
+      add("    " .. item.project_key .. "  " .. item.config_key, "DiagnosticInfo")
+      add("      used by: " .. table.concat(item.shared_by, ", "), "Comment")
+    end
+    add("")
+  end
+
+  -- Consolidated list of directories to be deleted
+  if #to_delete > 0 then
+    local dirs = {}
+    for _, item in ipairs(to_delete) do
+      if item.build_dir then
+        dirs[#dirs + 1] = rel_path(item.build_dir)
+      end
+    end
+    if #dirs > 0 then
+      add("  Directories to delete:", "DiagnosticError")
+      for _, dir in ipairs(dirs) do
+        add("    " .. dir, "Comment")
+      end
+      add("")
+    end
+  end
+
+  if #to_delete == 0 then
+    add("  Nothing to delete — all configurations are shared.", "Comment")
+    add("")
+    add("  Press q to close", "Comment")
+  else
+    if defined_in_config then
+      add("  Note: defined in loomworks.json — remains available for reconfiguration.", "Comment")
+      add("")
+    end
+    add("  Press y to confirm, q to cancel", "Comment")
+  end
+
+  -- Create floating window
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+
+  local width = 0
+  for _, line in ipairs(lines) do
+    width = math.max(width, #line + 2)
+  end
+  width = math.min(width, 80)
+  local height = math.min(#lines, 20)
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " Confirm Delete ",
+    title_pos = "center",
+  })
+
+  -- Apply highlights
+  local ns = vim.api.nvim_create_namespace("loomworks_delete_confirm")
+  for _, hl in ipairs(highlights) do
+    vim.api.nvim_buf_add_highlight(buf, ns, hl.hl_group, hl.line - 1, 0, -1)
+  end
+
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+
+  local map_opts = { buffer = buf, nowait = true, silent = true }
+  vim.keymap.set("n", "q", close, map_opts)
+  vim.keymap.set("n", "<Esc>", close, map_opts)
+  vim.keymap.set("n", "n", close, map_opts)
+
+  if #to_delete > 0 then
+    vim.keymap.set("n", "y", function()
+      close()
+      on_confirm(to_delete)
+    end, map_opts)
+  end
+end
+
+--- Handle D — delete the profile or configuration under cursor.
+local function on_delete()
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  local meta = M._line_meta[line]
+  local lw = require("loomworks")
+
+  -- Case 1: cursor on a profile line
+  if meta and meta.kind == "profile" then
+    local profile_key = meta.key
+    local items = lw.collect_profile_delete_items(profile_key)
+    if #items == 0 then
+      vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
+      return
+    end
+
+    -- Check if profile is explicitly defined in loomworks.json
+    local ws = lw.get_workspace()
+    local defined_in_config = ws and ws.config.profiles and ws.config.profiles[profile_key] or false
+
+    show_delete_confirmation(
+      "Delete profile: " .. profile_key,
+      items,
+      defined_in_config,
+      function(to_delete)
+        lw.delete_cached_configs(to_delete)
+        vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+      end
+    )
+    return
+  end
+
+  -- Case 2: cursor on a configuration line within Projects section
+  if meta and meta.kind == "configuration" then
+    local project_key = meta.project
+    local config_name = meta.key
+
+    -- Resolve the config key (may include kit_id)
+    local ws = lw.get_workspace()
+    local active_set = lw.get_active_configuration_set()
+    local proj = active_set and active_set.projects[project_key]
+    local config_key = config_name
+    if proj and proj.kit_id then
+      config_key = config_name .. ":" .. proj.kit_id
+    end
+
+    local items = lw.collect_config_delete_items(project_key, config_key)
+    if #items == 0 then
+      vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
+      return
+    end
+
+    -- Check if this config is defined in loomworks.json
+    local defined_in_config = ws and ws.config.projects[project_key] ~= nil
+
+    show_delete_confirmation(
+      "Delete configuration: " .. project_key .. " / " .. config_key,
+      items,
+      defined_in_config,
+      function(to_delete)
+        lw.delete_cached_configs(to_delete)
+        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+      end
+    )
+    return
+  end
+
+  -- Case 3: cursor on a profile_project line
+  if meta and meta.kind == "profile_project" then
+    local profile_key = meta.project
+    local project_key = meta.key
+
+    local ws = lw.get_workspace()
+    local all_profiles = merge.get_all_profiles(ws.config)
+    local profile = all_profiles[profile_key]
+    if not profile then return end
+
+    local config_sets = ws.config.configuration_sets
+    local mappings = profile.configuration_set and config_sets and config_sets[profile.configuration_set]
+    if not mappings or not mappings[project_key] then return end
+
+    local variant = mappings[project_key]
+    local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
+
+    local items = lw.collect_config_delete_items(project_key, config_key)
+    if #items == 0 then
+      vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
+      return
+    end
+
+    local defined_in_config = ws and ws.config.projects[project_key] ~= nil
+
+    show_delete_confirmation(
+      "Delete: " .. project_key .. " / " .. config_key,
+      items,
+      defined_in_config,
+      function(to_delete)
+        lw.delete_cached_configs(to_delete)
+        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+      end
+    )
+    return
+  end
+
+  -- Case 4: try to resolve enclosing profile
+  local profile_key = resolve_profile_at_cursor()
+  if profile_key then
+    local items = lw.collect_profile_delete_items(profile_key)
+    if #items == 0 then
+      vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
+      return
+    end
+
+    local ws = lw.get_workspace()
+    local defined_in_config = ws and ws.config.profiles and ws.config.profiles[profile_key] or false
+
+    show_delete_confirmation(
+      "Delete profile: " .. profile_key,
+      items,
+      defined_in_config,
+      function(to_delete)
+        lw.delete_cached_configs(to_delete)
+        vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+      end
+    )
+    return
+  end
+
+  vim.notify("loomworks: nothing to delete under cursor", vim.log.levels.WARN)
 end
 
 --- Open the status window.
@@ -897,6 +1177,7 @@ function M.open()
   vim.keymap.set("n", "<Tab>", on_toggle_fold, map_opts)
   vim.keymap.set("n", "B", on_build, map_opts)
   vim.keymap.set("n", "C", on_configure, map_opts)
+  vim.keymap.set("n", "D", on_delete, map_opts)
   vim.keymap.set("n", "r", function() M.refresh() end, map_opts)
   vim.keymap.set("n", "q", function() vim.api.nvim_win_close(0, true) end, map_opts)
 

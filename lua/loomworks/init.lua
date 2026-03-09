@@ -243,6 +243,203 @@ function M.record_task_result(result)
   end
 end
 
+--- Delete cached configurations and their build directories.
+--- @param items table[] list of { project_key: string, config_key: string }
+function M.delete_cached_configs(items)
+  local ws = workspace.get()
+  if not ws then return end
+
+  local uv = vim.uv or vim.loop
+
+  --- Recursively remove a directory tree.
+  --- @param dir string
+  --- @return boolean ok, string|nil err
+  local function rm_rf(dir)
+    local stat = uv.fs_stat(dir)
+    if not stat then return true, nil end
+    if stat.type ~= "directory" then
+      local ok, err = uv.fs_unlink(dir)
+      if not ok then return false, "unlink " .. dir .. ": " .. (err or "unknown") end
+      return true, nil
+    end
+
+    local handle = uv.fs_scandir(dir)
+    if not handle then return true, nil end
+
+    local errors = {}
+    while true do
+      local name, ftype = uv.fs_scandir_next(handle)
+      if not name then break end
+      local full = dir .. "/" .. name
+      if ftype == "directory" then
+        local ok, err = rm_rf(full)
+        if not ok then errors[#errors + 1] = err end
+      else
+        local ok, err = uv.fs_unlink(full)
+        if not ok then errors[#errors + 1] = "unlink " .. full .. ": " .. (err or "unknown") end
+      end
+    end
+
+    local ok, err = uv.fs_rmdir(dir)
+    if not ok then errors[#errors + 1] = "rmdir " .. dir .. ": " .. (err or "unknown") end
+
+    if #errors > 0 then
+      return false, table.concat(errors, "; ")
+    end
+    return true, nil
+  end
+
+  -- Safety: only allow deleting directories under the workspace's .nvim/build/
+  local safe_prefix = vim.fs.normalize(ws.root .. "/.nvim/build")
+
+  for _, item in ipairs(items) do
+    local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
+    if cached_proj and cached_proj.configurations then
+      local cached_config = cached_proj.configurations[item.config_key]
+      -- Delete build directory from disk
+      if cached_config and cached_config.build_dir then
+        local build_dir = vim.fs.normalize(cached_config.build_dir)
+        if build_dir:sub(1, #safe_prefix) == safe_prefix then
+          if uv.fs_stat(build_dir) then
+            local ok, err = rm_rf(build_dir)
+            if not ok then
+              vim.notify("loomworks: failed to remove " .. build_dir .. ": " .. err, vim.log.levels.WARN)
+            end
+          end
+        else
+          vim.notify("loomworks: refusing to delete build dir outside .nvim/build/: " .. build_dir, vim.log.levels.ERROR)
+        end
+      end
+      -- Remove from cache
+      cached_proj.configurations[item.config_key] = nil
+      -- Clean up empty project entry
+      if not next(cached_proj.configurations) then
+        ws.cache.projects[item.project_key] = nil
+      end
+    end
+  end
+
+  -- Save cache
+  local ok, err = cache_mod.save(ws.root, ws.cache)
+  if not ok then
+    vim.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
+  end
+
+  -- Re-merge and emit events
+  M._active_set = merge.merge(ws)
+  events.emit("active_set_changed", M._active_set)
+
+  -- Refresh status UI
+  local status_ok, status = pcall(require, "loomworks.ui.status")
+  if status_ok then
+    status.refresh()
+  end
+end
+
+--- Collect all config items for a profile, with shared-config analysis.
+--- @param profile_key string
+--- @return table[] items { project_key, config_key, build_dir?, shared_by? }
+function M.collect_profile_delete_items(profile_key)
+  local ws = workspace.get()
+  if not ws then return {} end
+
+  local all_profiles = merge.get_all_profiles(ws.config)
+  local profile = all_profiles[profile_key]
+  if not profile then return {} end
+
+  local config_sets = ws.config.configuration_sets
+  if not profile.configuration_set or not config_sets then return {} end
+
+  local mappings = config_sets[profile.configuration_set]
+  if not mappings then return {} end
+
+  -- Build a lookup of which other profiles reference each config key
+  local config_key_profiles = {} -- config_key -> list of profile keys that use it
+  for pkey, prof in pairs(all_profiles) do
+    if pkey ~= profile_key and prof.configuration_set and config_sets[prof.configuration_set] then
+      local other_mappings = config_sets[prof.configuration_set]
+      for proj_name, variant in pairs(other_mappings) do
+        local ck = prof.kit_id and (variant .. ":" .. prof.kit_id) or variant
+        local lookup = proj_name .. "\0" .. ck
+        config_key_profiles[lookup] = config_key_profiles[lookup] or {}
+        config_key_profiles[lookup][#config_key_profiles[lookup] + 1] = pkey
+      end
+    end
+  end
+
+  local items = {}
+  for proj_name, variant in pairs(mappings) do
+    local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
+    local lookup = proj_name .. "\0" .. config_key
+
+    local build_dir = nil
+    if ws.cache.projects and ws.cache.projects[proj_name] then
+      local cached = ws.cache.projects[proj_name].configurations
+      if cached and cached[config_key] then
+        build_dir = cached[config_key].build_dir
+      end
+    end
+
+    items[#items + 1] = {
+      project_key = proj_name,
+      config_key = config_key,
+      build_dir = build_dir,
+      shared_by = config_key_profiles[lookup],
+    }
+  end
+
+  table.sort(items, function(a, b) return a.project_key < b.project_key end)
+  return items
+end
+
+--- Collect a single config item for deletion.
+--- Lists affected profiles as warnings (not blockers).
+--- @param project_key string
+--- @param config_key string
+--- @return table[] items { project_key, config_key, build_dir?, affected_profiles? }
+function M.collect_config_delete_items(project_key, config_key)
+  local ws = workspace.get()
+  if not ws then return {} end
+
+  local all_profiles = merge.get_all_profiles(ws.config)
+  local config_sets = ws.config.configuration_sets
+
+  -- Find all profiles that reference this config key (informational warning)
+  local affected = {}
+  if config_sets then
+    for pkey, prof in pairs(all_profiles) do
+      if prof.configuration_set and config_sets[prof.configuration_set] then
+        local other_mappings = config_sets[prof.configuration_set]
+        for proj_name, variant in pairs(other_mappings) do
+          local ck = prof.kit_id and (variant .. ":" .. prof.kit_id) or variant
+          if proj_name == project_key and ck == config_key then
+            affected[#affected + 1] = pkey
+          end
+        end
+      end
+    end
+  end
+
+  local build_dir = nil
+  if ws.cache.projects and ws.cache.projects[project_key] then
+    local cached = ws.cache.projects[project_key].configurations
+    if cached and cached[config_key] then
+      build_dir = cached[config_key].build_dir
+    end
+  end
+
+  return {
+    {
+      project_key = project_key,
+      config_key = config_key,
+      build_dir = build_dir,
+      -- Single-config deletes are never blocked by sharing — user explicitly chose this.
+      -- affected_profiles is informational only.
+      affected_profiles = #affected > 0 and affected or nil,
+    },
+  }
+end
+
 --- Find the project containing a buffer's file.
 --- @param bufnr number
 --- @return string|nil project_key, table|nil project_data
