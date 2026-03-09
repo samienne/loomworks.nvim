@@ -1,0 +1,180 @@
+-- Shared test helpers for loomworks tests.
+
+local M = {}
+
+--- Build a minimal valid loomworks.json content string.
+--- Projects field is replaced entirely (not deep-merged) to avoid
+--- combining multiple type keys on a single project.
+--- @param overrides? table merged into the base config
+--- @return string JSON content
+function M.make_config_json(overrides)
+  local base = {
+    projects = {
+      App = { cmake = {} },
+    },
+  }
+  if overrides then
+    -- Replace projects entirely if provided (deep merge would combine type keys)
+    local projects_override = overrides.projects
+    if projects_override then
+      overrides = vim.tbl_extend("force", overrides, { projects = nil })
+      base.projects = projects_override
+    end
+    base = vim.tbl_deep_extend("force", base, overrides)
+  end
+  return vim.json.encode(base)
+end
+
+--- Build a valid user.json content string.
+--- @param overrides? table merged into the base
+--- @return string JSON content
+function M.make_user_json(overrides)
+  local base = { _meta = { version = 1 } }
+  if overrides then
+    base = vim.tbl_deep_extend("force", base, overrides)
+  end
+  return vim.json.encode(base)
+end
+
+--- Build a valid cache.json content string.
+--- @param overrides? table merged into the base
+--- @return string JSON content
+function M.make_cache_json(overrides)
+  local base = {
+    _meta = { version = 2, loomworks_hash = "", cached_at = "" },
+    projects = {},
+  }
+  if overrides then
+    base = vim.tbl_deep_extend("force", base, overrides)
+  end
+  return vim.json.encode(base)
+end
+
+--- Create a mock Core for testing Profile/Project objects.
+--- @param overrides? table
+--- @return table mock_core
+function M.make_mock_core(overrides)
+  local core = {
+    _generation = 1,
+    _running_tasks = {},
+    _deleting = {},
+
+    get_workspace = function()
+      return nil
+    end,
+
+    get_running_action = function(_, _, _)
+      return nil
+    end,
+
+    get_project_running_action = function(_, _)
+      return nil
+    end,
+
+    is_deleting = function(_, _, _)
+      return false
+    end,
+  }
+  if overrides then
+    for k, v in pairs(overrides) do
+      core[k] = v
+    end
+  end
+  return core
+end
+
+--- Build mocked deps for Core.new() that use in-memory file content.
+--- @param files? table<string, string> path -> content mapping
+--- @param opts? table extra dep overrides
+--- @return table deps
+function M.make_test_deps(files, opts)
+  files = files or {}
+  local events_log = {}
+
+  local real_user = require("loomworks.user")
+  local real_cache = require("loomworks.cache")
+  local real_workspace = require("loomworks.workspace")
+
+  local function file_lookup(path)
+    local normalized = path:gsub("\\", "/")
+    for k, v in pairs(files) do
+      if normalized:match(k:gsub("%-", "%%-"):gsub("%.", "%%.") .. "$") then
+        return v
+      end
+    end
+    return nil
+  end
+
+  local deps = {
+    io = {
+      read_file = file_lookup,
+      write_json = function() return true end,
+      rm_rf = function() return true end,
+      ensure_dir = function() return true end,
+    },
+    workspace = {
+      resolve_root = function(path)
+        -- Test-friendly: return as-is, no vim path normalization
+        return (path or "/test"):gsub("/$", "")
+      end,
+      paths = real_workspace.paths,
+      assemble = real_workspace.assemble,
+    },
+    user = {
+      parse = real_user.parse,
+      default = real_user.default,
+      filepath = real_user.filepath,
+      save = function() return true end,
+    },
+    cache = {
+      parse = real_cache.parse,
+      default = real_cache.default,
+      filepath = real_cache.filepath,
+      compute_hash = real_cache.compute_hash,
+      save = function() return true end,
+    },
+    modules = {
+      get = function() return nil end,
+    },
+    FileTracker = {
+      new = function(tracker_opts)
+        return {
+          watch = function() end,
+          unwatch = function() end,
+          stop = function() end,
+          content = function(_, path) return file_lookup(path) end,
+        }
+      end,
+    },
+    notify = function() end,
+    schedule = function(fn) fn() end,
+    normalize = function(p) return p:gsub("\\", "/") end,
+    events = {
+      emit = function(event, data)
+        events_log[#events_log + 1] = { event = event, data = data }
+      end,
+      on = function() end,
+      off = function() end,
+    },
+    _events_log = events_log,
+  }
+
+  if opts then
+    for k, v in pairs(opts) do
+      if k == "_events_log" then
+        -- skip
+      elseif type(v) == "table" and type(deps[k]) == "table" then
+        -- Merge table overrides so partial overrides work (e.g. only override cache.save)
+        for vk, vv in pairs(v) do
+          deps[k][vk] = vv
+        end
+      else
+        deps[k] = v
+      end
+    end
+  end
+
+  return deps
+end
+
+return M
