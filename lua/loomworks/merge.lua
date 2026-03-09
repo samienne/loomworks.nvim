@@ -270,4 +270,54 @@ function M.merge(workspace)
   }
 end
 
+--- Resolve project contexts for a specific profile without changing the active profile.
+--- Used for running tasks against a non-active profile.
+--- @param ws table workspace { root, config, cache }
+--- @param profile_key string
+--- @return table|nil projects { key -> { type, path, configuration, configuration_key, kit, configurations, ... } }
+function M.resolve_profile_projects(ws, profile_key)
+  local all_profiles = M.get_all_profiles(ws.config)
+  local profile = all_profiles[profile_key]
+  if not profile then return nil end
+
+  local set_name = profile.configuration_set
+  local set_mappings = nil
+  if set_name and ws.config.configuration_sets and ws.config.configuration_sets[set_name] then
+    set_mappings = ws.config.configuration_sets[set_name]
+  end
+
+  local kit_id = profile.kit_id
+  local kit = resolve_kit(kit_id)
+
+  local projects = {}
+  for key, project in pairs(ws.config.projects) do
+    local mod = modules.get(project.type)
+    local abs_path = ws.root .. "/" .. project.path
+    local mod_info = mod and mod.info and mod.info(abs_path, project.type_config) or { configurations = {} }
+
+    local active_configuration = set_mappings and set_mappings[key] or nil
+
+    local cache_config_key = nil
+    if active_configuration then
+      if kit_id and project.type == "cmake" then
+        cache_config_key = active_configuration .. ":" .. kit_id
+      else
+        cache_config_key = active_configuration
+      end
+    end
+
+    projects[key] = {
+      type = project.type,
+      path = project.path,
+      configuration = active_configuration,
+      configuration_key = cache_config_key,
+      kit_id = project.type == "cmake" and kit_id or nil,
+      kit = project.type == "cmake" and kit or nil,
+      configurations = mod_info.configurations or {},
+    }
+  end
+
+  return projects
+end
+
 return M

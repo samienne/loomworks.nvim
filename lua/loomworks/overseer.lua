@@ -94,25 +94,23 @@ function M.register()
 end
 
 --- Collect task definitions for a profile, grouped by action.
+--- Does not change the active profile.
 --- @param profile_key string
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_profile_tasks(profile_key)
   local loomworks = require("loomworks")
   local modules = require("loomworks.modules")
-
-  loomworks.activate_profile(profile_key)
+  local merge = require("loomworks.merge")
 
   local ws = loomworks.get_workspace()
   if not ws then return nil end
 
-  local active_set = loomworks.get_active_configuration_set()
-  if not active_set then return nil end
+  local projects = merge.resolve_profile_projects(ws, profile_key)
+  if not projects then return nil end
 
   local by_action = { configure = {}, build = {} }
 
-  for key, proj in pairs(active_set.projects) do
-    if proj.orphaned then goto continue end
-
+  for key, proj in pairs(projects) do
     local mod = modules.get(proj.type)
     if not mod or not mod.tasks then goto continue end
 
