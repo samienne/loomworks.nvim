@@ -852,11 +852,13 @@ local function on_configure()
 end
 
 --- Show a confirmation dialog for deleting configurations.
+--- Detects running tasks, shows them in the dialog, and stops them before deleting.
 --- @param title string dialog title
 --- @param items table[] from collect_profile_delete_items or collect_config_delete_items
 --- @param defined_in_config boolean whether the profile/config is defined in loomworks.json
 --- @param on_confirm function called with items to delete
 local function show_delete_confirmation(title, items, defined_in_config, on_confirm)
+  local lw = require("loomworks")
   local lines = {}
   local highlights = {}
 
@@ -883,6 +885,21 @@ local function show_delete_confirmation(title, items, defined_in_config, on_conf
 
   add("  " .. title, "DiagnosticWarn")
   add("")
+
+  -- Detect running tasks that will need to be stopped
+  local running_tasks = lw.find_running_tasks_for_items(items)
+  local running_task_ids = {}
+  for task_id in pairs(running_tasks) do
+    running_task_ids[#running_task_ids + 1] = task_id
+  end
+
+  if #running_task_ids > 0 then
+    add("  Will stop running tasks:", "DiagnosticWarn")
+    for _, info in pairs(running_tasks) do
+      add("    " .. info.project_key .. ": " .. info.action .. " " .. info.configuration_key, "DiagnosticWarn")
+    end
+    add("")
+  end
 
   -- Separate shared (blocked) from deletable, and collect affected-profile warnings
   local to_delete = {}
@@ -997,7 +1014,14 @@ local function show_delete_confirmation(title, items, defined_in_config, on_conf
   if #to_delete > 0 then
     vim.keymap.set("n", "y", function()
       close()
-      on_confirm(to_delete)
+      if #running_task_ids > 0 then
+        vim.notify("loomworks: stopping " .. #running_task_ids .. " running task(s)...", vim.log.levels.INFO)
+        lw.stop_tasks_then(running_task_ids, function()
+          on_confirm(to_delete)
+        end)
+      else
+        on_confirm(to_delete)
+      end
     end, map_opts)
   end
 end

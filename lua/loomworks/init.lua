@@ -243,6 +243,58 @@ function M.record_task_result(result)
   end
 end
 
+--- Find running task IDs that match a list of project+config items.
+--- @param items table[] list of { project_key: string, config_key: string }
+--- @return table<number, table> task_id -> running task info
+function M.find_running_tasks_for_items(items)
+  local matches = {}
+  for task_id, info in pairs(M._running_tasks) do
+    for _, item in ipairs(items) do
+      if info.project_key == item.project_key and info.configuration_key == item.config_key then
+        matches[task_id] = info
+        break
+      end
+    end
+  end
+  return matches
+end
+
+--- Stop running overseer tasks and call on_done when all have stopped.
+--- @param task_ids number[] overseer task IDs to stop
+--- @param on_done function called when all tasks have stopped
+function M.stop_tasks_then(task_ids, on_done)
+  if #task_ids == 0 then
+    on_done()
+    return
+  end
+
+  local ok, task_list = pcall(require, "overseer.task_list")
+  if not ok then
+    on_done()
+    return
+  end
+
+  local remaining = #task_ids
+  local function check_done()
+    remaining = remaining - 1
+    if remaining == 0 then
+      vim.schedule(on_done)
+    end
+  end
+
+  for _, task_id in ipairs(task_ids) do
+    local task = task_list.get(task_id)
+    if task and not task:is_complete() then
+      task:subscribe("on_complete", function()
+        check_done()
+      end)
+      task:stop()
+    else
+      check_done()
+    end
+  end
+end
+
 --- Delete cached configurations and their build directories.
 --- @param items table[] list of { project_key: string, config_key: string }
 function M.delete_cached_configs(items)
