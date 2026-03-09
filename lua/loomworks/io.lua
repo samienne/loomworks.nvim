@@ -166,4 +166,42 @@ function M.ensure_dir(path)
   return true, nil
 end
 
+--- Recursively remove a directory tree.
+--- @param dir string
+--- @return boolean ok, string|nil err
+function M.rm_rf(dir)
+  local stat = uv.fs_stat(dir)
+  if not stat then return true, nil end
+  if stat.type ~= "directory" then
+    local ok, err = uv.fs_unlink(dir)
+    if not ok then return false, "unlink " .. dir .. ": " .. (err or "unknown") end
+    return true, nil
+  end
+
+  local handle = uv.fs_scandir(dir)
+  if not handle then return true, nil end
+
+  local errors = {}
+  while true do
+    local name, ftype = uv.fs_scandir_next(handle)
+    if not name then break end
+    local full = dir .. "/" .. name
+    if ftype == "directory" then
+      local ok, err = M.rm_rf(full)
+      if not ok then errors[#errors + 1] = err end
+    else
+      local ok, err = uv.fs_unlink(full)
+      if not ok then errors[#errors + 1] = "unlink " .. full .. ": " .. (err or "unknown") end
+    end
+  end
+
+  local ok, err = uv.fs_rmdir(dir)
+  if not ok then errors[#errors + 1] = "rmdir " .. dir .. ": " .. (err or "unknown") end
+
+  if #errors > 0 then
+    return false, table.concat(errors, "; ")
+  end
+  return true, nil
+end
+
 return M

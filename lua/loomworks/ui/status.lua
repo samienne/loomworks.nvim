@@ -1,13 +1,14 @@
+--- loomworks/ui/status.lua — Pure rendering for the workspace status page.
+--- All business logic accessed via require("loomworks") API.
+
 local M = {}
 
-local workspace = require("loomworks.workspace")
 local merge = require("loomworks.merge")
 
 --- @type number|nil buffer number for the status window
 M._bufnr = nil
 
 --- @type table<string, boolean> fold key -> folded state
---- Keys: "project:<key>", "config:<project>:<config>", "set:<name>", "profile:<key>"
 M._folds = {}
 
 --- @type table<number, { kind: string, key: string, project?: string, set_name?: string }>
@@ -70,161 +71,6 @@ local function sorted_project_keys(projects)
   return normal
 end
 
---- Check if a profile key has any configured entries in cache.
---- Matches only when a cached config's variant belongs to the profile's
---- configuration set AND the kit matches.
---- @param profile_key string
---- @param all_profiles table
---- @param cache table
---- @param config_sets table|nil
---- @return boolean
-local function is_profile_configured(profile_key, all_profiles, cache, config_sets)
-  local profile = all_profiles[profile_key]
-  if not profile then return false end
-  if not cache.projects then return false end
-
-  -- Collect variants that belong to this profile's configuration set
-  local valid_variants = {}
-  if profile.configuration_set and config_sets then
-    local mappings = config_sets[profile.configuration_set]
-    if mappings then
-      for _, variant in pairs(mappings) do
-        valid_variants[variant] = true
-      end
-    end
-  end
-
-  for _, cached_proj in pairs(cache.projects) do
-    if cached_proj.configurations then
-      for config_key, _ in pairs(cached_proj.configurations) do
-        local variant, kit_id = merge.parse_profile_key(config_key)
-        if kit_id == profile.kit_id and valid_variants[variant] then
-          return true
-        end
-        -- For kitless profiles, match variant only
-        if not profile.kit_id and not kit_id and valid_variants[variant] then
-          return true
-        end
-      end
-    end
-  end
-  return false
-end
-
---- Resolve the cached state for a configuration.
---- @param proj table project data from merge
---- @param cname string configuration name
---- @return table|nil cached_state
-local function resolve_cached_config(proj, cname)
-  if not proj.cached_configurations then return nil end
-  if proj.kit_id then
-    local cached = proj.cached_configurations[cname .. ":" .. proj.kit_id]
-    if cached then return cached end
-  end
-  return proj.cached_configurations[cname]
-end
-
---- Compute an aggregate status for a profile from its constituent project states.
---- @param profile_key string
---- @param profile table
---- @param config_sets table|nil
---- @param cache table
---- @return string label, string hl_group
-local function resolve_profile_status(profile_key, profile, config_sets, cache)
-  if not profile.configuration_set or not config_sets then
-    return "unconfigured", "Comment"
-  end
-
-  local mappings = config_sets[profile.configuration_set]
-  if not mappings then return "unconfigured", "Comment" end
-
-  local lw = require("loomworks")
-  local total = 0
-  local counts = {
-    unconfigured = 0,
-    configured = 0,
-    built = 0,
-    failed_configure = 0,
-    failed_build = 0,
-    configuring = 0,
-    building = 0,
-    deleting = 0,
-  }
-
-  for pname, variant in pairs(mappings) do
-    total = total + 1
-    local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
-
-    -- Deleting takes highest priority
-    if lw.is_deleting(pname, config_key) then
-      counts.deleting = counts.deleting + 1
-    else
-      -- Check running state
-      local running_action = lw.get_running_action(pname, config_key)
-      if running_action then
-        local state = running_action == "configure" and "configuring" or "building"
-        counts[state] = counts[state] + 1
-      else
-        local state = "unconfigured"
-        if cache.projects and cache.projects[pname] and cache.projects[pname].configurations then
-          local cached = cache.projects[pname].configurations[config_key]
-          if cached and cached.state then
-            state = cached.state
-          end
-        end
-        counts[state] = (counts[state] or 0) + 1
-      end
-    end
-  end
-
-  if total == 0 then return "empty", "Comment" end
-
-  -- Deleting takes highest priority
-  if counts.deleting > 0 then
-    return "deleting " .. counts.deleting .. "/" .. total, "DiagnosticError"
-  end
-
-  local running = counts.configuring + counts.building
-  local failed = counts.failed_configure + counts.failed_build
-
-  -- Running tasks take priority in display
-  if running > 0 then
-    local parts = {}
-    if counts.configuring > 0 then parts[#parts + 1] = "configuring " .. counts.configuring end
-    if counts.building > 0 then parts[#parts + 1] = "building " .. counts.building end
-    if failed > 0 then parts[#parts + 1] = failed .. " failed" end
-    return table.concat(parts, ", "), "DiagnosticWarn"
-  end
-
-  -- All same state
-  if counts.built == total then return "built", STATUS_HL.built end
-  if counts.configured == total then return "configured", STATUS_HL.configured end
-  if counts.unconfigured == total then return "unconfigured", STATUS_HL.unconfigured end
-
-  -- Failures present
-  if failed > 0 then
-    local parts = {}
-    if counts.failed_configure > 0 then
-      parts[#parts + 1] = counts.failed_configure .. " failed configure"
-    end
-    if counts.failed_build > 0 then
-      parts[#parts + 1] = counts.failed_build .. " failed build"
-    end
-    local ok_count = counts.built + counts.configured
-    if ok_count > 0 then
-      parts[#parts + 1] = ok_count .. "/" .. total .. " ok"
-    end
-    return table.concat(parts, ", "), "DiagnosticError"
-  end
-
-  -- Mixed positive states
-  local parts = {}
-  if counts.built > 0 then parts[#parts + 1] = counts.built .. " built" end
-  if counts.configured > 0 then parts[#parts + 1] = counts.configured .. " configured" end
-  if counts.unconfigured > 0 then parts[#parts + 1] = counts.unconfigured .. " unconfigured" end
-  return table.concat(parts, ", "), "DiagnosticInfo"
-end
-
 --- Render profile details when expanded.
 --- @param add function
 --- @param profile_key string
@@ -233,6 +79,8 @@ end
 --- @param detected_kits table
 --- @param cache table
 local function render_profile_details(add, profile_key, profile, config_sets, detected_kits, cache)
+  local lw = require("loomworks")
+
   if profile.configuration_set then
     add("      Set: " .. profile.configuration_set, "Comment")
   end
@@ -261,8 +109,6 @@ local function render_profile_details(add, profile_key, profile, config_sets, de
         proj_names[#proj_names + 1] = name
       end
       table.sort(proj_names)
-
-      local lw = require("loomworks")
 
       for _, pname in ipairs(proj_names) do
         local variant = mappings[pname]
@@ -334,6 +180,8 @@ end
 --- @param cache table
 --- @param config_sets table|nil
 local function render_set_details(add, set_name, mappings, detected_kits, all_profiles, active_profile_key, cache, config_sets)
+  local lw = require("loomworks")
+
   -- Project mappings
   add("      Projects:", "Comment")
   local proj_names = {}
@@ -351,7 +199,7 @@ local function render_set_details(add, set_name, mappings, detected_kits, all_pr
     for _, kit in ipairs(detected_kits) do
       local profile_key = merge.profile_key(set_name, kit.id)
       local is_active = profile_key == active_profile_key
-      local already_configured = is_profile_configured(profile_key, all_profiles, cache, config_sets)
+      local already_configured = lw.is_profile_configured(profile_key)
       local marker = is_active and "●" or "○"
       local kit_hl = is_active and "DiagnosticOk" or (already_configured and "DiagnosticInfo" or "Comment")
 
@@ -372,12 +220,17 @@ end
 --- Build the status page lines and highlights.
 --- @return string[] lines, table[] highlights
 local function render()
-  local ws = workspace.get()
+  local lw = require("loomworks")
+  local ws = lw.get_workspace()
   if not ws then
     return { "  No workspace loaded.", "  Use :LoomworksInit to initialize." }, {}
   end
 
-  local active_set = merge.merge(ws)
+  local active_set = lw.get_active_configuration_set()
+  if not active_set then
+    return { "  No workspace loaded.", "  Use :LoomworksInit to initialize." }, {}
+  end
+
   local lines = {}
   local highlights = {}
   M._line_meta = {}
@@ -394,7 +247,7 @@ local function render()
   end
 
   -- Header
-  add("  loomworks.nvim " .. require("loomworks")._version, "Title")
+  add("  loomworks.nvim " .. lw._version, "Title")
   add("")
 
   -- Workspace info
@@ -407,36 +260,12 @@ local function render()
   local config_sets = active_set.configuration_sets
   local detected_kits = active_set.detected_kits or {}
 
-  local lw = require("loomworks")
-
-  -- Check if a profile has any running tasks
-  local function is_profile_running(profile_key)
-    local profile = all_profiles[profile_key]
-    if not profile then return false end
-    local set_mappings = profile.configuration_set
-        and config_sets and config_sets[profile.configuration_set]
-    if not set_mappings then return false end
-
-    local profile_variants = {}
-    for _, variant in pairs(set_mappings) do
-      profile_variants[variant] = true
-    end
-
-    for _, info in pairs(lw._running_tasks) do
-      local task_variant, task_kit = merge.parse_profile_key(info.configuration_key)
-      if profile_variants[task_variant] and task_kit == profile.kit_id then
-        return true
-      end
-    end
-    return false
-  end
-
   -- Collect profiles to show: configured (cache) OR currently running OR active profile
   local configured_profiles = {}
   local configured_set = {}
   for profile_key, _ in pairs(all_profiles) do
-    local dominated = is_profile_configured(profile_key, all_profiles, ws.cache, config_sets)
-        or is_profile_running(profile_key)
+    local dominated = lw.is_profile_configured(profile_key)
+        or lw.is_profile_running(profile_key)
         or profile_key == active_profile_key
     if dominated then
       configured_profiles[#configured_profiles + 1] = profile_key
@@ -462,7 +291,7 @@ local function render()
     local function render_profile_line(profile_key)
       local profile = all_profiles[profile_key]
       local is_active = profile_key == active_profile_key
-      local profile_running = is_profile_running(profile_key)
+      local profile_running = lw.is_profile_running(profile_key)
 
       local marker
       if profile_running then
@@ -482,9 +311,8 @@ local function render()
       end
 
       -- Aggregate profile status
-      local status_label, status_hl = resolve_profile_status(profile_key, profile, config_sets, ws.cache)
+      local status_label, status_hl = lw.resolve_profile_status(profile_key)
       display = display .. " (" .. status_label .. ")"
-      -- Use status hl if no stronger signal (running/active)
       if not hl then
         hl = status_hl
       end
@@ -546,8 +374,6 @@ local function render()
   add("  Projects", "Title")
   add("")
 
-  local loomworks = require("loomworks")
-
   local sorted = sorted_project_keys(active_set.projects)
   for _, key in ipairs(sorted) do
     local proj = active_set.projects[key]
@@ -560,7 +386,7 @@ local function render()
     end
 
     -- Check if any task is running for this project
-    local proj_running = loomworks.get_project_running_action(key)
+    local proj_running = lw.get_project_running_action(key)
     local proj_status = proj.status
     local proj_icon
     if proj_running then
@@ -598,7 +424,7 @@ local function render()
 
         for _, cname in ipairs(config_names) do
           local cdata = proj.configurations[cname]
-          local cached_state = resolve_cached_config(proj, cname)
+          local cached_state = lw.resolve_cached_config(proj, cname)
 
           -- Resolve the config key for running/deleting task lookup
           local config_cache_key = cname
@@ -609,12 +435,12 @@ local function render()
           local config_status
           local status_icon
           local status_hl
-          if loomworks.is_deleting(key, config_cache_key) then
+          if lw.is_deleting(key, config_cache_key) then
             config_status = "deleting"
             status_icon = spinner()
             status_hl = STATUS_HL.deleting
           else
-            local running_action = loomworks.get_running_action(key, config_cache_key)
+            local running_action = lw.get_running_action(key, config_cache_key)
             if running_action then
               config_status = running_action == "configure" and "configuring" or "building"
               status_icon = spinner()
@@ -764,6 +590,10 @@ function M.stop_spinner()
   end)
 end
 
+-- ---------------------------------------------------------------------------
+-- Keybinding handlers
+-- ---------------------------------------------------------------------------
+
 --- Toggle fold for the item under cursor.
 local function on_toggle_fold()
   local line = vim.api.nvim_win_get_cursor(0)[1]
@@ -810,19 +640,20 @@ local function on_enter()
   local meta = M._line_meta[line]
   if not meta then return end
 
+  local lw = require("loomworks")
+
   if meta.kind == "profile" then
-    require("loomworks").activate_profile(meta.key)
+    lw.activate_profile(meta.key)
     M.refresh()
 
   elseif meta.kind == "set_kit" then
     local profile_key = merge.profile_key(meta.set_name, meta.key)
-    require("loomworks").activate_profile(profile_key)
+    lw.activate_profile(profile_key)
     M.refresh()
   end
 end
 
 --- Resolve the profile key from the cursor's line metadata.
---- Works for profile lines, set_kit lines, and child lines within a profile fold.
 --- @return string|nil profile_key
 local function resolve_profile_at_cursor()
   local line = vim.api.nvim_win_get_cursor(0)[1]
@@ -834,7 +665,6 @@ local function resolve_profile_at_cursor()
     elseif meta.kind == "set_kit" then
       return merge.profile_key(meta.set_name, meta.key)
     elseif meta.kind == "profile_project" then
-      -- meta.project holds the profile_key for profile_project items
       return meta.project
     end
   end
@@ -874,14 +704,36 @@ local function on_configure()
   require("loomworks.overseer").run_profile_action(profile_key, "configure")
 end
 
---- Show a confirmation dialog for deleting configurations.
---- Detects running tasks, shows them in the dialog, and stops them before deleting.
---- @param title string dialog title
---- @param items table[] from collect_profile_delete_items or collect_config_delete_items
---- @param defined_in_config boolean whether the profile/config is defined in loomworks.json
---- @param on_confirm function called with items to delete
-local function show_delete_confirmation(title, items, defined_in_config, on_confirm)
+-- ---------------------------------------------------------------------------
+-- Deletion UI
+-- ---------------------------------------------------------------------------
+
+--- Make a path relative to workspace root for display.
+--- @param abs string|nil
+--- @return string|nil
+local function rel_path(abs)
+  if not abs then return abs end
   local lw = require("loomworks")
+  local ws = lw.get_workspace()
+  if not ws then return abs end
+  local ws_root = vim.fs.normalize(ws.root)
+  local normalized = vim.fs.normalize(abs)
+  if normalized:sub(1, #ws_root) == ws_root then
+    local rel = normalized:sub(#ws_root + 1)
+    if rel:sub(1, 1) == "/" then rel = rel:sub(2) end
+    return rel ~= "" and rel or "."
+  end
+  return abs
+end
+
+--- Show a confirmation dialog for deleting configurations.
+--- @param title string dialog title
+--- @param plan table from plan_profile_deletion or plan_config_deletion
+--- @param on_confirm function called with plan to execute
+local function show_delete_confirmation(title, plan, on_confirm)
+  local lw = require("loomworks")
+  local items = plan.items
+  local defined_in_config = plan.defined_in_config
   local lines = {}
   local highlights = {}
 
@@ -890,20 +742,6 @@ local function show_delete_confirmation(title, items, defined_in_config, on_conf
     if hl then
       highlights[#highlights + 1] = { line = #lines, hl_group = hl }
     end
-  end
-
-  -- Make paths relative to workspace root for readability
-  local ws = workspace.get()
-  local ws_root = ws and vim.fs.normalize(ws.root) or nil
-  local function rel_path(abs)
-    if not abs or not ws_root then return abs end
-    local normalized = vim.fs.normalize(abs)
-    if normalized:sub(1, #ws_root) == ws_root then
-      local rel = normalized:sub(#ws_root + 1)
-      if rel:sub(1, 1) == "/" then rel = rel:sub(2) end
-      return rel ~= "" and rel or "."
-    end
-    return abs
   end
 
   add("  " .. title, "DiagnosticWarn")
@@ -924,13 +762,12 @@ local function show_delete_confirmation(title, items, defined_in_config, on_conf
     add("")
   end
 
-  -- Separate shared (blocked) from deletable, and collect affected-profile warnings
+  -- Separate shared (blocked) from deletable
   local to_delete = {}
   local shared = {}
 
   for _, item in ipairs(items) do
     if item.shared_by and #item.shared_by > 0 then
-      -- Profile deletion: shared configs are blocked
       shared[#shared + 1] = item
     else
       to_delete[#to_delete + 1] = item
@@ -946,7 +783,6 @@ local function show_delete_confirmation(title, items, defined_in_config, on_conf
       else
         add("      (no build directory)", "Comment")
       end
-      -- Show affected profiles as warning for single-config deletions
       if item.affected_profiles and #item.affected_profiles > 0 then
         add("      affects profiles: " .. table.concat(item.affected_profiles, ", "), "DiagnosticWarn")
       end
@@ -1037,7 +873,7 @@ local function show_delete_confirmation(title, items, defined_in_config, on_conf
   if #to_delete > 0 then
     vim.keymap.set("n", "y", function()
       close()
-      on_confirm(to_delete)
+      on_confirm(plan)
     end, map_opts)
   end
 end
@@ -1051,27 +887,17 @@ local function on_delete()
   -- Case 1: cursor on a profile line
   if meta and meta.kind == "profile" then
     local profile_key = meta.key
-    local items = lw.collect_profile_delete_items(profile_key)
-    if #items == 0 then
+    local plan = lw.plan_profile_deletion(profile_key)
+    if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
       return
     end
 
-    -- Check if profile is explicitly defined in loomworks.json
-    local ws = lw.get_workspace()
-    local defined_in_config = ws and ws.config.profiles and ws.config.profiles[profile_key] or false
-
-    show_delete_confirmation(
-      "Delete profile: " .. profile_key,
-      items,
-      defined_in_config,
-      function(to_delete)
-        lw.deactivate_profile(profile_key)
-        lw.delete_async(to_delete, function()
-          vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
-        end)
-      end
-    )
+    show_delete_confirmation("Delete profile: " .. profile_key, plan, function(p)
+      lw.execute_deletion(p, { deactivate_profile = profile_key }, function()
+        vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+      end)
+    end)
     return
   end
 
@@ -1080,8 +906,6 @@ local function on_delete()
     local project_key = meta.project
     local config_name = meta.key
 
-    -- Resolve the config key (may include kit_id)
-    local ws = lw.get_workspace()
     local active_set = lw.get_active_configuration_set()
     local proj = active_set and active_set.projects[project_key]
     local config_key = config_name
@@ -1089,25 +913,17 @@ local function on_delete()
       config_key = config_name .. ":" .. proj.kit_id
     end
 
-    local items = lw.collect_config_delete_items(project_key, config_key)
-    if #items == 0 then
+    local plan = lw.plan_config_deletion(project_key, config_key)
+    if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
       return
     end
 
-    -- Check if this config is defined in loomworks.json
-    local defined_in_config = ws and ws.config.projects[project_key] ~= nil
-
-    show_delete_confirmation(
-      "Delete configuration: " .. project_key .. " / " .. config_key,
-      items,
-      defined_in_config,
-      function(to_delete)
-        lw.delete_async(to_delete, function()
-          vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-        end)
-      end
-    )
+    show_delete_confirmation("Delete configuration: " .. project_key .. " / " .. config_key, plan, function(p)
+      lw.execute_deletion(p, nil, function()
+        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+      end)
+    end)
     return
   end
 
@@ -1117,6 +933,7 @@ local function on_delete()
     local project_key = meta.key
 
     local ws = lw.get_workspace()
+    if not ws then return end
     local all_profiles = merge.get_all_profiles(ws.config)
     local profile = all_profiles[profile_key]
     if not profile then return end
@@ -1128,55 +945,82 @@ local function on_delete()
     local variant = mappings[project_key]
     local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
 
-    local items = lw.collect_config_delete_items(project_key, config_key)
-    if #items == 0 then
+    local plan = lw.plan_config_deletion(project_key, config_key)
+    if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
       return
     end
 
-    local defined_in_config = ws and ws.config.projects[project_key] ~= nil
-
-    show_delete_confirmation(
-      "Delete: " .. project_key .. " / " .. config_key,
-      items,
-      defined_in_config,
-      function(to_delete)
-        lw.delete_async(to_delete, function()
-          vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-        end)
-      end
-    )
+    show_delete_confirmation("Delete: " .. project_key .. " / " .. config_key, plan, function(p)
+      lw.execute_deletion(p, nil, function()
+        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+      end)
+    end)
     return
   end
 
   -- Case 4: try to resolve enclosing profile
   local profile_key = resolve_profile_at_cursor()
   if profile_key then
-    local items = lw.collect_profile_delete_items(profile_key)
-    if #items == 0 then
+    local plan = lw.plan_profile_deletion(profile_key)
+    if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
       return
     end
 
-    local ws = lw.get_workspace()
-    local defined_in_config = ws and ws.config.profiles and ws.config.profiles[profile_key] or false
-
-    show_delete_confirmation(
-      "Delete profile: " .. profile_key,
-      items,
-      defined_in_config,
-      function(to_delete)
-        lw.deactivate_profile(profile_key)
-        lw.delete_async(to_delete, function()
-          vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
-        end)
-      end
-    )
+    show_delete_confirmation("Delete profile: " .. profile_key, plan, function(p)
+      lw.execute_deletion(p, { deactivate_profile = profile_key }, function()
+        vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+      end)
+    end)
     return
   end
 
   vim.notify("loomworks: nothing to delete under cursor", vim.log.levels.WARN)
 end
+
+-- ---------------------------------------------------------------------------
+-- UI-level deletion API (interactive with confirmation dialog)
+-- ---------------------------------------------------------------------------
+
+--- Delete a profile interactively (with confirmation dialog).
+--- @param profile_key string
+function M.delete_profile(profile_key)
+  local lw = require("loomworks")
+  local plan = lw.plan_profile_deletion(profile_key)
+  if #plan.items == 0 then
+    vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
+    return
+  end
+
+  show_delete_confirmation("Delete profile: " .. profile_key, plan, function(p)
+    lw.execute_deletion(p, { deactivate_profile = profile_key }, function()
+      vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+    end)
+  end)
+end
+
+--- Delete a configuration interactively (with confirmation dialog).
+--- @param project_key string
+--- @param config_key string
+function M.delete_config(project_key, config_key)
+  local lw = require("loomworks")
+  local plan = lw.plan_config_deletion(project_key, config_key)
+  if #plan.items == 0 then
+    vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
+    return
+  end
+
+  show_delete_confirmation("Delete configuration: " .. project_key .. " / " .. config_key, plan, function(p)
+    lw.execute_deletion(p, nil, function()
+      vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+    end)
+  end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Window management
+-- ---------------------------------------------------------------------------
 
 --- Open the status window.
 function M.open()
@@ -1204,12 +1048,53 @@ function M.open()
   vim.bo[M._bufnr].filetype = "loomworks"
   vim.bo[M._bufnr].modifiable = false
 
-  -- Stop spinner when buffer is wiped
+  -- Wire up event-driven updates
+  local events = require("loomworks.events")
+
+  local function on_task_started()
+    M.start_spinner()
+  end
+  local function on_task_stopped(data)
+    if not data.has_running then
+      M.stop_spinner()
+    end
+  end
+  local function on_task_result()
+    M.refresh()
+  end
+  local function on_deletion_started()
+    M.start_spinner()
+    M.refresh()
+  end
+  local function on_deletion_completed()
+    if not require("loomworks").has_running_tasks() then
+      M.stop_spinner()
+    end
+    M.refresh()
+  end
+  local function on_active_set_changed()
+    M.refresh()
+  end
+
+  events.on("task_started", on_task_started)
+  events.on("task_stopped", on_task_stopped)
+  events.on("task_result", on_task_result)
+  events.on("deletion_started", on_deletion_started)
+  events.on("deletion_completed", on_deletion_completed)
+  events.on("active_set_changed", on_active_set_changed)
+
+  -- Stop spinner and unregister events when buffer is wiped
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = M._bufnr,
     callback = function()
       M.stop_spinner()
       M._bufnr = nil
+      events.off("task_started", on_task_started)
+      events.off("task_stopped", on_task_stopped)
+      events.off("task_result", on_task_result)
+      events.off("deletion_started", on_deletion_started)
+      events.off("deletion_completed", on_deletion_completed)
+      events.off("active_set_changed", on_active_set_changed)
     end,
   })
 
@@ -1231,12 +1116,23 @@ function M.open()
   vim.keymap.set("n", "q", function() vim.api.nvim_win_close(0, true) end, map_opts)
 
   -- Start spinner if tasks are already running
-  local loomworks = require("loomworks")
-  if next(loomworks._running_tasks) then
+  if require("loomworks").has_running_tasks() then
     M.start_spinner()
   end
 
   M.refresh()
+end
+
+--- Close the status window if open.
+function M.close()
+  if M._bufnr and vim.api.nvim_buf_is_valid(M._bufnr) then
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_buf(win) == M._bufnr then
+        vim.api.nvim_win_close(win, true)
+        return
+      end
+    end
+  end
 end
 
 return M

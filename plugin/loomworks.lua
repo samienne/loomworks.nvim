@@ -14,7 +14,7 @@ end, {
 })
 
 vim.api.nvim_create_user_command("LoomworksInfo", function()
-  require("loomworks.ui.status").open()
+  require("loomworks").open()
 end, {
   desc = "loomworks: show workspace status page",
 })
