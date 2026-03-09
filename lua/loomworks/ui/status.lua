@@ -7,11 +7,20 @@ local merge = require("loomworks.merge")
 M._bufnr = nil
 
 --- @type table<string, boolean> fold key -> folded state
---- Keys: "project:<key>", "config:<project>:<config>", "set:<name>"
+--- Keys: "project:<key>", "config:<project>:<config>", "set:<name>", "profile:<key>"
 M._folds = {}
 
 --- @type table<number, { kind: string, key: string, project?: string, set_name?: string }>
 M._line_meta = {}
+
+--- @type number|nil timer handle for spinner
+M._spinner_timer = nil
+
+--- @type number spinner frame index
+M._spinner_frame = 1
+
+local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local SPINNER_INTERVAL_MS = 80
 
 local STATUS_ICONS = {
   unconfigured     = "  ",
@@ -19,6 +28,8 @@ local STATUS_ICONS = {
   built            = "  ",
   failed_configure = "  ",
   failed_build     = "  ",
+  configuring      = "  ",
+  building         = "  ",
 }
 
 local STATUS_HL = {
@@ -27,7 +38,15 @@ local STATUS_HL = {
   built            = "DiagnosticOk",
   failed_configure = "DiagnosticError",
   failed_build     = "DiagnosticError",
+  configuring      = "DiagnosticWarn",
+  building         = "DiagnosticWarn",
 }
+
+--- Get the current spinner character.
+--- @return string
+local function spinner()
+  return SPINNER_FRAMES[M._spinner_frame] .. " "
+end
 
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
 --- @param projects table
@@ -50,19 +69,38 @@ local function sorted_project_keys(projects)
 end
 
 --- Check if a profile key has any configured entries in cache.
+--- Matches only when a cached config's variant belongs to the profile's
+--- configuration set AND the kit matches.
 --- @param profile_key string
 --- @param all_profiles table
 --- @param cache table
+--- @param config_sets table|nil
 --- @return boolean
-local function is_profile_configured(profile_key, all_profiles, cache)
+local function is_profile_configured(profile_key, all_profiles, cache, config_sets)
   local profile = all_profiles[profile_key]
-  if not profile or not profile.kit_id then return false end
+  if not profile then return false end
   if not cache.projects then return false end
+
+  -- Collect variants that belong to this profile's configuration set
+  local valid_variants = {}
+  if profile.configuration_set and config_sets then
+    local mappings = config_sets[profile.configuration_set]
+    if mappings then
+      for _, variant in pairs(mappings) do
+        valid_variants[variant] = true
+      end
+    end
+  end
 
   for _, cached_proj in pairs(cache.projects) do
     if cached_proj.configurations then
       for config_key, _ in pairs(cached_proj.configurations) do
-        if config_key:find(profile.kit_id, 1, true) then
+        local variant, kit_id = merge.parse_profile_key(config_key)
+        if kit_id == profile.kit_id and valid_variants[variant] then
+          return true
+        end
+        -- For kitless profiles, match variant only
+        if not profile.kit_id and not kit_id and valid_variants[variant] then
           return true
         end
       end
@@ -82,6 +120,146 @@ local function resolve_cached_config(proj, cname)
     if cached then return cached end
   end
   return proj.cached_configurations[cname]
+end
+
+--- Render profile details when expanded.
+--- @param add function
+--- @param profile_key string
+--- @param profile table
+--- @param config_sets table|nil
+--- @param detected_kits table
+--- @param cache table
+local function render_profile_details(add, profile_key, profile, config_sets, detected_kits, cache)
+  if profile.configuration_set then
+    add("      Set: " .. profile.configuration_set, "Comment")
+  end
+
+  -- Kit info
+  if profile.kit_id then
+    for _, kit in ipairs(detected_kits) do
+      if kit.id == profile.kit_id then
+        add("      Kit: " .. kit.display, "Comment")
+        add("      Generator: " .. kit.generator, "Comment")
+        if kit.compiler_id then
+          add("      Compiler: " .. kit.compiler_id, "Comment")
+        end
+        break
+      end
+    end
+  end
+
+  -- Project mappings from configuration set, foldable with config details
+  if profile.configuration_set and config_sets then
+    local mappings = config_sets[profile.configuration_set]
+    if mappings then
+      add("      Projects:", "Comment")
+      local proj_names = {}
+      for name in pairs(mappings) do
+        proj_names[#proj_names + 1] = name
+      end
+      table.sort(proj_names)
+
+      local lw = require("loomworks")
+
+      for _, pname in ipairs(proj_names) do
+        local variant = mappings[pname]
+        local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
+
+        -- Look up cached state
+        local cached_state = nil
+        if cache.projects and cache.projects[pname] and cache.projects[pname].configurations then
+          cached_state = cache.projects[pname].configurations[config_key]
+        end
+
+        -- Check running state
+        local running_action = lw.get_running_action(pname, config_key)
+
+        local config_status
+        local status_icon
+        if running_action then
+          config_status = running_action == "configure" and "configuring" or "building"
+          status_icon = spinner()
+        else
+          config_status = cached_state and cached_state.state or "unconfigured"
+          status_icon = STATUS_ICONS[config_status] or "  "
+        end
+        local status_hl = STATUS_HL[config_status] or "Comment"
+
+        local fold_key = "profile_proj:" .. profile_key .. ":" .. pname
+        local folded = M._folds[fold_key] ~= false
+
+        local fold_char = folded and "▶" or "▼"
+        add("        " .. fold_char .. " " .. status_icon .. pname .. " → " .. variant, status_hl,
+          { kind = "profile_project", key = pname, project = profile_key })
+
+        if not folded and cached_state then
+          add("            Status: " .. (cached_state.state or "unconfigured"), status_hl)
+          if cached_state.build_dir then
+            add("            Build dir: " .. cached_state.build_dir, "Comment")
+          end
+          if cached_state.last_configured then
+            add("            Last configured: " .. cached_state.last_configured, "Comment")
+          end
+          if cached_state.last_built then
+            add("            Last built: " .. cached_state.last_built, "Comment")
+          end
+          if cached_state.cmake then
+            if cached_state.cmake.generator then
+              add("            Generator: " .. cached_state.cmake.generator, "Comment")
+            end
+            if cached_state.cmake.compiler then
+              add("            Compiler: " .. cached_state.cmake.compiler, "Comment")
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+--- Render configuration set details when expanded.
+--- @param add function
+--- @param set_name string
+--- @param mappings table
+--- @param detected_kits table
+--- @param all_profiles table
+--- @param active_profile_key string
+--- @param cache table
+--- @param config_sets table|nil
+local function render_set_details(add, set_name, mappings, detected_kits, all_profiles, active_profile_key, cache, config_sets)
+  -- Project mappings
+  add("      Projects:", "Comment")
+  local proj_names = {}
+  for name in pairs(mappings) do
+    proj_names[#proj_names + 1] = name
+  end
+  table.sort(proj_names)
+  for _, pname in ipairs(proj_names) do
+    add("        " .. pname .. " → " .. mappings[pname], "Comment")
+  end
+
+  -- Available kits
+  if #detected_kits > 0 then
+    add("      Kits:", "Comment")
+    for _, kit in ipairs(detected_kits) do
+      local profile_key = merge.profile_key(set_name, kit.id)
+      local is_active = profile_key == active_profile_key
+      local already_configured = is_profile_configured(profile_key, all_profiles, cache, config_sets)
+      local marker = is_active and "●" or "○"
+      local kit_hl = is_active and "DiagnosticOk" or (already_configured and "DiagnosticInfo" or "Comment")
+
+      local suffix = already_configured and " (configured)" or ""
+      add("        " .. marker .. " " .. kit.display .. suffix, kit_hl,
+        { kind = "set_kit", key = kit.id, set_name = set_name })
+    end
+  else
+    local profile_key = set_name
+    local is_active = profile_key == active_profile_key
+    local marker = is_active and "●" or "○"
+    local hl = is_active and "DiagnosticOk" or "Comment"
+    add("        " .. marker .. " (no kits detected)", hl,
+      { kind = "profile", key = profile_key })
+  end
 end
 
 --- Build the status page lines and highlights.
@@ -119,58 +297,98 @@ local function render()
 
   local all_profiles = active_set.all_profiles or {}
   local active_profile_key = active_set.name or ""
+  local config_sets = active_set.configuration_sets
+  local detected_kits = active_set.detected_kits or {}
 
-  -- Collect configured profiles (have cache entries)
+  local lw = require("loomworks")
+
+  -- Check if a profile has any running tasks
+  local function is_profile_running(profile_key)
+    local profile = all_profiles[profile_key]
+    if not profile then return false end
+    local set_mappings = profile.configuration_set
+        and config_sets and config_sets[profile.configuration_set]
+    if not set_mappings then return false end
+
+    local profile_variants = {}
+    for _, variant in pairs(set_mappings) do
+      profile_variants[variant] = true
+    end
+
+    for _, info in pairs(lw._running_tasks) do
+      local task_variant, task_kit = merge.parse_profile_key(info.configuration_key)
+      if profile_variants[task_variant] and task_kit == profile.kit_id then
+        return true
+      end
+    end
+    return false
+  end
+
+  -- Collect profiles to show: configured (cache) OR currently running OR explicit
   local configured_profiles = {}
+  local configured_set = {}
   for profile_key, _ in pairs(all_profiles) do
-    if is_profile_configured(profile_key, all_profiles, ws.cache) then
+    if is_profile_configured(profile_key, all_profiles, ws.cache, config_sets) or is_profile_running(profile_key) then
       configured_profiles[#configured_profiles + 1] = profile_key
+      configured_set[profile_key] = true
     end
   end
   table.sort(configured_profiles)
 
-  -- Also include explicit profiles that may not have cache entries yet
-  local explicit_profiles = {}
+  -- Also include explicit profiles that aren't already shown
+  local explicit_unconfigured = {}
   for profile_key, profile in pairs(all_profiles) do
-    if profile.explicit and not is_profile_configured(profile_key, all_profiles, ws.cache) then
-      explicit_profiles[#explicit_profiles + 1] = profile_key
+    if profile.explicit and not configured_set[profile_key] then
+      explicit_unconfigured[#explicit_unconfigured + 1] = profile_key
     end
   end
-  table.sort(explicit_profiles)
+  table.sort(explicit_unconfigured)
 
-  -- Configured profiles section
-  if #configured_profiles > 0 or #explicit_profiles > 0 then
+  -- Profiles section
+  if #configured_profiles > 0 or #explicit_unconfigured > 0 then
     add("  Profiles", "Title")
     add("")
 
-    for _, profile_key in ipairs(configured_profiles) do
-      local is_active = profile_key == active_profile_key
-      local marker = is_active and "   ● " or "   ○ "
-      local hl = is_active and "DiagnosticOk" or nil
-
+    local function render_profile_line(profile_key)
       local profile = all_profiles[profile_key]
+      local is_active = profile_key == active_profile_key
+      local profile_running = is_profile_running(profile_key)
+
+      local marker
+      if profile_running then
+        marker = spinner()
+      else
+        marker = is_active and "● " or "○ "
+      end
+      local hl = profile_running and "DiagnosticWarn" or (is_active and "DiagnosticOk" or nil)
+
+      local profile_fold_key = "profile:" .. profile_key
+      local folded = M._folds[profile_fold_key] ~= false
+      local fold_char = folded and "▶ " or "▼ "
+
       local display = profile_key
       if profile.explicit then
         display = display .. " [explicit]"
       end
 
-      add(marker .. display, hl, { kind = "profile", key = profile_key })
+      add("   " .. marker .. fold_char .. display, hl, { kind = "profile", key = profile_key })
+
+      if not folded then
+        render_profile_details(add, profile_key, profile, config_sets, detected_kits, ws.cache)
+      end
     end
 
-    for _, profile_key in ipairs(explicit_profiles) do
-      local is_active = profile_key == active_profile_key
-      local marker = is_active and "   ● " or "   ○ "
-      local hl = is_active and "DiagnosticOk" or "Comment"
-      add(marker .. profile_key .. " [explicit]", hl, { kind = "profile", key = profile_key })
+    for _, profile_key in ipairs(configured_profiles) do
+      render_profile_line(profile_key)
+    end
+    for _, profile_key in ipairs(explicit_unconfigured) do
+      render_profile_line(profile_key)
     end
 
     add("")
   end
 
-  -- Configuration sets section (for creating new profiles)
-  local config_sets = active_set.configuration_sets
-  local detected_kits = active_set.detected_kits or {}
-
+  -- Configuration sets section
   if config_sets and next(config_sets) then
     add("  Configuration Sets", "Title")
     add("")
@@ -183,9 +401,8 @@ local function render()
 
     for _, set_name in ipairs(set_names) do
       local set_fold_key = "set:" .. set_name
-      local set_folded = M._folds[set_fold_key] ~= false -- default folded
+      local set_folded = M._folds[set_fold_key] ~= false
 
-      -- Check if the active profile belongs to this set
       local active_profile = all_profiles[active_profile_key]
       local is_active_set = active_profile and active_profile.configuration_set == set_name
 
@@ -194,27 +411,8 @@ local function render()
       add("   " .. fold_char .. set_name, set_hl, { kind = "set", key = set_name })
 
       if not set_folded then
-        if #detected_kits > 0 then
-          for _, kit in ipairs(detected_kits) do
-            local profile_key = merge.profile_key(set_name, kit.id)
-            local is_active = profile_key == active_profile_key
-            local already_configured = is_profile_configured(profile_key, all_profiles, ws.cache)
-            local marker = is_active and "●" or "○"
-            local kit_hl = is_active and "DiagnosticOk" or (already_configured and "DiagnosticInfo" or "Comment")
-
-            local suffix = already_configured and " (configured)" or ""
-            add("      " .. marker .. " " .. kit.display .. suffix, kit_hl,
-              { kind = "set_kit", key = kit.id, set_name = set_name })
-          end
-        else
-          -- No kits available, selecting the set directly creates a kitless profile
-          local profile_key = set_name
-          local is_active = profile_key == active_profile_key
-          local marker = is_active and "●" or "○"
-          local hl = is_active and "DiagnosticOk" or "Comment"
-          add("      " .. marker .. " (no kits detected)", hl,
-            { kind = "profile", key = profile_key })
-        end
+        render_set_details(add, set_name, config_sets[set_name], detected_kits,
+          all_profiles, active_profile_key, ws.cache, config_sets)
       end
     end
     add("")
@@ -230,30 +428,39 @@ local function render()
   add("  Projects", "Title")
   add("")
 
+  local loomworks = require("loomworks")
+
   local sorted = sorted_project_keys(active_set.projects)
   for _, key in ipairs(sorted) do
     local proj = active_set.projects[key]
     local proj_fold_key = "project:" .. key
-    local proj_folded = M._folds[proj_fold_key] ~= false -- default folded
+    local proj_folded = M._folds[proj_fold_key] ~= false
 
-    -- Resolve active kit display for header
     local kit_display = ""
     if proj.kit then
       kit_display = " | " .. proj.kit.display
     end
 
-    -- Project header line
+    -- Check if any task is running for this project
+    local proj_running = loomworks.get_project_running_action(key)
+    local proj_status = proj.status
+    local proj_icon
+    if proj_running then
+      proj_status = proj_running == "configure" and "configuring" or "building"
+      proj_icon = spinner()
+    else
+      proj_icon = STATUS_ICONS[proj_status] or "  "
+    end
+
     local fold_char = proj_folded and "▶ " or "▼ "
-    local icon = STATUS_ICONS[proj.status] or "  "
     local type_tag = "[" .. proj.type .. "]"
     local config_tag = proj.configuration and (" " .. proj.configuration) or ""
     local orphan_tag = proj.orphaned and " (orphaned)" or ""
     local refresh_tag = proj.needs_refresh and " !" or ""
 
-    local header = "  " .. fold_char .. icon .. key .. " " .. type_tag .. config_tag .. kit_display .. orphan_tag .. refresh_tag
-    add(header, STATUS_HL[proj.status], { kind = "project", key = key })
+    local header = "  " .. fold_char .. proj_icon .. key .. " " .. type_tag .. config_tag .. kit_display .. orphan_tag .. refresh_tag
+    add(header, STATUS_HL[proj_status], { kind = "project", key = key })
 
-    -- Expanded project content
     if not proj_folded then
       add("      Path: " .. (proj.path or key), "Comment")
 
@@ -263,7 +470,6 @@ local function render()
         end
       end
 
-      -- Show all configurations with per-configuration status
       if proj.configurations and next(proj.configurations) then
         add("      Configurations:", "Comment")
         local config_names = {}
@@ -276,18 +482,33 @@ local function render()
           local cdata = proj.configurations[cname]
           local cached_state = resolve_cached_config(proj, cname)
 
-          local config_status = cached_state and cached_state.state or "unconfigured"
-          local status_icon = STATUS_ICONS[config_status] or "  "
-          local status_hl = STATUS_HL[config_status] or "Comment"
+          -- Resolve the config key for running task lookup
+          local config_cache_key = cname
+          if proj.kit_id then
+            config_cache_key = cname .. ":" .. proj.kit_id
+          end
+          local running_action = loomworks.get_running_action(key, config_cache_key)
+
+          local config_status
+          local status_icon
+          local status_hl
+          if running_action then
+            config_status = running_action == "configure" and "configuring" or "building"
+            status_icon = spinner()
+            status_hl = STATUS_HL[config_status] or "DiagnosticWarn"
+          else
+            config_status = cached_state and cached_state.state or "unconfigured"
+            status_icon = STATUS_ICONS[config_status] or "  "
+            status_hl = STATUS_HL[config_status] or "Comment"
+          end
 
           local active_marker = cname == proj.configuration and "●" or "○"
 
           local config_fold_key = "config:" .. key .. ":" .. cname
-          local config_folded = M._folds[config_fold_key] ~= false -- default folded
+          local config_folded = M._folds[config_fold_key] ~= false
 
           local config_fold_char = config_folded and "▶" or "▼"
 
-          -- Brief details on the header line
           local brief = {}
           if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
           if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
@@ -296,7 +517,6 @@ local function render()
           add("        " .. active_marker .. " " .. config_fold_char .. " " .. status_icon .. cname .. brief_str, status_hl,
             { kind = "configuration", key = cname, project = key })
 
-          -- Expanded configuration content
           if not config_folded then
             add("            Status: " .. config_status, status_hl)
 
@@ -331,7 +551,6 @@ local function render()
         end
       end
 
-      -- Show cached targets
       if proj.cmake and proj.cmake.targets and next(proj.cmake.targets) then
         add("      Targets:", "Comment")
         local target_names = {}
@@ -368,78 +587,113 @@ end
 function M.refresh()
   if not M._bufnr or not vim.api.nvim_buf_is_valid(M._bufnr) then return end
 
+  -- Preserve cursor position during refresh
+  local cursor
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == M._bufnr then
+      cursor = vim.api.nvim_win_get_cursor(win)
+      break
+    end
+  end
+
   local lines, highlights = render()
   vim.bo[M._bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(M._bufnr, 0, -1, false, lines)
   vim.bo[M._bufnr].modifiable = false
   apply_highlights(M._bufnr, highlights)
+
+  -- Restore cursor position
+  if cursor then
+    local line_count = #lines
+    if cursor[1] > line_count then cursor[1] = line_count end
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_buf(win) == M._bufnr then
+        pcall(vim.api.nvim_win_set_cursor, win, cursor)
+        break
+      end
+    end
+  end
 end
 
---- Handle <CR> — context-dependent action based on cursor line.
+--- Start the spinner timer for animated progress display.
+function M.start_spinner()
+  if M._spinner_timer then return end
+  if not M._bufnr or not vim.api.nvim_buf_is_valid(M._bufnr) then return end
+
+  M._spinner_timer = vim.fn.timer_start(SPINNER_INTERVAL_MS, function()
+    M._spinner_frame = (M._spinner_frame % #SPINNER_FRAMES) + 1
+    vim.schedule(function()
+      M.refresh()
+    end)
+  end, { ["repeat"] = -1 })
+end
+
+--- Stop the spinner timer.
+function M.stop_spinner()
+  if M._spinner_timer then
+    vim.fn.timer_stop(M._spinner_timer)
+    M._spinner_timer = nil
+  end
+  -- Final refresh to show completed state
+  vim.schedule(function()
+    M.refresh()
+  end)
+end
+
+--- Toggle fold for the item under cursor.
+local function on_toggle_fold()
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  local meta = M._line_meta[line]
+  if not meta then return end
+
+  local fold_key
+  if meta.kind == "profile" then
+    fold_key = "profile:" .. meta.key
+  elseif meta.kind == "set" then
+    fold_key = "set:" .. meta.key
+  elseif meta.kind == "project" then
+    fold_key = "project:" .. meta.key
+  elseif meta.kind == "configuration" then
+    fold_key = "config:" .. meta.project .. ":" .. meta.key
+  elseif meta.kind == "profile_project" then
+    fold_key = "profile_proj:" .. meta.project .. ":" .. meta.key
+  else
+    return
+  end
+
+  M._folds[fold_key] = M._folds[fold_key] == false and true or false
+  M.refresh()
+
+  -- Keep cursor on same item
+  for ln, m in pairs(M._line_meta) do
+    if m.kind == meta.kind and m.key == meta.key then
+      if meta.kind == "configuration" or meta.kind == "profile_project" then
+        if m.project == meta.project then
+          pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
+          break
+        end
+      else
+        pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
+        break
+      end
+    end
+  end
+end
+
+--- Handle <CR> — select/activate the item under cursor.
 local function on_enter()
   local line = vim.api.nvim_win_get_cursor(0)[1]
   local meta = M._line_meta[line]
   if not meta then return end
 
-  if meta.kind == "project" then
-    local fold_key = "project:" .. meta.key
-    M._folds[fold_key] = M._folds[fold_key] == false and true or false
-    M.refresh()
-    for ln, m in pairs(M._line_meta) do
-      if m.kind == "project" and m.key == meta.key then
-        pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
-        break
-      end
-    end
-
-  elseif meta.kind == "configuration" then
-    local fold_key = "config:" .. meta.project .. ":" .. meta.key
-    M._folds[fold_key] = M._folds[fold_key] == false and true or false
-    M.refresh()
-    for ln, m in pairs(M._line_meta) do
-      if m.kind == "configuration" and m.key == meta.key and m.project == meta.project then
-        pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
-        break
-      end
-    end
-
-  elseif meta.kind == "profile" then
+  if meta.kind == "profile" then
     require("loomworks").activate_profile(meta.key)
     M.refresh()
 
-  elseif meta.kind == "set" then
-    -- Toggle fold on configuration set
-    local fold_key = "set:" .. meta.key
-    M._folds[fold_key] = M._folds[fold_key] == false and true or false
-    M.refresh()
-    for ln, m in pairs(M._line_meta) do
-      if m.kind == "set" and m.key == meta.key then
-        pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
-        break
-      end
-    end
-
   elseif meta.kind == "set_kit" then
-    -- Selecting a kit under a config set activates that profile
     local profile_key = merge.profile_key(meta.set_name, meta.key)
     require("loomworks").activate_profile(profile_key)
     M.refresh()
-  end
-end
-
---- Jump to the next/previous interactive line.
---- @param direction number 1 for forward, -1 for backward
-local function jump_section(direction)
-  local cur = vim.api.nvim_win_get_cursor(0)[1]
-  local line_count = vim.api.nvim_buf_line_count(M._bufnr)
-  local line = cur + direction
-
-  while line >= 1 and line <= line_count do
-    if M._line_meta[line] then
-      vim.api.nvim_win_set_cursor(0, { line, 0 })
-      return
-    end
-    line = line + direction
   end
 end
 
@@ -469,6 +723,15 @@ function M.open()
   vim.bo[M._bufnr].filetype = "loomworks"
   vim.bo[M._bufnr].modifiable = false
 
+  -- Stop spinner when buffer is wiped
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    buffer = M._bufnr,
+    callback = function()
+      M.stop_spinner()
+      M._bufnr = nil
+    end,
+  })
+
   vim.wo[win].number = false
   vim.wo[win].relativenumber = false
   vim.wo[win].signcolumn = "no"
@@ -479,10 +742,15 @@ function M.open()
   local map_opts = { buffer = M._bufnr, nowait = true, silent = true }
 
   vim.keymap.set("n", "<CR>", on_enter, map_opts)
-  vim.keymap.set("n", "<Tab>", function() jump_section(1) end, map_opts)
-  vim.keymap.set("n", "<S-Tab>", function() jump_section(-1) end, map_opts)
+  vim.keymap.set("n", "<Tab>", on_toggle_fold, map_opts)
   vim.keymap.set("n", "r", function() M.refresh() end, map_opts)
   vim.keymap.set("n", "q", function() vim.api.nvim_win_close(0, true) end, map_opts)
+
+  -- Start spinner if tasks are already running
+  local loomworks = require("loomworks")
+  if next(loomworks._running_tasks) then
+    M.start_spinner()
+  end
 
   M.refresh()
 end

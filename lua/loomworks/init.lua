@@ -11,6 +11,10 @@ local cache_mod = require("loomworks.cache")
 --- @type table|nil cached merged projection
 M._active_set = nil
 
+--- @type table<number, { project_key: string, action: string, configuration_key: string }>
+--- Maps overseer task id -> running task info
+M._running_tasks = {}
+
 --- Initialize loomworks workspace.
 --- @param opts? { root?: string }
 function M.setup(opts)
@@ -99,6 +103,61 @@ function M.activate_set(name)
   end
 
   M.activate_profile(new_profile_key)
+end
+
+--- Register a running task for live status display.
+--- @param info table { task_id, project_key, action, configuration_key }
+function M.register_running_task(info)
+  M._running_tasks[info.task_id] = {
+    project_key = info.project_key,
+    action = info.action,
+    configuration_key = info.configuration_key,
+  }
+
+  -- Start spinner if status UI is open
+  local status_ok, status = pcall(require, "loomworks.ui.status")
+  if status_ok then
+    status.start_spinner()
+  end
+end
+
+--- Unregister a running task.
+--- @param task_id number
+function M.unregister_running_task(task_id)
+  M._running_tasks[task_id] = nil
+
+  -- Stop spinner if no more running tasks
+  if not next(M._running_tasks) then
+    local status_ok, status = pcall(require, "loomworks.ui.status")
+    if status_ok then
+      status.stop_spinner()
+    end
+  end
+end
+
+--- Get running task info for a project + configuration key.
+--- @param project_key string
+--- @param config_key string
+--- @return string|nil action ("configure" or "build") if running
+function M.get_running_action(project_key, config_key)
+  for _, info in pairs(M._running_tasks) do
+    if info.project_key == project_key and info.configuration_key == config_key then
+      return info.action
+    end
+  end
+  return nil
+end
+
+--- Check if any task is running for a given project.
+--- @param project_key string
+--- @return string|nil action
+function M.get_project_running_action(project_key)
+  for _, info in pairs(M._running_tasks) do
+    if info.project_key == project_key then
+      return info.action
+    end
+  end
+  return nil
 end
 
 --- Record a task result and update the cache.
