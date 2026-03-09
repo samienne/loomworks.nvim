@@ -122,6 +122,96 @@ local function resolve_cached_config(proj, cname)
   return proj.cached_configurations[cname]
 end
 
+--- Compute an aggregate status for a profile from its constituent project states.
+--- @param profile_key string
+--- @param profile table
+--- @param config_sets table|nil
+--- @param cache table
+--- @return string label, string hl_group
+local function resolve_profile_status(profile_key, profile, config_sets, cache)
+  if not profile.configuration_set or not config_sets then
+    return "unconfigured", "Comment"
+  end
+
+  local mappings = config_sets[profile.configuration_set]
+  if not mappings then return "unconfigured", "Comment" end
+
+  local lw = require("loomworks")
+  local total = 0
+  local counts = {
+    unconfigured = 0,
+    configured = 0,
+    built = 0,
+    failed_configure = 0,
+    failed_build = 0,
+    configuring = 0,
+    building = 0,
+  }
+
+  for pname, variant in pairs(mappings) do
+    total = total + 1
+    local config_key = profile.kit_id and (variant .. ":" .. profile.kit_id) or variant
+
+    -- Check running state first
+    local running_action = lw.get_running_action(pname, config_key)
+    if running_action then
+      local state = running_action == "configure" and "configuring" or "building"
+      counts[state] = counts[state] + 1
+    else
+      local state = "unconfigured"
+      if cache.projects and cache.projects[pname] and cache.projects[pname].configurations then
+        local cached = cache.projects[pname].configurations[config_key]
+        if cached and cached.state then
+          state = cached.state
+        end
+      end
+      counts[state] = (counts[state] or 0) + 1
+    end
+  end
+
+  if total == 0 then return "empty", "Comment" end
+
+  local running = counts.configuring + counts.building
+  local failed = counts.failed_configure + counts.failed_build
+
+  -- Running tasks take priority in display
+  if running > 0 then
+    local parts = {}
+    if counts.configuring > 0 then parts[#parts + 1] = "configuring " .. counts.configuring end
+    if counts.building > 0 then parts[#parts + 1] = "building " .. counts.building end
+    if failed > 0 then parts[#parts + 1] = failed .. " failed" end
+    return table.concat(parts, ", "), "DiagnosticWarn"
+  end
+
+  -- All same state
+  if counts.built == total then return "built", STATUS_HL.built end
+  if counts.configured == total then return "configured", STATUS_HL.configured end
+  if counts.unconfigured == total then return "unconfigured", STATUS_HL.unconfigured end
+
+  -- Failures present
+  if failed > 0 then
+    local parts = {}
+    if counts.failed_configure > 0 then
+      parts[#parts + 1] = counts.failed_configure .. " failed configure"
+    end
+    if counts.failed_build > 0 then
+      parts[#parts + 1] = counts.failed_build .. " failed build"
+    end
+    local ok_count = counts.built + counts.configured
+    if ok_count > 0 then
+      parts[#parts + 1] = ok_count .. "/" .. total .. " ok"
+    end
+    return table.concat(parts, ", "), "DiagnosticError"
+  end
+
+  -- Mixed positive states
+  local parts = {}
+  if counts.built > 0 then parts[#parts + 1] = counts.built .. " built" end
+  if counts.configured > 0 then parts[#parts + 1] = counts.configured .. " configured" end
+  if counts.unconfigured > 0 then parts[#parts + 1] = counts.unconfigured .. " unconfigured" end
+  return table.concat(parts, ", "), "DiagnosticInfo"
+end
+
 --- Render profile details when expanded.
 --- @param add function
 --- @param profile_key string
@@ -369,6 +459,14 @@ local function render()
       local display = profile_key
       if profile.explicit then
         display = display .. " [explicit]"
+      end
+
+      -- Aggregate profile status
+      local status_label, status_hl = resolve_profile_status(profile_key, profile, config_sets, ws.cache)
+      display = display .. " (" .. status_label .. ")"
+      -- Use status hl if no stronger signal (running/active)
+      if not hl then
+        hl = status_hl
       end
 
       add("   " .. marker .. fold_char .. display, hl, { kind = "profile", key = profile_key })
@@ -697,6 +795,60 @@ local function on_enter()
   end
 end
 
+--- Resolve the profile key from the cursor's line metadata.
+--- Works for profile lines, set_kit lines, and child lines within a profile fold.
+--- @return string|nil profile_key
+local function resolve_profile_at_cursor()
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  local meta = M._line_meta[line]
+
+  if meta then
+    if meta.kind == "profile" then
+      return meta.key
+    elseif meta.kind == "set_kit" then
+      return merge.profile_key(meta.set_name, meta.key)
+    elseif meta.kind == "profile_project" then
+      -- meta.project holds the profile_key for profile_project items
+      return meta.project
+    end
+  end
+
+  -- Walk upward to find the enclosing profile
+  for l = line - 1, 1, -1 do
+    local m = M._line_meta[l]
+    if m then
+      if m.kind == "profile" then
+        return m.key
+      elseif m.kind == "set" or m.kind == "project" then
+        break
+      end
+    end
+  end
+
+  return nil
+end
+
+--- Handle B — build the profile under cursor.
+local function on_build()
+  local profile_key = resolve_profile_at_cursor()
+  if not profile_key then
+    vim.notify("loomworks: no profile under cursor", vim.log.levels.WARN)
+    return
+  end
+  require("loomworks.overseer").run_profile_action(profile_key, "build")
+end
+
+--- Handle C — configure the profile under cursor.
+local function on_configure()
+  local profile_key = resolve_profile_at_cursor()
+  if not profile_key then
+    -- Also check if we're on a set_kit line (configure new profile from set/kit)
+    vim.notify("loomworks: no profile or kit under cursor", vim.log.levels.WARN)
+    return
+  end
+  require("loomworks.overseer").run_profile_action(profile_key, "configure")
+end
+
 --- Open the status window.
 function M.open()
   -- Reuse existing buffer if valid
@@ -743,6 +895,8 @@ function M.open()
 
   vim.keymap.set("n", "<CR>", on_enter, map_opts)
   vim.keymap.set("n", "<Tab>", on_toggle_fold, map_opts)
+  vim.keymap.set("n", "B", on_build, map_opts)
+  vim.keymap.set("n", "C", on_configure, map_opts)
   vim.keymap.set("n", "r", function() M.refresh() end, map_opts)
   vim.keymap.set("n", "q", function() vim.api.nvim_win_close(0, true) end, map_opts)
 
