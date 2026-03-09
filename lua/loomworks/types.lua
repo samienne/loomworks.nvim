@@ -176,3 +176,11 @@
 --- @field build_dir? string
 --- @field shared_by? string[] profile keys sharing this config
 --- @field affected_profiles? string[] profiles affected by deletion
+
+-- ========================== File Tracking ==========================
+
+--- @class loomworks.FileTrackerOpts
+--- @field callback fun(path: string, content: string|nil)
+--- @field interval? number poll interval in ms (default 2000)
+--- @field read_file? fun(path: string): string|nil, string|nil
+--- @field schedule? fun(fn: function)

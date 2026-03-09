@@ -4,11 +4,13 @@
 
 --- @class loomworks.Core
 --- @field _deps table injected dependencies
+--- @field _workspace loomworks.Workspace|nil
 --- @field _active_set loomworks.ActiveSet|nil
 --- @field _running_tasks table<number, loomworks.RunningTaskInfo>
 --- @field _deleting table<string, boolean> "project\0config" -> true
 --- @field _delete_waiters function[]
 --- @field _generation number incremented on every remerge
+--- @field _tracker loomworks.FileTracker|nil
 local Core = {}
 Core.__index = Core
 
@@ -22,7 +24,10 @@ local DEFAULT_DEPS = {
   events    = require("loomworks.events"),
   user      = require("loomworks.user"),
   cache     = require("loomworks.cache"),
+  config    = require("loomworks.config"),
   io        = require("loomworks.io"),
+  modules   = require("loomworks.modules"),
+  FileTracker = require("loomworks.file_tracker"),
   notify    = vim.notify,
   now       = function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end,
   normalize = vim.fs.normalize,
@@ -53,11 +58,13 @@ function Core.new(deps)
   else
     self._deps = DEFAULT_DEPS
   end
+  self._workspace = nil
   self._active_set = nil
   self._running_tasks = {}
   self._deleting = {}
   self._delete_waiters = {}
   self._generation = 0
+  self._tracker = nil
   return self
 end
 
@@ -65,22 +72,122 @@ end
 -- Workspace & merge
 -- ---------------------------------------------------------------------------
 
+--- Validate all projects against their modules.
+--- @param config loomworks.Config
+--- @param root string
+--- @return boolean ok, string|nil err
+function Core:_validate_projects(config, root)
+  local modules_mod = self._deps.modules
+  for key, project in pairs(config.projects) do
+    local mod = modules_mod.get(project.type)
+    if mod and mod.validate then
+      local abs_path = root .. "/" .. project.path
+      local result = mod.validate(abs_path, project.type_config)
+      if not result.valid then
+        return false, "project '" .. key .. "': " .. table.concat(result.warnings, "; ")
+      end
+      for _, warning in ipairs(result.warnings) do
+        self._deps.notify("loomworks: project '" .. key .. "': " .. warning, vim.log.levels.WARN)
+      end
+    end
+  end
+  return true, nil
+end
+
+--- Handle a tracked file change.
+--- @param path string absolute file path that changed
+--- @param content string|nil new raw content
+function Core:_on_file_changed(path, content)
+  if not self._workspace then return end
+
+  local paths = self._deps.workspace.paths(self._workspace.root)
+
+  if path == paths.config then
+    -- loomworks.json changed: full reassemble
+    local ws, err = self._deps.workspace.assemble(
+      self._workspace.root,
+      content,
+      self._tracker:content(paths.user),
+      self._tracker:content(paths.cache)
+    )
+    if ws then
+      local ok, val_err = self:_validate_projects(ws.config, ws.root)
+      if ok then
+        self._workspace = ws
+        self:remerge()
+        self._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
+      else
+        self._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
+      end
+    else
+      self._deps.notify("loomworks: config reload failed: " .. (err or "unknown"), vim.log.levels.WARN)
+    end
+
+  elseif path == paths.user then
+    -- user.json changed: update user data and remerge
+    local user_data = content and self._deps.user.parse(content) or self._deps.user.default()
+    self._workspace.user = user_data
+    self:remerge()
+
+  elseif path == paths.cache then
+    -- cache.json changed: update cache data and remerge
+    local cache_data = content and self._deps.cache.parse(content) or self._deps.cache.default()
+    self._workspace.cache = cache_data
+    self:remerge()
+  end
+end
+
 --- Initialize the workspace and compute the initial merge.
 --- @param opts? { root?: string }
 --- @return boolean ok
 function Core:setup(opts)
-  local root = opts and opts.root or nil
-  local ok, err = self._deps.workspace.init(root)
-  if not ok then
+  local ws_mod = self._deps.workspace
+  local root = ws_mod.resolve_root(opts and opts.root or nil)
+  local paths = ws_mod.paths(root)
+
+  -- Read initial file contents via io
+  local config_content = self._deps.io.read_file(paths.config)
+  if not config_content then
+    self._deps.notify("loomworks: loomworks.json not found in " .. root, vim.log.levels.ERROR)
+    return false
+  end
+  local user_content = self._deps.io.read_file(paths.user)
+  local cache_content = self._deps.io.read_file(paths.cache)
+
+  -- Assemble workspace from raw content
+  local ws, err = ws_mod.assemble(root, config_content, user_content, cache_content)
+  if not ws then
     self._deps.notify("loomworks: " .. err, vim.log.levels.ERROR)
     return false
   end
 
-  local ws = self._deps.workspace.get()
+  -- Validate projects
+  local ok, val_err = self:_validate_projects(ws.config, ws.root)
+  if not ok then
+    self._deps.notify("loomworks: " .. val_err, vim.log.levels.ERROR)
+    return false
+  end
+
+  self._workspace = ws
   self._active_set = self._deps.merge.merge(ws)
   self._generation = self._generation + 1
   self._deps.events.emit("workspace_changed", ws)
   self._deps.events.emit("active_set_changed", self._active_set)
+
+  -- Start file tracking
+  if self._tracker then
+    self._tracker:stop()
+  end
+  self._tracker = self._deps.FileTracker.new({
+    callback = function(path, content)
+      self:_on_file_changed(path, content)
+    end,
+    schedule = self._deps.schedule,
+    read_file = self._deps.io.read_file,
+  })
+  self._tracker:watch(paths.config)
+  self._tracker:watch(paths.user)
+  self._tracker:watch(paths.cache)
 
   self._deps.notify("loomworks: workspace '" .. ws.name .. "' loaded (" .. ws.root .. ")", vim.log.levels.INFO)
   return true
@@ -88,9 +195,8 @@ end
 
 --- Re-merge workspace state and emit events.
 function Core:remerge()
-  local ws = self._deps.workspace.get()
-  if not ws then return end
-  self._active_set = self._deps.merge.merge(ws)
+  if not self._workspace then return end
+  self._active_set = self._deps.merge.merge(self._workspace)
   self._generation = self._generation + 1
   self._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -104,7 +210,7 @@ end
 --- Get the active workspace.
 --- @return loomworks.Workspace|nil
 function Core:get_workspace()
-  return self._deps.workspace.get()
+  return self._workspace
 end
 
 -- ---------------------------------------------------------------------------
@@ -125,14 +231,13 @@ end
 --- @param key string profile key
 --- @return loomworks.Profile|nil
 function Core:get_profile(key)
-  local ws = self._deps.workspace.get()
-  if not ws then return nil end
+  if not self._workspace then return nil end
 
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
+  local all_profiles = self._deps.merge.get_all_profiles(self._workspace.config)
   local data = all_profiles[key]
   if not data then return nil end
 
-  local config_sets = ws.config.configuration_sets
+  local config_sets = self._workspace.config.configuration_sets
   local mappings = data.configuration_set and config_sets
       and config_sets[data.configuration_set] or nil
 
@@ -149,11 +254,10 @@ end
 --- Get all Profile objects as a dict.
 --- @return table<string, loomworks.Profile>
 function Core:get_profiles()
-  local ws = self._deps.workspace.get()
-  if not ws then return {} end
+  if not self._workspace then return {} end
 
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
-  local config_sets = ws.config.configuration_sets
+  local all_profiles = self._deps.merge.get_all_profiles(self._workspace.config)
+  local config_sets = self._workspace.config.configuration_sets
   local result = {}
 
   for key, data in pairs(all_profiles) do
@@ -199,20 +303,19 @@ end
 --- Activate a named profile.
 --- @param profile_key string
 function Core:activate_profile(profile_key)
-  local ws = self._deps.workspace.get()
-  if not ws then
+  if not self._workspace then
     self._deps.notify("loomworks: no workspace loaded", vim.log.levels.ERROR)
     return
   end
 
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
+  local all_profiles = self._deps.merge.get_all_profiles(self._workspace.config)
   if not all_profiles[profile_key] then
     self._deps.notify("loomworks: profile '" .. profile_key .. "' not found", vim.log.levels.ERROR)
     return
   end
 
-  ws.user.active_profile = profile_key
-  self._deps.user.save(ws.root, ws.user)
+  self._workspace.user.active_profile = profile_key
+  self._deps.user.save(self._workspace.root, self._workspace.user)
 
   self:remerge()
 end
@@ -220,12 +323,11 @@ end
 --- Deactivate a profile if it is currently active.
 --- @param profile_key string
 function Core:deactivate_profile(profile_key)
-  local ws = self._deps.workspace.get()
-  if not ws then return end
+  if not self._workspace then return end
 
-  if ws.user.active_profile == profile_key then
-    ws.user.active_profile = nil
-    self._deps.user.save(ws.root, ws.user)
+  if self._workspace.user.active_profile == profile_key then
+    self._workspace.user.active_profile = nil
+    self._deps.user.save(self._workspace.root, self._workspace.user)
     self:remerge()
   end
 end
@@ -233,13 +335,12 @@ end
 --- Activate a named configuration set (legacy convenience wrapper).
 --- @param name string
 function Core:activate_set(name)
-  local ws = self._deps.workspace.get()
-  if not ws then
+  if not self._workspace then
     self._deps.notify("loomworks: no workspace loaded", vim.log.levels.ERROR)
     return
   end
 
-  if not ws.config.configuration_sets or not ws.config.configuration_sets[name] then
+  if not self._workspace.config.configuration_sets or not self._workspace.config.configuration_sets[name] then
     self._deps.notify("loomworks: configuration set '" .. name .. "' not found", vim.log.levels.ERROR)
     return
   end
@@ -363,9 +464,9 @@ end
 --- Record a task result and update the cache.
 --- @param result loomworks.TaskResult
 function Core:record_task_result(result)
-  local ws = self._deps.workspace.get()
-  if not ws then return end
+  if not self._workspace then return end
 
+  local ws = self._workspace
   local project_key = result.project_key
   local config_key = result.configuration_key
   local action = result.action
@@ -469,11 +570,11 @@ end
 --- @param config_key string
 --- @return loomworks.DeletionPlan
 function Core:plan_config_deletion(project_key, config_key)
-  local ws = self._deps.workspace.get()
-  if not ws then
+  if not self._workspace then
     return { items = {}, project_key = project_key, config_key = config_key, defined_in_config = false }
   end
 
+  local ws = self._workspace
   local all_profiles = self:get_profiles()
   local config_sets = ws.config.configuration_sets
 
@@ -523,9 +624,9 @@ end
 --- Delete cached configurations and their build directories (synchronous part).
 --- @param items loomworks.DeletionItem[]
 function Core:delete_cached_configs(items)
-  local ws = self._deps.workspace.get()
-  if not ws then return end
+  if not self._workspace then return end
 
+  local ws = self._workspace
   local normalize = self._deps.normalize
   local io_mod = self._deps.io
 
@@ -659,16 +760,15 @@ end
 --- @param bufnr number
 --- @return string|nil project_key, loomworks.Project|nil
 function Core:project_for_buf(bufnr)
-  local ws = self._deps.workspace.get()
-  if not ws then return nil, nil end
+  if not self._workspace then return nil, nil end
 
   local buf_path = self._deps.buf_name(bufnr)
   if buf_path == "" then return nil, nil end
   buf_path = self._deps.normalize(buf_path)
 
   local best_key, best_len = nil, 0
-  for key, project in pairs(ws.config.projects) do
-    local project_abs = self._deps.normalize(ws.root .. "/" .. project.path)
+  for key, project in pairs(self._workspace.config.projects) do
+    local project_abs = self._deps.normalize(self._workspace.root .. "/" .. project.path)
     if buf_path:sub(1, #project_abs) == project_abs and #project_abs > best_len then
       best_key = key
       best_len = #project_abs
@@ -679,6 +779,14 @@ function Core:project_for_buf(bufnr)
     return best_key, self:get_project(best_key)
   end
   return nil, nil
+end
+
+--- Stop file tracking and clean up.
+function Core:shutdown()
+  if self._tracker then
+    self._tracker:stop()
+    self._tracker = nil
+  end
 end
 
 return Core

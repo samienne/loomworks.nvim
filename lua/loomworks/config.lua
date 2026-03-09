@@ -110,6 +110,18 @@ function M.validate(raw, root)
   }, nil
 end
 
+--- Parse raw JSON content into a validated Config.
+--- @param content string raw JSON content
+--- @param root string workspace root for resolving paths
+--- @return loomworks.Config|nil config, string|nil err
+function M.parse(content, root)
+  local ok, raw = pcall(vim.json.decode, content)
+  if not ok or type(raw) ~= "table" then
+    return nil, "failed to decode JSON"
+  end
+  return M.validate(raw, root)
+end
+
 --- Load and validate loomworks.json from a workspace root.
 --- @param root string
 --- @return loomworks.Config|nil config, string|nil err, string|nil raw_content

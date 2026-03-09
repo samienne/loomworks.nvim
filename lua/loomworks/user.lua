@@ -17,6 +17,21 @@ function M.default()
   return { _meta = { version = CURRENT_VERSION } }
 end
 
+--- Parse raw JSON content into UserData.
+--- Returns defaults on invalid content.
+--- @param content string raw JSON content
+--- @return loomworks.UserData
+function M.parse(content)
+  local ok, raw = pcall(vim.json.decode, content)
+  if not ok or type(raw) ~= "table" then
+    return M.default()
+  end
+  if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
+    return M.default()
+  end
+  return raw
+end
+
 --- Load user preferences for a workspace.
 --- Returns defaults if file doesn't exist.
 --- @param root string

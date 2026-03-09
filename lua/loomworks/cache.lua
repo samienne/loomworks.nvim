@@ -28,6 +28,22 @@ function M.default()
   }
 end
 
+--- Parse raw JSON content into CacheData.
+--- Returns defaults on invalid content.
+--- @param content string raw JSON content
+--- @return loomworks.CacheData
+function M.parse(content)
+  local ok, raw = pcall(vim.json.decode, content)
+  if not ok or type(raw) ~= "table" then
+    return M.default()
+  end
+  if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
+    return M.default()
+  end
+  raw.projects = raw.projects or {}
+  return raw
+end
+
 --- Load cache for a workspace.
 --- Returns defaults if file doesn't exist.
 --- @param root string
