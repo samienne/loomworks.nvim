@@ -132,23 +132,14 @@ function M.merge(workspace)
   -- Get all available profiles
   local all_profiles = M.get_all_profiles(config)
 
-  -- Determine active profile
+  -- Determine active profile — only if explicitly set in user.json
   local active_profile_key = user.active_profile
   local active_profile = nil
 
   if active_profile_key and all_profiles[active_profile_key] then
     active_profile = all_profiles[active_profile_key]
   else
-    -- Pick first available profile as default
-    local sorted_names = {}
-    for name in pairs(all_profiles) do
-      sorted_names[#sorted_names + 1] = name
-    end
-    table.sort(sorted_names)
-    if #sorted_names > 0 then
-      active_profile_key = sorted_names[1]
-      active_profile = all_profiles[active_profile_key]
-    end
+    active_profile_key = nil
   end
 
   -- Resolve configuration set mappings
