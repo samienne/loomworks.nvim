@@ -1,9 +1,11 @@
 --- loomworks/ui/status.lua — Pure rendering for the workspace status page.
 --- All business logic accessed via require("loomworks") API.
+--- Tree nodes register action callbacks as widgets; keybinding handlers
+--- dispatch to them without knowledge of node types.
 
 local M = {}
 
-local merge = require("loomworks.merge")
+local TreeBuilder = require("loomworks.ui.tree")
 
 --- Format a progress update as a compact string like "[2/10]".
 --- @param p loomworks.ProgressUpdate|nil
@@ -68,7 +70,7 @@ M._bufnr = nil
 --- @type table<string, boolean> fold key -> folded state
 M._folds = {}
 
---- @type table<number, { kind: string, key: string, project?: string, set_name?: string }>
+--- @type table<number, table> line number -> widget (fold_key + action callbacks)
 M._line_meta = {}
 
 --- @type number|nil timer handle for spinner
@@ -77,19 +79,7 @@ M._spinner_timer = nil
 --- @type number spinner frame index
 M._spinner_frame = 1
 
-local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 local SPINNER_INTERVAL_MS = 80
-
-local STATUS_ICONS = {
-  unconfigured     = "  ",
-  configured       = "  ",
-  built            = "  ",
-  failed_configure = "  ",
-  failed_build     = "  ",
-  configuring      = "  ",
-  building         = "  ",
-  deleting         = "  ",
-}
 
 local STATUS_HL = {
   unconfigured     = "Comment",
@@ -102,24 +92,16 @@ local STATUS_HL = {
   deleting         = "DiagnosticError",
 }
 
---- Get the current spinner character.
---- @return string
-local function spinner()
-  return SPINNER_FRAMES[M._spinner_frame] .. " "
-end
-
 --- Resolve the live status for a project+config_key combination.
---- This is the single source of truth for configuration status resolution,
---- used by both the Projects and Profiles sections.
 --- @param project_key string
 --- @param config_key string
 --- @param cached loomworks.CachedConfig|nil
---- @return string status, string icon, string hl_group, string progress_str
+--- @return string status, string hl_group, string progress_str, boolean is_spinning
 local function resolve_config_status(project_key, config_key, cached)
   local lw = require("loomworks")
 
   if lw.is_deleting(project_key, config_key) then
-    return "deleting", spinner(), STATUS_HL.deleting, ""
+    return "deleting", STATUS_HL.deleting, "", true
   end
 
   local running_action = lw.get_running_action(project_key, config_key)
@@ -127,50 +109,11 @@ local function resolve_config_status(project_key, config_key, cached)
     local status = running_action == "configure" and "configuring" or "building"
     local progress_str = format_progress(lw.get_progress(project_key, config_key))
         .. format_elapsed(lw.get_elapsed(project_key, config_key))
-    return status, spinner(), STATUS_HL[status] or "DiagnosticWarn", progress_str
+    return status, STATUS_HL[status] or "DiagnosticWarn", progress_str, true
   end
 
   local status = cached and cached.state or "unconfigured"
-  return status, STATUS_ICONS[status] or "  ", STATUS_HL[status] or "Comment", ""
-end
-
-local INDENT_UNIT = "  "
-
---- Build an indentation string for a given nesting level.
---- @param level number
---- @return string
-local function indent(level)
-  return string.rep(INDENT_UNIT, level)
-end
-
---- Render the expanded details for a cached configuration.
---- @param add function
---- @param level number indentation nesting level for detail lines
---- @param config_status string
---- @param status_hl string
---- @param cached loomworks.CachedConfig|nil
-local function render_cached_details(add, level, config_status, status_hl, cached)
-  local pad = indent(level)
-  add(pad .. "Status: " .. config_status, status_hl)
-  if not cached then return end
-
-  if cached.build_dir then
-    add(pad .. "Build dir: " .. cached.build_dir, "Comment")
-  end
-  if cached.last_configured then
-    add(pad .. "Last configured: " .. cached.last_configured, "Comment")
-  end
-  if cached.last_built then
-    add(pad .. "Last built: " .. cached.last_built, "Comment")
-  end
-  if cached.cmake then
-    if cached.cmake.generator then
-      add(pad .. "Generator: " .. cached.cmake.generator, "Comment")
-    end
-    if cached.cmake.compiler then
-      add(pad .. "Compiler: " .. cached.cmake.compiler, "Comment")
-    end
-  end
+  return status, STATUS_HL[status] or "Comment", "", false
 end
 
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
@@ -193,638 +136,8 @@ local function sorted_project_keys(projects)
   return normal
 end
 
---- Render profile details when expanded.
---- @param add function
---- @param profile loomworks.Profile
-local function render_profile_details(add, profile)
-  if profile.configuration_set then
-    add("      Set: " .. profile.configuration_set, "Comment")
-  end
-
-  -- Kit info
-  if profile.kit then
-    add("      Kit: " .. profile.kit.display, "Comment")
-    if profile.kit.generator then
-      add("      Generator: " .. profile.kit.generator, "Comment")
-    end
-    if profile.kit.compiler_id then
-      add("      Compiler: " .. profile.kit.compiler_id, "Comment")
-    end
-  end
-
-  -- Operation result
-  local lw = require("loomworks")
-  local op = lw.get_operation(profile.key)
-  if op and op.message then
-    local op_hl = op.success and "DiagnosticOk" or "DiagnosticError"
-    add("      Last: " .. op.message, op_hl)
-  end
-
-  -- Project mappings — uses same resolve_config_status as project configurations section
-  local pps = profile:projects()
-  if #pps > 0 then
-    add("      Projects:", "Comment")
-
-    for _, pp in ipairs(pps) do
-      local cached = pp:cached_state()
-      local config_status, _, status_hl, progress_str =
-          resolve_config_status(pp.project_key, pp.config_key, cached)
-
-      local fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key
-      local folded = M._folds[fold_key] ~= false
-
-      local is_running = config_status == "configuring" or config_status == "building" or config_status == "deleting"
-      local fold_char = folded and "▶ " or "▼ "
-      local prefix = is_running and spinner() or fold_char
-      add("        " .. prefix .. pp.project_key .. " → " .. pp.variant .. progress_str, status_hl,
-        { kind = "profile_project", key = pp.project_key, project = profile.key })
-
-      if not folded then
-        render_cached_details(add, 6, config_status, status_hl, cached)
-      end
-    end
-  end
-end
-
---- Render configuration set details when expanded.
---- @param add function
---- @param set_name string
---- @param mappings table<string, string> project_key -> variant
---- @param all_profiles table<string, loomworks.Profile>
---- @param active_profile_key string
-local function render_set_details(add, set_name, mappings, all_profiles, active_profile_key)
-  -- Project mappings
-  add("      Projects:", "Comment")
-  local proj_names = {}
-  for name in pairs(mappings) do
-    proj_names[#proj_names + 1] = name
-  end
-  table.sort(proj_names)
-  for _, pname in ipairs(proj_names) do
-    add("        " .. pname .. " → " .. mappings[pname], "Comment")
-  end
-
-  -- Collect profiles belonging to this set
-  local set_profiles = {}
-  for profile_key, profile in pairs(all_profiles) do
-    if profile.configuration_set == set_name then
-      set_profiles[#set_profiles + 1] = { key = profile_key, profile = profile }
-    end
-  end
-  table.sort(set_profiles, function(a, b) return a.key < b.key end)
-
-  -- Only show profiles with tools (toolless profiles are redundant with the set itself)
-  local tool_profiles = {}
-  for _, entry in ipairs(set_profiles) do
-    if entry.profile.kit_id then
-      tool_profiles[#tool_profiles + 1] = entry
-    end
-  end
-
-  if #tool_profiles > 0 then
-    local lw = require("loomworks")
-    add("      Tools:", "Comment")
-    for _, entry in ipairs(tool_profiles) do
-      local profile_key = entry.key
-      local profile = entry.profile
-      local is_active = profile_key == active_profile_key
-      local profile_running = profile:is_running()
-      local already_configured = profile:is_configured()
-
-      local marker
-      if profile_running then
-        marker = spinner()
-      else
-        marker = is_active and "● " or "○ "
-      end
-
-      local suffix, hl
-      if profile_running then
-        local status_label = select(1, profile:status())
-        suffix = " (" .. status_label .. ")"
-        local pps = profile:projects()
-        local pct = aggregate_progress(pps)
-        if pct then suffix = suffix .. " " .. pct .. "%" end
-        suffix = suffix .. format_elapsed(lw.get_operation_elapsed(profile_key))
-        hl = "DiagnosticWarn"
-      elseif already_configured then
-        local op = lw.get_operation(profile_key)
-        if op and op.message then
-          suffix = " — " .. op.message
-        else
-          suffix = " (configured)"
-        end
-        hl = is_active and "DiagnosticOk" or "DiagnosticInfo"
-      else
-        suffix = ""
-        hl = is_active and "DiagnosticOk" or "Comment"
-      end
-
-      local display = profile.kit_id
-      if profile.kit and profile.kit.display then
-        display = profile.kit.display
-      end
-      add("        " .. marker .. display .. suffix, hl,
-        { kind = "set_kit", key = profile.kit_id, set_name = set_name })
-    end
-  end
-end
-
---- Build the status page lines and highlights.
---- @return string[] lines, table[] highlights
-local function render()
-  local lw = require("loomworks")
-  local ws = lw.get_workspace()
-  if not ws then
-    return { "  No workspace loaded.", "  Use :LoomworksInit to initialize." }, {}
-  end
-
-  local active_set = lw.get_active_configuration_set()
-  if not active_set then
-    return { "  No workspace loaded.", "  Use :LoomworksInit to initialize." }, {}
-  end
-
-  local lines = {}
-  local highlights = {}
-  M._line_meta = {}
-
-  local function add(text, hl, meta)
-    lines[#lines + 1] = text
-    local ln = #lines
-    if hl then
-      highlights[#highlights + 1] = { line = ln, col_start = 0, col_end = -1, hl_group = hl }
-    end
-    if meta then
-      M._line_meta[ln] = meta
-    end
-  end
-
-  -- Header
-  add("  loomworks.nvim " .. lw._version, "Title")
-  add("")
-
-  -- Workspace info
-  add("  Workspace: " .. ws.name, "Type")
-  add("  Root:      " .. ws.root, "Comment")
-  add("")
-
-  local all_profiles = lw.get_profiles()
-  local active_profile_key = active_set.name or ""
-  local config_sets = active_set.configuration_sets
-
-  -- Collect profiles to show: configured (cache) OR currently running OR active profile
-  local configured_profiles = {}
-  local configured_set = {}
-  for profile_key, profile in pairs(all_profiles) do
-    local dominated = profile:is_configured()
-        or profile:is_running()
-        or profile_key == active_profile_key
-    if dominated then
-      configured_profiles[#configured_profiles + 1] = profile_key
-      configured_set[profile_key] = true
-    end
-  end
-  table.sort(configured_profiles)
-
-  -- Also include explicit profiles that aren't already shown
-  local explicit_unconfigured = {}
-  for profile_key, profile in pairs(all_profiles) do
-    if profile.explicit and not configured_set[profile_key] then
-      explicit_unconfigured[#explicit_unconfigured + 1] = profile_key
-    end
-  end
-  table.sort(explicit_unconfigured)
-
-  -- Profiles section
-  if #configured_profiles > 0 or #explicit_unconfigured > 0 then
-    add("  Profiles", "Title")
-    add("")
-
-    local function render_profile_line(profile_key)
-      local profile = all_profiles[profile_key]
-      local is_active = profile_key == active_profile_key
-      local profile_running = profile:is_running()
-
-      local marker
-      if profile_running then
-        marker = spinner()
-      else
-        marker = is_active and "● " or "○ "
-      end
-      local hl = profile_running and "DiagnosticWarn" or (is_active and "DiagnosticOk" or nil)
-
-      local profile_fold_key = "profile:" .. profile_key
-      local folded = M._folds[profile_fold_key] ~= false
-      local fold_char = folded and "▶ " or "▼ "
-
-      local display = profile_key
-      if profile.explicit then
-        display = display .. " [explicit]"
-      end
-
-      -- Aggregate profile status
-      local status_label, status_hl = profile:status()
-      display = display .. " (" .. status_label .. ")"
-      if profile_running then
-        local pps = profile:projects()
-        local pct = aggregate_progress(pps)
-        if pct then
-          display = display .. " " .. pct .. "%"
-        end
-        display = display .. format_elapsed(lw.get_operation_elapsed(profile_key))
-      else
-        local op = lw.get_operation(profile_key)
-        if op and op.message then
-          display = display .. " — " .. op.message
-        end
-      end
-      if not hl then
-        hl = status_hl
-      end
-
-      add("   " .. marker .. fold_char .. display, hl, { kind = "profile", key = profile_key })
-
-      if not folded then
-        render_profile_details(add, profile)
-      end
-    end
-
-    for _, profile_key in ipairs(configured_profiles) do
-      render_profile_line(profile_key)
-    end
-    for _, profile_key in ipairs(explicit_unconfigured) do
-      render_profile_line(profile_key)
-    end
-
-    add("")
-  end
-
-  -- Configuration sets section
-  if config_sets and next(config_sets) then
-    add("  Configuration Sets", "Title")
-    add("")
-
-    local set_names = {}
-    for name in pairs(config_sets) do
-      set_names[#set_names + 1] = name
-    end
-    table.sort(set_names)
-
-    for _, set_name in ipairs(set_names) do
-      local set_fold_key = "set:" .. set_name
-      local set_folded = M._folds[set_fold_key] ~= false
-
-      local active_profile = all_profiles[active_profile_key]
-      local is_active_set = active_profile and active_profile.configuration_set == set_name
-
-      local fold_char = set_folded and "▶ " or "▼ "
-      local set_hl = is_active_set and "DiagnosticOk" or nil
-      add("   " .. fold_char .. set_name, set_hl, { kind = "set", key = set_name })
-
-      if not set_folded then
-        render_set_details(add, set_name, config_sets[set_name],
-          all_profiles, active_profile_key)
-      end
-    end
-    add("")
-  end
-
-  -- Active tool details
-  if active_set.kit then
-    add("  Active Tool: " .. active_set.kit.display, "DiagnosticInfo")
-    add("")
-  end
-
-  -- Projects (profile-independent structural view)
-  add("  Projects", "Title")
-  add("")
-
-  local projects = lw.get_projects()
-  local sorted = sorted_project_keys(projects)
-  for _, key in ipairs(sorted) do
-    local proj = projects[key]
-    local proj_fold_key = "project:" .. key
-    local proj_folded = M._folds[proj_fold_key] ~= false
-
-    -- Show spinner if any task is running for this project
-    local proj_running = proj:running_action()
-
-    -- Highlight if active profile includes this project
-    local is_active_project = proj.configuration ~= nil and not proj.orphaned
-    local proj_hl = proj_running and "DiagnosticWarn" or (is_active_project and "DiagnosticOk" or nil)
-
-    local fold_char = proj_folded and "▶ " or "▼ "
-    local prefix = proj_running and spinner() or fold_char
-    local type_tag = "[" .. proj.type .. "]"
-    local orphan_tag = proj.orphaned and " (orphaned)" or ""
-    local refresh_tag = proj.needs_refresh and " !" or ""
-
-    local header = "  " .. prefix .. key .. " " .. type_tag .. orphan_tag .. refresh_tag
-    add(header, proj_hl, { kind = "project", key = key })
-
-    if not proj_folded then
-      add("      Path: " .. (proj.path or key), "Comment")
-
-      if proj.needs_refresh and proj.refresh_reasons and #proj.refresh_reasons > 0 then
-        for _, reason in ipairs(proj.refresh_reasons) do
-          add("      ! " .. reason, "DiagnosticWarn")
-        end
-      end
-
-      if proj.configurations and next(proj.configurations) then
-        add("      Configurations:", "Comment")
-        local config_names = {}
-        for name in pairs(proj.configurations) do
-          config_names[#config_names + 1] = name
-        end
-        table.sort(config_names)
-
-        for _, cname in ipairs(config_names) do
-          local cdata = proj.configurations[cname]
-
-          local config_fold_key = "config:" .. key .. ":" .. cname
-          local config_folded = M._folds[config_fold_key] ~= false
-          local config_fold_char = config_folded and "▶ " or "▼ "
-
-          -- Check if any profile has a running task for this variant
-          local config_has_running = false
-          for _, profile in pairs(all_profiles) do
-            local pp = profile:project(key)
-            if pp and pp.variant == cname then
-              if lw.get_running_action(pp.project_key, pp.config_key) then
-                config_has_running = true
-                break
-              end
-            end
-          end
-
-          local config_prefix = config_has_running and spinner() or config_fold_char
-          local config_hl = config_has_running and "DiagnosticWarn" or "Comment"
-
-          local brief = {}
-          if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
-          if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
-          local brief_str = #brief > 0 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
-
-          add("        " .. config_prefix .. cname .. brief_str, config_hl,
-            { kind = "configuration", key = cname, project = key })
-
-          if not config_folded then
-            -- Configuration-specific details (from loomworks.json, not profile)
-            if cdata.toolchain then
-              add("            Toolchain: " .. tostring(cdata.toolchain), "Comment")
-            end
-            if cdata.generator then
-              add("            Generator: " .. cdata.generator, "Comment")
-            end
-
-            -- List all profiles that map to this variant
-            local profile_entries = {}
-            for profile_key, profile in pairs(all_profiles) do
-              local pp = profile:project(key)
-              if pp and pp.variant == cname then
-                profile_entries[#profile_entries + 1] = {
-                  profile_key = profile_key,
-                  pp = pp,
-                  is_active = profile_key == active_profile_key,
-                }
-              end
-            end
-
-            -- Sort: active first, then alphabetical
-            table.sort(profile_entries, function(a, b)
-              if a.is_active ~= b.is_active then return a.is_active end
-              return a.profile_key < b.profile_key
-            end)
-
-            for _, entry in ipairs(profile_entries) do
-              local pp = entry.pp
-              local cached = pp:cached_state()
-              local config_status, _, status_hl, progress_str =
-                  resolve_config_status(pp.project_key, pp.config_key, cached)
-
-              -- Highlight active profile entries
-              if entry.is_active and config_status ~= "configuring"
-                  and config_status ~= "building" and config_status ~= "deleting" then
-                status_hl = "DiagnosticOk"
-              end
-
-              local profile_fold_key = "config_profile:" .. key .. ":" .. cname .. ":" .. entry.profile_key
-              local profile_folded = M._folds[profile_fold_key] ~= false
-              local is_entry_running = config_status == "configuring" or config_status == "building" or config_status == "deleting"
-              local profile_fold_char = profile_folded and "▶ " or "▼ "
-              local entry_prefix = is_entry_running and spinner() or profile_fold_char
-
-              add("            " .. entry_prefix .. entry.profile_key .. progress_str, status_hl,
-                { kind = "config_profile", key = entry.profile_key, project = key, config = cname })
-
-              if not profile_folded then
-                render_cached_details(add, 8, config_status, status_hl, cached)
-              end
-            end
-          end
-        end
-      end
-
-      add("")
-    end
-  end
-
-  return lines, highlights
-end
-
---- Apply highlights to the buffer.
---- @param bufnr number
---- @param highlights table[]
-local function apply_highlights(bufnr, highlights)
-  local ns = vim.api.nvim_create_namespace("loomworks_status")
-  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-  for _, hl in ipairs(highlights) do
-    vim.api.nvim_buf_add_highlight(bufnr, ns, hl.hl_group, hl.line - 1, hl.col_start, hl.col_end)
-  end
-end
-
---- Refresh the status buffer content.
-function M.refresh()
-  if not M._bufnr or not vim.api.nvim_buf_is_valid(M._bufnr) then return end
-
-  -- Preserve cursor position during refresh
-  local cursor
-  for _, win in ipairs(vim.api.nvim_list_wins()) do
-    if vim.api.nvim_win_get_buf(win) == M._bufnr then
-      cursor = vim.api.nvim_win_get_cursor(win)
-      break
-    end
-  end
-
-  local lines, highlights = render()
-  vim.bo[M._bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(M._bufnr, 0, -1, false, lines)
-  vim.bo[M._bufnr].modifiable = false
-  apply_highlights(M._bufnr, highlights)
-
-  -- Restore cursor position
-  if cursor then
-    local line_count = #lines
-    if cursor[1] > line_count then cursor[1] = line_count end
-    for _, win in ipairs(vim.api.nvim_list_wins()) do
-      if vim.api.nvim_win_get_buf(win) == M._bufnr then
-        pcall(vim.api.nvim_win_set_cursor, win, cursor)
-        break
-      end
-    end
-  end
-end
-
---- Start the spinner timer for animated progress display.
-function M.start_spinner()
-  if M._spinner_timer then return end
-  if not M._bufnr or not vim.api.nvim_buf_is_valid(M._bufnr) then return end
-
-  M._spinner_timer = vim.fn.timer_start(SPINNER_INTERVAL_MS, function()
-    M._spinner_frame = (M._spinner_frame % #SPINNER_FRAMES) + 1
-    vim.schedule(function()
-      M.refresh()
-    end)
-  end, { ["repeat"] = -1 })
-end
-
---- Stop the spinner timer.
-function M.stop_spinner()
-  if M._spinner_timer then
-    vim.fn.timer_stop(M._spinner_timer)
-    M._spinner_timer = nil
-  end
-  -- Final refresh to show completed state
-  vim.schedule(function()
-    M.refresh()
-  end)
-end
-
 -- ---------------------------------------------------------------------------
--- Keybinding handlers
--- ---------------------------------------------------------------------------
-
---- Toggle fold for the item under cursor.
-local function on_toggle_fold()
-  local line = vim.api.nvim_win_get_cursor(0)[1]
-  local meta = M._line_meta[line]
-  if not meta then return end
-
-  local fold_key
-  if meta.kind == "profile" then
-    fold_key = "profile:" .. meta.key
-  elseif meta.kind == "set" then
-    fold_key = "set:" .. meta.key
-  elseif meta.kind == "project" then
-    fold_key = "project:" .. meta.key
-  elseif meta.kind == "configuration" then
-    fold_key = "config:" .. meta.project .. ":" .. meta.key
-  elseif meta.kind == "profile_project" then
-    fold_key = "profile_proj:" .. meta.project .. ":" .. meta.key
-  elseif meta.kind == "config_profile" then
-    fold_key = "config_profile:" .. meta.project .. ":" .. meta.config .. ":" .. meta.key
-  else
-    return
-  end
-
-  M._folds[fold_key] = M._folds[fold_key] == false and true or false
-  M.refresh()
-
-  -- Keep cursor on same item
-  for ln, m in pairs(M._line_meta) do
-    if m.kind == meta.kind and m.key == meta.key then
-      if meta.kind == "configuration" or meta.kind == "profile_project" or meta.kind == "config_profile" then
-        if m.project == meta.project then
-          pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
-          break
-        end
-      else
-        pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
-        break
-      end
-    end
-  end
-end
-
---- Handle <CR> — select/activate the item under cursor.
-local function on_enter()
-  local line = vim.api.nvim_win_get_cursor(0)[1]
-  local meta = M._line_meta[line]
-  if not meta then return end
-
-  local lw = require("loomworks")
-
-  if meta.kind == "profile" then
-    lw.activate_profile(meta.key)
-    M.refresh()
-
-  elseif meta.kind == "set_kit" then
-    local profile_key = merge.profile_key(meta.set_name, meta.key)
-    lw.activate_profile(profile_key)
-    M.refresh()
-
-  elseif meta.kind == "config_profile" then
-    lw.activate_profile(meta.key)
-    M.refresh()
-  end
-end
-
---- Resolve the profile key from the cursor's line metadata.
---- @return string|nil profile_key
-local function resolve_profile_at_cursor()
-  local line = vim.api.nvim_win_get_cursor(0)[1]
-  local meta = M._line_meta[line]
-
-  if meta then
-    if meta.kind == "profile" then
-      return meta.key
-    elseif meta.kind == "set_kit" then
-      return merge.profile_key(meta.set_name, meta.key)
-    elseif meta.kind == "profile_project" then
-      return meta.project
-    elseif meta.kind == "config_profile" then
-      return meta.key
-    end
-  end
-
-  -- Walk upward to find the enclosing profile
-  for l = line - 1, 1, -1 do
-    local m = M._line_meta[l]
-    if m then
-      if m.kind == "profile" then
-        return m.key
-      elseif m.kind == "set" or m.kind == "project" then
-        break
-      end
-    end
-  end
-
-  return nil
-end
-
---- Handle B — build the profile under cursor.
-local function on_build()
-  local profile_key = resolve_profile_at_cursor()
-  if not profile_key then
-    vim.notify("loomworks: no profile under cursor", vim.log.levels.WARN)
-    return
-  end
-  require("loomworks.overseer").run_profile_action(profile_key, "build")
-end
-
---- Handle C — configure the profile under cursor.
-local function on_configure()
-  local profile_key = resolve_profile_at_cursor()
-  if not profile_key then
-    vim.notify("loomworks: no profile or kit under cursor", vim.log.levels.WARN)
-    return
-  end
-  require("loomworks.overseer").run_profile_action(profile_key, "configure")
-end
-
--- ---------------------------------------------------------------------------
--- Deletion UI
+-- Deletion dialog
 -- ---------------------------------------------------------------------------
 
 --- Make a path relative to workspace root for display.
@@ -866,7 +179,6 @@ local function show_delete_confirmation(title, plan, on_confirm)
   add("  " .. title, "DiagnosticWarn")
   add("")
 
-  -- Detect running tasks that will need to be stopped
   local running_tasks = lw.find_running_tasks_for_items(items)
   local running_task_ids = {}
   for task_id in pairs(running_tasks) do
@@ -881,7 +193,6 @@ local function show_delete_confirmation(title, plan, on_confirm)
     add("")
   end
 
-  -- Separate shared (blocked) from deletable
   local to_delete = {}
   local shared = {}
 
@@ -918,7 +229,6 @@ local function show_delete_confirmation(title, plan, on_confirm)
     add("")
   end
 
-  -- Consolidated list of directories to be deleted
   if #to_delete > 0 then
     local dirs = {}
     for _, item in ipairs(to_delete) do
@@ -947,7 +257,6 @@ local function show_delete_confirmation(title, plan, on_confirm)
     add("  Press y to confirm, q to cancel", "Comment")
   end
 
-  -- Create floating window
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
@@ -972,7 +281,6 @@ local function show_delete_confirmation(title, plan, on_confirm)
     title_pos = "center",
   })
 
-  -- Apply highlights
   local ns = vim.api.nvim_create_namespace("loomworks_delete_confirm")
   for _, hl in ipairs(highlights) do
     vim.api.nvim_buf_add_highlight(buf, ns, hl.hl_group, hl.line - 1, 0, -1)
@@ -997,163 +305,636 @@ local function show_delete_confirmation(title, plan, on_confirm)
   end
 end
 
---- Handle D — delete the profile or configuration under cursor.
-local function on_delete()
-  local line = vim.api.nvim_win_get_cursor(0)[1]
-  local meta = M._line_meta[line]
-  local lw = require("loomworks")
+-- ---------------------------------------------------------------------------
+-- Action factories — capture context at render time, execute at action time
+-- ---------------------------------------------------------------------------
 
-  -- Case 1: cursor on a profile line
-  if meta and meta.kind == "profile" then
-    local profile = lw.get_profile(meta.key)
+local function activate_action(profile_key)
+  return function()
+    require("loomworks").activate_profile(profile_key)
+    M.refresh()
+  end
+end
+
+local function build_action(profile_key)
+  return function()
+    require("loomworks.overseer").run_profile_action(profile_key, "build")
+  end
+end
+
+local function configure_action(profile_key)
+  return function()
+    require("loomworks.overseer").run_profile_action(profile_key, "configure")
+  end
+end
+
+local function delete_profile_action(profile_key)
+  return function()
+    local lw = require("loomworks")
+    local profile = lw.get_profile(profile_key)
     if not profile then return end
     local plan = profile:plan_deletion()
     if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
       return
     end
-
     show_delete_confirmation("Delete profile: " .. profile.key, plan, function(p)
       lw.execute_deletion(p, { deactivate_profile = profile.key }, function()
         vim.notify("loomworks: profile '" .. profile.key .. "' cleaned", vim.log.levels.INFO)
       end)
     end)
-    return
   end
+end
 
-  -- Case 2: cursor on a configuration line within Projects section
-  if meta and meta.kind == "configuration" then
-    local project_key = meta.project
-    local config_name = meta.key
-
-    local proj = lw.get_project(project_key)
-    if not proj then return end
-    local config_key = proj:config_cache_key(config_name)
-
+local function delete_config_action(project_key, config_key)
+  return function()
+    local lw = require("loomworks")
     local plan = lw.plan_config_deletion(project_key, config_key)
     if #plan.items == 0 then
       vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
       return
     end
+    show_delete_confirmation("Delete: " .. project_key .. " / " .. config_key, plan, function(p)
+      lw.execute_deletion(p, nil, function()
+        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+      end)
+    end)
+  end
+end
 
+local function delete_configuration_action(project_key, config_name)
+  return function()
+    local lw = require("loomworks")
+    local proj = lw.get_project(project_key)
+    if not proj then return end
+    local config_key = proj:config_cache_key(config_name)
+    local plan = lw.plan_config_deletion(project_key, config_key)
+    if #plan.items == 0 then
+      vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
+      return
+    end
     show_delete_confirmation("Delete configuration: " .. project_key .. " / " .. config_key, plan, function(p)
       lw.execute_deletion(p, nil, function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
     end)
-    return
   end
-
-  -- Case 3: cursor on a profile_project line
-  if meta and meta.kind == "profile_project" then
-    local profile_key = meta.project
-    local project_key = meta.key
-
-    local profile = lw.get_profile(profile_key)
-    if not profile then return end
-    local pp = profile:project(project_key)
-    if not pp then return end
-
-    local plan = lw.plan_config_deletion(project_key, pp.config_key)
-    if #plan.items == 0 then
-      vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
-      return
-    end
-
-    show_delete_confirmation("Delete: " .. project_key .. " / " .. pp.config_key, plan, function(p)
-      lw.execute_deletion(p, nil, function()
-        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-      end)
-    end)
-    return
-  end
-
-  -- Case 3b: cursor on a config_profile line (profile entry under a configuration)
-  if meta and meta.kind == "config_profile" then
-    local profile_key = meta.key
-    local project_key = meta.project
-
-    local profile = lw.get_profile(profile_key)
-    if not profile then return end
-    local pp = profile:project(project_key)
-    if not pp then return end
-
-    local plan = lw.plan_config_deletion(project_key, pp.config_key)
-    if #plan.items == 0 then
-      vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
-      return
-    end
-
-    show_delete_confirmation("Delete: " .. project_key .. " / " .. pp.config_key, plan, function(p)
-      lw.execute_deletion(p, nil, function()
-        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-      end)
-    end)
-    return
-  end
-
-  -- Case 4: try to resolve enclosing profile
-  local profile_key = resolve_profile_at_cursor()
-  if profile_key then
-    local profile = lw.get_profile(profile_key)
-    if not profile then return end
-    local plan = profile:plan_deletion()
-    if #plan.items == 0 then
-      vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
-      return
-    end
-
-    show_delete_confirmation("Delete profile: " .. profile_key, plan, function(p)
-      lw.execute_deletion(p, { deactivate_profile = profile_key }, function()
-        vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
-      end)
-    end)
-    return
-  end
-
-  vim.notify("loomworks: nothing to delete under cursor", vim.log.levels.WARN)
 end
 
 -- ---------------------------------------------------------------------------
--- UI-level deletion API (interactive with confirmation dialog)
+-- Render helpers
 -- ---------------------------------------------------------------------------
 
---- Delete a profile interactively (with confirmation dialog).
---- @param profile_key string
-function M.delete_profile(profile_key)
-  local lw = require("loomworks")
-  local profile = lw.get_profile(profile_key)
-  if not profile then return end
+--- Render cached configuration details as leaf lines.
+--- @param tree loomworks.TreeBuilder
+--- @param config_status string
+--- @param status_hl string
+--- @param cached loomworks.CachedConfig|nil
+local function render_cached_details(tree, config_status, status_hl, cached)
+  tree:leaf("Status: " .. config_status, status_hl)
+  if not cached then return end
 
-  local plan = profile:plan_deletion()
-  if #plan.items == 0 then
-    vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
-    return
+  if cached.build_dir then
+    tree:leaf("Build dir: " .. cached.build_dir, "Comment")
+  end
+  if cached.last_configured then
+    tree:leaf("Last configured: " .. cached.last_configured, "Comment")
+  end
+  if cached.last_built then
+    tree:leaf("Last built: " .. cached.last_built, "Comment")
+  end
+  if cached.cmake then
+    if cached.cmake.generator then
+      tree:leaf("Generator: " .. cached.cmake.generator, "Comment")
+    end
+    if cached.cmake.compiler then
+      tree:leaf("Compiler: " .. cached.cmake.compiler, "Comment")
+    end
+  end
+end
+
+--- Render profile details when expanded.
+--- @param tree loomworks.TreeBuilder
+--- @param profile loomworks.Profile
+local function render_profile_details(tree, profile)
+  if profile.configuration_set then
+    tree:leaf("Set: " .. profile.configuration_set, "Comment")
   end
 
-  show_delete_confirmation("Delete profile: " .. profile_key, plan, function(p)
-    lw.execute_deletion(p, { deactivate_profile = profile_key }, function()
-      vim.notify("loomworks: profile '" .. profile_key .. "' cleaned", vim.log.levels.INFO)
+  if profile.kit then
+    tree:leaf("Kit: " .. profile.kit.display, "Comment")
+    if profile.kit.generator then
+      tree:leaf("Generator: " .. profile.kit.generator, "Comment")
+    end
+    if profile.kit.compiler_id then
+      tree:leaf("Compiler: " .. profile.kit.compiler_id, "Comment")
+    end
+  end
+
+  local lw = require("loomworks")
+  local op = lw.get_operation(profile.key)
+  if op and op.message then
+    local op_hl = op.success and "DiagnosticOk" or "DiagnosticError"
+    tree:leaf("Last: " .. op.message, op_hl)
+  end
+
+  local pps = profile:projects()
+  if #pps > 0 then
+    tree:group("Projects:", "Comment", function()
+      for _, pp in ipairs(pps) do
+        local cached = pp:cached_state()
+        local config_status, status_hl, progress_str, is_spinning =
+            resolve_config_status(pp.project_key, pp.config_key, cached)
+
+        tree:node(pp.project_key .. " → " .. pp.variant .. progress_str, {
+          fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key,
+          spinning = is_spinning,
+          hl = status_hl,
+          on_build = build_action(profile.key),
+          on_configure = configure_action(profile.key),
+          on_delete = delete_config_action(pp.project_key, pp.config_key),
+        }, function()
+          render_cached_details(tree, config_status, status_hl, cached)
+        end)
+      end
     end)
+  end
+end
+
+--- Render configuration set details when expanded.
+--- @param tree loomworks.TreeBuilder
+--- @param set_name string
+--- @param mappings table<string, string>
+--- @param all_profiles table<string, loomworks.Profile>
+--- @param active_profile_key string
+local function render_set_details(tree, set_name, mappings, all_profiles, active_profile_key)
+  tree:group("Projects:", "Comment", function()
+    local proj_names = {}
+    for name in pairs(mappings) do
+      proj_names[#proj_names + 1] = name
+    end
+    table.sort(proj_names)
+    for _, pname in ipairs(proj_names) do
+      tree:leaf(pname .. " → " .. mappings[pname], "Comment")
+    end
+  end)
+
+  -- Collect profiles belonging to this set with tools
+  local tool_profiles = {}
+  for profile_key, profile in pairs(all_profiles) do
+    if profile.configuration_set == set_name and profile.kit_id then
+      tool_profiles[#tool_profiles + 1] = { key = profile_key, profile = profile }
+    end
+  end
+  table.sort(tool_profiles, function(a, b) return a.key < b.key end)
+
+  if #tool_profiles > 0 then
+    local lw = require("loomworks")
+    tree:group("Tools:", "Comment", function()
+      for _, entry in ipairs(tool_profiles) do
+        local profile_key = entry.key
+        local profile = entry.profile
+        local is_active = profile_key == active_profile_key
+        local profile_running = profile:is_running()
+        local already_configured = profile:is_configured()
+
+        local marker = is_active and "● " or "○ "
+
+        local suffix, hl
+        if profile_running then
+          local status_label = select(1, profile:status())
+          suffix = " (" .. status_label .. ")"
+          local pps = profile:projects()
+          local pct = aggregate_progress(pps)
+          if pct then suffix = suffix .. " " .. pct .. "%" end
+          suffix = suffix .. format_elapsed(lw.get_operation_elapsed(profile_key))
+          hl = "DiagnosticWarn"
+        elseif already_configured then
+          local op = lw.get_operation(profile_key)
+          if op and op.message then
+            suffix = " — " .. op.message
+          else
+            suffix = " (configured)"
+          end
+          hl = is_active and "DiagnosticOk" or "DiagnosticInfo"
+        else
+          suffix = ""
+          hl = is_active and "DiagnosticOk" or "Comment"
+        end
+
+        local display = profile.kit_id
+        if profile.kit and profile.kit.display then
+          display = profile.kit.display
+        end
+
+        tree:item(display .. suffix, {
+          marker = marker,
+          spinning = profile_running,
+          hl = hl,
+          on_enter = activate_action(profile_key),
+          on_build = build_action(profile_key),
+          on_configure = configure_action(profile_key),
+          on_delete = delete_profile_action(profile_key),
+        })
+      end
+    end)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Main render
+-- ---------------------------------------------------------------------------
+
+--- Build the status page lines and highlights.
+--- @return string[] lines, table[] highlights
+local function render()
+  local lw = require("loomworks")
+  local ws = lw.get_workspace()
+  if not ws then
+    return { "  No workspace loaded.", "  Use :LoomworksInit to initialize." }, {}
+  end
+
+  local active_set = lw.get_active_configuration_set()
+  if not active_set then
+    return { "  No workspace loaded.", "  Use :LoomworksInit to initialize." }, {}
+  end
+
+  local tree = TreeBuilder.new(M._folds, M._spinner_frame)
+  tree._level = 1 -- base indentation
+
+  -- Header
+  tree:leaf("loomworks.nvim " .. lw._version, "Title")
+  tree:blank()
+  tree:leaf("Workspace: " .. ws.name, "Type")
+  tree:leaf("Root:      " .. ws.root, "Comment")
+  tree:blank()
+
+  local all_profiles = lw.get_profiles()
+  local active_profile_key = active_set.name or ""
+  local config_sets = active_set.configuration_sets
+
+  -- Collect profiles to show: configured OR currently running OR active
+  local configured_profiles = {}
+  local configured_set = {}
+  for profile_key, profile in pairs(all_profiles) do
+    if profile:is_configured() or profile:is_running() or profile_key == active_profile_key then
+      configured_profiles[#configured_profiles + 1] = profile_key
+      configured_set[profile_key] = true
+    end
+  end
+  table.sort(configured_profiles)
+
+  local explicit_unconfigured = {}
+  for profile_key, profile in pairs(all_profiles) do
+    if profile.explicit and not configured_set[profile_key] then
+      explicit_unconfigured[#explicit_unconfigured + 1] = profile_key
+    end
+  end
+  table.sort(explicit_unconfigured)
+
+  -- Profiles section
+  if #configured_profiles > 0 or #explicit_unconfigured > 0 then
+    tree:leaf("Profiles", "Title")
+    tree:blank()
+
+    local function render_profile_node(profile_key)
+      local profile = all_profiles[profile_key]
+      local is_active = profile_key == active_profile_key
+      local profile_running = profile:is_running()
+
+      local marker = is_active and "● " or "○ "
+      local hl = profile_running and "DiagnosticWarn" or (is_active and "DiagnosticOk" or nil)
+
+      local display = profile_key
+      if profile.explicit then
+        display = display .. " [explicit]"
+      end
+
+      local status_label, status_hl = profile:status()
+      display = display .. " (" .. status_label .. ")"
+      if profile_running then
+        local pps = profile:projects()
+        local pct = aggregate_progress(pps)
+        if pct then
+          display = display .. " " .. pct .. "%"
+        end
+        display = display .. format_elapsed(lw.get_operation_elapsed(profile_key))
+      else
+        local op = lw.get_operation(profile_key)
+        if op and op.message then
+          display = display .. " — " .. op.message
+        end
+      end
+      if not hl then
+        hl = status_hl
+      end
+
+      tree:node(display, {
+        fold_key = "profile:" .. profile_key,
+        marker = marker,
+        spinning = profile_running,
+        hl = hl,
+        on_enter = activate_action(profile_key),
+        on_build = build_action(profile_key),
+        on_configure = configure_action(profile_key),
+        on_delete = delete_profile_action(profile_key),
+      }, function()
+        render_profile_details(tree, profile)
+      end)
+    end
+
+    for _, profile_key in ipairs(configured_profiles) do
+      render_profile_node(profile_key)
+    end
+    for _, profile_key in ipairs(explicit_unconfigured) do
+      render_profile_node(profile_key)
+    end
+
+    tree:blank()
+  end
+
+  -- Configuration sets section
+  if config_sets and next(config_sets) then
+    tree:leaf("Configuration Sets", "Title")
+    tree:blank()
+
+    local set_names = {}
+    for name in pairs(config_sets) do
+      set_names[#set_names + 1] = name
+    end
+    table.sort(set_names)
+
+    for _, set_name in ipairs(set_names) do
+      local active_profile = all_profiles[active_profile_key]
+      local is_active_set = active_profile and active_profile.configuration_set == set_name
+      local set_hl = is_active_set and "DiagnosticOk" or nil
+
+      tree:node(set_name, {
+        fold_key = "set:" .. set_name,
+        hl = set_hl,
+      }, function()
+        render_set_details(tree, set_name, config_sets[set_name],
+          all_profiles, active_profile_key)
+      end)
+    end
+    tree:blank()
+  end
+
+  -- Active tool details
+  if active_set.kit then
+    tree:leaf("Active Tool: " .. active_set.kit.display, "DiagnosticInfo")
+    tree:blank()
+  end
+
+  -- Projects section
+  tree:leaf("Projects", "Title")
+  tree:blank()
+
+  local projects = lw.get_projects()
+  local sorted = sorted_project_keys(projects)
+  for _, key in ipairs(sorted) do
+    local proj = projects[key]
+    local proj_running = proj:running_action()
+    local is_active_project = proj.configuration ~= nil and not proj.orphaned
+    local proj_hl = proj_running and "DiagnosticWarn" or (is_active_project and "DiagnosticOk" or nil)
+
+    local type_tag = "[" .. proj.type .. "]"
+    local orphan_tag = proj.orphaned and " (orphaned)" or ""
+    local refresh_tag = proj.needs_refresh and " !" or ""
+
+    tree:node(key .. " " .. type_tag .. orphan_tag .. refresh_tag, {
+      fold_key = "project:" .. key,
+      spinning = proj_running ~= nil,
+      hl = proj_hl,
+    }, function()
+      tree:leaf("Path: " .. (proj.path or key), "Comment")
+
+      if proj.needs_refresh and proj.refresh_reasons and #proj.refresh_reasons > 0 then
+        for _, reason in ipairs(proj.refresh_reasons) do
+          tree:leaf("! " .. reason, "DiagnosticWarn")
+        end
+      end
+
+      if proj.configurations and next(proj.configurations) then
+        tree:group("Configurations:", "Comment", function()
+          local config_names = {}
+          for name in pairs(proj.configurations) do
+            config_names[#config_names + 1] = name
+          end
+          table.sort(config_names)
+
+          for _, cname in ipairs(config_names) do
+            local cdata = proj.configurations[cname]
+
+            -- Check if any profile has a running task for this variant
+            local config_has_running = false
+            for _, profile in pairs(all_profiles) do
+              local pp = profile:project(key)
+              if pp and pp.variant == cname then
+                if lw.get_running_action(pp.project_key, pp.config_key) then
+                  config_has_running = true
+                  break
+                end
+              end
+            end
+
+            local config_hl = config_has_running and "DiagnosticWarn" or "Comment"
+
+            local brief = {}
+            if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
+            if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
+            local brief_str = #brief > 0 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
+
+            tree:node(cname .. brief_str, {
+              fold_key = "config:" .. key .. ":" .. cname,
+              spinning = config_has_running,
+              hl = config_hl,
+              on_delete = delete_configuration_action(key, cname),
+            }, function()
+              if cdata.toolchain then
+                tree:leaf("Toolchain: " .. tostring(cdata.toolchain), "Comment")
+              end
+              if cdata.generator then
+                tree:leaf("Generator: " .. cdata.generator, "Comment")
+              end
+
+              -- List all profiles that map to this variant
+              local profile_entries = {}
+              for profile_key, profile in pairs(all_profiles) do
+                local pp = profile:project(key)
+                if pp and pp.variant == cname then
+                  profile_entries[#profile_entries + 1] = {
+                    profile_key = profile_key,
+                    pp = pp,
+                    is_active = profile_key == active_profile_key,
+                  }
+                end
+              end
+
+              table.sort(profile_entries, function(a, b)
+                if a.is_active ~= b.is_active then return a.is_active end
+                return a.profile_key < b.profile_key
+              end)
+
+              for _, entry in ipairs(profile_entries) do
+                local pp = entry.pp
+                local cached = pp:cached_state()
+                local config_status, status_hl, progress_str, is_spinning =
+                    resolve_config_status(pp.project_key, pp.config_key, cached)
+
+                if entry.is_active and not is_spinning then
+                  status_hl = "DiagnosticOk"
+                end
+
+                tree:node(entry.profile_key .. progress_str, {
+                  fold_key = "config_profile:" .. key .. ":" .. cname .. ":" .. entry.profile_key,
+                  spinning = is_spinning,
+                  hl = status_hl,
+                  on_enter = activate_action(entry.profile_key),
+                  on_build = build_action(entry.profile_key),
+                  on_configure = configure_action(entry.profile_key),
+                  on_delete = delete_config_action(pp.project_key, pp.config_key),
+                }, function()
+                  render_cached_details(tree, config_status, status_hl, cached)
+                end)
+              end
+            end)
+          end
+        end)
+      end
+
+      tree:blank()
+    end)
+  end
+
+  M._line_meta = tree.line_meta
+  return tree.lines, tree.highlights
+end
+
+-- ---------------------------------------------------------------------------
+-- Buffer management
+-- ---------------------------------------------------------------------------
+
+--- Apply highlights to the buffer.
+--- @param bufnr number
+--- @param highlights table[]
+local function apply_highlights(bufnr, highlights)
+  local ns = vim.api.nvim_create_namespace("loomworks_status")
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  for _, hl in ipairs(highlights) do
+    vim.api.nvim_buf_add_highlight(bufnr, ns, hl.hl_group, hl.line - 1, hl.col_start, hl.col_end)
+  end
+end
+
+--- Refresh the status buffer content.
+function M.refresh()
+  if not M._bufnr or not vim.api.nvim_buf_is_valid(M._bufnr) then return end
+
+  local cursor
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == M._bufnr then
+      cursor = vim.api.nvim_win_get_cursor(win)
+      break
+    end
+  end
+
+  local lines, highlights = render()
+  vim.bo[M._bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(M._bufnr, 0, -1, false, lines)
+  vim.bo[M._bufnr].modifiable = false
+  apply_highlights(M._bufnr, highlights)
+
+  if cursor then
+    local line_count = #lines
+    if cursor[1] > line_count then cursor[1] = line_count end
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_buf(win) == M._bufnr then
+        pcall(vim.api.nvim_win_set_cursor, win, cursor)
+        break
+      end
+    end
+  end
+end
+
+--- Start the spinner timer for animated progress display.
+function M.start_spinner()
+  if M._spinner_timer then return end
+  if not M._bufnr or not vim.api.nvim_buf_is_valid(M._bufnr) then return end
+
+  M._spinner_timer = vim.fn.timer_start(SPINNER_INTERVAL_MS, function()
+    M._spinner_frame = (M._spinner_frame % #TreeBuilder.SPINNER_FRAMES) + 1
+    vim.schedule(function()
+      M.refresh()
+    end)
+  end, { ["repeat"] = -1 })
+end
+
+--- Stop the spinner timer.
+function M.stop_spinner()
+  if M._spinner_timer then
+    vim.fn.timer_stop(M._spinner_timer)
+    M._spinner_timer = nil
+  end
+  vim.schedule(function()
+    M.refresh()
   end)
 end
 
---- Delete a configuration interactively (with confirmation dialog).
---- @param project_key string
---- @param config_key string
-function M.delete_config(project_key, config_key)
-  local lw = require("loomworks")
-  local plan = lw.plan_config_deletion(project_key, config_key)
-  if #plan.items == 0 then
-    vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
-    return
-  end
+-- ---------------------------------------------------------------------------
+-- Keybinding handlers — pure widget dispatch
+-- ---------------------------------------------------------------------------
 
-  show_delete_confirmation("Delete configuration: " .. project_key .. " / " .. config_key, plan, function(p)
-    lw.execute_deletion(p, nil, function()
-      vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-    end)
-  end)
+--- Toggle fold for the item under cursor.
+local function on_toggle_fold()
+  local w = M._line_meta[vim.api.nvim_win_get_cursor(0)[1]]
+  if not w or not w.fold_key then return end
+  local fk = w.fold_key
+  M._folds[fk] = not M._folds[fk]
+  M.refresh()
+  -- Restore cursor to same widget by fold_key
+  for ln, w2 in pairs(M._line_meta) do
+    if w2.fold_key == fk then
+      pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
+      break
+    end
+  end
+end
+
+--- Handle <CR> — activate the item under cursor.
+local function on_enter()
+  local w = M._line_meta[vim.api.nvim_win_get_cursor(0)[1]]
+  if w and w.on_enter then w.on_enter() end
+end
+
+--- Walk upward from cursor to find the nearest widget with the given action.
+--- Stops at the first widget found (acts as a section boundary).
+--- @param action_name string
+--- @return function|nil
+local function find_action(action_name)
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  for l = line, 1, -1 do
+    local w = M._line_meta[l]
+    if w then return w[action_name] end
+  end
+  return nil
+end
+
+local function on_build()
+  local action = find_action("on_build")
+  if action then action()
+  else vim.notify("loomworks: no buildable item under cursor", vim.log.levels.WARN) end
+end
+
+local function on_configure()
+  local action = find_action("on_configure")
+  if action then action()
+  else vim.notify("loomworks: no configurable item under cursor", vim.log.levels.WARN) end
+end
+
+local function on_delete()
+  local action = find_action("on_delete")
+  if action then action()
+  else vim.notify("loomworks: nothing to delete under cursor", vim.log.levels.WARN) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1162,7 +943,6 @@ end
 
 --- Open the status window.
 function M.open()
-  -- Reuse existing buffer if valid
   if M._bufnr and vim.api.nvim_buf_is_valid(M._bufnr) then
     for _, win in ipairs(vim.api.nvim_list_wins()) do
       if vim.api.nvim_win_get_buf(win) == M._bufnr then
@@ -1186,7 +966,6 @@ function M.open()
   vim.bo[M._bufnr].filetype = "loomworks"
   vim.bo[M._bufnr].modifiable = false
 
-  -- Wire up event-driven updates
   local events = require("loomworks.events")
 
   local function on_task_started()
@@ -1221,7 +1000,6 @@ function M.open()
   events.on("deletion_completed", on_deletion_completed)
   events.on("active_set_changed", on_active_set_changed)
 
-  -- Stop spinner and unregister events when buffer is wiped
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = M._bufnr,
     callback = function()
@@ -1253,7 +1031,6 @@ function M.open()
   vim.keymap.set("n", "r", function() M.refresh() end, map_opts)
   vim.keymap.set("n", "q", function() vim.api.nvim_win_close(0, true) end, map_opts)
 
-  -- Start spinner if tasks are already running
   if require("loomworks").has_running_tasks() then
     M.start_spinner()
   end
@@ -1271,6 +1048,23 @@ function M.close()
       end
     end
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- Public API for programmatic deletion
+-- ---------------------------------------------------------------------------
+
+--- Delete a profile interactively (with confirmation dialog).
+--- @param profile_key string
+function M.delete_profile(profile_key)
+  delete_profile_action(profile_key)()
+end
+
+--- Delete a configuration interactively (with confirmation dialog).
+--- @param project_key string
+--- @param config_key string
+function M.delete_config(project_key, config_key)
+  delete_config_action(project_key, config_key)()
 end
 
 return M
