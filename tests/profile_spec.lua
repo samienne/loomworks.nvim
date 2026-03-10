@@ -236,7 +236,7 @@ describe("Profile", function()
       assert.equals("DiagnosticError", hl)
     end)
 
-    it("shows running status", function()
+    it("shows running status with number first", function()
       local p = make_profile(nil, {
         get_running_action = function(_, proj, key)
           if proj == "App" and key == "Debug" then return "build" end
@@ -244,18 +244,18 @@ describe("Profile", function()
         end,
       })
       local label, hl = p:status()
-      assert.matches("building", label)
+      assert.matches("1 building", label)
       assert.equals("DiagnosticWarn", hl)
     end)
 
-    it("shows deleting status", function()
+    it("shows deleting status with number first", function()
       local p = make_profile(nil, {
         is_deleting = function(_, proj, key)
           return proj == "App" and key == "Debug"
         end,
       })
       local label, hl = p:status()
-      assert.matches("deleting", label)
+      assert.matches("1/2 deleting", label)
       assert.equals("DiagnosticError", hl)
     end)
   end)
@@ -310,7 +310,19 @@ end)
 
 describe("ProfileProject", function()
   local function make_pp(kit_id, core_overrides)
-    local core = h.make_mock_core(core_overrides)
+    -- Provide workspace with config so ProfileProject.new can check project type
+    local default_ws = {
+      config = {
+        projects = {
+          App = { type = "cmake", path = "App", type_config = {} },
+        },
+      },
+      cache = { projects = {} },
+    }
+    local merged = vim.tbl_deep_extend("force", {
+      get_workspace = function() return default_ws end,
+    }, core_overrides or {})
+    local core = h.make_mock_core(merged)
     local data = {
       configuration_set = "debug",
       kit_id = kit_id,

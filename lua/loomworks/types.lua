@@ -179,6 +179,12 @@
 
 -- ========================== File Tracking ==========================
 
+--- @class loomworks.Operation
+--- @field action? string "configure", "build", or "configure+build" (while running)
+--- @field started_at? number hrtime seconds (while running)
+--- @field message? string result message like "built in 2m10s" (after completion)
+--- @field success? boolean (after completion)
+
 --- @class loomworks.FileTrackerOpts
 --- @field callback fun(path: string, content: string|nil)
 --- @field interval? number poll interval in ms (default 2000)

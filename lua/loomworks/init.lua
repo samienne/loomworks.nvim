@@ -140,6 +140,68 @@ function M.has_running_tasks()
 end
 
 -- ---------------------------------------------------------------------------
+-- Progress tracking
+-- ---------------------------------------------------------------------------
+
+--- Update progress for a running task.
+--- @param task_id number
+--- @param progress loomworks.ProgressUpdate
+function M.update_task_progress(task_id, progress)
+  core:update_task_progress(task_id, progress)
+end
+
+--- Get progress for a running task.
+--- @param task_id number
+--- @return loomworks.ProgressUpdate|nil
+function M.get_task_progress(task_id)
+  return core:get_task_progress(task_id)
+end
+
+--- Get progress for a project+config key.
+--- @param project_key string
+--- @param config_key string
+--- @return loomworks.ProgressUpdate|nil
+function M.get_progress(project_key, config_key)
+  return core:get_progress(project_key, config_key)
+end
+
+--- Get elapsed seconds for a project+config key.
+--- @param project_key string
+--- @param config_key string
+--- @return number|nil seconds
+function M.get_elapsed(project_key, config_key)
+  return core:get_elapsed(project_key, config_key)
+end
+
+--- Start tracking a profile-level operation.
+--- @param profile_key string
+--- @param action string
+function M.start_operation(profile_key, action)
+  core:start_operation(profile_key, action)
+end
+
+--- Finish a profile-level operation.
+--- @param profile_key string
+--- @param success boolean
+function M.finish_operation(profile_key, success)
+  core:finish_operation(profile_key, success)
+end
+
+--- Get the current operation state for a profile.
+--- @param profile_key string
+--- @return loomworks.Operation|nil
+function M.get_operation(profile_key)
+  return core:get_operation(profile_key)
+end
+
+--- Get elapsed seconds for a running operation.
+--- @param profile_key string
+--- @return number|nil seconds
+function M.get_operation_elapsed(profile_key)
+  return core:get_operation_elapsed(profile_key)
+end
+
+-- ---------------------------------------------------------------------------
 -- Task results
 -- ---------------------------------------------------------------------------
 

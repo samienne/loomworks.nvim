@@ -43,6 +43,11 @@ function M.register()
 
         local project_ctx = proj:to_module_context(ws.root)
 
+        -- Resolve progress parser tool for this module+config
+        local progress_tool = mod.progress_parser
+            and mod.progress_parser(project_ctx, active_config)
+            or nil
+
         local mod_tasks = mod.tasks(project_ctx, active_config)
         for _, task in ipairs(mod_tasks) do
           -- Wrap builder to inject the tracker component
@@ -60,6 +65,7 @@ function M.register()
                 configuration_key = lw_meta.configuration_key,
                 build_dir = lw_meta.build_dir,
                 cmake = lw_meta.cmake,
+                progress_tool = progress_tool,
               }
               return result
             end
@@ -119,11 +125,18 @@ local function collect_profile_tasks(profile_key)
       env = proj.kit and proj.kit.env or {},
     }
 
+    local pt = mod.progress_parser
+        and mod.progress_parser(project_ctx, active_config)
+        or nil
+
     local mod_tasks = mod.tasks(project_ctx, active_config)
     for _, task_def in ipairs(mod_tasks) do
       local lw_meta = task_def.loomworks
-      if lw_meta and by_action[lw_meta.action] then
-        by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
+      if lw_meta then
+        lw_meta.progress_tool = pt
+        if by_action[lw_meta.action] then
+          by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
+        end
       end
     end
 
@@ -156,6 +169,7 @@ local function launch_tasks(overseer, task_defs, on_all_done)
       configuration_key = lw_meta.configuration_key,
       build_dir = lw_meta.build_dir,
       cmake = lw_meta.cmake,
+      progress_tool = lw_meta.progress_tool,
     }
 
     build_result.name = task_def.name
@@ -235,9 +249,13 @@ function M.run_profile_action(profile_key, action)
     if not all_tasks then return end
 
     if action == "configure" then
-      local launched = launch_tasks(overseer, all_tasks.configure)
+      loomworks.start_operation(profile_key, "configure")
+      local launched = launch_tasks(overseer, all_tasks.configure, function(all_succeeded)
+        loomworks.finish_operation(profile_key, all_succeeded)
+      end)
       if launched == 0 then
         vim.notify("loomworks: no configure tasks found for profile", vim.log.levels.WARN)
+        loomworks.finish_operation(profile_key, true)
       end
       return
     end
@@ -246,21 +264,30 @@ function M.run_profile_action(profile_key, action)
       local needs_configure = filter_unconfigured_tasks(all_tasks)
 
       if #needs_configure > 0 then
+        loomworks.start_operation(profile_key, "configure+build")
         vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
         launch_tasks(overseer, needs_configure, function(all_succeeded)
           if not all_succeeded then
             vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
+            loomworks.finish_operation(profile_key, false)
             return
           end
-          local build_launched = launch_tasks(overseer, all_tasks.build)
+          local build_launched = launch_tasks(overseer, all_tasks.build, function(build_succeeded)
+            loomworks.finish_operation(profile_key, build_succeeded)
+          end)
           if build_launched == 0 then
             vim.notify("loomworks: no build tasks found for profile", vim.log.levels.WARN)
+            loomworks.finish_operation(profile_key, true)
           end
         end)
       else
-        local launched = launch_tasks(overseer, all_tasks.build)
+        loomworks.start_operation(profile_key, "build")
+        local launched = launch_tasks(overseer, all_tasks.build, function(all_succeeded)
+          loomworks.finish_operation(profile_key, all_succeeded)
+        end)
         if launched == 0 then
           vim.notify("loomworks: no build tasks found for profile", vim.log.levels.WARN)
+          loomworks.finish_operation(profile_key, true)
         end
       end
       return

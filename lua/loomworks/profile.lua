@@ -24,7 +24,15 @@ function ProfileProject.new(profile, project_key, variant)
   self._core = profile._core
   self.project_key = project_key
   self.variant = variant
-  self.config_key = profile:config_key(variant)
+  -- Only cmake projects use kit-qualified config keys (matches merge.lua logic)
+  local ws = profile._core:get_workspace()
+  local config_projects = ws and ws.config and ws.config.projects
+  local project_def = config_projects and config_projects[project_key]
+  if profile.kit_id and project_def and project_def.type == "cmake" then
+    self.config_key = variant .. ":" .. profile.kit_id
+  else
+    self.config_key = variant
+  end
   return self
 end
 
@@ -208,17 +216,25 @@ end
 --- @return boolean
 function Profile:is_configured()
   local ws = self._core:get_workspace()
-  if not ws or not ws.cache.projects then return false end
+  if not ws or not ws.cache or not ws.cache.projects then return false end
 
-  for _, cached_proj in pairs(ws.cache.projects) do
+  local config_projects = ws.config and ws.config.projects or {}
+  for project_key, cached_proj in pairs(ws.cache.projects) do
     if cached_proj.configurations then
+      local project_def = config_projects[project_key]
+      local is_cmake = project_def and project_def.type == "cmake"
       for config_key, _ in pairs(cached_proj.configurations) do
-        local variant, kit_id = merge.parse_profile_key(config_key)
-        if kit_id == self.kit_id and self._valid_variants[variant] then
-          return true
-        end
-        if not self.kit_id and not kit_id and self._valid_variants[variant] then
-          return true
+        -- Only cmake projects use kit-qualified config keys (variant:kit_id)
+        if is_cmake and self.kit_id then
+          local variant, kit_id = merge.parse_profile_key(config_key)
+          if kit_id == self.kit_id and self._valid_variants[variant] then
+            return true
+          end
+        else
+          -- Non-cmake projects or profiles without kit: config_key is the variant
+          if self._valid_variants[config_key] then
+            return true
+          end
         end
       end
     end
@@ -260,7 +276,7 @@ function Profile:status()
   end
 
   if counts.deleting > 0 then
-    return "deleting " .. counts.deleting .. "/" .. total, STATUS_HL.deleting
+    return counts.deleting .. "/" .. total .. " deleting", STATUS_HL.deleting
   end
 
   local running = counts.configuring + counts.building
@@ -268,8 +284,8 @@ function Profile:status()
 
   if running > 0 then
     local parts = {}
-    if counts.configuring > 0 then parts[#parts + 1] = "configuring " .. counts.configuring end
-    if counts.building > 0 then parts[#parts + 1] = "building " .. counts.building end
+    if counts.configuring > 0 then parts[#parts + 1] = counts.configuring .. " configuring" end
+    if counts.building > 0 then parts[#parts + 1] = counts.building .. " building" end
     if failed > 0 then parts[#parts + 1] = failed .. " failed" end
     return table.concat(parts, ", "), STATUS_HL.configuring
   end
@@ -317,10 +333,9 @@ function Profile:plan_deletion()
   local all_profiles = self._core:get_profiles()
   local config_key_profiles = {}
   for _, other in pairs(all_profiles) do
-    if other.key ~= self.key and other.mappings then
-      for proj_name, variant in pairs(other.mappings) do
-        local ck = other:config_key(variant)
-        local lookup = proj_name .. "\0" .. ck
+    if other.key ~= self.key then
+      for _, other_pp in ipairs(other:projects()) do
+        local lookup = other_pp.project_key .. "\0" .. other_pp.config_key
         config_key_profiles[lookup] = config_key_profiles[lookup] or {}
         config_key_profiles[lookup][#config_key_profiles[lookup] + 1] = other.key
       end

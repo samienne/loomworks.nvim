@@ -738,6 +738,247 @@ describe("Core", function()
     end)
   end)
 
+  describe("task progress", function()
+    it("stores and retrieves progress by task_id", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      core:register_running_task({
+        task_id = 1,
+        project_key = "App",
+        action = "build",
+        configuration_key = "Debug",
+      })
+      core:update_task_progress(1, { current = 3, total = 10 })
+      local p = core:get_task_progress(1)
+      assert.is_not_nil(p)
+      assert.equals(3, p.current)
+      assert.equals(10, p.total)
+    end)
+
+    it("retrieves progress by project+config key", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      core:register_running_task({
+        task_id = 1,
+        project_key = "App",
+        action = "build",
+        configuration_key = "Debug",
+      })
+      core:update_task_progress(1, { current = 5, total = 20 })
+      local p = core:get_progress("App", "Debug")
+      assert.is_not_nil(p)
+      assert.equals(5, p.current)
+      assert.equals(20, p.total)
+    end)
+
+    it("returns nil for non-running task", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      assert.is_nil(core:get_task_progress(999))
+      assert.is_nil(core:get_progress("App", "Debug"))
+    end)
+
+    it("clears progress on unregister", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      core:register_running_task({
+        task_id = 1,
+        project_key = "App",
+        action = "build",
+        configuration_key = "Debug",
+      })
+      core:update_task_progress(1, { current = 3, total = 10 })
+      core:unregister_running_task(1)
+      assert.is_nil(core:get_task_progress(1))
+      assert.is_nil(core:get_progress("App", "Debug"))
+    end)
+
+    it("emits task_progress event", function()
+      local core, deps = make_core()
+      core:setup({ root = "/root" })
+      core:register_running_task({
+        task_id = 1,
+        project_key = "App",
+        action = "build",
+        configuration_key = "Debug",
+      })
+      core:update_task_progress(1, { current = 7, total = 10 })
+      local events = deps._events_log
+      local found = false
+      for _, e in ipairs(events) do
+        if e.event == "task_progress" then
+          assert.equals("App", e.data.project_key)
+          assert.equals(7, e.data.progress.current)
+          found = true
+        end
+      end
+      assert.is_true(found)
+    end)
+
+    it("ignores progress for unknown task", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      -- Should not error
+      core:update_task_progress(999, { current = 1, total = 1 })
+      assert.is_nil(core:get_task_progress(999))
+    end)
+  end)
+
+  describe("task elapsed time", function()
+    it("tracks elapsed time from registration", function()
+      local time = 100
+      local core = make_core(nil, nil, nil, {
+        clock = function() return time end,
+      })
+      core:setup({ root = "/root" })
+      core:register_running_task({
+        task_id = 1,
+        project_key = "App",
+        action = "build",
+        configuration_key = "Debug",
+      })
+      time = 142
+      assert.equals(42, core:get_task_elapsed(1))
+      assert.equals(42, core:get_elapsed("App", "Debug"))
+    end)
+
+    it("returns nil for non-running task", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      assert.is_nil(core:get_task_elapsed(999))
+      assert.is_nil(core:get_elapsed("App", "Debug"))
+    end)
+
+    it("clears elapsed on unregister", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      core:register_running_task({
+        task_id = 1,
+        project_key = "App",
+        action = "build",
+        configuration_key = "Debug",
+      })
+      core:unregister_running_task(1)
+      assert.is_nil(core:get_task_elapsed(1))
+    end)
+  end)
+
+  describe("operations", function()
+    it("tracks a running operation", function()
+      local time = 100
+      local core = make_core(nil, nil, nil, {
+        clock = function() return time end,
+      })
+      core:setup({ root = "/root" })
+      core:start_operation("debug", "build")
+
+      local op = core:get_operation("debug")
+      assert.is_not_nil(op)
+      assert.equals("build", op.action)
+      assert.equals(100, op.started_at)
+
+      time = 130
+      assert.equals(30, core:get_operation_elapsed("debug"))
+    end)
+
+    it("finishes operation with success message", function()
+      local time = 100
+      local core = make_core(nil, nil, nil, {
+        clock = function() return time end,
+      })
+      core:setup({ root = "/root" })
+      core:start_operation("debug", "build")
+      time = 190
+      core:finish_operation("debug", true)
+
+      local op = core:get_operation("debug")
+      assert.is_not_nil(op)
+      assert.equals("built in 1m30s", op.message)
+      assert.is_true(op.success)
+      -- No longer running
+      assert.is_nil(core:get_operation_elapsed("debug"))
+    end)
+
+    it("finishes operation with failure message", function()
+      local time = 0
+      local core = make_core(nil, nil, nil, {
+        clock = function() return time end,
+      })
+      core:setup({ root = "/root" })
+      core:start_operation("debug", "configure")
+      time = 45
+      core:finish_operation("debug", false)
+
+      local op = core:get_operation("debug")
+      assert.equals("configure failed in 45s", op.message)
+      assert.is_false(op.success)
+    end)
+
+    it("configure+build operation uses generic verb", function()
+      local time = 0
+      local core = make_core(nil, nil, nil, {
+        clock = function() return time end,
+      })
+      core:setup({ root = "/root" })
+      core:start_operation("debug", "configure+build")
+      time = 120
+      core:finish_operation("debug", true)
+
+      assert.equals("built in 2m00s", core:get_operation("debug").message)
+    end)
+
+    it("new operation replaces previous result", function()
+      local time = 0
+      local core = make_core(nil, nil, nil, {
+        clock = function() return time end,
+      })
+      core:setup({ root = "/root" })
+      core:start_operation("debug", "build")
+      time = 10
+      core:finish_operation("debug", true)
+      assert.is_not_nil(core:get_operation("debug").message)
+
+      core:start_operation("debug", "build")
+      -- Previous result replaced by running state
+      assert.is_not_nil(core:get_operation("debug").started_at)
+      assert.is_nil(core:get_operation("debug").message)
+    end)
+
+    it("returns nil for unknown profile", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      assert.is_nil(core:get_operation("nonexistent"))
+      assert.is_nil(core:get_operation_elapsed("nonexistent"))
+    end)
+
+    it("emits operation events", function()
+      local time = 0
+      local core, deps = make_core(nil, nil, nil, {
+        clock = function() return time end,
+      })
+      core:setup({ root = "/root" })
+      core:start_operation("debug", "build")
+      time = 10
+      core:finish_operation("debug", true)
+
+      local events = deps._events_log
+      local found_started, found_finished = false, false
+      for _, e in ipairs(events) do
+        if e.event == "operation_started" then
+          assert.equals("debug", e.data.profile_key)
+          found_started = true
+        end
+        if e.event == "operation_finished" then
+          assert.equals("debug", e.data.profile_key)
+          assert.is_true(e.data.success)
+          found_finished = true
+        end
+      end
+      assert.is_true(found_started)
+      assert.is_true(found_finished)
+    end)
+  end)
+
   describe("record_task_result state machine", function()
     local function make_recording_core()
       local saved_cache = nil

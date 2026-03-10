@@ -148,6 +148,7 @@ function M.make_test_deps(files, opts)
     },
     notify = function() end,
     schedule = function(fn) fn() end,
+    clock = function() return 0 end,
     normalize = function(p) return p:gsub("\\", "/") end,
     events = {
       emit = function(event, data)

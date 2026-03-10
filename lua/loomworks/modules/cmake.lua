@@ -419,6 +419,28 @@ function M.tasks(project, active_config)
   return tasks
 end
 
+--- Return the progress parser tool name for a project's active configuration.
+--- @param project loomworks.ModuleContext
+--- @param active_config string
+--- @return string|nil tool name for progress.get()
+function M.progress_parser(project, active_config)
+  local config_info = project.configurations and project.configurations[active_config] or nil
+  local kit = project.kit
+  local generator = (config_info and config_info.generator) or (kit and kit.generator) or nil
+
+  if not generator then
+    -- No generator specified — Ninja is common default, but can't be sure
+    return nil
+  end
+
+  if generator:find("Ninja", 1, true) then
+    return "ninja"
+  end
+
+  -- Future: "msbuild" for Visual Studio generators, "make" for Unix Makefiles
+  return nil
+end
+
 --- Compare current config/files against cache.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json

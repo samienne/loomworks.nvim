@@ -5,6 +5,63 @@ local M = {}
 
 local merge = require("loomworks.merge")
 
+--- Format a progress update as a compact string like "[2/10]".
+--- @param p loomworks.ProgressUpdate|nil
+--- @return string empty string if no progress
+local function format_progress(p)
+  if not p then return "" end
+  return " [" .. p.current .. "/" .. p.total .. "]"
+end
+
+--- Format elapsed seconds as a compact duration like "1m23s" or "42s".
+--- @param seconds number|nil
+--- @return string empty string if nil
+local function format_elapsed(seconds)
+  if not seconds then return "" end
+  local s = math.floor(seconds)
+  if s < 60 then
+    return " " .. s .. "s"
+  end
+  local m = math.floor(s / 60)
+  s = s % 60
+  if m < 60 then
+    return " " .. m .. "m" .. string.format("%02d", s) .. "s"
+  end
+  local h = math.floor(m / 60)
+  m = m % 60
+  return " " .. h .. "h" .. string.format("%02d", m) .. "m"
+end
+
+--- Compute weighted percentage across multiple ProfileProjects.
+--- Configure counts as 10% of overall work, build as 90%.
+--- Returns nil if no progress data is available for any project.
+--- @param pps loomworks.ProfileProject[]
+--- @return number|nil percentage 0-100
+local function aggregate_progress(pps)
+  local lw = require("loomworks")
+  local has_any = false
+  local total_pct = 0
+  local count = 0
+  for _, pp in ipairs(pps) do
+    local status = pp:status()
+    if status == "configuring" or status == "building" then
+      local p = lw.get_progress(pp.project_key, pp.config_key)
+      if p then
+        has_any = true
+        local phase_pct = p.current / p.total
+        if status == "configuring" then
+          total_pct = total_pct + 10 * phase_pct
+        else
+          total_pct = total_pct + 10 + 90 * phase_pct
+        end
+        count = count + 1
+      end
+    end
+  end
+  if not has_any then return nil end
+  return math.floor(total_pct / count)
+end
+
 --- @type number|nil buffer number for the status window
 M._bufnr = nil
 
@@ -51,6 +108,60 @@ local function spinner()
   return SPINNER_FRAMES[M._spinner_frame] .. " "
 end
 
+--- Resolve the live status for a project+config_key combination.
+--- This is the single source of truth for configuration status resolution,
+--- used by both the Projects and Profiles sections.
+--- @param project_key string
+--- @param config_key string
+--- @param cached loomworks.CachedConfig|nil
+--- @return string status, string icon, string hl_group, string progress_str
+local function resolve_config_status(project_key, config_key, cached)
+  local lw = require("loomworks")
+
+  if lw.is_deleting(project_key, config_key) then
+    return "deleting", spinner(), STATUS_HL.deleting, ""
+  end
+
+  local running_action = lw.get_running_action(project_key, config_key)
+  if running_action then
+    local status = running_action == "configure" and "configuring" or "building"
+    local progress_str = format_progress(lw.get_progress(project_key, config_key))
+        .. format_elapsed(lw.get_elapsed(project_key, config_key))
+    return status, spinner(), STATUS_HL[status] or "DiagnosticWarn", progress_str
+  end
+
+  local status = cached and cached.state or "unconfigured"
+  return status, STATUS_ICONS[status] or "  ", STATUS_HL[status] or "Comment", ""
+end
+
+--- Render the expanded details for a cached configuration.
+--- @param add function
+--- @param config_status string
+--- @param status_hl string
+--- @param cached loomworks.CachedConfig|nil
+local function render_cached_details(add, config_status, status_hl, cached)
+  add("            Status: " .. config_status, status_hl)
+  if not cached then return end
+
+  if cached.build_dir then
+    add("            Build dir: " .. cached.build_dir, "Comment")
+  end
+  if cached.last_configured then
+    add("            Last configured: " .. cached.last_configured, "Comment")
+  end
+  if cached.last_built then
+    add("            Last built: " .. cached.last_built, "Comment")
+  end
+  if cached.cmake then
+    if cached.cmake.generator then
+      add("            Generator: " .. cached.cmake.generator, "Comment")
+    end
+    if cached.cmake.compiler then
+      add("            Compiler: " .. cached.cmake.compiler, "Comment")
+    end
+  end
+end
+
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
 --- @param projects table<string, loomworks.Project>
 --- @return string[]
@@ -90,50 +201,33 @@ local function render_profile_details(add, profile)
     end
   end
 
-  -- Project mappings via ProfileProject objects
+  -- Operation result
+  local lw = require("loomworks")
+  local op = lw.get_operation(profile.key)
+  if op and op.message then
+    local op_hl = op.success and "DiagnosticOk" or "DiagnosticError"
+    add("      Last: " .. op.message, op_hl)
+  end
+
+  -- Project mappings — uses same resolve_config_status as project configurations section
   local pps = profile:projects()
   if #pps > 0 then
     add("      Projects:", "Comment")
 
     for _, pp in ipairs(pps) do
-      local config_status = pp:status()
-      local status_icon
-      if config_status == "deleting" or config_status == "configuring" or config_status == "building" then
-        status_icon = spinner()
-      else
-        status_icon = STATUS_ICONS[config_status] or "  "
-      end
-      local status_hl = STATUS_HL[config_status] or "Comment"
+      local cached = pp:cached_state()
+      local config_status, status_icon, status_hl, progress_str =
+          resolve_config_status(pp.project_key, pp.config_key, cached)
 
       local fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key
       local folded = M._folds[fold_key] ~= false
 
       local fold_char = folded and "▶" or "▼"
-      add("        " .. fold_char .. " " .. status_icon .. pp.project_key .. " → " .. pp.variant, status_hl,
+      add("        " .. fold_char .. " " .. status_icon .. pp.project_key .. " → " .. pp.variant .. progress_str, status_hl,
         { kind = "profile_project", key = pp.project_key, project = profile.key })
 
       if not folded then
-        local cached = pp:cached_state()
-        if cached then
-          add("            Status: " .. (cached.state or "unconfigured"), status_hl)
-          if cached.build_dir then
-            add("            Build dir: " .. cached.build_dir, "Comment")
-          end
-          if cached.last_configured then
-            add("            Last configured: " .. cached.last_configured, "Comment")
-          end
-          if cached.last_built then
-            add("            Last built: " .. cached.last_built, "Comment")
-          end
-          if cached.cmake then
-            if cached.cmake.generator then
-              add("            Generator: " .. cached.cmake.generator, "Comment")
-            end
-            if cached.cmake.compiler then
-              add("            Compiler: " .. cached.cmake.compiler, "Comment")
-            end
-          end
-        end
+        render_cached_details(add, config_status, status_hl, cached)
       end
     end
   end
@@ -279,6 +373,19 @@ local function render()
       -- Aggregate profile status
       local status_label, status_hl = profile:status()
       display = display .. " (" .. status_label .. ")"
+      if profile_running then
+        local pps = profile:projects()
+        local pct = aggregate_progress(pps)
+        if pct then
+          display = display .. " " .. pct .. "%"
+        end
+        display = display .. format_elapsed(lw.get_operation_elapsed(profile_key))
+      else
+        local op = lw.get_operation(profile_key)
+        if op and op.message then
+          display = display .. " — " .. op.message
+        end
+      end
       if not hl then
         hl = status_hl
       end
@@ -336,7 +443,7 @@ local function render()
     add("")
   end
 
-  -- Projects
+  -- Projects (profile-independent structural view)
   add("  Projects", "Title")
   add("")
 
@@ -347,30 +454,21 @@ local function render()
     local proj_fold_key = "project:" .. key
     local proj_folded = M._folds[proj_fold_key] ~= false
 
-    local kit_display = ""
-    if proj.kit then
-      kit_display = " | " .. proj.kit.display
-    end
-
-    -- Check if any task is running for this project
+    -- Show spinner if any task is running for this project
     local proj_running = proj:running_action()
-    local proj_status = proj.status
-    local proj_icon
-    if proj_running then
-      proj_status = proj_running == "configure" and "configuring" or "building"
-      proj_icon = spinner()
-    else
-      proj_icon = STATUS_ICONS[proj_status] or "  "
-    end
+    local proj_icon = proj_running and spinner() or "  "
+
+    -- Highlight if active profile includes this project
+    local is_active_project = proj.configuration ~= nil and not proj.orphaned
+    local proj_hl = proj_running and "DiagnosticWarn" or (is_active_project and "DiagnosticOk" or nil)
 
     local fold_char = proj_folded and "▶ " or "▼ "
     local type_tag = "[" .. proj.type .. "]"
-    local config_tag = proj.configuration and (" " .. proj.configuration) or ""
     local orphan_tag = proj.orphaned and " (orphaned)" or ""
     local refresh_tag = proj.needs_refresh and " !" or ""
 
-    local header = "  " .. fold_char .. proj_icon .. key .. " " .. type_tag .. config_tag .. kit_display .. orphan_tag .. refresh_tag
-    add(header, STATUS_HL[proj_status], { kind = "project", key = key })
+    local header = "  " .. fold_char .. proj_icon .. key .. " " .. type_tag .. orphan_tag .. refresh_tag
+    add(header, proj_hl, { kind = "project", key = key })
 
     if not proj_folded then
       add("      Path: " .. (proj.path or key), "Comment")
@@ -391,88 +489,86 @@ local function render()
 
         for _, cname in ipairs(config_names) do
           local cdata = proj.configurations[cname]
-          local cached_state = proj:cached_config(cname)
-
-          local config_status
-          local status_icon
-          local status_hl
-          if proj:is_deleting_config(cname) then
-            config_status = "deleting"
-            status_icon = spinner()
-            status_hl = STATUS_HL.deleting
-          else
-            local running_action = proj:config_running_action(cname)
-            if running_action then
-              config_status = running_action == "configure" and "configuring" or "building"
-              status_icon = spinner()
-              status_hl = STATUS_HL[config_status] or "DiagnosticWarn"
-            else
-              config_status = cached_state and cached_state.state or "unconfigured"
-              status_icon = STATUS_ICONS[config_status] or "  "
-              status_hl = STATUS_HL[config_status] or "Comment"
-            end
-          end
-
-          local active_marker = cname == proj.configuration and "●" or "○"
 
           local config_fold_key = "config:" .. key .. ":" .. cname
           local config_folded = M._folds[config_fold_key] ~= false
-
           local config_fold_char = config_folded and "▶" or "▼"
+
+          -- Check if any profile has a running task for this variant
+          local config_has_running = false
+          for _, profile in pairs(all_profiles) do
+            local pp = profile:project(key)
+            if pp and pp.variant == cname then
+              if lw.get_running_action(pp.project_key, pp.config_key) then
+                config_has_running = true
+                break
+              end
+            end
+          end
+
+          local config_icon = config_has_running and spinner() or ""
+          local config_hl = config_has_running and "DiagnosticWarn" or "Comment"
 
           local brief = {}
           if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
           if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
           local brief_str = #brief > 0 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
 
-          add("        " .. active_marker .. " " .. config_fold_char .. " " .. status_icon .. cname .. brief_str, status_hl,
+          add("        " .. config_fold_char .. " " .. config_icon .. cname .. brief_str, config_hl,
             { kind = "configuration", key = cname, project = key })
 
           if not config_folded then
-            add("            Status: " .. config_status, status_hl)
-
-            if cached_state then
-              if cached_state.build_dir then
-                add("            Build dir: " .. cached_state.build_dir, "Comment")
-              end
-              if cached_state.last_configured then
-                add("            Last configured: " .. cached_state.last_configured, "Comment")
-              end
-              if cached_state.last_built then
-                add("            Last built: " .. cached_state.last_built, "Comment")
-              end
-              if cached_state.cmake then
-                local cmake = cached_state.cmake
-                if cmake.generator then
-                  add("            Generator: " .. cmake.generator, "Comment")
-                end
-                if cmake.compiler then
-                  add("            Compiler: " .. cmake.compiler, "Comment")
-                end
-              end
-            end
-
+            -- Configuration-specific details (from loomworks.json, not profile)
             if cdata.toolchain then
               add("            Toolchain: " .. tostring(cdata.toolchain), "Comment")
             end
             if cdata.generator then
-              add("            Generator (config): " .. cdata.generator, "Comment")
+              add("            Generator: " .. cdata.generator, "Comment")
+            end
+
+            -- List all profiles that map to this variant
+            local profile_entries = {}
+            for profile_key, profile in pairs(all_profiles) do
+              local pp = profile:project(key)
+              if pp and pp.variant == cname then
+                profile_entries[#profile_entries + 1] = {
+                  profile_key = profile_key,
+                  pp = pp,
+                  is_active = profile_key == active_profile_key,
+                }
+              end
+            end
+
+            -- Sort: active first, then alphabetical
+            table.sort(profile_entries, function(a, b)
+              if a.is_active ~= b.is_active then return a.is_active end
+              return a.profile_key < b.profile_key
+            end)
+
+            for _, entry in ipairs(profile_entries) do
+              local pp = entry.pp
+              local cached = pp:cached_state()
+              local config_status, status_icon, status_hl, progress_str =
+                  resolve_config_status(pp.project_key, pp.config_key, cached)
+
+              -- Highlight active profile entries
+              if entry.is_active and config_status ~= "configuring"
+                  and config_status ~= "building" and config_status ~= "deleting" then
+                status_hl = "DiagnosticOk"
+              end
+
+              local profile_fold_key = "config_profile:" .. key .. ":" .. cname .. ":" .. entry.profile_key
+              local profile_folded = M._folds[profile_fold_key] ~= false
+              local profile_fold_char = profile_folded and "▶" or "▼"
+
+              add("            " .. profile_fold_char .. " " .. status_icon .. entry.profile_key .. progress_str, status_hl,
+                { kind = "config_profile", key = entry.profile_key, project = key, config = cname })
+
+              if not profile_folded then
+                render_cached_details(add, config_status, status_hl, cached)
+              end
             end
           end
-        end
-      end
-
-      if proj.cmake and proj.cmake.targets and next(proj.cmake.targets) then
-        add("      Targets:", "Comment")
-        local target_names = {}
-        for name in pairs(proj.cmake.targets) do
-          target_names[#target_names + 1] = name
-        end
-        table.sort(target_names)
-        for _, tname in ipairs(target_names) do
-          local tdata = proj.cmake.targets[tname]
-          local built_icon = tdata.built and "" or ""
-          add("        " .. built_icon .. " " .. tname .. " [" .. (tdata.type or "?") .. "]", "Comment")
         end
       end
 
@@ -572,6 +668,8 @@ local function on_toggle_fold()
     fold_key = "config:" .. meta.project .. ":" .. meta.key
   elseif meta.kind == "profile_project" then
     fold_key = "profile_proj:" .. meta.project .. ":" .. meta.key
+  elseif meta.kind == "config_profile" then
+    fold_key = "config_profile:" .. meta.project .. ":" .. meta.config .. ":" .. meta.key
   else
     return
   end
@@ -582,7 +680,7 @@ local function on_toggle_fold()
   -- Keep cursor on same item
   for ln, m in pairs(M._line_meta) do
     if m.kind == meta.kind and m.key == meta.key then
-      if meta.kind == "configuration" or meta.kind == "profile_project" then
+      if meta.kind == "configuration" or meta.kind == "profile_project" or meta.kind == "config_profile" then
         if m.project == meta.project then
           pcall(vim.api.nvim_win_set_cursor, 0, { ln, 0 })
           break
@@ -611,6 +709,10 @@ local function on_enter()
     local profile_key = merge.profile_key(meta.set_name, meta.key)
     lw.activate_profile(profile_key)
     M.refresh()
+
+  elseif meta.kind == "config_profile" then
+    lw.activate_profile(meta.key)
+    M.refresh()
   end
 end
 
@@ -627,6 +729,8 @@ local function resolve_profile_at_cursor()
       return merge.profile_key(meta.set_name, meta.key)
     elseif meta.kind == "profile_project" then
       return meta.project
+    elseif meta.kind == "config_profile" then
+      return meta.key
     end
   end
 
@@ -890,6 +994,30 @@ local function on_delete()
   if meta and meta.kind == "profile_project" then
     local profile_key = meta.project
     local project_key = meta.key
+
+    local profile = lw.get_profile(profile_key)
+    if not profile then return end
+    local pp = profile:project(project_key)
+    if not pp then return end
+
+    local plan = lw.plan_config_deletion(project_key, pp.config_key)
+    if #plan.items == 0 then
+      vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
+      return
+    end
+
+    show_delete_confirmation("Delete: " .. project_key .. " / " .. pp.config_key, plan, function(p)
+      lw.execute_deletion(p, nil, function()
+        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+      end)
+    end)
+    return
+  end
+
+  -- Case 3b: cursor on a config_profile line (profile entry under a configuration)
+  if meta and meta.kind == "config_profile" then
+    local profile_key = meta.key
+    local project_key = meta.project
 
     local profile = lw.get_profile(profile_key)
     if not profile then return end

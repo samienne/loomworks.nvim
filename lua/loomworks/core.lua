@@ -7,10 +7,13 @@
 --- @field _workspace loomworks.Workspace|nil
 --- @field _active_set loomworks.ActiveSet|nil
 --- @field _running_tasks table<number, loomworks.RunningTaskInfo>
+--- @field _task_progress table<number, loomworks.ProgressUpdate> task_id -> latest progress
+--- @field _task_start_times table<number, number> task_id -> os.clock() at start
 --- @field _deleting table<string, boolean> "project\0config" -> true
 --- @field _delete_waiters function[]
 --- @field _generation number incremented on every remerge
 --- @field _tracker loomworks.FileTracker|nil
+--- @field _operations table<string, loomworks.Operation> profile_key -> active or completed operation
 local Core = {}
 Core.__index = Core
 
@@ -30,6 +33,7 @@ local DEFAULT_DEPS = {
   FileTracker = require("loomworks.file_tracker"),
   notify    = vim.notify,
   now       = function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end,
+  clock     = function() return vim.uv.hrtime() / 1e9 end,
   normalize = vim.fs.normalize,
   schedule  = vim.schedule,
   --- Resolve an overseer task by id. Returns nil if overseer not available.
@@ -61,6 +65,9 @@ function Core.new(deps)
   self._workspace = nil
   self._active_set = nil
   self._running_tasks = {}
+  self._task_progress = {}
+  self._task_start_times = {}
+  self._operations = {}
   self._deleting = {}
   self._delete_waiters = {}
   self._generation = 0
@@ -368,6 +375,7 @@ function Core:register_running_task(info)
     action = info.action,
     configuration_key = info.configuration_key,
   }
+  self._task_start_times[info.task_id] = self._deps.clock()
   self._deps.events.emit("task_started", info)
 end
 
@@ -375,6 +383,8 @@ end
 --- @param task_id number
 function Core:unregister_running_task(task_id)
   self._running_tasks[task_id] = nil
+  self._task_progress[task_id] = nil
+  self._task_start_times[task_id] = nil
   local has_running = next(self._running_tasks) ~= nil
   self._deps.events.emit("task_stopped", { task_id = task_id, has_running = has_running })
 end
@@ -408,6 +418,142 @@ end
 --- @return boolean
 function Core:has_running_tasks()
   return next(self._running_tasks) ~= nil
+end
+
+--- Update progress for a running task.
+--- @param task_id number
+--- @param progress loomworks.ProgressUpdate
+function Core:update_task_progress(task_id, progress)
+  if not self._running_tasks[task_id] then return end
+  self._task_progress[task_id] = progress
+  local info = self._running_tasks[task_id]
+  self._deps.events.emit("task_progress", {
+    task_id = task_id,
+    project_key = info.project_key,
+    action = info.action,
+    configuration_key = info.configuration_key,
+    progress = progress,
+  })
+end
+
+--- Get progress for a running task.
+--- @param task_id number
+--- @return loomworks.ProgressUpdate|nil
+function Core:get_task_progress(task_id)
+  return self._task_progress[task_id]
+end
+
+--- Get progress for a project+config key (finds the matching running task).
+--- @param project_key string
+--- @param config_key string
+--- @return loomworks.ProgressUpdate|nil
+function Core:get_progress(project_key, config_key)
+  for task_id, info in pairs(self._running_tasks) do
+    if info.project_key == project_key and info.configuration_key == config_key then
+      return self._task_progress[task_id]
+    end
+  end
+  return nil
+end
+
+--- Get elapsed seconds for a running task.
+--- @param task_id number
+--- @return number|nil seconds
+function Core:get_task_elapsed(task_id)
+  local start = self._task_start_times[task_id]
+  if not start then return nil end
+  return self._deps.clock() - start
+end
+
+--- Get elapsed seconds for a project+config key (finds the matching running task).
+--- @param project_key string
+--- @param config_key string
+--- @return number|nil seconds
+function Core:get_elapsed(project_key, config_key)
+  for task_id, info in pairs(self._running_tasks) do
+    if info.project_key == project_key and info.configuration_key == config_key then
+      return self:get_task_elapsed(task_id)
+    end
+  end
+  return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Operations (profile-level action tracking)
+-- ---------------------------------------------------------------------------
+
+--- Start tracking a profile-level operation.
+--- Replaces any previous operation result for this profile.
+--- @param profile_key string
+--- @param action string "configure", "build", or "configure+build"
+function Core:start_operation(profile_key, action)
+  self._operations[profile_key] = {
+    action = action,
+    started_at = self._deps.clock(),
+  }
+  self._deps.events.emit("operation_started", { profile_key = profile_key, action = action })
+end
+
+--- Finish a profile-level operation and store a result message.
+--- @param profile_key string
+--- @param success boolean
+function Core:finish_operation(profile_key, success)
+  local op = self._operations[profile_key]
+  if not op or not op.started_at then return end
+
+  local elapsed = self._deps.clock() - op.started_at
+  local verb
+  if op.action == "configure" then
+    verb = success and "configured" or "configure failed"
+  elseif op.action == "build" then
+    verb = success and "built" or "build failed"
+  else
+    verb = success and "built" or "failed"
+  end
+
+  self._operations[profile_key] = {
+    message = verb .. " in " .. self:_format_duration(elapsed),
+    success = success,
+  }
+  self._deps.events.emit("operation_finished", {
+    profile_key = profile_key,
+    success = success,
+    message = self._operations[profile_key].message,
+  })
+end
+
+--- Get the current operation state for a profile.
+--- @param profile_key string
+--- @return loomworks.Operation|nil
+function Core:get_operation(profile_key)
+  return self._operations[profile_key]
+end
+
+--- Get elapsed seconds for a running operation.
+--- @param profile_key string
+--- @return number|nil seconds
+function Core:get_operation_elapsed(profile_key)
+  local op = self._operations[profile_key]
+  if not op or not op.started_at then return nil end
+  return self._deps.clock() - op.started_at
+end
+
+--- Format a duration in seconds to a compact string.
+--- @param seconds number
+--- @return string
+function Core:_format_duration(seconds)
+  local s = math.floor(seconds)
+  if s < 60 then
+    return s .. "s"
+  end
+  local m = math.floor(s / 60)
+  s = s % 60
+  if m < 60 then
+    return m .. "m" .. string.format("%02d", s) .. "s"
+  end
+  local h = math.floor(m / 60)
+  m = m % 60
+  return h .. "h" .. string.format("%02d", m) .. "m"
 end
 
 --- Find running task IDs that match a list of project+config items.
@@ -582,12 +728,9 @@ function Core:plan_config_deletion(project_key, config_key)
   local affected = {}
   if config_sets then
     for _, profile in pairs(all_profiles) do
-      if profile.mappings then
-        for proj_name, variant in pairs(profile.mappings) do
-          if proj_name == project_key and profile:config_key(variant) == config_key then
-            affected[#affected + 1] = profile.key
-          end
-        end
+      local pp = profile:project(project_key)
+      if pp and pp.config_key == config_key then
+        affected[#affected + 1] = profile.key
       end
     end
   end
