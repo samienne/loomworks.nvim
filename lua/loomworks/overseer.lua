@@ -64,6 +64,7 @@ function M.register()
                 action = lw_meta.action,
                 configuration_key = lw_meta.configuration_key,
                 build_dir = lw_meta.build_dir,
+                tool = lw_meta.tool,
                 cmake = lw_meta.cmake,
                 progress_tool = progress_tool,
               }
@@ -120,9 +121,9 @@ local function collect_profile_tasks(profile_key)
       configuration = active_config,
       configuration_key = proj.configuration_key,
       configurations = proj.configurations,
-      kit = proj.kit,
+      tool = proj.tool,
       workspace_root = ws.root,
-      env = proj.kit and proj.kit.env or {},
+      env = proj.tool and proj.tool.env or {},
     }
 
     local pt = mod.progress_parser
@@ -168,6 +169,7 @@ local function launch_tasks(overseer, task_defs, on_all_done)
       action = lw_meta.action,
       configuration_key = lw_meta.configuration_key,
       build_dir = lw_meta.build_dir,
+      tool = lw_meta.tool,
       cmake = lw_meta.cmake,
       progress_tool = lw_meta.progress_tool,
     }

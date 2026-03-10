@@ -19,6 +19,11 @@ return {
       type = "string",
       optional = true,
     },
+    tool = {
+      desc = "Tool used for this task (cached for profile materialization)",
+      type = "opaque",
+      optional = true,
+    },
     cmake = {
       desc = "CMake-specific metadata",
       type = "opaque",
@@ -69,6 +74,7 @@ return {
           action = params.action,
           configuration_key = params.configuration_key,
           build_dir = params.build_dir,
+          tool = params.tool,
           cmake = params.cmake,
           success = success,
         })

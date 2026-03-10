@@ -52,10 +52,21 @@
 --- @field path? string relative path
 --- @field configurations table<string, loomworks.CachedConfig>
 
+--- @class loomworks.CachedTool
+--- @field id string tool identifier (e.g. "ninja-gcc-14.2.0")
+--- @field display string human-readable name (e.g. "Ninja - GCC 14.2.0")
+--- @field generator? string cmake -G value
+--- @field compiler_id? string
+--- @field compiler_path? string
+--- @field vcvarsall? string path to vcvarsall.bat (MSVC)
+--- @field arch? string target architecture for vcvarsall
+--- @field env? table<string, string>
+
 --- @class loomworks.CachedConfig
 --- @field state? loomworks.Status
 --- @field variant? string
 --- @field kit_id? string
+--- @field tool? loomworks.CachedTool tool used for this configuration
 --- @field build_dir? string
 --- @field last_configured? string ISO 8601 timestamp
 --- @field last_built? string ISO 8601 timestamp
@@ -79,11 +90,10 @@
 --- @field name string|nil active profile key
 --- @field profile loomworks.ProfileDef|nil raw profile definition
 --- @field all_profiles table<string, loomworks.ProfileDef>
---- @field kit loomworks.CmakeKit|nil resolved kit for active profile
+--- @field kit loomworks.CachedTool|nil resolved tool for active profile
 --- @field kit_id string|nil
 --- @field projects table<string, loomworks.MergedProjectData>
 --- @field configuration_sets? table<string, table<string, string>>
---- @field detected_kits loomworks.CmakeKit[]
 
 --- @class loomworks.ProfileDef
 --- @field configuration_set string
@@ -97,8 +107,8 @@
 --- @field path? string relative path
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
---- @field kit_id? string
---- @field kit? loomworks.CmakeKit
+--- @field tool_id? string
+--- @field tool? loomworks.CmakeKit
 --- @field status loomworks.Status
 --- @field orphaned boolean
 --- @field needs_refresh boolean
@@ -129,7 +139,7 @@
 --- @field configuration string active configuration name
 --- @field configuration_key string cache key
 --- @field configurations table<string, loomworks.ConfigurationInfo>
---- @field kit? loomworks.CmakeKit
+--- @field tool? loomworks.CmakeKit
 --- @field workspace_root string absolute path
 --- @field env table<string, string>
 
@@ -153,6 +163,7 @@
 --- @field action string "configure" or "build"
 --- @field configuration_key string
 --- @field build_dir? string
+--- @field tool? loomworks.CachedTool tool used for the task
 --- @field cmake? loomworks.CachedCmakeInfo
 --- @field success boolean
 

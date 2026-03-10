@@ -1091,5 +1091,52 @@ describe("Core", function()
       assert.equals("/root/.nvim/build/App/development",
         get_cache().projects.App.configurations.development.cmake.compile_commands_dir)
     end)
+
+    it("records tool data from result", function()
+      local core, get_cache = make_recording_core()
+      local tool = {
+        id = "ninja-gcc-14.2.0",
+        display = "Ninja - GCC 14.2.0",
+        generator = "Ninja",
+        compiler_id = "gcc-14.2.0",
+        compiler_path = "/usr/bin/g++-14",
+      }
+      core:record_task_result({
+        project_key = "App",
+        action = "configure",
+        configuration_key = "Debug:ninja-gcc-14.2.0",
+        success = true,
+        tool = tool,
+      })
+      local cached_tool = get_cache().projects.App.configurations["Debug:ninja-gcc-14.2.0"].tool
+      assert.is_not_nil(cached_tool)
+      assert.equals("ninja-gcc-14.2.0", cached_tool.id)
+      assert.equals("Ninja - GCC 14.2.0", cached_tool.display)
+      assert.equals("Ninja", cached_tool.generator)
+      assert.equals("gcc-14.2.0", cached_tool.compiler_id)
+    end)
+
+    it("preserves existing tool when result has no tool", function()
+      local core, get_cache = make_recording_core()
+      -- First, record with tool
+      core:record_task_result({
+        project_key = "App",
+        action = "configure",
+        configuration_key = "Debug",
+        success = true,
+        tool = { id = "ninja-gcc-14.2.0", display = "Ninja - GCC 14.2.0" },
+      })
+      -- Second, record build without tool
+      core:record_task_result({
+        project_key = "App",
+        action = "build",
+        configuration_key = "Debug",
+        success = true,
+      })
+      local cached = get_cache().projects.App.configurations.Debug
+      assert.equals("built", cached.state)
+      assert.equals("ninja-gcc-14.2.0", cached.tool.id)
+    end)
   end)
+
 end)

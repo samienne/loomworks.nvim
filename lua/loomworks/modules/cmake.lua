@@ -269,7 +269,7 @@ function M.tasks(project, active_config)
   local tasks = {}
   local abs_path = project.workspace_root .. "/" .. project.path
   local config_info = project.configurations and project.configurations[active_config] or nil
-  local kit = project.kit
+  local kit = project.tool
   local env = project.env or {}
 
   -- Resolve generator from kit or config override
@@ -330,6 +330,21 @@ function M.tasks(project, active_config)
   -- Build the configuration key for cache tracking
   local configuration_key = project.configuration_key or active_config
 
+  -- Serialize tool for cache storage (strip empty env, keep JSON-safe fields)
+  local cached_tool = nil
+  if kit then
+    cached_tool = {
+      id = kit.id,
+      display = kit.display,
+      generator = kit.generator,
+      compiler_id = kit.compiler_id,
+      compiler_path = kit.compiler_path,
+      vcvarsall = kit.vcvarsall,
+      arch = kit.arch,
+      env = kit.env and next(kit.env) and kit.env or nil,
+    }
+  end
+
   tasks[#tasks + 1] = {
     name = project.name .. ": configure",
     builder = function()
@@ -344,6 +359,7 @@ function M.tasks(project, active_config)
       action = "configure",
       configuration_key = configuration_key,
       build_dir = build_dir,
+      tool = cached_tool,
       cmake = {
         multi_config = multi_config,
         generator = generator,
@@ -394,6 +410,7 @@ function M.tasks(project, active_config)
           action = "build",
           configuration_key = build_config_key,
           build_dir = build_dir,
+          tool = cached_tool,
         },
       }
     end
@@ -412,6 +429,7 @@ function M.tasks(project, active_config)
         action = "build",
         configuration_key = configuration_key,
         build_dir = build_dir,
+        tool = cached_tool,
       },
     }
   end
@@ -425,7 +443,7 @@ end
 --- @return string|nil tool name for progress.get()
 function M.progress_parser(project, active_config)
   local config_info = project.configurations and project.configurations[active_config] or nil
-  local kit = project.kit
+  local kit = project.tool
   local generator = (config_info and config_info.generator) or (kit and kit.generator) or nil
 
   if not generator then
@@ -439,6 +457,29 @@ function M.progress_parser(project, active_config)
 
   -- Future: "msbuild" for Visual Studio generators, "make" for Unix Makefiles
   return nil
+end
+
+--- Detect available tools (kits) for cmake projects.
+--- @return loomworks.CachedTool[]
+function M.detect_tools()
+  local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
+  if not ok then return {} end
+
+  local kits = cmake_kits.detect()
+  local tools = {}
+  for _, kit in ipairs(kits) do
+    tools[#tools + 1] = {
+      id = kit.id,
+      display = kit.display,
+      generator = kit.generator,
+      compiler_id = kit.compiler_id,
+      compiler_path = kit.compiler_path,
+      vcvarsall = kit.vcvarsall,
+      arch = kit.arch,
+      env = kit.env and next(kit.env) and kit.env or nil,
+    }
+  end
+  return tools
 end
 
 --- Compare current config/files against cache.

@@ -237,10 +237,9 @@ end
 --- @param add function
 --- @param set_name string
 --- @param mappings table<string, string> project_key -> variant
---- @param detected_kits loomworks.CmakeKit[]
 --- @param all_profiles table<string, loomworks.Profile>
 --- @param active_profile_key string
-local function render_set_details(add, set_name, mappings, detected_kits, all_profiles, active_profile_key)
+local function render_set_details(add, set_name, mappings, all_profiles, active_profile_key)
   -- Project mappings
   add("      Projects:", "Comment")
   local proj_names = {}
@@ -252,28 +251,41 @@ local function render_set_details(add, set_name, mappings, detected_kits, all_pr
     add("        " .. pname .. " → " .. mappings[pname], "Comment")
   end
 
-  -- Available kits
-  if #detected_kits > 0 then
-    add("      Kits:", "Comment")
-    for _, kit in ipairs(detected_kits) do
-      local profile_key = merge.profile_key(set_name, kit.id)
-      local is_active = profile_key == active_profile_key
-      local profile = all_profiles[profile_key]
-      local already_configured = profile and profile:is_configured() or false
-      local marker = is_active and "●" or "○"
-      local kit_hl = is_active and "DiagnosticOk" or (already_configured and "DiagnosticInfo" or "Comment")
-
-      local suffix = already_configured and " (configured)" or ""
-      add("        " .. marker .. " " .. kit.display .. suffix, kit_hl,
-        { kind = "set_kit", key = kit.id, set_name = set_name })
+  -- Collect profiles belonging to this set
+  local set_profiles = {}
+  for profile_key, profile in pairs(all_profiles) do
+    if profile.configuration_set == set_name then
+      set_profiles[#set_profiles + 1] = { key = profile_key, profile = profile }
     end
-  else
-    local profile_key = set_name
-    local is_active = profile_key == active_profile_key
-    local marker = is_active and "●" or "○"
-    local hl = is_active and "DiagnosticOk" or "Comment"
-    add("        " .. marker .. " (no kits detected)", hl,
-      { kind = "profile", key = profile_key })
+  end
+  table.sort(set_profiles, function(a, b) return a.key < b.key end)
+
+  -- Only show profiles with tools (toolless profiles are redundant with the set itself)
+  local tool_profiles = {}
+  for _, entry in ipairs(set_profiles) do
+    if entry.profile.kit_id then
+      tool_profiles[#tool_profiles + 1] = entry
+    end
+  end
+
+  if #tool_profiles > 0 then
+    add("      Tools:", "Comment")
+    for _, entry in ipairs(tool_profiles) do
+      local profile_key = entry.key
+      local profile = entry.profile
+      local is_active = profile_key == active_profile_key
+      local already_configured = profile:is_configured()
+      local marker = is_active and "●" or "○"
+      local hl = is_active and "DiagnosticOk" or (already_configured and "DiagnosticInfo" or "Comment")
+
+      local display = profile.kit_id
+      if profile.kit and profile.kit.display then
+        display = profile.kit.display
+      end
+      local suffix = already_configured and " (configured)" or ""
+      add("        " .. marker .. " " .. display .. suffix, hl,
+        { kind = "set_kit", key = profile.kit_id, set_name = set_name })
+    end
   end
 end
 
@@ -318,7 +330,6 @@ local function render()
   local all_profiles = lw.get_profiles()
   local active_profile_key = active_set.name or ""
   local config_sets = active_set.configuration_sets
-  local detected_kits = active_set.detected_kits or {}
 
   -- Collect profiles to show: configured (cache) OR currently running OR active profile
   local configured_profiles = {}
@@ -430,16 +441,16 @@ local function render()
       add("   " .. fold_char .. set_name, set_hl, { kind = "set", key = set_name })
 
       if not set_folded then
-        render_set_details(add, set_name, config_sets[set_name], detected_kits,
+        render_set_details(add, set_name, config_sets[set_name],
           all_profiles, active_profile_key)
       end
     end
     add("")
   end
 
-  -- Active profile details
+  -- Active tool details
   if active_set.kit then
-    add("  Active Kit: " .. active_set.kit.display, "DiagnosticInfo")
+    add("  Active Tool: " .. active_set.kit.display, "DiagnosticInfo")
     add("")
   end
 

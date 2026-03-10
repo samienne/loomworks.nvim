@@ -43,6 +43,10 @@ function M.info(path, config)
   return { configurations = configurations }
 end
 
+function M.detect_tools()
+  return {}
+end
+
 function M.tasks(project, active_config)
   return {}
 end

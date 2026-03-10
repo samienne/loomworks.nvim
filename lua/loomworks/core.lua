@@ -224,11 +224,27 @@ end
 -- Object factories
 -- ---------------------------------------------------------------------------
 
---- Resolve a kit object from kit_id.
+--- Resolve a tool by kit_id: check cache first, fall back to live detection.
+--- @param cache loomworks.CacheData|nil
 --- @param kit_id string|nil
---- @return loomworks.CmakeKit|nil
-local function resolve_kit(kit_id)
+--- @return loomworks.CachedTool|nil
+local function resolve_tool(cache, kit_id)
   if not kit_id then return nil end
+
+  -- Check cached configurations for stored tool info
+  if cache and cache.projects then
+    for _, cached_project in pairs(cache.projects) do
+      if cached_project.configurations then
+        for _, cached_config in pairs(cached_project.configurations) do
+          if cached_config.tool and cached_config.tool.id == kit_id then
+            return cached_config.tool
+          end
+        end
+      end
+    end
+  end
+
+  -- Fall back to live detection
   local ok, cmake_kits_mod = pcall(require, "loomworks.cmake_kits")
   if not ok then return nil end
   return cmake_kits_mod.get_by_id(kit_id)
@@ -240,18 +256,19 @@ end
 function Core:get_profile(key)
   if not self._workspace then return nil end
 
-  local all_profiles = self._deps.merge.get_all_profiles(self._workspace.config)
+  local ws = self._workspace
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
   local data = all_profiles[key]
   if not data then return nil end
 
-  local config_sets = self._workspace.config.configuration_sets
+  local config_sets = ws.config.configuration_sets
   local mappings = data.configuration_set and config_sets
       and config_sets[data.configuration_set] or nil
 
   return Profile.new(self, key, {
     configuration_set = data.configuration_set,
     kit_id = data.kit_id,
-    kit = resolve_kit(data.kit_id),
+    kit = resolve_tool(ws.cache, data.kit_id),
     explicit = data.explicit or false,
     auto_generated = data.auto_generated or false,
     mappings = mappings,
@@ -263,8 +280,9 @@ end
 function Core:get_profiles()
   if not self._workspace then return {} end
 
-  local all_profiles = self._deps.merge.get_all_profiles(self._workspace.config)
-  local config_sets = self._workspace.config.configuration_sets
+  local ws = self._workspace
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
+  local config_sets = ws.config.configuration_sets
   local result = {}
 
   for key, data in pairs(all_profiles) do
@@ -274,7 +292,7 @@ function Core:get_profiles()
     result[key] = Profile.new(self, key, {
       configuration_set = data.configuration_set,
       kit_id = data.kit_id,
-      kit = resolve_kit(data.kit_id),
+      kit = resolve_tool(ws.cache, data.kit_id),
       explicit = data.explicit or false,
       auto_generated = data.auto_generated or false,
       mappings = mappings,
@@ -661,6 +679,9 @@ function Core:record_task_result(result)
 
   if result.build_dir then
     cached_config.build_dir = result.build_dir
+  end
+  if result.tool then
+    cached_config.tool = result.tool
   end
   if result.cmake then
     cached_config.cmake = cached_config.cmake or {}

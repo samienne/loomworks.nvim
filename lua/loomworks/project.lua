@@ -7,8 +7,8 @@
 --- @field path? string relative path from workspace root
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
---- @field kit_id? string
---- @field kit? loomworks.CmakeKit
+--- @field tool_id? string
+--- @field tool? loomworks.CmakeKit
 --- @field status loomworks.Status
 --- @field orphaned boolean
 --- @field needs_refresh boolean
@@ -34,8 +34,8 @@ function Project.new(core, key, data)
   self.path = data.path
   self.configuration = data.configuration
   self.configuration_key = data.configuration_key
-  self.kit_id = data.kit_id
-  self.kit = data.kit
+  self.tool_id = data.tool_id
+  self.tool = data.tool
   self.status = data.status
   self.orphaned = data.orphaned or false
   self.needs_refresh = data.needs_refresh or false
@@ -67,8 +67,8 @@ end
 --- @param config_name string
 --- @return string
 function Project:config_cache_key(config_name)
-  if self.kit_id then
-    return config_name .. ":" .. self.kit_id
+  if self.tool_id then
+    return config_name .. ":" .. self.tool_id
   end
   return config_name
 end
@@ -93,8 +93,8 @@ end
 --- @return loomworks.CachedConfig|nil
 function Project:cached_config(config_name)
   if not self.cached_configurations then return nil end
-  if self.kit_id then
-    local cached = self.cached_configurations[config_name .. ":" .. self.kit_id]
+  if self.tool_id then
+    local cached = self.cached_configurations[config_name .. ":" .. self.tool_id]
     if cached then return cached end
   end
   return self.cached_configurations[config_name]
@@ -119,9 +119,9 @@ function Project:to_module_context(ws_root)
     configuration = self.configuration,
     configuration_key = self.configuration_key,
     configurations = self.configurations,
-    kit = self.kit,
+    tool = self.tool,
     workspace_root = ws_root,
-    env = self.kit and self.kit.env or {},
+    env = self.tool and self.tool.env or {},
   }
 end
 
