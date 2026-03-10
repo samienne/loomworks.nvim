@@ -49,12 +49,6 @@ local function render_fn(tree)
   require("loomworks.ui.sections.profiles")(tree, ctx)
   require("loomworks.ui.sections.config_sets")(tree, ctx)
 
-  -- Active tool
-  if active_set.kit then
-    tree:leaf("Active Tool: " .. active_set.kit.display, "DiagnosticInfo")
-    tree:blank()
-  end
-
   ctx.projects = lw.get_projects()
   require("loomworks.ui.sections.projects")(tree, ctx)
 end
