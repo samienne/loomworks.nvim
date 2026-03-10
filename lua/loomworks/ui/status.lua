@@ -134,30 +134,41 @@ local function resolve_config_status(project_key, config_key, cached)
   return status, STATUS_ICONS[status] or "  ", STATUS_HL[status] or "Comment", ""
 end
 
+local INDENT_UNIT = "  "
+
+--- Build an indentation string for a given nesting level.
+--- @param level number
+--- @return string
+local function indent(level)
+  return string.rep(INDENT_UNIT, level)
+end
+
 --- Render the expanded details for a cached configuration.
 --- @param add function
+--- @param level number indentation nesting level for detail lines
 --- @param config_status string
 --- @param status_hl string
 --- @param cached loomworks.CachedConfig|nil
-local function render_cached_details(add, config_status, status_hl, cached)
-  add("            Status: " .. config_status, status_hl)
+local function render_cached_details(add, level, config_status, status_hl, cached)
+  local pad = indent(level)
+  add(pad .. "Status: " .. config_status, status_hl)
   if not cached then return end
 
   if cached.build_dir then
-    add("            Build dir: " .. cached.build_dir, "Comment")
+    add(pad .. "Build dir: " .. cached.build_dir, "Comment")
   end
   if cached.last_configured then
-    add("            Last configured: " .. cached.last_configured, "Comment")
+    add(pad .. "Last configured: " .. cached.last_configured, "Comment")
   end
   if cached.last_built then
-    add("            Last built: " .. cached.last_built, "Comment")
+    add(pad .. "Last built: " .. cached.last_built, "Comment")
   end
   if cached.cmake then
     if cached.cmake.generator then
-      add("            Generator: " .. cached.cmake.generator, "Comment")
+      add(pad .. "Generator: " .. cached.cmake.generator, "Comment")
     end
     if cached.cmake.compiler then
-      add("            Compiler: " .. cached.cmake.compiler, "Comment")
+      add(pad .. "Compiler: " .. cached.cmake.compiler, "Comment")
     end
   end
 end
@@ -216,18 +227,20 @@ local function render_profile_details(add, profile)
 
     for _, pp in ipairs(pps) do
       local cached = pp:cached_state()
-      local config_status, status_icon, status_hl, progress_str =
+      local config_status, _, status_hl, progress_str =
           resolve_config_status(pp.project_key, pp.config_key, cached)
 
       local fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key
       local folded = M._folds[fold_key] ~= false
 
-      local fold_char = folded and "▶" or "▼"
-      add("        " .. fold_char .. " " .. status_icon .. pp.project_key .. " → " .. pp.variant .. progress_str, status_hl,
+      local is_running = config_status == "configuring" or config_status == "building" or config_status == "deleting"
+      local fold_char = folded and "▶ " or "▼ "
+      local prefix = is_running and spinner() or fold_char
+      add("        " .. prefix .. pp.project_key .. " → " .. pp.variant .. progress_str, status_hl,
         { kind = "profile_project", key = pp.project_key, project = profile.key })
 
       if not folded then
-        render_cached_details(add, config_status, status_hl, cached)
+        render_cached_details(add, 6, config_status, status_hl, cached)
       end
     end
   end
@@ -269,21 +282,49 @@ local function render_set_details(add, set_name, mappings, all_profiles, active_
   end
 
   if #tool_profiles > 0 then
+    local lw = require("loomworks")
     add("      Tools:", "Comment")
     for _, entry in ipairs(tool_profiles) do
       local profile_key = entry.key
       local profile = entry.profile
       local is_active = profile_key == active_profile_key
+      local profile_running = profile:is_running()
       local already_configured = profile:is_configured()
-      local marker = is_active and "●" or "○"
-      local hl = is_active and "DiagnosticOk" or (already_configured and "DiagnosticInfo" or "Comment")
+
+      local marker
+      if profile_running then
+        marker = spinner()
+      else
+        marker = is_active and "● " or "○ "
+      end
+
+      local suffix, hl
+      if profile_running then
+        local status_label = select(1, profile:status())
+        suffix = " (" .. status_label .. ")"
+        local pps = profile:projects()
+        local pct = aggregate_progress(pps)
+        if pct then suffix = suffix .. " " .. pct .. "%" end
+        suffix = suffix .. format_elapsed(lw.get_operation_elapsed(profile_key))
+        hl = "DiagnosticWarn"
+      elseif already_configured then
+        local op = lw.get_operation(profile_key)
+        if op and op.message then
+          suffix = " — " .. op.message
+        else
+          suffix = " (configured)"
+        end
+        hl = is_active and "DiagnosticOk" or "DiagnosticInfo"
+      else
+        suffix = ""
+        hl = is_active and "DiagnosticOk" or "Comment"
+      end
 
       local display = profile.kit_id
       if profile.kit and profile.kit.display then
         display = profile.kit.display
       end
-      local suffix = already_configured and " (configured)" or ""
-      add("        " .. marker .. " " .. display .. suffix, hl,
+      add("        " .. marker .. display .. suffix, hl,
         { kind = "set_kit", key = profile.kit_id, set_name = set_name })
     end
   end
@@ -467,18 +508,18 @@ local function render()
 
     -- Show spinner if any task is running for this project
     local proj_running = proj:running_action()
-    local proj_icon = proj_running and spinner() or "  "
 
     -- Highlight if active profile includes this project
     local is_active_project = proj.configuration ~= nil and not proj.orphaned
     local proj_hl = proj_running and "DiagnosticWarn" or (is_active_project and "DiagnosticOk" or nil)
 
     local fold_char = proj_folded and "▶ " or "▼ "
+    local prefix = proj_running and spinner() or fold_char
     local type_tag = "[" .. proj.type .. "]"
     local orphan_tag = proj.orphaned and " (orphaned)" or ""
     local refresh_tag = proj.needs_refresh and " !" or ""
 
-    local header = "  " .. fold_char .. proj_icon .. key .. " " .. type_tag .. orphan_tag .. refresh_tag
+    local header = "  " .. prefix .. key .. " " .. type_tag .. orphan_tag .. refresh_tag
     add(header, proj_hl, { kind = "project", key = key })
 
     if not proj_folded then
@@ -503,7 +544,7 @@ local function render()
 
           local config_fold_key = "config:" .. key .. ":" .. cname
           local config_folded = M._folds[config_fold_key] ~= false
-          local config_fold_char = config_folded and "▶" or "▼"
+          local config_fold_char = config_folded and "▶ " or "▼ "
 
           -- Check if any profile has a running task for this variant
           local config_has_running = false
@@ -517,7 +558,7 @@ local function render()
             end
           end
 
-          local config_icon = config_has_running and spinner() or ""
+          local config_prefix = config_has_running and spinner() or config_fold_char
           local config_hl = config_has_running and "DiagnosticWarn" or "Comment"
 
           local brief = {}
@@ -525,7 +566,7 @@ local function render()
           if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
           local brief_str = #brief > 0 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
 
-          add("        " .. config_fold_char .. " " .. config_icon .. cname .. brief_str, config_hl,
+          add("        " .. config_prefix .. cname .. brief_str, config_hl,
             { kind = "configuration", key = cname, project = key })
 
           if not config_folded then
@@ -559,7 +600,7 @@ local function render()
             for _, entry in ipairs(profile_entries) do
               local pp = entry.pp
               local cached = pp:cached_state()
-              local config_status, status_icon, status_hl, progress_str =
+              local config_status, _, status_hl, progress_str =
                   resolve_config_status(pp.project_key, pp.config_key, cached)
 
               -- Highlight active profile entries
@@ -570,13 +611,15 @@ local function render()
 
               local profile_fold_key = "config_profile:" .. key .. ":" .. cname .. ":" .. entry.profile_key
               local profile_folded = M._folds[profile_fold_key] ~= false
-              local profile_fold_char = profile_folded and "▶" or "▼"
+              local is_entry_running = config_status == "configuring" or config_status == "building" or config_status == "deleting"
+              local profile_fold_char = profile_folded and "▶ " or "▼ "
+              local entry_prefix = is_entry_running and spinner() or profile_fold_char
 
-              add("            " .. profile_fold_char .. " " .. status_icon .. entry.profile_key .. progress_str, status_hl,
+              add("            " .. entry_prefix .. entry.profile_key .. progress_str, status_hl,
                 { kind = "config_profile", key = entry.profile_key, project = key, config = cname })
 
               if not profile_folded then
-                render_cached_details(add, config_status, status_hl, cached)
+                render_cached_details(add, 8, config_status, status_hl, cached)
               end
             end
           end

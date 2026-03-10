@@ -40,7 +40,16 @@
 
 --- @class loomworks.CacheData
 --- @field _meta loomworks.CacheMeta
+--- @field profiles? table<string, loomworks.CachedProfile>
 --- @field projects table<string, loomworks.CachedProject>
+
+--- @class loomworks.CachedProfile
+--- @field configuration_set string
+--- @field tool? loomworks.CachedTool locked-in tool for this profile
+--- @field projects table<string, loomworks.CachedProfileProject>
+
+--- @class loomworks.CachedProfileProject
+--- @field config_key string cache key reference into projects.<name>.configurations
 
 --- @class loomworks.CacheMeta
 --- @field version number
@@ -101,6 +110,7 @@
 --- @field cmake? table
 --- @field auto_generated? boolean
 --- @field explicit? boolean
+--- @field materialized? boolean
 
 --- @class loomworks.MergedProjectData
 --- @field type string module type

@@ -110,11 +110,19 @@ describe("Profile", function()
       assert.is_false(p:is_configured())
     end)
 
-    it("returns true when cache has matching variant", function()
+    it("returns true when cached profile references configured config", function()
       local p = make_profile(nil, {
         get_workspace = function()
           return {
             cache = {
+              profiles = {
+                debug = {
+                  configuration_set = "debug",
+                  projects = {
+                    App = { config_key = "Debug" },
+                  },
+                },
+              },
               projects = {
                 App = {
                   configurations = {
@@ -129,11 +137,46 @@ describe("Profile", function()
       assert.is_true(p:is_configured())
     end)
 
-    it("returns false when cache has no matching variant", function()
+    it("returns false when cached profile exists but configs have no state", function()
       local p = make_profile(nil, {
         get_workspace = function()
           return {
             cache = {
+              profiles = {
+                debug = {
+                  configuration_set = "debug",
+                  projects = {
+                    App = { config_key = "Debug" },
+                  },
+                },
+              },
+              projects = {
+                App = {
+                  configurations = {
+                    Debug = { variant = "Debug" }, -- skeleton, no state
+                  },
+                },
+              },
+            },
+          }
+        end,
+      })
+      assert.is_false(p:is_configured())
+    end)
+
+    it("returns false when no cached profile matches", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              profiles = {
+                release = {
+                  configuration_set = "release",
+                  projects = {
+                    App = { config_key = "Release" },
+                  },
+                },
+              },
               projects = {
                 App = {
                   configurations = {
@@ -146,6 +189,43 @@ describe("Profile", function()
         end,
       })
       assert.is_false(p:is_configured())
+    end)
+  end)
+
+  describe("is_materialized", function()
+    it("returns false when no workspace", function()
+      local p = make_profile()
+      assert.is_false(p:is_materialized())
+    end)
+
+    it("returns true when cached profile matches by value", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            cache = {
+              profiles = {
+                debug = {
+                  configuration_set = "debug",
+                  projects = { App = { config_key = "Debug" } },
+                },
+              },
+              projects = {},
+            },
+          }
+        end,
+      })
+      assert.is_true(p:is_materialized())
+    end)
+
+    it("returns false when no cached profiles", function()
+      local p = make_profile(nil, {
+        get_workspace = function()
+          return {
+            cache = { projects = {} },
+          }
+        end,
+      })
+      assert.is_false(p:is_materialized())
     end)
   end)
 

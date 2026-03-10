@@ -246,6 +246,10 @@ function M.run_profile_action(profile_key, action)
   local loomworks = require("loomworks")
 
   local function do_action()
+    -- Materialize profile to cache before any tasks start.
+    -- This ensures cache reflects what will be built.
+    loomworks.materialize_profile(profile_key)
+
     -- Re-collect tasks after potential deletion completed (cache may have changed)
     local all_tasks = collect_profile_tasks(profile_key)
     if not all_tasks then return end

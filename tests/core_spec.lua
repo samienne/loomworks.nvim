@@ -416,6 +416,102 @@ describe("Core", function()
     end)
   end)
 
+  describe("materialize_profile", function()
+    it("writes profile and skeleton configs to cache", function()
+      local saved_cache = nil
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil, nil,
+        {
+          cache = {
+            save = function(root, data)
+              saved_cache = data
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      core:materialize_profile("debug")
+
+      assert.is_not_nil(saved_cache)
+      -- Profile entry
+      assert.is_not_nil(saved_cache.profiles)
+      assert.is_not_nil(saved_cache.profiles.debug)
+      assert.equals("debug", saved_cache.profiles.debug.configuration_set)
+      assert.is_not_nil(saved_cache.profiles.debug.projects)
+      assert.is_not_nil(saved_cache.profiles.debug.projects.App)
+      assert.equals("development", saved_cache.profiles.debug.projects.App.config_key)
+      -- Skeleton config entry
+      assert.is_not_nil(saved_cache.projects.App)
+      assert.is_not_nil(saved_cache.projects.App.configurations.development)
+      assert.equals("development", saved_cache.projects.App.configurations.development.variant)
+    end)
+
+    it("is idempotent (no-op when already materialized)", function()
+      local save_count = 0
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil, nil,
+        {
+          cache = {
+            save = function()
+              save_count = save_count + 1
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      core:materialize_profile("debug")
+      local count_after_first = save_count
+      core:materialize_profile("debug")
+      assert.equals(count_after_first, save_count) -- no additional save
+    end)
+
+    it("is safe without workspace", function()
+      local core = make_core()
+      -- don't setup
+      core:materialize_profile("debug") -- should not error
+    end)
+
+    it("is safe with unknown profile", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        }
+      )
+      core:setup({ root = "/root" })
+      core:materialize_profile("nonexistent") -- should not error
+    end)
+
+    it("remerges after materialization", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil, nil,
+        {
+          cache = {
+            save = function() return true end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local gen = core._generation
+      core:materialize_profile("debug")
+      assert.is_true(core._generation > gen)
+    end)
+  end)
+
   describe("shutdown", function()
     it("stops file tracker", function()
       local core = make_core()
@@ -692,6 +788,53 @@ describe("Core", function()
       assert.is_true(done)
       -- After completion, deleting flag should be cleared
       assert.is_false(core:is_deleting("App", "dev"))
+    end)
+
+    it("removes profile from cache.profiles on profile deletion", function()
+      local saved_cache = nil
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = {
+            debug = { configuration_set = "debug" },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        },
+        {
+          cache = {
+            save = function(root, data)
+              saved_cache = data
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local plan = {
+        profile_key = "debug",
+        items = {
+          { project_key = "App", config_key = "development" },
+        },
+      }
+
+      local done = false
+      core:execute_deletion(plan, nil, function() done = true end)
+      assert.is_true(done)
+      assert.is_not_nil(saved_cache)
+      -- profiles section should be cleaned up
+      assert.is_true(saved_cache.profiles == nil or saved_cache.profiles.debug == nil)
     end)
 
     it("skips shared items", function()

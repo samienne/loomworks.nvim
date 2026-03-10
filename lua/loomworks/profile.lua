@@ -92,6 +92,7 @@ end
 --- @field kit? loomworks.CmakeKit
 --- @field explicit boolean
 --- @field auto_generated boolean
+--- @field materialized boolean
 --- @field mappings? table<string, string> project_key -> variant name
 local Profile = {}
 Profile.__index = Profile
@@ -111,7 +112,7 @@ local STATUS_HL = {
 --- Create a new Profile object.
 --- @param core loomworks.Core
 --- @param key string profile key
---- @param data { configuration_set: string, kit_id?: string, kit?: loomworks.CmakeKit, explicit?: boolean, auto_generated?: boolean, mappings?: table<string, string> }
+--- @param data { configuration_set: string, kit_id?: string, kit?: loomworks.CmakeKit, explicit?: boolean, auto_generated?: boolean, materialized?: boolean, mappings?: table<string, string> }
 --- @return loomworks.Profile
 function Profile.new(core, key, data)
   local self = setmetatable({}, Profile)
@@ -123,6 +124,7 @@ function Profile.new(core, key, data)
   self.kit = data.kit
   self.explicit = data.explicit or false
   self.auto_generated = data.auto_generated or false
+  self.materialized = data.materialized or false
   self.mappings = data.mappings
 
   -- Precompute valid variants for is_configured checks
@@ -213,33 +215,40 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Check if this profile has any configured entries in cache.
+--- Uses cached profile references (value matching) instead of key parsing.
 --- @return boolean
 function Profile:is_configured()
   local ws = self._core:get_workspace()
-  if not ws or not ws.cache or not ws.cache.projects then return false end
+  if not ws or not ws.cache then return false end
 
-  local config_projects = ws.config and ws.config.projects or {}
-  for project_key, cached_proj in pairs(ws.cache.projects) do
-    if cached_proj.configurations then
-      local project_def = config_projects[project_key]
-      local is_cmake = project_def and project_def.type == "cmake"
-      for config_key, _ in pairs(cached_proj.configurations) do
-        -- Only cmake projects use kit-qualified config keys (variant:kit_id)
-        if is_cmake and self.kit_id then
-          local variant, kit_id = merge.parse_profile_key(config_key)
-          if kit_id == self.kit_id and self._valid_variants[variant] then
-            return true
-          end
-        else
-          -- Non-cmake projects or profiles without kit: config_key is the variant
-          if self._valid_variants[config_key] then
-            return true
-          end
-        end
+  -- Find the materialized profile in cache by value matching
+  local cached_profile = merge.find_cached_profile(
+    ws.cache, self.configuration_set, self.kit_id)
+  if not cached_profile or not cached_profile.projects then return false end
+
+  -- Check if any referenced configuration has actual build state
+  for project_key, proj_ref in pairs(cached_profile.projects) do
+    local cached_proj = ws.cache.projects and ws.cache.projects[project_key]
+    if cached_proj and cached_proj.configurations then
+      local cached_config = cached_proj.configurations[proj_ref.config_key]
+      if cached_config and cached_config.state
+          and cached_config.state ~= "unconfigured" then
+        return true
       end
     end
   end
   return false
+end
+
+--- Check if this profile has been materialized (exists in cache).
+--- @return boolean
+function Profile:is_materialized()
+  local ws = self._core:get_workspace()
+  if not ws or not ws.cache then return false end
+
+  local cached_profile = merge.find_cached_profile(
+    ws.cache, self.configuration_set, self.kit_id)
+  return cached_profile ~= nil
 end
 
 --- Check if this profile has any running tasks.

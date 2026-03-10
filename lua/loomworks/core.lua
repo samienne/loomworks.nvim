@@ -231,6 +231,15 @@ end
 local function resolve_tool(cache, kit_id)
   if not kit_id then return nil end
 
+  -- Check cached profiles first (single lookup by tool id)
+  if cache and cache.profiles then
+    for _, profile in pairs(cache.profiles) do
+      if profile.tool and profile.tool.id == kit_id then
+        return profile.tool
+      end
+    end
+  end
+
   -- Check cached configurations for stored tool info
   if cache and cache.projects then
     for _, cached_project in pairs(cache.projects) do
@@ -247,7 +256,12 @@ local function resolve_tool(cache, kit_id)
   -- Fall back to live detection
   local ok, cmake_kits_mod = pcall(require, "loomworks.cmake_kits")
   if not ok then return nil end
-  return cmake_kits_mod.get_by_id(kit_id)
+  local tool = cmake_kits_mod.get_by_id(kit_id)
+  -- Strip empty env table to avoid noisy JSON serialization
+  if tool and tool.env and not next(tool.env) then
+    tool.env = nil
+  end
+  return tool
 end
 
 --- Get a Profile object by key.
@@ -257,7 +271,7 @@ function Core:get_profile(key)
   if not self._workspace then return nil end
 
   local ws = self._workspace
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache)
   local data = all_profiles[key]
   if not data then return nil end
 
@@ -271,6 +285,7 @@ function Core:get_profile(key)
     kit = resolve_tool(ws.cache, data.kit_id),
     explicit = data.explicit or false,
     auto_generated = data.auto_generated or false,
+    materialized = data.materialized or false,
     mappings = mappings,
   })
 end
@@ -281,7 +296,7 @@ function Core:get_profiles()
   if not self._workspace then return {} end
 
   local ws = self._workspace
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config)
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache)
   local config_sets = ws.config.configuration_sets
   local result = {}
 
@@ -295,6 +310,7 @@ function Core:get_profiles()
       kit = resolve_tool(ws.cache, data.kit_id),
       explicit = data.explicit or false,
       auto_generated = data.auto_generated or false,
+      materialized = data.materialized or false,
       mappings = mappings,
     })
   end
@@ -333,7 +349,7 @@ function Core:activate_profile(profile_key)
     return
   end
 
-  local all_profiles = self._deps.merge.get_all_profiles(self._workspace.config)
+  local all_profiles = self._deps.merge.get_all_profiles(self._workspace.config, self._workspace.cache)
   if not all_profiles[profile_key] then
     self._deps.notify("loomworks: profile '" .. profile_key .. "' not found", vim.log.levels.ERROR)
     return
@@ -379,6 +395,88 @@ function Core:activate_set(name)
   end
 
   self:activate_profile(new_profile_key)
+end
+
+-- ---------------------------------------------------------------------------
+-- Profile materialization
+-- ---------------------------------------------------------------------------
+
+--- Materialize a profile: write it to cache with full tool and project
+--- references BEFORE any build/configure tasks start.
+--- Creates skeleton configuration entries in cache.projects.
+--- No-op if the profile is already materialized.
+--- @param profile_key string
+function Core:materialize_profile(profile_key)
+  if not self._workspace then return end
+
+  local ws = self._workspace
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache)
+  local profile_def = all_profiles[profile_key]
+  if not profile_def then return end
+
+  -- Check if already materialized by value comparison
+  local existing = self._deps.merge.find_cached_profile(
+    ws.cache, profile_def.configuration_set, profile_def.kit_id)
+  if existing then return end
+
+  -- Resolve tool: cache first, live detection fallback
+  local tool = resolve_tool(ws.cache, profile_def.kit_id)
+
+  -- Build project mappings from configuration set
+  local set_name = profile_def.configuration_set
+  local set_mappings = set_name and ws.config.configuration_sets
+      and ws.config.configuration_sets[set_name] or {}
+
+  local profile_projects = {}
+  for project_key, variant in pairs(set_mappings) do
+    local project_config = ws.config.projects[project_key]
+    if not project_config then goto continue end
+
+    local config_key
+    if profile_def.kit_id and project_config.type == "cmake" then
+      config_key = variant .. ":" .. profile_def.kit_id
+    else
+      config_key = variant
+    end
+
+    profile_projects[project_key] = { config_key = config_key }
+
+    -- Ensure skeleton config entry exists in cache.projects
+    ws.cache.projects = ws.cache.projects or {}
+    if not ws.cache.projects[project_key] then
+      ws.cache.projects[project_key] = {
+        type = project_config.type,
+        path = project_config.path or project_key,
+        configurations = {},
+      }
+    end
+    local cached_proj = ws.cache.projects[project_key]
+    cached_proj.configurations = cached_proj.configurations or {}
+    if not cached_proj.configurations[config_key] then
+      cached_proj.configurations[config_key] = {
+        variant = variant,
+        kit_id = profile_def.kit_id,
+        tool = tool,
+      }
+    end
+
+    ::continue::
+  end
+
+  -- Write profile to cache
+  ws.cache.profiles = ws.cache.profiles or {}
+  ws.cache.profiles[profile_key] = {
+    configuration_set = set_name,
+    tool = tool,
+    projects = profile_projects,
+  }
+
+  local ok, err = self._deps.cache.save(ws.root, ws.cache)
+  if not ok then
+    self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
+  end
+
+  self:remerge()
 end
 
 -- ---------------------------------------------------------------------------
@@ -533,6 +631,7 @@ function Core:finish_operation(profile_key, success)
     message = verb .. " in " .. self:_format_duration(elapsed),
     success = success,
   }
+
   self._deps.events.emit("operation_finished", {
     profile_key = profile_key,
     success = success,
@@ -870,6 +969,18 @@ function Core:execute_deletion(plan, opts, on_done)
   self:stop_tasks_then(task_ids, function()
     -- Now safe to delete
     self:delete_cached_configs(to_delete)
+
+    -- Remove profile from cache if this is a profile deletion
+    if plan.profile_key and self._workspace then
+      local ws = self._workspace
+      if ws.cache.profiles and ws.cache.profiles[plan.profile_key] then
+        ws.cache.profiles[plan.profile_key] = nil
+        if not next(ws.cache.profiles) then
+          ws.cache.profiles = nil
+        end
+        self._deps.cache.save(ws.root, ws.cache)
+      end
+    end
 
     -- Unmark deleting state
     for _, item in ipairs(to_delete) do

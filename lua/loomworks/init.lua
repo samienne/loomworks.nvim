@@ -96,6 +96,13 @@ function M.deactivate_profile(profile_key)
   core:deactivate_profile(profile_key)
 end
 
+--- Materialize a profile: write it to cache with full tool and project
+--- references before any build/configure tasks start.
+--- @param profile_key string
+function M.materialize_profile(profile_key)
+  core:materialize_profile(profile_key)
+end
+
 --- Activate a named configuration set.
 --- @param name string
 function M.activate_set(name)

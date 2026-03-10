@@ -43,12 +43,50 @@ local function has_cmake_projects(config)
   return false
 end
 
+--- Check if a cached profile matches a configuration_set and tool_id by value.
+--- @param cached_profile loomworks.CachedProfile
+--- @param configuration_set string
+--- @param tool_id string|nil
+--- @return boolean
+function M.cached_profile_matches(cached_profile, configuration_set, tool_id)
+  if cached_profile.configuration_set ~= configuration_set then
+    return false
+  end
+  local cached_tool_id = cached_profile.tool and cached_profile.tool.id
+  return cached_tool_id == tool_id
+end
+
+--- Find a cached profile that matches a configuration_set and tool_id.
+--- Matches by stored values, not by cache key.
+--- @param cache loomworks.CacheData|nil
+--- @param configuration_set string
+--- @param tool_id string|nil
+--- @return loomworks.CachedProfile|nil, string|nil cache_key
+function M.find_cached_profile(cache, configuration_set, tool_id)
+  if not cache or not cache.profiles then return nil, nil end
+  for key, cp in pairs(cache.profiles) do
+    if M.cached_profile_matches(cp, configuration_set, tool_id) then
+      return cp, key
+    end
+  end
+  return nil, nil
+end
+
 --- Resolve a tool by id: check cache first, fall back to live detection.
 --- @param cache loomworks.CacheData|nil
 --- @param tool_id string
 --- @return loomworks.CachedTool|nil
 local function resolve_tool(cache, tool_id)
   if not tool_id then return nil end
+
+  -- Check cached profiles first (single lookup by tool id)
+  if cache and cache.profiles then
+    for _, profile in pairs(cache.profiles) do
+      if profile.tool and profile.tool.id == tool_id then
+        return profile.tool
+      end
+    end
+  end
 
   -- Check cached configurations for stored tool info
   if cache and cache.projects then
@@ -66,7 +104,12 @@ local function resolve_tool(cache, tool_id)
   -- Fall back to live detection
   local ok, cmake_kits_mod = pcall(require, "loomworks.cmake_kits")
   if not ok then return nil end
-  return cmake_kits_mod.get_by_id(tool_id)
+  local tool = cmake_kits_mod.get_by_id(tool_id)
+  -- Strip empty env table to avoid noisy JSON serialization
+  if tool and tool.env and not next(tool.env) then
+    tool.env = nil
+  end
+  return tool
 end
 
 --- Auto-generate profiles from configuration_sets × detected kits.
@@ -115,11 +158,13 @@ local function generate_auto_profiles(config)
   return profiles
 end
 
---- Get all available profiles (auto-generated from detection + explicit from loomworks.json).
+--- Get all available profiles (auto-generated from detection + explicit from loomworks.json + cached).
 --- Explicit profiles override auto-generated ones with the same key.
+--- Cached profiles are matched by value (configuration_set + tool properties).
 --- @param config loomworks.Config
+--- @param cache loomworks.CacheData|nil
 --- @return table<string, loomworks.ProfileDef>
-function M.get_all_profiles(config)
+function M.get_all_profiles(config, cache)
   local profiles = generate_auto_profiles(config)
 
   -- Merge explicit profiles from loomworks.json (they win over auto-generated)
@@ -134,6 +179,35 @@ function M.get_all_profiles(config)
     end
   end
 
+  -- Merge cached profiles: mark matches as materialized, add unmatched as cached-only
+  if cache and cache.profiles then
+    for cache_key, cached_profile in pairs(cache.profiles) do
+      -- Find matching auto/explicit profile by value comparison
+      local matched_key = nil
+      for key, profile in pairs(profiles) do
+        local profile_tool_id = profile.kit_id
+        local cached_tool_id = cached_profile.tool and cached_profile.tool.id
+        if profile.configuration_set == cached_profile.configuration_set
+            and profile_tool_id == cached_tool_id then
+          matched_key = key
+          break
+        end
+      end
+
+      if matched_key then
+        profiles[matched_key].materialized = true
+      else
+        -- Cached profile with no auto/explicit counterpart (tool no longer detected)
+        profiles[cache_key] = {
+          configuration_set = cached_profile.configuration_set,
+          kit_id = cached_profile.tool and cached_profile.tool.id or nil,
+          auto_generated = false,
+          materialized = true,
+        }
+      end
+    end
+  end
+
   return profiles
 end
 
@@ -145,8 +219,8 @@ function M.merge(workspace)
   local user = workspace.user
   local cache = workspace.cache
 
-  -- Get all available profiles (from detection + explicit)
-  local all_profiles = M.get_all_profiles(config)
+  -- Get all available profiles (from detection + explicit + cached)
+  local all_profiles = M.get_all_profiles(config, cache)
 
   -- Determine active profile — only if explicitly set in user.json
   local active_profile_key = user.active_profile
@@ -282,7 +356,7 @@ end
 --- @param profile_key string
 --- @return table<string, loomworks.MergedProjectData>|nil
 function M.resolve_profile_projects(ws, profile_key)
-  local all_profiles = M.get_all_profiles(ws.config)
+  local all_profiles = M.get_all_profiles(ws.config, ws.cache)
   local profile = all_profiles[profile_key]
   if not profile then return nil end
 
