@@ -41,8 +41,32 @@ function M.info(path, config)
   return { configurations = configurations }
 end
 
+--- Detect available tools. eTS has a single default tool.
+--- @return { tool_data: table }[]
 function M.detect_tools()
-  return {}
+  return { { tool_data = {} } }
+end
+
+--- Compare two eTS tool_data objects. Always match (single tool).
+--- @param a table
+--- @param b table
+--- @return boolean
+function M.tools_match(a, b)
+  return true
+end
+
+--- Cache key suffix. nil = no suffix needed (single tool).
+--- @param tool_data table
+--- @return nil
+function M.tool_key(tool_data)
+  return nil
+end
+
+--- Display label. nil = omit from display (single tool).
+--- @param tool_data table
+--- @return nil
+function M.tool_label(tool_data)
+  return nil
 end
 
 --- Build a platform-appropriate sleep command.

@@ -52,12 +52,12 @@ describe("Project", function()
 
   describe("config_cache_key", function()
     it("returns bare name without kit", function()
-      local p = make_project({ tool_id = nil })
+      local p = make_project({ tool_key = nil })
       assert.equals("Debug", p:config_cache_key("Debug"))
     end)
 
     it("appends kit_id", function()
-      local p = make_project({ tool_id = "ninja-gcc" })
+      local p = make_project({ tool_key = "ninja-gcc" })
       assert.equals("Debug:ninja-gcc", p:config_cache_key("Debug"))
     end)
   end)
@@ -87,7 +87,7 @@ describe("Project", function()
 
     it("checks via core with computed cache key", function()
       local checked = {}
-      local p = make_project({ tool_id = "ninja-gcc" }, {
+      local p = make_project({ tool_key = "ninja-gcc" }, {
         is_deleting = function(_, proj, key)
           checked.proj = proj
           checked.key = key
@@ -102,7 +102,7 @@ describe("Project", function()
 
   describe("config_running_action", function()
     it("delegates to core with computed cache key", function()
-      local p = make_project({ tool_id = "ninja-gcc" }, {
+      local p = make_project({ tool_key = "ninja-gcc" }, {
         get_running_action = function(_, proj, key)
           if proj == "App" and key == "Debug:ninja-gcc" then return "configure" end
           return nil
@@ -131,7 +131,7 @@ describe("Project", function()
 
     it("tries kit-qualified key first", function()
       local p = make_project({
-        tool_id = "ninja-gcc",
+        tool_key = "ninja-gcc",
         cached_configurations = {
           Debug = { state = "configured" },
           ["Debug:ninja-gcc"] = { state = "built" },
@@ -143,7 +143,7 @@ describe("Project", function()
 
     it("falls back to bare name when kit-qualified not found", function()
       local p = make_project({
-        tool_id = "ninja-gcc",
+        tool_key = "ninja-gcc",
         cached_configurations = {
           Debug = { state = "configured" },
         },
@@ -157,7 +157,7 @@ describe("Project", function()
     it("builds module context with correct fields", function()
       local p = make_project({
         configuration_key = "Debug:ninja-gcc",
-        tool = { generator = "Ninja", env = { CC = "gcc" } },
+        tool_data = { generator = "Ninja", env = { CC = "gcc" } },
       })
       local ctx = p:to_module_context("/workspace")
       assert.equals("App", ctx.name)
@@ -169,8 +169,8 @@ describe("Project", function()
       assert.equals("gcc", ctx.env.CC)
     end)
 
-    it("uses empty env when no tool", function()
-      local p = make_project({ tool = nil })
+    it("uses empty env when no tool_data", function()
+      local p = make_project({ tool_data = nil })
       local ctx = p:to_module_context("/workspace")
       assert.are.same({}, ctx.env)
     end)

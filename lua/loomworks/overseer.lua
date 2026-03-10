@@ -64,7 +64,7 @@ function M.register()
                 action = lw_meta.action,
                 configuration_key = lw_meta.configuration_key,
                 build_dir = lw_meta.build_dir,
-                tool = lw_meta.tool,
+                tool_data = lw_meta.tool_data,
                 cmake = lw_meta.cmake,
                 progress_tool = progress_tool,
               }
@@ -108,18 +108,21 @@ local function collect_configuration_tasks(project_key, config_key)
   local mod = modules.get(project_config.type)
   if not mod or not mod.tasks then return nil end
 
-  -- Parse config_key to get variant and kit_id
-  local variant, kit_id = merge.parse_profile_key(config_key)
+  -- Parse config_key to get variant and tool_key
+  local variant, tool_key = merge.parse_profile_key(config_key)
 
-  -- Resolve tool from detected tools
+  -- Resolve tool_data from detected tools
   local core = loomworks._core()
-  local tool = nil
-  if kit_id then
-    for _, dt in ipairs(core._detected_tools) do
-      if dt.id == kit_id then
-        tool = dt
-        break
+  local tool_data = nil
+  if tool_key then
+    for _, tools in pairs(core._tools_by_type) do
+      for _, dt in ipairs(tools) do
+        if dt.tool_key == tool_key then
+          tool_data = dt.tool_data
+          break
+        end
       end
+      if tool_data then break end
     end
   end
 
@@ -135,9 +138,9 @@ local function collect_configuration_tasks(project_key, config_key)
     configuration = variant,
     configuration_key = config_key,
     configurations = mod_info.configurations or {},
-    tool = tool,
+    tool_data = tool_data,
     workspace_root = ws.root,
-    env = tool and tool.env or {},
+    env = tool_data and tool_data.env or {},
   }
 
   local pt = mod.progress_parser
@@ -175,7 +178,7 @@ local function collect_profile_tasks(profile_key)
 
   local core = loomworks._core()
   local projects = merge.resolve_profile_projects(
-    ws, profile_key, core._detected_tools, core._tool_modules)
+    ws, profile_key, core._tools_by_type)
   if not projects then return nil end
 
   local by_action = { configure = {}, build = {} }
@@ -194,9 +197,9 @@ local function collect_profile_tasks(profile_key)
       configuration = active_config,
       configuration_key = proj.configuration_key,
       configurations = proj.configurations,
-      tool = proj.tool,
+      tool_data = proj.tool_data,
       workspace_root = ws.root,
-      env = proj.tool and proj.tool.env or {},
+      env = proj.tool_data and proj.tool_data.env or {},
     }
 
     local pt = mod.progress_parser
@@ -243,7 +246,7 @@ local function launch_tasks(overseer, task_defs, on_all_done)
       action = lw_meta.action,
       configuration_key = lw_meta.configuration_key,
       build_dir = lw_meta.build_dir,
-      tool = lw_meta.tool,
+      tool_data = lw_meta.tool_data,
       cmake = lw_meta.cmake,
       progress_tool = lw_meta.progress_tool,
       profile_key = lw_meta.profile_key,

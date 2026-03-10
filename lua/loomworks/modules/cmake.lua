@@ -269,7 +269,7 @@ function M.tasks(project, active_config)
   local tasks = {}
   local abs_path = project.workspace_root .. "/" .. project.path
   local config_info = project.configurations and project.configurations[active_config] or nil
-  local kit = project.tool
+  local kit = project.tool_data
   local env = project.env or {}
 
   -- Resolve generator from kit or config override
@@ -330,20 +330,8 @@ function M.tasks(project, active_config)
   -- Build the configuration key for cache tracking
   local configuration_key = project.configuration_key or active_config
 
-  -- Serialize tool for cache storage (strip empty env, keep JSON-safe fields)
-  local cached_tool = nil
-  if kit then
-    cached_tool = {
-      id = kit.id,
-      display = kit.display,
-      generator = kit.generator,
-      compiler_id = kit.compiler_id,
-      compiler_path = kit.compiler_path,
-      vcvarsall = kit.vcvarsall,
-      arch = kit.arch,
-      env = kit.env and next(kit.env) and kit.env or nil,
-    }
-  end
+  -- tool_data is stored as-is in cache (opaque to core)
+  local cached_tool_data = kit
 
   tasks[#tasks + 1] = {
     name = project.name .. ": configure",
@@ -359,7 +347,7 @@ function M.tasks(project, active_config)
       action = "configure",
       configuration_key = configuration_key,
       build_dir = build_dir,
-      tool = cached_tool,
+      tool_data = cached_tool_data,
       cmake = {
         multi_config = multi_config,
         generator = generator,
@@ -410,7 +398,7 @@ function M.tasks(project, active_config)
           action = "build",
           configuration_key = build_config_key,
           build_dir = build_dir,
-          tool = cached_tool,
+          tool_data = cached_tool_data,
         },
       }
     end
@@ -429,7 +417,7 @@ function M.tasks(project, active_config)
         action = "build",
         configuration_key = configuration_key,
         build_dir = build_dir,
-        tool = cached_tool,
+        tool_data = cached_tool_data,
       },
     }
   end
@@ -443,7 +431,7 @@ end
 --- @return string|nil tool name for progress.get()
 function M.progress_parser(project, active_config)
   local config_info = project.configurations and project.configurations[active_config] or nil
-  local kit = project.tool
+  local kit = project.tool_data
   local generator = (config_info and config_info.generator) or (kit and kit.generator) or nil
 
   if not generator then
@@ -460,7 +448,7 @@ function M.progress_parser(project, active_config)
 end
 
 --- Detect available tools (kits) for cmake projects.
---- @return loomworks.CachedTool[]
+--- @return { tool_data: table }[]
 function M.detect_tools()
   local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
   if not ok then return {} end
@@ -469,17 +457,47 @@ function M.detect_tools()
   local tools = {}
   for _, kit in ipairs(kits) do
     tools[#tools + 1] = {
-      id = kit.id,
-      display = kit.display,
-      generator = kit.generator,
-      compiler_id = kit.compiler_id,
-      compiler_path = kit.compiler_path,
-      vcvarsall = kit.vcvarsall,
-      arch = kit.arch,
-      env = kit.env and next(kit.env) and kit.env or nil,
+      tool_data = {
+        id = kit.id,
+        display = kit.display,
+        generator = kit.generator,
+        compiler_id = kit.compiler_id,
+        compiler_path = kit.compiler_path,
+        compiler_version = kit.compiler_version,
+        vcvarsall = kit.vcvarsall,
+        arch = kit.arch,
+        env = kit.env and next(kit.env) and kit.env or nil,
+      },
     }
   end
   return tools
+end
+
+--- Compare two cmake tool_data objects for identity.
+--- @param a table
+--- @param b table
+--- @return boolean
+function M.tools_match(a, b)
+  if a == nil and b == nil then return true end
+  if a == nil or b == nil then return false end
+  return a.compiler_path == b.compiler_path
+      and a.generator == b.generator
+      and (a.vcvarsall or "") == (b.vcvarsall or "")
+      and (a.arch or "") == (b.arch or "")
+end
+
+--- Derive a cache key suffix from tool_data.
+--- @param tool_data table
+--- @return string
+function M.tool_key(tool_data)
+  return tool_data.id
+end
+
+--- Display label for a cmake tool.
+--- @param tool_data table
+--- @return string
+function M.tool_label(tool_data)
+  return tool_data.display
 end
 
 --- Compare current config/files against cache.

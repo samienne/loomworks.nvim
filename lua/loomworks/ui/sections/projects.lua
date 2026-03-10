@@ -92,7 +92,7 @@ return function(tree, ctx)
             local brief_str = #brief > 0
                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
 
-            local project_has_tools = lw.module_has_tools(proj.type)
+            local project_has_keyed_tools = lw.module_has_keyed_tools(proj.type)
 
             tree:node(cname .. brief_str, {
               fold_key = "config:" .. key .. ":" .. cname,
@@ -125,8 +125,8 @@ return function(tree, ctx)
                 return a.profile_key < b.profile_key
               end)
 
-              if project_has_tools then
-                -- Tool-providing modules: show per-profile entries
+              if project_has_keyed_tools then
+                -- Keyed-tool modules: show per-profile entries
                 for _, entry in ipairs(profile_entries) do
                   local pp = entry.pp
                   local cached = pp:cached_state()
@@ -151,7 +151,7 @@ return function(tree, ctx)
                   end)
                 end
               else
-                -- No-tool modules: show status directly with build/configure actions
+                -- Single-tool modules: show status directly with build/configure actions
                 local pp = profile_entries[1] and profile_entries[1].pp
                 if pp then
                   local cached = pp:cached_state()

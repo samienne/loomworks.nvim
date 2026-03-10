@@ -7,7 +7,7 @@ describe("Profile", function()
     local core = h.make_mock_core(core_overrides)
     local data = vim.tbl_deep_extend("force", {
       configuration_set = "debug",
-      kit_id = nil,
+      tool_key = nil,
       explicit = false,
       auto_generated = true,
       mappings = { App = "Debug", Lib = "Debug" },
@@ -32,13 +32,13 @@ describe("Profile", function()
   end)
 
   describe("config_key", function()
-    it("returns variant when no kit_id", function()
-      local p = make_profile({ kit_id = nil })
+    it("returns variant when no tool_key", function()
+      local p = make_profile({ tool_key = nil })
       assert.equals("Debug", p:config_key("Debug"))
     end)
 
-    it("appends kit_id when present", function()
-      local p = make_profile({ kit_id = "ninja-gcc" })
+    it("appends tool_key when present", function()
+      local p = make_profile({ tool_key = "ninja-gcc" })
       assert.equals("Debug:ninja-gcc", p:config_key("Debug"))
     end)
   end)
@@ -389,7 +389,7 @@ describe("Profile", function()
 end)
 
 describe("ProfileProject", function()
-  local function make_pp(kit_id, core_overrides)
+  local function make_pp(tool_key, core_overrides)
     -- Provide workspace with config so ProfileProject.new can check project type
     local default_ws = {
       config = {
@@ -405,7 +405,7 @@ describe("ProfileProject", function()
     local core = h.make_mock_core(merged)
     local data = {
       configuration_set = "debug",
-      kit_id = kit_id,
+      tool_key = tool_key,
       mappings = { App = "Debug" },
     }
     local profile = Profile.new(core, "debug", data)
@@ -418,7 +418,7 @@ describe("ProfileProject", function()
       assert.equals("Debug", pp.config_key)
     end)
 
-    it("variant:kit with kit_id", function()
+    it("variant:tool_key when present", function()
       local pp = make_pp("ninja-gcc")
       assert.equals("Debug:ninja-gcc", pp.config_key)
     end)

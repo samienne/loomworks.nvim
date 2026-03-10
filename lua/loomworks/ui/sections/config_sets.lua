@@ -25,7 +25,7 @@ local function render_set_details(tree, set_name, mappings, all_profiles, active
   -- Collect profiles belonging to this set with tools
   local tool_profiles = {}
   for profile_key, profile in pairs(all_profiles) do
-    if profile.configuration_set == set_name and profile.kit_id then
+    if profile.configuration_set == set_name and profile.tool_key then
       tool_profiles[#tool_profiles + 1] = { key = profile_key, profile = profile }
     end
   end
@@ -64,10 +64,7 @@ local function render_set_details(tree, set_name, mappings, all_profiles, active
           hl = is_active and "DiagnosticOk" or "Comment"
         end
 
-        local display = profile.kit_id
-        if profile.kit and profile.kit.display then
-          display = profile.kit.display
-        end
+        local display = profile.tool_label or profile.tool_key
 
         tree:item(display .. suffix, {
           marker = marker,

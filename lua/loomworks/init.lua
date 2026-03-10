@@ -108,17 +108,17 @@ function M.rescan_tools()
   core:rescan_tools()
 end
 
---- Check if a module type provides tools.
+--- Check if a module type has keyed tools (tools with non-nil tool_key).
 --- @param mod_type string
 --- @return boolean
-function M.module_has_tools(mod_type)
-  return core:module_has_tools(mod_type)
+function M.module_has_keyed_tools(mod_type)
+  return core:module_has_keyed_tools(mod_type)
 end
 
---- Get the list of currently detected tools.
---- @return loomworks.CachedTool[]
-function M.get_detected_tools()
-  return core:get_detected_tools()
+--- Get detected tools organized by module type.
+--- @return table<string, loomworks.DetectedTool[]>
+function M.get_tools_by_type()
+  return core:get_tools_by_type()
 end
 
 --- Materialize a single configuration in cache (skeleton entry).

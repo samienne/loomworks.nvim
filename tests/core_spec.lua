@@ -1235,9 +1235,9 @@ describe("Core", function()
         get_cache().projects.App.configurations.development.cmake.compile_commands_dir)
     end)
 
-    it("records tool data from result", function()
+    it("records tool_data from result", function()
       local core, get_cache = make_recording_core()
-      local tool = {
+      local tool_data = {
         id = "ninja-gcc-14.2.0",
         display = "Ninja - GCC 14.2.0",
         generator = "Ninja",
@@ -1249,27 +1249,27 @@ describe("Core", function()
         action = "configure",
         configuration_key = "Debug:ninja-gcc-14.2.0",
         success = true,
-        tool = tool,
+        tool_data = tool_data,
       })
-      local cached_tool = get_cache().projects.App.configurations["Debug:ninja-gcc-14.2.0"].tool
-      assert.is_not_nil(cached_tool)
-      assert.equals("ninja-gcc-14.2.0", cached_tool.id)
-      assert.equals("Ninja - GCC 14.2.0", cached_tool.display)
-      assert.equals("Ninja", cached_tool.generator)
-      assert.equals("gcc-14.2.0", cached_tool.compiler_id)
+      local cached_td = get_cache().projects.App.configurations["Debug:ninja-gcc-14.2.0"].tool_data
+      assert.is_not_nil(cached_td)
+      assert.equals("ninja-gcc-14.2.0", cached_td.id)
+      assert.equals("Ninja - GCC 14.2.0", cached_td.display)
+      assert.equals("Ninja", cached_td.generator)
+      assert.equals("gcc-14.2.0", cached_td.compiler_id)
     end)
 
-    it("preserves existing tool when result has no tool", function()
+    it("preserves existing tool_data when result has no tool_data", function()
       local core, get_cache = make_recording_core()
-      -- First, record with tool
+      -- First, record with tool_data
       core:record_task_result({
         project_key = "App",
         action = "configure",
         configuration_key = "Debug",
         success = true,
-        tool = { id = "ninja-gcc-14.2.0", display = "Ninja - GCC 14.2.0" },
+        tool_data = { id = "ninja-gcc-14.2.0", display = "Ninja - GCC 14.2.0" },
       })
-      -- Second, record build without tool
+      -- Second, record build without tool_data
       core:record_task_result({
         project_key = "App",
         action = "build",
@@ -1278,7 +1278,7 @@ describe("Core", function()
       })
       local cached = get_cache().projects.App.configurations.Debug
       assert.equals("built", cached.state)
-      assert.equals("ninja-gcc-14.2.0", cached.tool.id)
+      assert.equals("ninja-gcc-14.2.0", cached.tool_data.id)
     end)
   end)
 

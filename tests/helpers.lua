@@ -79,12 +79,11 @@ function M.make_mock_core(overrides)
       return false
     end,
 
-    module_has_tools = function(_, mod_type)
+    module_has_keyed_tools = function(_, mod_type)
       return mod_type == "cmake"
     end,
 
-    _detected_tools = {},
-    _tool_modules = { cmake = true },
+    _tools_by_type = {},
   }
   if overrides then
     for k, v in pairs(overrides) do

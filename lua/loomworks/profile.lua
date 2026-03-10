@@ -24,12 +24,13 @@ function ProfileProject.new(profile, project_key, variant)
   self._core = profile._core
   self.project_key = project_key
   self.variant = variant
-  -- Only tool-providing modules get kit-qualified config keys
+  -- Only modules with keyed tools get the tool_key suffix
   local ws = profile._core:get_workspace()
   local config_projects = ws and ws.config and ws.config.projects
   local project_def = config_projects and config_projects[project_key]
-  if profile.kit_id and project_def and profile._core:module_has_tools(project_def.type) then
-    self.config_key = variant .. ":" .. profile.kit_id
+  if profile.tool_key and project_def
+      and profile._core:module_has_keyed_tools(project_def.type) then
+    self.config_key = variant .. ":" .. profile.tool_key
   else
     self.config_key = variant
   end
@@ -93,8 +94,10 @@ end
 --- @class loomworks.Profile
 --- @field key string profile key
 --- @field configuration_set string
---- @field kit_id? string
---- @field kit? loomworks.CmakeKit
+--- @field tool_key? string cache key suffix from the keyed module
+--- @field tool_data? table opaque module-specific tool data
+--- @field tool_label? string display label for the tool
+--- @field tool_mod_type? string which module type owns this tool
 --- @field explicit boolean
 --- @field auto_generated boolean
 --- @field materialized boolean
@@ -117,7 +120,7 @@ local STATUS_HL = {
 --- Create a new Profile object.
 --- @param core loomworks.Core
 --- @param key string profile key
---- @param data { configuration_set: string, kit_id?: string, kit?: loomworks.CmakeKit, explicit?: boolean, auto_generated?: boolean, materialized?: boolean, mappings?: table<string, string> }
+--- @param data { configuration_set: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, auto_generated?: boolean, materialized?: boolean, mappings?: table<string, string> }
 --- @return loomworks.Profile
 function Profile.new(core, key, data)
   local self = setmetatable({}, Profile)
@@ -125,8 +128,10 @@ function Profile.new(core, key, data)
   self._generation = core._generation
   self.key = key
   self.configuration_set = data.configuration_set
-  self.kit_id = data.kit_id
-  self.kit = data.kit
+  self.tool_key = data.tool_key
+  self.tool_data = data.tool_data
+  self.tool_label = data.tool_label
+  self.tool_mod_type = data.tool_mod_type
   self.explicit = data.explicit or false
   self.auto_generated = data.auto_generated or false
   self.materialized = data.materialized or false
@@ -161,8 +166,8 @@ end
 --- @param variant string
 --- @return string
 function Profile:config_key(variant)
-  if self.kit_id then
-    return variant .. ":" .. self.kit_id
+  if self.tool_key then
+    return variant .. ":" .. self.tool_key
   end
   return variant
 end
@@ -228,7 +233,7 @@ function Profile:is_configured()
 
   -- Find the materialized profile in cache by value matching
   local cached_profile = merge.find_cached_profile(
-    ws.cache, self.configuration_set, self.kit_id)
+    ws.cache, self.configuration_set, self.tool_data)
   if not cached_profile or not cached_profile.projects then return false end
 
   -- Check if any referenced configuration has actual build state
@@ -252,7 +257,7 @@ function Profile:is_materialized()
   if not ws or not ws.cache then return false end
 
   local cached_profile = merge.find_cached_profile(
-    ws.cache, self.configuration_set, self.kit_id)
+    ws.cache, self.configuration_set, self.tool_data)
   return cached_profile ~= nil
 end
 

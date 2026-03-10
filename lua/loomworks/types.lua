@@ -45,7 +45,10 @@
 
 --- @class loomworks.CachedProfile
 --- @field configuration_set string
---- @field tool? loomworks.CachedTool locked-in tool for this profile
+--- @field tool_key? string cache key suffix from the keyed module
+--- @field tool_data? table opaque module-specific tool data
+--- @field tool_label? string display label for the tool
+--- @field tool_mod_type? string which module type owns this tool
 --- @field projects table<string, loomworks.CachedProfileProject>
 
 --- @class loomworks.CachedProfileProject
@@ -61,21 +64,11 @@
 --- @field path? string relative path
 --- @field configurations table<string, loomworks.CachedConfig>
 
---- @class loomworks.CachedTool
---- @field id string tool identifier (e.g. "ninja-gcc-14.2.0")
---- @field display string human-readable name (e.g. "Ninja - GCC 14.2.0")
---- @field generator? string cmake -G value
---- @field compiler_id? string
---- @field compiler_path? string
---- @field vcvarsall? string path to vcvarsall.bat (MSVC)
---- @field arch? string target architecture for vcvarsall
---- @field env? table<string, string>
-
 --- @class loomworks.CachedConfig
 --- @field state? loomworks.Status
 --- @field variant? string
---- @field kit_id? string
---- @field tool? loomworks.CachedTool tool used for this configuration
+--- @field tool_key? string cache key suffix
+--- @field tool_data? table opaque module-specific tool data
 --- @field build_dir? string
 --- @field last_configured? string ISO 8601 timestamp
 --- @field last_built? string ISO 8601 timestamp
@@ -93,21 +86,32 @@
 --- @field built? boolean
 --- @field last_built? string ISO 8601 timestamp
 
+-- ========================== Detected Tools ==========================
+
+--- @class loomworks.DetectedTool
+--- @field tool_data table opaque module-specific tool data
+--- @field tool_key? string unique key for cache (nil for single-tool modules)
+--- @field tool_label? string display label (nil for single-tool modules)
+
 -- ========================== Merge Result ==========================
 
 --- @class loomworks.ActiveSet
 --- @field name string|nil active profile key
 --- @field profile loomworks.ProfileDef|nil raw profile definition
 --- @field all_profiles table<string, loomworks.ProfileDef>
---- @field kit loomworks.CachedTool|nil resolved tool for active profile
---- @field kit_id string|nil
+--- @field tool_key? string cache key suffix from active profile
+--- @field tool_data? table opaque tool data from active profile
+--- @field tool_label? string display label from active profile
+--- @field tool_mod_type? string module type owning the active tool
 --- @field projects table<string, loomworks.MergedProjectData>
 --- @field configuration_sets? table<string, table<string, string>>
 
 --- @class loomworks.ProfileDef
 --- @field configuration_set string
---- @field kit_id? string
---- @field cmake? table
+--- @field tool_key? string cache key suffix from the keyed module
+--- @field tool_data? table opaque module-specific tool data
+--- @field tool_label? string display label for the tool
+--- @field tool_mod_type? string which module type owns this tool
 --- @field auto_generated? boolean
 --- @field explicit? boolean
 --- @field materialized? boolean
@@ -117,8 +121,8 @@
 --- @field path? string relative path
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
---- @field tool_id? string
---- @field tool? loomworks.CmakeKit
+--- @field tool_key? string cache key suffix
+--- @field tool_data? table opaque module-specific tool data
 --- @field status loomworks.Status
 --- @field orphaned boolean
 --- @field needs_refresh boolean
@@ -149,7 +153,7 @@
 --- @field configuration string active configuration name
 --- @field configuration_key string cache key
 --- @field configurations table<string, loomworks.ConfigurationInfo>
---- @field tool? loomworks.CmakeKit
+--- @field tool_data? table opaque module-specific tool data
 --- @field workspace_root string absolute path
 --- @field env table<string, string>
 
@@ -173,7 +177,7 @@
 --- @field action string "configure" or "build"
 --- @field configuration_key string
 --- @field build_dir? string
---- @field tool? loomworks.CachedTool tool used for the task
+--- @field tool_data? table opaque tool data to store in cache
 --- @field cmake? loomworks.CachedCmakeInfo
 --- @field success boolean
 
@@ -181,6 +185,7 @@
 --- @field project_key string
 --- @field action string "configure" or "build"
 --- @field configuration_key string
+--- @field profile_key? string profile that launched this task
 
 -- ========================== Deletion ==========================
 
@@ -211,3 +216,9 @@
 --- @field interval? number poll interval in ms (default 2000)
 --- @field read_file? fun(path: string): string|nil, string|nil
 --- @field schedule? fun(fn: function)
+
+-- ========================== Progress ==========================
+
+--- @class loomworks.ProgressUpdate
+--- @field current number
+--- @field total number
