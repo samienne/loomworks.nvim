@@ -28,6 +28,18 @@ function M.configure(profile_key)
   end
 end
 
+function M.build_configuration(project_key, config_key)
+  return function()
+    require("loomworks.overseer").run_configuration_action(project_key, config_key, "build")
+  end
+end
+
+function M.configure_configuration(project_key, config_key)
+  return function()
+    require("loomworks.overseer").run_configuration_action(project_key, config_key, "configure")
+  end
+end
+
 function M.delete_profile(profile_key)
   return function()
     local lw = require("loomworks")

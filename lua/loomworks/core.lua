@@ -14,6 +14,8 @@
 --- @field _generation number incremented on every remerge
 --- @field _tracker loomworks.FileTracker|nil
 --- @field _operations table<string, loomworks.Operation> profile_key -> active or completed operation
+--- @field _detected_tools loomworks.CachedTool[] tools from last scan
+--- @field _tool_modules table<string, boolean> module types that provide tools
 local Core = {}
 Core.__index = Core
 
@@ -72,6 +74,8 @@ function Core.new(deps)
   self._delete_waiters = {}
   self._generation = 0
   self._tracker = nil
+  self._detected_tools = {}
+  self._tool_modules = {}
   return self
 end
 
@@ -101,6 +105,33 @@ function Core:_validate_projects(config, root)
   return true, nil
 end
 
+--- Scan tools from all modules present in the workspace.
+--- Results are stored on the Core instance for use by merge and UI.
+function Core:_scan_tools()
+  if not self._workspace then return end
+  self._detected_tools, self._tool_modules = self._deps.merge.detect_tools(
+    self._workspace.config, self._workspace.cache)
+end
+
+--- Re-scan tools and remerge. Used for manual rescan from UI.
+function Core:rescan_tools()
+  self:_scan_tools()
+  self:remerge()
+end
+
+--- Check if a module type provides tools (has detected tools).
+--- @param mod_type string
+--- @return boolean
+function Core:module_has_tools(mod_type)
+  return self._tool_modules[mod_type] or false
+end
+
+--- Get the list of currently detected tools.
+--- @return loomworks.CachedTool[]
+function Core:get_detected_tools()
+  return self._detected_tools
+end
+
 --- Handle a tracked file change.
 --- @param path string absolute file path that changed
 --- @param content string|nil new raw content
@@ -121,6 +152,7 @@ function Core:_on_file_changed(path, content)
       local ok, val_err = self:_validate_projects(ws.config, ws.root)
       if ok then
         self._workspace = ws
+        self:_scan_tools()
         self:remerge()
         self._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
       else
@@ -176,7 +208,8 @@ function Core:setup(opts)
   end
 
   self._workspace = ws
-  self._active_set = self._deps.merge.merge(ws)
+  self:_scan_tools()
+  self._active_set = self._deps.merge.merge(ws, self._detected_tools, self._tool_modules)
   self._generation = self._generation + 1
   self._deps.events.emit("workspace_changed", ws)
   self._deps.events.emit("active_set_changed", self._active_set)
@@ -203,7 +236,8 @@ end
 --- Re-merge workspace state and emit events.
 function Core:remerge()
   if not self._workspace then return end
-  self._active_set = self._deps.merge.merge(self._workspace)
+  self._active_set = self._deps.merge.merge(
+    self._workspace, self._detected_tools, self._tool_modules)
   self._generation = self._generation + 1
   self._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -224,44 +258,27 @@ end
 -- Object factories
 -- ---------------------------------------------------------------------------
 
---- Resolve a tool by kit_id: check cache first, fall back to live detection.
---- @param cache loomworks.CacheData|nil
+--- Resolve a tool by kit_id from the Core's detected tools list.
+--- @param core loomworks.Core
 --- @param kit_id string|nil
 --- @return loomworks.CachedTool|nil
-local function resolve_tool(cache, kit_id)
+local function resolve_tool(core, kit_id)
   if not kit_id then return nil end
-
-  -- Check cached profiles first (single lookup by tool id)
-  if cache and cache.profiles then
-    for _, profile in pairs(cache.profiles) do
+  for _, tool in ipairs(core._detected_tools) do
+    if tool.id == kit_id then
+      return tool
+    end
+  end
+  -- Check cache as fallback (tool may no longer be detected)
+  local ws = core._workspace
+  if ws and ws.cache and ws.cache.profiles then
+    for _, profile in pairs(ws.cache.profiles) do
       if profile.tool and profile.tool.id == kit_id then
         return profile.tool
       end
     end
   end
-
-  -- Check cached configurations for stored tool info
-  if cache and cache.projects then
-    for _, cached_project in pairs(cache.projects) do
-      if cached_project.configurations then
-        for _, cached_config in pairs(cached_project.configurations) do
-          if cached_config.tool and cached_config.tool.id == kit_id then
-            return cached_config.tool
-          end
-        end
-      end
-    end
-  end
-
-  -- Fall back to live detection
-  local ok, cmake_kits_mod = pcall(require, "loomworks.cmake_kits")
-  if not ok then return nil end
-  local tool = cmake_kits_mod.get_by_id(kit_id)
-  -- Strip empty env table to avoid noisy JSON serialization
-  if tool and tool.env and not next(tool.env) then
-    tool.env = nil
-  end
-  return tool
+  return nil
 end
 
 --- Get a Profile object by key.
@@ -271,7 +288,7 @@ function Core:get_profile(key)
   if not self._workspace then return nil end
 
   local ws = self._workspace
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache)
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache, self._detected_tools)
   local data = all_profiles[key]
   if not data then return nil end
 
@@ -282,7 +299,7 @@ function Core:get_profile(key)
   return Profile.new(self, key, {
     configuration_set = data.configuration_set,
     kit_id = data.kit_id,
-    kit = resolve_tool(ws.cache, data.kit_id),
+    kit = resolve_tool(self, data.kit_id),
     explicit = data.explicit or false,
     auto_generated = data.auto_generated or false,
     materialized = data.materialized or false,
@@ -296,7 +313,7 @@ function Core:get_profiles()
   if not self._workspace then return {} end
 
   local ws = self._workspace
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache)
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache, self._detected_tools)
   local config_sets = ws.config.configuration_sets
   local result = {}
 
@@ -307,7 +324,7 @@ function Core:get_profiles()
     result[key] = Profile.new(self, key, {
       configuration_set = data.configuration_set,
       kit_id = data.kit_id,
-      kit = resolve_tool(ws.cache, data.kit_id),
+      kit = resolve_tool(self, data.kit_id),
       explicit = data.explicit or false,
       auto_generated = data.auto_generated or false,
       materialized = data.materialized or false,
@@ -410,17 +427,15 @@ function Core:materialize_profile(profile_key)
   if not self._workspace then return end
 
   local ws = self._workspace
-  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache)
+  local all_profiles = self._deps.merge.get_all_profiles(ws.config, ws.cache, self._detected_tools)
   local profile_def = all_profiles[profile_key]
   if not profile_def then return end
 
-  -- Check if already materialized by value comparison
+  -- Check if already materialized by tool property comparison
+  local profile_tool = resolve_tool(self, profile_def.kit_id)
   local existing = self._deps.merge.find_cached_profile(
-    ws.cache, profile_def.configuration_set, profile_def.kit_id)
+    ws.cache, profile_def.configuration_set, profile_tool)
   if existing then return end
-
-  -- Resolve tool: cache first, live detection fallback
-  local tool = resolve_tool(ws.cache, profile_def.kit_id)
 
   -- Build project mappings from configuration set
   local set_name = profile_def.configuration_set
@@ -432,8 +447,9 @@ function Core:materialize_profile(profile_key)
     local project_config = ws.config.projects[project_key]
     if not project_config then goto continue end
 
+    local has_tools = self._tool_modules[project_config.type] or false
     local config_key
-    if profile_def.kit_id and project_config.type == "cmake" then
+    if profile_def.kit_id and has_tools then
       config_key = variant .. ":" .. profile_def.kit_id
     else
       config_key = variant
@@ -456,7 +472,7 @@ function Core:materialize_profile(profile_key)
       cached_proj.configurations[config_key] = {
         variant = variant,
         kit_id = profile_def.kit_id,
-        tool = tool,
+        tool = has_tools and profile_tool or nil,
       }
     end
 
@@ -467,7 +483,7 @@ function Core:materialize_profile(profile_key)
   ws.cache.profiles = ws.cache.profiles or {}
   ws.cache.profiles[profile_key] = {
     configuration_set = set_name,
-    tool = tool,
+    tool = profile_tool,
     projects = profile_projects,
   }
 
@@ -479,17 +495,63 @@ function Core:materialize_profile(profile_key)
   self:remerge()
 end
 
+--- Materialize a single configuration: ensure cache has a skeleton entry.
+--- Lighter than materializing a full profile — used for configuration-level
+--- build/configure actions.
+--- @param project_key string
+--- @param config_key string cache key (variant or variant:kit_id)
+function Core:materialize_configuration(project_key, config_key)
+  if not self._workspace then return end
+
+  local ws = self._workspace
+  local project_config = ws.config.projects[project_key]
+  if not project_config then return end
+
+  -- Parse config_key for variant and kit_id
+  local variant, kit_id = self._deps.merge.parse_profile_key(config_key)
+  local has_tools = self._tool_modules[project_config.type] or false
+  local tool = has_tools and resolve_tool(self, kit_id) or nil
+
+  -- Ensure cache structure exists
+  ws.cache.projects = ws.cache.projects or {}
+  if not ws.cache.projects[project_key] then
+    ws.cache.projects[project_key] = {
+      type = project_config.type,
+      path = project_config.path or project_key,
+      configurations = {},
+    }
+  end
+
+  local cached_proj = ws.cache.projects[project_key]
+  cached_proj.configurations = cached_proj.configurations or {}
+  if not cached_proj.configurations[config_key] then
+    cached_proj.configurations[config_key] = {
+      variant = variant,
+      kit_id = kit_id,
+      tool = tool,
+    }
+
+    local ok, err = self._deps.cache.save(ws.root, ws.cache)
+    if not ok then
+      self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
+    end
+
+    self:remerge()
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Running task tracking
 -- ---------------------------------------------------------------------------
 
 --- Register a running task for live status display.
---- @param info { task_id: number, project_key: string, action: string, configuration_key: string }
+--- @param info { task_id: number, project_key: string, action: string, configuration_key: string, profile_key?: string }
 function Core:register_running_task(info)
   self._running_tasks[info.task_id] = {
     project_key = info.project_key,
     action = info.action,
     configuration_key = info.configuration_key,
+    profile_key = info.profile_key,
   }
   self._task_start_times[info.task_id] = self._deps.clock()
   self._deps.events.emit("task_started", info)
@@ -505,13 +567,30 @@ function Core:unregister_running_task(task_id)
   self._deps.events.emit("task_stopped", { task_id = task_id, has_running = has_running })
 end
 
---- Get running task info for a project + configuration key.
+--- Get running task info for a project + configuration key (global, any profile).
 --- @param project_key string
 --- @param config_key string
 --- @return string|nil action ("configure" or "build") if running
 function Core:get_running_action(project_key, config_key)
   for _, info in pairs(self._running_tasks) do
     if info.project_key == project_key and info.configuration_key == config_key then
+      return info.action
+    end
+  end
+  return nil
+end
+
+--- Get running task info scoped to a specific profile.
+--- Only matches tasks that were launched under this profile_key.
+--- @param profile_key string
+--- @param project_key string
+--- @param config_key string
+--- @return string|nil action ("configure" or "build") if running
+function Core:get_running_action_for_profile(profile_key, project_key, config_key)
+  for _, info in pairs(self._running_tasks) do
+    if info.profile_key == profile_key
+        and info.project_key == project_key
+        and info.configuration_key == config_key then
       return info.action
     end
   end

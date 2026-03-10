@@ -77,7 +77,7 @@ return function(tree, ctx)
             for _, profile in pairs(all_profiles) do
               local pp = profile:project(key)
               if pp and pp.variant == cname then
-                if lw.get_running_action(pp.project_key, pp.config_key) then
+                if pp:running_action() then
                   config_has_running = true
                   break
                 end
@@ -92,6 +92,8 @@ return function(tree, ctx)
             local brief_str = #brief > 0
                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
 
+            local project_has_tools = lw.module_has_tools(proj.type)
+
             tree:node(cname .. brief_str, {
               fold_key = "config:" .. key .. ":" .. cname,
               spinning = config_has_running,
@@ -105,7 +107,7 @@ return function(tree, ctx)
                 tree:leaf("Generator: " .. cdata.generator, "Comment")
               end
 
-              -- List all profiles that map to this variant
+              -- Collect profiles that map to this variant
               local profile_entries = {}
               for profile_key, profile in pairs(all_profiles) do
                 local pp = profile:project(key)
@@ -123,28 +125,49 @@ return function(tree, ctx)
                 return a.profile_key < b.profile_key
               end)
 
-              for _, entry in ipairs(profile_entries) do
-                local pp = entry.pp
-                local cached = pp:cached_state()
-                local config_status, status_hl, progress_str, is_spinning =
-                    helpers.resolve_config_status(pp.project_key, pp.config_key, cached)
+              if project_has_tools then
+                -- Tool-providing modules: show per-profile entries
+                for _, entry in ipairs(profile_entries) do
+                  local pp = entry.pp
+                  local cached = pp:cached_state()
+                  local config_status, status_hl, progress_str, is_spinning =
+                      helpers.resolve_config_status(pp, cached)
 
-                if entry.is_active and not is_spinning then
-                  status_hl = "DiagnosticOk"
+                  if entry.is_active and not is_spinning then
+                    status_hl = "DiagnosticOk"
+                  end
+
+                  tree:node(entry.profile_key .. progress_str, {
+                    fold_key = "config_profile:" .. key .. ":" .. cname .. ":"
+                        .. entry.profile_key,
+                    spinning = is_spinning,
+                    hl = status_hl,
+                    on_enter = actions.activate(entry.profile_key),
+                    on_build = actions.build_configuration(key, pp.config_key),
+                    on_configure = actions.configure_configuration(key, pp.config_key),
+                    on_delete = actions.delete_config(pp.project_key, pp.config_key),
+                  }, function()
+                    helpers.render_cached_details(tree, config_status, status_hl, cached)
+                  end)
                 end
+              else
+                -- No-tool modules: show status directly with build/configure actions
+                local pp = profile_entries[1] and profile_entries[1].pp
+                if pp then
+                  local cached = pp:cached_state()
+                  local config_status, status_hl, progress_str, is_spinning =
+                      helpers.resolve_config_status(pp, cached)
 
-                tree:node(entry.profile_key .. progress_str, {
-                  fold_key = "config_profile:" .. key .. ":" .. cname .. ":"
-                      .. entry.profile_key,
-                  spinning = is_spinning,
-                  hl = status_hl,
-                  on_enter = actions.activate(entry.profile_key),
-                  on_build = actions.build(entry.profile_key),
-                  on_configure = actions.configure(entry.profile_key),
-                  on_delete = actions.delete_config(pp.project_key, pp.config_key),
-                }, function()
-                  helpers.render_cached_details(tree, config_status, status_hl, cached)
-                end)
+                  tree:node("Status: " .. config_status .. progress_str, {
+                    fold_key = "config_status:" .. key .. ":" .. cname,
+                    spinning = is_spinning,
+                    hl = status_hl,
+                    on_build = actions.build_configuration(key, cname),
+                    on_configure = actions.configure_configuration(key, cname),
+                  }, function()
+                    helpers.render_cached_details(tree, config_status, status_hl, cached)
+                  end)
+                end
               end
             end)
           end

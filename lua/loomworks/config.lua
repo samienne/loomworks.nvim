@@ -97,6 +97,8 @@ function M.validate(raw, root)
       end
       profiles[profile_name] = {
         configuration_set = profile_def.configuration_set,
+        kit_id = profile_def.kit_id,
+        -- Legacy support: cmake.kit_id
         cmake = profile_def.cmake,
       }
     end

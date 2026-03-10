@@ -24,11 +24,11 @@ function ProfileProject.new(profile, project_key, variant)
   self._core = profile._core
   self.project_key = project_key
   self.variant = variant
-  -- Only cmake projects use kit-qualified config keys (matches merge.lua logic)
+  -- Only tool-providing modules get kit-qualified config keys
   local ws = profile._core:get_workspace()
   local config_projects = ws and ws.config and ws.config.projects
   local project_def = config_projects and config_projects[project_key]
-  if profile.kit_id and project_def and project_def.type == "cmake" then
+  if profile.kit_id and project_def and profile._core:module_has_tools(project_def.type) then
     self.config_key = variant .. ":" .. profile.kit_id
   else
     self.config_key = variant
@@ -41,12 +41,14 @@ function ProfileProject:__tostring()
 end
 
 --- Get the resolved status for this project-in-profile.
+--- Uses profile-scoped running check so non-cmake projects with shared
+--- config_keys don't leak running state across profiles.
 --- @return loomworks.Status|"configuring"|"building"|"deleting" status
 function ProfileProject:status()
   if self._core:is_deleting(self.project_key, self.config_key) then
     return "deleting"
   end
-  local action = self._core:get_running_action(self.project_key, self.config_key)
+  local action = self:running_action()
   if action then
     return action == "configure" and "configuring" or "building"
   end
@@ -55,9 +57,12 @@ function ProfileProject:status()
 end
 
 --- Get the running action for this project-in-profile.
+--- Scoped to the parent profile so non-cmake projects with shared config_keys
+--- only report running for the profile that actually launched the task.
 --- @return string|nil action
 function ProfileProject:running_action()
-  return self._core:get_running_action(self.project_key, self.config_key)
+  return self._core:get_running_action_for_profile(
+    self._profile.key, self.project_key, self.config_key)
 end
 
 --- Check if this project-in-profile is being deleted.

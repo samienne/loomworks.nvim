@@ -95,12 +95,12 @@ describe("merge", function()
       local ws = make_ws({
         configuration_sets = { debug = { App = "development" } },
         profiles = {
-          debug = { configuration_set = "debug", cmake = { kit_id = "custom" } },
+          debug = { configuration_set = "debug", kit_id = "custom" },
         },
       })
       local profiles = merge.get_all_profiles(ws.config)
       assert.is_true(profiles.debug.explicit)
-      assert.equals("custom", profiles.debug.cmake.kit_id)
+      assert.equals("custom", profiles.debug.kit_id)
     end)
   end)
 

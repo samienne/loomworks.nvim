@@ -69,23 +69,23 @@ M.STATUS_HL = {
   deleting         = "DiagnosticError",
 }
 
---- Resolve the live status for a project+config_key combination.
---- @param project_key string
---- @param config_key string
+--- Resolve the live status for a ProfileProject.
+--- Uses profile-scoped running check to prevent cross-profile state leakage.
+--- @param pp loomworks.ProfileProject
 --- @param cached loomworks.CachedConfig|nil
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.resolve_config_status(project_key, config_key, cached)
+function M.resolve_config_status(pp, cached)
   local lw = require("loomworks")
 
-  if lw.is_deleting(project_key, config_key) then
+  if pp:is_deleting() then
     return "deleting", M.STATUS_HL.deleting, "", true
   end
 
-  local running_action = lw.get_running_action(project_key, config_key)
+  local running_action = pp:running_action()
   if running_action then
     local status = running_action == "configure" and "configuring" or "building"
-    local progress_str = M.format_progress(lw.get_progress(project_key, config_key))
-        .. M.format_elapsed(lw.get_elapsed(project_key, config_key))
+    local progress_str = M.format_progress(lw.get_progress(pp.project_key, pp.config_key))
+        .. M.format_elapsed(lw.get_elapsed(pp.project_key, pp.config_key))
     return status, M.STATUS_HL[status] or "DiagnosticWarn", progress_str, true
   end
 

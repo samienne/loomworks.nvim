@@ -34,7 +34,7 @@ local function render_profile_details(tree, profile, lw)
       for _, pp in ipairs(pps) do
         local cached = pp:cached_state()
         local config_status, status_hl, progress_str, is_spinning =
-            helpers.resolve_config_status(pp.project_key, pp.config_key, cached)
+            helpers.resolve_config_status(pp, cached)
 
         tree:node(pp.project_key .. " → " .. pp.variant .. progress_str, {
           fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key,

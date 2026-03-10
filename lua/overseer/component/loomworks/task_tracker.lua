@@ -34,6 +34,11 @@ return {
       type = "string",
       optional = true,
     },
+    profile_key = {
+      desc = "Profile key that launched this task (for scoped running state)",
+      type = "string",
+      optional = true,
+    },
   },
   constructor = function(params)
     local progress_parser = nil
@@ -45,6 +50,7 @@ return {
           project_key = params.project_key,
           action = params.action,
           configuration_key = params.configuration_key,
+          profile_key = params.profile_key,
         })
 
         -- Resolve progress parser on start (lazy-load)

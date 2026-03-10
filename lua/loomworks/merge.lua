@@ -33,67 +33,154 @@ local function resolve_status(cache_entry)
   return "unconfigured"
 end
 
---- Check if any cmake project exists in config.
+-- ---------------------------------------------------------------------------
+-- Tool detection (generic, module-driven)
+-- ---------------------------------------------------------------------------
+
+--- Collect all unique module types present in config and cache.
 --- @param config loomworks.Config
---- @return boolean
-local function has_cmake_projects(config)
-  for _, project in pairs(config.projects) do
-    if project.type == "cmake" then return true end
+--- @param cache loomworks.CacheData|nil
+--- @return table<string, boolean> set of module type strings
+local function collect_module_types(config, cache)
+  local types = {}
+  if config.projects then
+    for _, project in pairs(config.projects) do
+      types[project.type] = true
+    end
   end
-  return false
+  if cache and cache.projects then
+    for _, cached_project in pairs(cache.projects) do
+      if cached_project.type then
+        types[cached_project.type] = true
+      end
+    end
+  end
+  return types
 end
 
---- Check if a cached profile matches a configuration_set and tool_id by value.
+--- Detect tools from all modules present in the workspace.
+--- Each module's detect_tools() is called; modules returning empty lists
+--- are recorded as having no tools.
+--- @param config loomworks.Config
+--- @param cache loomworks.CacheData|nil
+--- @return loomworks.CachedTool[] detected_tools, table<string, boolean> tool_modules
+function M.detect_tools(config, cache)
+  local module_types = collect_module_types(config, cache)
+  local all_tools = {}
+  local seen_ids = {}
+  local tool_modules = {}
+
+  for mod_type in pairs(module_types) do
+    local mod = modules.get(mod_type)
+    if mod and mod.detect_tools then
+      local tools = mod.detect_tools()
+      if #tools > 0 then
+        tool_modules[mod_type] = true
+        for _, tool in ipairs(tools) do
+          if not seen_ids[tool.id] then
+            seen_ids[tool.id] = true
+            all_tools[#all_tools + 1] = tool
+          end
+        end
+      end
+    end
+  end
+
+  return all_tools, tool_modules
+end
+
+--- Compare two tools by their identity properties (not by id).
+--- @param a loomworks.CachedTool|nil
+--- @param b loomworks.CachedTool|nil
+--- @return boolean
+function M.tools_match(a, b)
+  if a == nil and b == nil then return true end
+  if a == nil or b == nil then return false end
+  return a.compiler_path == b.compiler_path
+      and a.generator == b.generator
+      and (a.vcvarsall or "") == (b.vcvarsall or "")
+      and (a.arch or "") == (b.arch or "")
+end
+
+--- Find a detected tool matching a cached tool by properties.
+--- @param detected_tools loomworks.CachedTool[]
+--- @param cached_tool loomworks.CachedTool|nil
+--- @return loomworks.CachedTool|nil
+function M.find_matching_tool(detected_tools, cached_tool)
+  if not cached_tool then return nil end
+  for _, dt in ipairs(detected_tools) do
+    if M.tools_match(dt, cached_tool) then
+      return dt
+    end
+  end
+  return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Profile matching (property-based, not id-based)
+-- ---------------------------------------------------------------------------
+
+--- Check if a cached profile matches a configuration_set and tool by properties.
 --- @param cached_profile loomworks.CachedProfile
 --- @param configuration_set string
---- @param tool_id string|nil
+--- @param tool loomworks.CachedTool|nil
 --- @return boolean
-function M.cached_profile_matches(cached_profile, configuration_set, tool_id)
+function M.cached_profile_matches(cached_profile, configuration_set, tool)
   if cached_profile.configuration_set ~= configuration_set then
     return false
   end
-  local cached_tool_id = cached_profile.tool and cached_profile.tool.id
-  return cached_tool_id == tool_id
+  return M.tools_match(cached_profile.tool, tool)
 end
 
---- Find a cached profile that matches a configuration_set and tool_id.
---- Matches by stored values, not by cache key.
+--- Find a cached profile that matches a configuration_set and tool by properties.
 --- @param cache loomworks.CacheData|nil
 --- @param configuration_set string
---- @param tool_id string|nil
+--- @param tool loomworks.CachedTool|nil
 --- @return loomworks.CachedProfile|nil, string|nil cache_key
-function M.find_cached_profile(cache, configuration_set, tool_id)
+function M.find_cached_profile(cache, configuration_set, tool)
   if not cache or not cache.profiles then return nil, nil end
   for key, cp in pairs(cache.profiles) do
-    if M.cached_profile_matches(cp, configuration_set, tool_id) then
+    if M.cached_profile_matches(cp, configuration_set, tool) then
       return cp, key
     end
   end
   return nil, nil
 end
 
---- Resolve a tool by id: check cache first, fall back to live detection.
---- @param cache loomworks.CacheData|nil
---- @param tool_id string
---- @return loomworks.CachedTool|nil
-local function resolve_tool(cache, tool_id)
-  if not tool_id then return nil end
+-- ---------------------------------------------------------------------------
+-- Tool resolution
+-- ---------------------------------------------------------------------------
 
-  -- Check cached profiles first (single lookup by tool id)
+--- Resolve a tool by kit_id: check detected tools first, then cache.
+--- @param detected_tools loomworks.CachedTool[]
+--- @param cache loomworks.CacheData|nil
+--- @param kit_id string|nil
+--- @return loomworks.CachedTool|nil
+local function resolve_tool(detected_tools, cache, kit_id)
+  if not kit_id then return nil end
+
+  -- Check detected tools (same session, ids are consistent)
+  for _, tool in ipairs(detected_tools) do
+    if tool.id == kit_id then
+      return tool
+    end
+  end
+
+  -- Check cached profiles (tool may no longer be detected)
   if cache and cache.profiles then
     for _, profile in pairs(cache.profiles) do
-      if profile.tool and profile.tool.id == tool_id then
+      if profile.tool and profile.tool.id == kit_id then
         return profile.tool
       end
     end
   end
 
-  -- Check cached configurations for stored tool info
+  -- Check cached configurations
   if cache and cache.projects then
     for _, cached_project in pairs(cache.projects) do
       if cached_project.configurations then
         for _, cached_config in pairs(cached_project.configurations) do
-          if cached_config.tool and cached_config.tool.id == tool_id then
+          if cached_config.tool and cached_config.tool.id == kit_id then
             return cached_config.tool
           end
         end
@@ -101,52 +188,36 @@ local function resolve_tool(cache, tool_id)
     end
   end
 
-  -- Fall back to live detection
-  local ok, cmake_kits_mod = pcall(require, "loomworks.cmake_kits")
-  if not ok then return nil end
-  local tool = cmake_kits_mod.get_by_id(tool_id)
-  -- Strip empty env table to avoid noisy JSON serialization
-  if tool and tool.env and not next(tool.env) then
-    tool.env = nil
-  end
-  return tool
+  return nil
 end
 
---- Auto-generate profiles from configuration_sets × detected kits.
+-- ---------------------------------------------------------------------------
+-- Profile generation
+-- ---------------------------------------------------------------------------
+
+--- Auto-generate profiles from configuration_sets × detected tools.
 --- @param config loomworks.Config
+--- @param detected_tools loomworks.CachedTool[]
 --- @return table<string, loomworks.ProfileDef>
-local function generate_auto_profiles(config)
+local function generate_auto_profiles(config, detected_tools)
   local profiles = {}
 
   if not config.configuration_sets then return profiles end
 
-  local cmake_present = has_cmake_projects(config)
-
-  -- Detect kits if cmake projects exist
-  local kits = {}
-  if cmake_present then
-    local ok, cmake_kits_mod = pcall(require, "loomworks.cmake_kits")
-    if ok then
-      kits = cmake_kits_mod.detect()
-    end
-  end
-
-  for set_name, _ in pairs(config.configuration_sets) do
-    if cmake_present and #kits > 0 then
-      -- Generate one profile per set × kit
-      for _, kit in ipairs(kits) do
-        local key = M.profile_key(set_name, kit.id)
+  if #detected_tools > 0 then
+    for set_name, _ in pairs(config.configuration_sets) do
+      for _, tool in ipairs(detected_tools) do
+        local key = M.profile_key(set_name, tool.id)
         profiles[key] = {
           configuration_set = set_name,
-          kit_id = kit.id,
+          kit_id = tool.id,
           auto_generated = true,
-          cmake = {
-            kit_id = kit.id,
-          },
         }
       end
-    else
-      -- No cmake or no kits: one profile per set
+    end
+  else
+    -- No tools detected from any module: one profile per set
+    for set_name, _ in pairs(config.configuration_sets) do
       profiles[set_name] = {
         configuration_set = set_name,
         kit_id = nil,
@@ -158,37 +229,45 @@ local function generate_auto_profiles(config)
   return profiles
 end
 
---- Get all available profiles (auto-generated from detection + explicit from loomworks.json + cached).
+--- Get all available profiles (auto-generated + explicit + cached).
 --- Explicit profiles override auto-generated ones with the same key.
---- Cached profiles are matched by value (configuration_set + tool properties).
+--- Cached profiles are matched by tool properties (not id).
 --- @param config loomworks.Config
 --- @param cache loomworks.CacheData|nil
+--- @param detected_tools loomworks.CachedTool[]
 --- @return table<string, loomworks.ProfileDef>
-function M.get_all_profiles(config, cache)
-  local profiles = generate_auto_profiles(config)
+function M.get_all_profiles(config, cache, detected_tools)
+  local profiles = generate_auto_profiles(config, detected_tools or {})
 
   -- Merge explicit profiles from loomworks.json (they win over auto-generated)
   if config.profiles then
     for name, profile in pairs(config.profiles) do
       profiles[name] = {
         configuration_set = profile.configuration_set,
-        cmake = profile.cmake,
-        kit_id = profile.cmake and profile.cmake.kit_id or nil,
+        -- Support both new format (kit_id) and legacy (cmake.kit_id)
+        kit_id = profile.kit_id or (profile.cmake and profile.cmake.kit_id) or nil,
         explicit = true,
       }
     end
   end
 
-  -- Merge cached profiles: mark matches as materialized, add unmatched as cached-only
+  -- Merge cached profiles: match by tool properties, not by id
   if cache and cache.profiles then
     for cache_key, cached_profile in pairs(cache.profiles) do
-      -- Find matching auto/explicit profile by value comparison
       local matched_key = nil
       for key, profile in pairs(profiles) do
-        local profile_tool_id = profile.kit_id
-        local cached_tool_id = cached_profile.tool and cached_profile.tool.id
+        -- Resolve the profile's tool object for property comparison
+        local profile_tool = nil
+        if profile.kit_id and detected_tools then
+          for _, dt in ipairs(detected_tools) do
+            if dt.id == profile.kit_id then
+              profile_tool = dt
+              break
+            end
+          end
+        end
         if profile.configuration_set == cached_profile.configuration_set
-            and profile_tool_id == cached_tool_id then
+            and M.tools_match(profile_tool, cached_profile.tool) then
           matched_key = key
           break
         end
@@ -211,16 +290,25 @@ function M.get_all_profiles(config, cache)
   return profiles
 end
 
+-- ---------------------------------------------------------------------------
+-- Merge
+-- ---------------------------------------------------------------------------
+
 --- Merge all three files into the active profile projection.
 --- @param workspace loomworks.Workspace
+--- @param detected_tools loomworks.CachedTool[]
+--- @param tool_modules table<string, boolean>
 --- @return loomworks.ActiveSet
-function M.merge(workspace)
+function M.merge(workspace, detected_tools, tool_modules)
+  detected_tools = detected_tools or {}
+  tool_modules = tool_modules or {}
+
   local config = workspace.config
   local user = workspace.user
   local cache = workspace.cache
 
-  -- Get all available profiles (from detection + explicit + cached)
-  local all_profiles = M.get_all_profiles(config, cache)
+  -- Get all available profiles
+  local all_profiles = M.get_all_profiles(config, cache, detected_tools)
 
   -- Determine active profile — only if explicitly set in user.json
   local active_profile_key = user.active_profile
@@ -239,9 +327,9 @@ function M.merge(workspace)
     set_mappings = config.configuration_sets[set_name]
   end
 
-  -- Resolve tool: cache first (locked-in), detection fallback (new profiles)
+  -- Resolve tool for active profile
   local kit_id = active_profile and active_profile.kit_id or nil
-  local tool = resolve_tool(cache, kit_id)
+  local tool = resolve_tool(detected_tools, cache, kit_id)
 
   local projects = {}
 
@@ -255,9 +343,11 @@ function M.merge(workspace)
     local active_configuration = set_mappings and set_mappings[key] or nil
 
     -- Build the configuration key for cache lookup
+    -- Only tool-providing modules get kit-qualified config keys
+    local has_tools = tool_modules[project.type] or false
     local cache_config_key = nil
     if active_configuration then
-      if kit_id and project.type == "cmake" then
+      if kit_id and has_tools then
         cache_config_key = active_configuration .. ":" .. kit_id
       else
         cache_config_key = active_configuration
@@ -291,8 +381,8 @@ function M.merge(workspace)
       path = project.path,
       configuration = active_configuration,
       configuration_key = cache_config_key,
-      tool_id = project.type == "cmake" and kit_id or nil,
-      tool = project.type == "cmake" and tool or nil,
+      tool_id = has_tools and kit_id or nil,
+      tool = has_tools and tool or nil,
       status = status,
       orphaned = false,
       needs_refresh = needs_refresh,
@@ -302,11 +392,15 @@ function M.merge(workspace)
       cached_configurations = cached_configurations,
     }
 
-    -- Add module-specific info
-    if project.type == "cmake" then
+    -- Add module-specific info (cmake compile_commands, targets, etc.)
+    if mod and mod_info.compile_commands_from then
       projects[key].cmake = {
         compile_commands_from = mod_info.compile_commands_from,
         targets = cached_config_data and cached_config_data.cmake and cached_config_data.cmake.targets or nil,
+      }
+    elseif cached_config_data and cached_config_data.cmake then
+      projects[key].cmake = {
+        targets = cached_config_data.cmake.targets,
       }
     end
   end
@@ -354,9 +448,14 @@ end
 --- Used for running tasks against a non-active profile.
 --- @param ws loomworks.Workspace
 --- @param profile_key string
+--- @param detected_tools loomworks.CachedTool[]
+--- @param tool_modules table<string, boolean>
 --- @return table<string, loomworks.MergedProjectData>|nil
-function M.resolve_profile_projects(ws, profile_key)
-  local all_profiles = M.get_all_profiles(ws.config, ws.cache)
+function M.resolve_profile_projects(ws, profile_key, detected_tools, tool_modules)
+  detected_tools = detected_tools or {}
+  tool_modules = tool_modules or {}
+
+  local all_profiles = M.get_all_profiles(ws.config, ws.cache, detected_tools)
   local profile = all_profiles[profile_key]
   if not profile then return nil end
 
@@ -367,7 +466,7 @@ function M.resolve_profile_projects(ws, profile_key)
   end
 
   local kit_id = profile.kit_id
-  local tool = resolve_tool(ws.cache, kit_id)
+  local tool = resolve_tool(detected_tools, ws.cache, kit_id)
 
   local projects = {}
   for key, project in pairs(ws.config.projects) do
@@ -377,9 +476,10 @@ function M.resolve_profile_projects(ws, profile_key)
 
     local active_configuration = set_mappings and set_mappings[key] or nil
 
+    local has_tools = tool_modules[project.type] or false
     local cache_config_key = nil
     if active_configuration then
-      if kit_id and project.type == "cmake" then
+      if kit_id and has_tools then
         cache_config_key = active_configuration .. ":" .. kit_id
       else
         cache_config_key = active_configuration
@@ -391,8 +491,8 @@ function M.resolve_profile_projects(ws, profile_key)
       path = project.path,
       configuration = active_configuration,
       configuration_key = cache_config_key,
-      tool_id = project.type == "cmake" and kit_id or nil,
-      tool = project.type == "cmake" and tool or nil,
+      tool_id = has_tools and kit_id or nil,
+      tool = has_tools and tool or nil,
       configurations = mod_info.configurations or {},
     }
   end

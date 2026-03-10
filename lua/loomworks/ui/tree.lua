@@ -72,6 +72,10 @@ function Tree:on_key(action, line)
     if w and w.on_enter then w.on_enter() end
     return {}
 
+  elseif action == "rescan" then
+    require("loomworks").rescan_tools()
+    return { refresh = true }
+
   else
     -- Walk upward from line to find nearest widget with the action callback.
     local action_key = "on_" .. action

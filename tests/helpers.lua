@@ -67,6 +67,10 @@ function M.make_mock_core(overrides)
       return nil
     end,
 
+    get_running_action_for_profile = function(_, _, _, _)
+      return nil
+    end,
+
     get_project_running_action = function(_, _)
       return nil
     end,
@@ -74,6 +78,13 @@ function M.make_mock_core(overrides)
     is_deleting = function(_, _, _)
       return false
     end,
+
+    module_has_tools = function(_, mod_type)
+      return mod_type == "cmake"
+    end,
+
+    _detected_tools = {},
+    _tool_modules = { cmake = true },
   }
   if overrides then
     for k, v in pairs(overrides) do

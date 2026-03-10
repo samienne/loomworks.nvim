@@ -103,6 +103,31 @@ function M.materialize_profile(profile_key)
   core:materialize_profile(profile_key)
 end
 
+--- Re-scan tools from all modules and remerge.
+function M.rescan_tools()
+  core:rescan_tools()
+end
+
+--- Check if a module type provides tools.
+--- @param mod_type string
+--- @return boolean
+function M.module_has_tools(mod_type)
+  return core:module_has_tools(mod_type)
+end
+
+--- Get the list of currently detected tools.
+--- @return loomworks.CachedTool[]
+function M.get_detected_tools()
+  return core:get_detected_tools()
+end
+
+--- Materialize a single configuration in cache (skeleton entry).
+--- @param project_key string
+--- @param config_key string
+function M.materialize_configuration(project_key, config_key)
+  core:materialize_configuration(project_key, config_key)
+end
+
 --- Activate a named configuration set.
 --- @param name string
 function M.activate_set(name)
@@ -131,6 +156,15 @@ end
 --- @return string|nil action
 function M.get_running_action(project_key, config_key)
   return core:get_running_action(project_key, config_key)
+end
+
+--- Get running task info scoped to a specific profile.
+--- @param profile_key string
+--- @param project_key string
+--- @param config_key string
+--- @return string|nil action
+function M.get_running_action_for_profile(profile_key, project_key, config_key)
+  return core:get_running_action_for_profile(profile_key, project_key, config_key)
 end
 
 --- Check if any task is running for a given project.
