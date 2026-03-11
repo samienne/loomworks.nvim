@@ -66,8 +66,24 @@ function M.make_mock_core(overrides)
 
     _tools_by_type = {},
     _config_units = {},
+    _profiles = {},
+    _projects = {},
     _deps = { clock = function() return 0 end },
   }
+
+  -- Registry accessors (mirrors Core:get_profile/get_profiles)
+  core.get_profile = function(self, key)
+    return self._profiles[key]
+  end
+  core.get_profiles = function(self)
+    return self._profiles
+  end
+  core.get_project = function(self, key)
+    return self._projects[key]
+  end
+  core.get_projects = function(self)
+    return self._projects
+  end
 
   -- Add ConfigUnit registry (same logic as Core:get_config_unit)
   local ConfigUnit = require("loomworks.config_unit")

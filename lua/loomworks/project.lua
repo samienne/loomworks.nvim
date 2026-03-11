@@ -23,13 +23,21 @@ Project.__index = Project
 --- Create a new Project object.
 --- @param core loomworks.Core
 --- @param key string project key
---- @param data loomworks.MergedProjectData
+--- @param data? loomworks.MergedProjectData
 --- @return loomworks.Project
 function Project.new(core, key, data)
   local self = setmetatable({}, Project)
   self._core = core
-  self._generation = core._generation
   self.key = key
+  self._removed = false
+  if data then self:_update(data) end
+  return self
+end
+
+--- Update all data fields in place (preserves table identity).
+--- @param data loomworks.MergedProjectData
+function Project:_update(data)
+  self._generation = self._core._generation
   self.type = data.type
   self.path = data.path
   self.configuration = data.configuration
@@ -44,7 +52,6 @@ function Project.new(core, key, data)
   self.cached = data.cached
   self.cached_configurations = data.cached_configurations or {}
   self.cmake = data.cmake
-  return self
 end
 
 function Project:__tostring()

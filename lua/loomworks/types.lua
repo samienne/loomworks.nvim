@@ -119,6 +119,7 @@
 --- @field tool_label? string display label for the tool
 --- @field tool_mod_type? string which module type owns this tool
 --- @field explicit? boolean
+--- @field _removed? boolean true after profile removed from registry
 
 --- @class loomworks.ToolEntry
 --- @field profile_key string the profile key this tool would create

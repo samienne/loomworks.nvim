@@ -114,13 +114,21 @@ local STATUS_HL = {
 --- Create a new Profile object.
 --- @param core loomworks.Core
 --- @param key string profile key
---- @param data { configuration_set?: string, ad_hoc?: boolean, project_key?: string, config_key?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
+--- @param data? { configuration_set?: string, ad_hoc?: boolean, project_key?: string, config_key?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
 --- @return loomworks.Profile
 function Profile.new(core, key, data)
   local self = setmetatable({}, Profile)
   self._core = core
-  self._generation = core._generation
   self.key = key
+  self._removed = false
+  if data then self:_update(data) end
+  return self
+end
+
+--- Update all data fields in place (preserves table identity).
+--- @param data { configuration_set?: string, ad_hoc?: boolean, project_key?: string, config_key?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
+function Profile:_update(data)
+  self._generation = self._core._generation
   self.configuration_set = data.configuration_set
   self.ad_hoc = data.ad_hoc or false
   self.project_key = data.project_key
@@ -139,8 +147,6 @@ function Profile.new(core, key, data)
       self._valid_variants[variant] = true
     end
   end
-
-  return self
 end
 
 function Profile:__tostring()

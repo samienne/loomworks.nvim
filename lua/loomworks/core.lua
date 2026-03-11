@@ -69,6 +69,8 @@ function Core.new(deps)
   self._tracker = nil
   self._tools_by_type = {}
   self._config_units = {}
+  self._profiles = {}
+  self._projects = {}
   return self
 end
 
@@ -217,12 +219,12 @@ function Core:setup(opts)
 
   self._workspace = ws
   self._config_units = {}
+  self._profiles = {}
+  self._projects = {}
   self:_scan_tools()
   self:_adopt_orphaned_configs()
-  self._active_set = self._deps.merge.merge(ws, self._tools_by_type)
-  self._generation = self._generation + 1
+  self:remerge()
   self._deps.events.emit("workspace_changed", ws)
-  self._deps.events.emit("active_set_changed", self._active_set)
 
   -- Start file tracking
   if self._tracker then
@@ -243,12 +245,14 @@ function Core:setup(opts)
   return true
 end
 
---- Re-merge workspace state and emit events.
+--- Re-merge workspace state, sync object registries, and emit events.
 function Core:remerge()
   if not self._workspace then return end
   self._active_set = self._deps.merge.merge(
     self._workspace, self._tools_by_type)
   self._generation = self._generation + 1
+  self:_sync_profiles()
+  self:_sync_projects()
   self._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -265,7 +269,7 @@ function Core:get_workspace()
 end
 
 -- ---------------------------------------------------------------------------
--- Object factories
+-- Object registries
 -- ---------------------------------------------------------------------------
 
 --- Resolve mappings for a profile definition.
@@ -286,49 +290,28 @@ local function resolve_profile_mappings(data, config_sets)
       and config_sets[data.configuration_set] or nil
 end
 
---- Get a Profile object by key.
---- @param key string profile key
---- @return loomworks.Profile|nil
-function Core:get_profile(key)
-  if not self._workspace then return nil end
-
+--- Sync the profiles registry with current merge data.
+--- Creates new Profile objects, updates existing ones in place, removes stale ones.
+function Core:_sync_profiles()
   local ws = self._workspace
-  local all_profiles = self._deps.merge.get_all_profiles(
-    ws.config, ws.cache, self._tools_by_type)
-  local data = all_profiles[key]
-  if not data then return nil end
+  if not ws then return end
 
-  local mappings = resolve_profile_mappings(data, ws.config.configuration_sets)
-
-  return Profile.new(self, key, {
-    configuration_set = data.configuration_set,
-    ad_hoc = data.ad_hoc or false,
-    project_key = data.project_key,
-    config_key = data.config_key,
-    tool_key = data.tool_key,
-    tool_data = data.tool_data,
-    tool_label = data.tool_label,
-    tool_mod_type = data.tool_mod_type,
-    explicit = data.explicit or false,
-    mappings = mappings,
-  })
-end
-
---- Get all Profile objects as a dict.
---- @return table<string, loomworks.Profile>
-function Core:get_profiles()
-  if not self._workspace then return {} end
-
-  local ws = self._workspace
-  local all_profiles = self._deps.merge.get_all_profiles(
+  local all_defs = self._deps.merge.get_all_profiles(
     ws.config, ws.cache, self._tools_by_type)
   local config_sets = ws.config.configuration_sets
-  local result = {}
 
-  for key, data in pairs(all_profiles) do
+  -- Mark removed profiles
+  for key, profile in pairs(self._profiles) do
+    if not all_defs[key] then
+      profile._removed = true
+      self._profiles[key] = nil
+    end
+  end
+
+  -- Create or update
+  for key, data in pairs(all_defs) do
     local mappings = resolve_profile_mappings(data, config_sets)
-
-    result[key] = Profile.new(self, key, {
+    local profile_data = {
       configuration_set = data.configuration_set,
       ad_hoc = data.ad_hoc or false,
       project_key = data.project_key,
@@ -339,10 +322,54 @@ function Core:get_profiles()
       tool_mod_type = data.tool_mod_type,
       explicit = data.explicit or false,
       mappings = mappings,
-    })
+    }
+
+    local existing = self._profiles[key]
+    if existing then
+      existing:_update(profile_data)
+    else
+      self._profiles[key] = Profile.new(self, key, profile_data)
+    end
+  end
+end
+
+--- Sync the projects registry with current active set data.
+--- Creates new Project objects, updates existing ones in place, removes stale ones.
+function Core:_sync_projects()
+  if not self._active_set then return end
+
+  local new_data = self._active_set.projects
+
+  -- Mark removed projects
+  for key, project in pairs(self._projects) do
+    if not new_data[key] then
+      project._removed = true
+      self._projects[key] = nil
+    end
   end
 
-  return result
+  -- Create or update
+  for key, data in pairs(new_data) do
+    local existing = self._projects[key]
+    if existing then
+      existing:_update(data)
+    else
+      self._projects[key] = Project.new(self, key, data)
+    end
+  end
+end
+
+--- Get a Profile object by key.
+--- @param key string profile key
+--- @return loomworks.Profile|nil
+function Core:get_profile(key)
+  return self._profiles[key]
+end
+
+--- Get all Profile objects as a dict.
+--- @return table<string, loomworks.Profile>
+function Core:get_profiles()
+  return self._profiles
 end
 
 --- Get tool entries for the configuration sets UI.
@@ -357,19 +384,13 @@ end
 --- @param key string project key
 --- @return loomworks.Project|nil
 function Core:get_project(key)
-  if not self._active_set or not self._active_set.projects[key] then return nil end
-  return Project.new(self, key, self._active_set.projects[key])
+  return self._projects[key]
 end
 
 --- Get all Project objects from the active set as a dict.
 --- @return table<string, loomworks.Project>
 function Core:get_projects()
-  if not self._active_set then return {} end
-  local result = {}
-  for key, data in pairs(self._active_set.projects) do
-    result[key] = Project.new(self, key, data)
-  end
-  return result
+  return self._projects
 end
 
 -- ---------------------------------------------------------------------------
@@ -385,9 +406,7 @@ function Core:activate_profile(profile_key)
   end
 
   -- Ensure the profile exists — materialize if it can be resolved from config
-  local all_profiles = self._deps.merge.get_all_profiles(
-    self._workspace.config, self._workspace.cache, self._tools_by_type)
-  if not all_profiles[profile_key] then
+  if not self._profiles[profile_key] then
     -- Try to resolve and materialize from config_sets + detected tools
     local def = self._deps.merge.resolve_profile_def(
       self._workspace.config, self._tools_by_type, profile_key)
