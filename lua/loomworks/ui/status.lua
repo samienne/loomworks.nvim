@@ -105,7 +105,9 @@ end
 --- Delete a profile interactively (with confirmation dialog).
 --- @param profile_key string
 function M.delete_profile(profile_key)
-  actions.delete_profile(profile_key)()
+  local profile = require("loomworks").get_profile(profile_key)
+  if not profile then return end
+  actions.delete_profile(profile)()
 end
 
 --- Delete a configuration interactively (with confirmation dialog).

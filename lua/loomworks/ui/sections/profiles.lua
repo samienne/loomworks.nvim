@@ -87,7 +87,7 @@ local function render_adhoc_node(tree, profile, lw)
     on_rebuild = actions.rebuild_configuration(pp.project_key, pp.config_key),
     on_clean = actions.clean_configuration(pp.project_key, pp.config_key),
     on_configure = actions.configure_configuration(pp.project_key, pp.config_key),
-    on_delete = actions.delete_profile(profile.key),
+    on_delete = actions.delete_profile(profile),
   }, function()
     helpers.render_cached_details(tree, config_status, status_hl, cached)
   end)
@@ -104,33 +104,33 @@ return function(tree, ctx)
   -- Separate full profiles from ad-hoc entries
   local full_profiles = {}
   local adhoc_profiles = {}
-  for profile_key, profile in pairs(all_profiles) do
+  for _, profile in pairs(all_profiles) do
     if profile.ad_hoc then
-      adhoc_profiles[#adhoc_profiles + 1] = profile_key
+      adhoc_profiles[#adhoc_profiles + 1] = profile
     else
-      full_profiles[profile_key] = profile
+      full_profiles[#full_profiles + 1] = profile
     end
   end
-  table.sort(adhoc_profiles)
+  table.sort(adhoc_profiles, function(a, b) return a.key < b.key end)
 
   -- Collect full profiles to show: configured OR running OR active
   local configured_profiles = {}
   local configured_set = {}
-  for profile_key, profile in pairs(full_profiles) do
-    if profile:is_configured() or profile:is_running() or profile_key == active_profile_key then
-      configured_profiles[#configured_profiles + 1] = profile_key
-      configured_set[profile_key] = true
+  for _, profile in ipairs(full_profiles) do
+    if profile:is_configured() or profile:is_running() or profile.key == active_profile_key then
+      configured_profiles[#configured_profiles + 1] = profile
+      configured_set[profile.key] = true
     end
   end
-  table.sort(configured_profiles)
+  table.sort(configured_profiles, function(a, b) return a.key < b.key end)
 
   local explicit_unconfigured = {}
-  for profile_key, profile in pairs(full_profiles) do
-    if profile.explicit and not configured_set[profile_key] then
-      explicit_unconfigured[#explicit_unconfigured + 1] = profile_key
+  for _, profile in ipairs(full_profiles) do
+    if profile.explicit and not configured_set[profile.key] then
+      explicit_unconfigured[#explicit_unconfigured + 1] = profile
     end
   end
-  table.sort(explicit_unconfigured)
+  table.sort(explicit_unconfigured, function(a, b) return a.key < b.key end)
 
   local has_full = #configured_profiles > 0 or #explicit_unconfigured > 0
   local has_adhoc = #adhoc_profiles > 0
@@ -140,15 +140,14 @@ return function(tree, ctx)
   tree:leaf("Profiles", "Title")
   tree:blank()
 
-  local function render_profile_node(profile_key)
-    local profile = all_profiles[profile_key]
-    local is_active = profile_key == active_profile_key
+  local function render_profile_node(profile)
+    local is_active = profile.key == active_profile_key
     local profile_running = profile:is_running()
 
     local marker = is_active and "● " or "○ "
     local hl = profile_running and "DiagnosticWarn" or (is_active and "DiagnosticOk" or nil)
 
-    local display = profile_key
+    local display = profile.key
     if profile.explicit then
       display = display .. " [explicit]"
     end
@@ -161,9 +160,9 @@ return function(tree, ctx)
       if pct then
         display = display .. " " .. pct .. "%"
       end
-      display = display .. helpers.format_elapsed(lw.get_operation_elapsed(profile_key))
+      display = display .. helpers.format_elapsed(lw.get_operation_elapsed(profile.key))
     else
-      local op = lw.get_operation(profile_key)
+      local op = lw.get_operation(profile.key)
       if op and op.message then
         display = display .. " — " .. op.message
       end
@@ -173,26 +172,26 @@ return function(tree, ctx)
     end
 
     tree:node(display, {
-      fold_key = "profile:" .. profile_key,
+      fold_key = "profile:" .. profile.key,
       marker = marker,
       spinning = profile_running,
       hl = hl,
-      on_enter = actions.activate(profile_key),
-      on_build = actions.build(profile_key),
-      on_rebuild = actions.rebuild(profile_key),
-      on_clean = actions.clean(profile_key),
-      on_configure = actions.configure(profile_key),
-      on_delete = actions.delete_profile(profile_key),
+      on_enter = actions.activate(profile.key),
+      on_build = actions.build(profile),
+      on_rebuild = actions.rebuild(profile),
+      on_clean = actions.clean(profile),
+      on_configure = actions.configure(profile),
+      on_delete = actions.delete_profile(profile),
     }, function()
       render_profile_details(tree, profile, lw)
     end)
   end
 
-  for _, profile_key in ipairs(configured_profiles) do
-    render_profile_node(profile_key)
+  for _, profile in ipairs(configured_profiles) do
+    render_profile_node(profile)
   end
-  for _, profile_key in ipairs(explicit_unconfigured) do
-    render_profile_node(profile_key)
+  for _, profile in ipairs(explicit_unconfigured) do
+    render_profile_node(profile)
   end
 
   if has_adhoc then
@@ -200,8 +199,8 @@ return function(tree, ctx)
       tree:blank()
       tree:leaf("Pinned:", "Comment")
     end
-    for _, profile_key in ipairs(adhoc_profiles) do
-      render_adhoc_node(tree, all_profiles[profile_key], lw)
+    for _, profile in ipairs(adhoc_profiles) do
+      render_adhoc_node(tree, profile, lw)
     end
   end
 

@@ -7,41 +7,51 @@
 local M = {}
 
 -- ---------------------------------------------------------------------------
--- Action factories
+-- Profile action factories (take Profile objects)
 -- ---------------------------------------------------------------------------
 
+--- @param profile_key string takes a key because activate may materialize a new profile
 function M.activate(profile_key)
   return function()
     require("loomworks").activate_profile(profile_key)
   end
 end
 
-function M.build(profile_key)
-  return function()
-    require("loomworks.overseer").run_profile_action(profile_key, "build")
-  end
+--- @param profile loomworks.Profile
+function M.build(profile)
+  return function() profile:build() end
 end
 
-function M.configure(profile_key)
-  return function()
-    require("loomworks.overseer").run_profile_action(profile_key, "configure")
-  end
+--- @param profile loomworks.Profile
+function M.configure(profile)
+  return function() profile:configure() end
 end
 
-function M.rebuild(profile_key)
+--- @param profile loomworks.Profile
+function M.rebuild(profile)
+  return function() profile:rebuild() end
+end
+
+--- @param profile loomworks.Profile
+function M.clean(profile)
+  return function() profile:clean() end
+end
+
+--- @param profile loomworks.Profile
+function M.delete_profile(profile)
   return function()
-    local lw = require("loomworks")
-    lw.clean_profile(profile_key, function()
-      require("loomworks.overseer").run_profile_action(profile_key, "build")
+    local plan = profile:plan_deletion()
+    M._show_delete_confirmation("Delete profile: " .. profile.key, plan, function()
+      require("loomworks").execute_deletion(plan, { deactivate_profile = profile.key }, function()
+        vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
+      end)
     end)
   end
 end
 
-function M.clean(profile_key)
-  return function()
-    require("loomworks").clean_profile(profile_key)
-  end
-end
+-- ---------------------------------------------------------------------------
+-- Configuration action factories (take project_key + config_key strings)
+-- ---------------------------------------------------------------------------
 
 function M.build_configuration(project_key, config_key)
   return function()
@@ -57,8 +67,7 @@ end
 
 function M.rebuild_configuration(project_key, config_key)
   return function()
-    local lw = require("loomworks")
-    lw.clean_config(project_key, config_key, function()
+    require("loomworks").clean_config(project_key, config_key, function()
       require("loomworks.overseer").run_configuration_action(project_key, config_key, "build")
     end)
   end
@@ -67,20 +76,6 @@ end
 function M.clean_configuration(project_key, config_key)
   return function()
     require("loomworks").clean_config(project_key, config_key)
-  end
-end
-
-function M.delete_profile(profile_key)
-  return function()
-    local lw = require("loomworks")
-    local profile = lw.get_profile(profile_key)
-    if not profile then return end
-    local plan = profile:plan_deletion()
-    M._show_delete_confirmation("Delete profile: " .. profile.key, plan, function()
-      lw.execute_deletion(plan, { deactivate_profile = profile.key }, function()
-        vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
-      end)
-    end)
   end
 end
 
@@ -97,16 +92,16 @@ function M.delete_config(project_key, config_key)
   end
 end
 
-function M.delete_configuration(project_key, config_name)
+--- @param project loomworks.Project
+--- @param config_name string
+function M.delete_configuration(project, config_name)
   return function()
     local lw = require("loomworks")
-    local proj = lw.get_project(project_key)
-    if not proj then return end
-    local config_key = proj:config_cache_key(config_name)
-    local plan = lw.plan_config_deletion(project_key, config_key)
+    local config_key = project:config_cache_key(config_name)
+    local plan = lw.plan_config_deletion(project.key, config_key)
     M._show_delete_confirmation(
-      "Delete: " .. project_key .. " / " .. config_key, plan, function()
-      lw.delete_config(project_key, config_key, function()
+      "Delete: " .. project.key .. " / " .. config_key, plan, function()
+      lw.delete_config(project.key, config_key, function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
     end)

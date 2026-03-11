@@ -64,11 +64,11 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
           spinning = profile_running,
           hl = hl,
           on_enter = actions.activate(profile_key),
-          on_build = actions.build(profile_key),
-          on_rebuild = actions.rebuild(profile_key),
-          on_clean = actions.clean(profile_key),
-          on_configure = actions.configure(profile_key),
-          on_delete = entry.cached and actions.delete_profile(profile_key) or nil,
+          on_build = profile and actions.build(profile) or nil,
+          on_rebuild = profile and actions.rebuild(profile) or nil,
+          on_clean = profile and actions.clean(profile) or nil,
+          on_configure = profile and actions.configure(profile) or nil,
+          on_delete = profile and actions.delete_profile(profile) or nil,
         })
       end
     end)

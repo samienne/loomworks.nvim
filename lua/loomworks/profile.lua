@@ -379,4 +379,18 @@ function Profile:delete(on_done)
     self:plan_deletion(), { deactivate_profile = self.key }, on_done)
 end
 
+--- Clean this profile's configs: delete build dirs and reset to unconfigured.
+--- Does NOT remove the profile itself.
+--- @param on_done? function
+function Profile:clean(on_done)
+  self._core:clean_profile(self.key, on_done)
+end
+
+--- Rebuild: clean then build.
+function Profile:rebuild()
+  self:clean(function()
+    self:build()
+  end)
+end
+
 return { Profile = Profile, ProfileProject = ProfileProject }

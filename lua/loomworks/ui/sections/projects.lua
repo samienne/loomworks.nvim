@@ -211,7 +211,7 @@ return function(tree, ctx)
                   on_rebuild = actions.rebuild_configuration(key, cname),
                   on_clean = actions.clean_configuration(key, cname),
                   on_configure = actions.configure_configuration(key, cname),
-                  on_delete = cached and actions.delete_configuration(key, cname) or nil,
+                  on_delete = cached and actions.delete_configuration(proj, cname) or nil,
                   on_pin = actions.pin_config(key, cname),
                 }, function()
                   helpers.render_cached_details(tree, config_status, status_hl, cached)
