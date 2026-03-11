@@ -83,7 +83,7 @@ local function render_adhoc_node(tree, profile, lw)
     hl = status_hl,
     on_build = actions.build_configuration(pp.project_key, pp.config_key),
     on_configure = actions.configure_configuration(pp.project_key, pp.config_key),
-    on_delete = actions.delete_config(pp.project_key, pp.config_key),
+    on_delete = actions.delete_profile(profile.key),
   }, function()
     helpers.render_cached_details(tree, config_status, status_hl, cached)
   end)

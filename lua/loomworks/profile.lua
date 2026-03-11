@@ -357,28 +357,29 @@ function Profile:plan_deletion()
   if not ws then return empty end
   if not self.mappings then return empty end
 
-  -- Build lookup of other profiles' config keys for shared detection
+  -- Build lookup: which configs are referenced by OTHER materialized profiles.
+  -- Unmaterialized auto-generated profiles don't hold cache references.
+  local other_refs = {}
   local all_profiles = self._core:get_profiles()
-  local config_key_profiles = {}
   for _, other in pairs(all_profiles) do
-    if other.key ~= self.key then
+    if other.key ~= self.key and other.materialized then
       for _, other_pp in ipairs(other:projects()) do
-        local lookup = other_pp.project_key .. "\0" .. other_pp.config_key
-        config_key_profiles[lookup] = config_key_profiles[lookup] or {}
-        config_key_profiles[lookup][#config_key_profiles[lookup] + 1] = other.key
+        other_refs[other_pp.project_key .. "\0" .. other_pp.config_key] = true
       end
     end
   end
 
+  -- Only include configs that become unreferenced after this profile is removed
   local items = {}
   for _, pp in ipairs(self:projects()) do
     local lookup = pp.project_key .. "\0" .. pp.config_key
-    items[#items + 1] = {
-      project_key = pp.project_key,
-      config_key = pp.config_key,
-      build_dir = pp:build_dir(),
-      shared_by = config_key_profiles[lookup],
-    }
+    if not other_refs[lookup] then
+      items[#items + 1] = {
+        project_key = pp.project_key,
+        config_key = pp.config_key,
+        build_dir = pp:build_dir(),
+      }
+    end
   end
 
   table.sort(items, function(a, b) return a.project_key < b.project_key end)
@@ -395,12 +396,8 @@ end
 --- Delete this profile (plan + execute, no UI confirmation).
 --- @param on_done? function
 function Profile:delete(on_done)
-  local plan = self:plan_deletion()
-  if #plan.items == 0 then
-    if on_done then on_done() end
-    return
-  end
-  self._core:execute_deletion(plan, { deactivate_profile = self.key }, on_done)
+  self._core:execute_deletion(
+    self:plan_deletion(), { deactivate_profile = self.key }, on_done)
 end
 
 return { Profile = Profile, ProfileProject = ProfileProject }

@@ -206,6 +206,7 @@ return function(tree, ctx)
                   hl = status_hl,
                   on_build = actions.build_configuration(key, cname),
                   on_configure = actions.configure_configuration(key, cname),
+                  on_delete = cached and actions.delete_configuration(key, cname) or nil,
                 }, function()
                   helpers.render_cached_details(tree, config_status, status_hl, cached)
                 end)

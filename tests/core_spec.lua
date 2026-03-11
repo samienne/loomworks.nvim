@@ -649,14 +649,21 @@ describe("Core", function()
   end)
 
   describe("plan_config_deletion", function()
-    it("returns plan with build_dir from cache", function()
+    it("includes config when only ad-hoc profiles reference it", function()
       local core = make_core(
         {
           projects = { App = { typescript = {} } },
-          configuration_sets = { debug = { App = "development" } },
         },
         nil,
         {
+          profiles = {
+            ["adhoc:App:development"] = {
+              ad_hoc = true,
+              project_key = "App",
+              config_key = "development",
+              projects = { App = { config_key = "development" } },
+            },
+          },
           projects = {
             App = {
               type = "typescript",
@@ -671,8 +678,9 @@ describe("Core", function()
       local plan = core:plan_config_deletion("App", "development")
       assert.equals(1, #plan.items)
       assert.equals("App", plan.items[1].project_key)
-      assert.equals("development", plan.items[1].config_key)
       assert.equals("/root/.nvim/build/App/development", plan.items[1].build_dir)
+      assert.is_not_nil(plan.adhoc_profiles)
+      assert.equals(1, #plan.adhoc_profiles)
       assert.is_true(plan.defined_in_config)
     end)
 
@@ -682,6 +690,50 @@ describe("Core", function()
       local plan = core:plan_config_deletion("App", "Debug")
       assert.are.same({}, plan.items)
       assert.is_false(plan.defined_in_config)
+    end)
+
+    it("excludes config when a full profile references it", function()
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+          configuration_sets = { debug = { App = "Debug" } },
+        },
+        nil,
+        {
+          profiles = {
+            ["debug:ninja-gcc"] = {
+              configuration_set = "debug",
+              tool_key = "ninja-gcc",
+              tool_data = { generator = "Ninja", compiler_id = "gcc" },
+            },
+          },
+          projects = {
+            App = {
+              type = "cmake",
+              configurations = {
+                ["Debug:ninja-gcc"] = {
+                  state = "built",
+                  build_dir = "/root/.nvim/build/App/Debug",
+                  variant = "Debug",
+                  tool_key = "ninja-gcc",
+                },
+              },
+            },
+          },
+        },
+        {
+          tools_by_type = {
+            cmake = {
+              { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local plan = core:plan_config_deletion("App", "Debug:ninja-gcc")
+      -- Config is kept because full profile references it
+      assert.equals(0, #plan.items)
+      assert.is_not_nil(plan.kept_by)
     end)
   end)
 
@@ -837,23 +889,231 @@ describe("Core", function()
       assert.is_true(saved_cache.profiles == nil or saved_cache.profiles.debug == nil)
     end)
 
-    it("skips shared items", function()
+    it("removes profile with no unreferenced configs (empty items)", function()
+      local saved_cache = nil
       local core = make_core(
-        { projects = { App = { typescript = {} } } },
-        nil, nil,
-        { cache = { save = function() return true end } }
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = {
+            debug = { configuration_set = "debug" },
+            release = { configuration_set = "debug" },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        },
+        {
+          cache = {
+            save = function(root, data)
+              saved_cache = data
+              return true
+            end,
+          },
+        }
       )
       core:setup({ root = "/root" })
 
+      -- Empty items = no unreferenced configs, but profile should still be removed
       local plan = {
-        items = {
-          { project_key = "App", config_key = "dev", shared_by = { "release" } },
-        },
+        profile_key = "debug",
+        items = {},
       }
 
       local done = false
-      core:execute_deletion(plan, nil, function() done = true end)
+      core:execute_deletion(plan, { deactivate_profile = "debug" }, function() done = true end)
       assert.is_true(done)
+      assert.is_not_nil(saved_cache)
+      assert.is_nil(saved_cache.profiles.debug)
+      assert.is_not_nil(saved_cache.profiles.release)
+      -- Config preserved (no items to delete)
+      assert.is_not_nil(saved_cache.projects.App.configurations.development)
+    end)
+  end)
+
+  describe("find_referencing_profiles", function()
+    it("finds profiles referencing a config", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+        },
+        nil,
+        {
+          profiles = {
+            ["adhoc:App:development"] = {
+              ad_hoc = true,
+              project_key = "App",
+              config_key = "development",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local refs = core:find_referencing_profiles("App", "development")
+      assert.equals(1, #refs)
+      assert.equals("adhoc:App:development", refs[1])
+    end)
+
+    it("returns empty when no profiles reference config", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+        },
+        nil,
+        {
+          profiles = {
+            ["adhoc:App:development"] = {
+              ad_hoc = true,
+              project_key = "App",
+              config_key = "development",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local refs = core:find_referencing_profiles("App", "production")
+      assert.equals(0, #refs)
+    end)
+  end)
+
+  describe("_adopt_orphaned_configs", function()
+    it("creates ad-hoc profile for orphaned built config", function()
+      local saved_cache = nil
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          -- No profiles, but a built config exists
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        },
+        {
+          cache = {
+            save = function(root, data)
+              saved_cache = data
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.is_not_nil(saved_cache)
+      assert.is_not_nil(saved_cache.profiles)
+      assert.is_not_nil(saved_cache.profiles["adhoc:App:development"])
+      local adhoc = saved_cache.profiles["adhoc:App:development"]
+      assert.is_true(adhoc.ad_hoc)
+      assert.equals("App", adhoc.project_key)
+      assert.equals("development", adhoc.config_key)
+    end)
+
+    it("silently drops unconfigured skeleton", function()
+      local saved_cache = nil
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = {}, -- no state = unconfigured
+              },
+            },
+          },
+        },
+        {
+          cache = {
+            save = function(root, data)
+              saved_cache = data
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.is_not_nil(saved_cache)
+      -- Config should have been dropped
+      assert.is_nil(saved_cache.projects)
+      -- No ad-hoc profile created
+      assert.is_nil(saved_cache.profiles)
+    end)
+
+    it("does not adopt configs already referenced by a profile", function()
+      local saved = false
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        },
+        {
+          cache = {
+            save = function()
+              saved = true
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      -- No changes needed since config is already referenced
+      assert.is_false(saved)
     end)
   end)
 

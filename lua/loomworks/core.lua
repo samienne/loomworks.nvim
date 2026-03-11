@@ -207,6 +207,7 @@ function Core:setup(opts)
 
   self._workspace = ws
   self:_scan_tools()
+  self:_adopt_orphaned_configs()
   self._active_set = self._deps.merge.merge(ws, self._tools_by_type)
   self._generation = self._generation + 1
   self._deps.events.emit("workspace_changed", ws)
@@ -498,6 +499,101 @@ function Core:materialize_profile(profile_key)
   self:remerge()
 end
 
+--- Adopt orphaned cached configs on init.
+--- Configs in configured/built/failed state with no profile reference
+--- get an ad-hoc profile created. Unconfigured skeletons are silently dropped.
+function Core:_adopt_orphaned_configs()
+  local ws = self._workspace
+  if not ws or not ws.cache.projects then return end
+
+  -- Build a set of all (project_key, config_key) pairs referenced by profiles
+  local referenced = {}
+  if ws.cache.profiles then
+    for _, profile in pairs(ws.cache.profiles) do
+      if profile.projects then
+        for pkey, pdata in pairs(profile.projects) do
+          if pdata.config_key then
+            referenced[pkey .. "\0" .. pdata.config_key] = true
+          end
+        end
+      end
+    end
+  end
+
+  local changed = false
+  ws.cache.profiles = ws.cache.profiles or {}
+
+  for project_key, cached_proj in pairs(ws.cache.projects) do
+    if cached_proj.configurations then
+      local to_drop = {}
+      for config_key, cached_config in pairs(cached_proj.configurations) do
+        if not referenced[project_key .. "\0" .. config_key] then
+          local state = cached_config.state
+          if state and state ~= "unconfigured" then
+            -- Adopt: create ad-hoc profile
+            local adhoc_key = "adhoc:" .. project_key .. ":" .. config_key
+            local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
+
+            -- Resolve tool info from detected tools
+            local tool_data, tool_label, tool_mod_type = nil, nil, nil
+            if tool_key then
+              for mod_type, tools in pairs(self._tools_by_type) do
+                for _, dt in ipairs(tools) do
+                  if dt.tool_key == tool_key then
+                    tool_data = dt.tool_data
+                    tool_label = dt.tool_label
+                    tool_mod_type = mod_type
+                    break
+                  end
+                end
+                if tool_data then break end
+              end
+            end
+
+            ws.cache.profiles[adhoc_key] = {
+              ad_hoc = true,
+              project_key = project_key,
+              config_key = config_key,
+              tool_key = tool_key,
+              tool_data = tool_data or cached_config.tool_data,
+              tool_label = tool_label,
+              tool_mod_type = tool_mod_type,
+              projects = {
+                [project_key] = { config_key = config_key },
+              },
+            }
+            changed = true
+          else
+            -- Drop: unconfigured skeleton
+            to_drop[#to_drop + 1] = config_key
+            changed = true
+          end
+        end
+      end
+      for _, config_key in ipairs(to_drop) do
+        cached_proj.configurations[config_key] = nil
+      end
+      if not next(cached_proj.configurations) then
+        ws.cache.projects[project_key] = nil
+      end
+    end
+  end
+
+  if not next(ws.cache.projects) then
+    ws.cache.projects = nil
+  end
+  if ws.cache.profiles and not next(ws.cache.profiles) then
+    ws.cache.profiles = nil
+  end
+
+  if changed then
+    local ok, err = self._deps.cache.save(ws.root, ws.cache)
+    if not ok then
+      self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
+    end
+  end
+end
+
 --- Materialize a single configuration: ensure cache has a skeleton entry.
 --- Lighter than materializing a full profile — used for configuration-level
 --- build/configure actions.
@@ -616,6 +712,28 @@ function Core:materialize_adhoc(project_key, config_key)
 
   self:remerge()
   return adhoc_key
+end
+
+--- Find all profile keys that reference a specific cached config.
+--- @param project_key string
+--- @param config_key string
+--- @return string[] profile_keys
+function Core:find_referencing_profiles(project_key, config_key)
+  local profiles = self:get_profiles()
+  local result = {}
+  for pkey, profile in pairs(profiles) do
+    -- Only materialized profiles hold actual cache references.
+    if profile.materialized then
+      for _, pp in ipairs(profile:projects()) do
+        if pp.project_key == project_key and pp.config_key == config_key then
+          result[#result + 1] = pkey
+          break
+        end
+      end
+    end
+  end
+  table.sort(result)
+  return result
 end
 
 -- ---------------------------------------------------------------------------
@@ -988,7 +1106,9 @@ end
 -- Deletion: plan (config-level)
 -- ---------------------------------------------------------------------------
 
---- Plan a single config deletion.
+--- Plan a single config deletion from the Projects section.
+--- Removes ad-hoc profiles referencing this config; if no full profiles
+--- still reference it, the config itself is included for deletion.
 --- @param project_key string
 --- @param config_key string
 --- @return loomworks.DeletionPlan
@@ -998,39 +1118,44 @@ function Core:plan_config_deletion(project_key, config_key)
   end
 
   local ws = self._workspace
-  local all_profiles = self:get_profiles()
-  local config_sets = ws.config.configuration_sets
+  local refs = self:find_referencing_profiles(project_key, config_key)
 
-  -- Find all profiles that reference this config key (informational warning)
-  local affected = {}
-  if config_sets then
-    for _, profile in pairs(all_profiles) do
-      local pp = profile:project(project_key)
-      if pp and pp.config_key == config_key then
-        affected[#affected + 1] = profile.key
-      end
+  -- Separate ad-hoc and full profile references
+  local adhoc_keys = {}
+  local has_full_ref = false
+  local all_profiles = self:get_profiles()
+  for _, pkey in ipairs(refs) do
+    local profile = all_profiles[pkey]
+    if profile and profile.ad_hoc then
+      adhoc_keys[#adhoc_keys + 1] = pkey
+    else
+      has_full_ref = true
     end
   end
 
-  local build_dir = nil
-  if ws.cache.projects and ws.cache.projects[project_key] then
-    local cached = ws.cache.projects[project_key].configurations
-    if cached and cached[config_key] then
-      build_dir = cached[config_key].build_dir
+  -- Config is deletable only if no full profile references it
+  local items = {}
+  if not has_full_ref then
+    local build_dir = nil
+    if ws.cache.projects and ws.cache.projects[project_key] then
+      local cached = ws.cache.projects[project_key].configurations
+      if cached and cached[config_key] then
+        build_dir = cached[config_key].build_dir
+      end
     end
+    items[#items + 1] = {
+      project_key = project_key,
+      config_key = config_key,
+      build_dir = build_dir,
+    }
   end
 
   local defined_in_config = ws.config.projects[project_key] ~= nil
 
   return {
-    items = {
-      {
-        project_key = project_key,
-        config_key = config_key,
-        build_dir = build_dir,
-        affected_profiles = #affected > 0 and affected or nil,
-      },
-    },
+    items = items,
+    adhoc_profiles = #adhoc_keys > 0 and adhoc_keys or nil,
+    kept_by = has_full_ref and refs or nil,
     project_key = project_key,
     config_key = config_key,
     defined_in_config = defined_in_config,
@@ -1075,24 +1200,6 @@ function Core:delete_cached_configs(items)
     end
   end
 
-  -- Clean up ad-hoc profiles referencing deleted configs
-  if ws.cache.profiles then
-    local deleted_set = {}
-    for _, item in ipairs(items) do
-      deleted_set[item.project_key .. "\0" .. item.config_key] = true
-    end
-    for pkey, profile in pairs(ws.cache.profiles) do
-      if profile.ad_hoc and profile.project_key and profile.config_key then
-        if deleted_set[profile.project_key .. "\0" .. profile.config_key] then
-          ws.cache.profiles[pkey] = nil
-        end
-      end
-    end
-    if not next(ws.cache.profiles) then
-      ws.cache.profiles = nil
-    end
-  end
-
   local ok, err = self._deps.cache.save(ws.root, ws.cache)
   if not ok then
     self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
@@ -1102,63 +1209,60 @@ function Core:delete_cached_configs(items)
 end
 
 --- Execute a deletion plan asynchronously.
---- Marks items as deleting, stops running tasks, cleans cache + build dirs.
+--- All items in the plan are unreferenced configs that will be deleted.
+--- Also removes the profile entry from cache if plan.profile_key is set.
 --- @param plan loomworks.DeletionPlan
 --- @param opts? { deactivate_profile?: string }
 --- @param on_done? function called when deletion is complete
 function Core:execute_deletion(plan, opts, on_done)
   opts = opts or {}
-
-  -- Filter to only non-shared items (shared items have shared_by set)
-  local to_delete = {}
-  for _, item in ipairs(plan.items) do
-    if not item.shared_by or #item.shared_by == 0 then
-      to_delete[#to_delete + 1] = item
-    end
-  end
-
-  if #to_delete == 0 then
-    if on_done then on_done() end
-    return
-  end
+  local items = plan.items
 
   -- Deactivate profile if requested
   if opts.deactivate_profile then
     self:deactivate_profile(opts.deactivate_profile)
   end
 
+  -- Remove profile entry from cache (before async work)
+  if plan.profile_key and self._workspace then
+    local ws = self._workspace
+    if ws.cache.profiles and ws.cache.profiles[plan.profile_key] then
+      ws.cache.profiles[plan.profile_key] = nil
+      if not next(ws.cache.profiles) then
+        ws.cache.profiles = nil
+      end
+      self._deps.cache.save(ws.root, ws.cache)
+      if #items == 0 then
+        self:remerge()
+      end
+    end
+  end
+
+  if #items == 0 then
+    if on_done then on_done() end
+    return
+  end
+
   -- Mark items as deleting
-  for _, item in ipairs(to_delete) do
+  for _, item in ipairs(items) do
     self._deleting[item.project_key .. "\0" .. item.config_key] = true
   end
 
-  self._deps.events.emit("deletion_started", to_delete)
+  self._deps.events.emit("deletion_started", items)
 
   -- Find and stop running tasks for these items
-  local running = self:find_running_tasks_for_items(to_delete)
+  local running = self:find_running_tasks_for_items(items)
   local task_ids = {}
   for task_id in pairs(running) do
     task_ids[#task_ids + 1] = task_id
   end
 
   self:stop_tasks_then(task_ids, function()
-    -- Now safe to delete
-    self:delete_cached_configs(to_delete)
-
-    -- Remove profile from cache if this is a profile deletion
-    if plan.profile_key and self._workspace then
-      local ws = self._workspace
-      if ws.cache.profiles and ws.cache.profiles[plan.profile_key] then
-        ws.cache.profiles[plan.profile_key] = nil
-        if not next(ws.cache.profiles) then
-          ws.cache.profiles = nil
-        end
-        self._deps.cache.save(ws.root, ws.cache)
-      end
-    end
+    -- Now safe to delete configs + build dirs
+    self:delete_cached_configs(items)
 
     -- Unmark deleting state
-    for _, item in ipairs(to_delete) do
+    for _, item in ipairs(items) do
       self._deleting[item.project_key .. "\0" .. item.config_key] = nil
     end
 
@@ -1171,7 +1275,7 @@ function Core:execute_deletion(plan, opts, on_done)
       end
     end
 
-    self._deps.events.emit("deletion_completed", to_delete)
+    self._deps.events.emit("deletion_completed", items)
 
     if on_done then on_done() end
   end)
@@ -1190,12 +1294,31 @@ function Core:delete_profile(profile_key, on_done)
 end
 
 --- Convenience: delete a single config without UI confirmation.
+--- Removes ad-hoc profiles referencing it, then GCs the config if unreferenced.
 --- @param project_key string
 --- @param config_key string
 --- @param on_done? function
 function Core:delete_config(project_key, config_key, on_done)
   local plan = self:plan_config_deletion(project_key, config_key)
+
+  -- Remove ad-hoc profiles referencing this config
+  if plan.adhoc_profiles and self._workspace then
+    local ws = self._workspace
+    ws.cache.profiles = ws.cache.profiles or {}
+    for _, pkey in ipairs(plan.adhoc_profiles) do
+      ws.cache.profiles[pkey] = nil
+    end
+    if not next(ws.cache.profiles) then
+      ws.cache.profiles = nil
+    end
+    self._deps.cache.save(ws.root, ws.cache)
+  end
+
   if #plan.items == 0 then
+    -- Config is kept (referenced by full profile), but ad-hoc profiles were cleaned
+    if plan.adhoc_profiles then
+      self:remerge()
+    end
     if on_done then on_done() end
     return
   end

@@ -47,11 +47,14 @@ function M.delete_profile(profile_key)
     if not profile then return end
     local plan = profile:plan_deletion()
     if #plan.items == 0 then
-      vim.notify("loomworks: nothing to delete for profile", vim.log.levels.INFO)
+      -- No unreferenced configs to delete — just remove the profile entry
+      lw.execute_deletion(plan, { deactivate_profile = profile.key }, function()
+        vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
+      end)
       return
     end
-    M._show_delete_confirmation("Delete profile: " .. profile.key, plan, function(p)
-      lw.execute_deletion(p, { deactivate_profile = profile.key }, function()
+    M._show_delete_confirmation("Delete profile: " .. profile.key, plan, function()
+      lw.execute_deletion(plan, { deactivate_profile = profile.key }, function()
         vim.notify("loomworks: profile '" .. profile.key .. "' cleaned", vim.log.levels.INFO)
       end)
     end)
@@ -62,12 +65,20 @@ function M.delete_config(project_key, config_key)
   return function()
     local lw = require("loomworks")
     local plan = lw.plan_config_deletion(project_key, config_key)
-    if #plan.items == 0 then
+    if #plan.items == 0 and not plan.adhoc_profiles then
       vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
       return
     end
-    M._show_delete_confirmation("Delete: " .. project_key .. " / " .. config_key, plan, function(p)
-      lw.execute_deletion(p, nil, function()
+    if #plan.items == 0 then
+      -- Config kept by full profiles, but we can remove ad-hoc pins
+      lw.delete_config(project_key, config_key, function()
+        vim.notify("loomworks: pin removed", vim.log.levels.INFO)
+      end)
+      return
+    end
+    M._show_delete_confirmation(
+      "Delete: " .. project_key .. " / " .. config_key, plan, function()
+      lw.delete_config(project_key, config_key, function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
     end)
@@ -81,13 +92,19 @@ function M.delete_configuration(project_key, config_name)
     if not proj then return end
     local config_key = proj:config_cache_key(config_name)
     local plan = lw.plan_config_deletion(project_key, config_key)
-    if #plan.items == 0 then
+    if #plan.items == 0 and not plan.adhoc_profiles then
       vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
       return
     end
+    if #plan.items == 0 then
+      lw.delete_config(project_key, config_key, function()
+        vim.notify("loomworks: pin removed", vim.log.levels.INFO)
+      end)
+      return
+    end
     M._show_delete_confirmation(
-      "Delete configuration: " .. project_key .. " / " .. config_key, plan, function(p)
-      lw.execute_deletion(p, nil, function()
+      "Delete configuration: " .. project_key .. " / " .. config_key, plan, function()
+      lw.delete_config(project_key, config_key, function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
     end)
@@ -119,7 +136,7 @@ end
 --- Show a confirmation dialog for deleting configurations.
 --- @param title string
 --- @param plan loomworks.DeletionPlan
---- @param on_confirm fun(plan: loomworks.DeletionPlan)
+--- @param on_confirm fun()
 function M._show_delete_confirmation(title, plan, on_confirm)
   local lw = require("loomworks")
   local items = plan.items
@@ -152,70 +169,41 @@ function M._show_delete_confirmation(title, plan, on_confirm)
     add("")
   end
 
-  local to_delete = {}
-  local shared = {}
-
+  add("  Will clean:", "Title")
   for _, item in ipairs(items) do
-    if item.shared_by and #item.shared_by > 0 then
-      shared[#shared + 1] = item
+    add("    " .. item.project_key .. "  " .. item.config_key, "DiagnosticError")
+    if item.build_dir then
+      add("      " .. rel_path(item.build_dir), "Comment")
     else
-      to_delete[#to_delete + 1] = item
+      add("      (no build directory)", "Comment")
     end
   end
+  add("")
 
-  if #to_delete > 0 then
-    add("  Will clean:", "Title")
-    for _, item in ipairs(to_delete) do
-      add("    " .. item.project_key .. "  " .. item.config_key, "DiagnosticError")
-      if item.build_dir then
-        add("      " .. rel_path(item.build_dir), "Comment")
-      else
-        add("      (no build directory)", "Comment")
-      end
-      if item.affected_profiles and #item.affected_profiles > 0 then
-        add("      affects profiles: " .. table.concat(item.affected_profiles, ", "),
-          "DiagnosticWarn")
-      end
+  if plan.kept_by then
+    add("  Kept by profiles: " .. table.concat(plan.kept_by, ", "), "Comment")
+    add("")
+  end
+
+  local dirs = {}
+  for _, item in ipairs(items) do
+    if item.build_dir then
+      dirs[#dirs + 1] = rel_path(item.build_dir)
+    end
+  end
+  if #dirs > 0 then
+    add("  Directories to delete:", "DiagnosticError")
+    for _, dir in ipairs(dirs) do
+      add("    " .. dir, "Comment")
     end
     add("")
   end
 
-  if #shared > 0 then
-    add("  Shared (kept):", "Title")
-    for _, item in ipairs(shared) do
-      add("    " .. item.project_key .. "  " .. item.config_key, "DiagnosticInfo")
-      add("      used by: " .. table.concat(item.shared_by, ", "), "Comment")
-    end
+  if defined_in_config then
+    add("  Note: defined in loomworks.json — remains available for reconfiguration.", "Comment")
     add("")
   end
-
-  if #to_delete > 0 then
-    local dirs = {}
-    for _, item in ipairs(to_delete) do
-      if item.build_dir then
-        dirs[#dirs + 1] = rel_path(item.build_dir)
-      end
-    end
-    if #dirs > 0 then
-      add("  Directories to delete:", "DiagnosticError")
-      for _, dir in ipairs(dirs) do
-        add("    " .. dir, "Comment")
-      end
-      add("")
-    end
-  end
-
-  if #to_delete == 0 then
-    add("  Nothing to delete — all configurations are shared.", "Comment")
-    add("")
-    add("  Press q to close", "Comment")
-  else
-    if defined_in_config then
-      add("  Note: defined in loomworks.json — remains available for reconfiguration.", "Comment")
-      add("")
-    end
-    add("  Press y to confirm, q to cancel", "Comment")
-  end
+  add("  Press y to confirm, q to cancel", "Comment")
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -256,13 +244,10 @@ function M._show_delete_confirmation(title, plan, on_confirm)
   vim.keymap.set("n", "q", close, map_opts)
   vim.keymap.set("n", "<Esc>", close, map_opts)
   vim.keymap.set("n", "n", close, map_opts)
-
-  if #to_delete > 0 then
-    vim.keymap.set("n", "y", function()
-      close()
-      on_confirm(plan)
-    end, map_opts)
-  end
+  vim.keymap.set("n", "y", function()
+    close()
+    on_confirm()
+  end, map_opts)
 end
 
 return M
