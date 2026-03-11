@@ -67,6 +67,7 @@ local view = View.new({
     ["B"]     = "build",
     ["C"]     = "configure",
     ["D"]     = "delete",
+    ["P"]     = "pin",
     ["R"]     = "rescan",
   },
   events = {

@@ -731,9 +731,9 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
       local plan = core:plan_config_deletion("App", "Debug:ninja-gcc")
-      -- Config is kept because full profile references it
-      assert.equals(0, #plan.items)
-      assert.is_not_nil(plan.kept_by)
+      -- Config is referenced by full profile — disposition is "reset"
+      assert.equals(1, #plan.items)
+      assert.equals("reset", plan.items[1].disposition)
     end)
   end)
 

@@ -197,17 +197,19 @@
 
 --- @class loomworks.DeletionPlan
 --- @field items loomworks.DeletionItem[]
---- @field profile_key? string
---- @field project_key? string
---- @field config_key? string
+--- @field adhoc_profiles? string[] ad-hoc profiles to remove (config deletion)
+--- @field profile_key? string profile being deleted
+--- @field project_key? string single config deletion target
+--- @field config_key? string single config deletion target
 --- @field defined_in_config boolean
+
+--- @alias loomworks.DeletionDisposition "clean"|"reset"
 
 --- @class loomworks.DeletionItem
 --- @field project_key string
 --- @field config_key string
 --- @field build_dir? string
---- @field shared_by? string[] profile keys sharing this config
---- @field affected_profiles? string[] profiles affected by deletion
+--- @field disposition loomworks.DeletionDisposition "clean" removes cache entry, "reset" clears state only
 
 -- ========================== File Tracking ==========================
 

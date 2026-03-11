@@ -323,6 +323,14 @@ function M.find_running_tasks_for_items(items)
   return core:find_running_tasks_for_items(items)
 end
 
+--- Find all materialized profile keys that reference a specific cached config.
+--- @param project_key string
+--- @param config_key string
+--- @return string[] profile_keys
+function M.find_referencing_profiles(project_key, config_key)
+  return core:find_referencing_profiles(project_key, config_key)
+end
+
 -- ---------------------------------------------------------------------------
 -- Queries
 -- ---------------------------------------------------------------------------

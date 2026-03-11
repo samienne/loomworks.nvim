@@ -325,8 +325,11 @@ function M.run_configuration_action(project_key, config_key, action)
   local loomworks = require("loomworks")
 
   local function do_action()
-    -- Create ad-hoc profile to pin this config in cache
-    local adhoc_key = loomworks.materialize_adhoc(project_key, config_key)
+    -- Pin config only if not already referenced by a materialized profile
+    local refs = loomworks.find_referencing_profiles(project_key, config_key)
+    if #refs == 0 then
+      loomworks.materialize_adhoc(project_key, config_key)
+    end
 
     local all_tasks = collect_configuration_tasks(project_key, config_key)
     if not all_tasks then return end

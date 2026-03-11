@@ -243,11 +243,12 @@ describe("cache coherence", function()
       local n_profiles = count_profiles(core)
       assert.is_true(n_profiles >= 2)
 
-      -- Delete ad-hoc — config should survive (full profile still references it)
+      -- Delete ad-hoc — config should survive but be reset (full profile still references it)
       local adhoc = core:get_profile("adhoc:App:development")
       assert.is_not_nil(adhoc)
       local plan = adhoc:plan_deletion()
-      assert.equals(0, #plan.items) -- config is referenced by full profile
+      assert.equals(1, #plan.items)
+      assert.equals("reset", plan.items[1].disposition)
 
       local done = false
       core:execute_deletion(plan, { deactivate_profile = adhoc.key },
@@ -256,6 +257,9 @@ describe("cache coherence", function()
 
       assert_cache_coherent(core, "after deleting ad-hoc")
       assert.equals(1, count_cached_configs(core))
+      -- Config entry exists but state was reset
+      local ws = core:get_workspace()
+      assert.is_nil(ws.cache.projects.App.configurations.development.state)
     end)
   end)
 
@@ -420,21 +424,23 @@ describe("cache coherence", function()
       core:materialize_adhoc("Backend", "Debug:ninja-gcc")
       assert_cache_coherent(core, "after ad-hoc overlapping")
 
-      -- Delete ad-hoc — config shared by full profile, should survive
+      -- Delete ad-hoc — config shared by full profile, should be reset
       local adhoc = core:get_profile("adhoc:Backend:Debug:ninja-gcc")
       assert.is_not_nil(adhoc)
       local plan = adhoc:plan_deletion()
-      assert.equals(0, #plan.items) -- shared
+      assert.equals(1, #plan.items)
+      assert.equals("reset", plan.items[1].disposition)
       core:execute_deletion(plan, { deactivate_profile = adhoc.key })
       assert_cache_coherent(core, "after ad-hoc delete")
       assert.equals(2, count_cached_configs(core))
-      assert.equals(0, #rm_calls)
+      assert.equals(1, #rm_calls) -- Backend build dir cleaned on reset
 
       -- Now delete full profile — both configs should be cleaned
       local full = core:get_profile("debug:ninja-gcc")
       assert.is_not_nil(full)
       local plan2 = full:plan_deletion()
       assert.equals(2, #plan2.items)
+      -- Backend was already reset (no build dir), Frontend still has one
       core:execute_deletion(plan2, { deactivate_profile = full.key })
 
       assert_cache_empty(core, "after full profile delete")
@@ -475,17 +481,20 @@ describe("cache coherence", function()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
 
-      -- delete_config removes ad-hoc but keeps config (full profile still refs it)
+      -- delete_config removes ad-hoc, resets config (full profile still refs it)
       local done = false
       core:delete_config("App", "development", function() done = true end)
       assert.is_true(done)
 
       assert_cache_coherent(core, "after delete_config with full ref")
       assert.equals(1, count_cached_configs(core))
-      assert.equals(0, #rm_calls)
+      assert.equals(1, #rm_calls) -- build dir cleaned on reset
+
+      -- Config entry exists but state was reset to unconfigured
+      local ws = core:get_workspace()
+      assert.is_nil(ws.cache.projects.App.configurations.development.state)
 
       -- Ad-hoc should be gone
-      local ws = core:get_workspace()
       local adhoc_gone = not ws.cache.profiles
           or not ws.cache.profiles["adhoc:App:development"]
       assert.is_true(adhoc_gone)
@@ -1311,23 +1320,25 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "initial")
       assert.equals(2, count_profiles(core))
 
-      -- Delete first profile — config survives (staging still refs it)
+      -- Delete first profile — config reset (staging still refs it)
       local p1 = core:get_profile("debug")
       assert.is_not_nil(p1)
       local plan1 = p1:plan_deletion()
-      assert.equals(0, #plan1.items) -- shared by staging
+      assert.equals(1, #plan1.items)
+      assert.equals("reset", plan1.items[1].disposition)
       core:execute_deletion(plan1, { deactivate_profile = p1.key })
 
       assert_cache_coherent(core, "after first delete")
       assert.equals(1, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
-      assert.equals(0, #rm_calls)
+      assert.equals(1, #rm_calls) -- build dir cleaned on reset
 
       -- Delete second profile — config now unreferenced, cleaned
       local p2 = core:get_profile("staging")
       assert.is_not_nil(p2)
       local plan2 = p2:plan_deletion()
-      assert.equals(1, #plan2.items) -- now unreferenced
+      assert.equals(1, #plan2.items)
+      assert.equals("clean", plan2.items[1].disposition)
       core:execute_deletion(plan2, { deactivate_profile = p2.key })
 
       assert_cache_empty(core, "after deleting both")
@@ -1402,19 +1413,22 @@ describe("cache coherence", function()
       assert.equals(3, count_profiles(core))
       assert.equals(3, count_cached_configs(core))
 
-      -- Delete B — P2/dev held by A, P3/dev held by C
+      -- Delete B — P2/dev held by A (reset), P3/dev held by C (reset)
       local pB = core:get_profile("setB")
       assert.is_not_nil(pB)
       local planB = pB:plan_deletion()
-      assert.equals(0, #planB.items)
+      assert.equals(2, #planB.items)
+      for _, item in ipairs(planB.items) do
+        assert.equals("reset", item.disposition)
+      end
       core:execute_deletion(planB, { deactivate_profile = pB.key })
 
       assert_cache_coherent(core, "after B deleted")
       assert.equals(2, count_profiles(core))
       assert.equals(3, count_cached_configs(core))
-      assert.equals(0, #rm_calls)
+      assert.equals(2, #rm_calls) -- P2 and P3 build dirs cleaned on reset
 
-      -- Delete A — P1/dev unreferenced (cleaned), P2/dev unreferenced (cleaned)
+      -- Delete A — P1/dev unreferenced (cleaned), P2/dev already reset (cleaned)
       local pA = core:get_profile("setA")
       assert.is_not_nil(pA)
       local planA = pA:plan_deletion()
@@ -1424,16 +1438,19 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "after A deleted")
       assert.equals(1, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
-      assert.equals(2, #rm_calls)
+      -- P1 build dir cleaned + P2 build dir was already nil from reset
+      assert.equals(3, #rm_calls)
 
-      -- Delete C — P3/dev unreferenced (cleaned)
+      -- Delete C — P3/dev unreferenced (cleaned, but build dir already nil from reset)
       local pC = core:get_profile("setC")
       assert.is_not_nil(pC)
       local planC = pC:plan_deletion()
       assert.equals(1, #planC.items)
+      assert.equals("clean", planC.items[1].disposition)
       core:execute_deletion(planC, { deactivate_profile = pC.key })
 
       assert_cache_empty(core, "after all deleted")
+      -- 2 from B's reset + 1 from A's clean of P1 (P2,P3 build dirs already nil)
       assert.equals(3, #rm_calls)
     end)
   end)
@@ -1615,6 +1632,406 @@ describe("cache coherence", function()
     end)
   end)
 
+  describe("disposition: reset vs clean", function()
+
+    it("reset clears state but keeps cache entry skeleton", function()
+      -- Two full profiles share same config. Delete one → reset.
+      -- Verify config entry survives with tool fields intact but state cleared.
+      local core, rm_calls, setup = make_tracked_core(
+        {
+          projects = { Lib = { cmake = {} } },
+          configuration_sets = {
+            debug = { Lib = "Debug" },
+            staging = { Lib = "Debug" },
+          },
+        },
+        nil,
+        {
+          profiles = {
+            ["debug:ninja-gcc"] = {
+              configuration_set = "debug",
+              tool_key = "ninja-gcc",
+              tool_data = { generator = "Ninja", compiler_id = "gcc" },
+              tool_label = "Ninja GCC",
+              tool_mod_type = "cmake",
+              projects = { Lib = { config_key = "Debug:ninja-gcc" } },
+            },
+            ["staging:ninja-gcc"] = {
+              configuration_set = "staging",
+              tool_key = "ninja-gcc",
+              tool_data = { generator = "Ninja", compiler_id = "gcc" },
+              tool_label = "Ninja GCC",
+              tool_mod_type = "cmake",
+              projects = { Lib = { config_key = "Debug:ninja-gcc" } },
+            },
+          },
+          projects = {
+            Lib = {
+              type = "cmake",
+              configurations = {
+                ["Debug:ninja-gcc"] = {
+                  state = "built",
+                  variant = "Debug",
+                  tool_key = "ninja-gcc",
+                  tool_data = { generator = "Ninja", compiler_id = "gcc" },
+                  build_dir = "/root/.nvim/build/Lib/Debug-gcc",
+                  last_configured = "2026-03-01",
+                  last_built = "2026-03-01",
+                  cmake = { compile_commands = "/root/.nvim/build/Lib/Debug-gcc/compile_commands.json" },
+                },
+              },
+            },
+          },
+        },
+        {
+          tools_by_type = {
+            cmake = {
+              { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+            },
+          },
+        }
+      )
+      setup({ root = "/root" })
+      assert_cache_coherent(core, "initial")
+
+      -- Delete debug profile — config shared with staging → reset
+      local profile = core:get_profile("debug:ninja-gcc")
+      assert.is_not_nil(profile)
+      local plan = profile:plan_deletion()
+      assert.equals(1, #plan.items)
+      assert.equals("reset", plan.items[1].disposition)
+
+      core:execute_deletion(plan, { deactivate_profile = profile.key })
+      assert_cache_coherent(core, "after reset")
+
+      -- Config entry still exists
+      local ws = core:get_workspace()
+      local cached = ws.cache.projects.Lib.configurations["Debug:ninja-gcc"]
+      assert.is_not_nil(cached, "config entry should still exist after reset")
+
+      -- State fields cleared
+      assert.is_nil(cached.state)
+      assert.is_nil(cached.build_dir)
+      assert.is_nil(cached.last_configured)
+      assert.is_nil(cached.last_built)
+      assert.is_nil(cached.cmake)
+
+      -- Tool fields preserved
+      assert.equals("Debug", cached.variant)
+      assert.equals("ninja-gcc", cached.tool_key)
+      assert.is_not_nil(cached.tool_data)
+
+      -- Build dir was cleaned
+      assert.equals(1, #rm_calls)
+      assert.truthy(rm_calls[1]:match("Debug%-gcc"))
+    end)
+
+    it("reset config can be rebuilt", function()
+      -- After reset, a config should go from unconfigured → built again
+      local core, rm_calls = make_tracked_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = {
+            debug = { App = "development" },
+            staging = { App = "development" },
+          },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+            staging = {
+              configuration_set = "staging",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = {
+                  state = "built",
+                  build_dir = "/root/.nvim/build/App/development",
+                },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      -- Delete debug → config reset
+      local p1 = core:get_profile("debug")
+      local plan = p1:plan_deletion()
+      assert.equals("reset", plan.items[1].disposition)
+      core:execute_deletion(plan, { deactivate_profile = p1.key })
+
+      -- Config is reset
+      local ws = core:get_workspace()
+      local cached = ws.cache.projects.App.configurations.development
+      assert.is_nil(cached.state)
+
+      -- Rebuild via staging profile
+      simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
+      assert_cache_coherent(core, "after rebuild")
+
+      cached = ws.cache.projects.App.configurations.development
+      assert.equals("built", cached.state)
+      assert.equals("/root/.nvim/build/App/development", cached.build_dir)
+    end)
+
+    it("plan_deletion always includes all items even when all shared", function()
+      -- If every config is shared, plan still returns all items (all "reset")
+      local core = make_tracked_core(
+        {
+          projects = {
+            A = { typescript = {} },
+            B = { typescript = {} },
+          },
+          configuration_sets = {
+            debug = { A = "dev", B = "dev" },
+            staging = { A = "dev", B = "dev" },
+          },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { A = { config_key = "dev" }, B = { config_key = "dev" } },
+            },
+            staging = {
+              configuration_set = "staging",
+              projects = { A = { config_key = "dev" }, B = { config_key = "dev" } },
+            },
+          },
+          projects = {
+            A = {
+              type = "typescript",
+              configurations = {
+                dev = { state = "built", build_dir = "/root/.nvim/build/A/dev" },
+              },
+            },
+            B = {
+              type = "typescript",
+              configurations = {
+                dev = { state = "built", build_dir = "/root/.nvim/build/B/dev" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local profile = core:get_profile("debug")
+      local plan = profile:plan_deletion()
+
+      -- All items present (not filtered out)
+      assert.equals(2, #plan.items)
+
+      -- All are "reset" since staging holds them
+      for _, item in ipairs(plan.items) do
+        assert.equals("reset", item.disposition)
+      end
+    end)
+
+    it("delete_config with full profile ref resets config instead of blocking", function()
+      local core, rm_calls = make_tracked_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = {
+                  state = "built",
+                  build_dir = "/root/.nvim/build/App/development",
+                },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      -- plan_config_deletion should return "reset" since full profile refs it
+      local plan = core:plan_config_deletion("App", "development")
+      assert.equals(1, #plan.items)
+      assert.equals("reset", plan.items[1].disposition)
+      assert.is_nil(plan.adhoc_profiles)
+
+      -- Execute deletion
+      core:delete_config("App", "development")
+      assert_cache_coherent(core, "after config delete with full ref")
+
+      -- Config still exists but state cleared
+      local ws = core:get_workspace()
+      local cached = ws.cache.projects.App.configurations.development
+      assert.is_not_nil(cached, "config should survive reset")
+      assert.is_nil(cached.state)
+      assert.is_nil(cached.build_dir)
+
+      -- Build dir was cleaned
+      assert.equals(1, #rm_calls)
+
+      -- Profile still intact
+      assert.is_not_nil(ws.cache.profiles.debug)
+    end)
+
+    it("delete_config without full profile cleans config entirely", function()
+      local core, rm_calls = make_tracked_core(
+        {
+          projects = { App = { typescript = {} } },
+        },
+        nil,
+        {
+          profiles = {
+            ["adhoc:App:development"] = {
+              ad_hoc = true,
+              project_key = "App",
+              config_key = "development",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = {
+                  state = "built",
+                  build_dir = "/root/.nvim/build/App/development",
+                },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      -- plan_config_deletion should return "clean" (only ad-hoc refs)
+      local plan = core:plan_config_deletion("App", "development")
+      assert.equals(1, #plan.items)
+      assert.equals("clean", plan.items[1].disposition)
+      assert.is_not_nil(plan.adhoc_profiles)
+      assert.equals(1, #plan.adhoc_profiles)
+
+      core:delete_config("App", "development")
+      assert_cache_empty(core, "after clean delete")
+      assert.equals(1, #rm_calls)
+    end)
+  end)
+
+  describe("find_referencing_profiles", function()
+
+    it("only counts materialized profiles", function()
+      -- Config set generates unmaterialized profiles. These should NOT
+      -- count as references for GC purposes.
+      local core = make_tracked_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          -- Only an ad-hoc profile is materialized; the auto-generated "debug"
+          -- profile is not in the cache so it's unmaterialized.
+          profiles = {
+            ["adhoc:App:development"] = {
+              ad_hoc = true,
+              project_key = "App",
+              config_key = "development",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      -- The auto-generated "debug" profile exists but is unmaterialized
+      local debug_profile = core:get_profile("debug")
+      assert.is_not_nil(debug_profile)
+      assert.is_falsy(debug_profile.materialized)
+
+      -- find_referencing_profiles should only find the ad-hoc (materialized)
+      local refs = core:find_referencing_profiles("App", "development")
+      assert.equals(1, #refs)
+      assert.equals("adhoc:App:development", refs[1])
+    end)
+
+    it("returns empty when only unmaterialized profiles reference config", function()
+      local core = make_tracked_core({
+        projects = { App = { typescript = {} } },
+        configuration_sets = { debug = { App = "development" } },
+      })
+      core:setup({ root = "/root" })
+
+      -- "debug" profile exists from config_sets but is not materialized
+      local refs = core:find_referencing_profiles("App", "development")
+      assert.equals(0, #refs)
+    end)
+
+    it("counts multiple materialized profiles", function()
+      local core = make_tracked_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = {
+            debug = { App = "development" },
+            staging = { App = "development" },
+          },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+            staging = {
+              configuration_set = "staging",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local refs = core:find_referencing_profiles("App", "development")
+      assert.equals(2, #refs)
+      -- Sorted alphabetically
+      assert.equals("debug", refs[1])
+      assert.equals("staging", refs[2])
+    end)
+  end)
+
   describe("delete_config cross-project isolation", function()
 
     it("delete_config on one project does not affect other projects", function()
@@ -1671,20 +2088,24 @@ describe("cache coherence", function()
       core:materialize_adhoc("Backend", "development")
       assert_cache_coherent(core, "full + ad-hoc")
 
-      -- delete_config on Backend — removes ad-hoc, but full profile keeps it
+      -- delete_config on Backend — removes ad-hoc, resets config (full profile keeps it)
       core:delete_config("Backend", "development")
       assert_cache_coherent(core, "after delete_config")
       assert.equals(2, count_cached_configs(core)) -- both still there
-      assert.equals(0, #rm_calls)
+      assert.equals(1, #rm_calls) -- Backend build dir cleaned on reset
+
+      -- Backend config exists but state reset
+      local ws = core:get_workspace()
+      assert.is_nil(ws.cache.projects.Backend.configurations.development.state)
 
       -- Ad-hoc is gone
-      local ws = core:get_workspace()
       local adhoc_gone = not ws.cache.profiles
           or not ws.cache.profiles["adhoc:Backend:development"]
       assert.is_true(adhoc_gone)
 
-      -- Full profile still has both configs
+      -- Full profile still has both configs, Frontend untouched
       assert.is_not_nil(ws.cache.profiles.debug)
+      assert.equals("built", ws.cache.projects.Frontend.configurations.development.state)
     end)
   end)
 end)

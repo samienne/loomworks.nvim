@@ -46,16 +46,9 @@ function M.delete_profile(profile_key)
     local profile = lw.get_profile(profile_key)
     if not profile then return end
     local plan = profile:plan_deletion()
-    if #plan.items == 0 then
-      -- No unreferenced configs to delete — just remove the profile entry
-      lw.execute_deletion(plan, { deactivate_profile = profile.key }, function()
-        vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
-      end)
-      return
-    end
     M._show_delete_confirmation("Delete profile: " .. profile.key, plan, function()
       lw.execute_deletion(plan, { deactivate_profile = profile.key }, function()
-        vim.notify("loomworks: profile '" .. profile.key .. "' cleaned", vim.log.levels.INFO)
+        vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
       end)
     end)
   end
@@ -65,17 +58,6 @@ function M.delete_config(project_key, config_key)
   return function()
     local lw = require("loomworks")
     local plan = lw.plan_config_deletion(project_key, config_key)
-    if #plan.items == 0 and not plan.adhoc_profiles then
-      vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
-      return
-    end
-    if #plan.items == 0 then
-      -- Config kept by full profiles, but we can remove ad-hoc pins
-      lw.delete_config(project_key, config_key, function()
-        vim.notify("loomworks: pin removed", vim.log.levels.INFO)
-      end)
-      return
-    end
     M._show_delete_confirmation(
       "Delete: " .. project_key .. " / " .. config_key, plan, function()
       lw.delete_config(project_key, config_key, function()
@@ -92,22 +74,33 @@ function M.delete_configuration(project_key, config_name)
     if not proj then return end
     local config_key = proj:config_cache_key(config_name)
     local plan = lw.plan_config_deletion(project_key, config_key)
-    if #plan.items == 0 and not plan.adhoc_profiles then
-      vim.notify("loomworks: nothing to delete", vim.log.levels.INFO)
-      return
-    end
-    if #plan.items == 0 then
-      lw.delete_config(project_key, config_key, function()
-        vim.notify("loomworks: pin removed", vim.log.levels.INFO)
-      end)
-      return
-    end
     M._show_delete_confirmation(
-      "Delete configuration: " .. project_key .. " / " .. config_key, plan, function()
+      "Delete: " .. project_key .. " / " .. config_key, plan, function()
       lw.delete_config(project_key, config_key, function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
     end)
+  end
+end
+
+function M.pin_config(project_key, config_key)
+  return function()
+    local lw = require("loomworks")
+    local refs = lw.find_referencing_profiles(project_key, config_key)
+    if #refs > 0 then
+      vim.notify("loomworks: already referenced by " .. refs[1], vim.log.levels.INFO)
+      return
+    end
+    lw.materialize_adhoc(project_key, config_key)
+    vim.notify("loomworks: pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
+  end
+end
+
+function M.materialize(profile_key)
+  return function()
+    local lw = require("loomworks")
+    lw.materialize_profile(profile_key)
+    vim.notify("loomworks: materialized " .. profile_key, vim.log.levels.INFO)
   end
 end
 
@@ -140,7 +133,6 @@ end
 function M._show_delete_confirmation(title, plan, on_confirm)
   local lw = require("loomworks")
   local items = plan.items
-  local defined_in_config = plan.defined_in_config
   local lines = {}
   local highlights = {}
 
@@ -169,40 +161,41 @@ function M._show_delete_confirmation(title, plan, on_confirm)
     add("")
   end
 
-  add("  Will clean:", "Title")
+  -- Split items by disposition
+  local clean_items, reset_items = {}, {}
   for _, item in ipairs(items) do
-    add("    " .. item.project_key .. "  " .. item.config_key, "DiagnosticError")
-    if item.build_dir then
-      add("      " .. rel_path(item.build_dir), "Comment")
+    if item.disposition == "reset" then
+      reset_items[#reset_items + 1] = item
     else
-      add("      (no build directory)", "Comment")
+      clean_items[#clean_items + 1] = item
     end
   end
-  add("")
 
-  if plan.kept_by then
-    add("  Kept by profiles: " .. table.concat(plan.kept_by, ", "), "Comment")
-    add("")
-  end
-
-  local dirs = {}
-  for _, item in ipairs(items) do
-    if item.build_dir then
-      dirs[#dirs + 1] = rel_path(item.build_dir)
-    end
-  end
-  if #dirs > 0 then
-    add("  Directories to delete:", "DiagnosticError")
-    for _, dir in ipairs(dirs) do
-      add("    " .. dir, "Comment")
+  if #clean_items > 0 then
+    add("  Will remove:", "DiagnosticError")
+    for _, item in ipairs(clean_items) do
+      local dir = item.build_dir and rel_path(item.build_dir) or nil
+      local suffix = dir and ("  " .. dir) or ""
+      add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticError")
     end
     add("")
   end
 
-  if defined_in_config then
-    add("  Note: defined in loomworks.json — remains available for reconfiguration.", "Comment")
+  if #reset_items > 0 then
+    add("  Will reset to unconfigured:", "Comment")
+    for _, item in ipairs(reset_items) do
+      local dir = item.build_dir and rel_path(item.build_dir) or nil
+      local suffix = dir and ("  " .. dir) or ""
+      add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "Comment")
+    end
     add("")
   end
+
+  if #items == 0 and plan.profile_key then
+    add("  No configurations to clean.", "Comment")
+    add("")
+  end
+
   add("  Press y to confirm, q to cancel", "Comment")
 
   local buf = vim.api.nvim_create_buf(false, true)

@@ -189,6 +189,7 @@ return function(tree, ctx)
                     on_configure = actions.configure_configuration(key, entry.config_key),
                     on_delete = entry.cached
                         and actions.delete_config(key, entry.config_key) or nil,
+                    on_pin = actions.pin_config(key, entry.config_key),
                   }, function()
                     helpers.render_cached_details(tree, config_status, status_hl, entry.cached)
                   end)
@@ -207,6 +208,7 @@ return function(tree, ctx)
                   on_build = actions.build_configuration(key, cname),
                   on_configure = actions.configure_configuration(key, cname),
                   on_delete = cached and actions.delete_configuration(key, cname) or nil,
+                  on_pin = actions.pin_config(key, cname),
                 }, function()
                   helpers.render_cached_details(tree, config_status, status_hl, cached)
                 end)

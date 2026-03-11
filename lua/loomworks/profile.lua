@@ -369,17 +369,16 @@ function Profile:plan_deletion()
     end
   end
 
-  -- Only include configs that become unreferenced after this profile is removed
+  -- Include ALL project/config combos with disposition
   local items = {}
   for _, pp in ipairs(self:projects()) do
     local lookup = pp.project_key .. "\0" .. pp.config_key
-    if not other_refs[lookup] then
-      items[#items + 1] = {
-        project_key = pp.project_key,
-        config_key = pp.config_key,
-        build_dir = pp:build_dir(),
-      }
-    end
+    items[#items + 1] = {
+      project_key = pp.project_key,
+      config_key = pp.config_key,
+      build_dir = pp:build_dir(),
+      disposition = other_refs[lookup] and "reset" or "clean",
+    }
   end
 
   table.sort(items, function(a, b) return a.project_key < b.project_key end)

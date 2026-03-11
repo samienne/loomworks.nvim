@@ -1133,29 +1133,28 @@ function Core:plan_config_deletion(project_key, config_key)
     end
   end
 
-  -- Config is deletable only if no full profile references it
-  local items = {}
-  if not has_full_ref then
-    local build_dir = nil
-    if ws.cache.projects and ws.cache.projects[project_key] then
-      local cached = ws.cache.projects[project_key].configurations
-      if cached and cached[config_key] then
-        build_dir = cached[config_key].build_dir
-      end
+  -- Build the item with appropriate disposition
+  local build_dir = nil
+  if ws.cache.projects and ws.cache.projects[project_key] then
+    local cached = ws.cache.projects[project_key].configurations
+    if cached and cached[config_key] then
+      build_dir = cached[config_key].build_dir
     end
-    items[#items + 1] = {
-      project_key = project_key,
-      config_key = config_key,
-      build_dir = build_dir,
-    }
   end
+
+  local items = {}
+  items[#items + 1] = {
+    project_key = project_key,
+    config_key = config_key,
+    build_dir = build_dir,
+    disposition = has_full_ref and "reset" or "clean",
+  }
 
   local defined_in_config = ws.config.projects[project_key] ~= nil
 
   return {
     items = items,
     adhoc_profiles = #adhoc_keys > 0 and adhoc_keys or nil,
-    kept_by = has_full_ref and refs or nil,
     project_key = project_key,
     config_key = config_key,
     defined_in_config = defined_in_config,
@@ -1166,50 +1165,71 @@ end
 -- Deletion: execute
 -- ---------------------------------------------------------------------------
 
+--- Delete build directory for a cached config if it's under .nvim/build/.
+--- @param cached_config loomworks.CachedConfig
+--- @param safe_prefix string
+function Core:_delete_build_dir(cached_config, safe_prefix)
+  if not cached_config or not cached_config.build_dir then return end
+  local build_dir = self._deps.normalize(cached_config.build_dir)
+  if build_dir:sub(1, #safe_prefix) == safe_prefix then
+    local ok, err = self._deps.io.rm_rf(build_dir)
+    if not ok then
+      self._deps.notify("loomworks: failed to remove " .. build_dir .. ": " .. err, vim.log.levels.WARN)
+    end
+  else
+    self._deps.notify("loomworks: refusing to delete build dir outside .nvim/build/: " .. build_dir, vim.log.levels.ERROR)
+  end
+end
+
 --- Delete cached configurations and their build directories (synchronous part).
+--- Removes cache entries entirely.
 --- @param items loomworks.DeletionItem[]
 function Core:delete_cached_configs(items)
   if not self._workspace then return end
 
   local ws = self._workspace
-  local normalize = self._deps.normalize
-  local io_mod = self._deps.io
-
-  -- Safety: only allow deleting directories under the workspace's .nvim/build/
-  local safe_prefix = normalize(ws.root .. "/.nvim/build")
+  local safe_prefix = self._deps.normalize(ws.root .. "/.nvim/build")
 
   for _, item in ipairs(items) do
     local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
     if cached_proj and cached_proj.configurations then
-      local cached_config = cached_proj.configurations[item.config_key]
-      if cached_config and cached_config.build_dir then
-        local build_dir = normalize(cached_config.build_dir)
-        if build_dir:sub(1, #safe_prefix) == safe_prefix then
-          local ok, err = io_mod.rm_rf(build_dir)
-          if not ok then
-            self._deps.notify("loomworks: failed to remove " .. build_dir .. ": " .. err, vim.log.levels.WARN)
-          end
-        else
-          self._deps.notify("loomworks: refusing to delete build dir outside .nvim/build/: " .. build_dir, vim.log.levels.ERROR)
-        end
-      end
+      self:_delete_build_dir(cached_proj.configurations[item.config_key], safe_prefix)
       cached_proj.configurations[item.config_key] = nil
       if not next(cached_proj.configurations) then
         ws.cache.projects[item.project_key] = nil
       end
     end
   end
+end
 
-  local ok, err = self._deps.cache.save(ws.root, ws.cache)
-  if not ok then
-    self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
+--- Reset cached configurations: delete build dirs and clear state to unconfigured.
+--- Keeps the cache entry skeleton (variant, tool_key, tool_data) intact.
+--- @param items loomworks.DeletionItem[]
+function Core:reset_cached_configs(items)
+  if not self._workspace then return end
+
+  local ws = self._workspace
+  local safe_prefix = self._deps.normalize(ws.root .. "/.nvim/build")
+
+  for _, item in ipairs(items) do
+    local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
+    if cached_proj and cached_proj.configurations then
+      local cached_config = cached_proj.configurations[item.config_key]
+      if cached_config then
+        self:_delete_build_dir(cached_config, safe_prefix)
+        cached_config.state = nil
+        cached_config.build_dir = nil
+        cached_config.last_configured = nil
+        cached_config.last_built = nil
+        cached_config.cmake = nil
+      end
+    end
   end
-
-  self:remerge()
 end
 
 --- Execute a deletion plan asynchronously.
---- All items in the plan are unreferenced configs that will be deleted.
+--- Items with disposition "clean" have their cache entries removed.
+--- Items with disposition "reset" have their state cleared to unconfigured.
 --- Also removes the profile entry from cache if plan.profile_key is set.
 --- @param plan loomworks.DeletionPlan
 --- @param opts? { deactivate_profile?: string }
@@ -1243,6 +1263,16 @@ function Core:execute_deletion(plan, opts, on_done)
     return
   end
 
+  -- Split items by disposition
+  local clean_items, reset_items = {}, {}
+  for _, item in ipairs(items) do
+    if item.disposition == "reset" then
+      reset_items[#reset_items + 1] = item
+    else
+      clean_items[#clean_items + 1] = item
+    end
+  end
+
   -- Mark items as deleting
   for _, item in ipairs(items) do
     self._deleting[item.project_key .. "\0" .. item.config_key] = true
@@ -1258,8 +1288,20 @@ function Core:execute_deletion(plan, opts, on_done)
   end
 
   self:stop_tasks_then(task_ids, function()
-    -- Now safe to delete configs + build dirs
-    self:delete_cached_configs(items)
+    -- Clean unreferenced configs (remove cache entry + build dir)
+    if #clean_items > 0 then
+      self:delete_cached_configs(clean_items)
+    end
+    -- Reset shared configs (clear state + delete build dir, keep skeleton)
+    if #reset_items > 0 then
+      self:reset_cached_configs(reset_items)
+    end
+
+    -- Save cache once after all mutations
+    if self._workspace then
+      self._deps.cache.save(self._workspace.root, self._workspace.cache)
+    end
+    self:remerge()
 
     -- Unmark deleting state
     for _, item in ipairs(items) do
@@ -1294,7 +1336,7 @@ function Core:delete_profile(profile_key, on_done)
 end
 
 --- Convenience: delete a single config without UI confirmation.
---- Removes ad-hoc profiles referencing it, then GCs the config if unreferenced.
+--- Removes ad-hoc profiles referencing it, then cleans/resets the config.
 --- @param project_key string
 --- @param config_key string
 --- @param on_done? function
@@ -1314,14 +1356,6 @@ function Core:delete_config(project_key, config_key, on_done)
     self._deps.cache.save(ws.root, ws.cache)
   end
 
-  if #plan.items == 0 then
-    -- Config is kept (referenced by full profile), but ad-hoc profiles were cleaned
-    if plan.adhoc_profiles then
-      self:remerge()
-    end
-    if on_done then on_done() end
-    return
-  end
   self:execute_deletion(plan, nil, on_done)
 end
 

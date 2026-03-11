@@ -74,6 +74,7 @@ local function render_set_details(tree, set_name, mappings, all_profiles, active
           on_build = actions.build(profile_key),
           on_configure = actions.configure(profile_key),
           on_delete = actions.delete_profile(profile_key),
+          on_pin = actions.materialize(profile_key),
         })
       end
     end)
