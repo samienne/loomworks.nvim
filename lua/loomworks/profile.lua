@@ -58,10 +58,13 @@ function ProfileProject:status()
 end
 
 --- Get the running action for this project-in-profile.
---- Scoped to the parent profile so non-cmake projects with shared config_keys
---- only report running for the profile that actually launched the task.
+--- Full profiles use profile-scoped check. Ad-hoc profiles use global check
+--- since their tasks are launched without a profile_key.
 --- @return string|nil action
 function ProfileProject:running_action()
+  if self._profile.ad_hoc then
+    return self._core:get_running_action(self.project_key, self.config_key)
+  end
   return self._core:get_running_action_for_profile(
     self._profile.key, self.project_key, self.config_key)
 end
@@ -93,7 +96,10 @@ end
 
 --- @class loomworks.Profile
 --- @field key string profile key
---- @field configuration_set string
+--- @field configuration_set? string nil for ad-hoc profiles
+--- @field ad_hoc boolean true for lightweight single-config pins
+--- @field project_key? string only for ad-hoc profiles
+--- @field config_key? string only for ad-hoc profiles
 --- @field tool_key? string cache key suffix from the keyed module
 --- @field tool_data? table opaque module-specific tool data
 --- @field tool_label? string display label for the tool
@@ -120,7 +126,7 @@ local STATUS_HL = {
 --- Create a new Profile object.
 --- @param core loomworks.Core
 --- @param key string profile key
---- @param data { configuration_set: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, auto_generated?: boolean, materialized?: boolean, mappings?: table<string, string> }
+--- @param data { configuration_set?: string, ad_hoc?: boolean, project_key?: string, config_key?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, auto_generated?: boolean, materialized?: boolean, mappings?: table<string, string> }
 --- @return loomworks.Profile
 function Profile.new(core, key, data)
   local self = setmetatable({}, Profile)
@@ -128,6 +134,9 @@ function Profile.new(core, key, data)
   self._generation = core._generation
   self.key = key
   self.configuration_set = data.configuration_set
+  self.ad_hoc = data.ad_hoc or false
+  self.project_key = data.project_key
+  self.config_key = data.config_key
   self.tool_key = data.tool_key
   self.tool_data = data.tool_data
   self.tool_label = data.tool_label

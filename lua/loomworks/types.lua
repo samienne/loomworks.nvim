@@ -44,7 +44,10 @@
 --- @field projects table<string, loomworks.CachedProject>
 
 --- @class loomworks.CachedProfile
---- @field configuration_set string
+--- @field configuration_set? string nil for ad-hoc profiles
+--- @field ad_hoc? boolean true for lightweight single-config pins
+--- @field project_key? string only for ad-hoc profiles
+--- @field config_key? string only for ad-hoc profiles
 --- @field tool_key? string cache key suffix from the keyed module
 --- @field tool_data? table opaque module-specific tool data
 --- @field tool_label? string display label for the tool
@@ -107,7 +110,10 @@
 --- @field configuration_sets? table<string, table<string, string>>
 
 --- @class loomworks.ProfileDef
---- @field configuration_set string
+--- @field configuration_set? string nil for ad-hoc profiles
+--- @field ad_hoc? boolean true for lightweight single-config pins
+--- @field project_key? string only for ad-hoc profiles
+--- @field config_key? string only for ad-hoc profiles
 --- @field tool_key? string cache key suffix from the keyed module
 --- @field tool_data? table opaque module-specific tool data
 --- @field tool_label? string display label for the tool

@@ -92,7 +92,7 @@ end
 
 --- Collect task definitions for a single project configuration, grouped by action.
 --- @param project_key string
---- @param config_key string cache key (variant or variant:kit_id)
+--- @param config_key string cache key (variant or variant:tool_key)
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_configuration_tasks(project_key, config_key)
   local loomworks = require("loomworks")
@@ -310,10 +310,10 @@ local function filter_unconfigured_tasks(all_tasks)
 end
 
 --- Run an action for a single project configuration.
---- Materializes the configuration in cache, then launches overseer tasks.
+--- Creates an ad-hoc profile entry to pin the config, then launches overseer tasks.
 --- If building and the configuration is unconfigured, configures first.
 --- @param project_key string
---- @param config_key string cache key (variant or variant:kit_id)
+--- @param config_key string cache key (variant or variant:tool_key)
 --- @param action string "configure" or "build"
 function M.run_configuration_action(project_key, config_key, action)
   local ok, overseer = pcall(require, "overseer")
@@ -325,8 +325,8 @@ function M.run_configuration_action(project_key, config_key, action)
   local loomworks = require("loomworks")
 
   local function do_action()
-    -- Materialize configuration skeleton in cache
-    loomworks.materialize_configuration(project_key, config_key)
+    -- Create ad-hoc profile to pin this config in cache
+    local adhoc_key = loomworks.materialize_adhoc(project_key, config_key)
 
     local all_tasks = collect_configuration_tasks(project_key, config_key)
     if not all_tasks then return end

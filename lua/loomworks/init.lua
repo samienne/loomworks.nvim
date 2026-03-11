@@ -128,6 +128,15 @@ function M.materialize_configuration(project_key, config_key)
   core:materialize_configuration(project_key, config_key)
 end
 
+--- Create a lightweight ad-hoc profile entry that pins a single config in cache.
+--- Returns the ad-hoc profile key (format: "adhoc:<project_key>:<config_key>").
+--- @param project_key string
+--- @param config_key string
+--- @return string adhoc_profile_key
+function M.materialize_adhoc(project_key, config_key)
+  return core:materialize_adhoc(project_key, config_key)
+end
+
 --- Activate a named configuration set.
 --- @param name string
 function M.activate_set(name)

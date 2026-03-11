@@ -256,6 +256,24 @@ end
 -- Object factories
 -- ---------------------------------------------------------------------------
 
+--- Resolve mappings for a profile definition.
+--- Ad-hoc profiles derive mappings from their single project+config_key.
+--- Full profiles derive mappings from configuration_sets.
+--- @param data loomworks.ProfileDef
+--- @param config_sets table|nil
+--- @return table<string, string>|nil
+local function resolve_profile_mappings(data, config_sets)
+  if data.ad_hoc then
+    if data.project_key and data.config_key then
+      local variant = require("loomworks.merge").parse_profile_key(data.config_key)
+      return { [data.project_key] = variant }
+    end
+    return nil
+  end
+  return data.configuration_set and config_sets
+      and config_sets[data.configuration_set] or nil
+end
+
 --- Get a Profile object by key.
 --- @param key string profile key
 --- @return loomworks.Profile|nil
@@ -268,12 +286,13 @@ function Core:get_profile(key)
   local data = all_profiles[key]
   if not data then return nil end
 
-  local config_sets = ws.config.configuration_sets
-  local mappings = data.configuration_set and config_sets
-      and config_sets[data.configuration_set] or nil
+  local mappings = resolve_profile_mappings(data, ws.config.configuration_sets)
 
   return Profile.new(self, key, {
     configuration_set = data.configuration_set,
+    ad_hoc = data.ad_hoc or false,
+    project_key = data.project_key,
+    config_key = data.config_key,
     tool_key = data.tool_key,
     tool_data = data.tool_data,
     tool_label = data.tool_label,
@@ -297,11 +316,13 @@ function Core:get_profiles()
   local result = {}
 
   for key, data in pairs(all_profiles) do
-    local mappings = data.configuration_set and config_sets
-        and config_sets[data.configuration_set] or nil
+    local mappings = resolve_profile_mappings(data, config_sets)
 
     result[key] = Profile.new(self, key, {
       configuration_set = data.configuration_set,
+      ad_hoc = data.ad_hoc or false,
+      project_key = data.project_key,
+      config_key = data.config_key,
       tool_key = data.tool_key,
       tool_data = data.tool_data,
       tool_label = data.tool_label,
@@ -532,6 +553,69 @@ function Core:materialize_configuration(project_key, config_key)
 
     self:remerge()
   end
+end
+
+--- Materialize an ad-hoc profile: a lightweight single-config pin.
+--- Creates the config skeleton and an ad-hoc profile entry in cache.
+--- Returns the ad-hoc profile key.
+--- @param project_key string
+--- @param config_key string
+--- @return string|nil adhoc_key
+function Core:materialize_adhoc(project_key, config_key)
+  if not self._workspace then return nil end
+
+  local ws = self._workspace
+  local project_config = ws.config.projects[project_key]
+  if not project_config then return nil end
+
+  local adhoc_key = "adhoc:" .. project_key .. ":" .. config_key
+
+  -- Ensure config skeleton exists
+  self:materialize_configuration(project_key, config_key)
+
+  -- Check if ad-hoc profile already exists
+  ws.cache.profiles = ws.cache.profiles or {}
+  if ws.cache.profiles[adhoc_key] then return adhoc_key end
+
+  -- Parse config_key for variant and tool_key
+  local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
+
+  -- Resolve tool data
+  local tool_data, tool_label, tool_mod_type = nil, nil, nil
+  if tool_key then
+    for mod_type, tools in pairs(self._tools_by_type) do
+      for _, dt in ipairs(tools) do
+        if dt.tool_key == tool_key then
+          tool_data = dt.tool_data
+          tool_label = dt.tool_label
+          tool_mod_type = mod_type
+          break
+        end
+      end
+      if tool_data then break end
+    end
+  end
+
+  ws.cache.profiles[adhoc_key] = {
+    ad_hoc = true,
+    project_key = project_key,
+    config_key = config_key,
+    tool_key = tool_key,
+    tool_data = tool_data,
+    tool_label = tool_label,
+    tool_mod_type = tool_mod_type,
+    projects = {
+      [project_key] = { config_key = config_key },
+    },
+  }
+
+  local ok, err = self._deps.cache.save(ws.root, ws.cache)
+  if not ok then
+    self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
+  end
+
+  self:remerge()
+  return adhoc_key
 end
 
 -- ---------------------------------------------------------------------------
@@ -988,6 +1072,24 @@ function Core:delete_cached_configs(items)
       if not next(cached_proj.configurations) then
         ws.cache.projects[item.project_key] = nil
       end
+    end
+  end
+
+  -- Clean up ad-hoc profiles referencing deleted configs
+  if ws.cache.profiles then
+    local deleted_set = {}
+    for _, item in ipairs(items) do
+      deleted_set[item.project_key .. "\0" .. item.config_key] = true
+    end
+    for pkey, profile in pairs(ws.cache.profiles) do
+      if profile.ad_hoc and profile.project_key and profile.config_key then
+        if deleted_set[profile.project_key .. "\0" .. profile.config_key] then
+          ws.cache.profiles[pkey] = nil
+        end
+      end
+    end
+    if not next(ws.cache.profiles) then
+      ws.cache.profiles = nil
     end
   end
 

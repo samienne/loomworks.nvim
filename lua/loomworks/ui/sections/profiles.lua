@@ -54,6 +54,41 @@ local function render_profile_details(tree, profile, lw)
   end
 end
 
+--- Render an ad-hoc profile entry (single project+config pin).
+--- @param tree loomworks.Tree
+--- @param profile loomworks.Profile
+--- @param lw table loomworks API
+local function render_adhoc_node(tree, profile, lw)
+  local pps = profile:projects()
+  local pp = pps[1]
+  if not pp then return end
+
+  local cached = pp:cached_state()
+  local config_status, status_hl, progress_str, is_spinning =
+      helpers.resolve_config_status(pp, cached)
+
+  -- Compact display: "project / variant × tool"
+  local display = pp.project_key .. " / " .. pp.variant
+  if profile.tool_label then
+    display = display .. " × " .. profile.tool_label
+  elseif profile.tool_key then
+    display = display .. " × " .. profile.tool_key
+  end
+  display = display .. " (" .. config_status .. ")" .. progress_str
+
+  tree:node(display, {
+    fold_key = "profile:" .. profile.key,
+    marker = "· ",
+    spinning = is_spinning,
+    hl = status_hl,
+    on_build = actions.build_configuration(pp.project_key, pp.config_key),
+    on_configure = actions.configure_configuration(pp.project_key, pp.config_key),
+    on_delete = actions.delete_config(pp.project_key, pp.config_key),
+  }, function()
+    helpers.render_cached_details(tree, config_status, status_hl, cached)
+  end)
+end
+
 --- Render the profiles section.
 --- @param tree loomworks.Tree
 --- @param ctx table { lw, all_profiles, active_profile_key }
@@ -62,10 +97,22 @@ return function(tree, ctx)
   local all_profiles = ctx.all_profiles
   local active_profile_key = ctx.active_profile_key
 
-  -- Collect profiles to show: configured OR running OR active
+  -- Separate full profiles from ad-hoc entries
+  local full_profiles = {}
+  local adhoc_profiles = {}
+  for profile_key, profile in pairs(all_profiles) do
+    if profile.ad_hoc then
+      adhoc_profiles[#adhoc_profiles + 1] = profile_key
+    else
+      full_profiles[profile_key] = profile
+    end
+  end
+  table.sort(adhoc_profiles)
+
+  -- Collect full profiles to show: configured OR running OR active
   local configured_profiles = {}
   local configured_set = {}
-  for profile_key, profile in pairs(all_profiles) do
+  for profile_key, profile in pairs(full_profiles) do
     if profile:is_configured() or profile:is_running() or profile_key == active_profile_key then
       configured_profiles[#configured_profiles + 1] = profile_key
       configured_set[profile_key] = true
@@ -74,14 +121,17 @@ return function(tree, ctx)
   table.sort(configured_profiles)
 
   local explicit_unconfigured = {}
-  for profile_key, profile in pairs(all_profiles) do
+  for profile_key, profile in pairs(full_profiles) do
     if profile.explicit and not configured_set[profile_key] then
       explicit_unconfigured[#explicit_unconfigured + 1] = profile_key
     end
   end
   table.sort(explicit_unconfigured)
 
-  if #configured_profiles == 0 and #explicit_unconfigured == 0 then return end
+  local has_full = #configured_profiles > 0 or #explicit_unconfigured > 0
+  local has_adhoc = #adhoc_profiles > 0
+
+  if not has_full and not has_adhoc then return end
 
   tree:leaf("Profiles", "Title")
   tree:blank()
@@ -137,6 +187,16 @@ return function(tree, ctx)
   end
   for _, profile_key in ipairs(explicit_unconfigured) do
     render_profile_node(profile_key)
+  end
+
+  if has_adhoc then
+    if has_full then
+      tree:blank()
+      tree:leaf("Pinned:", "Comment")
+    end
+    for _, profile_key in ipairs(adhoc_profiles) do
+      render_adhoc_node(tree, all_profiles[profile_key], lw)
+    end
   end
 
   tree:blank()

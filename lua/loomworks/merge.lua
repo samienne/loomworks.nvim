@@ -299,47 +299,61 @@ function M.get_all_profiles(config, cache, tools_by_type)
   -- Merge cached profiles: match by tool_data via module comparator
   if cache and cache.profiles then
     for cache_key, cached_profile in pairs(cache.profiles) do
-      local matched_key = nil
-      for key, profile in pairs(profiles) do
-        if profile.configuration_set == cached_profile.configuration_set then
-          -- Compare tool_data via module comparator
-          local mod_type = cached_profile.tool_mod_type or profile.tool_mod_type
-          if mod_type then
-            if module_tools_match(mod_type, profile.tool_data, cached_profile.tool_data) then
-              matched_key = key
-              break
-            end
-          else
-            -- Both have no tool module — match by nil tool_data
-            if profile.tool_data == nil and cached_profile.tool_data == nil then
-              matched_key = key
-              break
+      if cached_profile.ad_hoc then
+        -- Ad-hoc profiles are standalone single-config pins
+        profiles[cache_key] = {
+          ad_hoc = true,
+          project_key = cached_profile.project_key,
+          config_key = cached_profile.config_key,
+          tool_key = cached_profile.tool_key,
+          tool_data = cached_profile.tool_data,
+          tool_label = cached_profile.tool_label,
+          tool_mod_type = cached_profile.tool_mod_type,
+          materialized = true,
+        }
+      else
+        local matched_key = nil
+        for key, profile in pairs(profiles) do
+          if profile.configuration_set == cached_profile.configuration_set then
+            -- Compare tool_data via module comparator
+            local mod_type = cached_profile.tool_mod_type or profile.tool_mod_type
+            if mod_type then
+              if module_tools_match(mod_type, profile.tool_data, cached_profile.tool_data) then
+                matched_key = key
+                break
+              end
+            else
+              -- Both have no tool module — match by nil tool_data
+              if profile.tool_data == nil and cached_profile.tool_data == nil then
+                matched_key = key
+                break
+              end
             end
           end
         end
-      end
 
-      if matched_key then
-        profiles[matched_key].materialized = true
-      else
-        -- Cached profile with no auto/explicit counterpart (tool no longer detected)
-        local mod = cached_profile.tool_mod_type
-            and modules.get(cached_profile.tool_mod_type) or nil
-        profiles[cache_key] = {
-          configuration_set = cached_profile.configuration_set,
-          tool_key = cached_profile.tool_key
-              or (mod and mod.tool_key and cached_profile.tool_data
-                and mod.tool_key(cached_profile.tool_data))
-              or nil,
-          tool_data = cached_profile.tool_data,
-          tool_label = cached_profile.tool_label
-              or (mod and mod.tool_label and cached_profile.tool_data
-                and mod.tool_label(cached_profile.tool_data))
-              or nil,
-          tool_mod_type = cached_profile.tool_mod_type,
-          auto_generated = false,
-          materialized = true,
-        }
+        if matched_key then
+          profiles[matched_key].materialized = true
+        else
+          -- Cached profile with no auto/explicit counterpart (tool no longer detected)
+          local mod = cached_profile.tool_mod_type
+              and modules.get(cached_profile.tool_mod_type) or nil
+          profiles[cache_key] = {
+            configuration_set = cached_profile.configuration_set,
+            tool_key = cached_profile.tool_key
+                or (mod and mod.tool_key and cached_profile.tool_data
+                  and mod.tool_key(cached_profile.tool_data))
+                or nil,
+            tool_data = cached_profile.tool_data,
+            tool_label = cached_profile.tool_label
+                or (mod and mod.tool_label and cached_profile.tool_data
+                  and mod.tool_label(cached_profile.tool_data))
+                or nil,
+            tool_mod_type = cached_profile.tool_mod_type,
+            auto_generated = false,
+            materialized = true,
+          }
+        end
       end
     end
   end

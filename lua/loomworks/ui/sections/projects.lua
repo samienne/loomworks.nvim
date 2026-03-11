@@ -1,7 +1,11 @@
 --- loomworks/ui/sections/projects.lua — Projects section renderer.
+---
+--- Profile-agnostic: shows cached state and detected tools directly,
+--- without any profile context. Uses global running checks.
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
+local merge = require("loomworks.merge")
 
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
 --- @param projects table<string, loomworks.Project>
@@ -23,20 +27,79 @@ local function sorted_project_keys(projects)
   return normal
 end
 
+--- Look up a tool display label from detected tools.
+--- @param tools_by_type table<string, loomworks.DetectedTool[]>
+--- @param mod_type string
+--- @param tool_key string
+--- @return string
+local function get_tool_display(tools_by_type, mod_type, tool_key)
+  local tools = tools_by_type[mod_type]
+  if tools then
+    for _, dt in ipairs(tools) do
+      if dt.tool_key == tool_key then
+        return dt.tool_label or tool_key
+      end
+    end
+  end
+  return tool_key
+end
+
+--- Collect tool entries for a keyed-tool variant: cached entries + unconfigured detected tools.
+--- @param proj loomworks.Project
+--- @param variant string
+--- @param tools_by_type table<string, loomworks.DetectedTool[]>
+--- @return table[] entries { config_key, tool_key, display_label, cached }
+local function collect_tool_entries(proj, variant, tools_by_type)
+  local entries = {}
+  local seen_tool_keys = {}
+
+  -- 1. Cached entries for this variant
+  if proj.cached_configurations then
+    for config_key, cached_config in pairs(proj.cached_configurations) do
+      local v, tk = merge.parse_profile_key(config_key)
+      if v == variant and tk then
+        entries[#entries + 1] = {
+          config_key = config_key,
+          tool_key = tk,
+          display_label = get_tool_display(tools_by_type, proj.type, tk),
+          cached = cached_config,
+        }
+        seen_tool_keys[tk] = true
+      end
+    end
+  end
+
+  -- 2. Detected tools not yet cached for this variant
+  local relevant_tools = tools_by_type[proj.type] or {}
+  for _, dt in ipairs(relevant_tools) do
+    if dt.tool_key and not seen_tool_keys[dt.tool_key] then
+      entries[#entries + 1] = {
+        config_key = variant .. ":" .. dt.tool_key,
+        tool_key = dt.tool_key,
+        display_label = dt.tool_label or dt.tool_key,
+        cached = nil,
+      }
+    end
+  end
+
+  table.sort(entries, function(a, b) return a.config_key < b.config_key end)
+  return entries
+end
+
 --- Render the projects section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, all_profiles, active_profile_key, projects }
+--- @param ctx table { lw, projects }
 return function(tree, ctx)
   local lw = ctx.lw
-  local all_profiles = ctx.all_profiles
-  local active_profile_key = ctx.active_profile_key
   local projects = ctx.projects
   if not projects or not next(projects) then return end
 
   tree:leaf("Projects", "Title")
   tree:blank()
 
+  local tools_by_type = lw.get_tools_by_type()
   local sorted = sorted_project_keys(projects)
+
   for _, key in ipairs(sorted) do
     local proj = projects[key]
     local proj_running = proj:running_action()
@@ -69,18 +132,24 @@ return function(tree, ctx)
           end
           table.sort(config_names)
 
+          local project_has_keyed_tools = lw.module_has_keyed_tools(proj.type)
+
           for _, cname in ipairs(config_names) do
             local cdata = proj.configurations[cname]
 
-            -- Check if any profile has a running task for this variant
+            -- Check running state across all config_keys for this variant
             local config_has_running = false
-            for _, profile in pairs(all_profiles) do
-              local pp = profile:project(key)
-              if pp and pp.variant == cname then
-                if pp:running_action() then
+            if project_has_keyed_tools then
+              local entries = collect_tool_entries(proj, cname, tools_by_type)
+              for _, entry in ipairs(entries) do
+                if lw.get_running_action(key, entry.config_key) then
                   config_has_running = true
                   break
                 end
+              end
+            else
+              if lw.get_running_action(key, cname) then
+                config_has_running = true
               end
             end
 
@@ -91,8 +160,6 @@ return function(tree, ctx)
             if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
             local brief_str = #brief > 0
                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
-
-            local project_has_keyed_tools = lw.module_has_keyed_tools(proj.type)
 
             tree:node(cname .. brief_str, {
               fold_key = "config:" .. key .. ":" .. cname,
@@ -107,67 +174,41 @@ return function(tree, ctx)
                 tree:leaf("Generator: " .. cdata.generator, "Comment")
               end
 
-              -- Collect profiles that map to this variant
-              local profile_entries = {}
-              for profile_key, profile in pairs(all_profiles) do
-                local pp = profile:project(key)
-                if pp and pp.variant == cname then
-                  profile_entries[#profile_entries + 1] = {
-                    profile_key = profile_key,
-                    pp = pp,
-                    is_active = profile_key == active_profile_key,
-                  }
-                end
-              end
-
-              table.sort(profile_entries, function(a, b)
-                if a.is_active ~= b.is_active then return a.is_active end
-                return a.profile_key < b.profile_key
-              end)
-
               if project_has_keyed_tools then
-                -- Keyed-tool modules: show per-profile entries
-                for _, entry in ipairs(profile_entries) do
-                  local pp = entry.pp
-                  local cached = pp:cached_state()
+                -- Keyed-tool modules: show each tool (cached + unconfigured)
+                local entries = collect_tool_entries(proj, cname, tools_by_type)
+                for _, entry in ipairs(entries) do
                   local config_status, status_hl, progress_str, is_spinning =
-                      helpers.resolve_config_status(pp, cached)
+                      helpers.resolve_config_status_global(key, entry.config_key, entry.cached)
 
-                  if entry.is_active and not is_spinning then
-                    status_hl = "DiagnosticOk"
-                  end
-
-                  tree:node(entry.profile_key .. progress_str, {
-                    fold_key = "config_profile:" .. key .. ":" .. cname .. ":"
-                        .. entry.profile_key,
+                  tree:node(entry.display_label .. progress_str, {
+                    fold_key = "config_tool:" .. key .. ":" .. entry.config_key,
                     spinning = is_spinning,
                     hl = status_hl,
-                    on_enter = actions.activate(entry.profile_key),
-                    on_build = actions.build_configuration(key, pp.config_key),
-                    on_configure = actions.configure_configuration(key, pp.config_key),
-                    on_delete = actions.delete_config(pp.project_key, pp.config_key),
+                    on_build = actions.build_configuration(key, entry.config_key),
+                    on_configure = actions.configure_configuration(key, entry.config_key),
+                    on_delete = entry.cached
+                        and actions.delete_config(key, entry.config_key) or nil,
                   }, function()
-                    helpers.render_cached_details(tree, config_status, status_hl, cached)
+                    helpers.render_cached_details(tree, config_status, status_hl, entry.cached)
                   end)
                 end
               else
-                -- Single-tool modules: show status directly with build/configure actions
-                local pp = profile_entries[1] and profile_entries[1].pp
-                if pp then
-                  local cached = pp:cached_state()
-                  local config_status, status_hl, progress_str, is_spinning =
-                      helpers.resolve_config_status(pp, cached)
+                -- Non-keyed modules: show single status
+                local cached = proj.cached_configurations
+                    and proj.cached_configurations[cname]
+                local config_status, status_hl, progress_str, is_spinning =
+                    helpers.resolve_config_status_global(key, cname, cached)
 
-                  tree:node("Status: " .. config_status .. progress_str, {
-                    fold_key = "config_status:" .. key .. ":" .. cname,
-                    spinning = is_spinning,
-                    hl = status_hl,
-                    on_build = actions.build_configuration(key, cname),
-                    on_configure = actions.configure_configuration(key, cname),
-                  }, function()
-                    helpers.render_cached_details(tree, config_status, status_hl, cached)
-                  end)
-                end
+                tree:node("Status: " .. config_status .. progress_str, {
+                  fold_key = "config_status:" .. key .. ":" .. cname,
+                  spinning = is_spinning,
+                  hl = status_hl,
+                  on_build = actions.build_configuration(key, cname),
+                  on_configure = actions.configure_configuration(key, cname),
+                }, function()
+                  helpers.render_cached_details(tree, config_status, status_hl, cached)
+                end)
               end
             end)
           end
