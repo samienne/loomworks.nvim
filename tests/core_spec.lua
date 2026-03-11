@@ -731,9 +731,9 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
       local plan = core:plan_config_deletion("App", "Debug:ninja-gcc")
-      -- Config is referenced by full profile — disposition is "reset"
+      -- Config is referenced by full profile — disposition is "keep"
       assert.equals(1, #plan.items)
-      assert.equals("reset", plan.items[1].disposition)
+      assert.equals("keep", plan.items[1].disposition)
     end)
   end)
 

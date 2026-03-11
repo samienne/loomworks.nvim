@@ -1147,7 +1147,7 @@ function Core:plan_config_deletion(project_key, config_key)
     project_key = project_key,
     config_key = config_key,
     build_dir = build_dir,
-    disposition = has_full_ref and "reset" or "clean",
+    disposition = has_full_ref and "keep" or "clean",
   }
 
   local defined_in_config = ws.config.projects[project_key] ~= nil
@@ -1202,34 +1202,9 @@ function Core:delete_cached_configs(items)
   end
 end
 
---- Reset cached configurations: delete build dirs and clear state to unconfigured.
---- Keeps the cache entry skeleton (variant, tool_key, tool_data) intact.
---- @param items loomworks.DeletionItem[]
-function Core:reset_cached_configs(items)
-  if not self._workspace then return end
-
-  local ws = self._workspace
-  local safe_prefix = self._deps.normalize(ws.root .. "/.nvim/build")
-
-  for _, item in ipairs(items) do
-    local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
-    if cached_proj and cached_proj.configurations then
-      local cached_config = cached_proj.configurations[item.config_key]
-      if cached_config then
-        self:_delete_build_dir(cached_config, safe_prefix)
-        cached_config.state = nil
-        cached_config.build_dir = nil
-        cached_config.last_configured = nil
-        cached_config.last_built = nil
-        cached_config.cmake = nil
-      end
-    end
-  end
-end
-
 --- Execute a deletion plan asynchronously.
 --- Items with disposition "clean" have their cache entries removed.
---- Items with disposition "reset" have their state cleared to unconfigured.
+--- Items with disposition "keep" are left untouched (referenced by another profile).
 --- Also removes the profile entry from cache if plan.profile_key is set.
 --- @param plan loomworks.DeletionPlan
 --- @param opts? { deactivate_profile?: string }
@@ -1252,50 +1227,39 @@ function Core:execute_deletion(plan, opts, on_done)
         ws.cache.profiles = nil
       end
       self._deps.cache.save(ws.root, ws.cache)
-      if #items == 0 then
-        self:remerge()
-      end
     end
   end
 
-  if #items == 0 then
-    if on_done then on_done() end
-    return
-  end
-
-  -- Split items by disposition
-  local clean_items, reset_items = {}, {}
+  -- Only "clean" items need actual work; "keep" items are left untouched
+  local clean_items = {}
   for _, item in ipairs(items) do
-    if item.disposition == "reset" then
-      reset_items[#reset_items + 1] = item
-    else
+    if item.disposition == "clean" then
       clean_items[#clean_items + 1] = item
     end
   end
 
-  -- Mark items as deleting
-  for _, item in ipairs(items) do
+  if #clean_items == 0 then
+    self:remerge()
+    if on_done then on_done() end
+    return
+  end
+
+  -- Mark clean items as deleting
+  for _, item in ipairs(clean_items) do
     self._deleting[item.project_key .. "\0" .. item.config_key] = true
   end
 
-  self._deps.events.emit("deletion_started", items)
+  self._deps.events.emit("deletion_started", clean_items)
 
-  -- Find and stop running tasks for these items
-  local running = self:find_running_tasks_for_items(items)
+  -- Find and stop running tasks for clean items
+  local running = self:find_running_tasks_for_items(clean_items)
   local task_ids = {}
   for task_id in pairs(running) do
     task_ids[#task_ids + 1] = task_id
   end
 
   self:stop_tasks_then(task_ids, function()
-    -- Clean unreferenced configs (remove cache entry + build dir)
-    if #clean_items > 0 then
-      self:delete_cached_configs(clean_items)
-    end
-    -- Reset shared configs (clear state + delete build dir, keep skeleton)
-    if #reset_items > 0 then
-      self:reset_cached_configs(reset_items)
-    end
+    self:delete_cached_configs(clean_items)
 
     -- Save cache once after all mutations
     if self._workspace then
@@ -1304,7 +1268,7 @@ function Core:execute_deletion(plan, opts, on_done)
     self:remerge()
 
     -- Unmark deleting state
-    for _, item in ipairs(items) do
+    for _, item in ipairs(clean_items) do
       self._deleting[item.project_key .. "\0" .. item.config_key] = nil
     end
 
@@ -1317,7 +1281,7 @@ function Core:execute_deletion(plan, opts, on_done)
       end
     end
 
-    self._deps.events.emit("deletion_completed", items)
+    self._deps.events.emit("deletion_completed", clean_items)
 
     if on_done then on_done() end
   end)

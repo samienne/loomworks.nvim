@@ -377,7 +377,7 @@ function Profile:plan_deletion()
       project_key = pp.project_key,
       config_key = pp.config_key,
       build_dir = pp:build_dir(),
-      disposition = other_refs[lookup] and "reset" or "clean",
+      disposition = other_refs[lookup] and "keep" or "clean",
     }
   end
 

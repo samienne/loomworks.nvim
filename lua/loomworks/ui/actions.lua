@@ -162,10 +162,10 @@ function M._show_delete_confirmation(title, plan, on_confirm)
   end
 
   -- Split items by disposition
-  local clean_items, reset_items = {}, {}
+  local clean_items, keep_items = {}, {}
   for _, item in ipairs(items) do
-    if item.disposition == "reset" then
-      reset_items[#reset_items + 1] = item
+    if item.disposition == "keep" then
+      keep_items[#keep_items + 1] = item
     else
       clean_items[#clean_items + 1] = item
     end
@@ -181,12 +181,10 @@ function M._show_delete_confirmation(title, plan, on_confirm)
     add("")
   end
 
-  if #reset_items > 0 then
-    add("  Will reset to unconfigured:", "Comment")
-    for _, item in ipairs(reset_items) do
-      local dir = item.build_dir and rel_path(item.build_dir) or nil
-      local suffix = dir and ("  " .. dir) or ""
-      add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "Comment")
+  if #keep_items > 0 then
+    add("  Will keep (referenced by another profile):", "Comment")
+    for _, item in ipairs(keep_items) do
+      add("    " .. item.project_key .. " / " .. item.config_key, "Comment")
     end
     add("")
   end
