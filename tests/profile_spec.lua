@@ -237,7 +237,7 @@ describe("Profile", function()
 
     it("returns true when a project has running action", function()
       local p = make_profile(nil, {
-        get_running_action = function(_, proj, key)
+        get_running_action_relevant_to_profile = function(_, _, proj, key)
           if proj == "App" and key == "Debug" then return "build" end
           return nil
         end,
@@ -318,7 +318,7 @@ describe("Profile", function()
 
     it("shows running status with number first", function()
       local p = make_profile(nil, {
-        get_running_action = function(_, proj, key)
+        get_running_action_relevant_to_profile = function(_, _, proj, key)
           if proj == "App" and key == "Debug" then return "build" end
           return nil
         end,
@@ -442,7 +442,7 @@ describe("ProfileProject", function()
     it("returns configuring when running configure", function()
       local pp = make_pp(nil, {
         is_deleting = function() return false end,
-        get_running_action = function(_, proj, key)
+        get_running_action_relevant_to_profile = function(_, _, proj, key)
           if proj == "App" and key == "Debug" then return "configure" end
           return nil
         end,
@@ -453,7 +453,7 @@ describe("ProfileProject", function()
     it("returns building when running build", function()
       local pp = make_pp(nil, {
         is_deleting = function() return false end,
-        get_running_action = function(_, proj, key)
+        get_running_action_relevant_to_profile = function(_, _, proj, key)
           if proj == "App" and key == "Debug" then return "build" end
           return nil
         end,
@@ -470,12 +470,46 @@ describe("ProfileProject", function()
 
     it("delegates to core with project and config key", function()
       local pp = make_pp(nil, {
-        get_running_action = function(_, proj, key)
+        get_running_action_relevant_to_profile = function(_, _, proj, key)
           if proj == "App" and key == "Debug" then return "build" end
           return nil
         end,
       })
       assert.equals("build", pp:running_action())
+    end)
+
+    it("uses profile-scoped check, not global", function()
+      -- Verify that running_action calls get_running_action_relevant_to_profile
+      -- (not get_running_action), so non-keyed projects don't leak across profiles
+      local called_method = nil
+      local pp = make_pp(nil, {
+        get_running_action = function(_, proj, key)
+          called_method = "global"
+          return "build"
+        end,
+        get_running_action_relevant_to_profile = function(_, profile_key, proj, key)
+          called_method = "profile_scoped"
+          -- Only match if the profile key matches
+          if profile_key == "debug" and proj == "App" and key == "Debug" then
+            return "build"
+          end
+          return nil
+        end,
+      })
+      pp:running_action()
+      assert.equals("profile_scoped", called_method)
+    end)
+
+    it("passes profile key to the core method", function()
+      local captured_profile_key = nil
+      local pp = make_pp(nil, {
+        get_running_action_relevant_to_profile = function(_, profile_key, proj, key)
+          captured_profile_key = profile_key
+          return nil
+        end,
+      })
+      pp:running_action()
+      assert.equals("debug", captured_profile_key)
     end)
   end)
 

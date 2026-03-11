@@ -72,9 +72,18 @@ function Tree:on_key(action, line)
     if w and w.on_enter then w.on_enter() end
     return {}
 
-  elseif action == "rescan" then
-    require("loomworks").rescan_tools()
+  elseif action == "load" then
+    local lw = require("loomworks")
+    if lw.get_workspace() then
+      lw.rescan_tools()
+    else
+      lw.setup({ root = vim.fn.getcwd() })
+    end
     return { refresh = true }
+
+  elseif action == "help" then
+    self:_show_help()
+    return {}
 
   else
     -- Walk upward from line to find nearest widget with the action callback.
@@ -88,6 +97,71 @@ function Tree:on_key(action, line)
     end
     return {}
   end
+end
+
+-- -----------------------------------------------------------------------
+-- Help dialog
+-- -----------------------------------------------------------------------
+
+function Tree:_show_help()
+  local lines = {
+    "  Keybindings",
+    "",
+    "  <Tab>   Toggle fold",
+    "  <CR>    Activate profile",
+    "",
+    "  b       Build",
+    "  c       Configure",
+    "  p       Pin configuration",
+    "  L       Load / rescan workspace",
+    "",
+    "  R       Rebuild (clean + build)",
+    "  C       Clean (reset to unconfigured)",
+    "  D       Delete",
+    "",
+    "  q       Close",
+    "  ?       Show this help",
+  }
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+
+  local width = 38
+  local height = #lines
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " Help ",
+    title_pos = "center",
+  })
+
+  local ns = vim.api.nvim_create_namespace("loomworks_help")
+  vim.api.nvim_buf_add_highlight(buf, ns, "Title", 0, 0, -1)
+  -- Highlight destructive keys
+  for i, line in ipairs(lines) do
+    if line:match("^  [RCD]%s") then
+      vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", i - 1, 2, 3)
+    end
+  end
+
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+
+  local map_opts = { buffer = buf, nowait = true, silent = true }
+  vim.keymap.set("n", "q", close, map_opts)
+  vim.keymap.set("n", "<Esc>", close, map_opts)
+  vim.keymap.set("n", "?", close, map_opts)
 end
 
 -- -----------------------------------------------------------------------

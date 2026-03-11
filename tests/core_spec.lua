@@ -168,6 +168,84 @@ describe("Core", function()
       assert.is_nil(core:get_running_action("App", "Debug"))
       assert.is_nil(core:get_project_running_action("App"))
     end)
+
+    describe("get_running_action_relevant_to_profile", function()
+      it("matches task launched by same profile", function()
+        local core = make_core()
+        core:setup({ root = "/root" })
+        core:register_running_task({
+          task_id = 50,
+          project_key = "App",
+          action = "configure",
+          configuration_key = "debug",
+          profile_key = "debug:ninja-gcc",
+        })
+        assert.equals("configure",
+          core:get_running_action_relevant_to_profile("debug:ninja-gcc", "App", "debug"))
+      end)
+
+      it("matches task launched without profile scope", function()
+        local core = make_core()
+        core:setup({ root = "/root" })
+        core:register_running_task({
+          task_id = 51,
+          project_key = "App",
+          action = "build",
+          configuration_key = "debug",
+        })
+        -- No profile_key on task — should match any profile asking
+        assert.equals("build",
+          core:get_running_action_relevant_to_profile("debug:ninja-gcc", "App", "debug"))
+        assert.equals("build",
+          core:get_running_action_relevant_to_profile("debug:ninja-clang", "App", "debug"))
+      end)
+
+      it("does NOT match task launched by a different profile", function()
+        local core = make_core()
+        core:setup({ root = "/root" })
+        core:register_running_task({
+          task_id = 52,
+          project_key = "App",
+          action = "configure",
+          configuration_key = "debug",
+          profile_key = "debug:ninja-gcc",
+        })
+        -- Different profile asking about same project+config_key
+        assert.is_nil(
+          core:get_running_action_relevant_to_profile("debug:ninja-clang", "App", "debug"))
+      end)
+
+      it("isolates non-keyed projects across profiles in same config set", function()
+        local core = make_core()
+        core:setup({ root = "/root" })
+        -- Simulate two profiles in same set, non-keyed project shares config_key "debug"
+        core:register_running_task({
+          task_id = 60,
+          project_key = "EtsApp",
+          action = "configure",
+          configuration_key = "debug",
+          profile_key = "debug:ninja-gcc",
+        })
+        core:register_running_task({
+          task_id = 61,
+          project_key = "CmakeApp",
+          action = "configure",
+          configuration_key = "Debug:ninja-gcc",
+          profile_key = "debug:ninja-gcc",
+        })
+        -- The profile that launched the tasks sees both
+        assert.equals("configure",
+          core:get_running_action_relevant_to_profile("debug:ninja-gcc", "EtsApp", "debug"))
+        assert.equals("configure",
+          core:get_running_action_relevant_to_profile("debug:ninja-gcc", "CmakeApp", "Debug:ninja-gcc"))
+        -- A different profile does NOT see the non-keyed EtsApp task
+        assert.is_nil(
+          core:get_running_action_relevant_to_profile("debug:ninja-clang", "EtsApp", "debug"))
+        -- A different profile also doesn't see the keyed CmakeApp task (different config_key)
+        assert.is_nil(
+          core:get_running_action_relevant_to_profile("debug:ninja-clang", "CmakeApp", "Debug:ninja-clang"))
+      end)
+    end)
   end)
 
   describe("record_task_result", function()

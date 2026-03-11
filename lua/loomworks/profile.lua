@@ -58,11 +58,14 @@ function ProfileProject:status()
 end
 
 --- Get the running action for this project-in-profile.
---- Uses global (project_key + config_key) check so that builds triggered
---- from the Projects section are visible on profiles referencing the same config.
+--- Matches tasks launched by this profile or without profile scope.
+--- This ensures builds from the Projects section are visible, while
+--- preventing non-keyed projects from leaking running state across
+--- profiles that share the same config_key.
 --- @return string|nil action
 function ProfileProject:running_action()
-  return self._core:get_running_action(self.project_key, self.config_key)
+  return self._core:get_running_action_relevant_to_profile(
+    self._profile.key, self.project_key, self.config_key)
 end
 
 --- Check if this project-in-profile is being deleted.

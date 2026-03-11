@@ -19,7 +19,9 @@ local function render_fn(tree)
   local ws = lw.get_workspace()
   if not ws then
     tree:leaf("No workspace loaded.", "Comment")
-    tree:leaf("Use :LoomworksInit to initialize.", "Comment")
+    tree:blank()
+    tree:leaf("Press L to load from:", "Comment")
+    tree:leaf("  " .. vim.fn.getcwd(), "DiagnosticInfo")
     return
   end
 
@@ -64,11 +66,14 @@ local view = View.new({
   keymaps = {
     ["<Tab>"] = "toggle_fold",
     ["<CR>"]  = "enter",
-    ["B"]     = "build",
-    ["C"]     = "configure",
+    ["b"]     = "build",
+    ["R"]     = "rebuild",
+    ["c"]     = "configure",
+    ["C"]     = "clean",
     ["D"]     = "delete",
-    ["P"]     = "pin",
-    ["R"]     = "rescan",
+    ["p"]     = "pin",
+    ["L"]     = "load",
+    ["?"]     = "help",
   },
   events = {
     "task_started",

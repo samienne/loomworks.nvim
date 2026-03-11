@@ -71,6 +71,10 @@ function M.make_mock_core(overrides)
       return nil
     end,
 
+    get_running_action_relevant_to_profile = function(_, _, _, _)
+      return nil
+    end,
+
     get_project_running_action = function(_, _)
       return nil
     end,

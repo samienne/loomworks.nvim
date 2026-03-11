@@ -793,6 +793,26 @@ function Core:get_running_action_for_profile(profile_key, project_key, config_ke
   return nil
 end
 
+--- Get running task info relevant to a profile.
+--- Matches tasks that were launched by this profile, OR tasks launched
+--- without a profile scope (e.g. from the Projects section).
+--- This prevents non-keyed projects from leaking running state across
+--- profiles that share the same config_key.
+--- @param profile_key string
+--- @param project_key string
+--- @param config_key string
+--- @return string|nil action
+function Core:get_running_action_relevant_to_profile(profile_key, project_key, config_key)
+  for _, info in pairs(self._running_tasks) do
+    if info.project_key == project_key and info.configuration_key == config_key then
+      if not info.profile_key or info.profile_key == profile_key then
+        return info.action
+      end
+    end
+  end
+  return nil
+end
+
 --- Check if any task is running for a given project.
 --- @param project_key string
 --- @return string|nil action
@@ -1363,6 +1383,110 @@ function Core:delete_config(project_key, config_key, on_done)
   end
 
   self:execute_deletion(plan, nil, on_done)
+end
+
+-- ---------------------------------------------------------------------------
+-- Clean: reset state without touching profiles
+-- ---------------------------------------------------------------------------
+
+--- Clean a profile's configs: delete build dirs and reset to unconfigured.
+--- Does NOT remove or modify the profile itself.
+--- @param profile_key string
+--- @param on_done? function
+function Core:clean_profile(profile_key, on_done)
+  local profile = self:get_profile(profile_key)
+  if not profile then
+    if on_done then on_done() end
+    return
+  end
+
+  local items = {}
+  for _, pp in ipairs(profile:projects()) do
+    items[#items + 1] = {
+      project_key = pp.project_key,
+      config_key = pp.config_key,
+    }
+  end
+
+  if #items == 0 then
+    if on_done then on_done() end
+    return
+  end
+
+  -- Mark as deleting for UI
+  for _, item in ipairs(items) do
+    self._deleting[item.project_key .. "\0" .. item.config_key] = true
+  end
+  self._deps.events.emit("deletion_started", items)
+
+  local running = self:find_running_tasks_for_items(items)
+  local task_ids = {}
+  for task_id in pairs(running) do
+    task_ids[#task_ids + 1] = task_id
+  end
+
+  self:stop_tasks_then(task_ids, function()
+    self:reset_cached_configs(items)
+
+    if self._workspace then
+      self._deps.cache.save(self._workspace.root, self._workspace.cache)
+    end
+    self:remerge()
+
+    for _, item in ipairs(items) do
+      self._deleting[item.project_key .. "\0" .. item.config_key] = nil
+    end
+    if not next(self._deleting) then
+      local waiters = self._delete_waiters
+      self._delete_waiters = {}
+      for _, fn in ipairs(waiters) do fn() end
+    end
+
+    self._deps.events.emit("deletion_completed", items)
+    if on_done then on_done() end
+  end)
+end
+
+--- Clean a single config: delete build dir and reset to unconfigured.
+--- Does NOT remove or modify any profile.
+--- @param project_key string
+--- @param config_key string
+--- @param on_done? function
+function Core:clean_config(project_key, config_key, on_done)
+  if not self._workspace then
+    if on_done then on_done() end
+    return
+  end
+
+  local items = { { project_key = project_key, config_key = config_key } }
+
+  self._deleting[project_key .. "\0" .. config_key] = true
+  self._deps.events.emit("deletion_started", items)
+
+  local running = self:find_running_tasks_for_items(items)
+  local task_ids = {}
+  for task_id in pairs(running) do
+    task_ids[#task_ids + 1] = task_id
+  end
+
+  self:stop_tasks_then(task_ids, function()
+    self:reset_cached_configs(items)
+
+    if self._workspace then
+      self._deps.cache.save(self._workspace.root, self._workspace.cache)
+    end
+    self:remerge()
+
+    self._deleting[project_key .. "\0" .. config_key] = nil
+    if not next(self._deleting) then
+      local waiters = self._delete_waiters
+      self._delete_waiters = {}
+      for _, fn in ipairs(waiters) do fn() end
+    end
+
+    self._deps.events.emit("deletion_completed", items)
+    if on_done then on_done() end
+  end)
 end
 
 -- ---------------------------------------------------------------------------

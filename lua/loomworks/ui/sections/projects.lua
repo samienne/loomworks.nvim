@@ -186,6 +186,8 @@ return function(tree, ctx)
                     spinning = is_spinning,
                     hl = status_hl,
                     on_build = actions.build_configuration(key, entry.config_key),
+                    on_rebuild = actions.rebuild_configuration(key, entry.config_key),
+                    on_clean = actions.clean_configuration(key, entry.config_key),
                     on_configure = actions.configure_configuration(key, entry.config_key),
                     on_delete = entry.cached
                         and actions.delete_config(key, entry.config_key) or nil,
@@ -206,6 +208,8 @@ return function(tree, ctx)
                   spinning = is_spinning,
                   hl = status_hl,
                   on_build = actions.build_configuration(key, cname),
+                  on_rebuild = actions.rebuild_configuration(key, cname),
+                  on_clean = actions.clean_configuration(key, cname),
                   on_configure = actions.configure_configuration(key, cname),
                   on_delete = cached and actions.delete_configuration(key, cname) or nil,
                   on_pin = actions.pin_config(key, cname),

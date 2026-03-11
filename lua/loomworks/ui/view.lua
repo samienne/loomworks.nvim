@@ -189,7 +189,6 @@ function View:_setup_keymaps()
   local map_opts = { buffer = self._bufnr, nowait = true, silent = true }
 
   -- Built-in keys
-  vim.keymap.set("n", "r", function() self:refresh() end, map_opts)
   vim.keymap.set("n", "q", function() self:close() end, map_opts)
 
   -- Widget action keys

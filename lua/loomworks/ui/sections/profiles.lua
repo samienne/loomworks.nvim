@@ -44,6 +44,8 @@ local function render_profile_details(tree, profile, lw)
           spinning = is_spinning,
           hl = status_hl,
           on_build = actions.build(profile.key),
+          on_rebuild = actions.rebuild(profile.key),
+          on_clean = actions.clean(profile.key),
           on_configure = actions.configure(profile.key),
           on_delete = actions.delete_config(pp.project_key, pp.config_key),
         }, function()
@@ -82,6 +84,8 @@ local function render_adhoc_node(tree, profile, lw)
     spinning = is_spinning,
     hl = status_hl,
     on_build = actions.build_configuration(pp.project_key, pp.config_key),
+    on_rebuild = actions.rebuild_configuration(pp.project_key, pp.config_key),
+    on_clean = actions.clean_configuration(pp.project_key, pp.config_key),
     on_configure = actions.configure_configuration(pp.project_key, pp.config_key),
     on_delete = actions.delete_profile(profile.key),
   }, function()
@@ -175,6 +179,8 @@ return function(tree, ctx)
       hl = hl,
       on_enter = actions.activate(profile_key),
       on_build = actions.build(profile_key),
+      on_rebuild = actions.rebuild(profile_key),
+      on_clean = actions.clean(profile_key),
       on_configure = actions.configure(profile_key),
       on_delete = actions.delete_profile(profile_key),
     }, function()

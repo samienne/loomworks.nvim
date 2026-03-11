@@ -28,6 +28,21 @@ function M.configure(profile_key)
   end
 end
 
+function M.rebuild(profile_key)
+  return function()
+    local lw = require("loomworks")
+    lw.clean_profile(profile_key, function()
+      require("loomworks.overseer").run_profile_action(profile_key, "build")
+    end)
+  end
+end
+
+function M.clean(profile_key)
+  return function()
+    require("loomworks").clean_profile(profile_key)
+  end
+end
+
 function M.build_configuration(project_key, config_key)
   return function()
     require("loomworks.overseer").run_configuration_action(project_key, config_key, "build")
@@ -37,6 +52,21 @@ end
 function M.configure_configuration(project_key, config_key)
   return function()
     require("loomworks.overseer").run_configuration_action(project_key, config_key, "configure")
+  end
+end
+
+function M.rebuild_configuration(project_key, config_key)
+  return function()
+    local lw = require("loomworks")
+    lw.clean_config(project_key, config_key, function()
+      require("loomworks.overseer").run_configuration_action(project_key, config_key, "build")
+    end)
+  end
+end
+
+function M.clean_configuration(project_key, config_key)
+  return function()
+    require("loomworks").clean_config(project_key, config_key)
   end
 end
 

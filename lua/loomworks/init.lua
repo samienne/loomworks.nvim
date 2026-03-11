@@ -316,6 +316,23 @@ function M.delete_config(project_key, config_key, on_done)
   core:delete_config(project_key, config_key, on_done)
 end
 
+--- Clean a profile: delete build dirs and reset all configs to unconfigured.
+--- Does NOT remove or modify any profile.
+--- @param profile_key string
+--- @param on_done? function
+function M.clean_profile(profile_key, on_done)
+  core:clean_profile(profile_key, on_done)
+end
+
+--- Clean a single config: delete build dir and reset to unconfigured.
+--- Does NOT remove or modify any profile.
+--- @param project_key string
+--- @param config_key string
+--- @param on_done? function
+function M.clean_config(project_key, config_key, on_done)
+  core:clean_config(project_key, config_key, on_done)
+end
+
 --- Find running task IDs that match a list of project+config items.
 --- @param items loomworks.DeletionItem[]
 --- @return table<number, loomworks.RunningTaskInfo>
