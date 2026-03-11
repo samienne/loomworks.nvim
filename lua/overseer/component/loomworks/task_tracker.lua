@@ -34,23 +34,20 @@ return {
       type = "string",
       optional = true,
     },
-    profile_key = {
-      desc = "Profile key that launched this task (for scoped running state)",
-      type = "string",
-      optional = true,
-    },
   },
   constructor = function(params)
     local progress_parser = nil
 
     return {
       on_start = function(_, task)
-        require("loomworks").register_running_task({
+        local lw = require("loomworks")
+        local unit = lw.get_config_unit(params.project_key, params.configuration_key)
+        unit:register_task(task.id, params.action)
+        lw._emit("task_started", {
           task_id = task.id,
           project_key = params.project_key,
           action = params.action,
           configuration_key = params.configuration_key,
-          profile_key = params.profile_key,
         })
 
         -- Resolve progress parser on start (lazy-load)
@@ -64,18 +61,34 @@ return {
         for i = #lines, 1, -1 do
           local update = progress_parser(lines[i])
           if update then
-            require("loomworks").update_task_progress(task.id, update)
+            local lw = require("loomworks")
+            local unit = lw.get_config_unit(params.project_key, params.configuration_key)
+            unit:update_progress(task.id, update)
+            lw._emit("task_progress", {
+              task_id = task.id,
+              project_key = params.project_key,
+              action = params.action,
+              configuration_key = params.configuration_key,
+              progress = update,
+            })
             return
           end
         end
       end,
       on_complete = function(_, task, status)
-        require("loomworks").unregister_running_task(task.id)
+        local lw = require("loomworks")
+        local unit = lw.get_config_unit(params.project_key, params.configuration_key)
+        unit:unregister_task(task.id)
+        lw._emit("task_stopped", {
+          task_id = task.id,
+          project_key = params.project_key,
+          configuration_key = params.configuration_key,
+        })
 
         if status == "CANCELED" then return end
 
         local success = status == "SUCCESS"
-        require("loomworks").record_task_result({
+        lw.record_task_result({
           project_key = params.project_key,
           action = params.action,
           configuration_key = params.configuration_key,
@@ -86,7 +99,14 @@ return {
         })
       end,
       on_dispose = function(_, task)
-        require("loomworks").unregister_running_task(task.id)
+        local lw = require("loomworks")
+        local unit = lw.get_config_unit(params.project_key, params.configuration_key)
+        unit:unregister_task(task.id)
+        lw._emit("task_stopped", {
+          task_id = task.id,
+          project_key = params.project_key,
+          configuration_key = params.configuration_key,
+        })
       end,
     }
   end,

@@ -43,10 +43,10 @@ local function render_profile_details(tree, profile, lw)
           fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key,
           spinning = is_spinning,
           hl = status_hl,
-          on_build = actions.build(profile.key),
-          on_rebuild = actions.rebuild(profile.key),
-          on_clean = actions.clean(profile.key),
-          on_configure = actions.configure(profile.key),
+          on_build = actions.build_configuration(pp.project_key, pp.config_key),
+          on_rebuild = actions.rebuild_configuration(pp.project_key, pp.config_key),
+          on_clean = actions.clean_configuration(pp.project_key, pp.config_key),
+          on_configure = actions.configure_configuration(pp.project_key, pp.config_key),
           on_delete = actions.delete_config(pp.project_key, pp.config_key),
         }, function()
           helpers.render_cached_details(tree, config_status, status_hl, cached)
@@ -117,7 +117,7 @@ return function(tree, ctx)
   local configured_profiles = {}
   local configured_set = {}
   for profile_key, profile in pairs(full_profiles) do
-    if profile:is_configured() or profile:is_running() or profile_key == active_profile_key then
+    if profile.materialized or profile:is_configured() or profile_key == active_profile_key then
       configured_profiles[#configured_profiles + 1] = profile_key
       configured_set[profile_key] = true
     end

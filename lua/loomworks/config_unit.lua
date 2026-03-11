@@ -1,0 +1,182 @@
+--- loomworks/config_unit.lua — ConfigUnit: atomic unit of configuration state.
+--- A ConfigUnit represents a unique (project_key, config_key) combination.
+--- It owns the running/deleting state for that combination and provides
+--- a single derived state value. Multiple profiles may reference the same
+--- ConfigUnit; state changes are visible to all of them.
+
+--- @class loomworks.ConfigUnit
+--- @field project_key string
+--- @field config_key string
+--- @field _core loomworks.Core
+--- @field _task_id number|nil current overseer task ID
+--- @field _action string|nil "configure" or "build" while a task is running
+--- @field _progress loomworks.ProgressUpdate|nil
+--- @field _start_time number|nil clock() value when task started
+--- @field _deleting boolean
+--- @field _listeners function[]
+local ConfigUnit = {}
+ConfigUnit.__index = ConfigUnit
+
+--- @alias loomworks.ConfigUnitState
+--- | "unconfigured"
+--- | "configuring"
+--- | "configured"
+--- | "building"
+--- | "built"
+--- | "configure_failed"
+--- | "build_failed"
+--- | "deleting"
+
+--- Create a new ConfigUnit.
+--- @param core loomworks.Core
+--- @param project_key string
+--- @param config_key string
+--- @return loomworks.ConfigUnit
+function ConfigUnit.new(core, project_key, config_key)
+  local self = setmetatable({}, ConfigUnit)
+  self._core = core
+  self.project_key = project_key
+  self.config_key = config_key
+  self._task_id = nil
+  self._action = nil
+  self._progress = nil
+  self._start_time = nil
+  self._deleting = false
+  self._listeners = {}
+  return self
+end
+
+function ConfigUnit:__tostring()
+  return "ConfigUnit(" .. self.project_key .. ", " .. self.config_key .. ")"
+end
+
+-- ---------------------------------------------------------------------------
+-- State
+-- ---------------------------------------------------------------------------
+
+--- Get the derived state for this unit.
+--- Priority: deleting > running > cached.
+--- @return loomworks.ConfigUnitState
+function ConfigUnit:state()
+  if self._deleting then return "deleting" end
+  if self._action then
+    return self._action == "configure" and "configuring" or "building"
+  end
+  local cached = self:cached_state()
+  if not cached or not cached.state then return "unconfigured" end
+  -- Map cached status names to ConfigUnitState names
+  local state = cached.state
+  if state == "failed_configure" then return "configure_failed" end
+  if state == "failed_build" then return "build_failed" end
+  return state
+end
+
+--- Check if a task is currently running on this unit.
+--- @return boolean
+function ConfigUnit:is_running()
+  return self._action ~= nil
+end
+
+--- Get the running action name, if any.
+--- @return string|nil "configure" or "build"
+function ConfigUnit:running_action()
+  return self._action
+end
+
+--- Check if this unit is being deleted/cleaned.
+--- @return boolean
+function ConfigUnit:is_deleting()
+  return self._deleting
+end
+
+--- Get cached state from the workspace cache.
+--- @return loomworks.CachedConfig|nil
+function ConfigUnit:cached_state()
+  local ws = self._core:get_workspace()
+  if not ws or not ws.cache.projects then return nil end
+  local proj = ws.cache.projects[self.project_key]
+  if not proj or not proj.configurations then return nil end
+  return proj.configurations[self.config_key]
+end
+
+--- Get the build directory from cache.
+--- @return string|nil
+function ConfigUnit:build_dir()
+  local cached = self:cached_state()
+  return cached and cached.build_dir
+end
+
+--- Get the current progress update, if any.
+--- @return loomworks.ProgressUpdate|nil
+function ConfigUnit:progress()
+  return self._progress
+end
+
+--- Get elapsed seconds since the running task started.
+--- @return number|nil seconds
+function ConfigUnit:elapsed()
+  if not self._start_time then return nil end
+  return self._core._deps.clock() - self._start_time
+end
+
+-- ---------------------------------------------------------------------------
+-- Task tracking (called by task_tracker component and Core)
+-- ---------------------------------------------------------------------------
+
+--- Register a running task on this unit.
+--- @param task_id number overseer task ID
+--- @param action string "configure" or "build"
+function ConfigUnit:register_task(task_id, action)
+  self._task_id = task_id
+  self._action = action
+  self._progress = nil
+  self._start_time = self._core._deps.clock()
+  self:_notify()
+end
+
+--- Unregister the running task.
+--- @param task_id number overseer task ID (must match current)
+function ConfigUnit:unregister_task(task_id)
+  if self._task_id ~= task_id then return end
+  self._task_id = nil
+  self._action = nil
+  self._progress = nil
+  self._start_time = nil
+  self:_notify()
+end
+
+--- Update progress for the running task.
+--- @param task_id number
+--- @param progress loomworks.ProgressUpdate
+function ConfigUnit:update_progress(task_id, progress)
+  if self._task_id ~= task_id then return end
+  self._progress = progress
+  self:_notify()
+end
+
+--- Mark this unit as deleting/cleaning (or clear the flag).
+--- @param flag boolean
+function ConfigUnit:mark_deleting(flag)
+  self._deleting = flag
+  self:_notify()
+end
+
+-- ---------------------------------------------------------------------------
+-- Listeners
+-- ---------------------------------------------------------------------------
+
+--- Subscribe to state changes on this unit.
+--- The callback receives the unit as its argument.
+--- @param fn fun(unit: loomworks.ConfigUnit)
+function ConfigUnit:on_state_change(fn)
+  self._listeners[#self._listeners + 1] = fn
+end
+
+--- Fire all listeners.
+function ConfigUnit:_notify()
+  for _, fn in ipairs(self._listeners) do
+    fn(self)
+  end
+end
+
+return ConfigUnit

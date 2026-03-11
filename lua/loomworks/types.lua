@@ -191,7 +191,6 @@
 --- @field project_key string
 --- @field action string "configure" or "build"
 --- @field configuration_key string
---- @field profile_key? string profile that launched this task
 
 -- ========================== Deletion ==========================
 
@@ -230,3 +229,15 @@
 --- @class loomworks.ProgressUpdate
 --- @field current number
 --- @field total number
+
+-- ========================== ConfigUnit ==========================
+
+--- @alias loomworks.ConfigUnitState
+--- | "unconfigured"
+--- | "configuring"
+--- | "configured"
+--- | "building"
+--- | "built"
+--- | "configure_failed"
+--- | "build_failed"
+--- | "deleting"

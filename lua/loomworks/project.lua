@@ -77,14 +77,16 @@ end
 --- @param config_name string
 --- @return boolean
 function Project:is_deleting_config(config_name)
-  return self._core:is_deleting(self.key, self:config_cache_key(config_name))
+  local unit = self._core:get_config_unit(self.key, self:config_cache_key(config_name))
+  return unit:is_deleting()
 end
 
 --- Get the running action for a specific configuration.
 --- @param config_name string
 --- @return string|nil action
 function Project:config_running_action(config_name)
-  return self._core:get_running_action(self.key, self:config_cache_key(config_name))
+  local unit = self._core:get_config_unit(self.key, self:config_cache_key(config_name))
+  return unit:running_action()
 end
 
 --- Resolve the cached state for a configuration.

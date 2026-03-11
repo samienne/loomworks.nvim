@@ -18,6 +18,13 @@ function M._core()
   return core
 end
 
+--- Emit an event. Used by components that bypass Core (e.g. task_tracker).
+--- @param event string
+--- @param data any
+function M._emit(event, data)
+  events.emit(event, data)
+end
+
 -- ---------------------------------------------------------------------------
 -- Setup & workspace
 -- ---------------------------------------------------------------------------
@@ -147,42 +154,6 @@ end
 -- Running task tracking
 -- ---------------------------------------------------------------------------
 
---- Register a running task for live status display.
---- @param info { task_id: number, project_key: string, action: string, configuration_key: string }
-function M.register_running_task(info)
-  core:register_running_task(info)
-end
-
---- Unregister a running task.
---- @param task_id number
-function M.unregister_running_task(task_id)
-  core:unregister_running_task(task_id)
-end
-
---- Get running task info for a project + configuration key.
---- @param project_key string
---- @param config_key string
---- @return string|nil action
-function M.get_running_action(project_key, config_key)
-  return core:get_running_action(project_key, config_key)
-end
-
---- Get running task info scoped to a specific profile.
---- @param profile_key string
---- @param project_key string
---- @param config_key string
---- @return string|nil action
-function M.get_running_action_for_profile(profile_key, project_key, config_key)
-  return core:get_running_action_for_profile(profile_key, project_key, config_key)
-end
-
---- Check if any task is running for a given project.
---- @param project_key string
---- @return string|nil action
-function M.get_project_running_action(project_key)
-  return core:get_project_running_action(project_key)
-end
-
 --- Check if any tasks are currently running.
 --- @return boolean
 function M.has_running_tasks()
@@ -193,18 +164,12 @@ end
 -- Progress tracking
 -- ---------------------------------------------------------------------------
 
---- Update progress for a running task.
---- @param task_id number
---- @param progress loomworks.ProgressUpdate
-function M.update_task_progress(task_id, progress)
-  core:update_task_progress(task_id, progress)
-end
-
---- Get progress for a running task.
---- @param task_id number
---- @return loomworks.ProgressUpdate|nil
-function M.get_task_progress(task_id)
-  return core:get_task_progress(task_id)
+--- Get a ConfigUnit for a (project_key, config_key) pair.
+--- @param project_key string
+--- @param config_key string
+--- @return loomworks.ConfigUnit
+function M.get_config_unit(project_key, config_key)
+  return core:get_config_unit(project_key, config_key)
 end
 
 --- Get progress for a project+config key.
@@ -212,7 +177,7 @@ end
 --- @param config_key string
 --- @return loomworks.ProgressUpdate|nil
 function M.get_progress(project_key, config_key)
-  return core:get_progress(project_key, config_key)
+  return core:get_config_unit(project_key, config_key):progress()
 end
 
 --- Get elapsed seconds for a project+config key.
@@ -220,7 +185,7 @@ end
 --- @param config_key string
 --- @return number|nil seconds
 function M.get_elapsed(project_key, config_key)
-  return core:get_elapsed(project_key, config_key)
+  return core:get_config_unit(project_key, config_key):elapsed()
 end
 
 --- Start tracking a profile-level operation.
@@ -264,14 +229,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Deletion
 -- ---------------------------------------------------------------------------
-
---- Check if a project+config is currently being deleted.
---- @param project_key string
---- @param config_key string
---- @return boolean
-function M.is_deleting(project_key, config_key)
-  return core:is_deleting(project_key, config_key)
-end
 
 --- Check if any items are currently being deleted.
 --- @return boolean

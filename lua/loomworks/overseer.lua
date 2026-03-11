@@ -164,8 +164,7 @@ local function collect_configuration_tasks(project_key, config_key)
 end
 
 --- Collect task definitions for a profile, grouped by action.
---- Does not change the active profile. Each task's loomworks metadata
---- includes profile_key for profile-scoped running state tracking.
+--- Does not change the active profile.
 --- @param profile_key string
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_profile_tasks(profile_key)
@@ -211,7 +210,6 @@ local function collect_profile_tasks(profile_key)
       local lw_meta = task_def.loomworks
       if lw_meta then
         lw_meta.progress_tool = pt
-        lw_meta.profile_key = profile_key
         if by_action[lw_meta.action] then
           by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
         end
@@ -230,13 +228,28 @@ end
 --- @param on_all_done? function called when all launched tasks complete, with boolean all_succeeded
 --- @return number launched count of tasks started
 local function launch_tasks(overseer, task_defs, on_all_done)
-  local launched = 0
-  local remaining = 0
+  -- Pre-count valid tasks so remaining starts at the correct total.
+  -- This prevents a race where task:start() triggers synchronous completion,
+  -- decrementing remaining to 0 before later tasks are even started.
+  local tasks_to_launch = {}
+  for _, task_def in ipairs(task_defs) do
+    if task_def.loomworks then
+      tasks_to_launch[#tasks_to_launch + 1] = task_def
+    end
+  end
+
+  if #tasks_to_launch == 0 then
+    if on_all_done then
+      vim.schedule(function() on_all_done(true) end)
+    end
+    return 0
+  end
+
+  local remaining = #tasks_to_launch
   local all_ok = true
 
-  for _, task_def in ipairs(task_defs) do
+  for _, task_def in ipairs(tasks_to_launch) do
     local lw_meta = task_def.loomworks
-    if not lw_meta then goto next_task end
 
     local build_result = task_def.builder()
     build_result.components = build_result.components or { "default" }
@@ -249,14 +262,12 @@ local function launch_tasks(overseer, task_defs, on_all_done)
       tool_data = lw_meta.tool_data,
       cmake = lw_meta.cmake,
       progress_tool = lw_meta.progress_tool,
-      profile_key = lw_meta.profile_key,
     }
 
     build_result.name = task_def.name
     local task = overseer.new_task(build_result)
 
     if on_all_done then
-      remaining = remaining + 1
       task:subscribe("on_complete", function(_, status)
         if status ~= "SUCCESS" then all_ok = false end
         remaining = remaining - 1
@@ -267,17 +278,9 @@ local function launch_tasks(overseer, task_defs, on_all_done)
     end
 
     task:start()
-    launched = launched + 1
-
-    ::next_task::
   end
 
-  -- If nothing was launched but callback expected, fire it immediately
-  if launched == 0 and on_all_done then
-    vim.schedule(function() on_all_done(true) end)
-  end
-
-  return launched
+  return #tasks_to_launch
 end
 
 --- Check which projects in the active set need configuring.

@@ -134,117 +134,40 @@ describe("Core", function()
   end)
 
   describe("running tasks", function()
-    it("registers and queries running tasks", function()
+    it("registers and queries via ConfigUnit", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 42,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(42, "build")
       assert.is_true(core:has_running_tasks())
-      assert.equals("build", core:get_running_action("App", "Debug"))
       assert.equals("build", core:get_project_running_action("App"))
+      assert.is_true(unit:is_running())
+      assert.equals("build", unit:running_action())
     end)
 
     it("unregisters running tasks", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 42,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
-      core:unregister_running_task(42)
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(42, "build")
+      unit:unregister_task(42)
       assert.is_false(core:has_running_tasks())
-      assert.is_nil(core:get_running_action("App", "Debug"))
+      assert.is_false(unit:is_running())
     end)
 
     it("returns nil for non-running project", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      assert.is_nil(core:get_running_action("App", "Debug"))
       assert.is_nil(core:get_project_running_action("App"))
     end)
 
-    describe("get_running_action_relevant_to_profile", function()
-      it("matches task launched by same profile", function()
-        local core = make_core()
-        core:setup({ root = "/root" })
-        core:register_running_task({
-          task_id = 50,
-          project_key = "App",
-          action = "configure",
-          configuration_key = "debug",
-          profile_key = "debug:ninja-gcc",
-        })
-        assert.equals("configure",
-          core:get_running_action_relevant_to_profile("debug:ninja-gcc", "App", "debug"))
-      end)
-
-      it("matches task launched without profile scope", function()
-        local core = make_core()
-        core:setup({ root = "/root" })
-        core:register_running_task({
-          task_id = 51,
-          project_key = "App",
-          action = "build",
-          configuration_key = "debug",
-        })
-        -- No profile_key on task — should match any profile asking
-        assert.equals("build",
-          core:get_running_action_relevant_to_profile("debug:ninja-gcc", "App", "debug"))
-        assert.equals("build",
-          core:get_running_action_relevant_to_profile("debug:ninja-clang", "App", "debug"))
-      end)
-
-      it("does NOT match task launched by a different profile", function()
-        local core = make_core()
-        core:setup({ root = "/root" })
-        core:register_running_task({
-          task_id = 52,
-          project_key = "App",
-          action = "configure",
-          configuration_key = "debug",
-          profile_key = "debug:ninja-gcc",
-        })
-        -- Different profile asking about same project+config_key
-        assert.is_nil(
-          core:get_running_action_relevant_to_profile("debug:ninja-clang", "App", "debug"))
-      end)
-
-      it("isolates non-keyed projects across profiles in same config set", function()
-        local core = make_core()
-        core:setup({ root = "/root" })
-        -- Simulate two profiles in same set, non-keyed project shares config_key "debug"
-        core:register_running_task({
-          task_id = 60,
-          project_key = "EtsApp",
-          action = "configure",
-          configuration_key = "debug",
-          profile_key = "debug:ninja-gcc",
-        })
-        core:register_running_task({
-          task_id = 61,
-          project_key = "CmakeApp",
-          action = "configure",
-          configuration_key = "Debug:ninja-gcc",
-          profile_key = "debug:ninja-gcc",
-        })
-        -- The profile that launched the tasks sees both
-        assert.equals("configure",
-          core:get_running_action_relevant_to_profile("debug:ninja-gcc", "EtsApp", "debug"))
-        assert.equals("configure",
-          core:get_running_action_relevant_to_profile("debug:ninja-gcc", "CmakeApp", "Debug:ninja-gcc"))
-        -- A different profile does NOT see the non-keyed EtsApp task
-        assert.is_nil(
-          core:get_running_action_relevant_to_profile("debug:ninja-clang", "EtsApp", "debug"))
-        -- A different profile also doesn't see the keyed CmakeApp task (different config_key)
-        assert.is_nil(
-          core:get_running_action_relevant_to_profile("debug:ninja-clang", "CmakeApp", "Debug:ninja-clang"))
-      end)
+    it("shares running state across profiles via ConfigUnit", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      local unit = core:get_config_unit("App", "debug")
+      unit:register_task(50, "configure")
+      assert.equals("configure", unit:running_action())
+      assert.is_true(core:has_running_tasks())
     end)
   end)
 
@@ -298,19 +221,20 @@ describe("Core", function()
   end)
 
   describe("deletion", function()
-    it("tracks deleting state", function()
+    it("tracks deleting state via ConfigUnit", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      assert.is_false(core:is_deleting("App", "Debug"))
-      core._deleting["App\0Debug"] = true
-      assert.is_true(core:is_deleting("App", "Debug"))
+      local unit = core:get_config_unit("App", "Debug")
+      assert.is_false(unit:is_deleting())
+      unit:mark_deleting(true)
+      assert.is_true(unit:is_deleting())
     end)
 
-    it("has_pending_deletions reflects state", function()
+    it("has_pending_deletions reflects ConfigUnit state", function()
       local core = make_core()
       core:setup({ root = "/root" })
       assert.is_false(core:has_pending_deletions())
-      core._deleting["App\0Debug"] = true
+      core:get_config_unit("App", "Debug"):mark_deleting(true)
       assert.is_true(core:has_pending_deletions())
     end)
   end)
@@ -678,18 +602,8 @@ describe("Core", function()
     it("finds matching tasks", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 1,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
-      core:register_running_task({
-        task_id = 2,
-        project_key = "Lib",
-        action = "configure",
-        configuration_key = "Debug",
-      })
+      core:get_config_unit("App", "Debug"):register_task(1, "build")
+      core:get_config_unit("Lib", "Debug"):register_task(2, "configure")
 
       local matches = core:find_running_tasks_for_items({
         { project_key = "App", config_key = "Debug" },
@@ -917,7 +831,7 @@ describe("Core", function()
       core:execute_deletion(plan, nil, function() done = true end)
       assert.is_true(done)
       -- After completion, deleting flag should be cleared
-      assert.is_false(core:is_deleting("App", "dev"))
+      assert.is_false(core:get_config_unit("App", "dev"):is_deleting())
     end)
 
     it("removes profile from cache.profiles on profile deletion", function()
@@ -1211,7 +1125,7 @@ describe("Core", function()
         { cache = { save = function() return true end } }
       )
       core:setup({ root = "/root" })
-      core._deleting["App\0dev"] = true
+      core:get_config_unit("App", "dev"):mark_deleting(true)
 
       local called = false
       core:after_deletions(function() called = true end)
@@ -1220,127 +1134,83 @@ describe("Core", function()
   end)
 
   describe("task progress", function()
-    it("stores and retrieves progress by task_id", function()
+    it("stores and retrieves progress via ConfigUnit", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 1,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
-      core:update_task_progress(1, { current = 3, total = 10 })
-      local p = core:get_task_progress(1)
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
+      unit:update_progress(1, { current = 3, total = 10 })
+      local p = unit:progress()
       assert.is_not_nil(p)
       assert.equals(3, p.current)
       assert.equals(10, p.total)
     end)
 
-    it("retrieves progress by project+config key", function()
+    it("returns nil for non-running config", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 1,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
-      core:update_task_progress(1, { current = 5, total = 20 })
-      local p = core:get_progress("App", "Debug")
-      assert.is_not_nil(p)
-      assert.equals(5, p.current)
-      assert.equals(20, p.total)
-    end)
-
-    it("returns nil for non-running task", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      assert.is_nil(core:get_task_progress(999))
-      assert.is_nil(core:get_progress("App", "Debug"))
+      local unit = core:get_config_unit("App", "Debug")
+      assert.is_nil(unit:progress())
     end)
 
     it("clears progress on unregister", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 1,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
-      core:update_task_progress(1, { current = 3, total = 10 })
-      core:unregister_running_task(1)
-      assert.is_nil(core:get_task_progress(1))
-      assert.is_nil(core:get_progress("App", "Debug"))
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
+      unit:update_progress(1, { current = 3, total = 10 })
+      unit:unregister_task(1)
+      assert.is_nil(unit:progress())
     end)
 
-    it("emits task_progress event", function()
-      local core, deps = make_core()
-      core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 1,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
-      core:update_task_progress(1, { current = 7, total = 10 })
-      local events = deps._events_log
-      local found = false
-      for _, e in ipairs(events) do
-        if e.event == "task_progress" then
-          assert.equals("App", e.data.project_key)
-          assert.equals(7, e.data.progress.current)
-          found = true
-        end
-      end
-      assert.is_true(found)
-    end)
-
-    it("ignores progress for unknown task", function()
+    it("emits state_change on progress update", function()
       local core = make_core()
       core:setup({ root = "/root" })
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
+      local fired = false
+      unit:on_state_change(function() fired = true end)
+      unit:update_progress(1, { current = 7, total = 10 })
+      assert.is_true(fired)
+    end)
+
+    it("ignores progress when no task registered", function()
+      local core = make_core()
+      core:setup({ root = "/root" })
+      local unit = core:get_config_unit("App", "Debug")
       -- Should not error
-      core:update_task_progress(999, { current = 1, total = 1 })
-      assert.is_nil(core:get_task_progress(999))
+      unit:update_progress(999, { current = 1, total = 1 })
+      assert.is_nil(unit:progress())
     end)
   end)
 
   describe("task elapsed time", function()
-    it("tracks elapsed time from registration", function()
+    it("tracks elapsed time via ConfigUnit", function()
       local time = 100
       local core = make_core(nil, nil, nil, {
         clock = function() return time end,
       })
       core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 1,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
       time = 142
-      assert.equals(42, core:get_task_elapsed(1))
-      assert.equals(42, core:get_elapsed("App", "Debug"))
+      assert.equals(42, unit:elapsed())
     end)
 
-    it("returns nil for non-running task", function()
+    it("returns nil for non-running config", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      assert.is_nil(core:get_task_elapsed(999))
-      assert.is_nil(core:get_elapsed("App", "Debug"))
+      local unit = core:get_config_unit("App", "Debug")
+      assert.is_nil(unit:elapsed())
     end)
 
     it("clears elapsed on unregister", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      core:register_running_task({
-        task_id = 1,
-        project_key = "App",
-        action = "build",
-        configuration_key = "Debug",
-      })
-      core:unregister_running_task(1)
-      assert.is_nil(core:get_task_elapsed(1))
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
+      unit:unregister_task(1)
+      assert.is_nil(unit:elapsed())
     end)
   end)
 

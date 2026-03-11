@@ -42,36 +42,27 @@ function ProfileProject:__tostring()
 end
 
 --- Get the resolved status for this project-in-profile.
---- Uses profile-scoped running check so non-cmake projects with shared
---- config_keys don't leak running state across profiles.
---- @return loomworks.Status|"configuring"|"building"|"deleting" status
+--- Delegates to ConfigUnit for the single source of truth.
+--- @return loomworks.ConfigUnitState status
 function ProfileProject:status()
-  if self._core:is_deleting(self.project_key, self.config_key) then
-    return "deleting"
-  end
-  local action = self:running_action()
-  if action then
-    return action == "configure" and "configuring" or "building"
-  end
-  local cached = self:cached_state()
-  return cached and cached.state or "unconfigured"
+  local unit = self._core:get_config_unit(self.project_key, self.config_key)
+  return unit:state()
 end
 
 --- Get the running action for this project-in-profile.
---- Matches tasks launched by this profile or without profile scope.
---- This ensures builds from the Projects section are visible, while
---- preventing non-keyed projects from leaking running state across
---- profiles that share the same config_key.
+--- Delegates to ConfigUnit — running state is shared across all profiles
+--- that reference the same (project_key, config_key) pair.
 --- @return string|nil action
 function ProfileProject:running_action()
-  return self._core:get_running_action_relevant_to_profile(
-    self._profile.key, self.project_key, self.config_key)
+  local unit = self._core:get_config_unit(self.project_key, self.config_key)
+  return unit:running_action()
 end
 
 --- Check if this project-in-profile is being deleted.
 --- @return boolean
 function ProfileProject:is_deleting()
-  return self._core:is_deleting(self.project_key, self.config_key)
+  local unit = self._core:get_config_unit(self.project_key, self.config_key)
+  return unit:is_deleting()
 end
 
 --- Get cached state from the workspace cache.
@@ -270,9 +261,11 @@ function Profile:is_materialized()
 end
 
 --- Check if this profile has any running tasks.
+--- Only materialized profiles can be running — shared ConfigUnit activity
+--- from another profile's tasks should not leak to non-materialized profiles.
 --- @return boolean
 function Profile:is_running()
-  if not self.mappings then return false end
+  if not self.materialized or not self.mappings then return false end
   for _, pp in ipairs(self:projects()) do
     if pp:running_action() then return true end
   end
@@ -290,8 +283,8 @@ function Profile:status()
     unconfigured = 0,
     configured = 0,
     built = 0,
-    failed_configure = 0,
-    failed_build = 0,
+    configure_failed = 0,
+    build_failed = 0,
     configuring = 0,
     building = 0,
     deleting = 0,
@@ -307,7 +300,7 @@ function Profile:status()
   end
 
   local running = counts.configuring + counts.building
-  local failed = counts.failed_configure + counts.failed_build
+  local failed = counts.configure_failed + counts.build_failed
 
   if running > 0 then
     local parts = {}
@@ -323,11 +316,11 @@ function Profile:status()
 
   if failed > 0 then
     local parts = {}
-    if counts.failed_configure > 0 then
-      parts[#parts + 1] = counts.failed_configure .. " failed configure"
+    if counts.configure_failed > 0 then
+      parts[#parts + 1] = counts.configure_failed .. " failed configure"
     end
-    if counts.failed_build > 0 then
-      parts[#parts + 1] = counts.failed_build .. " failed build"
+    if counts.build_failed > 0 then
+      parts[#parts + 1] = counts.build_failed .. " failed build"
     end
     local ok_count = counts.built + counts.configured
     if ok_count > 0 then

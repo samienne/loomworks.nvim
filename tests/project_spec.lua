@@ -4,9 +4,10 @@ local h = require("tests.helpers")
 --- Create a Project with mock core and standard data.
 --- @param data_overrides? table
 --- @param core_overrides? table
+--- @param existing_core? table pre-built mock core
 --- @return loomworks.Project, table core
-local function make_project(data_overrides, core_overrides)
-  local core = h.make_mock_core(core_overrides)
+local function make_project(data_overrides, core_overrides, existing_core)
+  local core = existing_core or h.make_mock_core(core_overrides)
   local data = vim.tbl_deep_extend("force", {
     type = "cmake",
     path = "App",
@@ -68,13 +69,11 @@ describe("Project", function()
       assert.is_nil(p:running_action())
     end)
 
-    it("delegates to core", function()
-      local p = make_project(nil, {
-        get_project_running_action = function(_, key)
-          if key == "App" then return "build" end
-          return nil
-        end,
-      })
+    it("returns action when a ConfigUnit is running", function()
+      local core = h.make_mock_core()
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
+      local p = make_project(nil, nil, core)
       assert.equals("build", p:running_action())
     end)
   end)
@@ -85,29 +84,21 @@ describe("Project", function()
       assert.is_false(p:is_deleting_config("Debug"))
     end)
 
-    it("checks via core with computed cache key", function()
-      local checked = {}
-      local p = make_project({ tool_key = "ninja-gcc" }, {
-        is_deleting = function(_, proj, key)
-          checked.proj = proj
-          checked.key = key
-          return true
-        end,
-      })
+    it("checks via ConfigUnit with computed cache key", function()
+      local core = h.make_mock_core()
+      local unit = core:get_config_unit("App", "Debug:ninja-gcc")
+      unit:mark_deleting(true)
+      local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
       assert.is_true(p:is_deleting_config("Debug"))
-      assert.equals("App", checked.proj)
-      assert.equals("Debug:ninja-gcc", checked.key)
     end)
   end)
 
   describe("config_running_action", function()
-    it("delegates to core with computed cache key", function()
-      local p = make_project({ tool_key = "ninja-gcc" }, {
-        get_running_action = function(_, proj, key)
-          if proj == "App" and key == "Debug:ninja-gcc" then return "configure" end
-          return nil
-        end,
-      })
+    it("delegates to ConfigUnit with computed cache key", function()
+      local core = h.make_mock_core()
+      local unit = core:get_config_unit("App", "Debug:ninja-gcc")
+      unit:register_task(1, "configure")
+      local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
       assert.equals("configure", p:config_running_action("Debug"))
     end)
   end)

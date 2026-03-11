@@ -235,14 +235,18 @@ describe("Profile", function()
       assert.is_false(p:is_running())
     end)
 
-    it("returns true when a project has running action", function()
-      local p = make_profile(nil, {
-        get_running_action_relevant_to_profile = function(_, _, proj, key)
-          if proj == "App" and key == "Debug" then return "build" end
-          return nil
-        end,
-      })
+    it("returns true when a materialized profile has running action", function()
+      local p, core = make_profile({ materialized = true })
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
       assert.is_true(p:is_running())
+    end)
+
+    it("returns false for non-materialized profile even with running ConfigUnit", function()
+      local p, core = make_profile({ materialized = false })
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
+      assert.is_false(p:is_running())
     end)
   end)
 
@@ -317,23 +321,18 @@ describe("Profile", function()
     end)
 
     it("shows running status with number first", function()
-      local p = make_profile(nil, {
-        get_running_action_relevant_to_profile = function(_, _, proj, key)
-          if proj == "App" and key == "Debug" then return "build" end
-          return nil
-        end,
-      })
+      local p, core = make_profile()
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
       local label, hl = p:status()
       assert.matches("1 building", label)
       assert.equals("DiagnosticWarn", hl)
     end)
 
     it("shows deleting status with number first", function()
-      local p = make_profile(nil, {
-        is_deleting = function(_, proj, key)
-          return proj == "App" and key == "Debug"
-        end,
-      })
+      local p, core = make_profile()
+      local unit = core:get_config_unit("App", "Debug")
+      unit:mark_deleting(true)
       local label, hl = p:status()
       assert.matches("1/2 deleting", label)
       assert.equals("DiagnosticError", hl)
@@ -430,34 +429,24 @@ describe("ProfileProject", function()
       assert.equals("unconfigured", pp:status())
     end)
 
-    it("returns deleting when core marks it", function()
-      local pp = make_pp(nil, {
-        is_deleting = function(_, proj, key)
-          return proj == "App" and key == "Debug"
-        end,
-      })
+    it("returns deleting when unit is marked deleting", function()
+      local pp, core = make_pp(nil)
+      local unit = core:get_config_unit("App", "Debug")
+      unit:mark_deleting(true)
       assert.equals("deleting", pp:status())
     end)
 
-    it("returns configuring when running configure", function()
-      local pp = make_pp(nil, {
-        is_deleting = function() return false end,
-        get_running_action_relevant_to_profile = function(_, _, proj, key)
-          if proj == "App" and key == "Debug" then return "configure" end
-          return nil
-        end,
-      })
+    it("returns configuring when configure task is running", function()
+      local pp, core = make_pp(nil)
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "configure")
       assert.equals("configuring", pp:status())
     end)
 
-    it("returns building when running build", function()
-      local pp = make_pp(nil, {
-        is_deleting = function() return false end,
-        get_running_action_relevant_to_profile = function(_, _, proj, key)
-          if proj == "App" and key == "Debug" then return "build" end
-          return nil
-        end,
-      })
+    it("returns building when build task is running", function()
+      local pp, core = make_pp(nil)
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
       assert.equals("building", pp:status())
     end)
   end)
@@ -468,48 +457,43 @@ describe("ProfileProject", function()
       assert.is_nil(pp:running_action())
     end)
 
-    it("delegates to core with project and config key", function()
-      local pp = make_pp(nil, {
-        get_running_action_relevant_to_profile = function(_, _, proj, key)
-          if proj == "App" and key == "Debug" then return "build" end
-          return nil
-        end,
-      })
+    it("returns the action from the ConfigUnit", function()
+      local pp, core = make_pp(nil)
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
       assert.equals("build", pp:running_action())
     end)
 
-    it("uses profile-scoped check, not global", function()
-      -- Verify that running_action calls get_running_action_relevant_to_profile
-      -- (not get_running_action), so non-keyed projects don't leak across profiles
-      local called_method = nil
-      local pp = make_pp(nil, {
-        get_running_action = function(_, proj, key)
-          called_method = "global"
-          return "build"
-        end,
-        get_running_action_relevant_to_profile = function(_, profile_key, proj, key)
-          called_method = "profile_scoped"
-          -- Only match if the profile key matches
-          if profile_key == "debug" and proj == "App" and key == "Debug" then
-            return "build"
-          end
-          return nil
+    it("shares running state across profiles via ConfigUnit", function()
+      -- Two profiles referencing the same (project_key, config_key)
+      -- should see the same running state
+      local core = h.make_mock_core({
+        get_workspace = function()
+          return {
+            config = {
+              projects = {
+                App = { type = "cmake", path = "App", type_config = {} },
+              },
+            },
+            cache = { projects = {} },
+          }
         end,
       })
-      pp:running_action()
-      assert.equals("profile_scoped", called_method)
-    end)
-
-    it("passes profile key to the core method", function()
-      local captured_profile_key = nil
-      local pp = make_pp(nil, {
-        get_running_action_relevant_to_profile = function(_, profile_key, proj, key)
-          captured_profile_key = profile_key
-          return nil
-        end,
+      local Profile = require("loomworks.profile").Profile
+      local p1 = Profile.new(core, "debug:ninja-gcc", {
+        configuration_set = "debug",
+        mappings = { App = "Debug" },
       })
-      pp:running_action()
-      assert.equals("debug", captured_profile_key)
+      local p2 = Profile.new(core, "debug:ninja-clang", {
+        configuration_set = "debug",
+        mappings = { App = "Debug" },
+      })
+      -- Start a task on the shared unit
+      local unit = core:get_config_unit("App", "Debug")
+      unit:register_task(1, "build")
+      -- Both profiles see it
+      assert.equals("build", p1:project("App"):running_action())
+      assert.equals("build", p2:project("App"):running_action())
     end)
   end)
 
@@ -519,12 +503,10 @@ describe("ProfileProject", function()
       assert.is_false(pp:is_deleting())
     end)
 
-    it("returns true when core marks it", function()
-      local pp = make_pp(nil, {
-        is_deleting = function(_, proj, key)
-          return proj == "App" and key == "Debug"
-        end,
-      })
+    it("returns true when unit is marked deleting", function()
+      local pp, core = make_pp(nil)
+      local unit = core:get_config_unit("App", "Debug")
+      unit:mark_deleting(true)
       assert.is_true(pp:is_deleting())
     end)
   end)

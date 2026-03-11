@@ -6,10 +6,7 @@
 --- @field _deps table injected dependencies
 --- @field _workspace loomworks.Workspace|nil
 --- @field _active_set loomworks.ActiveSet|nil
---- @field _running_tasks table<number, loomworks.RunningTaskInfo>
---- @field _task_progress table<number, loomworks.ProgressUpdate> task_id -> latest progress
---- @field _task_start_times table<number, number> task_id -> os.clock() at start
---- @field _deleting table<string, boolean> "project\0config" -> true
+--- @field _config_units table<string, loomworks.ConfigUnit> "project\0config" -> unit
 --- @field _delete_waiters function[]
 --- @field _generation number incremented on every remerge
 --- @field _tracker loomworks.FileTracker|nil
@@ -20,6 +17,7 @@ Core.__index = Core
 
 local Profile = require("loomworks.profile").Profile
 local Project = require("loomworks.project")
+local ConfigUnit = require("loomworks.config_unit")
 
 --- Default dependency table. Tests override individual entries.
 local DEFAULT_DEPS = {
@@ -65,16 +63,28 @@ function Core.new(deps)
   end
   self._workspace = nil
   self._active_set = nil
-  self._running_tasks = {}
-  self._task_progress = {}
-  self._task_start_times = {}
   self._operations = {}
-  self._deleting = {}
   self._delete_waiters = {}
   self._generation = 0
   self._tracker = nil
   self._tools_by_type = {}
+  self._config_units = {}
   return self
+end
+
+--- Get or create a ConfigUnit for a (project_key, config_key) pair.
+--- Returns the same instance for the same pair (registry/flyweight pattern).
+--- @param project_key string
+--- @param config_key string
+--- @return loomworks.ConfigUnit
+function Core:get_config_unit(project_key, config_key)
+  local key = project_key .. "\0" .. config_key
+  local unit = self._config_units[key]
+  if not unit then
+    unit = ConfigUnit.new(self, project_key, config_key)
+    self._config_units[key] = unit
+  end
+  return unit
 end
 
 -- ---------------------------------------------------------------------------
@@ -206,6 +216,7 @@ function Core:setup(opts)
   end
 
   self._workspace = ws
+  self._config_units = {}
   self:_scan_tools()
   self:_adopt_orphaned_configs()
   self._active_set = self._deps.merge.merge(ws, self._tools_by_type)
@@ -740,86 +751,13 @@ end
 -- Running task tracking
 -- ---------------------------------------------------------------------------
 
---- Register a running task for live status display.
---- @param info { task_id: number, project_key: string, action: string, configuration_key: string, profile_key?: string }
-function Core:register_running_task(info)
-  self._running_tasks[info.task_id] = {
-    project_key = info.project_key,
-    action = info.action,
-    configuration_key = info.configuration_key,
-    profile_key = info.profile_key,
-  }
-  self._task_start_times[info.task_id] = self._deps.clock()
-  self._deps.events.emit("task_started", info)
-end
-
---- Unregister a running task.
---- @param task_id number
-function Core:unregister_running_task(task_id)
-  self._running_tasks[task_id] = nil
-  self._task_progress[task_id] = nil
-  self._task_start_times[task_id] = nil
-  local has_running = next(self._running_tasks) ~= nil
-  self._deps.events.emit("task_stopped", { task_id = task_id, has_running = has_running })
-end
-
---- Get running task info for a project + configuration key (global, any profile).
---- @param project_key string
---- @param config_key string
---- @return string|nil action ("configure" or "build") if running
-function Core:get_running_action(project_key, config_key)
-  for _, info in pairs(self._running_tasks) do
-    if info.project_key == project_key and info.configuration_key == config_key then
-      return info.action
-    end
-  end
-  return nil
-end
-
---- Get running task info scoped to a specific profile.
---- Only matches tasks that were launched under this profile_key.
---- @param profile_key string
---- @param project_key string
---- @param config_key string
---- @return string|nil action ("configure" or "build") if running
-function Core:get_running_action_for_profile(profile_key, project_key, config_key)
-  for _, info in pairs(self._running_tasks) do
-    if info.profile_key == profile_key
-        and info.project_key == project_key
-        and info.configuration_key == config_key then
-      return info.action
-    end
-  end
-  return nil
-end
-
---- Get running task info relevant to a profile.
---- Matches tasks that were launched by this profile, OR tasks launched
---- without a profile scope (e.g. from the Projects section).
---- This prevents non-keyed projects from leaking running state across
---- profiles that share the same config_key.
---- @param profile_key string
---- @param project_key string
---- @param config_key string
---- @return string|nil action
-function Core:get_running_action_relevant_to_profile(profile_key, project_key, config_key)
-  for _, info in pairs(self._running_tasks) do
-    if info.project_key == project_key and info.configuration_key == config_key then
-      if not info.profile_key or info.profile_key == profile_key then
-        return info.action
-      end
-    end
-  end
-  return nil
-end
-
---- Check if any task is running for a given project.
+--- Check if any task is running for a given project (any config).
 --- @param project_key string
 --- @return string|nil action
 function Core:get_project_running_action(project_key)
-  for _, info in pairs(self._running_tasks) do
-    if info.project_key == project_key then
-      return info.action
+  for _, unit in pairs(self._config_units) do
+    if unit.project_key == project_key and unit:is_running() then
+      return unit:running_action()
     end
   end
   return nil
@@ -828,65 +766,10 @@ end
 --- Check if any tasks are currently running.
 --- @return boolean
 function Core:has_running_tasks()
-  return next(self._running_tasks) ~= nil
-end
-
---- Update progress for a running task.
---- @param task_id number
---- @param progress loomworks.ProgressUpdate
-function Core:update_task_progress(task_id, progress)
-  if not self._running_tasks[task_id] then return end
-  self._task_progress[task_id] = progress
-  local info = self._running_tasks[task_id]
-  self._deps.events.emit("task_progress", {
-    task_id = task_id,
-    project_key = info.project_key,
-    action = info.action,
-    configuration_key = info.configuration_key,
-    progress = progress,
-  })
-end
-
---- Get progress for a running task.
---- @param task_id number
---- @return loomworks.ProgressUpdate|nil
-function Core:get_task_progress(task_id)
-  return self._task_progress[task_id]
-end
-
---- Get progress for a project+config key (finds the matching running task).
---- @param project_key string
---- @param config_key string
---- @return loomworks.ProgressUpdate|nil
-function Core:get_progress(project_key, config_key)
-  for task_id, info in pairs(self._running_tasks) do
-    if info.project_key == project_key and info.configuration_key == config_key then
-      return self._task_progress[task_id]
-    end
+  for _, unit in pairs(self._config_units) do
+    if unit:is_running() then return true end
   end
-  return nil
-end
-
---- Get elapsed seconds for a running task.
---- @param task_id number
---- @return number|nil seconds
-function Core:get_task_elapsed(task_id)
-  local start = self._task_start_times[task_id]
-  if not start then return nil end
-  return self._deps.clock() - start
-end
-
---- Get elapsed seconds for a project+config key (finds the matching running task).
---- @param project_key string
---- @param config_key string
---- @return number|nil seconds
-function Core:get_elapsed(project_key, config_key)
-  for task_id, info in pairs(self._running_tasks) do
-    if info.project_key == project_key and info.configuration_key == config_key then
-      return self:get_task_elapsed(task_id)
-    end
-  end
-  return nil
+  return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -973,12 +856,14 @@ end
 --- @return table<number, loomworks.RunningTaskInfo>
 function Core:find_running_tasks_for_items(items)
   local matches = {}
-  for task_id, info in pairs(self._running_tasks) do
-    for _, item in ipairs(items) do
-      if info.project_key == item.project_key and info.configuration_key == item.config_key then
-        matches[task_id] = info
-        break
-      end
+  for _, item in ipairs(items) do
+    local unit = self:get_config_unit(item.project_key, item.config_key)
+    if unit._task_id then
+      matches[unit._task_id] = {
+        project_key = unit.project_key,
+        action = unit:running_action(),
+        configuration_key = unit.config_key,
+      }
     end
   end
   return matches
@@ -1097,25 +982,20 @@ end
 -- Deletion: query & status
 -- ---------------------------------------------------------------------------
 
---- Check if a project+config is currently being deleted.
---- @param project_key string
---- @param config_key string
---- @return boolean
-function Core:is_deleting(project_key, config_key)
-  return self._deleting[project_key .. "\0" .. config_key] == true
-end
-
 --- Check if any items are currently being deleted.
 --- @return boolean
 function Core:has_pending_deletions()
-  return next(self._deleting) ~= nil
+  for _, unit in pairs(self._config_units) do
+    if unit:is_deleting() then return true end
+  end
+  return false
 end
 
 --- Wait for all pending deletions to finish, then call fn.
 --- If nothing is pending, calls fn immediately.
 --- @param fn function
 function Core:after_deletions(fn)
-  if not next(self._deleting) then
+  if not self:has_pending_deletions() then
     fn()
     return
   end
@@ -1296,7 +1176,7 @@ function Core:execute_deletion(plan, opts, on_done)
 
   -- Mark actionable items as deleting
   for _, item in ipairs(actionable) do
-    self._deleting[item.project_key .. "\0" .. item.config_key] = true
+    self:get_config_unit(item.project_key, item.config_key):mark_deleting(true)
   end
 
   self._deps.events.emit("deletion_started", actionable)
@@ -1331,11 +1211,11 @@ function Core:execute_deletion(plan, opts, on_done)
 
     -- Unmark deleting state
     for _, item in ipairs(actionable) do
-      self._deleting[item.project_key .. "\0" .. item.config_key] = nil
+      self:get_config_unit(item.project_key, item.config_key):mark_deleting(false)
     end
 
     -- Notify waiters if no more pending deletions
-    if not next(self._deleting) then
+    if not self:has_pending_deletions() then
       local waiters = self._delete_waiters
       self._delete_waiters = {}
       for _, fn in ipairs(waiters) do
@@ -1415,7 +1295,7 @@ function Core:clean_profile(profile_key, on_done)
 
   -- Mark as deleting for UI
   for _, item in ipairs(items) do
-    self._deleting[item.project_key .. "\0" .. item.config_key] = true
+    self:get_config_unit(item.project_key, item.config_key):mark_deleting(true)
   end
   self._deps.events.emit("deletion_started", items)
 
@@ -1434,9 +1314,9 @@ function Core:clean_profile(profile_key, on_done)
     self:remerge()
 
     for _, item in ipairs(items) do
-      self._deleting[item.project_key .. "\0" .. item.config_key] = nil
+      self:get_config_unit(item.project_key, item.config_key):mark_deleting(false)
     end
-    if not next(self._deleting) then
+    if not self:has_pending_deletions() then
       local waiters = self._delete_waiters
       self._delete_waiters = {}
       for _, fn in ipairs(waiters) do fn() end
@@ -1460,7 +1340,7 @@ function Core:clean_config(project_key, config_key, on_done)
 
   local items = { { project_key = project_key, config_key = config_key } }
 
-  self._deleting[project_key .. "\0" .. config_key] = true
+  self:get_config_unit(project_key, config_key):mark_deleting(true)
   self._deps.events.emit("deletion_started", items)
 
   local running = self:find_running_tasks_for_items(items)
@@ -1477,8 +1357,8 @@ function Core:clean_config(project_key, config_key, on_done)
     end
     self:remerge()
 
-    self._deleting[project_key .. "\0" .. config_key] = nil
-    if not next(self._deleting) then
+    self:get_config_unit(project_key, config_key):mark_deleting(false)
+    if not self:has_pending_deletions() then
       local waiters = self._delete_waiters
       self._delete_waiters = {}
       for _, fn in ipairs(waiters) do fn() end

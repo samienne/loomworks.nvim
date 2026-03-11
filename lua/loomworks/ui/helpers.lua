@@ -69,53 +69,46 @@ M.STATUS_HL = {
   deleting         = "DiagnosticError",
 }
 
+--- Resolve the live status for a ConfigUnit.
+--- Used by both profile and project sections — ConfigUnit is the single source of truth.
+--- @param unit loomworks.ConfigUnit
+--- @return string status, string hl_group, string progress_str, boolean is_spinning
+function M.resolve_unit_status(unit)
+  local state = unit:state()
+  if state == "deleting" then
+    return "deleting", M.STATUS_HL.deleting, "", true
+  end
+  if state == "configuring" or state == "building" then
+    local progress_str = M.format_progress(unit:progress())
+        .. M.format_elapsed(unit:elapsed())
+    return state, M.STATUS_HL[state] or "DiagnosticWarn", progress_str, true
+  end
+  -- Map ConfigUnit state names back to cache state names for HL lookup
+  local cache_state = state
+  if state == "configure_failed" then cache_state = "failed_configure" end
+  if state == "build_failed" then cache_state = "failed_build" end
+  return cache_state, M.STATUS_HL[cache_state] or "Comment", "", false
+end
+
 --- Resolve the live status for a ProfileProject.
---- Uses profile-scoped running check to prevent cross-profile state leakage.
 --- @param pp loomworks.ProfileProject
---- @param cached loomworks.CachedConfig|nil
+--- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
 function M.resolve_config_status(pp, cached)
   local lw = require("loomworks")
-
-  if pp:is_deleting() then
-    return "deleting", M.STATUS_HL.deleting, "", true
-  end
-
-  local running_action = pp:running_action()
-  if running_action then
-    local status = running_action == "configure" and "configuring" or "building"
-    local progress_str = M.format_progress(lw.get_progress(pp.project_key, pp.config_key))
-        .. M.format_elapsed(lw.get_elapsed(pp.project_key, pp.config_key))
-    return status, M.STATUS_HL[status] or "DiagnosticWarn", progress_str, true
-  end
-
-  local status = cached and cached.state or "unconfigured"
-  return status, M.STATUS_HL[status] or "Comment", "", false
+  local unit = lw.get_config_unit(pp.project_key, pp.config_key)
+  return M.resolve_unit_status(unit)
 end
 
---- Resolve the live status for a project+config using global running check.
---- Used by the Projects section which is profile-agnostic.
+--- Resolve the live status for a project+config (profile-agnostic).
 --- @param project_key string
 --- @param config_key string
---- @param cached loomworks.CachedConfig|nil
+--- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
 function M.resolve_config_status_global(project_key, config_key, cached)
   local lw = require("loomworks")
-
-  if lw.is_deleting(project_key, config_key) then
-    return "deleting", M.STATUS_HL.deleting, "", true
-  end
-
-  local running_action = lw.get_running_action(project_key, config_key)
-  if running_action then
-    local status = running_action == "configure" and "configuring" or "building"
-    local progress_str = M.format_progress(lw.get_progress(project_key, config_key))
-        .. M.format_elapsed(lw.get_elapsed(project_key, config_key))
-    return status, M.STATUS_HL[status] or "DiagnosticWarn", progress_str, true
-  end
-
-  local status = cached and cached.state or "unconfigured"
-  return status, M.STATUS_HL[status] or "Comment", "", false
+  local unit = lw.get_config_unit(project_key, config_key)
+  return M.resolve_unit_status(unit)
 end
 
 --- Render cached configuration details as leaf lines.

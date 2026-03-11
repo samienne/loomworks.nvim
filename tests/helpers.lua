@@ -56,31 +56,8 @@ end
 function M.make_mock_core(overrides)
   local core = {
     _generation = 1,
-    _running_tasks = {},
-    _deleting = {},
-
     get_workspace = function()
       return nil
-    end,
-
-    get_running_action = function(_, _, _)
-      return nil
-    end,
-
-    get_running_action_for_profile = function(_, _, _, _)
-      return nil
-    end,
-
-    get_running_action_relevant_to_profile = function(_, _, _, _)
-      return nil
-    end,
-
-    get_project_running_action = function(_, _)
-      return nil
-    end,
-
-    is_deleting = function(_, _, _)
-      return false
     end,
 
     module_has_keyed_tools = function(_, mod_type)
@@ -88,7 +65,31 @@ function M.make_mock_core(overrides)
     end,
 
     _tools_by_type = {},
+    _config_units = {},
+    _deps = { clock = function() return 0 end },
   }
+
+  -- Add ConfigUnit registry (same logic as Core:get_config_unit)
+  local ConfigUnit = require("loomworks.config_unit")
+  core.get_config_unit = function(self, project_key, config_key)
+    local key = project_key .. "\0" .. config_key
+    local unit = self._config_units[key]
+    if not unit then
+      unit = ConfigUnit.new(self, project_key, config_key)
+      self._config_units[key] = unit
+    end
+    return unit
+  end
+
+  -- ConfigUnit-based running task queries
+  core.get_project_running_action = function(self, project_key)
+    for _, unit in pairs(self._config_units) do
+      if unit.project_key == project_key and unit:is_running() then
+        return unit:running_action()
+      end
+    end
+    return nil
+  end
   if overrides then
     for k, v in pairs(overrides) do
       core[k] = v

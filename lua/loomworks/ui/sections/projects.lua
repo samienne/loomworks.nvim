@@ -142,13 +142,13 @@ return function(tree, ctx)
             if project_has_keyed_tools then
               local entries = collect_tool_entries(proj, cname, tools_by_type)
               for _, entry in ipairs(entries) do
-                if lw.get_running_action(key, entry.config_key) then
+                if lw.get_config_unit(key, entry.config_key):is_running() then
                   config_has_running = true
                   break
                 end
               end
             else
-              if lw.get_running_action(key, cname) then
+              if lw.get_config_unit(key, cname):is_running() then
                 config_has_running = true
               end
             end
