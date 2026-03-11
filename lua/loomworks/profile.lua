@@ -58,15 +58,11 @@ function ProfileProject:status()
 end
 
 --- Get the running action for this project-in-profile.
---- Full profiles use profile-scoped check. Ad-hoc profiles use global check
---- since their tasks are launched without a profile_key.
+--- Uses global (project_key + config_key) check so that builds triggered
+--- from the Projects section are visible on profiles referencing the same config.
 --- @return string|nil action
 function ProfileProject:running_action()
-  if self._profile.ad_hoc then
-    return self._core:get_running_action(self.project_key, self.config_key)
-  end
-  return self._core:get_running_action_for_profile(
-    self._profile.key, self.project_key, self.config_key)
+  return self._core:get_running_action(self.project_key, self.config_key)
 end
 
 --- Check if this project-in-profile is being deleted.

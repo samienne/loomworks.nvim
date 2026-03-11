@@ -237,8 +237,8 @@ describe("Profile", function()
 
     it("returns true when a project has running action", function()
       local p = make_profile(nil, {
-        get_running_action_for_profile = function(_, profile_key, proj, key)
-          if profile_key == "debug" and proj == "App" and key == "Debug" then return "build" end
+        get_running_action = function(_, proj, key)
+          if proj == "App" and key == "Debug" then return "build" end
           return nil
         end,
       })
@@ -318,8 +318,8 @@ describe("Profile", function()
 
     it("shows running status with number first", function()
       local p = make_profile(nil, {
-        get_running_action_for_profile = function(_, profile_key, proj, key)
-          if profile_key == "debug" and proj == "App" and key == "Debug" then return "build" end
+        get_running_action = function(_, proj, key)
+          if proj == "App" and key == "Debug" then return "build" end
           return nil
         end,
       })
@@ -442,8 +442,8 @@ describe("ProfileProject", function()
     it("returns configuring when running configure", function()
       local pp = make_pp(nil, {
         is_deleting = function() return false end,
-        get_running_action_for_profile = function(_, profile_key, proj, key)
-          if profile_key == "debug" and proj == "App" and key == "Debug" then return "configure" end
+        get_running_action = function(_, proj, key)
+          if proj == "App" and key == "Debug" then return "configure" end
           return nil
         end,
       })
@@ -453,8 +453,8 @@ describe("ProfileProject", function()
     it("returns building when running build", function()
       local pp = make_pp(nil, {
         is_deleting = function() return false end,
-        get_running_action_for_profile = function(_, profile_key, proj, key)
-          if profile_key == "debug" and proj == "App" and key == "Debug" then return "build" end
+        get_running_action = function(_, proj, key)
+          if proj == "App" and key == "Debug" then return "build" end
           return nil
         end,
       })
@@ -468,10 +468,10 @@ describe("ProfileProject", function()
       assert.is_nil(pp:running_action())
     end)
 
-    it("delegates to core with profile key", function()
+    it("delegates to core with project and config key", function()
       local pp = make_pp(nil, {
-        get_running_action_for_profile = function(_, profile_key, proj, key)
-          if profile_key == "debug" and proj == "App" and key == "Debug" then return "build" end
+        get_running_action = function(_, proj, key)
+          if proj == "App" and key == "Debug" then return "build" end
           return nil
         end,
       })
