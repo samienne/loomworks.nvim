@@ -250,10 +250,17 @@ describe("Core", function()
     end)
 
     it("returns Profile object for known profile", function()
-      local core = make_core({
-        projects = { App = { typescript = {} } },
-        configuration_sets = { debug = { App = "development" } },
-      })
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
+          projects = { App = { type = "typescript", configurations = {} } },
+        }
+      )
       core:setup({ root = "/root" })
       local profile = core:get_profile("debug")
       assert.is_not_nil(profile)
@@ -262,13 +269,23 @@ describe("Core", function()
     end)
 
     it("get_profiles returns all profiles", function()
-      local core = make_core({
-        projects = { App = { typescript = {} } },
-        configuration_sets = {
-          debug = { App = "development" },
-          release = { App = "production" },
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = {
+            debug = { App = "development" },
+            release = { App = "production" },
+          },
         },
-      })
+        nil,
+        {
+          profiles = {
+            debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } },
+            release = { configuration_set = "release", projects = { App = { config_key = "production" } } },
+          },
+          projects = { App = { type = "typescript", configurations = {} } },
+        }
+      )
       core:setup({ root = "/root" })
       local profiles = core:get_profiles()
       assert.is_not_nil(profiles.debug)

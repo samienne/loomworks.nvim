@@ -7,10 +7,11 @@ local actions = require("loomworks.ui.actions")
 --- @param tree loomworks.Tree
 --- @param set_name string
 --- @param mappings table<string, string>
+--- @param tool_entries loomworks.ToolEntry[]
 --- @param all_profiles table<string, loomworks.Profile>
 --- @param active_profile_key string
 --- @param lw table loomworks API
-local function render_set_details(tree, set_name, mappings, all_profiles, active_profile_key, lw)
+local function render_set_details(tree, set_name, mappings, tool_entries, all_profiles, active_profile_key, lw)
   tree:group("Projects:", "Comment", function()
     local proj_names = {}
     for name in pairs(mappings) do
@@ -22,23 +23,15 @@ local function render_set_details(tree, set_name, mappings, all_profiles, active
     end
   end)
 
-  -- Collect profiles belonging to this set with tools
-  local tool_profiles = {}
-  for profile_key, profile in pairs(all_profiles) do
-    if profile.configuration_set == set_name and profile.tool_key then
-      tool_profiles[#tool_profiles + 1] = { key = profile_key, profile = profile }
-    end
-  end
-  table.sort(tool_profiles, function(a, b) return a.key < b.key end)
-
-  if #tool_profiles > 0 then
+  if #tool_entries > 0 then
     tree:group("Tools:", "Comment", function()
-      for _, entry in ipairs(tool_profiles) do
-        local profile_key = entry.key
-        local profile = entry.profile
+      for _, entry in ipairs(tool_entries) do
+        local profile_key = entry.profile_key
         local is_active = profile_key == active_profile_key
-        local profile_running = profile:is_running()
-        local already_configured = profile:is_configured()
+        -- Only show running/configured state if a cached profile exists
+        local profile = entry.cached and all_profiles[profile_key] or nil
+        local profile_running = profile and profile:is_running() or false
+        local already_configured = profile and profile:is_configured() or false
 
         local marker = is_active and "● " or "○ "
 
@@ -64,7 +57,7 @@ local function render_set_details(tree, set_name, mappings, all_profiles, active
           hl = is_active and "DiagnosticOk" or "Comment"
         end
 
-        local display = profile.tool_label or profile.tool_key
+        local display = entry.tool_label or entry.tool_key
 
         tree:item(display .. suffix, {
           marker = marker,
@@ -75,8 +68,7 @@ local function render_set_details(tree, set_name, mappings, all_profiles, active
           on_rebuild = actions.rebuild(profile_key),
           on_clean = actions.clean(profile_key),
           on_configure = actions.configure(profile_key),
-          on_delete = actions.delete_profile(profile_key),
-          on_pin = actions.materialize(profile_key),
+          on_delete = entry.cached and actions.delete_profile(profile_key) or nil,
         })
       end
     end)
@@ -85,13 +77,14 @@ end
 
 --- Render the configuration sets section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, all_profiles, active_profile_key, config_sets }
+--- @param ctx table { lw, all_profiles, active_profile_key, config_sets, tool_entries }
 return function(tree, ctx)
   local config_sets = ctx.config_sets
   if not config_sets or not next(config_sets) then return end
 
   local all_profiles = ctx.all_profiles
   local active_profile_key = ctx.active_profile_key
+  local tool_entries = ctx.tool_entries or {}
   local lw = ctx.lw
 
   tree:leaf("Configuration Sets", "Title")
@@ -113,7 +106,7 @@ return function(tree, ctx)
       hl = set_hl,
     }, function()
       render_set_details(tree, set_name, config_sets[set_name],
-        all_profiles, active_profile_key, lw)
+        tool_entries[set_name] or {}, all_profiles, active_profile_key, lw)
     end)
   end
 

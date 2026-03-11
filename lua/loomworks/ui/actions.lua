@@ -118,20 +118,12 @@ function M.pin_config(project_key, config_key)
     local lw = require("loomworks")
     local adhoc_key = "adhoc:" .. project_key .. ":" .. config_key
     local existing = lw.get_profile(adhoc_key)
-    if existing and existing.materialized then
+    if existing then
       vim.notify("loomworks: already pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
       return
     end
     lw.materialize_adhoc(project_key, config_key)
     vim.notify("loomworks: pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
-  end
-end
-
-function M.materialize(profile_key)
-  return function()
-    local lw = require("loomworks")
-    lw.materialize_profile(profile_key)
-    vim.notify("loomworks: materialized " .. profile_key, vim.log.levels.INFO)
   end
 end
 

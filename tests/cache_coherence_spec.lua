@@ -1929,8 +1929,8 @@ describe("cache coherence", function()
 
   describe("find_referencing_profiles", function()
 
-    it("only counts materialized profiles", function()
-      -- Config set generates unmaterialized profiles. These should NOT
+    it("only counts cached profiles", function()
+      -- Config sets alone do NOT create profiles. Only cached profiles
       -- count as references for GC purposes.
       local core = make_tracked_core(
         {
@@ -1939,8 +1939,6 @@ describe("cache coherence", function()
         },
         nil,
         {
-          -- Only an ad-hoc profile is materialized; the auto-generated "debug"
-          -- profile is not in the cache so it's unmaterialized.
           profiles = {
             ["adhoc:App:development"] = {
               ad_hoc = true,
@@ -1961,25 +1959,24 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- The auto-generated "debug" profile exists but is unmaterialized
+      -- No "debug" profile exists (config_sets don't auto-generate profiles)
       local debug_profile = core:get_profile("debug")
-      assert.is_not_nil(debug_profile)
-      assert.is_falsy(debug_profile.materialized)
+      assert.is_nil(debug_profile)
 
-      -- find_referencing_profiles should only find the ad-hoc (materialized)
+      -- find_referencing_profiles should only find the cached ad-hoc
       local refs = core:find_referencing_profiles("App", "development")
       assert.equals(1, #refs)
       assert.equals("adhoc:App:development", refs[1])
     end)
 
-    it("returns empty when only unmaterialized profiles reference config", function()
+    it("returns empty when no cached profiles reference config", function()
       local core = make_tracked_core({
         projects = { App = { typescript = {} } },
         configuration_sets = { debug = { App = "development" } },
       })
       core:setup({ root = "/root" })
 
-      -- "debug" profile exists from config_sets but is not materialized
+      -- No cached profiles at all
       local refs = core:find_referencing_profiles("App", "development")
       assert.equals(0, #refs)
     end)

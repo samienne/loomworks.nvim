@@ -95,8 +95,6 @@ end
 --- @field tool_label? string display label for the tool
 --- @field tool_mod_type? string which module type owns this tool
 --- @field explicit boolean
---- @field auto_generated boolean
---- @field materialized boolean
 --- @field mappings? table<string, string> project_key -> variant name
 local Profile = {}
 Profile.__index = Profile
@@ -116,7 +114,7 @@ local STATUS_HL = {
 --- Create a new Profile object.
 --- @param core loomworks.Core
 --- @param key string profile key
---- @param data { configuration_set?: string, ad_hoc?: boolean, project_key?: string, config_key?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, auto_generated?: boolean, materialized?: boolean, mappings?: table<string, string> }
+--- @param data { configuration_set?: string, ad_hoc?: boolean, project_key?: string, config_key?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
 --- @return loomworks.Profile
 function Profile.new(core, key, data)
   local self = setmetatable({}, Profile)
@@ -132,8 +130,6 @@ function Profile.new(core, key, data)
   self.tool_label = data.tool_label
   self.tool_mod_type = data.tool_mod_type
   self.explicit = data.explicit or false
-  self.auto_generated = data.auto_generated or false
-  self.materialized = data.materialized or false
   self.mappings = data.mappings
 
   -- Precompute valid variants for is_configured checks
@@ -249,23 +245,10 @@ function Profile:is_configured()
   return false
 end
 
---- Check if this profile has been materialized (exists in cache).
---- @return boolean
-function Profile:is_materialized()
-  local ws = self._core:get_workspace()
-  if not ws or not ws.cache then return false end
-
-  local cached_profile = merge.find_cached_profile(
-    ws.cache, self.configuration_set, self.tool_data)
-  return cached_profile ~= nil
-end
-
 --- Check if this profile has any running tasks.
---- Only materialized profiles can be running — shared ConfigUnit activity
---- from another profile's tasks should not leak to non-materialized profiles.
 --- @return boolean
 function Profile:is_running()
-  if not self.materialized or not self.mappings then return false end
+  if not self.mappings then return false end
   for _, pp in ipairs(self:projects()) do
     if pp:running_action() then return true end
   end
@@ -349,12 +332,11 @@ function Profile:plan_deletion()
   if not ws then return empty end
   if not self.mappings then return empty end
 
-  -- Build lookup: which configs are referenced by OTHER materialized profiles.
-  -- Unmaterialized auto-generated profiles don't hold cache references.
+  -- Build lookup: which configs are referenced by OTHER profiles.
   local other_refs = {}
   local all_profiles = self._core:get_profiles()
   for _, other in pairs(all_profiles) do
-    if other.key ~= self.key and other.materialized then
+    if other.key ~= self.key then
       for _, other_pp in ipairs(other:projects()) do
         other_refs[other_pp.project_key .. "\0" .. other_pp.config_key] = true
       end

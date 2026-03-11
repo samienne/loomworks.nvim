@@ -310,8 +310,6 @@ function Core:get_profile(key)
     tool_label = data.tool_label,
     tool_mod_type = data.tool_mod_type,
     explicit = data.explicit or false,
-    auto_generated = data.auto_generated or false,
-    materialized = data.materialized or false,
     mappings = mappings,
   })
 end
@@ -340,13 +338,19 @@ function Core:get_profiles()
       tool_label = data.tool_label,
       tool_mod_type = data.tool_mod_type,
       explicit = data.explicit or false,
-      auto_generated = data.auto_generated or false,
-      materialized = data.materialized or false,
       mappings = mappings,
     })
   end
 
   return result
+end
+
+--- Get tool entries for the configuration sets UI.
+--- @return table<string, loomworks.ToolEntry[]> set_name -> entries
+function Core:get_tool_entries()
+  if not self._workspace then return {} end
+  return self._deps.merge.get_tool_entries(
+    self._workspace.config, self._workspace.cache, self._tools_by_type)
 end
 
 --- Get a Project object by key (from the active set).
@@ -380,11 +384,18 @@ function Core:activate_profile(profile_key)
     return
   end
 
+  -- Ensure the profile exists — materialize if it can be resolved from config
   local all_profiles = self._deps.merge.get_all_profiles(
     self._workspace.config, self._workspace.cache, self._tools_by_type)
   if not all_profiles[profile_key] then
-    self._deps.notify("loomworks: profile '" .. profile_key .. "' not found", vim.log.levels.ERROR)
-    return
+    -- Try to resolve and materialize from config_sets + detected tools
+    local def = self._deps.merge.resolve_profile_def(
+      self._workspace.config, self._tools_by_type, profile_key)
+    if not def then
+      self._deps.notify("loomworks: profile '" .. profile_key .. "' not found", vim.log.levels.ERROR)
+      return
+    end
+    self:materialize_profile(profile_key)
   end
 
   self._workspace.user.active_profile = profile_key
@@ -442,15 +453,14 @@ function Core:materialize_profile(profile_key)
   if not self._workspace then return end
 
   local ws = self._workspace
-  local all_profiles = self._deps.merge.get_all_profiles(
-    ws.config, ws.cache, self._tools_by_type)
-  local profile_def = all_profiles[profile_key]
-  if not profile_def then return end
 
-  -- Check if already materialized by tool_data comparison
-  local existing = self._deps.merge.find_cached_profile(
-    ws.cache, profile_def.configuration_set, profile_def.tool_data)
-  if existing then return end
+  -- Already cached?
+  if ws.cache.profiles and ws.cache.profiles[profile_key] then return end
+
+  -- Resolve from config_sets + detected tools
+  local profile_def = self._deps.merge.resolve_profile_def(
+    ws.config, self._tools_by_type, profile_key)
+  if not profile_def then return end
 
   -- Build project mappings from configuration set
   local set_name = profile_def.configuration_set
@@ -733,13 +743,10 @@ function Core:find_referencing_profiles(project_key, config_key)
   local profiles = self:get_profiles()
   local result = {}
   for pkey, profile in pairs(profiles) do
-    -- Only materialized profiles hold actual cache references.
-    if profile.materialized then
-      for _, pp in ipairs(profile:projects()) do
-        if pp.project_key == project_key and pp.config_key == config_key then
-          result[#result + 1] = pkey
-          break
-        end
+    for _, pp in ipairs(profile:projects()) do
+      if pp.project_key == project_key and pp.config_key == config_key then
+        result[#result + 1] = pkey
+        break
       end
     end
   end

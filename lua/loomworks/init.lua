@@ -74,6 +74,12 @@ function M.get_profiles()
   return core:get_profiles()
 end
 
+--- Get tool entries for the configuration sets UI.
+--- @return table<string, loomworks.ToolEntry[]> set_name -> entries
+function M.get_tool_entries()
+  return core:get_tool_entries()
+end
+
 --- Get a Project object by key (from the active set).
 --- @param key string project key
 --- @return loomworks.Project|nil

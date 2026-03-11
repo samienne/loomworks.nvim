@@ -46,6 +46,7 @@ local function render_fn(tree)
     active_profile_key = active_set.name or "",
     active_set = active_set,
     config_sets = active_set.configuration_sets,
+    tool_entries = lw.get_tool_entries(),
   }
 
   require("loomworks.ui.sections.profiles")(tree, ctx)

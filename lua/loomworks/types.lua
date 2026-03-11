@@ -118,9 +118,15 @@
 --- @field tool_data? table opaque module-specific tool data
 --- @field tool_label? string display label for the tool
 --- @field tool_mod_type? string which module type owns this tool
---- @field auto_generated? boolean
 --- @field explicit? boolean
---- @field materialized? boolean
+
+--- @class loomworks.ToolEntry
+--- @field profile_key string the profile key this tool would create
+--- @field tool_key string
+--- @field tool_data table
+--- @field tool_label? string
+--- @field tool_mod_type? string
+--- @field cached boolean whether a materialized profile exists
 
 --- @class loomworks.MergedProjectData
 --- @field type string module type

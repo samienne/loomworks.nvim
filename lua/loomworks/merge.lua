@@ -169,24 +169,6 @@ end
 -- Tool resolution
 -- ---------------------------------------------------------------------------
 
---- Collect keyed tools — tools from all modules that have non-nil tool_key.
---- These are what generate profile variants (e.g. cmake's generator+compiler combos).
---- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @return loomworks.DetectedTool[] keyed_tools, string|nil keyed_mod_type
-local function collect_keyed_tools(tools_by_type)
-  local keyed = {}
-  local keyed_mod_type = nil
-  for mod_type, tools in pairs(tools_by_type) do
-    for _, tool in ipairs(tools) do
-      if tool.tool_key then
-        keyed[#keyed + 1] = tool
-        keyed_mod_type = mod_type
-      end
-    end
-  end
-  return keyed, keyed_mod_type
-end
-
 --- Resolve a detected tool by tool_key from tools_by_type.
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
 --- @param tool_key string|nil
@@ -230,57 +212,52 @@ local function resolve_tool(tools_by_type, cache, tool_key)
 end
 
 -- ---------------------------------------------------------------------------
--- Profile generation
+-- Profile collection (cached + explicit only)
 -- ---------------------------------------------------------------------------
 
---- Auto-generate profiles from configuration_sets × keyed tools.
---- @param config loomworks.Config
---- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @return table<string, loomworks.ProfileDef>
-local function generate_auto_profiles(config, tools_by_type)
-  local profiles = {}
-
-  if not config.configuration_sets then return profiles end
-
-  local keyed_tools, keyed_mod_type = collect_keyed_tools(tools_by_type)
-
-  if #keyed_tools > 0 then
-    for set_name, _ in pairs(config.configuration_sets) do
-      for _, tool in ipairs(keyed_tools) do
-        local key = M.profile_key(set_name, tool.tool_key)
-        profiles[key] = {
-          configuration_set = set_name,
-          tool_key = tool.tool_key,
-          tool_data = tool.tool_data,
-          tool_label = tool.tool_label,
-          tool_mod_type = keyed_mod_type,
-          auto_generated = true,
-        }
-      end
-    end
-  else
-    -- No keyed tools: one profile per set
-    for set_name, _ in pairs(config.configuration_sets) do
-      profiles[set_name] = {
-        configuration_set = set_name,
-        auto_generated = true,
-      }
-    end
-  end
-
-  return profiles
-end
-
---- Get all available profiles (auto-generated + explicit + cached).
+--- Get all profiles: cached profiles + explicit profiles from loomworks.json.
+--- No auto-generation — profiles only exist when materialized or declared.
 --- @param config loomworks.Config
 --- @param cache loomworks.CacheData|nil
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
 --- @return table<string, loomworks.ProfileDef>
 function M.get_all_profiles(config, cache, tools_by_type)
   tools_by_type = tools_by_type or {}
-  local profiles = generate_auto_profiles(config, tools_by_type)
+  local profiles = {}
 
-  -- Merge explicit profiles from loomworks.json
+  -- Cached profiles (all materialized by definition)
+  if cache and cache.profiles then
+    for cache_key, cp in pairs(cache.profiles) do
+      if cp.ad_hoc then
+        profiles[cache_key] = {
+          ad_hoc = true,
+          project_key = cp.project_key,
+          config_key = cp.config_key,
+          tool_key = cp.tool_key,
+          tool_data = cp.tool_data,
+          tool_label = cp.tool_label,
+          tool_mod_type = cp.tool_mod_type,
+        }
+      else
+        local mod = cp.tool_mod_type and modules.get(cp.tool_mod_type) or nil
+        profiles[cache_key] = {
+          configuration_set = cp.configuration_set,
+          tool_key = cp.tool_key
+              or (mod and mod.tool_key and cp.tool_data
+                and mod.tool_key(cp.tool_data))
+              or nil,
+          tool_data = cp.tool_data,
+          tool_label = cp.tool_label
+              or (mod and mod.tool_label and cp.tool_data
+                and mod.tool_label(cp.tool_data))
+              or nil,
+          tool_mod_type = cp.tool_mod_type,
+        }
+      end
+    end
+  end
+
+  -- Explicit profiles from loomworks.json
   if config.profiles then
     for name, profile in pairs(config.profiles) do
       local tk = profile.kit_id or (profile.cmake and profile.cmake.kit_id) or nil
@@ -296,69 +273,85 @@ function M.get_all_profiles(config, cache, tools_by_type)
     end
   end
 
-  -- Merge cached profiles: match by tool_data via module comparator
-  if cache and cache.profiles then
-    for cache_key, cached_profile in pairs(cache.profiles) do
-      if cached_profile.ad_hoc then
-        -- Ad-hoc profiles are standalone single-config pins
-        profiles[cache_key] = {
-          ad_hoc = true,
-          project_key = cached_profile.project_key,
-          config_key = cached_profile.config_key,
-          tool_key = cached_profile.tool_key,
-          tool_data = cached_profile.tool_data,
-          tool_label = cached_profile.tool_label,
-          tool_mod_type = cached_profile.tool_mod_type,
-          materialized = true,
-        }
-      else
-        local matched_key = nil
-        for key, profile in pairs(profiles) do
-          if profile.configuration_set == cached_profile.configuration_set then
-            -- Compare tool_data via module comparator
-            local mod_type = cached_profile.tool_mod_type or profile.tool_mod_type
-            if mod_type then
-              if module_tools_match(mod_type, profile.tool_data, cached_profile.tool_data) then
-                matched_key = key
-                break
-              end
-            else
-              -- Both have no tool module — match by nil tool_data
-              if profile.tool_data == nil and cached_profile.tool_data == nil then
-                matched_key = key
-                break
-              end
-            end
-          end
-        end
+  return profiles
+end
 
-        if matched_key then
-          profiles[matched_key].materialized = true
-        else
-          -- Cached profile with no auto/explicit counterpart (tool no longer detected)
-          local mod = cached_profile.tool_mod_type
-              and modules.get(cached_profile.tool_mod_type) or nil
-          profiles[cache_key] = {
-            configuration_set = cached_profile.configuration_set,
-            tool_key = cached_profile.tool_key
-                or (mod and mod.tool_key and cached_profile.tool_data
-                  and mod.tool_key(cached_profile.tool_data))
-                or nil,
-            tool_data = cached_profile.tool_data,
-            tool_label = cached_profile.tool_label
-                or (mod and mod.tool_label and cached_profile.tool_data
-                  and mod.tool_label(cached_profile.tool_data))
-                or nil,
-            tool_mod_type = cached_profile.tool_mod_type,
-            auto_generated = false,
-            materialized = true,
-          }
-        end
+--- Resolve a profile definition from a profile_key by parsing it into
+--- (set_name, tool_key) and resolving against config + detected tools.
+--- Returns nil if the set_name doesn't exist in configuration_sets.
+--- @param config loomworks.Config
+--- @param tools_by_type table<string, loomworks.DetectedTool[]>
+--- @param profile_key string
+--- @return loomworks.ProfileDef|nil
+function M.resolve_profile_def(config, tools_by_type, profile_key)
+  local set_name, tool_key = M.parse_profile_key(profile_key)
+  if not config.configuration_sets or not config.configuration_sets[set_name] then
+    return nil
+  end
+
+  local tool_data, tool_label, tool_mod_type = nil, nil, nil
+  if tool_key then
+    local dt, mod_type = resolve_detected_tool(tools_by_type, tool_key)
+    if dt then
+      tool_data = dt.tool_data
+      tool_label = dt.tool_label
+      tool_mod_type = mod_type
+    end
+  end
+
+  return {
+    configuration_set = set_name,
+    tool_key = tool_key,
+    tool_data = tool_data,
+    tool_label = tool_label,
+    tool_mod_type = tool_mod_type,
+  }
+end
+
+--- Get tool entries for the configuration sets UI.
+--- Returns detected tools with their materialized profile key (if cached).
+--- @param config loomworks.Config
+--- @param cache loomworks.CacheData|nil
+--- @param tools_by_type table<string, loomworks.DetectedTool[]>
+--- @return table<string, loomworks.ToolEntry[]> set_name -> entries
+function M.get_tool_entries(config, cache, tools_by_type)
+  tools_by_type = tools_by_type or {}
+  local result = {}
+  if not config.configuration_sets then return result end
+
+  -- Collect keyed tools
+  local keyed_tools = {}
+  local keyed_mod_type = nil
+  for mod_type, tools in pairs(tools_by_type) do
+    for _, tool in ipairs(tools) do
+      if tool.tool_key then
+        keyed_tools[#keyed_tools + 1] = tool
+        keyed_mod_type = mod_type
       end
     end
   end
 
-  return profiles
+  for set_name in pairs(config.configuration_sets) do
+    local entries = {}
+    if #keyed_tools > 0 then
+      for _, tool in ipairs(keyed_tools) do
+        local pkey = M.profile_key(set_name, tool.tool_key)
+        -- Check if a cached profile exists for this combination
+        local cached = cache and cache.profiles and cache.profiles[pkey] or nil
+        entries[#entries + 1] = {
+          profile_key = pkey,
+          tool_key = tool.tool_key,
+          tool_data = tool.tool_data,
+          tool_label = tool.tool_label,
+          tool_mod_type = keyed_mod_type,
+          cached = cached ~= nil,
+        }
+      end
+    end
+    result[set_name] = entries
+  end
+
+  return result
 end
 
 -- ---------------------------------------------------------------------------

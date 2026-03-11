@@ -9,7 +9,6 @@ describe("Profile", function()
       configuration_set = "debug",
       tool_key = nil,
       explicit = false,
-      auto_generated = true,
       mappings = { App = "Debug", Lib = "Debug" },
     }, overrides or {})
     return Profile.new(core, "debug", data), core
@@ -20,7 +19,6 @@ describe("Profile", function()
       local p = make_profile()
       assert.equals("debug", p.key)
       assert.equals("debug", p.configuration_set)
-      assert.is_true(p.auto_generated)
       assert.is_false(p.explicit)
     end)
 
@@ -192,61 +190,17 @@ describe("Profile", function()
     end)
   end)
 
-  describe("is_materialized", function()
-    it("returns false when no workspace", function()
-      local p = make_profile()
-      assert.is_false(p:is_materialized())
-    end)
-
-    it("returns true when cached profile matches by value", function()
-      local p = make_profile(nil, {
-        get_workspace = function()
-          return {
-            cache = {
-              profiles = {
-                debug = {
-                  configuration_set = "debug",
-                  projects = { App = { config_key = "Debug" } },
-                },
-              },
-              projects = {},
-            },
-          }
-        end,
-      })
-      assert.is_true(p:is_materialized())
-    end)
-
-    it("returns false when no cached profiles", function()
-      local p = make_profile(nil, {
-        get_workspace = function()
-          return {
-            cache = { projects = {} },
-          }
-        end,
-      })
-      assert.is_false(p:is_materialized())
-    end)
-  end)
-
   describe("is_running", function()
     it("returns false when nothing running", function()
       local p = make_profile()
       assert.is_false(p:is_running())
     end)
 
-    it("returns true when a materialized profile has running action", function()
-      local p, core = make_profile({ materialized = true })
+    it("returns true when profile has running action", function()
+      local p, core = make_profile()
       local unit = core:get_config_unit("App", "Debug")
       unit:register_task(1, "build")
       assert.is_true(p:is_running())
-    end)
-
-    it("returns false for non-materialized profile even with running ConfigUnit", function()
-      local p, core = make_profile({ materialized = false })
-      local unit = core:get_config_unit("App", "Debug")
-      unit:register_task(1, "build")
-      assert.is_false(p:is_running())
     end)
   end)
 

@@ -63,35 +63,40 @@ describe("merge", function()
   end)
 
   describe("get_all_profiles", function()
-    it("generates profiles from configuration_sets", function()
-      local ws = make_ws({
-        configuration_sets = {
-          debug = { App = "development" },
-          release = { App = "production" },
-        },
-      })
-      local profiles = merge.get_all_profiles(ws.config)
+    it("returns cached profiles", function()
+      local ws = make_ws(
+        { configuration_sets = { debug = { App = "development" } } },
+        nil,
+        {
+          profiles = {
+            debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } },
+            release = { configuration_set = "release", projects = { App = { config_key = "production" } } },
+          },
+          projects = { App = { type = "typescript", configurations = {} } },
+        }
+      )
+      local profiles = merge.get_all_profiles(ws.config, ws.cache)
       assert.is_not_nil(profiles.debug)
       assert.is_not_nil(profiles.release)
       assert.equals("debug", profiles.debug.configuration_set)
       assert.equals("release", profiles.release.configuration_set)
     end)
 
-    it("returns empty when no configuration_sets", function()
+    it("returns empty when no cached or explicit profiles", function()
       local ws = make_ws()
       local profiles = merge.get_all_profiles(ws.config)
       assert.are.same({}, profiles)
     end)
 
-    it("marks auto-generated profiles", function()
+    it("does not auto-generate profiles from configuration_sets", function()
       local ws = make_ws({
         configuration_sets = { debug = { App = "development" } },
       })
       local profiles = merge.get_all_profiles(ws.config)
-      assert.is_true(profiles.debug.auto_generated)
+      assert.are.same({}, profiles)
     end)
 
-    it("explicit profiles override auto-generated", function()
+    it("explicit profiles from config", function()
       local ws = make_ws({
         configuration_sets = { debug = { App = "development" } },
         profiles = {
@@ -124,7 +129,11 @@ describe("merge", function()
     it("sets status to unconfigured when no cache", function()
       local ws = make_ws(
         { configuration_sets = { debug = { App = "development" } } },
-        { active_profile = "debug" }
+        { active_profile = "debug" },
+        {
+          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
+          projects = { App = { type = "typescript", configurations = {} } },
+        }
       )
       local result = merge.merge(ws)
       assert.equals("unconfigured", result.projects.App.status)
@@ -135,6 +144,7 @@ describe("merge", function()
         { configuration_sets = { debug = { App = "development" } } },
         { active_profile = "debug" },
         {
+          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
           projects = {
             App = {
               type = "typescript",
@@ -152,7 +162,11 @@ describe("merge", function()
     it("resolves active profile from user preferences", function()
       local ws = make_ws(
         { configuration_sets = { debug = { App = "development" } } },
-        { active_profile = "debug" }
+        { active_profile = "debug" },
+        {
+          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
+          projects = { App = { type = "typescript", configurations = {} } },
+        }
       )
       local result = merge.merge(ws)
       assert.equals("debug", result.name)
@@ -169,7 +183,11 @@ describe("merge", function()
     it("resolves configuration from active set", function()
       local ws = make_ws(
         { configuration_sets = { debug = { App = "development" } } },
-        { active_profile = "debug" }
+        { active_profile = "debug" },
+        {
+          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
+          projects = { App = { type = "typescript", configurations = {} } },
+        }
       )
       local result = merge.merge(ws)
       assert.equals("development", result.projects.App.configuration)

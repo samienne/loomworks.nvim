@@ -117,7 +117,7 @@ return function(tree, ctx)
   local configured_profiles = {}
   local configured_set = {}
   for profile_key, profile in pairs(full_profiles) do
-    if profile.materialized or profile:is_configured() or profile_key == active_profile_key then
+    if profile:is_configured() or profile:is_running() or profile_key == active_profile_key then
       configured_profiles[#configured_profiles + 1] = profile_key
       configured_set[profile_key] = true
     end
