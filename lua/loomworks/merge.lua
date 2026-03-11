@@ -24,6 +24,14 @@ function M.parse_profile_key(key)
   return key, nil
 end
 
+--- Build an ad-hoc profile key from project and config keys.
+--- @param project_key string
+--- @param config_key string
+--- @return string
+function M.adhoc_key(project_key, config_key)
+  return "adhoc:" .. project_key .. ":" .. config_key
+end
+
 --- Determine project status from cache entry.
 --- @param cache_entry loomworks.CachedConfig|nil
 --- @return loomworks.Status
@@ -173,7 +181,7 @@ end
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
 --- @param tool_key string|nil
 --- @return loomworks.DetectedTool|nil, string|nil mod_type
-local function resolve_detected_tool(tools_by_type, tool_key)
+function M.resolve_detected_tool(tools_by_type, tool_key)
   if not tool_key then return nil, nil end
   for mod_type, tools in pairs(tools_by_type) do
     for _, tool in ipairs(tools) do
@@ -194,7 +202,7 @@ local function resolve_tool(tools_by_type, cache, tool_key)
   if not tool_key then return nil, nil, nil end
 
   -- Check detected tools (same session)
-  local dt, mod_type = resolve_detected_tool(tools_by_type, tool_key)
+  local dt, mod_type = M.resolve_detected_tool(tools_by_type, tool_key)
   if dt then
     return dt.tool_data, dt.tool_label, mod_type
   end
@@ -291,7 +299,7 @@ function M.resolve_profile_def(config, tools_by_type, profile_key)
 
   local tool_data, tool_label, tool_mod_type = nil, nil, nil
   if tool_key then
-    local dt, mod_type = resolve_detected_tool(tools_by_type, tool_key)
+    local dt, mod_type = M.resolve_detected_tool(tools_by_type, tool_key)
     if dt then
       tool_data = dt.tool_data
       tool_label = dt.tool_label
@@ -379,7 +387,8 @@ end
 --- Merge all three files into the active profile projection.
 --- @param workspace loomworks.Workspace
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @return loomworks.ActiveSet
+--- @return loomworks.ActiveSet active_set
+--- @return table<string, loomworks.ProfileDef> all_profiles
 function M.merge(workspace, tools_by_type)
   tools_by_type = tools_by_type or {}
 
@@ -513,15 +522,10 @@ function M.merge(workspace, tools_by_type)
 
   return {
     name = active_profile_key,
-    profile = active_profile,
-    all_profiles = all_profiles,
     tool_key = tool_key,
-    tool_data = tool_data,
-    tool_label = tool_label,
-    tool_mod_type = tool_mod_type,
     projects = projects,
     configuration_sets = config.configuration_sets,
-  }
+  }, all_profiles
 end
 
 --- Resolve project contexts for a specific profile without changing the active profile.

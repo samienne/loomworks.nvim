@@ -90,6 +90,40 @@ function Core:get_config_unit(project_key, config_key)
 end
 
 -- ---------------------------------------------------------------------------
+-- Cache helpers
+-- ---------------------------------------------------------------------------
+
+--- Save the cache file with standard error handling.
+--- @return boolean ok
+function Core:_save_cache()
+  if not self._workspace then return false end
+  local ok, err = self._deps.cache.save(self._workspace.root, self._workspace.cache)
+  if not ok then
+    self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
+  end
+  return ok
+end
+
+--- Ensure a project entry exists in the cache. Returns the cached project table.
+--- @param project_key string
+--- @return table cached_project
+function Core:_ensure_cached_project(project_key)
+  local ws = self._workspace
+  ws.cache.projects = ws.cache.projects or {}
+  if not ws.cache.projects[project_key] then
+    local project_config = ws.config.projects[project_key]
+    ws.cache.projects[project_key] = {
+      type = project_config and project_config.type or "unknown",
+      path = project_config and (project_config.path or project_key) or project_key,
+      configurations = {},
+    }
+  end
+  local cached_proj = ws.cache.projects[project_key]
+  cached_proj.configurations = cached_proj.configurations or {}
+  return cached_proj
+end
+
+-- ---------------------------------------------------------------------------
 -- Workspace & merge
 -- ---------------------------------------------------------------------------
 
@@ -248,10 +282,11 @@ end
 --- Re-merge workspace state, sync object registries, and emit events.
 function Core:remerge()
   if not self._workspace then return end
-  self._active_set = self._deps.merge.merge(
+  local active_set, all_profile_defs = self._deps.merge.merge(
     self._workspace, self._tools_by_type)
+  self._active_set = active_set
   self._generation = self._generation + 1
-  self:_sync_profiles()
+  self:_sync_profiles(all_profile_defs)
   self:_sync_projects()
   self._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -292,12 +327,11 @@ end
 
 --- Sync the profiles registry with current merge data.
 --- Creates new Profile objects, updates existing ones in place, removes stale ones.
-function Core:_sync_profiles()
+--- @param all_defs table<string, loomworks.ProfileDef> profile definitions from merge
+function Core:_sync_profiles(all_defs)
   local ws = self._workspace
   if not ws then return end
 
-  local all_defs = self._deps.merge.get_all_profiles(
-    ws.config, ws.cache, self._tools_by_type)
   local config_sets = ws.config.configuration_sets
 
   -- Mark removed profiles
@@ -497,16 +531,7 @@ function Core:materialize_profile(profile_key)
     profile_projects[project_key] = { config_key = config_key }
 
     -- Ensure skeleton config entry exists in cache.projects
-    ws.cache.projects = ws.cache.projects or {}
-    if not ws.cache.projects[project_key] then
-      ws.cache.projects[project_key] = {
-        type = project_config.type,
-        path = project_config.path or project_key,
-        configurations = {},
-      }
-    end
-    local cached_proj = ws.cache.projects[project_key]
-    cached_proj.configurations = cached_proj.configurations or {}
+    local cached_proj = self:_ensure_cached_project(project_key)
     if not cached_proj.configurations[config_key] then
       local has_keyed = self._deps.merge.module_has_keyed_tools(
         self._tools_by_type, project_config.type)
@@ -531,11 +556,7 @@ function Core:materialize_profile(profile_key)
     projects = profile_projects,
   }
 
-  local ok, err = self._deps.cache.save(ws.root, ws.cache)
-  if not ok then
-    self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
-  end
-
+  self:_save_cache()
   self:remerge()
 end
 
@@ -571,26 +592,22 @@ function Core:_adopt_orphaned_configs()
           local state = cached_config.state
           if state and state ~= "unconfigured" then
             -- Adopt: create ad-hoc profile
-            local adhoc_key = "adhoc:" .. project_key .. ":" .. config_key
+            local ak = self._deps.merge.adhoc_key(project_key, config_key)
             local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
 
             -- Resolve tool info from detected tools
             local tool_data, tool_label, tool_mod_type = nil, nil, nil
             if tool_key then
-              for mod_type, tools in pairs(self._tools_by_type) do
-                for _, dt in ipairs(tools) do
-                  if dt.tool_key == tool_key then
-                    tool_data = dt.tool_data
-                    tool_label = dt.tool_label
-                    tool_mod_type = mod_type
-                    break
-                  end
-                end
-                if tool_data then break end
+              local dt, mt = self._deps.merge.resolve_detected_tool(
+                self._tools_by_type, tool_key)
+              if dt then
+                tool_data = dt.tool_data
+                tool_label = dt.tool_label
+                tool_mod_type = mt
               end
             end
 
-            ws.cache.profiles[adhoc_key] = {
+            ws.cache.profiles[ak] = {
               ad_hoc = true,
               project_key = project_key,
               config_key = config_key,
@@ -627,10 +644,7 @@ function Core:_adopt_orphaned_configs()
   end
 
   if changed then
-    local ok, err = self._deps.cache.save(ws.root, ws.cache)
-    if not ok then
-      self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
-    end
+    self:_save_cache()
   end
 end
 
@@ -650,43 +664,20 @@ function Core:materialize_configuration(project_key, config_key)
   local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
 
   -- Resolve tool_data from detected tools
-  local tool_data = nil
-  if tool_key then
-    for _, tools in pairs(self._tools_by_type) do
-      for _, dt in ipairs(tools) do
-        if dt.tool_key == tool_key then
-          tool_data = dt.tool_data
-          break
-        end
-      end
-      if tool_data then break end
-    end
-  end
+  local dt = tool_key
+      and self._deps.merge.resolve_detected_tool(self._tools_by_type, tool_key)
+      or nil
 
   -- Ensure cache structure exists
-  ws.cache.projects = ws.cache.projects or {}
-  if not ws.cache.projects[project_key] then
-    ws.cache.projects[project_key] = {
-      type = project_config.type,
-      path = project_config.path or project_key,
-      configurations = {},
-    }
-  end
-
-  local cached_proj = ws.cache.projects[project_key]
-  cached_proj.configurations = cached_proj.configurations or {}
+  local cached_proj = self:_ensure_cached_project(project_key)
   if not cached_proj.configurations[config_key] then
     cached_proj.configurations[config_key] = {
       variant = variant,
       tool_key = tool_key,
-      tool_data = tool_data,
+      tool_data = dt and dt.tool_data or nil,
     }
 
-    local ok, err = self._deps.cache.save(ws.root, ws.cache)
-    if not ok then
-      self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
-    end
-
+    self:_save_cache()
     self:remerge()
   end
 end
@@ -704,35 +695,31 @@ function Core:materialize_adhoc(project_key, config_key)
   local project_config = ws.config.projects[project_key]
   if not project_config then return nil end
 
-  local adhoc_key = "adhoc:" .. project_key .. ":" .. config_key
+  local ak = self._deps.merge.adhoc_key(project_key, config_key)
 
   -- Ensure config skeleton exists
   self:materialize_configuration(project_key, config_key)
 
   -- Check if ad-hoc profile already exists
   ws.cache.profiles = ws.cache.profiles or {}
-  if ws.cache.profiles[adhoc_key] then return adhoc_key end
+  if ws.cache.profiles[ak] then return ak end
 
   -- Parse config_key for variant and tool_key
-  local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
+  local _, tool_key = self._deps.merge.parse_profile_key(config_key)
 
   -- Resolve tool data
   local tool_data, tool_label, tool_mod_type = nil, nil, nil
   if tool_key then
-    for mod_type, tools in pairs(self._tools_by_type) do
-      for _, dt in ipairs(tools) do
-        if dt.tool_key == tool_key then
-          tool_data = dt.tool_data
-          tool_label = dt.tool_label
-          tool_mod_type = mod_type
-          break
-        end
-      end
-      if tool_data then break end
+    local det, mt = self._deps.merge.resolve_detected_tool(
+      self._tools_by_type, tool_key)
+    if det then
+      tool_data = det.tool_data
+      tool_label = det.tool_label
+      tool_mod_type = mt
     end
   end
 
-  ws.cache.profiles[adhoc_key] = {
+  ws.cache.profiles[ak] = {
     ad_hoc = true,
     project_key = project_key,
     config_key = config_key,
@@ -745,13 +732,9 @@ function Core:materialize_adhoc(project_key, config_key)
     },
   }
 
-  local ok, err = self._deps.cache.save(ws.root, ws.cache)
-  if not ok then
-    self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
-  end
-
+  self:_save_cache()
   self:remerge()
-  return adhoc_key
+  return ak
 end
 
 --- Find all profile keys that reference a specific cached config.
@@ -943,18 +926,7 @@ function Core:record_task_result(result)
   local now = self._deps.now()
 
   -- Ensure cache structure exists
-  ws.cache.projects = ws.cache.projects or {}
-  if not ws.cache.projects[project_key] then
-    local project_config = ws.config.projects[project_key]
-    ws.cache.projects[project_key] = {
-      type = project_config and project_config.type or "unknown",
-      path = project_config and project_config.path or project_key,
-      configurations = {},
-    }
-  end
-
-  local cached_proj = ws.cache.projects[project_key]
-  cached_proj.configurations = cached_proj.configurations or {}
+  local cached_proj = self:_ensure_cached_project(project_key)
 
   if not cached_proj.configurations[config_key] then
     local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
@@ -995,11 +967,7 @@ function Core:record_task_result(result)
     end
   end
 
-  local ok, err = self._deps.cache.save(ws.root, ws.cache)
-  if not ok then
-    self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
-  end
-
+  self:_save_cache()
   self:remerge()
   self._deps.events.emit("task_result", result)
 end
@@ -1153,6 +1121,47 @@ function Core:reset_cached_configs(items)
   end
 end
 
+--- Common async deletion workflow: mark items as deleting, stop running tasks,
+--- call work_fn for the actual cache mutations, save, remerge, unmark, flush waiters.
+--- @param items table[] list of { project_key, config_key, ... }
+--- @param work_fn function called synchronously after tasks are stopped
+--- @param on_done? function called when complete
+function Core:_run_deletion(items, work_fn, on_done)
+  if #items == 0 then
+    if on_done then on_done() end
+    return
+  end
+
+  for _, item in ipairs(items) do
+    self:get_config_unit(item.project_key, item.config_key):mark_deleting(true)
+  end
+  self._deps.events.emit("deletion_started", items)
+
+  local running = self:find_running_tasks_for_items(items)
+  local task_ids = {}
+  for task_id in pairs(running) do
+    task_ids[#task_ids + 1] = task_id
+  end
+
+  self:stop_tasks_then(task_ids, function()
+    work_fn()
+    self:_save_cache()
+    self:remerge()
+
+    for _, item in ipairs(items) do
+      self:get_config_unit(item.project_key, item.config_key):mark_deleting(false)
+    end
+    if not self:has_pending_deletions() then
+      local waiters = self._delete_waiters
+      self._delete_waiters = {}
+      for _, fn in ipairs(waiters) do fn() end
+    end
+
+    self._deps.events.emit("deletion_completed", items)
+    if on_done then on_done() end
+  end)
+end
+
 --- Execute a deletion plan asynchronously.
 --- Items with disposition "clean" have their cache entries removed.
 --- Items with disposition "reset" have their state cleared to unconfigured.
@@ -1163,7 +1172,6 @@ end
 --- @param on_done? function called when deletion is complete
 function Core:execute_deletion(plan, opts, on_done)
   opts = opts or {}
-  local items = plan.items
 
   -- Deactivate profile if requested
   if opts.deactivate_profile then
@@ -1178,16 +1186,18 @@ function Core:execute_deletion(plan, opts, on_done)
       if not next(ws.cache.profiles) then
         ws.cache.profiles = nil
       end
-      self._deps.cache.save(ws.root, ws.cache)
+      self:_save_cache()
     end
   end
 
-  -- Split items by disposition: clean and reset need work, keep is untouched
+  -- Split items by disposition
   local actionable = {}
+  local clean_items = {}
   local reset_items = {}
-  for _, item in ipairs(items) do
+  for _, item in ipairs(plan.items) do
     if item.disposition == "clean" then
       actionable[#actionable + 1] = item
+      clean_items[#clean_items + 1] = item
     elseif item.disposition == "reset" then
       actionable[#actionable + 1] = item
       reset_items[#reset_items + 1] = item
@@ -1200,59 +1210,14 @@ function Core:execute_deletion(plan, opts, on_done)
     return
   end
 
-  -- Mark actionable items as deleting
-  for _, item in ipairs(actionable) do
-    self:get_config_unit(item.project_key, item.config_key):mark_deleting(true)
-  end
-
-  self._deps.events.emit("deletion_started", actionable)
-
-  -- Find and stop running tasks for actionable items
-  local running = self:find_running_tasks_for_items(actionable)
-  local task_ids = {}
-  for task_id in pairs(running) do
-    task_ids[#task_ids + 1] = task_id
-  end
-
-  local clean_items = {}
-  for _, item in ipairs(items) do
-    if item.disposition == "clean" then
-      clean_items[#clean_items + 1] = item
-    end
-  end
-
-  self:stop_tasks_then(task_ids, function()
+  self:_run_deletion(actionable, function()
     if #clean_items > 0 then
       self:delete_cached_configs(clean_items)
     end
     if #reset_items > 0 then
       self:reset_cached_configs(reset_items)
     end
-
-    -- Save cache once after all mutations
-    if self._workspace then
-      self._deps.cache.save(self._workspace.root, self._workspace.cache)
-    end
-    self:remerge()
-
-    -- Unmark deleting state
-    for _, item in ipairs(actionable) do
-      self:get_config_unit(item.project_key, item.config_key):mark_deleting(false)
-    end
-
-    -- Notify waiters if no more pending deletions
-    if not self:has_pending_deletions() then
-      local waiters = self._delete_waiters
-      self._delete_waiters = {}
-      for _, fn in ipairs(waiters) do
-        fn()
-      end
-    end
-
-    self._deps.events.emit("deletion_completed", actionable)
-
-    if on_done then on_done() end
-  end)
+  end, on_done)
 end
 
 --- Convenience: delete a profile without UI confirmation.
@@ -1285,7 +1250,7 @@ function Core:delete_config(project_key, config_key, on_done)
     if not next(ws.cache.profiles) then
       ws.cache.profiles = nil
     end
-    self._deps.cache.save(ws.root, ws.cache)
+    self:_save_cache()
   end
 
   self:execute_deletion(plan, nil, on_done)
@@ -1314,43 +1279,9 @@ function Core:clean_profile(profile_key, on_done)
     }
   end
 
-  if #items == 0 then
-    if on_done then on_done() end
-    return
-  end
-
-  -- Mark as deleting for UI
-  for _, item in ipairs(items) do
-    self:get_config_unit(item.project_key, item.config_key):mark_deleting(true)
-  end
-  self._deps.events.emit("deletion_started", items)
-
-  local running = self:find_running_tasks_for_items(items)
-  local task_ids = {}
-  for task_id in pairs(running) do
-    task_ids[#task_ids + 1] = task_id
-  end
-
-  self:stop_tasks_then(task_ids, function()
+  self:_run_deletion(items, function()
     self:reset_cached_configs(items)
-
-    if self._workspace then
-      self._deps.cache.save(self._workspace.root, self._workspace.cache)
-    end
-    self:remerge()
-
-    for _, item in ipairs(items) do
-      self:get_config_unit(item.project_key, item.config_key):mark_deleting(false)
-    end
-    if not self:has_pending_deletions() then
-      local waiters = self._delete_waiters
-      self._delete_waiters = {}
-      for _, fn in ipairs(waiters) do fn() end
-    end
-
-    self._deps.events.emit("deletion_completed", items)
-    if on_done then on_done() end
-  end)
+  end, on_done)
 end
 
 --- Clean a single config: delete build dir and reset to unconfigured.
@@ -1365,34 +1296,9 @@ function Core:clean_config(project_key, config_key, on_done)
   end
 
   local items = { { project_key = project_key, config_key = config_key } }
-
-  self:get_config_unit(project_key, config_key):mark_deleting(true)
-  self._deps.events.emit("deletion_started", items)
-
-  local running = self:find_running_tasks_for_items(items)
-  local task_ids = {}
-  for task_id in pairs(running) do
-    task_ids[#task_ids + 1] = task_id
-  end
-
-  self:stop_tasks_then(task_ids, function()
+  self:_run_deletion(items, function()
     self:reset_cached_configs(items)
-
-    if self._workspace then
-      self._deps.cache.save(self._workspace.root, self._workspace.cache)
-    end
-    self:remerge()
-
-    self:get_config_unit(project_key, config_key):mark_deleting(false)
-    if not self:has_pending_deletions() then
-      local waiters = self._delete_waiters
-      self._delete_waiters = {}
-      for _, fn in ipairs(waiters) do fn() end
-    end
-
-    self._deps.events.emit("deletion_completed", items)
-    if on_done then on_done() end
-  end)
+  end, on_done)
 end
 
 -- ---------------------------------------------------------------------------

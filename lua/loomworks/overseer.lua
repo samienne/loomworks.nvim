@@ -115,15 +115,8 @@ local function collect_configuration_tasks(project_key, config_key)
   local core = loomworks._core()
   local tool_data = nil
   if tool_key then
-    for _, tools in pairs(core._tools_by_type) do
-      for _, dt in ipairs(tools) do
-        if dt.tool_key == tool_key then
-          tool_data = dt.tool_data
-          break
-        end
-      end
-      if tool_data then break end
-    end
+    local dt = merge.resolve_detected_tool(core._tools_by_type, tool_key)
+    if dt then tool_data = dt.tool_data end
   end
 
   -- Get module info
