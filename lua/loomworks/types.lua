@@ -203,13 +203,13 @@
 --- @field config_key? string single config deletion target
 --- @field defined_in_config boolean
 
---- @alias loomworks.DeletionDisposition "clean"|"keep"
+--- @alias loomworks.DeletionDisposition "clean"|"reset"|"keep"
 
 --- @class loomworks.DeletionItem
 --- @field project_key string
 --- @field config_key string
 --- @field build_dir? string
---- @field disposition loomworks.DeletionDisposition "clean" removes cache entry, "keep" leaves it (referenced by another profile)
+--- @field disposition loomworks.DeletionDisposition "clean" removes entry, "reset" clears state (keeps skeleton), "keep" untouched
 
 -- ========================== File Tracking ==========================
 

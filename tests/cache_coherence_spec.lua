@@ -480,18 +480,18 @@ describe("cache coherence", function()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
 
-      -- delete_config removes ad-hoc, keeps config (full profile still refs it)
+      -- delete_config removes ad-hoc, resets config (full profile still refs it)
       local done = false
       core:delete_config("App", "development", function() done = true end)
       assert.is_true(done)
 
       assert_cache_coherent(core, "after delete_config with full ref")
       assert.equals(1, count_cached_configs(core))
-      assert.equals(0, #rm_calls) -- "keep" does not touch build dir
+      assert.equals(1, #rm_calls) -- build dir cleaned on reset
 
-      -- Config entry untouched (full profile keeps it)
+      -- Config entry exists but state cleared to unconfigured
       local ws = core:get_workspace()
-      assert.equals("built", ws.cache.projects.App.configurations.development.state)
+      assert.is_nil(ws.cache.projects.App.configurations.development.state)
 
       -- Ad-hoc should be gone
       local adhoc_gone = not ws.cache.profiles
@@ -1860,25 +1860,25 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- plan_config_deletion should return "keep" since full profile refs it
+      -- plan_config_deletion should return "reset" since full profile refs it
       local plan = core:plan_config_deletion("App", "development")
       assert.equals(1, #plan.items)
-      assert.equals("keep", plan.items[1].disposition)
+      assert.equals("reset", plan.items[1].disposition)
       assert.is_nil(plan.adhoc_profiles)
 
       -- Execute deletion
       core:delete_config("App", "development")
       assert_cache_coherent(core, "after config delete with full ref")
 
-      -- Config untouched (kept by full profile)
+      -- Config reset to unconfigured (skeleton kept for full profile)
       local ws = core:get_workspace()
       local cached = ws.cache.projects.App.configurations.development
-      assert.is_not_nil(cached, "config should survive keep")
-      assert.equals("built", cached.state)
-      assert.equals("/root/.nvim/build/App/development", cached.build_dir)
+      assert.is_not_nil(cached, "config should survive reset")
+      assert.is_nil(cached.state)
+      assert.is_nil(cached.build_dir)
 
-      -- No build dir cleanup
-      assert.equals(0, #rm_calls)
+      -- Build dir was cleaned
+      assert.equals(1, #rm_calls)
 
       -- Profile still intact
       assert.is_not_nil(ws.cache.profiles.debug)
@@ -2081,15 +2081,15 @@ describe("cache coherence", function()
       core:materialize_adhoc("Backend", "development")
       assert_cache_coherent(core, "full + ad-hoc")
 
-      -- delete_config on Backend — removes ad-hoc, keeps config (full profile holds it)
+      -- delete_config on Backend — removes ad-hoc, resets config (full profile holds it)
       core:delete_config("Backend", "development")
       assert_cache_coherent(core, "after delete_config")
       assert.equals(2, count_cached_configs(core)) -- both still there
-      assert.equals(0, #rm_calls) -- "keep" does not touch build dir
+      assert.equals(1, #rm_calls) -- Backend build dir cleaned on reset
 
-      -- Backend config untouched (full profile still holds it)
+      -- Backend config reset to unconfigured
       local ws = core:get_workspace()
-      assert.equals("built", ws.cache.projects.Backend.configurations.development.state)
+      assert.is_nil(ws.cache.projects.Backend.configurations.development.state)
 
       -- Ad-hoc is gone
       local adhoc_gone = not ws.cache.profiles

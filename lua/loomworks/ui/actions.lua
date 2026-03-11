@@ -86,9 +86,10 @@ end
 function M.pin_config(project_key, config_key)
   return function()
     local lw = require("loomworks")
-    local refs = lw.find_referencing_profiles(project_key, config_key)
-    if #refs > 0 then
-      vim.notify("loomworks: already referenced by " .. refs[1], vim.log.levels.INFO)
+    local adhoc_key = "adhoc:" .. project_key .. ":" .. config_key
+    local existing = lw.get_profile(adhoc_key)
+    if existing and existing.materialized then
+      vim.notify("loomworks: already pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
       return
     end
     lw.materialize_adhoc(project_key, config_key)
@@ -162,10 +163,12 @@ function M._show_delete_confirmation(title, plan, on_confirm)
   end
 
   -- Split items by disposition
-  local clean_items, keep_items = {}, {}
+  local clean_items, reset_items, keep_items = {}, {}, {}
   for _, item in ipairs(items) do
     if item.disposition == "keep" then
       keep_items[#keep_items + 1] = item
+    elseif item.disposition == "reset" then
+      reset_items[#reset_items + 1] = item
     else
       clean_items[#clean_items + 1] = item
     end
@@ -177,6 +180,16 @@ function M._show_delete_confirmation(title, plan, on_confirm)
       local dir = item.build_dir and rel_path(item.build_dir) or nil
       local suffix = dir and ("  " .. dir) or ""
       add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticError")
+    end
+    add("")
+  end
+
+  if #reset_items > 0 then
+    add("  Will reset to unconfigured:", "DiagnosticWarn")
+    for _, item in ipairs(reset_items) do
+      local dir = item.build_dir and rel_path(item.build_dir) or nil
+      local suffix = dir and ("  " .. dir) or ""
+      add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticWarn")
     end
     add("")
   end
