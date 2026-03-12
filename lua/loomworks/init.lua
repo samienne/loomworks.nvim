@@ -33,6 +33,9 @@ end
 --- @param opts? { root?: string }
 function M.setup(opts)
   if not core:setup(opts) then return end
+
+  -- Optional fidget.nvim integration for progress notifications
+  require("loomworks.fidget").setup()
 end
 
 --- Get the merged active configuration set.
