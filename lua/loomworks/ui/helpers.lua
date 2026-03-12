@@ -90,6 +90,14 @@ function M.format_status(status)
   return status
 end
 
+--- Get the status icon as a tree marker (icon + trailing space).
+--- Returns "○ " for unknown/composite statuses.
+--- @param status string
+--- @return string marker
+function M.status_marker(status)
+  return (M.STATUS_ICON[status] or "○") .. " "
+end
+
 --- Resolve the live status for a ConfigUnit.
 --- Used by both profile and project sections — ConfigUnit is the single source of truth.
 --- @param unit loomworks.ConfigUnit
@@ -138,7 +146,7 @@ end
 --- @param status_hl string
 --- @param cached loomworks.CachedConfig|nil
 function M.render_cached_details(tree, config_status, status_hl, cached)
-  tree:leaf("Status: " .. M.format_status(config_status), status_hl)
+  tree:leaf("Status: " .. config_status, status_hl)
   if not cached then return end
 
   if cached.build_dir then

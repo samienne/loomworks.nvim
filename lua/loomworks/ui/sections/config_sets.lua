@@ -33,12 +33,11 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
         local profile_running = profile and profile:is_running() or false
         local already_configured = profile and profile:is_configured() or false
 
-        local marker = is_active and "● " or "○ "
-
-        local suffix, hl
+        local suffix, hl, marker
         if profile_running then
           local status_label = select(1, profile:status())
-          suffix = " (" .. helpers.format_status(status_label) .. ")"
+          marker = helpers.status_marker(status_label)
+          suffix = " (" .. status_label .. ")"
           local pps = profile:projects()
           local pct = helpers.aggregate_progress(pps)
           if pct then suffix = suffix .. " " .. pct .. "%" end
@@ -48,18 +47,22 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
           hl = "LoomworksActive"
           local op = lw.get_operation(profile_key)
           if op and op.message then
+            local p_label = already_configured and select(1, profile:status()) or "unconfigured"
+            marker = helpers.status_marker(p_label)
             suffix = " — " .. op.message
           else
             local p_label = already_configured and select(1, profile:status()) or "unconfigured"
-            suffix = " (" .. helpers.format_status(p_label) .. ")"
+            marker = helpers.status_marker(p_label)
+            suffix = " (" .. p_label .. ")"
           end
         elseif already_configured then
           local p_label = select(1, profile:status())
+          marker = helpers.status_marker(p_label)
           local op = lw.get_operation(profile_key)
           if op and op.message then
             suffix = " — " .. op.message
           else
-            suffix = " (" .. helpers.format_status(p_label) .. ")"
+            suffix = " (" .. p_label .. ")"
           end
           if p_label == "failed_configure" or p_label == "failed_build"
               or p_label:match("failed") then
@@ -68,6 +71,7 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
             hl = "LoomworksConfigured"
           end
         else
+          marker = helpers.status_marker("unconfigured")
           suffix = ""
           hl = "LoomworksUnconfigured"
         end

@@ -76,7 +76,7 @@ local function render_adhoc_node(tree, profile, lw)
   elseif profile.tool_key then
     display = display .. " × " .. profile.tool_key
   end
-  display = display .. " (" .. helpers.format_status(config_status) .. ")" .. progress_str
+  display = display .. " (" .. config_status .. ")" .. progress_str
 
   tree:node(display, {
     fold_key = "profile:" .. profile.key,
@@ -144,7 +144,8 @@ return function(tree, ctx)
     local is_active = profile.key == active_profile_key
     local profile_running = profile:is_running()
 
-    local marker = is_active and "● " or "○ "
+    local status_label, status_hl = profile:status()
+    local marker = helpers.status_marker(status_label)
     local hl
 
     local display = profile.key
@@ -152,8 +153,7 @@ return function(tree, ctx)
       display = display .. " [explicit]"
     end
 
-    local status_label, status_hl = profile:status()
-    display = display .. " (" .. helpers.format_status(status_label) .. ")"
+    display = display .. " (" .. status_label .. ")"
     if profile_running then
       hl = "LoomworksRunning"
       local pps = profile:projects()

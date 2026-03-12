@@ -203,7 +203,7 @@ return function(tree, ctx)
                 local config_status, status_hl, progress_str, is_spinning =
                     helpers.resolve_config_status_global(key, cname, cached)
 
-                tree:node("Status: " .. helpers.format_status(config_status) .. progress_str, {
+                tree:node("Status: " .. config_status .. progress_str, {
                   fold_key = "config_status:" .. key .. ":" .. cname,
                   spinning = is_spinning,
                   hl = status_hl,
