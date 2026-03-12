@@ -940,7 +940,10 @@ function Core:record_task_result(result)
 
   if action == "configure" then
     if success then
-      cached_config.state = "configured"
+      -- Don't downgrade from built to configured
+      if cached_config.state ~= "built" then
+        cached_config.state = "configured"
+      end
       cached_config.last_configured = now
     else
       cached_config.state = "failed_configure"
