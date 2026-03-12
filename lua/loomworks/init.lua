@@ -33,9 +33,6 @@ end
 --- @param opts? { root?: string }
 function M.setup(opts)
   if not core:setup(opts) then return end
-
-  -- Register overseer template provider
-  require("loomworks.overseer").register()
 end
 
 --- Get the merged active configuration set.
