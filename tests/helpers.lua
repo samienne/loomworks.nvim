@@ -41,7 +41,7 @@ end
 --- @return string JSON content
 function M.make_cache_json(overrides)
   local base = {
-    _meta = { version = 2, loomworks_hash = "", cached_at = "" },
+    _meta = { version = 3, loomworks_hash = "", cached_at = "" },
     projects = {},
   }
   if overrides then

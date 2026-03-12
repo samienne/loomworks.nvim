@@ -50,6 +50,12 @@ function M.get_workspace()
   return core:get_workspace()
 end
 
+--- Get the last setup error (e.g., cache version mismatch).
+--- @return { root: string, message: string }|nil
+function M.get_setup_error()
+  return core:get_setup_error()
+end
+
 --- Register an event listener.
 --- @param event string
 --- @param fn function
@@ -121,6 +127,13 @@ function M.rescan_tools()
   core:rescan_tools()
 end
 
+--- Nuke the cache: delete .nvim/build/ and loomworks.cache.json, then reload.
+--- Caller must confirm with the user before calling this.
+--- @param root string workspace root to nuke
+function M.nuke_cache(root)
+  core:nuke_cache(root)
+end
+
 --- Check if a module type has keyed tools (tools with non-nil tool_key).
 --- @param mod_type string
 --- @return boolean
@@ -141,13 +154,13 @@ function M.materialize_configuration(project_key, config_key)
   core:materialize_configuration(project_key, config_key)
 end
 
---- Create a lightweight ad-hoc profile entry that pins a single config in cache.
---- Returns the ad-hoc profile key (format: "adhoc:<project_key>:<config_key>").
+--- Create a pinned profile entry that pins a single config in cache.
+--- Returns the pinned profile key (format: "project/config_key").
 --- @param project_key string
 --- @param config_key string
---- @return string adhoc_profile_key
-function M.materialize_adhoc(project_key, config_key)
-  return core:materialize_adhoc(project_key, config_key)
+--- @return string pinned_profile_key
+function M.materialize_pinned(project_key, config_key)
+  return core:materialize_pinned(project_key, config_key)
 end
 
 --- Activate a named configuration set.

@@ -18,10 +18,21 @@ local function render_fn(tree)
   local lw = require("loomworks")
   local ws = lw.get_workspace()
   if not ws then
-    tree:leaf("No workspace loaded.", "Comment")
-    tree:blank()
-    tree:leaf("Press L to load from:", "Comment")
-    tree:leaf("  " .. vim.fn.getcwd(), "DiagnosticInfo")
+    local err = lw.get_setup_error()
+    if err then
+      tree._level = 1
+      tree:leaf("loomworks.nvim " .. lw._version, "Title")
+      tree:blank()
+      tree:leaf("Failed to load workspace", "DiagnosticError")
+      tree:leaf("Root: " .. err.root, "Comment")
+      tree:blank()
+      tree:leaf(err.message, "DiagnosticWarn")
+    else
+      tree:leaf("No workspace loaded.", "Comment")
+      tree:blank()
+      tree:leaf("Press L to load from:", "Comment")
+      tree:leaf("  " .. vim.fn.getcwd(), "DiagnosticInfo")
+    end
     return
   end
 
@@ -74,6 +85,7 @@ local view = View.new({
     ["D"]     = "delete",
     ["p"]     = "pin",
     ["L"]     = "load",
+    ["<C-n>"] = "nuke",
     ["?"]     = "help",
   },
   events = {

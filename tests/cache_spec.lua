@@ -2,9 +2,9 @@ local cache = require("loomworks.cache")
 
 describe("cache", function()
   describe("default", function()
-    it("returns table with version 2 and empty projects", function()
+    it("returns table with version 3 and empty projects", function()
       local d = cache.default()
-      assert.equals(2, d._meta.version)
+      assert.equals(3, d._meta.version)
       assert.are.same({}, d.projects)
     end)
   end)
@@ -12,7 +12,7 @@ describe("cache", function()
   describe("parse", function()
     it("parses valid cache.json", function()
       local json = vim.json.encode({
-        _meta = { version = 2, loomworks_hash = "abc", cached_at = "2025-01-01" },
+        _meta = { version = 3, loomworks_hash = "abc", cached_at = "2025-01-01" },
         projects = {
           App = {
             type = "cmake",
@@ -23,23 +23,43 @@ describe("cache", function()
         },
       })
       local result = cache.parse(json)
-      assert.equals(2, result._meta.version)
+      assert.equals(3, result._meta.version)
       assert.equals("built", result.projects.App.configurations.Debug.state)
     end)
 
-    it("returns defaults on invalid JSON", function()
-      local result = cache.parse("broken {{{")
-      assert.equals(2, result._meta.version)
-      assert.are.same({}, result.projects)
+    it("returns no version mismatch on valid parse", function()
+      local json = vim.json.encode({
+        _meta = { version = 3, loomworks_hash = "abc", cached_at = "2025-01-01" },
+        projects = {},
+      })
+      local _, mismatch = cache.parse(json)
+      assert.is_false(mismatch)
     end)
 
-    it("returns defaults on wrong version", function()
+    it("returns defaults on invalid JSON without version mismatch", function()
+      local result, mismatch = cache.parse("broken {{{")
+      assert.equals(3, result._meta.version)
+      assert.are.same({}, result.projects)
+      assert.is_false(mismatch)
+    end)
+
+    it("returns defaults and version mismatch on wrong version", function()
       local json = vim.json.encode({
         _meta = { version = 999 },
         projects = { App = {} },
       })
-      local result = cache.parse(json)
+      local result, mismatch = cache.parse(json)
       assert.are.same({}, result.projects)
+      assert.is_true(mismatch)
+    end)
+
+    it("returns version mismatch on old version", function()
+      local json = vim.json.encode({
+        _meta = { version = 2 },
+        projects = {},
+      })
+      local _, mismatch = cache.parse(json)
+      assert.is_true(mismatch)
     end)
 
     it("ensures projects field exists", function()

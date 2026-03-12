@@ -12,6 +12,7 @@
 --- @field _tracker loomworks.FileTracker|nil
 --- @field _operations table<string, loomworks.Operation> profile_key -> active or completed operation
 --- @field _tools_by_type table<string, loomworks.DetectedTool[]> tools per module type
+--- @field _setup_error { root: string, message: string }|nil set when setup fails
 local Core = {}
 Core.__index = Core
 
@@ -71,6 +72,7 @@ function Core.new(deps)
   self._config_units = {}
   self._profiles = {}
   self._projects = {}
+  self._setup_error = nil
   return self
 end
 
@@ -225,6 +227,8 @@ end
 --- @param opts? { root?: string }
 --- @return boolean ok
 function Core:setup(opts)
+  self._setup_error = nil
+
   local ws_mod = self._deps.workspace
   local root = ws_mod.resolve_root(opts and opts.root or nil)
   local paths = ws_mod.paths(root)
@@ -242,6 +246,14 @@ function Core:setup(opts)
   local ws, err = ws_mod.assemble(root, config_content, user_content, cache_content)
   if not ws then
     self._deps.notify("loomworks: " .. err, vim.log.levels.ERROR)
+    return false
+  end
+
+  -- Refuse to load when cache has incompatible version
+  if ws.cache_version_mismatch then
+    local msg = "Cache version mismatch (expected v3). Press <C-n> to reset."
+    self._setup_error = { root = root, message = msg }
+    self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
     return false
   end
 
@@ -281,6 +293,65 @@ function Core:setup(opts)
   return true
 end
 
+--- Validate that a path is a child of root/.nvim/ before deletion.
+--- Uses absolute normalized paths to prevent directory traversal.
+--- @param path string path to validate
+--- @param root string workspace root
+--- @return boolean safe
+function Core:_safe_nvim_path(path, root)
+  local normalize = self._deps.normalize
+  local norm_path = normalize(path)
+  local nvim_prefix = normalize(root .. "/.nvim")
+  -- Ensure path starts with root/.nvim/ (trailing slash prevents partial matches)
+  return norm_path == nvim_prefix or norm_path:sub(1, #nvim_prefix + 1) == nvim_prefix .. "/"
+end
+
+--- Nuke the cache: delete .nvim/build/ and loomworks.cache.json, then reload.
+--- Caller must confirm with the user before calling this.
+--- @param root string workspace root to nuke
+function Core:nuke_cache(root)
+  -- Safety: root must be absolute (Unix /... or Windows C:/...)
+  local norm_root = self._deps.normalize(root)
+  if not norm_root:match("^/") and not norm_root:match("^%a:/") then
+    self._deps.notify("loomworks: nuke_cache requires an absolute path, got: " .. root, vim.log.levels.ERROR)
+    return
+  end
+
+  -- Safety: loomworks.json must exist at root (confirms this is a real workspace)
+  local config_path = norm_root .. "/loomworks.json"
+  if not self._deps.io.read_file(config_path) then
+    self._deps.notify("loomworks: no loomworks.json found at " .. norm_root .. ", aborting nuke", vim.log.levels.ERROR)
+    return
+  end
+
+  -- Build absolute paths
+  local build_dir = norm_root .. "/.nvim/build"
+  local cache_path = self._deps.cache.filepath(norm_root)
+  local cache_bak = cache_path .. ".bak"
+
+  -- Safety: verify all paths are under root/.nvim/
+  local paths_to_delete = { build_dir, cache_path, cache_bak }
+  for _, p in ipairs(paths_to_delete) do
+    if not self:_safe_nvim_path(p, norm_root) then
+      self._deps.notify("loomworks: refusing to delete path outside .nvim/: " .. p, vim.log.levels.ERROR)
+      return
+    end
+  end
+
+  -- Delete build directory
+  local ok, err = self._deps.io.rm_rf(build_dir)
+  if not ok then
+    self._deps.notify("loomworks: failed to delete build dir: " .. err, vim.log.levels.ERROR)
+  end
+
+  -- Delete cache file and backup
+  self._deps.io.rm_rf(cache_path)
+  self._deps.io.rm_rf(cache_bak)
+
+  -- Re-setup from scratch
+  self:setup({ root = norm_root })
+end
+
 --- Re-merge workspace state, sync object registries, and emit events.
 function Core:remerge()
   if not self._workspace then return end
@@ -305,13 +376,19 @@ function Core:get_workspace()
   return self._workspace
 end
 
+--- Get the last setup error (e.g., cache version mismatch).
+--- @return { root: string, message: string }|nil
+function Core:get_setup_error()
+  return self._setup_error
+end
+
 -- ---------------------------------------------------------------------------
 -- Object registries
 -- ---------------------------------------------------------------------------
 
 --- Resolve mappings for a profile definition.
---- Ad-hoc profiles derive mappings from their single project+config_key.
---- Full profiles derive mappings from configuration_sets.
+--- Set-based profiles derive mappings from configuration_sets (reactive).
+--- Pinned profiles use their stored mappings directly.
 --- Falls back to cached profile project data when the configuration_set
 --- no longer exists in config (orphaned profile).
 --- @param data loomworks.ProfileDef
@@ -319,17 +396,16 @@ end
 --- @return table<string, string>|nil mappings
 --- @return boolean orphaned true if mappings came from cache fallback
 local function resolve_profile_mappings(data, config_sets)
-  if data.ad_hoc then
-    if data.project_key and data.config_key then
-      local variant = require("loomworks.merge").parse_profile_key(data.config_key)
-      return { [data.project_key] = variant }, false
-    end
-    return nil, false
-  end
-
-  -- Try config_sets lookup first
+  -- Set-based profiles: derive from config_sets (reactive)
   if data.configuration_set and config_sets and config_sets[data.configuration_set] then
     return config_sets[data.configuration_set], false
+  end
+
+  -- Pinned profiles or set-based with stored mappings
+  if data.mappings then
+    -- If this has a configuration_set that's no longer in config, it's orphaned
+    local orphaned = data.configuration_set ~= nil
+    return data.mappings, orphaned
   end
 
   -- Fallback: derive mappings from cached profile projects
@@ -342,7 +418,7 @@ local function resolve_profile_mappings(data, config_sets)
         mappings[project_key] = variant
       end
     end
-    if next(mappings) then return mappings, true end
+    if next(mappings) then return mappings, data.configuration_set ~= nil end
   end
 
   return nil, false
@@ -370,9 +446,6 @@ function Core:_sync_profiles(all_defs)
     local mappings, orphaned_set = resolve_profile_mappings(data, config_sets)
     local profile_data = {
       configuration_set = data.configuration_set,
-      ad_hoc = data.ad_hoc or false,
-      project_key = data.project_key,
-      config_key = data.config_key,
       tool_key = data.tool_key,
       tool_data = data.tool_data,
       tool_label = data.tool_label,
@@ -598,9 +671,8 @@ function Core:_migrate_set_names()
 
   local renames = {} -- old_key -> { new_key, new_set }
   for profile_key, cached_profile in pairs(ws.cache.profiles) do
-    if cached_profile.ad_hoc then goto continue end
     local old_set = cached_profile.configuration_set
-    if not old_set then goto continue end
+    if not old_set then goto continue end -- pinned profiles have no set
 
     -- Already matches exactly?
     if ws.config.configuration_sets[old_set] then goto continue end
@@ -636,7 +708,7 @@ end
 
 --- Adopt orphaned cached configs on init.
 --- Configs in configured/built/failed state with no profile reference
---- get an ad-hoc profile created. Unconfigured skeletons are silently dropped.
+--- get a pinned profile created. Unconfigured skeletons are silently dropped.
 function Core:_adopt_orphaned_configs()
   local ws = self._workspace
   if not ws or not ws.cache.projects then return end
@@ -665,8 +737,8 @@ function Core:_adopt_orphaned_configs()
         if not referenced[project_key .. "\0" .. config_key] then
           local state = cached_config.state
           if state and state ~= "unconfigured" then
-            -- Adopt: create ad-hoc profile
-            local ak = self._deps.merge.adhoc_key(project_key, config_key)
+            -- Adopt: create pinned profile
+            local ak = self._deps.merge.pinned_key(project_key, config_key)
             local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
 
             -- Resolve tool info from detected tools
@@ -682,9 +754,7 @@ function Core:_adopt_orphaned_configs()
             end
 
             ws.cache.profiles[ak] = {
-              ad_hoc = true,
-              project_key = project_key,
-              config_key = config_key,
+              mappings = { [project_key] = variant },
               tool_key = tool_key,
               tool_data = tool_data or cached_config.tool_data,
               tool_label = tool_label,
@@ -756,30 +826,30 @@ function Core:materialize_configuration(project_key, config_key)
   end
 end
 
---- Materialize an ad-hoc profile: a lightweight single-config pin.
---- Creates the config skeleton and an ad-hoc profile entry in cache.
---- Returns the ad-hoc profile key.
+--- Materialize a pinned profile: a lightweight single-config pin.
+--- Creates the config skeleton and a pinned profile entry in cache.
+--- Returns the pinned profile key.
 --- @param project_key string
 --- @param config_key string
---- @return string|nil adhoc_key
-function Core:materialize_adhoc(project_key, config_key)
+--- @return string|nil pinned_key
+function Core:materialize_pinned(project_key, config_key)
   if not self._workspace then return nil end
 
   local ws = self._workspace
   local project_config = ws.config.projects[project_key]
   if not project_config then return nil end
 
-  local ak = self._deps.merge.adhoc_key(project_key, config_key)
+  local ak = self._deps.merge.pinned_key(project_key, config_key)
 
   -- Ensure config skeleton exists
   self:materialize_configuration(project_key, config_key)
 
-  -- Check if ad-hoc profile already exists
+  -- Check if pinned profile already exists
   ws.cache.profiles = ws.cache.profiles or {}
   if ws.cache.profiles[ak] then return ak end
 
   -- Parse config_key for variant and tool_key
-  local _, tool_key = self._deps.merge.parse_profile_key(config_key)
+  local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
 
   -- Resolve tool data
   local tool_data, tool_label, tool_mod_type = nil, nil, nil
@@ -794,9 +864,7 @@ function Core:materialize_adhoc(project_key, config_key)
   end
 
   ws.cache.profiles[ak] = {
-    ad_hoc = true,
-    project_key = project_key,
-    config_key = config_key,
+    mappings = { [project_key] = variant },
     tool_key = tool_key,
     tool_data = tool_data,
     tool_label = tool_label,
@@ -1078,8 +1146,9 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Plan a single config deletion from the Projects section.
---- Removes ad-hoc profiles referencing this config; if no full profiles
---- still reference it, the config itself is included for deletion.
+--- If any profile references it, disposition = "reset" (clear state, keep
+--- skeleton so the profile sees "unconfigured"). Otherwise "clean" (remove).
+--- Profiles are never removed — only explicit profile deletion does that.
 --- @param project_key string
 --- @param config_key string
 --- @return loomworks.DeletionPlan
@@ -1090,19 +1159,7 @@ function Core:plan_config_deletion(project_key, config_key)
 
   local ws = self._workspace
   local refs = self:find_referencing_profiles(project_key, config_key)
-
-  -- Separate ad-hoc and full profile references
-  local adhoc_keys = {}
-  local has_full_ref = false
-  local all_profiles = self:get_profiles()
-  for _, pkey in ipairs(refs) do
-    local profile = all_profiles[pkey]
-    if profile and profile.ad_hoc then
-      adhoc_keys[#adhoc_keys + 1] = pkey
-    else
-      has_full_ref = true
-    end
-  end
+  local has_ref = #refs > 0
 
   -- Build the item with appropriate disposition
   local build_dir = nil
@@ -1118,14 +1175,13 @@ function Core:plan_config_deletion(project_key, config_key)
     project_key = project_key,
     config_key = config_key,
     build_dir = build_dir,
-    disposition = has_full_ref and "reset" or "clean",
+    disposition = has_ref and "reset" or "clean",
   }
 
   local defined_in_config = ws.config.projects[project_key] ~= nil
 
   return {
     items = items,
-    adhoc_profiles = #adhoc_keys > 0 and adhoc_keys or nil,
     project_key = project_key,
     config_key = config_key,
     defined_in_config = defined_in_config,
@@ -1310,26 +1366,13 @@ function Core:delete_profile(profile_key, on_done)
 end
 
 --- Convenience: delete a single config without UI confirmation.
---- Removes ad-hoc profiles referencing it, then cleans/resets the config.
+--- Cleans/resets the config. Profiles are never removed — they stay and
+--- show "unconfigured" state.
 --- @param project_key string
 --- @param config_key string
 --- @param on_done? function
 function Core:delete_config(project_key, config_key, on_done)
   local plan = self:plan_config_deletion(project_key, config_key)
-
-  -- Remove ad-hoc profiles referencing this config
-  if plan.adhoc_profiles and self._workspace then
-    local ws = self._workspace
-    ws.cache.profiles = ws.cache.profiles or {}
-    for _, pkey in ipairs(plan.adhoc_profiles) do
-      ws.cache.profiles[pkey] = nil
-    end
-    if not next(ws.cache.profiles) then
-      ws.cache.profiles = nil
-    end
-    self:_save_cache()
-  end
-
   self:execute_deletion(plan, nil, on_done)
 end
 

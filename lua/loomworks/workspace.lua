@@ -47,7 +47,14 @@ function M.assemble(root, config_content, user_content, cache_content)
   end
 
   local user_data = user_content and user_mod.parse(user_content) or user_mod.default()
-  local cache_data = cache_content and cache_mod.parse(cache_content) or cache_mod.default()
+
+  local cache_data, cache_version_mismatch
+  if cache_content then
+    cache_data, cache_version_mismatch = cache_mod.parse(cache_content)
+  else
+    cache_data = cache_mod.default()
+    cache_version_mismatch = false
+  end
 
   -- Update cache hash from raw content
   if cache_data._meta then
@@ -62,6 +69,7 @@ function M.assemble(root, config_content, user_content, cache_content)
     config = config,
     user = user_data,
     cache = cache_data,
+    cache_version_mismatch = cache_version_mismatch,
   }, nil
 end
 

@@ -86,10 +86,7 @@ end
 
 --- @class loomworks.Profile
 --- @field key string profile key
---- @field configuration_set? string nil for ad-hoc profiles
---- @field ad_hoc boolean true for lightweight single-config pins
---- @field project_key? string only for ad-hoc profiles
---- @field config_key? string only for ad-hoc profiles
+--- @field configuration_set? string nil for pinned profiles
 --- @field tool_key? string cache key suffix from the keyed module
 --- @field tool_data? table opaque module-specific tool data
 --- @field tool_label? string display label for the tool
@@ -114,7 +111,7 @@ local STATUS_HL = {
 --- Create a new Profile object.
 --- @param core loomworks.Core
 --- @param key string profile key
---- @param data? { configuration_set?: string, ad_hoc?: boolean, project_key?: string, config_key?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
+--- @param data? { configuration_set?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
 --- @return loomworks.Profile
 function Profile.new(core, key, data)
   local self = setmetatable({}, Profile)
@@ -126,13 +123,10 @@ function Profile.new(core, key, data)
 end
 
 --- Update all data fields in place (preserves table identity).
---- @param data { configuration_set?: string, ad_hoc?: boolean, project_key?: string, config_key?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
+--- @param data { configuration_set?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
 function Profile:_update(data)
   self._generation = self._core._generation
   self.configuration_set = data.configuration_set
-  self.ad_hoc = data.ad_hoc or false
-  self.project_key = data.project_key
-  self.config_key = data.config_key
   self.tool_key = data.tool_key
   self.tool_data = data.tool_data
   self.tool_label = data.tool_label
@@ -227,16 +221,21 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Check if this profile has any configured entries in cache.
---- Uses cached profile references (value matching) instead of key parsing.
 --- @return boolean
 function Profile:is_configured()
   local ws = self._core:get_workspace()
   if not ws or not ws.cache then return false end
 
-  -- Find the materialized profile in cache by value matching
-  local cached_profile = merge.find_cached_profile(
-    ws.cache, self.configuration_set, self.tool_data)
-  if not cached_profile or not cached_profile.projects then return false end
+  -- Look up profile in cache by key
+  local cached_profile = ws.cache.profiles and ws.cache.profiles[self.key]
+  if not cached_profile or not cached_profile.projects then
+    -- Fallback: value matching for set-based profiles
+    if self.configuration_set then
+      cached_profile = merge.find_cached_profile(
+        ws.cache, self.configuration_set, self.tool_data)
+    end
+    if not cached_profile or not cached_profile.projects then return false end
+  end
 
   -- Check if any referenced configuration has actual build state
   for project_key, proj_ref in pairs(cached_profile.projects) do

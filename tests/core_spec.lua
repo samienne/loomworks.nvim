@@ -658,7 +658,7 @@ describe("Core", function()
   end)
 
   describe("plan_config_deletion", function()
-    it("includes config when only ad-hoc profiles reference it", function()
+    it("resets config when only pinned profiles reference it", function()
       local core = make_core(
         {
           projects = { App = { typescript = {} } },
@@ -666,10 +666,8 @@ describe("Core", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -688,8 +686,8 @@ describe("Core", function()
       assert.equals(1, #plan.items)
       assert.equals("App", plan.items[1].project_key)
       assert.equals("/root/.nvim/build/App/development", plan.items[1].build_dir)
-      assert.is_not_nil(plan.adhoc_profiles)
-      assert.equals(1, #plan.adhoc_profiles)
+      -- Pinned profile still references it, so disposition is "reset"
+      assert.equals("reset", plan.items[1].disposition)
       assert.is_true(plan.defined_in_config)
     end)
 
@@ -701,7 +699,7 @@ describe("Core", function()
       assert.is_false(plan.defined_in_config)
     end)
 
-    it("excludes config when a full profile references it", function()
+    it("excludes config when a set-based profile references it", function()
       local core = make_core(
         {
           projects = { App = { cmake = {} } },
@@ -740,7 +738,7 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
       local plan = core:plan_config_deletion("App", "Debug:ninja-gcc")
-      -- Config is referenced by full profile — disposition is "reset"
+      -- Config is referenced by set-based profile — disposition is "reset"
       assert.equals(1, #plan.items)
       assert.equals("reset", plan.items[1].disposition)
     end)
@@ -957,10 +955,8 @@ describe("Core", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -978,7 +974,7 @@ describe("Core", function()
 
       local refs = core:find_referencing_profiles("App", "development")
       assert.equals(1, #refs)
-      assert.equals("adhoc:App:development", refs[1])
+      assert.equals("App/development", refs[1])
     end)
 
     it("returns empty when no profiles reference config", function()
@@ -989,10 +985,8 @@ describe("Core", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -1014,7 +1008,7 @@ describe("Core", function()
   end)
 
   describe("_adopt_orphaned_configs", function()
-    it("creates ad-hoc profile for orphaned built config", function()
+    it("creates pinned profile for orphaned built config", function()
       local saved_cache = nil
       local core = make_core(
         {
@@ -1045,11 +1039,10 @@ describe("Core", function()
       core:setup({ root = "/root" })
       assert.is_not_nil(saved_cache)
       assert.is_not_nil(saved_cache.profiles)
-      assert.is_not_nil(saved_cache.profiles["adhoc:App:development"])
-      local adhoc = saved_cache.profiles["adhoc:App:development"]
-      assert.is_true(adhoc.ad_hoc)
-      assert.equals("App", adhoc.project_key)
-      assert.equals("development", adhoc.config_key)
+      assert.is_not_nil(saved_cache.profiles["App/development"])
+      local adhoc = saved_cache.profiles["App/development"]
+      assert.is_not_nil(adhoc.mappings)
+      assert.equals("development", adhoc.mappings.App)
     end)
 
     it("silently drops unconfigured skeleton", function()
@@ -1083,7 +1076,7 @@ describe("Core", function()
       assert.is_not_nil(saved_cache)
       -- Config should have been dropped
       assert.is_nil(saved_cache.projects)
-      -- No ad-hoc profile created
+      -- No pinned profile created
       assert.is_nil(saved_cache.profiles)
     end)
 
@@ -1505,6 +1498,204 @@ describe("Core", function()
       assert.equals("built", cached.state)
       assert.equals("ninja-gcc-14.2.0", cached.tool_data.id)
     end)
+  end)
+
+  describe("cache version mismatch", function()
+    local function make_mismatch_core(dep_overrides)
+      -- Provide a cache file with wrong version
+      local files = {
+        ["loomworks.json"] = h.make_config_json(),
+        ["loomworks.cache.json"] = vim.json.encode({
+          _meta = { version = 1, loomworks_hash = "", cached_at = "" },
+          projects = {},
+        }),
+      }
+      local deps = h.make_test_deps(files, dep_overrides)
+      return Core.new(deps), deps
+    end
+
+    it("refuses to load workspace on version mismatch", function()
+      local core = make_mismatch_core()
+      local ok = core:setup({ root = "/test" })
+      assert.is_false(ok)
+      assert.is_nil(core:get_workspace())
+    end)
+
+    it("does not modify cache file on version mismatch", function()
+      local writes = {}
+      local core = make_mismatch_core({
+        io = {
+          write_json = function(path, data)
+            writes[#writes + 1] = path
+            return true
+          end,
+        },
+      })
+      core:setup({ root = "/test" })
+      -- No files should have been written
+      assert.equals(0, #writes)
+    end)
+
+    it("notifies user on version mismatch", function()
+      local notifications = {}
+      local core = make_mismatch_core({
+        notify = function(msg, level) notifications[#notifications + 1] = { msg = msg, level = level } end,
+      })
+      core:setup({ root = "/test" })
+      assert.equals(1, #notifications)
+      assert.matches("version mismatch", notifications[1].msg)
+      assert.equals(vim.log.levels.ERROR, notifications[1].level)
+    end)
+
+    it("stores setup error with root and message", function()
+      local core = make_mismatch_core()
+      core:setup({ root = "/test" })
+      local err = core:get_setup_error()
+      assert.is_not_nil(err)
+      assert.equals("/test", err.root)
+      assert.matches("version mismatch", err.message)
+    end)
+
+    it("clears setup error on successful setup", function()
+      local core = make_core()
+      core:setup({ root = "/test" })
+      assert.is_nil(core:get_setup_error())
+    end)
+  end)
+
+  describe("nuke_cache", function()
+    it("deletes build dir, cache file, and backup then reloads", function()
+      local deleted = {}
+      local core, deps = make_core(nil, nil, nil, {
+        io = {
+          rm_rf = function(path)
+            deleted[#deleted + 1] = path
+            return true
+          end,
+        },
+      })
+      core:setup({ root = "/test" })
+
+      core:nuke_cache("/test")
+
+      local found_build = false
+      local found_cache = false
+      local found_bak = false
+      for _, p in ipairs(deleted) do
+        if p:match("/%.nvim/build$") then found_build = true end
+        if p:match("loomworks%.cache%.json$") then found_cache = true end
+        if p:match("loomworks%.cache%.json%.bak$") then found_bak = true end
+      end
+      assert.is_true(found_build, "should delete .nvim/build")
+      assert.is_true(found_cache, "should delete cache file")
+      assert.is_true(found_bak, "should delete cache backup")
+    end)
+
+    it("re-setups after nuke", function()
+      local core = make_core()
+      core:setup({ root = "/test" })
+      -- Nuke clears and re-setups
+      core:nuke_cache("/test")
+      assert.is_not_nil(core:get_workspace())
+    end)
+
+    it("refuses to delete paths outside .nvim/", function()
+      local notifications = {}
+      local deleted = {}
+      local core = make_core(nil, nil, nil, {
+        notify = function(msg, level) notifications[#notifications + 1] = { msg = msg, level = level } end,
+        io = {
+          rm_rf = function(path) deleted[#deleted + 1] = path; return true end,
+        },
+        cache = {
+          -- Return a path outside .nvim/ to test safety check
+          filepath = function() return "/somewhere/else/cache.json" end,
+        },
+      })
+      core:setup({ root = "/test" })
+
+      core:nuke_cache("/test")
+
+      -- Should have refused and notified
+      local found_refuse = false
+      for _, n in ipairs(notifications) do
+        if n.msg:match("refusing to delete") then found_refuse = true end
+      end
+      assert.is_true(found_refuse)
+      -- Nothing should have been deleted
+      assert.equals(0, #deleted)
+    end)
+
+    it("refuses when no loomworks.json at root", function()
+      local notifications = {}
+      local deleted = {}
+      local files = {} -- no loomworks.json
+      local deps = h.make_test_deps(files, {
+        notify = function(msg, level) notifications[#notifications + 1] = { msg = msg, level = level } end,
+        io = {
+          rm_rf = function(path) deleted[#deleted + 1] = path; return true end,
+        },
+      })
+      local core = Core.new(deps)
+
+      core:nuke_cache("/test")
+
+      local found_no_config = false
+      for _, n in ipairs(notifications) do
+        if n.msg:match("no loomworks%.json") then found_no_config = true end
+      end
+      assert.is_true(found_no_config)
+      assert.equals(0, #deleted)
+    end)
+
+    it("refuses relative paths", function()
+      local notifications = {}
+      local deleted = {}
+      local core = make_core(nil, nil, nil, {
+        notify = function(msg, level) notifications[#notifications + 1] = { msg = msg, level = level } end,
+        io = {
+          rm_rf = function(path) deleted[#deleted + 1] = path; return true end,
+        },
+      })
+      core:setup({ root = "/test" })
+
+      core:nuke_cache("relative/path")
+
+      local found_abs = false
+      for _, n in ipairs(notifications) do
+        if n.msg:match("absolute path") then found_abs = true end
+      end
+      assert.is_true(found_abs)
+      assert.equals(0, #deleted)
+    end)
+  end)
+
+  describe("_safe_nvim_path", function()
+    it("accepts paths under root/.nvim/", function()
+      local core = make_core()
+      core:setup({ root = "/test" })
+      assert.is_true(core:_safe_nvim_path("/test/.nvim/build", "/test"))
+      assert.is_true(core:_safe_nvim_path("/test/.nvim/loomworks.cache.json", "/test"))
+      assert.is_true(core:_safe_nvim_path("/test/.nvim/loomworks.cache.json.bak", "/test"))
+    end)
+
+    it("accepts the .nvim directory itself", function()
+      local core = make_core()
+      core:setup({ root = "/test" })
+      assert.is_true(core:_safe_nvim_path("/test/.nvim", "/test"))
+    end)
+
+    it("rejects paths outside .nvim/", function()
+      local core = make_core()
+      core:setup({ root = "/test" })
+      assert.is_false(core:_safe_nvim_path("/test/src/main.cpp", "/test"))
+      assert.is_false(core:_safe_nvim_path("/other/project/.nvim/build", "/test"))
+      assert.is_false(core:_safe_nvim_path("/test/.nvim-fake/build", "/test"))
+    end)
+
+    -- Directory traversal (e.g. /test/.nvim/../secret) is handled by
+    -- vim.fs.normalize which resolves ".." before the prefix check runs.
+    -- Not tested here because the test mock doesn't resolve "..".
   end)
 
 end)

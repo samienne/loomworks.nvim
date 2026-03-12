@@ -274,7 +274,7 @@ local function filter_unconfigured_tasks(all_tasks)
 end
 
 --- Run an action for a single project configuration.
---- Creates an ad-hoc profile entry to pin the config, then launches overseer tasks.
+--- Creates a pinned profile entry if needed, then launches overseer tasks.
 --- If building and the configuration is unconfigured, configures first.
 --- @param project_key string
 --- @param config_key string cache key (variant or variant:tool_key)
@@ -292,7 +292,7 @@ function M.run_configuration_action(project_key, config_key, action)
     -- Pin config only if not already referenced by a materialized profile
     local refs = loomworks.find_referencing_profiles(project_key, config_key)
     if #refs == 0 then
-      loomworks.materialize_adhoc(project_key, config_key)
+      loomworks.materialize_pinned(project_key, config_key)
     end
 
     local all_tasks = collect_configuration_tasks(project_key, config_key)

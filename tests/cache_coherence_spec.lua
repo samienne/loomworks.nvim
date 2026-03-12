@@ -1,7 +1,7 @@
 --- Cache coherence tests.
 ---
 --- Integration-style tests that simulate real workflows:
---- configure, build, delete profiles (full and ad-hoc),
+--- configure, build, delete profiles (full and pinned),
 --- and verify cache invariants after each operation.
 ---
 --- Key invariant: every cached config in configured/built/failed state
@@ -184,32 +184,32 @@ describe("cache coherence", function()
       assert_cache_empty(core, "fresh workspace")
     end)
 
-    it("materialize_adhoc + build creates coherent state", function()
+    it("materialize_pinned + build creates coherent state", function()
       local core = make_tracked_core({
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
 
-      core:materialize_adhoc("App", "development")
-      assert_cache_coherent(core, "after materialize_adhoc")
+      core:materialize_pinned("App", "development")
+      assert_cache_coherent(core, "after materialize_pinned")
       assert.equals(1, count_profiles(core))
 
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
     end)
 
-    it("deleting sole ad-hoc profile cleans config and build dir", function()
+    it("deleting sole pinned profile cleans config and build dir", function()
       local core, rm_calls = make_tracked_core({
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
 
-      core:materialize_adhoc("App", "development")
+      core:materialize_pinned("App", "development")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert.equals(1, count_cached_configs(core))
 
       -- Delete via plan+execute (as UI would)
-      local profile = core:get_profile("adhoc:App:development")
+      local profile = core:get_profile("App/development")
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       -- Config is unreferenced after removing sole profile
@@ -232,19 +232,19 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      -- Materialize a full profile
+      -- Materialize a set-based profile
       core:materialize_profile("debug")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
-      assert_cache_coherent(core, "after full profile build")
+      assert_cache_coherent(core, "after set-based profile build")
 
-      -- Also create an ad-hoc for the same config
-      core:materialize_adhoc("App", "development")
-      assert_cache_coherent(core, "after also creating ad-hoc")
+      -- Also create an pinned for the same config
+      core:materialize_pinned("App", "development")
+      assert_cache_coherent(core, "after also creating pinned")
       local n_profiles = count_profiles(core)
       assert.is_true(n_profiles >= 2)
 
-      -- Delete ad-hoc — config should survive intact (full profile still references it)
-      local adhoc = core:get_profile("adhoc:App:development")
+      -- Delete pinned — config should survive intact (set-based profile still references it)
+      local adhoc = core:get_profile("App/development")
       assert.is_not_nil(adhoc)
       local plan = adhoc:plan_deletion()
       assert.equals(1, #plan.items)
@@ -255,7 +255,7 @@ describe("cache coherence", function()
         function() done = true end)
       assert.is_true(done)
 
-      assert_cache_coherent(core, "after deleting ad-hoc")
+      assert_cache_coherent(core, "after deleting pinned")
       assert.equals(1, count_cached_configs(core))
       -- Config entry exists with state preserved
       local ws = core:get_workspace()
@@ -284,18 +284,18 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "after setup")
 
       -- Build with gcc
-      core:materialize_adhoc("Lib", "Debug:ninja-gcc")
+      core:materialize_pinned("Lib", "Debug:ninja-gcc")
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
       assert_cache_coherent(core, "after gcc build")
 
       -- Build with clang
-      core:materialize_adhoc("Lib", "Debug:ninja-clang")
+      core:materialize_pinned("Lib", "Debug:ninja-clang")
       simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
       assert_cache_coherent(core, "after clang build")
       assert.equals(2, count_cached_configs(core))
 
       -- Delete gcc profile
-      local gcc_profile = core:get_profile("adhoc:Lib:Debug:ninja-gcc")
+      local gcc_profile = core:get_profile("Lib/Debug:ninja-gcc")
       assert.is_not_nil(gcc_profile)
       local plan = gcc_profile:plan_deletion()
       assert.equals(1, #plan.items)
@@ -331,22 +331,22 @@ describe("cache coherence", function()
       )
       setup({ root = "/root" })
 
-      core:materialize_adhoc("Lib", "Debug:ninja-gcc")
+      core:materialize_pinned("Lib", "Debug:ninja-gcc")
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug")
-      core:materialize_adhoc("Lib", "Release:ninja-gcc")
+      core:materialize_pinned("Lib", "Release:ninja-gcc")
       simulate_build(core, "Lib", "Release:ninja-gcc", "/root/.nvim/build/Lib/Release")
       assert.equals(2, count_cached_configs(core))
       assert_cache_coherent(core, "after two builds")
 
       -- Delete first
-      local p1 = core:get_profile("adhoc:Lib:Debug:ninja-gcc")
+      local p1 = core:get_profile("Lib/Debug:ninja-gcc")
       local plan1 = p1:plan_deletion()
       core:execute_deletion(plan1, { deactivate_profile = p1.key })
       assert_cache_coherent(core, "after first delete")
       assert.equals(1, count_cached_configs(core))
 
       -- Delete second
-      local p2 = core:get_profile("adhoc:Lib:Release:ninja-gcc")
+      local p2 = core:get_profile("Lib/Release:ninja-gcc")
       local plan2 = p2:plan_deletion()
       core:execute_deletion(plan2, { deactivate_profile = p2.key })
 
@@ -357,7 +357,7 @@ describe("cache coherence", function()
 
   describe("multi-project workspace", function()
 
-    it("full profile build + delete cleans all project configs", function()
+    it("set-based profile build + delete cleans all project configs", function()
       local core, rm_calls, setup = make_tracked_core({
         projects = {
           Backend = { cmake = {} },
@@ -393,11 +393,11 @@ describe("cache coherence", function()
         function() done = true end)
       assert.is_true(done)
 
-      assert_cache_empty(core, "after deleting full profile")
+      assert_cache_empty(core, "after deleting set-based profile")
       assert.equals(2, #rm_calls)
     end)
 
-    it("mixed full + ad-hoc profiles with shared configs", function()
+    it("mixed full + pinned profiles with shared configs", function()
       local core, rm_calls, setup = make_tracked_core({
         projects = {
           Backend = { cmake = {} },
@@ -420,42 +420,42 @@ describe("cache coherence", function()
       simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/Debug")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
-      -- Ad-hoc: build Backend with same config (overlapping reference)
-      core:materialize_adhoc("Backend", "Debug:ninja-gcc")
-      assert_cache_coherent(core, "after ad-hoc overlapping")
+      -- Pinned: build Backend with same config (overlapping reference)
+      core:materialize_pinned("Backend", "Debug:ninja-gcc")
+      assert_cache_coherent(core, "after pinned overlapping")
 
-      -- Delete ad-hoc — config shared by full profile, kept intact
-      local adhoc = core:get_profile("adhoc:Backend:Debug:ninja-gcc")
+      -- Delete pinned — config shared by set-based profile, kept intact
+      local adhoc = core:get_profile("Backend/Debug:ninja-gcc")
       assert.is_not_nil(adhoc)
       local plan = adhoc:plan_deletion()
       assert.equals(1, #plan.items)
       assert.equals("keep", plan.items[1].disposition)
       core:execute_deletion(plan, { deactivate_profile = adhoc.key })
-      assert_cache_coherent(core, "after ad-hoc delete")
+      assert_cache_coherent(core, "after pinned delete")
       assert.equals(2, count_cached_configs(core))
       assert.equals(0, #rm_calls) -- "keep" does not touch build dir
 
-      -- Now delete full profile — both configs should be cleaned
+      -- Now delete set-based profile — both configs should be cleaned
       local full = core:get_profile("debug:ninja-gcc")
       assert.is_not_nil(full)
       local plan2 = full:plan_deletion()
       assert.equals(2, #plan2.items)
       core:execute_deletion(plan2, { deactivate_profile = full.key })
 
-      assert_cache_empty(core, "after full profile delete")
+      assert_cache_empty(core, "after set-based profile delete")
       assert.equals(2, #rm_calls)
     end)
   end)
 
   describe("delete_config from Projects section", function()
 
-    it("deletes config and ad-hoc profile when no full profile refs", function()
+    it("resets config but keeps pinned profile when no set-based profile refs", function()
       local core, rm_calls = make_tracked_core({
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
 
-      core:materialize_adhoc("App", "development")
+      core:materialize_pinned("App", "development")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
 
@@ -463,24 +463,29 @@ describe("cache coherence", function()
       core:delete_config("App", "development", function() done = true end)
       assert.is_true(done)
 
-      assert_cache_empty(core, "after delete_config")
+      assert_cache_coherent(core, "after delete_config")
       assert.equals(1, #rm_calls)
+
+      -- Config reset but pinned profile stays
+      local ws = core:get_workspace()
+      assert.is_not_nil(ws.cache.profiles["App/development"])
+      assert.is_nil(ws.cache.projects.App.configurations.development.state)
     end)
 
-    it("keeps config when full profile references it", function()
+    it("keeps config when set-based profile references it", function()
       local core, rm_calls = make_tracked_core({
         projects = { App = { typescript = {} } },
         configuration_sets = { debug = { App = "development" } },
       })
       core:setup({ root = "/root" })
 
-      -- Full profile + ad-hoc both reference the config
+      -- Full profile + pinned both reference the config
       core:materialize_profile("debug")
-      core:materialize_adhoc("App", "development")
+      core:materialize_pinned("App", "development")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
 
-      -- delete_config removes ad-hoc, resets config (full profile still refs it)
+      -- delete_config resets config (both profiles still ref it)
       local done = false
       core:delete_config("App", "development", function() done = true end)
       assert.is_true(done)
@@ -493,10 +498,9 @@ describe("cache coherence", function()
       local ws = core:get_workspace()
       assert.is_nil(ws.cache.projects.App.configurations.development.state)
 
-      -- Ad-hoc should be gone
-      local adhoc_gone = not ws.cache.profiles
-          or not ws.cache.profiles["adhoc:App:development"]
-      assert.is_true(adhoc_gone)
+      -- Both profiles still intact
+      assert.is_not_nil(ws.cache.profiles.debug)
+      assert.is_not_nil(ws.cache.profiles["App/development"])
     end)
 
     it("keyed tool: deletes specific tool config, keeps other tools", function()
@@ -512,26 +516,33 @@ describe("cache coherence", function()
       })
       setup({ root = "/root" })
 
-      core:materialize_adhoc("Lib", "Debug:ninja-gcc")
+      core:materialize_pinned("Lib", "Debug:ninja-gcc")
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
-      core:materialize_adhoc("Lib", "Debug:ninja-clang")
+      core:materialize_pinned("Lib", "Debug:ninja-clang")
       simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
       assert.equals(2, count_cached_configs(core))
 
       core:delete_config("Lib", "Debug:ninja-gcc")
       assert_cache_coherent(core, "after delete one tool config")
-      assert.equals(1, count_cached_configs(core))
+      -- Both configs still exist (gcc was reset, clang is built)
+      assert.equals(2, count_cached_configs(core))
       assert.equals(1, #rm_calls)
 
-      -- Clang config still present
+      -- GCC config reset, clang config still built
       local ws = core:get_workspace()
+      assert.is_nil(ws.cache.projects.Lib.configurations["Debug:ninja-gcc"].state)
       assert.is_not_nil(ws.cache.projects.Lib.configurations["Debug:ninja-clang"])
+      assert.equals("built", ws.cache.projects.Lib.configurations["Debug:ninja-clang"].state)
+
+      -- Both pinned profiles still intact
+      assert.is_not_nil(ws.cache.profiles["Lib/Debug:ninja-gcc"])
+      assert.is_not_nil(ws.cache.profiles["Lib/Debug:ninja-clang"])
     end)
   end)
 
   describe("init adoption", function()
 
-    it("adopts orphaned built config as ad-hoc profile", function()
+    it("adopts orphaned built config as pinned profile", function()
       local core = make_tracked_core(
         { projects = { App = { typescript = {} } } },
         nil,
@@ -558,7 +569,7 @@ describe("cache coherence", function()
       assert.equals(1, count_cached_configs(core))
 
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.profiles["adhoc:App:development"])
+      assert.is_not_nil(ws.cache.profiles["App/development"])
     end)
 
     it("drops unconfigured skeleton on init", function()
@@ -586,10 +597,8 @@ describe("cache coherence", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -609,7 +618,7 @@ describe("cache coherence", function()
       assert.equals(1, count_profiles(core))
     end)
 
-    it("adopts failed_configure as ad-hoc profile", function()
+    it("adopts failed_configure as pinned profile", function()
       local core = make_tracked_core(
         { projects = { App = { typescript = {} } } },
         nil,
@@ -629,7 +638,7 @@ describe("cache coherence", function()
       assert.equals(1, count_profiles(core))
     end)
 
-    it("adopts keyed-tool config with correct ad-hoc key", function()
+    it("adopts keyed-tool config with correct pinned key", function()
       local core, _, setup = make_tracked_core(
         { projects = { Lib = { cmake = {} } } },
         nil,
@@ -660,18 +669,17 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "keyed tool adopted")
 
       local ws = core:get_workspace()
-      local adhoc = ws.cache.profiles["adhoc:Lib:Debug:ninja-gcc"]
+      local adhoc = ws.cache.profiles["Lib/Debug:ninja-gcc"]
       assert.is_not_nil(adhoc)
-      assert.is_true(adhoc.ad_hoc)
-      assert.equals("Lib", adhoc.project_key)
-      assert.equals("Debug:ninja-gcc", adhoc.config_key)
+      assert.is_not_nil(adhoc.mappings)
+      assert.equals("Debug", adhoc.mappings.Lib)
       assert.equals("ninja-gcc", adhoc.tool_key)
     end)
   end)
 
   describe("init with pre-populated cache", function()
 
-    it("full profile with matching configs stays intact", function()
+    it("set-based profile with matching configs stays intact", function()
       local core = make_tracked_core(
         {
           projects = { App = { typescript = {} } },
@@ -700,7 +708,7 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      assert_cache_coherent(core, "pre-populated full profile")
+      assert_cache_coherent(core, "pre-populated set-based profile")
       assert.equals(1, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
 
@@ -709,7 +717,7 @@ describe("cache coherence", function()
       assert.equals("built", ws.cache.projects.App.configurations.development.state)
     end)
 
-    it("multiple full profiles sharing same config stays coherent", function()
+    it("multiple set-based profiles sharing same config stays coherent", function()
       -- Two profiles referencing the same config (different sets mapping to same variant)
       local core = make_tracked_core(
         {
@@ -751,7 +759,7 @@ describe("cache coherence", function()
       assert.equals(1, count_cached_configs(core))
     end)
 
-    it("full profile + ad-hoc both referencing same config", function()
+    it("set-based profile + pinned both referencing same config", function()
       local core = make_tracked_core(
         {
           projects = { App = { typescript = {} } },
@@ -764,10 +772,8 @@ describe("cache coherence", function()
               configuration_set = "debug",
               projects = { App = { config_key = "development" } },
             },
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -786,7 +792,7 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      assert_cache_coherent(core, "full + ad-hoc overlap")
+      assert_cache_coherent(core, "full + pinned overlap")
       assert.equals(2, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
     end)
@@ -800,10 +806,8 @@ describe("cache coherence", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -900,10 +904,8 @@ describe("cache coherence", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -923,15 +925,15 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- "production" is orphaned (no profile) so adoption creates ad-hoc for it
+      -- "production" is orphaned (no profile) so adoption creates pinned for it
       assert_cache_coherent(core, "stale profile + orphaned config")
       assert.equals(2, count_profiles(core))
 
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.profiles["adhoc:App:production"])
+      assert.is_not_nil(ws.cache.profiles["App/production"])
     end)
 
-    it("multiple ad-hoc profiles for same project different configs", function()
+    it("multiple pinned profiles for same project different configs", function()
       local core = make_tracked_core(
         {
           projects = { App = { typescript = {} } },
@@ -939,16 +941,12 @@ describe("cache coherence", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
-            ["adhoc:App:production"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "production",
+            ["App/production"] = {
+              mappings = { App = "production" },
               projects = { App = { config_key = "production" } },
             },
           },
@@ -971,7 +969,7 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      assert_cache_coherent(core, "multiple ad-hoc same project")
+      assert_cache_coherent(core, "multiple pinned same project")
       assert.equals(2, count_profiles(core))
       assert.equals(2, count_cached_configs(core))
     end)
@@ -1115,12 +1113,12 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- "production" was orphaned and adopted as ad-hoc
+      -- "production" was orphaned and adopted as pinned
       assert_cache_coherent(core, "after init with orphan")
       assert.equals(2, count_profiles(core))
       assert.equals(2, count_cached_configs(core))
 
-      -- Delete the full profile — only "development" is unreferenced
+      -- Delete the set-based profile — only "development" is unreferenced
       local profile = core:get_profile("debug")
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
@@ -1133,9 +1131,9 @@ describe("cache coherence", function()
       assert.equals(1, count_cached_configs(core))
       assert.equals(1, #rm_calls)
 
-      -- The adopted ad-hoc profile for production should still exist
+      -- The adopted pinned profile for production should still exist
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.profiles["adhoc:App:production"])
+      assert.is_not_nil(ws.cache.profiles["App/production"])
       assert.is_not_nil(ws.cache.projects.App.configurations.production)
     end)
 
@@ -1203,30 +1201,30 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- First build
-      core:materialize_adhoc("App", "development")
+      core:materialize_pinned("App", "development")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "first build")
 
       -- Delete
-      local p1 = core:get_profile("adhoc:App:development")
+      local p1 = core:get_profile("App/development")
       local plan1 = p1:plan_deletion()
       core:execute_deletion(plan1, { deactivate_profile = p1.key })
       assert_cache_empty(core, "first delete")
 
-      -- Rebuild (materialize_adhoc creates a new ad-hoc)
-      core:materialize_adhoc("App", "development")
+      -- Rebuild (materialize_pinned creates a new pinned)
+      core:materialize_pinned("App", "development")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "rebuild")
 
       -- Delete again
-      local p2 = core:get_profile("adhoc:App:development")
+      local p2 = core:get_profile("App/development")
       local plan2 = p2:plan_deletion()
       core:execute_deletion(plan2, { deactivate_profile = p2.key })
       assert_cache_empty(core, "second delete")
       assert.equals(2, #rm_calls)
     end)
 
-    it("full profile configure → failed build → delete cleans up", function()
+    it("set-based profile configure → failed build → delete cleans up", function()
       local core, rm_calls = make_tracked_core({
         projects = { App = { typescript = {} } },
         configuration_sets = { debug = { App = "development" } },
@@ -1265,14 +1263,14 @@ describe("cache coherence", function()
       assert.equals(1, #rm_calls)
     end)
 
-    it("materialize_adhoc is idempotent", function()
+    it("materialize_pinned is idempotent", function()
       local core = make_tracked_core({
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
 
-      local key1 = core:materialize_adhoc("App", "development")
-      local key2 = core:materialize_adhoc("App", "development")
+      local key1 = core:materialize_pinned("App", "development")
+      local key2 = core:materialize_pinned("App", "development")
       assert.equals(key1, key2)
       assert.equals(1, count_profiles(core))
       assert_cache_coherent(core, "idempotent materialize")
@@ -1281,7 +1279,7 @@ describe("cache coherence", function()
 
   describe("shared config GC handoff", function()
 
-    it("two full profiles sharing config, delete both sequentially", function()
+    it("two set-based profiles sharing config, delete both sequentially", function()
       local core, rm_calls = make_tracked_core(
         {
           projects = { App = { typescript = {} } },
@@ -1487,23 +1485,23 @@ describe("cache coherence", function()
       assert.equals(0, #rm_calls) -- no build dir to delete
     end)
 
-    it("ad-hoc materialized but never built, then deleted", function()
+    it("pinned materialized but never built, then deleted", function()
       local core, rm_calls = make_tracked_core({
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
 
-      core:materialize_adhoc("App", "production")
-      assert_cache_coherent(core, "after materialize_adhoc")
+      core:materialize_pinned("App", "production")
+      assert_cache_coherent(core, "after materialize_pinned")
       assert.equals(1, count_profiles(core))
 
-      local profile = core:get_profile("adhoc:App:production")
+      local profile = core:get_profile("App/production")
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       assert.equals(1, #plan.items)
       core:execute_deletion(plan, { deactivate_profile = profile.key })
 
-      assert_cache_empty(core, "after deleting unbuilt ad-hoc")
+      assert_cache_empty(core, "after deleting unbuilt pinned")
       assert.equals(0, #rm_calls)
     end)
   end)
@@ -1597,7 +1595,7 @@ describe("cache coherence", function()
 
   describe("re-materialize after deletion", function()
 
-    it("full profile can be re-materialized and rebuilt after deletion", function()
+    it("set-based profile can be re-materialized and rebuilt after deletion", function()
       local core, rm_calls = make_tracked_core({
         projects = { App = { typescript = {} } },
         configuration_sets = { debug = { App = "development" } },
@@ -1636,7 +1634,7 @@ describe("cache coherence", function()
   describe("disposition: keep vs clean", function()
 
     it("keep leaves config completely untouched", function()
-      -- Two full profiles share same config. Delete one → keep.
+      -- Two set-based profiles share same config. Delete one → keep.
       -- Verify config entry survives with all fields intact.
       local core, rm_calls, setup = make_tracked_core(
         {
@@ -1831,7 +1829,7 @@ describe("cache coherence", function()
       end
     end)
 
-    it("delete_config with full profile ref resets config instead of blocking", function()
+    it("delete_config with set-based profile ref resets config instead of blocking", function()
       local core, rm_calls = make_tracked_core(
         {
           projects = { App = { typescript = {} } },
@@ -1860,17 +1858,16 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- plan_config_deletion should return "reset" since full profile refs it
+      -- plan_config_deletion should return "reset" since set-based profile refs it
       local plan = core:plan_config_deletion("App", "development")
       assert.equals(1, #plan.items)
       assert.equals("reset", plan.items[1].disposition)
-      assert.is_nil(plan.adhoc_profiles)
 
       -- Execute deletion
       core:delete_config("App", "development")
       assert_cache_coherent(core, "after config delete with full ref")
 
-      -- Config reset to unconfigured (skeleton kept for full profile)
+      -- Config reset to unconfigured (skeleton kept for set-based profile)
       local ws = core:get_workspace()
       local cached = ws.cache.projects.App.configurations.development
       assert.is_not_nil(cached, "config should survive reset")
@@ -1884,7 +1881,7 @@ describe("cache coherence", function()
       assert.is_not_nil(ws.cache.profiles.debug)
     end)
 
-    it("delete_config without full profile cleans config entirely", function()
+    it("delete_config with only pinned profile resets config", function()
       local core, rm_calls = make_tracked_core(
         {
           projects = { App = { typescript = {} } },
@@ -1892,10 +1889,8 @@ describe("cache coherence", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -1914,16 +1909,24 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- plan_config_deletion should return "clean" (only ad-hoc refs)
+      -- plan_config_deletion should return "reset" (pinned profile still refs it)
       local plan = core:plan_config_deletion("App", "development")
       assert.equals(1, #plan.items)
-      assert.equals("clean", plan.items[1].disposition)
-      assert.is_not_nil(plan.adhoc_profiles)
-      assert.equals(1, #plan.adhoc_profiles)
+      assert.equals("reset", plan.items[1].disposition)
 
       core:delete_config("App", "development")
-      assert_cache_empty(core, "after clean delete")
+      assert_cache_coherent(core, "after config delete with pinned ref")
       assert.equals(1, #rm_calls)
+
+      -- Config reset to unconfigured (skeleton kept for pinned profile)
+      local ws = core:get_workspace()
+      local cached = ws.cache.projects.App.configurations.development
+      assert.is_not_nil(cached, "config should survive reset")
+      assert.is_nil(cached.state)
+      assert.is_nil(cached.build_dir)
+
+      -- Pinned profile still intact
+      assert.is_not_nil(ws.cache.profiles["App/development"])
     end)
   end)
 
@@ -1940,10 +1943,8 @@ describe("cache coherence", function()
         nil,
         {
           profiles = {
-            ["adhoc:App:development"] = {
-              ad_hoc = true,
-              project_key = "App",
-              config_key = "development",
+            ["App/development"] = {
+              mappings = { App = "development" },
               projects = { App = { config_key = "development" } },
             },
           },
@@ -1963,10 +1964,10 @@ describe("cache coherence", function()
       local debug_profile = core:get_profile("debug")
       assert.is_nil(debug_profile)
 
-      -- find_referencing_profiles should only find the cached ad-hoc
+      -- find_referencing_profiles should only find the cached pinned
       local refs = core:find_referencing_profiles("App", "development")
       assert.equals(1, #refs)
-      assert.equals("adhoc:App:development", refs[1])
+      assert.equals("App/development", refs[1])
     end)
 
     it("returns empty when no cached profiles reference config", function()
@@ -2033,32 +2034,36 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      -- Build both projects via ad-hoc
-      core:materialize_adhoc("Backend", "development")
+      -- Build both projects via pinned
+      core:materialize_pinned("Backend", "development")
       simulate_build(core, "Backend", "development", "/root/.nvim/build/Backend/dev")
-      core:materialize_adhoc("Frontend", "development")
+      core:materialize_pinned("Frontend", "development")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
       assert_cache_coherent(core, "both built")
       assert.equals(2, count_profiles(core))
       assert.equals(2, count_cached_configs(core))
 
-      -- Delete Backend config — Frontend unaffected
+      -- Delete Backend config — Frontend unaffected, Backend profile stays
       core:delete_config("Backend", "development")
       assert_cache_coherent(core, "after Backend delete")
-      assert.equals(1, count_profiles(core))
-      assert.equals(1, count_cached_configs(core))
+      assert.equals(2, count_profiles(core)) -- both pinned profiles stay
+      assert.equals(2, count_cached_configs(core)) -- Backend reset, Frontend built
       assert.equals(1, #rm_calls)
 
-      -- Frontend still fully intact
+      -- Backend config reset, pinned profile still exists
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.profiles["adhoc:Frontend:development"])
+      assert.is_not_nil(ws.cache.profiles["Backend/development"])
+      assert.is_nil(ws.cache.projects.Backend.configurations.development.state)
+
+      -- Frontend still fully intact
+      assert.is_not_nil(ws.cache.profiles["Frontend/development"])
       assert.is_not_nil(ws.cache.projects.Frontend.configurations.development)
       assert.equals("built", ws.cache.projects.Frontend.configurations.development.state)
     end)
 
     it("delete_config removes only target from multi-config profile's reachable set", function()
       -- Full profile covers two projects. delete_config on one project's config
-      -- only removes the ad-hoc, the full profile still keeps the config.
+      -- only removes the pinned, the set-based profile still keeps the config.
       local core, rm_calls = make_tracked_core({
         projects = {
           Backend = { typescript = {} },
@@ -2074,11 +2079,11 @@ describe("cache coherence", function()
       simulate_build(core, "Backend", "development", "/root/.nvim/build/Backend/dev")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
-      -- Also pin Backend via ad-hoc
-      core:materialize_adhoc("Backend", "development")
-      assert_cache_coherent(core, "full + ad-hoc")
+      -- Also pin Backend via pinned
+      core:materialize_pinned("Backend", "development")
+      assert_cache_coherent(core, "full + pinned")
 
-      -- delete_config on Backend — removes ad-hoc, resets config (full profile holds it)
+      -- delete_config on Backend — resets config (both profiles still ref it)
       core:delete_config("Backend", "development")
       assert_cache_coherent(core, "after delete_config")
       assert.equals(2, count_cached_configs(core)) -- both still there
@@ -2088,12 +2093,8 @@ describe("cache coherence", function()
       local ws = core:get_workspace()
       assert.is_nil(ws.cache.projects.Backend.configurations.development.state)
 
-      -- Ad-hoc is gone
-      local adhoc_gone = not ws.cache.profiles
-          or not ws.cache.profiles["adhoc:Backend:development"]
-      assert.is_true(adhoc_gone)
-
-      -- Full profile still has both configs, Frontend untouched
+      -- Both profiles still intact
+      assert.is_not_nil(ws.cache.profiles["Backend/development"])
       assert.is_not_nil(ws.cache.profiles.debug)
       assert.equals("built", ws.cache.projects.Frontend.configurations.development.state)
     end)

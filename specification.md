@@ -78,26 +78,39 @@ Tool detection runs:
 
 ### 1.6 Profile
 
-A profile is a fully resolved buildable unit: a configuration set + tool
-selection. Profiles are what users activate, build, configure, and delete.
+A profile is a fully resolved buildable unit. Every profile stores its own
+**mappings** (project_key → variant) directly. Profiles are what users
+activate, build, configure, and delete.
 
-**Profile key format**: `"set_name:tool_key"` (e.g., `"Debug:ninja-gcc-12"`)
-or just `"set_name"` if no tool key is needed.
+There is one Profile class. Profiles differ in two optional properties:
 
-**Profile types**:
+- **`configuration_set`**: if non-nil, the profile is "set-based" — its
+  mappings are re-derived from the configuration set on every remerge, so
+  adding/removing projects in `loomworks.json` automatically updates the
+  profile. If nil, the profile is "pinned" — its mappings are stored
+  directly and never re-derived.
+- **`explicit`**: if true, the profile is declared in `loomworks.json`
+  under `"profiles"` and always appears in the UI, even before
+  materialization.
 
-| Type     | Key format                        | Lifecycle |
-|----------|-----------------------------------|-----------|
-| Full     | `set_name:tool_key` or `set_name` | Created when materialized (first build/configure or explicit `<CR>` activate). Persists in cache. |
-| Ad-hoc   | `adhoc:project:config_key`        | Lightweight pin for a single project+config. Created via `p` key or auto-created for orphan adoption. |
-| Explicit | User-defined key                  | Declared in `loomworks.json` under `"profiles"`. Always visible in UI. |
+**Profile key formats**:
+
+| Variant    | Key format                        | configuration_set |
+|------------|-----------------------------------|-------------------|
+| Set-based  | `set_name:tool_key` or `set_name` | non-nil           |
+| Pinned     | `project/config_key`              | nil               |
+| Explicit   | User-defined key                  | non-nil (typically)|
+
+Pinned keys use `/` as separator to avoid collision with set-based keys that
+use `:`. The config_key already includes the tool_key for keyed modules (e.g.,
+`"App/Debug:ninja-gcc"`), so the tool is visible in the key.
 
 **Profile lifecycle**:
 
 1. **Unmaterialized** — exists as a potential combination of set + tool.
    Shown in Configuration Sets section as a tool entry. No cache entry.
-2. **Materialized** — written to cache with project references and skeleton
-   config entries. Shown in Profiles section.
+2. **Materialized** — written to cache with mappings and skeleton config
+   entries. Shown in Profiles section.
 3. **Active** — the user-selected profile. Stored in
    `loomworks.user.json` as `active_profile`. Determines which
    configurations the LSP, statusline, and `buf_status()` report.
@@ -112,12 +125,16 @@ Materialization happens when:
 - User presses `<CR>` on a tool entry in Configuration Sets (activate)
 - User presses `b` or `c` on a tool entry (build/configure)
 - `materialize_profile()` API is called
+- User presses `p` on a configuration (creates a pinned profile)
+- Orphan adoption on startup (creates a pinned profile)
 
 On materialization:
-1. Profile definition is resolved from config sets + detected tools
-2. For each project in the set, a skeleton cache entry is created (if absent)
-3. Profile entry is written to `cache.profiles`
-4. Cache is saved; merge is triggered
+1. Profile definition is resolved (from config sets + detected tools, or
+   from a direct project+config reference for pinned profiles)
+2. Mappings are computed and stored on the profile
+3. For each project in the mappings, a skeleton cache entry is created
+4. Profile entry is written to `cache.profiles`
+5. Cache is saved; merge is triggered
 
 ### 1.7 ConfigUnit
 
@@ -163,10 +180,21 @@ Sparse record of what has actually been configured and built.
 
 ```json
 {
-  "_meta": { "version": 2, "cached_at": "..." },
+  "_meta": { "version": 3, "cached_at": "..." },
   "profiles": {
     "Debug:ninja-gcc-12": {
       "configuration_set": "Debug",
+      "mappings": { "App": "Debug", "Frontend": "development" },
+      "tool_key": "ninja-gcc-12",
+      "tool_data": { ... },
+      "tool_label": "Ninja + GCC 12.3",
+      "tool_mod_type": "cmake",
+      "projects": {
+        "App": { "config_key": "Debug:ninja-gcc-12" }
+      }
+    },
+    "App/Debug:ninja-gcc-12": {
+      "mappings": { "App": "Debug" },
       "tool_key": "ninja-gcc-12",
       "tool_data": { ... },
       "tool_label": "Ninja + GCC 12.3",
@@ -293,17 +321,28 @@ The merge operation produces the active set by reconciling all three files:
 Materialization writes a profile to the cache so that build tasks can be
 launched against it. A profile must be materialized before any task runs.
 
-**Trigger**: `activate_profile()`, `build()`, `configure()`, or `<CR>` in UI.
+**Trigger**: `activate_profile()`, `build()`, `configure()`, `<CR>` in UI,
+`p` key (pinned), or orphan adoption on startup.
 
-**Process**:
+**Process (set-based profiles)**:
 1. Parse profile key → (set_name, tool_key)
-2. Look up set_name in `configuration_sets`
+2. Look up set_name in `configuration_sets` → mappings
 3. Resolve tool_data from detected tools or cache
-4. For each project in the set:
+4. For each project in the mappings:
    - Compute config_key (variant + tool_key for keyed modules)
    - Create skeleton cache entry if absent
-5. Write profile entry to `cache.profiles`
+5. Write profile entry (with `configuration_set` and `mappings`) to
+   `cache.profiles`
 6. Save cache, trigger remerge
+
+**Process (pinned profiles)**:
+1. Receive project_key and config_key directly
+2. Compute mappings = `{ [project_key] = variant }` (variant parsed from
+   config_key)
+3. Create skeleton cache entry if absent
+4. Write profile entry (with `configuration_set = nil` and `mappings`) to
+   `cache.profiles`
+5. Save cache, trigger remerge
 
 **Idempotent**: no-op if profile already exists in cache.
 
@@ -325,14 +364,15 @@ When configuration set names change in `loomworks.json` (e.g., "debug" →
 "Debug"), the system performs case-insensitive migration:
 
 1. Build a lowercase lookup of config set names from the new config
-2. For each cached profile, if its `configuration_set` doesn't match any
-   config set exactly but does match case-insensitively:
+2. For each cached profile with a non-nil `configuration_set`, if it doesn't
+   match any config set exactly but does match case-insensitively:
    - Rename the profile key in cache
    - Update `configuration_set` in the profile
    - Update `active_profile` in user.json if it pointed to the old key
 3. Save cache
 
-This runs on both initial setup and config hot-reload.
+Pinned profiles (`configuration_set == nil`) are skipped — they have no set
+to migrate. This runs on both initial setup and config hot-reload.
 
 ### 4.4 Orphaned Profiles (Stale)
 
@@ -349,7 +389,7 @@ When a configuration set is removed from `loomworks.json`:
 On startup, configs in cache that are not referenced by any profile are
 "adopted":
 
-- Configs with state (configured/built/failed) → ad-hoc profile created
+- Configs with state (configured/built/failed) → pinned profile created
 - Configs without state (unconfigured skeletons) → silently dropped
 
 This ensures every meaningful cache entry is reachable through a profile.
@@ -368,20 +408,28 @@ This ensures every meaningful cache entry is reachable through a profile.
 
 **Config deletion** (`D` key on a configuration):
 1. Show confirmation dialog
-2. If referenced by a full profile → disposition = `reset` (clear state but
-   keep skeleton)
-3. If only referenced by ad-hoc profiles → remove those ad-hoc profiles,
-   disposition = `clean`
+2. If referenced by any profile (set-based or pinned) → disposition = `reset`
+   (clear state but keep skeleton; profile stays and shows "unconfigured")
+3. If not referenced by any profile → disposition = `clean` (remove entry)
 4. Same stop/mark/execute/unmark cycle
+5. No profiles are ever removed — profiles are only deleted via explicit
+   profile deletion (`D` on the profile itself)
 
-**Build directory safety**: only directories under `.nvim/build/` are deleted.
-Directories outside this prefix are refused with an error.
+**Build directory deletion**: Build directories stored in the cache may reside
+anywhere under the workspace root (e.g., `<root>/build/`, `<root>/.nvim/build/`,
+a preset's `binaryDir`). Before deleting a build directory, the system
+normalizes the path and verifies it is under the workspace root. Paths that
+resolve outside the workspace (e.g., via `../` traversal, absolute paths
+pointing elsewhere, or corrupted cache entries) are refused with an error
+notification and left untouched. This check lives in core (at the
+`execute_deletion` / clean level), not in the io layer — the io layer is a
+general-purpose utility that deletes what it is told to.
 
 ### 4.7 Cleaning
 
 **Profile clean** (`C` key):
 1. For each project in the profile:
-   - Delete build directory (if under `.nvim/build/`)
+   - Delete build directory
    - Reset cache entry to unconfigured (clear state, build_dir, timestamps,
      cmake data)
    - Keep skeleton (variant, tool_key, tool_data)
@@ -504,11 +552,12 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `<CR>`  | enter       | Activate profile (on profile/tool nodes) |
 | `b`     | build       | Build (walks up to nearest node with `on_build`) |
 | `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
-| `p`     | pin         | Pin configuration as ad-hoc profile |
+| `p`     | pin         | Pin configuration as pinned profile |
 | `R`     | rebuild     | Clean + build (destructive) |
 | `C`     | clean       | Reset to unconfigured, delete build dir (destructive) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
 | `L`     | load        | Load workspace from cwd / rescan tools |
+| `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `?`     | help        | Show help dialog |
 | `q`     | (close)     | Close the status page |
 
@@ -517,15 +566,15 @@ and `pin`, the tree walks upward from the cursor line to find the nearest
 node that has the corresponding `on_<action>` callback. This means pressing
 `b` on a child detail line triggers the build action of the parent node.
 
-**Destructive action highlighting**: `R`, `C`, `D` keys are highlighted with
-`DiagnosticWarn` in the help dialog.
+**Destructive action highlighting**: `R`, `C`, `D`, `<C-n>` keys are
+highlighted with `DiagnosticWarn` in the help dialog.
 
 ### 6.4 Profiles Section
 
 Shows all materialized (cached) and explicit profiles. Profiles only appear
 here when they exist in the cache or are declared in `loomworks.json`.
 
-**Full profile node display**:
+**Profile node display** (all profiles use the same rendering):
 ```
 {marker} {fold_char} {profile_key} [{tag}] ({status_label}) [{elapsed}] [— {op_message}]
 ```
@@ -538,7 +587,11 @@ Where:
 - `{elapsed}` = shown only when running (e.g., "1m23s")
 - `{op_message}` = last operation result (e.g., "built in 42s")
 
-**Full profile highlight rules**:
+All profiles — whether set-based or pinned — are displayed identically.
+A pinned profile with key `"App/Debug:ninja-gcc"` appears like any other
+profile; it simply has fewer projects when expanded.
+
+**Profile highlight rules**:
 | Condition | Highlight |
 |-----------|-----------|
 | Running + active | `LoomworksActive` |
@@ -548,29 +601,19 @@ Where:
 | Unconfigured | `LoomworksUnconfigured` |
 | Otherwise | `LoomworksConfigured` |
 
-**Full profile children** (when unfolded):
-- Set name (with warning if orphaned/stale)
+**Profile children** (when unfolded):
+- Set name (with warning if orphaned/stale) — only for set-based profiles
 - Tool label (with generator/compiler details)
 - Last operation message
 - Projects sub-group:
   - Each project: `project_key → variant {progress}` with status highlight
   - When unfolded: status, build dir, timestamps, cmake details
 
-**Ad-hoc profile display**:
-```
-{marker} {fold_char} {project_key} / {variant} × {tool_label} ({status}) {progress}
-```
-
-- Shown under a "Pinned:" sub-header after full profiles
-- Uses `· ` as marker prefix
-- More compact than full profiles — single project, single config
-
 **Profile actions**:
 
 | Node type | `<CR>` | `b` | `c` | `R` | `C` | `D` |
 |-----------|--------|-----|-----|-----|-----|-----|
-| Full profile | activate | build all | configure all | clean+build all | clean all | delete with dialog |
-| Ad-hoc profile | activate | build | configure | clean+build | clean | delete with dialog |
+| Profile | activate | build all | configure all | clean+build all | clean all | delete with dialog |
 | Project under profile | — | build config | configure config | clean+build config | clean config | delete config with dialog |
 
 ### 6.5 Configuration Sets Section
@@ -653,12 +696,12 @@ Each configuration shows its available tools:
 
 | Action | Behavior |
 |--------|----------|
-| `b`    | Build this project+config (creates ad-hoc if needed) |
-| `c`    | Configure this project+config (creates ad-hoc if needed) |
+| `b`    | Build this project+config (creates pinned profile if needed) |
+| `c`    | Configure this project+config (creates pinned profile if needed) |
 | `R`    | Clean + build |
 | `C`    | Clean (reset to unconfigured) |
 | `D`    | Delete config with dialog |
-| `p`    | Pin as ad-hoc profile |
+| `p`    | Pin as pinned profile |
 
 ### 6.7 Deletion Confirmation Dialog
 
@@ -675,12 +718,39 @@ Shown for all delete operations (`D` key). Floating window centered in editor.
 
 **Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
 
-### 6.8 Help Dialog
+### 6.8 Nuke Confirmation Dialog
 
-Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`)
-have their key character highlighted with `DiagnosticWarn`.
+Shown when `<C-n>` is pressed. Floating window centered in editor.
 
-### 6.9 Auto-refresh
+**Content**:
+1. Title: "Reset workspace cache"
+2. List of paths that will be deleted:
+   - `<root>/.nvim/build/`
+   - `<root>/.nvim/loomworks.cache.json`
+3. Confirmation prompt
+
+**Root resolution**: Uses `ws.root` if a workspace is loaded, otherwise
+resolves from cwd via `workspace.resolve_root()`.
+
+**Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
+
+**Safety checks** (in `nuke_cache(root)`):
+1. Root must be an absolute path (rejects relative paths)
+2. `loomworks.json` must exist at the root (confirms it is a real workspace)
+3. Every path to delete is verified to be under `root/.nvim/` using
+   normalized path prefix checking (prevents directory traversal)
+
+If any check fails, the operation aborts with an error notification and
+no files are deleted. These checks are specific to the nuke operation —
+the general io layer does not restrict deletion paths, because normal
+config/profile deletion may delete build directories anywhere.
+
+### 6.9 Help Dialog
+
+Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
+`<C-n>`) have their key character highlighted with `DiagnosticWarn`.
+
+### 6.10 Auto-refresh
 
 The status page refreshes automatically on these events:
 - `task_started`, `task_stopped`, `task_result`, `task_progress`
@@ -839,8 +909,11 @@ All tasks wait for pending deletions before starting.
    never automatically removed. Only explicit user action modifies or removes
    cache entries.
 
-3. **Safe deletion**: Build directories are only deleted if they reside under
-   `.nvim/build/`. Any other path is refused.
+3. **Deletion safety**: All build directory deletions (config delete, clean,
+   nuke) verify that the target path is under the workspace root before
+   proceeding. Paths resolving outside the workspace are refused with an
+   error notification. The nuke operation (`<C-n>`) is further restricted
+   to `root/.nvim/` and requires that `loomworks.json` exists at the root.
 
 4. **Atomic writes**: All file writes (cache, user) use temp + fsync + rename
    with .bak recovery on read failure.
@@ -850,8 +923,7 @@ All tasks wait for pending deletions before starting.
    ConfigUnit.
 
 6. **Profile existence implies cache entry**: Every profile shown in the
-   Profiles section has a corresponding entry in `cache.profiles`. Ad-hoc
-   profiles also have entries.
+   Profiles section has a corresponding entry in `cache.profiles`.
 
 7. **Materialization before action**: No build/configure task runs without
    the profile being materialized to cache first.
@@ -865,3 +937,13 @@ All tasks wait for pending deletions before starting.
 10. **Generation counter**: Objects (Profile, Project) track staleness via a
     generation counter incremented on every remerge. Stale objects may have
     outdated data.
+
+11. **Cache version check**: On load, the cache version (`_meta.version`) is
+    checked against the expected version. If the version is incompatible,
+    setup refuses to load — the workspace stays nil, the cache file on disk
+    is untouched, and the user is notified. The status page shows the
+    normal "No workspace loaded" state. The user can press `<C-n>` to nuke
+    the cache and build artifacts, which deletes `.nvim/build/` and
+    `loomworks.cache.json`, then re-runs setup. This is the only way to
+    resolve a version mismatch — the system never silently discards or
+    overwrites an incompatible cache.

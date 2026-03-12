@@ -81,6 +81,10 @@ function Tree:on_key(action, line)
     end
     return { refresh = true }
 
+  elseif action == "nuke" then
+    self:_confirm_nuke()
+    return {}
+
   elseif action == "help" then
     self:_show_help()
     return {}
@@ -118,6 +122,7 @@ function Tree:_show_help()
     "  R       Rebuild (clean + build)",
     "  C       Clean (reset to unconfigured)",
     "  D       Delete",
+    "  <C-n>   Nuke cache + build dirs",
     "",
     "  q       Close",
     "  ?       Show this help",
@@ -147,8 +152,9 @@ function Tree:_show_help()
   vim.api.nvim_buf_add_highlight(buf, ns, "Title", 0, 0, -1)
   -- Highlight destructive keys
   for i, line in ipairs(lines) do
-    if line:match("^  [RCD]%s") then
-      vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", i - 1, 2, 3)
+    if line:match("^  [RCD]%s") or line:match("^  <C%-N>") then
+      local key_end = line:find("%s%s", 3) or #line
+      vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", i - 1, 2, key_end)
     end
   end
 
@@ -162,6 +168,72 @@ function Tree:_show_help()
   vim.keymap.set("n", "q", close, map_opts)
   vim.keymap.set("n", "<Esc>", close, map_opts)
   vim.keymap.set("n", "?", close, map_opts)
+end
+
+-- -----------------------------------------------------------------------
+-- Cache nuke confirmation dialog
+-- -----------------------------------------------------------------------
+
+function Tree:_confirm_nuke()
+  local lw = require("loomworks")
+  local ws = lw.get_workspace()
+  local err = lw.get_setup_error()
+  local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
+
+  local lines = {
+    "  Reset workspace cache",
+    "",
+    "  This will permanently delete:",
+    "    " .. root .. "/.nvim/build/",
+    "    " .. root .. "/.nvim/loomworks.cache.json",
+    "",
+    "  Press y to confirm, q to cancel",
+  }
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+
+  local width = 0
+  for _, l in ipairs(lines) do
+    width = math.max(width, #l + 4)
+  end
+  width = math.min(width, 80)
+  local height = #lines
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " Confirm Reset ",
+    title_pos = "center",
+  })
+
+  local ns = vim.api.nvim_create_namespace("loomworks_nuke_confirm")
+  vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticError", 0, 0, -1)
+  vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", 2, 0, -1)
+  vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", 3, 0, -1)
+  vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", 4, 0, -1)
+
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+
+  local map_opts = { buffer = buf, nowait = true, silent = true }
+  vim.keymap.set("n", "q", close, map_opts)
+  vim.keymap.set("n", "<Esc>", close, map_opts)
+  vim.keymap.set("n", "n", close, map_opts)
+  vim.keymap.set("n", "y", function()
+    close()
+    lw.nuke_cache(root)
+  end, map_opts)
 end
 
 -- -----------------------------------------------------------------------

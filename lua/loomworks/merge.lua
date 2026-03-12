@@ -24,13 +24,14 @@ function M.parse_profile_key(key)
   return key, nil
 end
 
---- Build an ad-hoc profile key from project and config keys.
+--- Build a pinned profile key from project and config keys.
 --- @param project_key string
 --- @param config_key string
 --- @return string
-function M.adhoc_key(project_key, config_key)
-  return "adhoc:" .. project_key .. ":" .. config_key
+function M.pinned_key(project_key, config_key)
+  return project_key .. "/" .. config_key
 end
+
 
 --- Determine project status from cache entry.
 --- @param cache_entry loomworks.CachedConfig|nil
@@ -236,33 +237,22 @@ function M.get_all_profiles(config, cache, tools_by_type)
   -- Cached profiles (all materialized by definition)
   if cache and cache.profiles then
     for cache_key, cp in pairs(cache.profiles) do
-      if cp.ad_hoc then
-        profiles[cache_key] = {
-          ad_hoc = true,
-          project_key = cp.project_key,
-          config_key = cp.config_key,
-          tool_key = cp.tool_key,
-          tool_data = cp.tool_data,
-          tool_label = cp.tool_label,
-          tool_mod_type = cp.tool_mod_type,
-        }
-      else
-        local mod = cp.tool_mod_type and modules.get(cp.tool_mod_type) or nil
-        profiles[cache_key] = {
-          configuration_set = cp.configuration_set,
-          tool_key = cp.tool_key
-              or (mod and mod.tool_key and cp.tool_data
-                and mod.tool_key(cp.tool_data))
-              or nil,
-          tool_data = cp.tool_data,
-          tool_label = cp.tool_label
-              or (mod and mod.tool_label and cp.tool_data
-                and mod.tool_label(cp.tool_data))
-              or nil,
-          tool_mod_type = cp.tool_mod_type,
-          _cached_projects = cp.projects,
-        }
-      end
+      local mod = cp.tool_mod_type and modules.get(cp.tool_mod_type) or nil
+      profiles[cache_key] = {
+        configuration_set = cp.configuration_set,
+        mappings = cp.mappings,
+        tool_key = cp.tool_key
+            or (mod and mod.tool_key and cp.tool_data
+              and mod.tool_key(cp.tool_data))
+            or nil,
+        tool_data = cp.tool_data,
+        tool_label = cp.tool_label
+            or (mod and mod.tool_label and cp.tool_data
+              and mod.tool_label(cp.tool_data))
+            or nil,
+        tool_mod_type = cp.tool_mod_type,
+        _cached_projects = cp.projects,
+      }
     end
   end
 
@@ -541,10 +531,13 @@ function M.resolve_profile_projects(ws, profile_key, tools_by_type)
   if not profile then return nil end
 
   local set_name = profile.configuration_set
-  local set_mappings = nil
+  local mappings = nil
   if set_name and ws.config.configuration_sets and ws.config.configuration_sets[set_name] then
-    set_mappings = ws.config.configuration_sets[set_name]
+    mappings = ws.config.configuration_sets[set_name]
+  elseif profile.mappings then
+    mappings = profile.mappings
   end
+  if not mappings then return nil end
 
   local tk = profile.tool_key
   local td = profile.tool_data
@@ -556,7 +549,7 @@ function M.resolve_profile_projects(ws, profile_key, tools_by_type)
     local mod_info = mod and mod.info and mod.info(abs_path, project.type_config)
         or { configurations = {} }
 
-    local active_configuration = set_mappings and set_mappings[key] or nil
+    local active_configuration = mappings[key] or nil
 
     local cache_config_key = nil
     if active_configuration then

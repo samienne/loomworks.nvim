@@ -17,6 +17,7 @@
 --- @field config loomworks.Config parsed loomworks.json
 --- @field user loomworks.UserData user preferences (.nvim/loomworks.user.json)
 --- @field cache loomworks.CacheData build state (.nvim/loomworks.cache.json)
+--- @field cache_version_mismatch? boolean set during assembly, checked by Core.setup()
 
 --- @class loomworks.Config
 --- @field name? string workspace name override (falls back to dir name)
@@ -44,10 +45,8 @@
 --- @field projects table<string, loomworks.CachedProject>
 
 --- @class loomworks.CachedProfile
---- @field configuration_set? string nil for ad-hoc profiles
---- @field ad_hoc? boolean true for lightweight single-config pins
---- @field project_key? string only for ad-hoc profiles
---- @field config_key? string only for ad-hoc profiles
+--- @field configuration_set? string nil for pinned profiles
+--- @field mappings? table<string, string> project_key -> variant (stored for pinned, re-derived for set-based)
 --- @field tool_key? string cache key suffix from the keyed module
 --- @field tool_data? table opaque module-specific tool data
 --- @field tool_label? string display label for the tool
@@ -118,10 +117,8 @@
 --- @field configuration_sets? table<string, table<string, string>>
 
 --- @class loomworks.ProfileDef
---- @field configuration_set? string nil for ad-hoc profiles
---- @field ad_hoc? boolean true for lightweight single-config pins
---- @field project_key? string only for ad-hoc profiles
---- @field config_key? string only for ad-hoc profiles
+--- @field configuration_set? string nil for pinned profiles
+--- @field mappings? table<string, string> project_key -> variant (stored for pinned, re-derived for set-based)
 --- @field tool_key? string cache key suffix from the keyed module
 --- @field tool_data? table opaque module-specific tool data
 --- @field tool_label? string display label for the tool
@@ -213,7 +210,6 @@
 
 --- @class loomworks.DeletionPlan
 --- @field items loomworks.DeletionItem[]
---- @field adhoc_profiles? string[] ad-hoc profiles to remove (config deletion)
 --- @field profile_key? string profile being deleted
 --- @field project_key? string single config deletion target
 --- @field config_key? string single config deletion target

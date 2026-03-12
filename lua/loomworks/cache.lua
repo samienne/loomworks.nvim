@@ -2,7 +2,7 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local CURRENT_VERSION = 2
+local CURRENT_VERSION = 3
 
 --- Return the file path for a workspace root.
 --- @param root string
@@ -29,19 +29,20 @@ function M.default()
 end
 
 --- Parse raw JSON content into CacheData.
---- Returns defaults on invalid content.
+--- Returns defaults on invalid content. Second return value is true when a
+--- version mismatch was detected (valid JSON but wrong version number).
 --- @param content string raw JSON content
---- @return loomworks.CacheData
+--- @return loomworks.CacheData data, boolean version_mismatch
 function M.parse(content)
   local ok, raw = pcall(vim.json.decode, content)
   if not ok or type(raw) ~= "table" then
-    return M.default()
+    return M.default(), false
   end
   if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
-    return M.default()
+    return M.default(), true
   end
   raw.projects = raw.projects or {}
-  return raw
+  return raw, false
 end
 
 --- Load cache for a workspace.

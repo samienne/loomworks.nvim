@@ -121,13 +121,13 @@ end
 function M.pin_config(project_key, config_key)
   return function()
     local lw = require("loomworks")
-    local adhoc_key = require("loomworks.merge").adhoc_key(project_key, config_key)
-    local existing = lw.get_profile(adhoc_key)
+    local pkey = require("loomworks.merge").pinned_key(project_key, config_key)
+    local existing = lw.get_profile(pkey)
     if existing then
       vim.notify("loomworks: already pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
       return
     end
-    lw.materialize_adhoc(project_key, config_key)
+    lw.materialize_pinned(project_key, config_key)
     vim.notify("loomworks: pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
   end
 end
