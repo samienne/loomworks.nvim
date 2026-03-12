@@ -155,6 +155,7 @@
 
 --- @class loomworks.ProjectCmakeInfo
 --- @field compile_commands_from? string configuration to source compile_commands.json from
+--- @field clangd? string project-level clangd binary override (from loomworks.json, supports ${ENV_VAR})
 --- @field targets? table<string, loomworks.CachedTarget>
 
 -- ========================== Module Interface ==========================
@@ -173,6 +174,7 @@
 --- @class loomworks.ModuleInfo
 --- @field configurations table<string, loomworks.ConfigurationInfo>
 --- @field compile_commands_from? string
+--- @field clangd? string
 
 --- @class loomworks.ModuleValidation
 --- @field valid boolean

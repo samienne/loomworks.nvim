@@ -9,6 +9,7 @@ local M = {}
 --- @field env table<string, string> environment variables needed
 --- @field vcvarsall string|nil path to vcvarsall.bat (MSVC kits)
 --- @field arch string|nil target architecture for vcvarsall
+--- @field clangd_path string|nil path to clangd binary bundled with this toolchain
 
 --- @type loomworks.CmakeKit[]|nil
 M._cached = nil
@@ -96,8 +97,23 @@ local function detect_msvc_kits()
   return kits
 end
 
+--- Try to find a clangd binary alongside a compiler path.
+--- Looks for clangd in the same directory as the compiler.
+--- @param compiler_path string
+--- @return string|nil clangd_path
+local function find_sibling_clangd(compiler_path)
+  local dir = compiler_path:match("^(.+)/[^/]+$")
+  if not dir then return nil end
+  local candidate = dir .. "/clangd"
+  if vim.fn.executable(candidate) == 1 then return candidate end
+  -- Try with .exe on Windows
+  candidate = dir .. "/clangd.exe"
+  if uv.fs_stat(candidate) then return candidate end
+  return nil
+end
+
 --- Detect C/C++ compilers in PATH.
---- @return { id: string, display: string, path: string, version: string, family: string }[]
+--- @return { id: string, display: string, path: string, version: string, family: string, clangd_path: string|nil }[]
 local function detect_compilers()
   local compilers = {}
   local seen = {}
@@ -145,6 +161,7 @@ local function detect_compilers()
       path = cpp_path,
       version = version,
       family = family,
+      clangd_path = find_sibling_clangd(cpp_path),
     }
 
     ::continue::
@@ -182,6 +199,7 @@ function M.detect()
         generator = "Ninja",
         compiler_id = comp.id,
         compiler_path = comp.path,
+        clangd_path = comp.clangd_path,
         env = {},
       }
     end

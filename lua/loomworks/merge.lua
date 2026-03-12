@@ -480,15 +480,14 @@ function M.merge(workspace, tools_by_type)
     }
 
     -- Add module-specific info (cmake compile_commands, targets, etc.)
-    if mod and mod_info.compile_commands_from then
+    local has_cmake_info = (mod and (mod_info.compile_commands_from or mod_info.clangd))
+        or (cached_config_data and cached_config_data.cmake)
+    if has_cmake_info then
       projects[key].cmake = {
-        compile_commands_from = mod_info.compile_commands_from,
+        compile_commands_from = mod_info and mod_info.compile_commands_from or nil,
+        clangd = mod_info and mod_info.clangd or nil,
         targets = cached_config_data and cached_config_data.cmake
             and cached_config_data.cmake.targets or nil,
-      }
-    elseif cached_config_data and cached_config_data.cmake then
-      projects[key].cmake = {
-        targets = cached_config_data.cmake.targets,
       }
     end
   end

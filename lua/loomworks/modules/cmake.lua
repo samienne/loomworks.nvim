@@ -204,6 +204,7 @@ function M.info(path, config)
   local result = {
     configurations = configurations,
     compile_commands_from = config.compile_commands_from,
+    clangd = config.clangd,
   }
 
   return result
@@ -303,6 +304,11 @@ function M.tasks(project, active_config)
       local c_path = compiler_path:gsub("clang%+%+", "clang"):gsub("g%+%+", "gcc")
       configure_cmd[#configure_cmd + 1] = "-DCMAKE_CXX_COMPILER=" .. compiler_path
       configure_cmd[#configure_cmd + 1] = "-DCMAKE_C_COMPILER=" .. c_path
+    end
+
+    -- Single-config generators support compile_commands.json generation
+    if not multi_config then
+      configure_cmd[#configure_cmd + 1] = "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
     end
   end
 
@@ -464,6 +470,7 @@ function M.detect_tools()
         compiler_id = kit.compiler_id,
         compiler_path = kit.compiler_path,
         compiler_version = kit.compiler_version,
+        clangd_path = kit.clangd_path,
         vcvarsall = kit.vcvarsall,
         arch = kit.arch,
         env = kit.env and next(kit.env) and kit.env or nil,
