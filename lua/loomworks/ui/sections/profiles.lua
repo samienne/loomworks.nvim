@@ -155,7 +155,7 @@ return function(tree, ctx)
 
     display = display .. " (" .. status_label .. ")"
     if profile_running then
-      hl = "LoomworksRunning"
+      hl = is_active and "LoomworksActive" or "LoomworksRunning"
       local pps = profile:projects()
       local pct = helpers.aggregate_progress(pps)
       if pct then

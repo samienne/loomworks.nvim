@@ -42,7 +42,7 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
           local pct = helpers.aggregate_progress(pps)
           if pct then suffix = suffix .. " " .. pct .. "%" end
           suffix = suffix .. helpers.format_elapsed(lw.get_operation_elapsed(profile_key))
-          hl = "LoomworksRunning"
+          hl = is_active and "LoomworksActive" or "LoomworksRunning"
         elseif is_active then
           hl = "LoomworksActive"
           local op = lw.get_operation(profile_key)
