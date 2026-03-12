@@ -38,23 +38,38 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
         local suffix, hl
         if profile_running then
           local status_label = select(1, profile:status())
-          suffix = " (" .. status_label .. ")"
+          suffix = " (" .. helpers.format_status(status_label) .. ")"
           local pps = profile:projects()
           local pct = helpers.aggregate_progress(pps)
           if pct then suffix = suffix .. " " .. pct .. "%" end
           suffix = suffix .. helpers.format_elapsed(lw.get_operation_elapsed(profile_key))
-          hl = "DiagnosticWarn"
-        elseif already_configured then
+          hl = "LoomworksRunning"
+        elseif is_active then
+          hl = "LoomworksActive"
           local op = lw.get_operation(profile_key)
           if op and op.message then
             suffix = " — " .. op.message
           else
-            suffix = " (configured)"
+            local p_label = already_configured and select(1, profile:status()) or "unconfigured"
+            suffix = " (" .. helpers.format_status(p_label) .. ")"
           end
-          hl = is_active and "DiagnosticOk" or "DiagnosticInfo"
+        elseif already_configured then
+          local p_label = select(1, profile:status())
+          local op = lw.get_operation(profile_key)
+          if op and op.message then
+            suffix = " — " .. op.message
+          else
+            suffix = " (" .. helpers.format_status(p_label) .. ")"
+          end
+          if p_label == "failed_configure" or p_label == "failed_build"
+              or p_label:match("failed") then
+            hl = "LoomworksFailed"
+          else
+            hl = "LoomworksConfigured"
+          end
         else
           suffix = ""
-          hl = is_active and "DiagnosticOk" or "Comment"
+          hl = "LoomworksUnconfigured"
         end
 
         local display = entry.tool_label or entry.tool_key
@@ -99,7 +114,7 @@ return function(tree, ctx)
   for _, set_name in ipairs(set_names) do
     local active_profile = all_profiles[active_profile_key]
     local is_active_set = active_profile and active_profile.configuration_set == set_name
-    local set_hl = is_active_set and "DiagnosticOk" or nil
+    local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
 
     tree:node(set_name, {
       fold_key = "set:" .. set_name,

@@ -59,15 +59,36 @@ function M.aggregate_progress(pps)
 end
 
 M.STATUS_HL = {
-  unconfigured     = "Comment",
-  configured       = "DiagnosticInfo",
-  built            = "DiagnosticOk",
-  failed_configure = "DiagnosticError",
-  failed_build     = "DiagnosticError",
-  configuring      = "DiagnosticWarn",
-  building         = "DiagnosticWarn",
-  deleting         = "DiagnosticError",
+  unconfigured     = "LoomworksUnconfigured",
+  configured       = "LoomworksConfigured",
+  built            = "LoomworksBuilt",
+  failed_configure = "LoomworksFailed",
+  failed_build     = "LoomworksFailed",
+  configuring      = "LoomworksRunning",
+  building         = "LoomworksRunning",
+  deleting         = "LoomworksDeleting",
 }
+
+M.STATUS_ICON = {
+  unconfigured     = "○",
+  configured       = "◆",
+  built            = "✔",
+  failed_configure = "✘",
+  failed_build     = "✘",
+}
+
+--- Format a status label with its icon prefix.
+--- Running/deleting states use the spinner so no icon is added.
+--- Composite labels (e.g. "1 building, 1 failed") pass through unchanged.
+--- @param status string
+--- @return string
+function M.format_status(status)
+  local icon = M.STATUS_ICON[status]
+  if icon then
+    return icon .. " " .. status
+  end
+  return status
+end
 
 --- Resolve the live status for a ConfigUnit.
 --- Used by both profile and project sections — ConfigUnit is the single source of truth.
@@ -117,7 +138,7 @@ end
 --- @param status_hl string
 --- @param cached loomworks.CachedConfig|nil
 function M.render_cached_details(tree, config_status, status_hl, cached)
-  tree:leaf("Status: " .. config_status, status_hl)
+  tree:leaf("Status: " .. M.format_status(config_status), status_hl)
   if not cached then return end
 
   if cached.build_dir then

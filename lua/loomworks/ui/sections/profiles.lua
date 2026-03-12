@@ -76,7 +76,7 @@ local function render_adhoc_node(tree, profile, lw)
   elseif profile.tool_key then
     display = display .. " × " .. profile.tool_key
   end
-  display = display .. " (" .. config_status .. ")" .. progress_str
+  display = display .. " (" .. helpers.format_status(config_status) .. ")" .. progress_str
 
   tree:node(display, {
     fold_key = "profile:" .. profile.key,
@@ -145,7 +145,7 @@ return function(tree, ctx)
     local profile_running = profile:is_running()
 
     local marker = is_active and "● " or "○ "
-    local hl = profile_running and "DiagnosticWarn" or (is_active and "DiagnosticOk" or nil)
+    local hl
 
     local display = profile.key
     if profile.explicit then
@@ -153,22 +153,34 @@ return function(tree, ctx)
     end
 
     local status_label, status_hl = profile:status()
-    display = display .. " (" .. status_label .. ")"
+    display = display .. " (" .. helpers.format_status(status_label) .. ")"
     if profile_running then
+      hl = "LoomworksRunning"
       local pps = profile:projects()
       local pct = helpers.aggregate_progress(pps)
       if pct then
         display = display .. " " .. pct .. "%"
       end
       display = display .. helpers.format_elapsed(lw.get_operation_elapsed(profile.key))
-    else
+    elseif is_active then
+      hl = "LoomworksActive"
       local op = lw.get_operation(profile.key)
       if op and op.message then
         display = display .. " — " .. op.message
       end
-    end
-    if not hl then
-      hl = status_hl
+    else
+      if status_label == "failed_configure" or status_label == "failed_build"
+          or status_label:match("failed") then
+        hl = "LoomworksFailed"
+      elseif status_label == "unconfigured" then
+        hl = "LoomworksUnconfigured"
+      else
+        hl = "LoomworksConfigured"
+      end
+      local op = lw.get_operation(profile.key)
+      if op and op.message then
+        display = display .. " — " .. op.message
+      end
     end
 
     tree:node(display, {

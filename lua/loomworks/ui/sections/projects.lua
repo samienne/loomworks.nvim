@@ -104,8 +104,8 @@ return function(tree, ctx)
     local proj = projects[key]
     local proj_running = proj:running_action()
     local is_active_project = proj.configuration ~= nil and not proj.orphaned
-    local proj_hl = proj_running and "DiagnosticWarn"
-        or (is_active_project and "DiagnosticOk" or nil)
+    local proj_hl = proj_running and "LoomworksRunning"
+        or (is_active_project and "LoomworksActive" or "LoomworksActionable")
 
     local type_tag = "[" .. proj.type .. "]"
     local orphan_tag = proj.orphaned and " (orphaned)" or ""
@@ -153,7 +153,7 @@ return function(tree, ctx)
               end
             end
 
-            local config_hl = config_has_running and "DiagnosticWarn" or "Comment"
+            local config_hl = config_has_running and "LoomworksRunning" or "LoomworksActionable"
 
             local brief = {}
             if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
@@ -203,7 +203,7 @@ return function(tree, ctx)
                 local config_status, status_hl, progress_str, is_spinning =
                     helpers.resolve_config_status_global(key, cname, cached)
 
-                tree:node("Status: " .. config_status .. progress_str, {
+                tree:node("Status: " .. helpers.format_status(config_status) .. progress_str, {
                   fold_key = "config_status:" .. key .. ":" .. cname,
                   spinning = is_spinning,
                   hl = status_hl,
