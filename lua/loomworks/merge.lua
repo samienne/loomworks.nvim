@@ -260,6 +260,7 @@ function M.get_all_profiles(config, cache, tools_by_type)
                 and mod.tool_label(cp.tool_data))
               or nil,
           tool_mod_type = cp.tool_mod_type,
+          _cached_projects = cp.projects,
         }
       end
     end

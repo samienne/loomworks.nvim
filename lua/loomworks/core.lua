@@ -197,6 +197,7 @@ function Core:_on_file_changed(path, content)
       if ok then
         self._workspace = ws
         self:_scan_tools()
+        self:_migrate_set_names()
         self:remerge()
         self._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
       else
@@ -256,6 +257,7 @@ function Core:setup(opts)
   self._profiles = {}
   self._projects = {}
   self:_scan_tools()
+  self:_migrate_set_names()
   self:_adopt_orphaned_configs()
   self:remerge()
   self._deps.events.emit("workspace_changed", ws)
@@ -310,19 +312,40 @@ end
 --- Resolve mappings for a profile definition.
 --- Ad-hoc profiles derive mappings from their single project+config_key.
 --- Full profiles derive mappings from configuration_sets.
+--- Falls back to cached profile project data when the configuration_set
+--- no longer exists in config (orphaned profile).
 --- @param data loomworks.ProfileDef
 --- @param config_sets table|nil
---- @return table<string, string>|nil
+--- @return table<string, string>|nil mappings
+--- @return boolean orphaned true if mappings came from cache fallback
 local function resolve_profile_mappings(data, config_sets)
   if data.ad_hoc then
     if data.project_key and data.config_key then
       local variant = require("loomworks.merge").parse_profile_key(data.config_key)
-      return { [data.project_key] = variant }
+      return { [data.project_key] = variant }, false
     end
-    return nil
+    return nil, false
   end
-  return data.configuration_set and config_sets
-      and config_sets[data.configuration_set] or nil
+
+  -- Try config_sets lookup first
+  if data.configuration_set and config_sets and config_sets[data.configuration_set] then
+    return config_sets[data.configuration_set], false
+  end
+
+  -- Fallback: derive mappings from cached profile projects
+  if data._cached_projects then
+    local merge = require("loomworks.merge")
+    local mappings = {}
+    for project_key, proj_ref in pairs(data._cached_projects) do
+      if proj_ref.config_key then
+        local variant = merge.parse_profile_key(proj_ref.config_key)
+        mappings[project_key] = variant
+      end
+    end
+    if next(mappings) then return mappings, true end
+  end
+
+  return nil, false
 end
 
 --- Sync the profiles registry with current merge data.
@@ -344,7 +367,7 @@ function Core:_sync_profiles(all_defs)
 
   -- Create or update
   for key, data in pairs(all_defs) do
-    local mappings = resolve_profile_mappings(data, config_sets)
+    local mappings, orphaned_set = resolve_profile_mappings(data, config_sets)
     local profile_data = {
       configuration_set = data.configuration_set,
       ad_hoc = data.ad_hoc or false,
@@ -356,6 +379,7 @@ function Core:_sync_profiles(all_defs)
       tool_mod_type = data.tool_mod_type,
       explicit = data.explicit or false,
       mappings = mappings,
+      orphaned_set = orphaned_set,
     }
 
     local existing = self._profiles[key]
@@ -558,6 +582,56 @@ function Core:materialize_profile(profile_key)
 
   self:_save_cache()
   self:remerge()
+end
+
+--- Migrate cached profile names when configuration_sets are renamed (case change).
+--- Matches cached profiles to config sets case-insensitively and updates the cache.
+function Core:_migrate_set_names()
+  local ws = self._workspace
+  if not ws or not ws.cache.profiles or not ws.config.configuration_sets then return end
+
+  -- Build case-insensitive lookup: lowercase -> actual name in config
+  local config_sets_lower = {}
+  for name in pairs(ws.config.configuration_sets) do
+    config_sets_lower[name:lower()] = name
+  end
+
+  local renames = {} -- old_key -> { new_key, new_set }
+  for profile_key, cached_profile in pairs(ws.cache.profiles) do
+    if cached_profile.ad_hoc then goto continue end
+    local old_set = cached_profile.configuration_set
+    if not old_set then goto continue end
+
+    -- Already matches exactly?
+    if ws.config.configuration_sets[old_set] then goto continue end
+
+    -- Try case-insensitive match
+    local new_set = config_sets_lower[old_set:lower()]
+    if new_set then
+      local _, tool_key = self._deps.merge.parse_profile_key(profile_key)
+      local new_key = self._deps.merge.profile_key(new_set, tool_key)
+      renames[profile_key] = { new_key = new_key, new_set = new_set }
+    end
+
+    ::continue::
+  end
+
+  if not next(renames) then return end
+
+  for old_key, info in pairs(renames) do
+    local profile_data = ws.cache.profiles[old_key]
+    profile_data.configuration_set = info.new_set
+    ws.cache.profiles[info.new_key] = profile_data
+    ws.cache.profiles[old_key] = nil
+
+    -- Update active_profile if it was the old key
+    if ws.user.active_profile == old_key then
+      ws.user.active_profile = info.new_key
+      self._deps.user.save(ws.root, ws.user)
+    end
+  end
+
+  self:_save_cache()
 end
 
 --- Adopt orphaned cached configs on init.

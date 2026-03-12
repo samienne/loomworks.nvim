@@ -8,7 +8,10 @@ local actions = require("loomworks.ui.actions")
 --- @param profile loomworks.Profile
 --- @param lw table loomworks API
 local function render_profile_details(tree, profile, lw)
-  if profile.configuration_set then
+  if profile.orphaned_set then
+    tree:leaf("Set '" .. (profile.configuration_set or "?")
+      .. "' removed from loomworks.json", "DiagnosticWarn")
+  elseif profile.configuration_set then
     tree:leaf("Set: " .. profile.configuration_set, "Comment")
   end
 
@@ -113,26 +116,10 @@ return function(tree, ctx)
   end
   table.sort(adhoc_profiles, function(a, b) return a.key < b.key end)
 
-  -- Collect full profiles to show: configured OR running OR active
-  local configured_profiles = {}
-  local configured_set = {}
-  for _, profile in ipairs(full_profiles) do
-    if profile:is_configured() or profile:is_running() or profile.key == active_profile_key then
-      configured_profiles[#configured_profiles + 1] = profile
-      configured_set[profile.key] = true
-    end
-  end
-  table.sort(configured_profiles, function(a, b) return a.key < b.key end)
+  -- All full profiles are shown (they only exist if cached or explicit)
+  table.sort(full_profiles, function(a, b) return a.key < b.key end)
 
-  local explicit_unconfigured = {}
-  for _, profile in ipairs(full_profiles) do
-    if profile.explicit and not configured_set[profile.key] then
-      explicit_unconfigured[#explicit_unconfigured + 1] = profile
-    end
-  end
-  table.sort(explicit_unconfigured, function(a, b) return a.key < b.key end)
-
-  local has_full = #configured_profiles > 0 or #explicit_unconfigured > 0
+  local has_full = #full_profiles > 0
   local has_adhoc = #adhoc_profiles > 0
 
   if not has_full and not has_adhoc then return end
@@ -149,7 +136,9 @@ return function(tree, ctx)
     local hl
 
     local display = profile.key
-    if profile.explicit then
+    if profile.orphaned_set then
+      display = display .. " [stale]"
+    elseif profile.explicit then
       display = display .. " [explicit]"
     end
 
@@ -199,10 +188,7 @@ return function(tree, ctx)
     end)
   end
 
-  for _, profile in ipairs(configured_profiles) do
-    render_profile_node(profile)
-  end
-  for _, profile in ipairs(explicit_unconfigured) do
+  for _, profile in ipairs(full_profiles) do
     render_profile_node(profile)
   end
 

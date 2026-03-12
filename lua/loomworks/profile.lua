@@ -139,6 +139,7 @@ function Profile:_update(data)
   self.tool_mod_type = data.tool_mod_type
   self.explicit = data.explicit or false
   self.mappings = data.mappings
+  self.orphaned_set = data.orphaned_set or false
 
   -- Precompute valid variants for is_configured checks
   self._valid_variants = {}
