@@ -96,6 +96,14 @@
 --- @field tool_key? string unique key for cache (nil for single-tool modules)
 --- @field tool_label? string display label (nil for single-tool modules)
 
+--- @class loomworks.BufStatus
+--- @field profile_key? string full active profile key (e.g. "debug:ninja-gcc-12")
+--- @field set_name? string configuration set name parsed from profile key
+--- @field tool_key? string project-specific tool key (e.g. "ninja-gcc-12" for cmake)
+--- @field project string project key for the buffer
+--- @field configuration? string active configuration name (e.g. "Debug")
+--- @field status? loomworks.ConfigUnitState current ConfigUnit state
+
 -- ========================== Merge Result ==========================
 
 --- @class loomworks.ActiveSet

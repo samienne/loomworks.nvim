@@ -17,14 +17,24 @@ function M.activate(profile_key)
   end
 end
 
---- @param profile loomworks.Profile
-function M.build(profile)
-  return function() profile:build() end
+--- @param profile_or_key loomworks.Profile|string
+function M.build(profile_or_key)
+  if type(profile_or_key) == "string" then
+    return function()
+      require("loomworks.overseer").run_profile_action(profile_or_key, "build")
+    end
+  end
+  return function() profile_or_key:build() end
 end
 
---- @param profile loomworks.Profile
-function M.configure(profile)
-  return function() profile:configure() end
+--- @param profile_or_key loomworks.Profile|string
+function M.configure(profile_or_key)
+  if type(profile_or_key) == "string" then
+    return function()
+      require("loomworks.overseer").run_profile_action(profile_or_key, "configure")
+    end
+  end
+  return function() profile_or_key:configure() end
 end
 
 --- @param profile loomworks.Profile

@@ -322,6 +322,39 @@ function M.project_for_buf(bufnr)
   return core:project_for_buf(bufnr)
 end
 
+--- Get status info for the buffer's project, suitable for statusline/winbar.
+--- @param bufnr? number defaults to current buffer
+--- @return loomworks.BufStatus|nil
+function M.buf_status(bufnr)
+  bufnr = bufnr or 0
+  local active_set = core:get_active_configuration_set()
+  if not active_set then return nil end
+
+  local project_key, project = core:project_for_buf(bufnr)
+  if not project_key then return nil end
+
+  local merge = require("loomworks.merge")
+  local profile_key = active_set.name
+  local set_name
+  if profile_key then
+    set_name = merge.parse_profile_key(profile_key)
+  end
+
+  local status
+  if project.configuration_key then
+    status = core:get_config_unit(project_key, project.configuration_key):state()
+  end
+
+  return {
+    profile_key = profile_key,
+    set_name = set_name,
+    tool_key = project.tool_key,
+    project = project_key,
+    configuration = project.configuration,
+    status = status,
+  }
+end
+
 -- ---------------------------------------------------------------------------
 -- UI
 -- ---------------------------------------------------------------------------
