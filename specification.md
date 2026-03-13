@@ -1205,9 +1205,12 @@ require("loomworks").setup({
 Auto-load runs on:
 1. **Plugin load** — checks cwd for `loomworks.json`
 2. **`DirChanged` event** — checks new cwd for `loomworks.json`
+3. **`SessionLoadPost` event** — re-checks cwd after session restore
+4. **`User ResessionLoadPost` event** — re-checks cwd after resession.nvim
+   session restore (safe to register even if resession is not installed)
 
-Both check **cwd only** — no parent directory walking. Use `:LoomworksInit`
-for workspaces in parent or non-cwd directories.
+All checks use **cwd only** — no parent directory walking. Use
+`:LoomworksInit` for workspaces in parent or non-cwd directories.
 
 ### 13.3 Behavior
 

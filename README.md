@@ -47,7 +47,7 @@ loomworks.nvim is loaded as a standard Neovim plugin. With lazy.nvim:
 ```lua
 {
   "your-user/loomworks.nvim",
-  cmd = { "LoomworksInit", "LoomworksInfo" },
+  event = "VeryLazy",
 }
 ```
 
