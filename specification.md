@@ -308,19 +308,18 @@ still work.
           │           │ build started
           │           ▼
           │     ┌──────────┐
-          │  ┌──│ building │
-          │  │  └────┬─────┘
-          │  │       │
-          │  │ fail  │ success
-          │  │       ▼
-          │  │  ┌─────────┐
-          │  │  │  built  │
-          │  │  └─────────┘
-          │  │
-          ▼  ▼
-   ┌──────────────────┐    ┌────────────────┐
-   │ configure_failed │    │  build_failed  │
-   └──────────────────┘    └────────────────┘
+          │     │ building │──────┐
+          │     └────┬─────┘      │
+          │          │            │ fail
+          │  success │            │
+          │          ▼            ▼
+          │     ┌─────────┐  ┌────────────────┐
+          │     │  built  │  │  build_failed  │
+          │     └─────────┘  └────────────────┘
+          ▼
+   ┌──────────────────┐
+   │ configure_failed │
+   └──────────────────┘
 
    Any state ──── delete/clean ────► deleting ────► unconfigured (clean)
                                                     or removed (delete)
