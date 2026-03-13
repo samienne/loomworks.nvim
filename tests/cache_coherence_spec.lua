@@ -154,6 +154,10 @@ local function make_tracked_core(config_overrides, user_overrides, cache_overrid
         rm_rf_calls[#rm_rf_calls + 1] = path
         return true
       end,
+      rm_rf_async = function(path, cb)
+        rm_rf_calls[#rm_rf_calls + 1] = path
+        cb(true, nil)
+      end,
     },
     cache = {
       save = function(root, data) return true end,

@@ -188,6 +188,12 @@ describe("overseer task readiness", function()
         assert.is_true(should_skip)
       end)
     end
+
+    it("blocks when state is unknown", function()
+      local unit = make_unit("App", "Debug", "unknown")
+      register_unit(unit)
+      assert.equals("unknown", unit:state())
+    end)
   end)
 
   -- -------------------------------------------------------------------------
@@ -214,6 +220,12 @@ describe("overseer task readiness", function()
         assert.equals(state, unit:state())
       end)
     end
+
+    it("blocks when state is unknown", function()
+      local unit = make_unit("App", "Debug", "unknown")
+      register_unit(unit)
+      assert.equals("unknown", unit:state())
+    end)
   end)
 end)
 

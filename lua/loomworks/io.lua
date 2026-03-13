@@ -204,4 +204,41 @@ function M.rm_rf(dir)
   return true, nil
 end
 
+--- Recursively remove a directory tree asynchronously via subprocess.
+--- Uses rm -rf on Unix, cmd /c rd /s /q on Windows.
+--- @param dir string
+--- @param callback fun(ok: boolean, err: string|nil)
+function M.rm_rf_async(dir, callback)
+  local stat = uv.fs_stat(dir)
+  if not stat then
+    callback(true, nil)
+    return
+  end
+
+  local cmd
+  if vim.fn.has("win32") == 1 then
+    -- Normalize to backslashes for Windows rd command
+    local win_dir = dir:gsub("/", "\\")
+    if stat.type == "directory" then
+      cmd = { "cmd", "/c", "rd", "/s", "/q", win_dir }
+    else
+      cmd = { "cmd", "/c", "del", "/f", "/q", win_dir }
+    end
+  else
+    cmd = { "rm", "-rf", dir }
+  end
+
+  vim.system(cmd, { text = true }, function(result)
+    vim.schedule(function()
+      if result.code == 0 then
+        callback(true, nil)
+      else
+        local err = result.stderr or ""
+        if err == "" then err = "exit code " .. result.code end
+        callback(false, err)
+      end
+    end)
+  end)
+end
+
 return M

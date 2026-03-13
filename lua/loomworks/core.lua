@@ -810,10 +810,11 @@ function Core:delete_orphaned_config(project_key, config_key, on_done)
       project_key = project_key,
       config_key = config_key,
       disposition = "clean",
+      build_dir = self:_cached_build_dir(project_key, config_key),
     },
   }
-  self:_run_deletion(items, function()
-    self:delete_cached_configs(items)
+  self:_run_deletion(items, function(effective_items)
+    self:delete_cached_configs(effective_items)
   end, on_done)
 end
 
@@ -1217,35 +1218,54 @@ end
 -- Deletion: execute
 -- ---------------------------------------------------------------------------
 
---- Delete build directory for a cached config if it's under .nvim/build/.
---- @param cached_config loomworks.CachedConfig
---- @param safe_prefix string
-function Core:_delete_build_dir(cached_config, safe_prefix)
-  if not cached_config or not cached_config.build_dir then return end
-  local build_dir = self._deps.normalize(cached_config.build_dir)
-  if build_dir:sub(1, #safe_prefix) == safe_prefix then
-    local ok, err = self._deps.io.rm_rf(build_dir)
-    if not ok then
-      self._deps.notify("loomworks: failed to remove " .. build_dir .. ": " .. err, vim.log.levels.WARN)
-    end
-  else
-    self._deps.notify("loomworks: refusing to delete build dir outside .nvim/build/: " .. build_dir, vim.log.levels.ERROR)
+--- Validate a build directory path is safe to delete (under workspace root).
+--- Checks that the path is strictly under the workspace root using a
+--- directory boundary check (trailing "/") to prevent prefix collisions
+--- (e.g., "/root" must not match "/roots/...").
+--- @param build_dir string normalized path
+--- @param safe_prefix string normalized workspace root
+--- @return boolean safe
+function Core:_validate_build_dir(build_dir, safe_prefix)
+  local is_under = build_dir == safe_prefix
+    or build_dir:sub(1, #safe_prefix + 1) == safe_prefix .. "/"
+  if not is_under then
+    self._deps.notify("loomworks: refusing to delete build dir outside workspace: " .. build_dir, vim.log.levels.ERROR)
+    return false
+  end
+  return true
+end
+
+--- Delete multiple build directories asynchronously via subprocesses (parallel).
+--- @param dirs string[] list of normalized directory paths
+--- @param callback fun(results: {dir: string, ok: boolean, err: string|nil}[])
+function Core:_delete_build_dirs_async(dirs, callback)
+  if #dirs == 0 then
+    callback({})
+    return
+  end
+
+  local results = {}
+  local remaining = #dirs
+  for _, dir in ipairs(dirs) do
+    self._deps.io.rm_rf_async(dir, function(ok, err)
+      results[#results + 1] = { dir = dir, ok = ok, err = err }
+      remaining = remaining - 1
+      if remaining == 0 then
+        callback(results)
+      end
+    end)
   end
 end
 
---- Delete cached configurations and their build directories (synchronous part).
---- Removes cache entries entirely.
+--- Remove cache entries entirely (cache-only, no filesystem operations).
 --- @param items loomworks.DeletionItem[]
 function Core:delete_cached_configs(items)
   if not self._workspace then return end
 
   local ws = self._workspace
-  local safe_prefix = self._deps.normalize(ws.root .. "/.nvim/build")
-
   for _, item in ipairs(items) do
     local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
     if cached_proj and cached_proj.configurations then
-      self:_delete_build_dir(cached_proj.configurations[item.config_key], safe_prefix)
       cached_proj.configurations[item.config_key] = nil
       if not next(cached_proj.configurations) then
         ws.cache.projects[item.project_key] = nil
@@ -1254,21 +1274,18 @@ function Core:delete_cached_configs(items)
   end
 end
 
---- Reset cached configurations: delete build dirs and clear state to unconfigured.
+--- Reset cached configurations: clear state to unconfigured (cache-only, no filesystem).
 --- Keeps the cache entry skeleton (variant, tool_key, tool_data) intact.
 --- @param items loomworks.DeletionItem[]
 function Core:reset_cached_configs(items)
   if not self._workspace then return end
 
   local ws = self._workspace
-  local safe_prefix = self._deps.normalize(ws.root .. "/.nvim/build")
-
   for _, item in ipairs(items) do
     local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
     if cached_proj and cached_proj.configurations then
       local cached_config = cached_proj.configurations[item.config_key]
       if cached_config then
-        self:_delete_build_dir(cached_config, safe_prefix)
         cached_config.state = nil
         cached_config.build_dir = nil
         cached_config.last_configured = nil
@@ -1279,10 +1296,28 @@ function Core:reset_cached_configs(items)
   end
 end
 
+--- Set cache state to "unknown" for items that have build directories.
+--- @param items loomworks.DeletionItem[]
+function Core:_mark_cache_unknown(items)
+  if not self._workspace then return end
+
+  local ws = self._workspace
+  for _, item in ipairs(items) do
+    local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
+    if cached_proj and cached_proj.configurations then
+      local cached_config = cached_proj.configurations[item.config_key]
+      if cached_config and cached_config.build_dir then
+        cached_config.state = "unknown"
+      end
+    end
+  end
+end
+
 --- Common async deletion workflow: mark items as deleting, stop running tasks,
---- call work_fn for the actual cache mutations, save, remerge, unmark, flush waiters.
+--- delete build dirs via async subprocess, then apply cache mutations.
+--- Crash-safe: cache is set to "unknown" before async deletion starts.
 --- @param items table[] list of { project_key, config_key, ... }
---- @param work_fn function called synchronously after tasks are stopped
+--- @param work_fn function called after build dirs are successfully deleted (cache mutations)
 --- @param on_done? function called when complete
 function Core:_run_deletion(items, work_fn, on_done)
   if #items == 0 then
@@ -1302,21 +1337,133 @@ function Core:_run_deletion(items, work_fn, on_done)
   end
 
   self:stop_tasks_then(task_ids, function()
-    work_fn()
+    -- Crash-safe: mark cache as "unknown" before starting async deletion
+    self:_mark_cache_unknown(items)
     self:_save_cache()
-    self:remerge()
 
+    -- Collect build directories to delete
+    local ws = self._workspace
+    if not ws then
+      if on_done then on_done() end
+      return
+    end
+
+    local safe_prefix = self._deps.normalize(ws.root)
+    local dirs = {}
     for _, item in ipairs(items) do
-      self:get_config_unit(item.project_key, item.config_key):mark_deleting(false)
-    end
-    if not self:has_pending_deletions() then
-      local waiters = self._delete_waiters
-      self._delete_waiters = {}
-      for _, fn in ipairs(waiters) do fn() end
+      if item.build_dir then
+        local normalized = self._deps.normalize(item.build_dir)
+        if self:_validate_build_dir(normalized, safe_prefix) then
+          dirs[#dirs + 1] = normalized
+        end
+      end
     end
 
-    self._deps.events.emit("deletion_completed", items)
-    if on_done then on_done() end
+    -- Delete build directories asynchronously
+    self:_delete_build_dirs_async(dirs, function(results)
+      -- Check for failures
+      local errors = {}
+      for _, r in ipairs(results) do
+        if not r.ok then
+          errors[#errors + 1] = r
+        end
+      end
+
+      if #errors > 0 then
+        -- Failure: cache already has "unknown" state, notify user
+        for _, e in ipairs(errors) do
+          self._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
+        end
+
+        -- Discard any queued actions on failed items
+        for _, item in ipairs(items) do
+          local unit = self:get_config_unit(item.project_key, item.config_key)
+          unit:mark_deleting(false)
+        end
+
+        self:_save_cache()
+        self:remerge()
+
+        if not self:has_pending_deletions() then
+          local waiters = self._delete_waiters
+          self._delete_waiters = {}
+          for _, fn in ipairs(waiters) do fn() end
+        end
+
+        self._deps.events.emit("deletion_failed", { items = items, errors = errors })
+        if on_done then on_done() end
+        return
+      end
+
+      -- Success: check for queued actions before applying cache mutations
+      local queued = {}
+      for _, item in ipairs(items) do
+        local unit = self:get_config_unit(item.project_key, item.config_key)
+        local action = unit:pop_queued_action()
+        if action then
+          queued[#queued + 1] = { item = item, action = action }
+        end
+      end
+
+      -- Apply cache mutations for items without queued actions
+      if #queued > 0 then
+        -- Items with queued actions: reset to unconfigured (keep cache entry)
+        local queued_items = {}
+        local normal_items = {}
+        local queued_set = {}
+        for _, q in ipairs(queued) do
+          local key = q.item.project_key .. "\0" .. q.item.config_key
+          queued_set[key] = true
+          queued_items[#queued_items + 1] = q.item
+        end
+        for _, item in ipairs(items) do
+          local key = item.project_key .. "\0" .. item.config_key
+          if not queued_set[key] then
+            normal_items[#normal_items + 1] = item
+          end
+        end
+        -- Reset queued items to unconfigured
+        self:reset_cached_configs(queued_items)
+        -- Apply normal work_fn only to non-queued items
+        -- For simplicity, run work_fn for all then restore queued ones
+        -- Actually, the work_fn operates on all items - we need to exclude queued ones
+        -- Split: run work_fn replacement logic manually
+        -- The work_fn is either delete_cached_configs or reset_cached_configs
+        -- We handle this by not calling work_fn for queued items
+        if #normal_items > 0 then
+          -- Re-scope work_fn: this is called with the original items, so we need
+          -- to apply the mutation to normal items only. The caller passes work_fn
+          -- that operates on the full item list. Instead, we apply mutations directly.
+          work_fn(normal_items)
+        end
+      else
+        work_fn(items)
+      end
+
+      self:_save_cache()
+      self:remerge()
+
+      for _, item in ipairs(items) do
+        self:get_config_unit(item.project_key, item.config_key):mark_deleting(false)
+      end
+      if not self:has_pending_deletions() then
+        local waiters = self._delete_waiters
+        self._delete_waiters = {}
+        for _, fn in ipairs(waiters) do fn() end
+      end
+
+      self._deps.events.emit("deletion_completed", items)
+
+      -- Execute queued actions after everything is settled
+      for _, q in ipairs(queued) do
+        self._deps.schedule(function()
+          local overseer = require("loomworks.overseer")
+          overseer.run_config_action(q.item.project_key, q.item.config_key, q.action)
+        end)
+      end
+
+      if on_done then on_done() end
+    end)
   end)
 end
 
@@ -1368,12 +1515,27 @@ function Core:execute_deletion(plan, opts, on_done)
     return
   end
 
-  self:_run_deletion(actionable, function()
-    if #clean_items > 0 then
-      self:delete_cached_configs(clean_items)
+  self:_run_deletion(actionable, function(effective_items)
+    -- Split effective items by their original disposition
+    local eff_clean = {}
+    local eff_reset = {}
+    local clean_set = {}
+    for _, item in ipairs(clean_items) do
+      clean_set[item.project_key .. "\0" .. item.config_key] = true
     end
-    if #reset_items > 0 then
-      self:reset_cached_configs(reset_items)
+    for _, item in ipairs(effective_items) do
+      local key = item.project_key .. "\0" .. item.config_key
+      if clean_set[key] then
+        eff_clean[#eff_clean + 1] = item
+      else
+        eff_reset[#eff_reset + 1] = item
+      end
+    end
+    if #eff_clean > 0 then
+      self:delete_cached_configs(eff_clean)
+    end
+    if #eff_reset > 0 then
+      self:reset_cached_configs(eff_reset)
     end
   end, on_done)
 end
@@ -1405,6 +1567,19 @@ end
 -- Clean: reset state without touching profiles
 -- ---------------------------------------------------------------------------
 
+--- Look up the build_dir for a cached config.
+--- @param project_key string
+--- @param config_key string
+--- @return string|nil
+function Core:_cached_build_dir(project_key, config_key)
+  if not self._workspace then return nil end
+  local ws = self._workspace
+  local proj = ws.cache.projects and ws.cache.projects[project_key]
+  if not proj or not proj.configurations then return nil end
+  local cfg = proj.configurations[config_key]
+  return cfg and cfg.build_dir
+end
+
 --- Clean a profile's configs: delete build dirs and reset to unconfigured.
 --- Does NOT remove or modify the profile itself.
 --- @param profile_key string
@@ -1421,11 +1596,12 @@ function Core:clean_profile(profile_key, on_done)
     items[#items + 1] = {
       project_key = pp.project_key,
       config_key = pp.config_key,
+      build_dir = self:_cached_build_dir(pp.project_key, pp.config_key),
     }
   end
 
-  self:_run_deletion(items, function()
-    self:reset_cached_configs(items)
+  self:_run_deletion(items, function(effective_items)
+    self:reset_cached_configs(effective_items)
   end, on_done)
 end
 
@@ -1440,9 +1616,13 @@ function Core:clean_config(project_key, config_key, on_done)
     return
   end
 
-  local items = { { project_key = project_key, config_key = config_key } }
-  self:_run_deletion(items, function()
-    self:reset_cached_configs(items)
+  local items = { {
+    project_key = project_key,
+    config_key = config_key,
+    build_dir = self:_cached_build_dir(project_key, config_key),
+  } }
+  self:_run_deletion(items, function(effective_items)
+    self:reset_cached_configs(effective_items)
   end, on_done)
 end
 

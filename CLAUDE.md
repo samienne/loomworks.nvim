@@ -103,6 +103,27 @@ which auto-loads every subdirectory of `C:/src/nvim-plugins` as a lazy.nvim dev 
 
 See specification.md sections 1.1–1.7 for full definitions.
 
+## Deletion Safety (mandatory review)
+
+Any change that touches deletion logic (rm_rf, rm_rf_async, _run_deletion,
+_validate_build_dir, delete_cached_configs, reset_cached_configs,
+execute_deletion, clean_*, delete_*, nuke_cache) **must** be reviewed for
+directory safety before merging:
+
+1. **Boundary check**: path prefix comparisons must include a trailing `/`
+   separator to prevent prefix collisions (`/root` must not match
+   `/roots/...`). Use the pattern: `path == prefix or path:sub(1, #prefix + 1) == prefix .. "/"`
+2. **Nil/empty paths**: build_dir can be nil — always check before passing
+   to deletion functions.
+3. **Cache as source of dirs**: build directories come from
+   `loomworks.cache.json` which could be corrupted. Never trust cache paths
+   without validation.
+4. **Crash safety**: cache must reflect "unknown" state before async
+   deletion starts. Cache entries are only removed after confirmed success.
+5. **Two safety scopes**: `_validate_build_dir` checks against workspace
+   root (build dirs can be anywhere under it). `_safe_nvim_path` checks
+   against `root/.nvim/` (used by nuke_cache only).
+
 ## Implementation Notes
 
 These are implementation-specific details not covered by the spec or architecture:

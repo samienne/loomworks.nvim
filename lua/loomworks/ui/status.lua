@@ -97,6 +97,7 @@ local view = View.new({
     "task_progress",
     "deletion_started",
     "deletion_completed",
+    "deletion_failed",
     "active_set_changed",
     "operation_started",
     "operation_finished",
