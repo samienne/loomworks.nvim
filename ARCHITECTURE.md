@@ -83,6 +83,81 @@ system does (data model, state machines, UI behavior, invariants), see
 
 ---
 
+## Design Principles
+
+These principles guide all development decisions. When in doubt, choose the
+simpler option.
+
+1. **Simplicity over abstraction.** Prefer one class with differentiating
+   properties over multiple classes. Example: there is one Profile class —
+   set-based vs pinned profiles differ by `configuration_set` being non-nil
+   or nil, not by type hierarchy. If two concepts have 80% overlap, make
+   them one thing with a flag rather than two separate implementations.
+
+2. **No duplicate functionality.** Before adding a new function, method, or
+   concept, check if an existing one can be extended. Audit for overlap —
+   if two methods do similar things, combine them or make one call the
+   other. This applies at every level: API functions, internal helpers,
+   data model concepts, UI sections.
+
+3. **API over data model.** Consumers (integrations, UI, external plugins)
+   use `require("loomworks")` public API. They never reach into raw
+   workspace, cache, or config data directly. The public API is the
+   contract; internal data shapes can change freely.
+
+4. **Single source of truth.** Each piece of state lives in exactly one
+   place. Runtime state (running, deleting, progress) → ConfigUnit.
+   Persistent build state → cache.json. Intent → loomworks.json. User
+   choices → user.json. If you find the same information stored in two
+   places, eliminate one.
+
+5. **Constructor injection for testability.** Core uses `Core.new(deps)`
+   with a default dependency table that tests can selectively override.
+   All external dependencies (I/O, vim APIs, time, scheduling) go through
+   the deps table — never call `vim.fn`, `vim.uv`, or `os.date` directly
+   from core.lua. This makes every behavior testable without mocking
+   globals.
+
+   ```lua
+   local DEFAULT_DEPS = {
+     workspace = require("loomworks.workspace"),
+     merge     = require("loomworks.merge"),
+     events    = require("loomworks.events"),
+     user      = require("loomworks.user"),
+     cache     = require("loomworks.cache"),
+     config    = require("loomworks.config"),
+     io        = require("loomworks.io"),
+     modules   = require("loomworks.modules"),
+     FileTracker = require("loomworks.file_tracker"),
+     notify    = vim.notify,
+     now       = function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end,
+     clock     = function() return vim.uv.hrtime() / 1e9 end,
+     normalize = vim.fs.normalize,
+     schedule  = vim.schedule,
+     get_overseer_task = function(task_id) ... end,
+     buf_name  = function(bufnr) ... end,
+   }
+   ```
+
+   Tests override only what they need:
+
+   ```lua
+   local core = Core.new({
+     io = mock_io,
+     modules = mock_modules,
+     notify = function() end,
+     schedule = function(fn) fn() end,
+   })
+   ```
+
+6. **Pure where possible.** Functions that don't need state should not have
+   state. merge.lua is pure (data in, data out). workspace.lua is pure.
+   Modules are stateless — they receive paths and config, return results.
+   Only core.lua is stateful, and it is the single owner of all mutable
+   state.
+
+---
+
 ## Layers and Dependency Rules
 
 The codebase has five layers. Dependencies flow **downward only** — a layer
@@ -315,25 +390,30 @@ changes on a ConfigUnit are immediately visible to all consumers.
 
 ---
 
-## Testing Approach
+## Testing
 
-### Dependency Injection
+### Running Tests
 
-`Core.new(deps)` accepts an override table. Tests replace individual
-dependencies to isolate behavior:
+Tests use [plenary.nvim](https://github.com/nvim-lua/plenary.nvim) with
+busted-style assertions. A Makefile provides shortcuts:
 
-```lua
-local core = Core.new({
-  io = mock_io,           -- control file reads/writes
-  modules = mock_modules, -- return canned info/tasks
-  notify = function() end,  -- suppress notifications
-  schedule = function(fn) fn() end,  -- run synchronously
-  now = function() return "2026-01-01T00:00:00Z" end,
-  clock = function() return 0 end,
-})
+```bash
+make test                                    # run all tests
+make test-file FILE=tests/core_spec.lua      # run a single test file
 ```
 
+Or directly:
+
+```bash
+nvim --headless -u tests/minimal_init.lua \
+  -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
+```
+
+`tests/minimal_init.lua` bootstraps plenary and sets up the Lua path.
+
 ### Test Patterns
+
+Tests use the constructor injection pattern described in Design Principles §5.
 
 - **Unit tests** feed raw JSON strings to `core:setup()` via mock io, then
   assert on the resulting state (profiles, projects, active set).

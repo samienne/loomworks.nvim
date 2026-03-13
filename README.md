@@ -1,7 +1,7 @@
 # loomworks.nvim
 
 Workspace management for Neovim. Provides project structure, build
-configurations, and compiler kits to other plugins (LSP, overseer, DAP).
+configurations, and toolchains to other plugins (LSP, overseer, DAP).
 
 **Assistive, not authoritative** — loomworks reads your existing project files
 (CMakeLists.txt, CMakePresets.json, etc.) and helps coordinate them. It never
@@ -18,20 +18,27 @@ typescript modules are shims.
   from a single `loomworks.json`
 - **CMake preset support** — reads `CMakePresets.json` and
   `CMakeUserPresets.json` with full inheritance
-- **Automatic kit detection** — finds MSVC (via vswhere), GCC, and Clang
-  compilers; generates profile combinations
-- **Configuration sets** — group build variants across projects (e.g. "debug"
+- **Automatic tool detection** — finds MSVC (via vswhere), GCC, and Clang
+  compilers; generates profile combinations with Ninja/Visual Studio generators
+- **Configuration sets** — group build variants across projects (e.g. "Debug"
   maps ProjectA to Debug and ProjectB to development)
+- **Profiles** — fully resolved buildable units combining a configuration set
+  with a toolchain. Activate, build, and manage profiles from the status page
 - **Overseer integration** — auto-generates configure and build tasks, tracks
-  completion, records state
+  completion, records state to cache
+- **clangd integration** — auto-injects `--compile-commands-dir` and restarts
+  clangd when switching profiles
+- **Lualine component** — winbar showing active profile/project/configuration
 - **Live file watching** — reloads automatically when config files change
 - **Status page** — `:LoomworksInfo` shows workspace state with folding, status
-  icons, and spinner animations for running tasks
+  icons, spinner animations, and build progress
 
 ## Requirements
 
 - Neovim >= 0.9
 - [overseer.nvim](https://github.com/stevearc/overseer.nvim) (for task running)
+- Optional: [fidget.nvim](https://github.com/j-hui/fidget.nvim) (for progress
+  notifications outside the status page)
 
 ## Setup
 
@@ -63,8 +70,8 @@ Create a `loomworks.json` at your workspace root:
     "Frontend": { "typescript": {} }
   },
   "configuration_sets": {
-    "debug":   { "MyApp": "Debug",   "MyLib": "Debug",   "Frontend": "development" },
-    "release": { "MyApp": "Release", "MyLib": "Release", "Frontend": "production" }
+    "Debug":   { "MyApp": "Debug",   "MyLib": "Debug",   "Frontend": "development" },
+    "Release": { "MyApp": "Release", "MyLib": "Release", "Frontend": "production" }
   }
 }
 ```
@@ -126,14 +133,28 @@ Map configuration names across projects:
 ```json
 {
   "configuration_sets": {
-    "debug":   { "ProjectA": "Debug",   "ProjectB": "development" },
-    "release": { "ProjectA": "Release", "ProjectB": "production" }
+    "Debug":   { "ProjectA": "Debug",   "ProjectB": "development" },
+    "Release": { "ProjectA": "Release", "ProjectB": "production" }
   }
 }
 ```
 
-When combined with detected cmake kits, profiles are auto-generated:
-`debug:ninja-gcc-14.2.0`, `debug:msvc-17-2022-enterprise`, etc.
+When combined with detected cmake tools, profiles are auto-generated:
+`Debug:ninja-gcc-14.2.0`, `Debug:msvc-17-2022-enterprise`, etc.
+
+## Concepts
+
+**Configuration set** — a cross-project mapping declared in `loomworks.json`.
+Says "Debug means Debug for MyApp and development for Frontend."
+
+**Profile** — a fully resolved buildable unit: configuration set + toolchain
+selection. For example, `Debug:ninja-gcc-14.2.0` pairs the "Debug"
+configuration set with the Ninja generator and GCC 14.2 compiler. Profiles
+are what you activate, build, and delete.
+
+**Tool** — a module-specific toolchain choice. For cmake this means a
+generator + compiler combination (e.g., Ninja + GCC 14.2). Detected
+automatically from your system.
 
 ## Commands
 
@@ -142,6 +163,102 @@ When combined with detected cmake kits, profiles are auto-generated:
 | `:LoomworksInit [path]` | Initialize workspace from directory (default: cwd) |
 | `:LoomworksInfo` | Open workspace status page |
 
+## Status Page
+
+`:LoomworksInfo` opens a status page with the following sections:
+
+1. **Header** — plugin version, workspace name, root path
+2. **Profiles** — all materialized profiles with build status
+3. **Orphaned Configurations** — cached configs no longer referenced by any
+   profile (hidden when empty; common after switching git branches)
+4. **Configuration Sets** — declared sets with available tool entries
+5. **Projects** — all projects with their configurations and build state
+
+### Keybindings
+
+| Key | Action |
+|---|---|
+| `<Tab>` | Toggle fold on the current node |
+| `<CR>` | Activate profile (materializes if needed) |
+| `b` | Build profile or configuration |
+| `c` | Configure (cmake configure) |
+| `p` | Pin a configuration as a standalone profile |
+| `R` | Clean + rebuild (destructive) |
+| `C` | Clean — reset to unconfigured, delete build dir (destructive) |
+| `D` | Delete profile or configuration (destructive, with confirmation) |
+| `L` | Load workspace from cwd / rescan tools |
+| `<C-n>` | Reset workspace: delete `.nvim/build/` + cache, reload (destructive) |
+| `?` | Show help dialog |
+| `q` | Close the status page |
+
+Actions walk upward from the cursor to find the nearest actionable node.
+Pressing `b` on a detail line triggers the build action of the parent
+profile or configuration.
+
+## clangd Integration
+
+loomworks can automatically configure clangd with the correct
+`compile_commands.json` directory for each project.
+
+In your lspconfig setup:
+
+```lua
+local lsp = require("loomworks.lsp")
+
+require("lspconfig").clangd.setup({
+  cmd = lsp.clangd_cmd({ "clangd", "--background-index", "-j=12" }),
+  root_dir = lsp.clangd_root_dir(),
+})
+```
+
+- `clangd_cmd()` injects `--compile-commands-dir` based on the active
+  profile's build directory. Also overrides the clangd binary if a
+  project-specific one is configured.
+- `clangd_root_dir()` scopes clangd to the correct project directory within
+  the workspace.
+- clangd is automatically restarted when switching profiles if the
+  compile_commands_dir or binary has changed.
+
+## Lualine Component
+
+Show the active profile context in your winbar or statusline:
+
+```lua
+require("lualine").setup({
+  winbar = {
+    lualine_c = {
+      { "loomworks" },
+    },
+  },
+})
+```
+
+Default display: `Debug > MyApp/Debug [ninja-gcc-14.2.0]`
+
+Customize which parts to show:
+
+```lua
+{ "loomworks", show = { "project", "configuration" } }
+```
+
+Available fields: `set_name`, `project`, `configuration`, `tool_key`,
+`profile_key`, `status`.
+
+## Workspace File Layout
+
+```
+workspace-root/
+├── loomworks.json               Commit or gitignore, your choice
+└── .nvim/
+    ├── loomworks.user.json      Always gitignored (active profile)
+    ├── loomworks.cache.json     Always gitignored (build state)
+    └── build/
+        ├── ProjectA/
+        │   ├── Debug/
+        │   └── Release/
+        └── ProjectB/
+```
+
 ## API
 
 ```lua
@@ -149,43 +266,38 @@ local lw = require("loomworks")
 
 -- Workspace
 lw.setup({ root = "/path/to/workspace" })
-lw.get_workspace()                          -- full Workspace data
+lw.get_workspace()                          -- Workspace data
 lw.get_active_configuration_set()           -- merged ActiveSet
 
 -- Profiles
 lw.get_profiles()                           -- all Profile objects
-lw.get_profile("debug:ninja-gcc-14.2.0")   -- single Profile
-lw.activate_profile("debug:ninja-gcc-14.2.0")
-lw.activate_set("debug")                   -- keep current kit, switch set
+lw.get_profile("Debug:ninja-gcc-14.2.0")   -- single Profile
+lw.activate_profile("Debug:ninja-gcc-14.2.0")
+lw.activate_set("Debug")                   -- keep current tool, switch set
 
 -- Projects
 lw.get_projects()                           -- all Project objects
 lw.get_project("MyApp")                     -- single Project
 lw.project_for_buf(bufnr)                   -- find project for buffer
 
+-- Buffer status (for statusline/winbar)
+lw.buf_status(bufnr)                        -- { project, configuration, status, ... }
+
 -- Events
 lw.on("active_set_changed", function(active_set)
   -- React to profile switches, task completions, file changes
 end)
-
--- Task tracking
-lw.has_running_tasks()
-lw.get_running_action("MyApp", "Debug:ninja-gcc-14.2.0")
-
--- Deletion
-lw.delete_profile("debug:ninja-gcc-14.2.0", function() end)
-lw.delete_config("MyApp", "Debug:ninja-gcc-14.2.0", function() end)
 ```
 
 ### Profile object
 
 ```lua
-local profile = lw.get_profile("debug:ninja-gcc-14.2.0")
+local profile = lw.get_profile("Debug:ninja-gcc-14.2.0")
 
-profile.key                   -- "debug:ninja-gcc-14.2.0"
-profile.configuration_set     -- "debug"
-profile.kit_id                -- "ninja-gcc-14.2.0"
-profile.kit                   -- { generator = "Ninja", ... }
+profile.key                   -- "Debug:ninja-gcc-14.2.0"
+profile.configuration_set     -- "Debug"
+profile.tool_key              -- "ninja-gcc-14.2.0"
+profile.tool_label            -- "Ninja + GCC 14.2.0"
 profile.mappings              -- { MyApp = "Debug", MyLib = "Debug" }
 
 profile:status()              -- "built", "DiagnosticOk" (label + highlight)
@@ -193,6 +305,8 @@ profile:is_configured()       -- true if any cached entries exist
 profile:is_running()          -- true if any tasks running
 profile:projects()            -- ProfileProject[] sorted by key
 profile:activate()
+profile:build()
+profile:configure()
 profile:delete(on_done)
 ```
 
@@ -203,59 +317,38 @@ local proj = lw.get_project("MyApp")
 
 proj.key                      -- "MyApp"
 proj.type                     -- "cmake"
-proj.configuration            -- "Debug"
+proj.configuration            -- "Debug" (from active profile)
+proj.configuration_key        -- "Debug:ninja-gcc-14.2.0"
 proj.status                   -- "built"
+proj.orphaned                 -- false
 proj.configurations           -- { Debug = {...}, Release = {...} }
 
 proj:running_action()         -- "configure" | "build" | nil
-proj:cached_config("Debug")   -- CachedConfig from cache.json
 proj:is_stale()               -- true if Core has remerged since creation
-proj:to_module_context(root)  -- table for module.tasks()
 ```
-
-## File Layout
-
-```
-workspace-root/
-+-- loomworks.json               Commit or gitignore, your choice
-+-- .nvim/
-    +-- loomworks.user.json      Always gitignored (user preferences)
-    +-- loomworks.cache.json     Always gitignored (build state)
-    +-- build/
-        +-- ProjectA/
-        |   +-- Debug/
-        |   +-- Release/
-        +-- ProjectB/
-```
-
-## Events
-
-| Event | Data | When |
-|---|---|---|
-| `workspace_changed` | Workspace | Initial load or config file change |
-| `active_set_changed` | ActiveSet | Any remerge (profile switch, build, file change) |
-| `task_started` | info | Overseer task begins |
-| `task_stopped` | info | Overseer task ends |
-| `task_result` | TaskResult | Build result recorded to cache |
-| `deletion_started` | items[] | Cache/build deletion begins |
-| `deletion_completed` | items[] | Deletion finishes |
 
 ## Build States
 
-Projects track build state per configuration:
+Each configuration tracks its build state:
 
-- `unconfigured` — never configured
-- `configured` — cmake configure succeeded
-- `built` — build succeeded
-- `failed_configure` — configure attempted and failed
-- `failed_build` — build attempted and failed
+| State | Meaning |
+|---|---|
+| `unconfigured` | Never configured |
+| `configured` | Configure succeeded, not yet built |
+| `built` | Build succeeded |
+| `configure_failed` | Configure attempted and failed |
+| `build_failed` | Build attempted and failed |
 
 Orthogonal flags: `needs_refresh` (project files changed since last configure),
-`orphaned` (in cache but removed from loomworks.json).
+`orphaned` (project in cache but removed from loomworks.json).
+
+Failed states are never auto-cleaned — only explicit user action (`C` or `D`)
+removes them.
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation architecture and
+[specification.md](specification.md) for the full behavioral specification.
 
 ## License
 

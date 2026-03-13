@@ -3,7 +3,7 @@
 This document is the authoritative behavioral specification for loomworks.nvim.
 It defines *what* the system does — data model, state machines, UI behavior,
 and invariants — not how it is implemented. The implementation (code) and
-architecture (CLAUDE.md) must conform to this specification.
+architecture (ARCHITECTURE.md) must conform to this specification.
 
 ---
 
@@ -143,6 +143,81 @@ profiles may reference the same ConfigUnit; state changes are visible to all.
 
 ConfigUnits are created lazily (flyweight pattern) and shared across the
 entire system. They are never destroyed during a session.
+
+### 1.8 loomworks.json Schema
+
+```json
+{
+  "name": "MyWorkspace",
+  "projects": {
+    "App": {
+      "path": "packages/app",
+      "cmake": {
+        "configurations": {
+          "Debug": {},
+          "Release": {},
+          "ohos-debug": {
+            "toolchain": "${OHOS_NDK_HOME}/cmake/ohos.toolchain.cmake"
+          }
+        },
+        "compile_commands_from": "ninja-debug",
+        "clangd": "${OHOS_NDK_HOME}/llvm/bin/clangd"
+      }
+    },
+    "Frontend": { "typescript": {} },
+    "NativeDemo": { "ets": {} }
+  },
+  "configuration_sets": {
+    "Debug":   { "App": "Debug",   "Frontend": "development", "NativeDemo": "debug" },
+    "Release": { "App": "Release", "Frontend": "production",  "NativeDemo": "release" }
+  },
+  "profiles": {
+    "cross-ohos": {
+      "configuration_set": "Debug",
+      "kit_id": "ninja-ohos-clang"
+    }
+  }
+}
+```
+
+**Top-level fields**:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | No | Workspace display name (defaults to root dir name) |
+| `projects` | Yes | Dict of project_key → project definition |
+| `configuration_sets` | No | Dict of set_name → { project_key → variant } |
+| `profiles` | No | Dict of profile_key → explicit profile definition |
+
+**Project definition fields**:
+
+| Field | Description |
+|-------|-------------|
+| `path` | Relative path from workspace root (defaults to project key) |
+| `depends_on` | Reserved for future cross-project dependencies (ignored in v1) |
+| `<type>` | Inner key determines project type; value is the type-specific config |
+
+The type key (`cmake`, `ets`, `typescript`) is the only required field. Its
+value is a table passed to the module as `type_config`.
+
+**CMake type_config fields**:
+
+| Field | Description |
+|-------|-------------|
+| `configurations` | Dict of config_name → config overrides |
+| `compile_commands_from` | Name of another configuration to source compile_commands.json from |
+| `clangd` | Path to project-specific clangd binary (`${ENV_VAR}` expanded) |
+
+Configuration overrides may include:
+- `toolchain`: path to CMake toolchain file (`${ENV_VAR}` expanded, no absolute paths)
+- `role`: `"compile_commands"` hides the configuration from UI
+
+**Explicit profile fields**:
+
+| Field | Description |
+|-------|-------------|
+| `configuration_set` | Name of a configuration set to derive mappings from |
+| `kit_id` | Tool key to use (e.g., `"ninja-ohos-clang"`) |
 
 ---
 
@@ -891,9 +966,109 @@ conditions.
 
 ---
 
-## 9. LSP Integration
+## 9. Module Interface
 
-### 9.1 clangd cmd factory
+A module is a handler for a project type. Modules implement a standard
+interface that the core system calls for project discovery, task generation,
+and staleness detection.
+
+### 9.1 Required methods
+
+**`validate(path, config) → { valid, warnings[] }`**
+
+Check whether the project directory is valid for this module type. `path` is
+the absolute project directory. `config` is the type_config from
+`loomworks.json` (the value of the `"cmake": {}` key).
+
+- Return `{ valid = false, warnings = {...} }` to reject
+- Return `{ valid = true, warnings = {...} }` with non-fatal warnings
+
+**`info(path, config) → { configurations, targets? }`**
+
+Return what the module knows about the project from its own files. Called
+during merge to discover available configurations.
+
+- `configurations`: dict of config_name → config info (generator, binary_dir,
+  toolchain_locked, toolchain)
+- `targets`: optional, only present after configure (e.g., cmake File API data)
+
+**`tasks(project, active_config) → task_def[]`**
+
+Return overseer task definitions for a project in a given configuration.
+`project` is a `ModuleContext` table with: `name`, `path`, `workspace_root`,
+`configurations`, `tool_data`, `configuration_key`, `env`.
+
+Each task_def has:
+- `name`: display name
+- `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`)
+- `loomworks`: metadata — `project_key`, `action` ("configure"|"build"),
+  `configuration_key`, `build_dir`, optional `tool_data` and `cmake` info
+
+**`inspect(path, config, cached) → { needs_refresh, reasons[], notes[] }`**
+
+Compare current project files against cached state. Called when the config
+hash has changed (fast pre-filter). `cached` is the dict of config_key →
+cached config data for this project.
+
+- `needs_refresh = true` + `reasons[]` for significant changes
+- `notes[]` for informational observations
+- Return `{ needs_refresh = false }` when no meaningful change detected
+
+**`detect_tools() → tool_entry[]`**
+
+Return available tools for this module type. Each entry has:
+- `tool_data`: opaque table of tool properties (stored in cache)
+- Additional fields added by core: `tool_key`, `tool_label`
+
+Non-keyed modules (ets, typescript) return a single entry with empty
+`tool_data`.
+
+### 9.2 Tool identity methods
+
+These methods define how tools are compared and displayed:
+
+**`tool_key(tool_data) → string|nil`**
+
+Return the cache key suffix for a tool. `nil` means no suffix (non-keyed
+module — tool does not affect cache key).
+
+**`tool_label(tool_data) → string|nil`**
+
+Return a human-readable label for the tool. `nil` means omit from display
+(single-tool module).
+
+**`tools_match(a, b) → boolean`**
+
+Return true if two tool_data tables represent the same tool. Used to match
+detected tools against cached tools.
+
+### 9.3 Optional methods
+
+**`progress_parser(project?, active_config?) → string|nil`**
+
+Return the name of a registered progress parser (e.g., `"ninja"`), or `nil`
+if the module has no progress tracking. Parameters are optional — modules
+may ignore them or use them to select a parser based on context.
+
+### 9.4 CMakePresets integration (cmake module)
+
+The cmake module reads `CMakePresets.json` + `CMakeUserPresets.json` with
+full preset inheritance:
+
+- Each non-hidden configure preset becomes a loomworks configuration
+- Preset's `binaryDir` is used as the build directory (wins over defaults)
+- Preset's `toolchainFile` / `CMAKE_TOOLCHAIN_FILE` maps to
+  `toolchain_locked = true`
+- Debug/Release/RelWithDebInfo are auto-generated **only if no presets exist
+  and no configurations are declared in loomworks.json**
+- Overrides in `loomworks.json` `configurations` block add to or override
+  preset-derived configurations
+
+---
+
+## 10. LSP Integration
+
+### 10.1 clangd cmd factory
 
 `loomworks.lsp.clangd_cmd(base_cmd)` returns a function suitable for
 lspconfig's `cmd` option. It resolves per-project:
@@ -905,14 +1080,14 @@ lspconfig's `cmd` option. It resolves per-project:
    `compile_commands_from` is set, uses that configuration's build dir
    instead.
 
-### 9.2 clangd root_dir factory
+### 10.2 clangd root_dir factory
 
 `loomworks.lsp.clangd_root_dir(fallback?)` returns a function for
 lspconfig's `root_dir`. For cmake projects, returns the project's absolute
 path (so clangd scopes to the right project). Falls back to provided
 function for non-cmake or when loomworks has no data.
 
-### 9.3 Automatic restarts
+### 10.3 Automatic restarts
 
 The LSP module restarts clangd clients when:
 - Workspace is first loaded
@@ -923,7 +1098,7 @@ Restarts are per-client and include notification of the reason.
 
 ---
 
-## 10. Winbar / Statusline Component
+## 11. Winbar / Statusline Component
 
 `lualine/components/loomworks.lua` provides a lualine component for
 winbar display.
@@ -946,9 +1121,9 @@ spaces.
 
 ---
 
-## 11. Overseer Integration
+## 12. Overseer Integration
 
-### 11.1 Task generation
+### 12.1 Task generation
 
 Modules provide task definitions via their `tasks()` function. Each task
 definition includes:
@@ -957,7 +1132,7 @@ definition includes:
 - `loomworks` — metadata: project_key, action, configuration_key, build_dir,
   tool_data, cmake info
 
-### 11.2 Task tracking component
+### 12.2 Task tracking component
 
 `loomworks.task_tracker` is an overseer component injected into every
 loomworks-spawned task. It:
@@ -967,7 +1142,7 @@ loomworks-spawned task. It:
 3. On completion: records the task result to cache, unregisters from
    ConfigUnit
 
-### 11.3 Task lifecycle
+### 12.3 Task lifecycle
 
 ```
 collect tasks → check readiness → launch/skip/defer → track → complete → record result
@@ -977,7 +1152,7 @@ All tasks wait for pending deletions before starting.
 
 ---
 
-## 12. Neovim Commands
+## 13. Neovim Commands
 
 | Command | Args | Description |
 |---------|------|-------------|
@@ -986,7 +1161,7 @@ All tasks wait for pending deletions before starting.
 
 ---
 
-## 13. Invariants
+## 14. Invariants
 
 1. **Cache is truth**: The cache reflects what exists on disk. It is never
    contradicted or overridden by config or user files.
