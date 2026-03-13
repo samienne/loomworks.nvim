@@ -47,16 +47,32 @@ loomworks.nvim is loaded as a standard Neovim plugin. With lazy.nvim:
 ```lua
 {
   "your-user/loomworks.nvim",
-  cmd = { "LoomworksInit", "LoomworksInfo" },
+  event = "VeryLazy",
 }
 ```
 
-Then initialize a workspace:
+By default, loomworks auto-loads when you open Neovim in (or `:cd` to) a
+directory containing `loomworks.json`. You can also initialize manually:
 
 ```vim
 :LoomworksInit
 :LoomworksInit /path/to/workspace
 ```
+
+### Auto-load options
+
+```lua
+require("loomworks").setup({
+  auto_load = "auto",  -- default: always load silently, notify via vim.notify
+})
+```
+
+| Value | Behavior |
+|-------|----------|
+| `"auto"` | Load silently when `loomworks.json` is found in cwd |
+| `"cached_only"` | Load silently only if the workspace has been used before |
+| `"prompt"` | Load cached workspaces silently, prompt for new ones |
+| `false` | Never auto-load, only manual `:LoomworksInit` |
 
 ## Configuration
 

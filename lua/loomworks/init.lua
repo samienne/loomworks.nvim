@@ -12,6 +12,10 @@ local events = require("loomworks.events")
 --- @type loomworks.Core
 local core = Core.new()
 
+--- Auto-load mode. Default: "auto".
+--- @type string|false
+local auto_load_mode = "auto"
+
 --- Access the underlying core instance (for advanced use / testing).
 --- @return loomworks.Core
 function M._core()
@@ -30,12 +34,22 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Initialize loomworks workspace.
---- @param opts? { root?: string }
+--- @param opts? { root?: string, auto_load?: string|false }
 function M.setup(opts)
+  if opts and opts.auto_load ~= nil then
+    auto_load_mode = opts.auto_load
+  end
+
   if not core:setup(opts) then return end
 
   -- Optional fidget.nvim integration for progress notifications
   require("loomworks.fidget").setup()
+end
+
+--- Get the current auto-load mode.
+--- @return string|false
+function M._auto_load_mode()
+  return auto_load_mode
 end
 
 --- Get the merged active configuration set.

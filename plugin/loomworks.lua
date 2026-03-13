@@ -29,3 +29,32 @@ vim.api.nvim_create_user_command("LoomworksInfo", function()
 end, {
   desc = "loomworks: show workspace status page",
 })
+
+-- Auto-load: check cwd on plugin load, directory changes, and session restore
+local auto_load = require("loomworks.auto_load")
+
+auto_load.check_cwd()
+
+local auto_load_group = vim.api.nvim_create_augroup("loomworks_auto_load", { clear = true })
+
+vim.api.nvim_create_autocmd("DirChanged", {
+  group = auto_load_group,
+  callback = function()
+    auto_load.check_cwd()
+  end,
+})
+
+vim.api.nvim_create_autocmd("SessionLoadPost", {
+  group = auto_load_group,
+  callback = function()
+    auto_load.check_cwd()
+  end,
+})
+
+vim.api.nvim_create_autocmd("User", {
+  group = auto_load_group,
+  pattern = "ResessionLoadPost",
+  callback = function()
+    auto_load.check_cwd()
+  end,
+})
