@@ -45,6 +45,9 @@ local function get_tool_display(tools_by_type, mod_type, tool_key)
 end
 
 --- Collect tool entries for a keyed-tool variant: cached entries + unconfigured detected tools.
+--- Uses case-insensitive matching for variants because configuration_set variant
+--- names may differ in case from module-detected configuration names (e.g. cmake
+--- presets use "Debug" but the configuration set may map to "debug").
 --- @param proj loomworks.Project
 --- @param variant string
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
@@ -52,12 +55,13 @@ end
 local function collect_tool_entries(proj, variant, tools_by_type)
   local entries = {}
   local seen_tool_keys = {}
+  local variant_lower = variant:lower()
 
-  -- 1. Cached entries for this variant
+  -- 1. Cached entries for this variant (case-insensitive match)
   if proj.cached_configurations then
     for config_key, cached_config in pairs(proj.cached_configurations) do
       local v, tk = merge.parse_profile_key(config_key)
-      if v == variant and tk then
+      if v and tk and v:lower() == variant_lower then
         entries[#entries + 1] = {
           config_key = config_key,
           tool_key = tk,
