@@ -157,7 +157,13 @@ simpler option.
    lightweight references (e.g., `{ "config_key": "Debug:ninja-gcc-12" }`)
    that point to the canonical data rather than duplicating it.
 
-7. **Pure where possible.** Functions that don't need state should not have
+7. **Methods over free functions.** If a function takes an object as its
+   first parameter and is clearly about that object, it should be a method
+   on the object rather than a standalone function elsewhere. Example:
+   `profile:status()` not `compute_profile_status(profile)`. This keeps
+   related behavior co-located and discoverable.
+
+8. **Pure where possible.** Functions that don't need state should not have
    state. merge.lua is pure (data in, data out). workspace.lua is pure.
    Modules are stateless — they receive paths and config, return results.
    Only core.lua is stateful, and it is the single owner of all mutable
