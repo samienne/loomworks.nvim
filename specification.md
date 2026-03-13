@@ -646,10 +646,11 @@ for progress reporting:
 The operation message is displayed in the Profiles section after the profile
 name.
 
-Deletion and clean operations use the same operation tracking. The action
-is `"delete"` or `"clean"`. Fidget shows a spinner with a message like
-"Deleting Debug:ninja-gcc-12" (no percentage — just a spinner). The status
-page shows the standard spinner animation for deleting configs.
+Deletion and clean operations use separate `deletion_started`,
+`deletion_completed`, and `deletion_failed` events (not operation tracking).
+Fidget shows a spinner with a message like "Deleting Debug:ninja-gcc-12"
+(no percentage — just a spinner). The status page shows the standard
+spinner animation for deleting configs.
 
 ### 5.4 Progress tracking
 
