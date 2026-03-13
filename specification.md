@@ -1181,7 +1181,68 @@ All tasks wait for pending deletions before starting.
 
 ---
 
-## 13. Neovim Commands
+## 13. Auto-load
+
+### 13.1 Configuration
+
+Auto-load is controlled by the `auto_load` setup option:
+
+```lua
+require("loomworks").setup({
+  auto_load = "auto",  -- default
+})
+```
+
+| Value | Behavior |
+|-------|----------|
+| `"auto"` | Always load silently when `loomworks.json` is found in cwd. Notify via `vim.notify`. |
+| `"cached_only"` | Load silently if cache exists (`.nvim/loomworks.cache.json`). For uncached workspaces, notify but do not load. |
+| `"prompt"` | Load silently if cache exists. For uncached workspaces, prompt the user for confirmation. |
+| `false` | Never auto-load. Only manual `:LoomworksInit`. |
+
+### 13.2 Triggers
+
+Auto-load runs on:
+1. **Plugin load** — checks cwd for `loomworks.json`
+2. **`DirChanged` event** — checks new cwd for `loomworks.json`
+
+Both check **cwd only** — no parent directory walking. Use `:LoomworksInit`
+for workspaces in parent or non-cwd directories.
+
+### 13.3 Behavior
+
+When a trigger fires:
+1. Check if `loomworks.json` exists in cwd (single `stat` call).
+2. If not found → no-op.
+3. If found and a workspace is already loaded at that root → no-op.
+4. If found and a **different** workspace is already loaded → prompt
+   "Switch workspace to {name}?" regardless of `auto_load` mode.
+5. If found and no workspace is loaded:
+   - `"auto"` → load and notify: "Loaded workspace: {name}"
+   - `"cached_only"` + cache exists → load and notify
+   - `"cached_only"` + no cache → notify: "Workspace found at {root}
+     (run :LoomworksInit to load)"
+   - `"prompt"` + cache exists → load and notify
+   - `"prompt"` + no cache → prompt: "loomworks.json found at {root},
+     load workspace? (y/n)"
+   - `false` → no-op
+
+### 13.4 Loading side effects
+
+Loading a workspace (whether via auto-load or `:LoomworksInit`) always:
+- Reads `loomworks.json`, `loomworks.cache.json`, `loomworks.user.json`
+- Creates `.nvim/loomworks.cache.json` if it does not exist
+- Emits `active_set_changed` event
+
+### 13.5 Limitations
+
+- **No file watching for `loomworks.json` creation**: If the file is created
+  after Neovim starts and no `:cd` occurs, use `:LoomworksInit` manually.
+- **No parent directory walking**: Auto-load only checks cwd, not parent
+  directories. Opening Neovim in `workspace/src/` will not find
+  `workspace/loomworks.json`. Use `:LoomworksInit` or `:cd` to the root.
+
+## 14. Neovim Commands
 
 | Command | Args | Description |
 |---------|------|-------------|
@@ -1190,7 +1251,7 @@ All tasks wait for pending deletions before starting.
 
 ---
 
-## 14. Invariants
+## 15. Invariants
 
 1. **Cache is truth**: The cache reflects what exists on disk. It is never
    contradicted or overridden by config or user files.
