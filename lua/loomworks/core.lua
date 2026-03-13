@@ -270,7 +270,7 @@ function Core:setup(opts)
   self._projects = {}
   self:_scan_tools()
   self:_migrate_set_names()
-  self:_adopt_orphaned_configs()
+  self:_cleanup_orphaned_skeletons()
   self:remerge()
   self._deps.events.emit("workspace_changed", ws)
 
@@ -706,16 +706,12 @@ function Core:_migrate_set_names()
   self:_save_cache()
 end
 
---- Adopt orphaned cached configs on init.
---- Configs in configured/built/failed state with no profile reference
---- get a pinned profile created. Unconfigured skeletons are silently dropped.
-function Core:_adopt_orphaned_configs()
+--- Build a set of all (project_key, config_key) pairs referenced by profiles.
+--- @return table<string, boolean> referenced set keyed by "project_key\0config_key"
+function Core:_build_referenced_set()
   local ws = self._workspace
-  if not ws or not ws.cache.projects then return end
-
-  -- Build a set of all (project_key, config_key) pairs referenced by profiles
   local referenced = {}
-  if ws.cache.profiles then
+  if ws and ws.cache.profiles then
     for _, profile in pairs(ws.cache.profiles) do
       if profile.projects then
         for pkey, pdata in pairs(profile.projects) do
@@ -726,9 +722,19 @@ function Core:_adopt_orphaned_configs()
       end
     end
   end
+  return referenced
+end
+
+--- Clean up unreferenced unconfigured skeletons on init.
+--- Configs with no state and no profile reference are silently dropped.
+--- Configs with state are left as orphaned (shown in UI).
+function Core:_cleanup_orphaned_skeletons()
+  local ws = self._workspace
+  if not ws or not ws.cache.projects then return end
+
+  local referenced = self:_build_referenced_set()
 
   local changed = false
-  ws.cache.profiles = ws.cache.profiles or {}
 
   for project_key, cached_proj in pairs(ws.cache.projects) do
     if cached_proj.configurations then
@@ -736,36 +742,7 @@ function Core:_adopt_orphaned_configs()
       for config_key, cached_config in pairs(cached_proj.configurations) do
         if not referenced[project_key .. "\0" .. config_key] then
           local state = cached_config.state
-          if state and state ~= "unconfigured" then
-            -- Adopt: create pinned profile
-            local ak = self._deps.merge.pinned_key(project_key, config_key)
-            local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
-
-            -- Resolve tool info from detected tools
-            local tool_data, tool_label, tool_mod_type = nil, nil, nil
-            if tool_key then
-              local dt, mt = self._deps.merge.resolve_detected_tool(
-                self._tools_by_type, tool_key)
-              if dt then
-                tool_data = dt.tool_data
-                tool_label = dt.tool_label
-                tool_mod_type = mt
-              end
-            end
-
-            ws.cache.profiles[ak] = {
-              mappings = { [project_key] = variant },
-              tool_key = tool_key,
-              tool_data = tool_data or cached_config.tool_data,
-              tool_label = tool_label,
-              tool_mod_type = tool_mod_type,
-              projects = {
-                [project_key] = { config_key = config_key },
-              },
-            }
-            changed = true
-          else
-            -- Drop: unconfigured skeleton
+          if not state or state == "unconfigured" then
             to_drop[#to_drop + 1] = config_key
             changed = true
           end
@@ -780,16 +757,64 @@ function Core:_adopt_orphaned_configs()
     end
   end
 
-  if not next(ws.cache.projects) then
+  if ws.cache.projects and not next(ws.cache.projects) then
     ws.cache.projects = nil
-  end
-  if ws.cache.profiles and not next(ws.cache.profiles) then
-    ws.cache.profiles = nil
   end
 
   if changed then
     self:_save_cache()
   end
+end
+
+--- Get orphaned cached configs: configs with state not referenced by any profile.
+--- @return loomworks.OrphanedConfig[]
+function Core:get_orphaned_configs()
+  local ws = self._workspace
+  if not ws or not ws.cache.projects then return {} end
+
+  local referenced = self:_build_referenced_set()
+
+  local result = {}
+  for project_key, cached_proj in pairs(ws.cache.projects) do
+    if cached_proj.configurations then
+      for config_key, cached_config in pairs(cached_proj.configurations) do
+        local state = cached_config.state
+        if state and state ~= "unconfigured"
+            and not referenced[project_key .. "\0" .. config_key] then
+          result[#result + 1] = {
+            project_key = project_key,
+            config_key = config_key,
+            cached = cached_config,
+          }
+        end
+      end
+    end
+  end
+
+  -- Sort for deterministic UI order
+  table.sort(result, function(a, b)
+    if a.project_key ~= b.project_key then return a.project_key < b.project_key end
+    return a.config_key < b.config_key
+  end)
+
+  return result
+end
+
+--- Delete an orphaned config: remove cache entry + build directory.
+--- @param project_key string
+--- @param config_key string
+--- @param on_done? function
+function Core:delete_orphaned_config(project_key, config_key, on_done)
+  local items = {
+    {
+      project_key = project_key,
+      config_key = config_key,
+      disposition = "clean",
+    },
+  }
+  self:_run_deletion(items, function()
+    self:delete_cached_configs(items)
+  end, on_done)
 end
 
 --- Materialize a single configuration: ensure cache has a skeleton entry.

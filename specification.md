@@ -126,7 +126,6 @@ Materialization happens when:
 - User presses `b` or `c` on a tool entry (build/configure)
 - `materialize_profile()` API is called
 - User presses `p` on a configuration (creates a pinned profile)
-- Orphan adoption on startup (creates a pinned profile)
 
 On materialization:
 1. Profile definition is resolved (from config sets + detected tools, or
@@ -322,7 +321,7 @@ Materialization writes a profile to the cache so that build tasks can be
 launched against it. A profile must be materialized before any task runs.
 
 **Trigger**: `activate_profile()`, `build()`, `configure()`, `<CR>` in UI,
-`p` key (pinned), or orphan adoption on startup.
+or `p` key (pinned).
 
 **Process (set-based profiles)**:
 1. Parse profile key → (set_name, tool_key)
@@ -384,15 +383,25 @@ When a configuration set is removed from `loomworks.json`:
 4. Profile remains fully functional — builds still work using cached mappings
 5. UI shows `[stale]` tag and a warning about the removed set
 
-### 4.5 Orphan Adoption
+### 4.5 Orphaned Configurations
 
-On startup, configs in cache that are not referenced by any profile are
-"adopted":
+A cached configuration is **orphaned** when it has build state
+(configured/built/failed) but is not referenced by any profile's `projects`
+entries. Common cause: switching git branches where a profile was built on
+one branch but the configuration set that produced it no longer exists.
 
-- Configs with state (configured/built/failed) → pinned profile created
-- Configs without state (unconfigured skeletons) → silently dropped
+**On startup**:
+- Cached configs with state but no profile reference → kept as orphans
+  (shown in the Orphaned Configurations UI section)
+- Cached configs without state (unconfigured skeletons) and no profile
+  reference → silently dropped from cache
 
-This ensures every meaningful cache entry is reachable through a profile.
+**Rules**:
+1. Orphaned configs are never auto-deleted — the user must explicitly delete
+2. Orphaned configs are never auto-adopted into pinned profiles
+3. The only action available on an orphaned config is delete (removes cache
+   entry + build directory)
+4. Orphaned configs do not affect profile resolution or the active set
 
 ### 4.6 Deletion
 
@@ -509,12 +518,13 @@ If a build/configure action is requested while a deletion is in progress:
 ### 6.1 Layout
 
 The status page opens as a vertical split (60 columns wide) and contains
-three sections in order:
+these sections in order:
 
 1. **Header** — plugin version, workspace name, workspace root
 2. **Profiles** — all materialized and explicit profiles
-3. **Configuration Sets** — declared sets with tool entries
-4. **Projects** — all projects with their configurations
+3. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
+4. **Configuration Sets** — declared sets with tool entries
+5. **Projects** — all projects with their configurations
 
 Sections are separated by blank lines. Each section has a title line.
 
@@ -616,7 +626,40 @@ profile; it simply has fewer projects when expanded.
 | Profile | activate | build all | configure all | clean+build all | clean all | delete with dialog |
 | Project under profile | — | build config | configure config | clean+build config | clean config | delete config with dialog |
 
-### 6.5 Configuration Sets Section
+### 6.5 Orphaned Configurations Section
+
+Shows cached configurations with build state that are not referenced by any
+profile. Hidden when there are no orphaned configs (the common case).
+
+**Title**: `Orphaned Configurations` with `Title` highlight.
+
+**Layout**: Configs are grouped by project key (sorted alphabetically).
+Each project is a foldable node; each config within is a foldable node
+showing the config key and its status.
+
+```
+Orphaned Configurations
+
+  ▶ App
+    ▶ Debug:ninja-gcc-12 (built)
+      Status: built
+      Build dir: .nvim/build/App/Debug
+
+  ▶ SubLib
+    ▶ Release:msvc-2022 (configured)
+      Status: configured
+      Build dir: .nvim/build/SubLib/Release
+```
+
+**Highlight**: Project nodes use `LoomworksUnconfigured`. Config nodes use
+`resolve_config_status()` highlights (same as Projects section).
+
+**Actions**: Only `D` (delete) is mapped on config nodes. All other action
+keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned configs cannot be
+built, configured, or pinned. Deletion shows the standard confirmation
+dialog.
+
+### 6.6 Configuration Sets Section
 
 Shows declared configuration sets from `loomworks.json`. Only appears when
 sets are declared.
@@ -654,7 +697,7 @@ Where:
 | `C`    | clean via profile | nil (no-op) |
 | `D`    | delete profile with dialog | nil (no-op) |
 
-### 6.6 Projects Section
+### 6.7 Projects Section
 
 Shows all projects from the active set, including orphaned projects. Projects
 are sorted alphabetically with orphaned projects at the end.
@@ -703,7 +746,7 @@ Each configuration shows its available tools:
 | `D`    | Delete config with dialog |
 | `p`    | Pin as pinned profile |
 
-### 6.7 Deletion Confirmation Dialog
+### 6.8 Deletion Confirmation Dialog
 
 Shown for all delete operations (`D` key). Floating window centered in editor.
 
@@ -718,7 +761,7 @@ Shown for all delete operations (`D` key). Floating window centered in editor.
 
 **Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
 
-### 6.8 Nuke Confirmation Dialog
+### 6.9 Nuke Confirmation Dialog
 
 Shown when `<C-n>` is pressed. Floating window centered in editor.
 
@@ -745,12 +788,12 @@ no files are deleted. These checks are specific to the nuke operation —
 the general io layer does not restrict deletion paths, because normal
 config/profile deletion may delete build directories anywhere.
 
-### 6.9 Help Dialog
+### 6.10 Help Dialog
 
 Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
 `<C-n>`) have their key character highlighted with `DiagnosticWarn`.
 
-### 6.10 Auto-refresh
+### 6.11 Auto-refresh
 
 The status page refreshes automatically on these events:
 - `task_started`, `task_stopped`, `task_result`, `task_progress`
@@ -905,9 +948,11 @@ All tasks wait for pending deletions before starting.
 1. **Cache is truth**: The cache reflects what exists on disk. It is never
    contradicted or overridden by config or user files.
 
-2. **No auto-clean**: Failed states, orphaned entries, and stale profiles are
-   never automatically removed. Only explicit user action modifies or removes
-   cache entries.
+2. **No auto-clean**: Failed states, orphaned configurations, and stale
+   profiles are never automatically removed. Only explicit user action
+   modifies or removes cache entries. Orphaned configurations (cached configs
+   with state but no profile reference) are preserved and shown in the UI
+   for the user to manage.
 
 3. **Deletion safety**: All build directory deletions (config delete, clean,
    nuke) verify that the target path is under the workspace root before

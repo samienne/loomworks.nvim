@@ -118,6 +118,25 @@ function M.delete_configuration(project, config_name)
   end
 end
 
+function M.delete_orphaned_config(project_key, config_key)
+  return function()
+    local lw = require("loomworks")
+    local orphan_items = { {
+      project_key = project_key,
+      config_key = config_key,
+      disposition = "clean",
+    } }
+    M._show_delete_confirmation(
+      "Delete orphaned: " .. project_key .. " / " .. config_key,
+      { items = orphan_items, defined_in_config = false },
+      function()
+        lw.delete_orphaned_config(project_key, config_key, function()
+          vim.notify("loomworks: orphaned configuration removed", vim.log.levels.INFO)
+        end)
+      end)
+  end
+end
+
 function M.pin_config(project_key, config_key)
   return function()
     local lw = require("loomworks")

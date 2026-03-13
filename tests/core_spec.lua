@@ -131,6 +131,66 @@ describe("Core", function()
       core:activate_profile("debug")
       assert.is_true(core._generation > gen)
     end)
+
+    it("switching A→B→A does not modify cache", function()
+      local cache_saves = {}
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = {
+            debug = { App = "development" },
+            release = { App = "production" },
+          },
+        },
+        nil,
+        {
+          -- Both profiles already materialized
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+            release = {
+              configuration_set = "release",
+              projects = { App = { config_key = "production" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+                production = { state = "configured" },
+              },
+            },
+          },
+        },
+        {
+          cache = {
+            save = function(root, data)
+              cache_saves[#cache_saves + 1] = vim.deepcopy(data)
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      -- Record cache state after setup (no cache writes expected from setup
+      -- since both profiles are already materialized and referenced)
+      local saves_after_setup = #cache_saves
+
+      -- Activate A
+      core:activate_profile("debug")
+      -- Activate B
+      core:activate_profile("release")
+      -- Return to A
+      core:activate_profile("debug")
+
+      -- No cache writes should have happened during profile switching
+      assert.equals(saves_after_setup, #cache_saves,
+        "switching between materialized profiles should not write to cache")
+    end)
   end)
 
   describe("running tasks", function()
@@ -1098,11 +1158,16 @@ describe("Core", function()
 
   describe("delete_cached_configs", function()
     it("removes config from cache and saves", function()
-      local saved_cache = nil
       local core = make_core(
         { projects = { App = { typescript = {} } } },
         nil,
         {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+          },
           projects = {
             App = {
               type = "typescript",
@@ -1111,23 +1176,15 @@ describe("Core", function()
               },
             },
           },
-        },
-        {
-          cache = {
-            save = function(root, data)
-              saved_cache = data
-              return true
-            end,
-          },
         }
       )
       core:setup({ root = "/root" })
       core:delete_cached_configs({
         { project_key = "App", config_key = "development" },
       })
-      assert.is_not_nil(saved_cache)
+      local ws = core:get_workspace()
       -- Project should be removed since no configs left
-      assert.is_nil(saved_cache.projects.App)
+      assert.is_nil(ws.cache.projects.App)
     end)
 
     it("refuses to delete build dir outside .nvim/build", function()
@@ -1359,45 +1416,8 @@ describe("Core", function()
     end)
   end)
 
-  describe("_adopt_orphaned_configs", function()
-    it("creates pinned profile for orphaned built config", function()
-      local saved_cache = nil
-      local core = make_core(
-        {
-          projects = { App = { typescript = {} } },
-          configuration_sets = { debug = { App = "development" } },
-        },
-        nil,
-        {
-          -- No profiles, but a built config exists
-          projects = {
-            App = {
-              type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
-            },
-          },
-        },
-        {
-          cache = {
-            save = function(root, data)
-              saved_cache = data
-              return true
-            end,
-          },
-        }
-      )
-      core:setup({ root = "/root" })
-      assert.is_not_nil(saved_cache)
-      assert.is_not_nil(saved_cache.profiles)
-      assert.is_not_nil(saved_cache.profiles["App/development"])
-      local adhoc = saved_cache.profiles["App/development"]
-      assert.is_not_nil(adhoc.mappings)
-      assert.equals("development", adhoc.mappings.App)
-    end)
-
-    it("silently drops unconfigured skeleton", function()
+  describe("_cleanup_orphaned_skeletons", function()
+    it("drops unconfigured skeleton with no profile reference", function()
       local saved_cache = nil
       local core = make_core(
         {
@@ -1428,11 +1448,39 @@ describe("Core", function()
       assert.is_not_nil(saved_cache)
       -- Config should have been dropped
       assert.is_nil(saved_cache.projects)
-      -- No pinned profile created
-      assert.is_nil(saved_cache.profiles)
     end)
 
-    it("does not adopt configs already referenced by a profile", function()
+    it("preserves configs with state (leaves them as orphans)", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          -- No profiles, but a built config exists
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      -- Config should NOT be dropped — it has state
+      local ws = core:get_workspace()
+      assert.is_not_nil(ws.cache.projects)
+      assert.is_not_nil(ws.cache.projects.App)
+      assert.is_not_nil(ws.cache.projects.App.configurations.development)
+      assert.equals("built", ws.cache.projects.App.configurations.development.state)
+      -- No pinned profile should be created
+      assert.is_nil(ws.cache.profiles)
+    end)
+
+    it("does not touch configs referenced by a profile", function()
       local saved = false
       local core = make_core(
         {
@@ -1468,6 +1516,379 @@ describe("Core", function()
       core:setup({ root = "/root" })
       -- No changes needed since config is already referenced
       assert.is_false(saved)
+    end)
+  end)
+
+  describe("get_orphaned_configs", function()
+    it("returns empty when no workspace", function()
+      local core = make_core()
+      assert.same({}, core:get_orphaned_configs())
+    end)
+
+    it("returns empty when all configs are referenced", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.same({}, core:get_orphaned_configs())
+    end)
+
+    it("returns configs with state not referenced by any profile", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+                production = { state = "configured" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local orphans = core:get_orphaned_configs()
+      assert.equals(1, #orphans)
+      assert.equals("App", orphans[1].project_key)
+      assert.equals("production", orphans[1].config_key)
+      assert.equals("configured", orphans[1].cached.state)
+    end)
+
+    it("excludes unconfigured skeletons", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+        },
+        nil,
+        {
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = {}, -- unconfigured skeleton — should be dropped by cleanup
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.same({}, core:get_orphaned_configs())
+    end)
+
+    it("returns sorted by project then config key", function()
+      local core = make_core(
+        {
+          projects = {
+            Bravo = { typescript = {} },
+            Alpha = { typescript = {} },
+          },
+        },
+        nil,
+        {
+          projects = {
+            Bravo = {
+              type = "typescript",
+              configurations = {
+                prod = { state = "built" },
+              },
+            },
+            Alpha = {
+              type = "typescript",
+              configurations = {
+                staging = { state = "configured" },
+                dev = { state = "built" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local orphans = core:get_orphaned_configs()
+      assert.equals(3, #orphans)
+      assert.equals("Alpha", orphans[1].project_key)
+      assert.equals("dev", orphans[1].config_key)
+      assert.equals("Alpha", orphans[2].project_key)
+      assert.equals("staging", orphans[2].config_key)
+      assert.equals("Bravo", orphans[3].project_key)
+      assert.equals("prod", orphans[3].config_key)
+    end)
+  end)
+
+  describe("delete_orphaned_config", function()
+    it("removes orphaned config from cache", function()
+      local saved_cache = nil
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+        },
+        nil,
+        {
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                production = { state = "built", build_dir = "/root/.nvim/build/App/production" },
+              },
+            },
+          },
+        },
+        {
+          cache = {
+            save = function(root, data)
+              saved_cache = vim.deepcopy(data)
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.equals(1, #core:get_orphaned_configs())
+
+      core:delete_orphaned_config("App", "production")
+      assert.equals(0, #core:get_orphaned_configs())
+      -- Cache should no longer have the config
+      assert.is_not_nil(saved_cache)
+      if saved_cache.projects and saved_cache.projects.App then
+        assert.is_nil(saved_cache.projects.App.configurations.production)
+      end
+    end)
+  end)
+
+  describe("branch switching", function()
+    it("configs built on feature branch become orphaned on master", function()
+      -- Simulate: master has config_set "debug" with App=Debug
+      -- Feature branch added config_set "feature" and user built it
+      -- Cache has profile "feature" from the feature branch
+      -- After switching to master, "feature" set no longer in config
+      -- The profile becomes stale (orphaned_set) but config is still referenced
+
+      local core = make_core(
+        {
+          -- master: only "debug" config set
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          -- Cache from feature branch: has both profiles
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+            feature = {
+              configuration_set = "feature",
+              projects = { App = { config_key = "staging" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+                staging = { state = "built" },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      -- "staging" is still referenced by the cached "feature" profile
+      -- so it should NOT be orphaned
+      assert.same({}, core:get_orphaned_configs())
+
+      -- The "feature" profile should still exist but with orphaned_set=true
+      local profile = core:get_profile("feature")
+      assert.is_not_nil(profile)
+      assert.is_true(profile.orphaned_set)
+    end)
+
+    it("unreferenced configs from branch switching are orphaned", function()
+      -- Scenario: user built configs directly (via materialize_configuration)
+      -- on feature branch, then switched to master. The configs have no
+      -- profile referencing them.
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+                -- This config was built on another branch, no profile references it
+                ["feature-config"] = {
+                  state = "built",
+                  build_dir = "/root/.nvim/build/App/feature-config",
+                },
+              },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local orphans = core:get_orphaned_configs()
+      assert.equals(1, #orphans)
+      assert.equals("App", orphans[1].project_key)
+      assert.equals("feature-config", orphans[1].config_key)
+      assert.equals("built", orphans[1].cached.state)
+    end)
+
+    it("deleting orphan from branch switch cleans up correctly", function()
+      local deleted_dirs = {}
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+                ["feature-config"] = {
+                  state = "built",
+                  build_dir = "/root/.nvim/build/App/feature-config",
+                },
+              },
+            },
+          },
+        },
+        {
+          io = {
+            rm_rf = function(path)
+              deleted_dirs[#deleted_dirs + 1] = path
+              return true
+            end,
+          },
+          cache = {
+            save = function() return true end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.equals(1, #core:get_orphaned_configs())
+
+      core:delete_orphaned_config("App", "feature-config")
+
+      -- Orphan should be gone
+      assert.equals(0, #core:get_orphaned_configs())
+      -- Build dir should have been deleted
+      local found_dir = false
+      for _, d in ipairs(deleted_dirs) do
+        if d:match("feature%-config") then found_dir = true end
+      end
+      assert.is_true(found_dir, "build directory should be deleted")
+      -- Referenced config should still exist
+      local ws = core:get_workspace()
+      assert.is_not_nil(ws.cache.projects.App.configurations.development)
+    end)
+
+    it("round-trip: master→feature→master leaves cache intact", function()
+      -- This is the A→B→A test but framed as branch switching.
+      -- Master config, then feature config, then back to master.
+      -- The user switches profiles (not branches) but the cache should not change.
+      local cache_saves = {}
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = {
+            debug = { App = "development" },
+            release = { App = "production" },
+          },
+        },
+        nil,
+        {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              projects = { App = { config_key = "development" } },
+            },
+            release = {
+              configuration_set = "release",
+              projects = { App = { config_key = "production" } },
+            },
+          },
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = {
+                development = { state = "built" },
+                production = { state = "configured" },
+              },
+            },
+          },
+        },
+        {
+          cache = {
+            save = function(root, data)
+              cache_saves[#cache_saves + 1] = vim.deepcopy(data)
+              return true
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local saves_after_setup = #cache_saves
+
+      core:activate_profile("debug")
+      core:activate_profile("release")
+      core:activate_profile("debug")
+
+      assert.equals(saves_after_setup, #cache_saves,
+        "switching between materialized profiles should not write to cache")
+      assert.same({}, core:get_orphaned_configs())
     end)
   end)
 

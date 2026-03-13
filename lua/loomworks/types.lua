@@ -243,6 +243,13 @@
 --- @field current number
 --- @field total number
 
+-- ========================== Orphaned Configs ==========================
+
+--- @class loomworks.OrphanedConfig
+--- @field project_key string
+--- @field config_key string
+--- @field cached loomworks.CachedConfig the cached state
+
 -- ========================== ConfigUnit ==========================
 
 --- @alias loomworks.ConfigUnitState

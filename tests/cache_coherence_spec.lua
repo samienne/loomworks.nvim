@@ -4,9 +4,10 @@
 --- configure, build, delete profiles (full and pinned),
 --- and verify cache invariants after each operation.
 ---
---- Key invariant: every cached config in configured/built/failed state
---- is referenced by at least one profile. No orphaned configs or
---- leftover build directories after profile deletion.
+--- Key invariant after user actions: every cached config in
+--- configured/built/failed state is referenced by at least one profile.
+--- Orphaned configs (unreferenced) ARE allowed to exist from branch switching
+--- or cache loading — they show up in the "Orphaned Configurations" UI section.
 
 local Core = require("loomworks.core")
 local h = require("tests.helpers")
@@ -15,8 +16,9 @@ local h = require("tests.helpers")
 -- Helpers
 -- ---------------------------------------------------------------------------
 
---- Assert the cache coherence invariant: every cached config with state
---- is referenced by at least one profile.
+--- Assert strict cache coherence: every cached config with state
+--- is referenced by at least one profile. No orphaned configs allowed.
+--- Use this to verify user actions don't create new orphans.
 local function assert_cache_coherent(core, msg)
   local ws = core:get_workspace()
   if not ws then return end
@@ -37,7 +39,15 @@ local function assert_cache_coherent(core, msg)
     end
   end
 
-  -- Check every cached config is referenced
+  -- Also allow orphaned configs (unreferenced from branch switching)
+  -- For strict checks, use assert_no_orphans separately
+  local orphans = core:get_orphaned_configs()
+  local orphan_set = {}
+  for _, o in ipairs(orphans) do
+    orphan_set[o.project_key .. "\0" .. o.config_key] = true
+  end
+
+  -- Check every cached config is either referenced or a known orphan
   if ws.cache.projects then
     for project_key, cached_proj in pairs(ws.cache.projects) do
       if cached_proj.configurations then
@@ -45,7 +55,7 @@ local function assert_cache_coherent(core, msg)
           local state = cached_config.state
           if state and state ~= "unconfigured" then
             local lookup = project_key .. "\0" .. config_key
-            assert(referenced[lookup],
+            assert(referenced[lookup] or orphan_set[lookup],
               prefix .. "orphaned config: " .. project_key .. "/" .. config_key
               .. " (state=" .. state .. ") not referenced by any profile")
           end
@@ -53,6 +63,15 @@ local function assert_cache_coherent(core, msg)
       end
     end
   end
+end
+
+--- Assert that no orphaned configs exist. Use after user actions to verify
+--- that actions don't accidentally create orphans.
+local function assert_no_orphans(core, msg)
+  local prefix = msg and (msg .. ": ") or ""
+  local orphans = core:get_orphaned_configs()
+  assert(#orphans == 0,
+    prefix .. "expected no orphaned configs, found " .. #orphans)
 end
 
 --- Assert that the cache has no configs at all.
@@ -540,9 +559,9 @@ describe("cache coherence", function()
     end)
   end)
 
-  describe("init adoption", function()
+  describe("init with orphaned configs", function()
 
-    it("adopts orphaned built config as pinned profile", function()
+    it("preserves orphaned built config without creating profile", function()
       local core = make_tracked_core(
         { projects = { App = { typescript = {} } } },
         nil,
@@ -563,13 +582,15 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- Should have been adopted
-      assert_cache_coherent(core, "after init adoption")
-      assert.equals(1, count_profiles(core))
+      -- Should remain as orphan, no profile created
+      assert_cache_coherent(core, "after init with orphan")
+      assert.equals(0, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
 
-      local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.profiles["App/development"])
+      local orphans = core:get_orphaned_configs()
+      assert.equals(1, #orphans)
+      assert.equals("App", orphans[1].project_key)
+      assert.equals("development", orphans[1].config_key)
     end)
 
     it("drops unconfigured skeleton on init", function()
@@ -591,7 +612,7 @@ describe("cache coherence", function()
       assert_cache_empty(core, "skeleton should be dropped")
     end)
 
-    it("does not adopt configs already referenced by profile", function()
+    it("configs referenced by profile are not orphaned", function()
       local core = make_tracked_core(
         { projects = { App = { typescript = {} } } },
         nil,
@@ -618,7 +639,7 @@ describe("cache coherence", function()
       assert.equals(1, count_profiles(core))
     end)
 
-    it("adopts failed_configure as pinned profile", function()
+    it("failed_configure config stays as orphan", function()
       local core = make_tracked_core(
         { projects = { App = { typescript = {} } } },
         nil,
@@ -634,11 +655,15 @@ describe("cache coherence", function()
         }
       )
       core:setup({ root = "/root" })
-      assert_cache_coherent(core, "failed_configure adopted")
-      assert.equals(1, count_profiles(core))
+      assert_cache_coherent(core, "failed_configure as orphan")
+      assert.equals(0, count_profiles(core))
+
+      local orphans = core:get_orphaned_configs()
+      assert.equals(1, #orphans)
+      assert.equals("failed_configure", orphans[1].cached.state)
     end)
 
-    it("adopts keyed-tool config with correct pinned key", function()
+    it("keyed-tool config without profile stays as orphan", function()
       local core, _, setup = make_tracked_core(
         { projects = { Lib = { cmake = {} } } },
         nil,
@@ -666,14 +691,14 @@ describe("cache coherence", function()
         }
       )
       setup({ root = "/root" })
-      assert_cache_coherent(core, "keyed tool adopted")
+      assert_cache_coherent(core, "keyed tool as orphan")
 
-      local ws = core:get_workspace()
-      local adhoc = ws.cache.profiles["Lib/Debug:ninja-gcc"]
-      assert.is_not_nil(adhoc)
-      assert.is_not_nil(adhoc.mappings)
-      assert.equals("Debug", adhoc.mappings.Lib)
-      assert.equals("ninja-gcc", adhoc.tool_key)
+      -- No profile created, config remains as orphan
+      assert.equals(0, count_profiles(core))
+      local orphans = core:get_orphaned_configs()
+      assert.equals(1, #orphans)
+      assert.equals("Lib", orphans[1].project_key)
+      assert.equals("Debug:ninja-gcc", orphans[1].config_key)
     end)
   end)
 
@@ -893,10 +918,10 @@ describe("cache coherence", function()
       assert.equals(3, count_cached_configs(core))
     end)
 
-    it("stale profile with missing config entry gets config adopted", function()
+    it("stale profile with missing config entry leaves other config as orphan", function()
       -- Profile references a config_key but the config entry is missing from cache
       -- The profile still holds the reference, so no adoption needed.
-      -- But also a separate orphaned config with no profile exists.
+      -- A separate unreferenced config stays as an orphan.
       local core = make_tracked_core(
         {
           projects = { App = { typescript = {} } },
@@ -925,12 +950,13 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- "production" is orphaned (no profile) so adoption creates pinned for it
+      -- "production" is orphaned — no pinned profile created
       assert_cache_coherent(core, "stale profile + orphaned config")
-      assert.equals(2, count_profiles(core))
+      assert.equals(1, count_profiles(core))
 
-      local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.profiles["App/production"])
+      local orphans = core:get_orphaned_configs()
+      assert.equals(1, #orphans)
+      assert.equals("production", orphans[1].config_key)
     end)
 
     it("multiple pinned profiles for same project different configs", function()
@@ -1113,12 +1139,16 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      -- "production" was orphaned and adopted as pinned
+      -- "production" is orphaned (no profile references it)
       assert_cache_coherent(core, "after init with orphan")
-      assert.equals(2, count_profiles(core))
+      assert.equals(1, count_profiles(core))
       assert.equals(2, count_cached_configs(core))
 
-      -- Delete the set-based profile — only "development" is unreferenced
+      local orphans = core:get_orphaned_configs()
+      assert.equals(1, #orphans)
+      assert.equals("production", orphans[1].config_key)
+
+      -- Delete the set-based profile — only "development" gets cleaned
       local profile = core:get_profile("debug")
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
@@ -1126,15 +1156,19 @@ describe("cache coherence", function()
       assert.equals("development", plan.items[1].config_key)
 
       core:execute_deletion(plan, { deactivate_profile = profile.key })
-      assert_cache_coherent(core, "after delete, orphan-adopted survives")
-      assert.equals(1, count_profiles(core))
+      assert_cache_coherent(core, "after delete, orphan survives")
+      assert.equals(0, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
       assert.equals(1, #rm_calls)
 
-      -- The adopted pinned profile for production should still exist
+      -- The orphaned production config should still exist (not auto-deleted)
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.profiles["App/production"])
       assert.is_not_nil(ws.cache.projects.App.configurations.production)
+
+      -- And it's still an orphan
+      orphans = core:get_orphaned_configs()
+      assert.equals(1, #orphans)
+      assert.equals("production", orphans[1].config_key)
     end)
 
     it("init with cache referencing tools no longer detected", function()

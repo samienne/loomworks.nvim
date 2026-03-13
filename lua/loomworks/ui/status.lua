@@ -61,6 +61,7 @@ local function render_fn(tree)
   }
 
   require("loomworks.ui.sections.profiles")(tree, ctx)
+  require("loomworks.ui.sections.orphaned")(tree, ctx)
   require("loomworks.ui.sections.config_sets")(tree, ctx)
 
   ctx.projects = lw.get_projects()

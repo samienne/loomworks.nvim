@@ -324,6 +324,20 @@ function M.find_referencing_profiles(project_key, config_key)
   return core:find_referencing_profiles(project_key, config_key)
 end
 
+--- Get orphaned cached configs (configs with state not referenced by any profile).
+--- @return loomworks.OrphanedConfig[]
+function M.get_orphaned_configs()
+  return core:get_orphaned_configs()
+end
+
+--- Delete an orphaned config (cache entry + build directory).
+--- @param project_key string
+--- @param config_key string
+--- @param on_done? function
+function M.delete_orphaned_config(project_key, config_key, on_done)
+  core:delete_orphaned_config(project_key, config_key, on_done)
+end
+
 -- ---------------------------------------------------------------------------
 -- Queries
 -- ---------------------------------------------------------------------------
