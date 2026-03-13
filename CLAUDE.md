@@ -32,6 +32,49 @@ For changes that are clearly *within* the existing spec (bug fixes, adding
 tests, refactoring without behavior change), skip steps 1-4 and implement
 directly.
 
+## Branch Workflow
+
+All changes go through branches — never commit directly to master.
+
+### Commits
+
+Do not create commits automatically. Only commit when the user explicitly
+asks. It is fine to suggest "should we commit this?" at natural stopping
+points.
+
+### Creating branches
+
+- **Feature branches**: `feature/<short-name>` — new functionality or enhancements
+- **Bugfix branches**: `fix/<short-name>` — bug fixes
+- Branch from master. Multiple commits on the branch are fine.
+
+### Mid-feature bugfixes
+
+If a bug is discovered while working on a feature branch:
+
+1. Switch to master, create `fix/<name>`, fix and merge `--no-ff`
+2. Switch back to the feature branch, rebase onto updated master
+3. Resolve any conflicts
+
+### Pre-merge checklist (mandatory)
+
+Before merging ANY branch to master, verify:
+
+1. **specification.md** — all behavioral changes are reflected
+2. **ARCHITECTURE.md** — any structural changes are documented
+3. **README.md** — user-facing changes are covered
+4. **No discrepancies** — the three documents agree with each other and with
+   the code being merged
+5. **Tests pass** — `make test`
+
+**Do not merge if documentation is out of sync.** Fix the docs first, then
+merge. If the user does not ask for this check, remind them before merging.
+
+### Merge format
+
+Use `git merge --no-ff` with a summary commit message that describes *what*
+and *why* — not a dump of individual branch commits.
+
 ## What this is
 
 A Neovim workspace management plugin. Provides project structure information
