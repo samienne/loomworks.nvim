@@ -433,3 +433,386 @@ describe("Projects section cmake status", function()
     assert.equals("built", cached.state)
   end)
 end)
+
+--- Replicate entry_highlight from projects.lua for testing.
+local function entry_highlight(config_status, status_hl, is_spinning, is_active)
+  if is_spinning then return status_hl end
+  if is_active then return "LoomworksActive" end
+  if config_status == "failed_configure" or config_status == "failed_build" then
+    return "LoomworksFailed"
+  end
+  if config_status == "unconfigured" then return "LoomworksUnconfigured" end
+  return "LoomworksConfigured"
+end
+
+--- Simulate rendering with highlights, matching projects.lua logic.
+--- @param core loomworks.Core
+--- @param project_key string
+--- @param variant string
+--- @param active_profile_key string|nil
+--- @return table[] entries with { config_key, tool_key, state, hl }
+local function simulate_with_highlights(core, project_key, variant, active_profile_key)
+  local proj = core:get_project(project_key)
+  if not proj then return {} end
+
+  local tools_by_type = core:get_tools_by_type()
+  local _, active_tool_key = merge.parse_profile_key(active_profile_key or "")
+  local is_active_project = proj.configuration ~= nil and not proj.orphaned
+  local is_active_variant = is_active_project
+      and proj.configuration:lower() == variant:lower()
+
+  -- Collect entries (same as simulate_projects_section_rendering)
+  local entries = {}
+  local seen_tool_keys = {}
+  local variant_lower = variant:lower()
+
+  if proj.cached_configurations then
+    for config_key, cached_config in pairs(proj.cached_configurations) do
+      local v, tk = merge.parse_profile_key(config_key)
+      if v and tk and v:lower() == variant_lower then
+        entries[#entries + 1] = {
+          config_key = config_key,
+          tool_key = tk,
+          cached = cached_config,
+        }
+        seen_tool_keys[tk] = true
+      end
+    end
+  end
+
+  local relevant_tools = tools_by_type[proj.type] or {}
+  for _, dt in ipairs(relevant_tools) do
+    if dt.tool_key and not seen_tool_keys[dt.tool_key] then
+      entries[#entries + 1] = {
+        config_key = variant .. ":" .. dt.tool_key,
+        tool_key = dt.tool_key,
+        cached = nil,
+      }
+    end
+  end
+
+  -- Compute state + highlight for each entry
+  local results = {}
+  for _, entry in ipairs(entries) do
+    local unit = core:get_config_unit(project_key, entry.config_key)
+    local state = unit:state()
+    local is_spinning = (state == "configuring" or state == "building" or state == "deleting")
+    local is_active = is_active_variant and active_tool_key == entry.tool_key
+    -- Map state names for hl lookup (same as resolve_unit_status)
+    local config_status = state
+    if state == "configure_failed" then config_status = "failed_configure" end
+    if state == "build_failed" then config_status = "failed_build" end
+    local status_hl = ({
+      unconfigured     = "LoomworksUnconfigured",
+      configured       = "LoomworksConfigured",
+      built            = "LoomworksBuilt",
+      failed_configure = "LoomworksFailed",
+      failed_build     = "LoomworksFailed",
+      configuring      = "LoomworksRunning",
+      building         = "LoomworksRunning",
+      deleting         = "LoomworksDeleting",
+    })[config_status] or "Comment"
+
+    results[#results + 1] = {
+      config_key = entry.config_key,
+      tool_key = entry.tool_key,
+      state = state,
+      hl = entry_highlight(config_status, status_hl, is_spinning, is_active),
+    }
+  end
+
+  return results
+end
+
+describe("Projects section tool entry highlights", function()
+  it("active tool entry gets LoomworksActive", function()
+    local core = make_core(
+      {
+        projects = { App = { cmake = {} } },
+        configuration_sets = { debug = { App = "Debug" } },
+      },
+      { active_profile = "debug:ninja-gcc-12" },
+      {
+        profiles = {
+          ["debug:ninja-gcc-12"] = {
+            configuration_set = "debug",
+            tool_key = "ninja-gcc-12",
+            projects = { App = { config_key = "Debug:ninja-gcc-12" } },
+          },
+        },
+        projects = {
+          App = {
+            type = "cmake",
+            configurations = {
+              ["Debug:ninja-gcc-12"] = {
+                state = "built",
+                variant = "Debug",
+                tool_key = "ninja-gcc-12",
+              },
+            },
+          },
+        },
+      },
+      {
+        merge = merge_with_cmake_tools(),
+        modules = { get = function(t) return t == "cmake" and cmake_module or nil end },
+      }
+    )
+    core:setup({ root = "/root" })
+
+    local results = simulate_with_highlights(core, "App", "Debug", "debug:ninja-gcc-12")
+    assert.equals(1, #results)
+    assert.equals("LoomworksActive", results[1].hl,
+      "active tool entry should be LoomworksActive (green)")
+  end)
+
+  it("non-active built tool entry gets LoomworksConfigured", function()
+    local core = make_core(
+      {
+        projects = { App = { cmake = {} } },
+        configuration_sets = { debug = { App = "Debug" } },
+      },
+      { active_profile = "debug:ninja-gcc-12" },
+      {
+        profiles = {
+          ["debug:ninja-gcc-12"] = {
+            configuration_set = "debug",
+            tool_key = "ninja-gcc-12",
+            projects = { App = { config_key = "Debug:ninja-gcc-12" } },
+          },
+        },
+        projects = {
+          App = {
+            type = "cmake",
+            configurations = {
+              ["Debug:ninja-gcc-12"] = {
+                state = "built",
+                variant = "Debug",
+                tool_key = "ninja-gcc-12",
+              },
+              ["Debug:msvc-17"] = {
+                state = "built",
+                variant = "Debug",
+                tool_key = "msvc-17",
+              },
+            },
+          },
+        },
+      },
+      {
+        merge = merge_with_cmake_tools(),
+        modules = { get = function(t) return t == "cmake" and cmake_module or nil end },
+      }
+    )
+    core:setup({ root = "/root" })
+
+    local results = simulate_with_highlights(core, "App", "Debug", "debug:ninja-gcc-12")
+    assert.equals(2, #results)
+    local by_tool = {}
+    for _, r in ipairs(results) do by_tool[r.tool_key] = r end
+
+    assert.equals("LoomworksActive", by_tool["ninja-gcc-12"].hl,
+      "active tool should be LoomworksActive")
+    assert.equals("LoomworksConfigured", by_tool["msvc-17"].hl,
+      "non-active built tool should be LoomworksConfigured (light blue)")
+  end)
+
+  it("unconfigured active tool gets LoomworksActive (active takes precedence)", function()
+    local core = make_core(
+      {
+        projects = { App = { cmake = {} } },
+        configuration_sets = { debug = { App = "Debug" } },
+      },
+      { active_profile = "debug:ninja-gcc-12" },
+      {
+        profiles = {
+          ["debug:ninja-gcc-12"] = {
+            configuration_set = "debug",
+            tool_key = "ninja-gcc-12",
+            projects = { App = { config_key = "Debug:ninja-gcc-12" } },
+          },
+        },
+        projects = {
+          App = {
+            type = "cmake",
+            configurations = {},
+          },
+        },
+      },
+      {
+        merge = merge_with_cmake_tools(),
+        modules = { get = function(t) return t == "cmake" and cmake_module or nil end },
+      }
+    )
+    core:setup({ root = "/root" })
+
+    -- ninja-gcc-12 detected but not cached → unconfigured, but active takes precedence
+    local results = simulate_with_highlights(core, "App", "Debug", "debug:ninja-gcc-12")
+    assert.equals(1, #results)
+    assert.equals("LoomworksActive", results[1].hl,
+      "active tool should be LoomworksActive even when unconfigured")
+  end)
+
+  it("unconfigured non-active tool gets LoomworksUnconfigured", function()
+    local core = make_core(
+      {
+        projects = { App = { cmake = {} } },
+        configuration_sets = { debug = { App = "Debug" } },
+      },
+      nil, -- no active profile
+      {
+        projects = {
+          App = {
+            type = "cmake",
+            configurations = {},
+          },
+        },
+      },
+      {
+        merge = merge_with_cmake_tools(),
+        modules = { get = function(t) return t == "cmake" and cmake_module or nil end },
+      }
+    )
+    core:setup({ root = "/root" })
+
+    local results = simulate_with_highlights(core, "App", "Debug", nil)
+    assert.equals(1, #results)
+    assert.equals("LoomworksUnconfigured", results[1].hl,
+      "unconfigured non-active tool should be LoomworksUnconfigured (gray)")
+  end)
+
+  it("non-active variant built entry gets LoomworksConfigured not LoomworksActive", function()
+    -- Active profile is for Debug, but we're looking at Release variant
+    local core = make_core(
+      {
+        projects = { App = { cmake = {} } },
+        configuration_sets = { debug = { App = "Debug" } },
+      },
+      { active_profile = "debug:ninja-gcc-12" },
+      {
+        profiles = {
+          ["debug:ninja-gcc-12"] = {
+            configuration_set = "debug",
+            tool_key = "ninja-gcc-12",
+            projects = { App = { config_key = "Debug:ninja-gcc-12" } },
+          },
+        },
+        projects = {
+          App = {
+            type = "cmake",
+            configurations = {
+              ["Debug:ninja-gcc-12"] = {
+                state = "built",
+                variant = "Debug",
+                tool_key = "ninja-gcc-12",
+              },
+              ["Release:ninja-gcc-12"] = {
+                state = "built",
+                variant = "Release",
+                tool_key = "ninja-gcc-12",
+              },
+            },
+          },
+        },
+      },
+      {
+        merge = merge_with_cmake_tools(),
+        modules = { get = function(t) return t == "cmake" and cmake_module or nil end },
+      }
+    )
+    core:setup({ root = "/root" })
+
+    -- Release variant: same tool_key but NOT the active variant
+    local results = simulate_with_highlights(core, "App", "Release", "debug:ninja-gcc-12")
+    assert.equals(1, #results)
+    assert.equals("ninja-gcc-12", results[1].tool_key)
+    assert.equals("LoomworksConfigured", results[1].hl,
+      "same tool on non-active variant should be LoomworksConfigured, not LoomworksActive")
+  end)
+
+  it("no active profile: all built entries get LoomworksConfigured", function()
+    local core = make_core(
+      {
+        projects = { App = { cmake = {} } },
+        configuration_sets = { debug = { App = "Debug" } },
+      },
+      nil, -- no active profile
+      {
+        projects = {
+          App = {
+            type = "cmake",
+            configurations = {
+              ["Debug:ninja-gcc-12"] = {
+                state = "built",
+                variant = "Debug",
+                tool_key = "ninja-gcc-12",
+              },
+            },
+          },
+        },
+      },
+      {
+        merge = merge_with_cmake_tools(),
+        modules = { get = function(t) return t == "cmake" and cmake_module or nil end },
+      }
+    )
+    core:setup({ root = "/root" })
+
+    local results = simulate_with_highlights(core, "App", "Debug", nil)
+    assert.equals(1, #results)
+    assert.equals("LoomworksConfigured", results[1].hl,
+      "without active profile, built entry should be LoomworksConfigured")
+  end)
+
+  it("failed active tool gets LoomworksActive (active takes precedence)", function()
+    local core = make_core(
+      {
+        projects = { App = { cmake = {} } },
+        configuration_sets = { debug = { App = "Debug" } },
+      },
+      { active_profile = "debug:ninja-gcc-12" },
+      {
+        profiles = {
+          ["debug:ninja-gcc-12"] = {
+            configuration_set = "debug",
+            tool_key = "ninja-gcc-12",
+            projects = { App = { config_key = "Debug:ninja-gcc-12" } },
+          },
+        },
+        projects = {
+          App = {
+            type = "cmake",
+            configurations = {
+              ["Debug:ninja-gcc-12"] = {
+                state = "failed_build",
+                variant = "Debug",
+                tool_key = "ninja-gcc-12",
+              },
+              ["Debug:msvc-17"] = {
+                state = "failed_configure",
+                variant = "Debug",
+                tool_key = "msvc-17",
+              },
+            },
+          },
+        },
+      },
+      {
+        merge = merge_with_cmake_tools(),
+        modules = { get = function(t) return t == "cmake" and cmake_module or nil end },
+      }
+    )
+    core:setup({ root = "/root" })
+
+    local results = simulate_with_highlights(core, "App", "Debug", "debug:ninja-gcc-12")
+    local by_tool = {}
+    for _, r in ipairs(results) do by_tool[r.tool_key] = r end
+
+    -- Active takes precedence over failed (consistent with profiles/config_sets)
+    assert.equals("LoomworksActive", by_tool["ninja-gcc-12"].hl,
+      "active tool should be LoomworksActive even when failed")
+    -- Non-active failed should be red
+    assert.equals("LoomworksFailed", by_tool["msvc-17"].hl,
+      "failed non-active tool should be LoomworksFailed")
+  end)
+end)

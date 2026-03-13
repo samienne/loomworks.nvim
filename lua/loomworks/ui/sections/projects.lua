@@ -1,7 +1,7 @@
 --- loomworks/ui/sections/projects.lua — Projects section renderer.
 ---
---- Profile-agnostic: shows cached state and detected tools directly,
---- without any profile context. Uses global running checks.
+--- Shows cached state and detected tools. Uses active profile context
+--- only for highlight coloring (active vs non-active).
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
@@ -90,9 +90,26 @@ local function collect_tool_entries(proj, variant, tools_by_type)
   return entries
 end
 
+--- Determine the display highlight for a config entry.
+--- Running/deleting entries keep their status_hl; others are colored by active state.
+--- @param config_status string
+--- @param status_hl string
+--- @param is_spinning boolean
+--- @param is_active boolean
+--- @return string hl_group
+local function entry_highlight(config_status, status_hl, is_spinning, is_active)
+  if is_spinning then return status_hl end
+  if is_active then return "LoomworksActive" end
+  if config_status == "failed_configure" or config_status == "failed_build" then
+    return "LoomworksFailed"
+  end
+  if config_status == "unconfigured" then return "LoomworksUnconfigured" end
+  return "LoomworksConfigured"
+end
+
 --- Render the projects section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, projects }
+--- @param ctx table { lw, projects, active_profile_key }
 return function(tree, ctx)
   local lw = ctx.lw
   local projects = ctx.projects
@@ -103,6 +120,7 @@ return function(tree, ctx)
 
   local tools_by_type = lw.get_tools_by_type()
   local sorted = sorted_project_keys(projects)
+  local _, active_tool_key = merge.parse_profile_key(ctx.active_profile_key or "")
 
   for _, key in ipairs(sorted) do
     local proj = projects[key]
@@ -180,15 +198,20 @@ return function(tree, ctx)
 
               if project_has_keyed_tools then
                 -- Keyed-tool modules: show each tool (cached + unconfigured)
+                local is_active_variant = is_active_project
+                    and proj.configuration:lower() == cname:lower()
                 local entries = collect_tool_entries(proj, cname, tools_by_type)
                 for _, entry in ipairs(entries) do
                   local config_status, status_hl, progress_str, is_spinning =
                       helpers.resolve_config_status_global(key, entry.config_key, entry.cached)
+                  local is_active = is_active_variant
+                      and active_tool_key == entry.tool_key
+                  local hl = entry_highlight(config_status, status_hl, is_spinning, is_active)
 
                   tree:node(entry.display_label .. progress_str, {
                     fold_key = "config_tool:" .. key .. ":" .. entry.config_key,
                     spinning = is_spinning,
-                    hl = status_hl,
+                    hl = hl,
                     on_build = actions.build_configuration(key, entry.config_key),
                     on_rebuild = actions.rebuild_configuration(key, entry.config_key),
                     on_clean = actions.clean_configuration(key, entry.config_key),
@@ -206,11 +229,14 @@ return function(tree, ctx)
                     and proj.cached_configurations[cname]
                 local config_status, status_hl, progress_str, is_spinning =
                     helpers.resolve_config_status_global(key, cname, cached)
+                local is_active_variant = is_active_project
+                    and proj.configuration:lower() == cname:lower()
+                local hl = entry_highlight(config_status, status_hl, is_spinning, is_active_variant)
 
                 tree:node("Status: " .. config_status .. progress_str, {
                   fold_key = "config_status:" .. key .. ":" .. cname,
                   spinning = is_spinning,
-                  hl = status_hl,
+                  hl = hl,
                   on_build = actions.build_configuration(key, cname),
                   on_rebuild = actions.rebuild_configuration(key, cname),
                   on_clean = actions.clean_configuration(key, cname),

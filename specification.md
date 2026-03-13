@@ -893,6 +893,25 @@ Each configuration shows its available tools:
 | `D`    | Delete config with dialog |
 | `p`    | Pin as pinned profile |
 
+**Tool entry highlight rules** (keyed-tool modules):
+
+| Condition                       | Highlight              |
+|---------------------------------|------------------------|
+| Running                         | `LoomworksRunning`     |
+| Deleting                        | `LoomworksDeleting`    |
+| Active (matches active profile) | `LoomworksActive`      |
+| Failed                          | `LoomworksFailed`      |
+| Configured/Built (not active)   | `LoomworksConfigured`  |
+| Unconfigured                    | `LoomworksUnconfigured`|
+
+A tool entry is "active" when the active profile's tool_key matches the
+entry's tool_key and the configuration variant matches the project's active
+configuration.
+
+**Non-keyed module highlight rules** follow the same pattern but without
+tool_key matching — the entry is active when its variant matches the
+project's active configuration.
+
 ### 6.9 Deletion Confirmation Dialog
 
 Shown for all delete operations (`D` key). Floating window centered in editor.
