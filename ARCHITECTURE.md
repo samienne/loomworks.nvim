@@ -150,7 +150,14 @@ simpler option.
    })
    ```
 
-6. **Pure where possible.** Functions that don't need state should not have
+6. **Objects over keys.** In runtime code, pass objects (Profile, Project,
+   ConfigUnit) rather than string keys that require lookup. Objects carry
+   their context — the recipient can query state directly without reaching
+   back into core or the data model. In disk formats (cache.json), use
+   lightweight references (e.g., `{ "config_key": "Debug:ninja-gcc-12" }`)
+   that point to the canonical data rather than duplicating it.
+
+7. **Pure where possible.** Functions that don't need state should not have
    state. merge.lua is pure (data in, data out). workspace.lua is pure.
    Modules are stateless — they receive paths and config, return results.
    Only core.lua is stateful, and it is the single owner of all mutable
