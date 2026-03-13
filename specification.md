@@ -396,8 +396,11 @@ still work.
    │ configure_failed │
    └──────────────────┘
 
-   Any state ──── delete/clean ────► deleting ────► unconfigured (clean)
-                                                    or removed (delete)
+   Any state ──── delete/clean ────► deleting ────► unconfigured (clean, success)
+                                                    or removed (delete, success)
+                                                    or unknown (failure)
+
+   unknown ──── delete/clean ────► deleting ────► (same outcomes)
 ```
 
 **State derivation priority**: `deleting > running > cached`
@@ -415,6 +418,10 @@ still work.
    does not invalidate the configure timestamp.
 5. The `deleting` state is transient — it exists only while a deletion
    operation is in flight.
+6. The `unknown` state means the build directory may be partially deleted
+   (e.g., subprocess was killed, or files were locked on Windows). The only
+   user actions available from `unknown` are delete and clean (retry).
+   Build and configure are blocked.
 
 ### 3.2 Cache state names vs ConfigUnit state names
 
@@ -425,6 +432,7 @@ still work.
 | `built`            | `built`             |
 | `failed_configure` | `configure_failed`  |
 | `failed_build`     | `build_failed`      |
+| `unknown`          | `unknown`           |
 | (runtime only)     | `configuring`       |
 | (runtime only)     | `building`          |
 | (runtime only)     | `deleting`          |
@@ -530,19 +538,39 @@ one branch but the configuration set that produced it no longer exists.
    - If not → disposition = `clean` (remove cache entry + build dir)
 3. Stop any running tasks for affected configs
 4. Mark affected ConfigUnits as `deleting`
-5. Execute deletions, remove profile from cache
-6. Unmark ConfigUnits, flush deletion waiters, remerge
+5. Remove profile entry from cache immediately (profile disappears from UI)
+6. **Crash-safe cache update**: set cache state to `"unknown"` for all
+   affected items and save cache to disk. This ensures that if Neovim
+   crashes mid-deletion, the cache still tracks the build directories.
+7. **Delete build directories asynchronously** via subprocess. Multiple
+   directories are deleted in parallel (one subprocess per directory).
+8. On success: remove/reset cache entries per disposition, save cache,
+   flush deletion waiters, remerge
+9. On failure: cache already has `"unknown"` state — notify user with
+   subprocess error output, unmark ConfigUnits, remerge
+10. On crash: cache has `"unknown"` entries on next startup, user can
+    retry delete/clean
+
+**Invariant**: every build directory on disk always has a corresponding
+cache entry. Cache entries are only removed **after** the build directory
+has been successfully deleted.
 
 **Config deletion** (`D` key on a configuration):
 1. Show confirmation dialog
 2. If referenced by any profile (set-based or pinned) → disposition = `reset`
    (clear state but keep skeleton; profile stays and shows "unconfigured")
 3. If not referenced by any profile → disposition = `clean` (remove entry)
-4. Same stop/mark/execute/unmark cycle
+4. Same async stop/mark/execute/unmark cycle
 5. No profiles are ever removed — profiles are only deleted via explicit
    profile deletion (`D` on the profile itself)
 
-**Build directory deletion**: Build directories stored in the cache may reside
+**Async build directory deletion**: Build directories are deleted via
+`vim.system()` subprocess calls (`rm -rf` on Unix, `cmd /c rd /s /q` on
+Windows). This prevents blocking Neovim's event loop during deletion of
+large build directories. Subprocess stderr is captured and shown to the
+user on failure.
+
+**Build directory safety**: Build directories stored in the cache may reside
 anywhere under the workspace root (e.g., `<root>/build/`, `<root>/.nvim/build/`,
 a preset's `binaryDir`). Before deleting a build directory, the system
 normalizes the path and verifies it is under the workspace root. Paths that
@@ -556,10 +584,12 @@ general-purpose utility that deletes what it is told to.
 
 **Profile clean** (`C` key):
 1. For each project in the profile:
-   - Delete build directory
-   - Reset cache entry to unconfigured (clear state, build_dir, timestamps,
-     cmake data)
-   - Keep skeleton (variant, tool_key, tool_data)
+   - Set cache state to `"unknown"` and save to disk (crash-safe)
+   - Delete build directory asynchronously (same subprocess approach as
+     deletion)
+   - On success: reset cache entry to unconfigured (clear state, build_dir,
+     timestamps, cmake data), keep skeleton (variant, tool_key, tool_data)
+   - On failure: cache already has `"unknown"` state, notify user
 2. Profile itself is NOT removed — it stays in the Profiles section
 
 **Config clean** (`C` key on a configuration):
@@ -577,10 +607,15 @@ Before launching a task, the system checks the ConfigUnit state:
 |-----------|--------------------|----------|
 | configure | unconfigured       | launch   |
 | configure | configure_failed   | launch   |
+| configure | unknown            | block    |
 | configure | any other          | skip     |
 | build     | building           | skip     |
 | build     | configuring        | defer    |
+| build     | unknown            | block    |
 | build     | any other          | launch   |
+
+**Blocked tasks**: When a task is blocked due to `unknown` state, the user is
+notified that the config must be cleaned or deleted first.
 
 **Deferred tasks**: When a build task is deferred because its config is still
 configuring, a listener is registered on the ConfigUnit. When configuring
@@ -600,8 +635,8 @@ When building a profile and some projects are unconfigured or in
 
 ### 5.3 Profile-level operations
 
-Profile actions (build/configure) are tracked as "operations" for progress
-reporting:
+Profile actions (build/configure/delete/clean) are tracked as "operations"
+for progress reporting:
 
 1. `start_operation(profile_key, action)` — records start time
 2. Tasks run (potentially multiple projects in parallel)
@@ -610,6 +645,11 @@ reporting:
 
 The operation message is displayed in the Profiles section after the profile
 name.
+
+Deletion and clean operations use the same operation tracking. The action
+is `"delete"` or `"clean"`. Fidget shows a spinner with a message like
+"Deleting Debug:ninja-gcc-12" (no percentage — just a spinner). The status
+page shows the standard spinner animation for deleting configs.
 
 ### 5.4 Progress tracking
 
@@ -628,6 +668,34 @@ If a build/configure action is requested while a deletion is in progress:
 1. `has_pending_deletions()` returns true
 2. Action is deferred via `after_deletions(fn)`
 3. When all deletions complete, deferred actions are flushed in order
+
+### 5.6 Queued actions on deleting configs
+
+If a build or configure action is requested on a ConfigUnit that is currently
+in the `deleting` state:
+
+1. The action is stored as a **queued action** on the ConfigUnit
+   (`_queued_action`).
+2. Only one action can be queued per ConfigUnit. If a new action is queued,
+   it replaces the previous one.
+3. Queueing a build/configure on a config mid-deletion **preserves the cache
+   entry** — even if the original disposition was `clean` (full removal), the
+   cache entry is kept and the deletion effectively becomes a clean+rebuild.
+4. When deletion completes successfully:
+   - If a queued action exists: reset cache entry to `unconfigured`, then
+     execute the queued action
+   - If no queued action: proceed with normal disposal (remove or reset per
+     original disposition)
+5. When deletion fails (`unknown` state):
+   - Queued action is discarded — the user must retry the delete first
+6. Queueing a delete or clean on a config that is already deleting is
+   prevented (cannot stack deletions).
+
+### 5.7 Task readiness: unknown state
+
+Configs in `unknown` state block build and configure actions. The user must
+issue a delete or clean first to resolve the unknown state. The UI should
+indicate this restriction.
 
 ---
 
@@ -963,7 +1031,7 @@ Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
 
 The status page refreshes automatically on these events:
 - `task_started`, `task_stopped`, `task_result`, `task_progress`
-- `deletion_started`, `deletion_completed`
+- `deletion_started`, `deletion_completed`, `deletion_failed`
 - `active_set_changed`
 - `operation_started`, `operation_finished`
 
@@ -986,6 +1054,7 @@ automatically when no spinners are active.
 | `LoomworksFailed`     | `DiagnosticError` | Failed configure or build |
 | `LoomworksRunning`    | `DiagnosticWarn`  | Running tasks (non-active) |
 | `LoomworksDeleting`   | `DiagnosticError` | Deletion in progress |
+| `LoomworksUnknown`    | `DiagnosticWarn`  | Unknown state (partial deletion) |
 | `LoomworksActionable` | `Normal`          | Actionable items (sets, configs) |
 
 Users can override these by defining the highlight groups before plugin load.
@@ -1007,7 +1076,8 @@ Events are the primary mechanism for cross-component communication.
 | `task_stopped`         | (via ConfigUnit) | Task unregistered |
 | `task_progress`        | (via ConfigUnit) | Progress update |
 | `deletion_started`     | `DeletionItem[]` | Deletion operation begins |
-| `deletion_completed`   | `DeletionItem[]` | Deletion operation ends |
+| `deletion_completed`   | `DeletionItem[]` | Deletion operation ends (success) |
+| `deletion_failed`      | `{ items, errors }` | One or more build dir deletions failed |
 
 Events pass data directly to listeners — no need to re-query, no race
 conditions.
