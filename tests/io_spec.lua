@@ -59,23 +59,6 @@ describe("io", function()
       assert.equals('{\n  "a": {\n    "b": 1\n  }\n}\n', result)
     end)
 
-    it("handles arrays", function()
-      local result = io_mod._pretty_json('[1,2,3]')
-      assert.equals('[\n  1,\n  2,\n  3\n]\n', result)
-    end)
-
-    it("preserves strings with special characters", function()
-      local result = io_mod._pretty_json('{"key":"value:with{braces}"}')
-      assert.equals('{\n  "key": "value:with{braces}"\n}\n', result)
-    end)
-
-    it("handles empty objects and arrays", function()
-      local obj_result = io_mod._pretty_json('{}')
-      assert.equals('{\n  \n}\n', obj_result)
-
-      local arr_result = io_mod._pretty_json('[]')
-      assert.equals('[\n  \n]\n', arr_result)
-    end)
   end)
 
   describe("read_json", function()

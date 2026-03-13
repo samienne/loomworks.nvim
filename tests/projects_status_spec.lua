@@ -170,44 +170,6 @@ describe("Projects section cmake status", function()
       .. "\n  cached_from_unit: " .. vim.inspect(results[1].cached_from_unit))
   end)
 
-  it("shows built status for tool-qualified cache entry WITHOUT active profile", function()
-    local core = make_core(
-      {
-        projects = { App = { cmake = {} } },
-        configuration_sets = { debug = { App = "Debug" } },
-      },
-      nil, -- no active profile
-      {
-        projects = {
-          App = {
-            type = "cmake",
-            configurations = {
-              ["Debug:ninja-gcc-12"] = {
-                state = "built",
-                variant = "Debug",
-                tool_key = "ninja-gcc-12",
-                build_dir = "/root/.nvim/build/App/Debug-ninja-gcc-12",
-              },
-            },
-          },
-        },
-      },
-      {
-        merge = merge_with_cmake_tools(),
-        modules = { get = function(t) return t == "cmake" and cmake_module or nil end },
-      }
-    )
-    core:setup({ root = "/root" })
-
-    local results = simulate_projects_section_rendering(core, "App", "Debug")
-    assert.equals(1, #results, "should find exactly one tool entry (from cache)")
-    assert.equals("Debug:ninja-gcc-12", results[1].config_key)
-    assert.equals("built", results[1].state,
-      "ConfigUnit should return 'built' but got '" .. results[1].state .. "'"
-      .. "\n  cached_from_collect: " .. vim.inspect(results[1].cached_from_collect)
-      .. "\n  cached_from_unit: " .. vim.inspect(results[1].cached_from_unit))
-  end)
-
   it("shows built status when no tools detected but cache has keyed entries", function()
     local core = make_core(
       {

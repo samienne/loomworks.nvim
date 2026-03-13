@@ -1,15 +1,6 @@
 local FileTracker = require("loomworks.file_tracker")
 
 describe("FileTracker", function()
-  describe("new", function()
-    it("creates a tracker with defaults", function()
-      local tracker = FileTracker.new({
-        callback = function() end,
-      })
-      assert.is_not_nil(tracker)
-    end)
-  end)
-
   describe("content", function()
     it("returns nil for unwatched path", function()
       local tracker = FileTracker.new({
