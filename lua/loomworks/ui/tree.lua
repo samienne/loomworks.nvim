@@ -280,11 +280,42 @@ function Tree:_add(text, hl, widget)
   end
 end
 
+--- Add a line from {text, hl} chunks at current indentation.
+--- @param chunks {[1]: string, [2]: string}[]
+--- @param widget? table
+function Tree:_add_chunks(chunks, widget)
+  local pad = self:_pad()
+  local parts = { pad }
+  for _, chunk in ipairs(chunks) do
+    parts[#parts + 1] = chunk[1]
+  end
+  self.lines[#self.lines + 1] = table.concat(parts)
+  local ln = #self.lines
+  local col = #pad
+  for _, chunk in ipairs(chunks) do
+    local len = #chunk[1]
+    if chunk[2] then
+      self.highlights[#self.highlights + 1] = {
+        line = ln, col_start = col, col_end = col + len, hl_group = chunk[2],
+      }
+    end
+    col = col + len
+  end
+  if widget then
+    self.line_meta[ln] = widget
+  end
+end
+
 --- Add a plain text line at current indentation.
---- @param text string
+--- Accepts either (text, hl) or a list of {text, hl} chunks.
+--- @param text_or_chunks string|{[1]: string, [2]: string}[]
 --- @param hl? string
-function Tree:leaf(text, hl)
-  self:_add(self:_pad() .. text, hl)
+function Tree:leaf(text_or_chunks, hl)
+  if type(text_or_chunks) == "table" then
+    self:_add_chunks(text_or_chunks)
+  else
+    self:_add(self:_pad() .. text_or_chunks, hl)
+  end
 end
 
 --- Add a blank line.
@@ -332,14 +363,24 @@ function Tree:item(text, opts)
 end
 
 --- Add a labeled sub-section that increases indentation for its children.
---- @param label string
---- @param hl? string
---- @param children_fn fun()
-function Tree:group(label, hl, children_fn)
-  self:leaf(label, hl)
-  self._level = self._level + 1
-  children_fn()
-  self._level = self._level - 1
+--- Accepts either (label, hl, children_fn) or (chunks, children_fn).
+--- @param label_or_chunks string|{[1]: string, [2]: string}[]
+--- @param hl_or_fn string|fun()
+--- @param children_fn? fun()
+function Tree:group(label_or_chunks, hl_or_fn, children_fn)
+  if type(label_or_chunks) == "table" then
+    -- chunks form: group(chunks, children_fn)
+    self:leaf(label_or_chunks)
+    self._level = self._level + 1
+    hl_or_fn() -- this is actually children_fn
+    self._level = self._level - 1
+  else
+    -- simple form: group(label, hl, children_fn)
+    self:leaf(label_or_chunks, hl_or_fn)
+    self._level = self._level + 1
+    children_fn()
+    self._level = self._level - 1
+  end
 end
 
 return Tree

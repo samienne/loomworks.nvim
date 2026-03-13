@@ -651,10 +651,12 @@ Sections are separated by blank lines. Each section has a title line.
 The status page uses a foldable tree widget with two-level nesting.
 
 **Node types**:
-- `leaf` — plain text line, no interaction
+- `leaf` — plain text line, no interaction. Accepts either `(text, hl)` or
+  a list of `{text, hl}` chunks for mixed highlights on one line.
 - `node` — foldable line with children, toggle via `<Tab>`
 - `item` — interactive line with actions, no folding
-- `group` — labeled sub-section that increases indentation
+- `group` — labeled sub-section that increases indentation. Accepts either
+  `(label, hl, children_fn)` or `(chunks, children_fn)` for mixed highlights.
 - `blank` — empty line for spacing
 
 **Fold characters**: `▶` (folded), `▼` (unfolded)
@@ -697,7 +699,34 @@ node that has the corresponding `on_<action>` callback. This means pressing
 **Destructive action highlighting**: `R`, `C`, `D`, `<C-n>` keys are
 highlighted with `DiagnosticWarn` in the help dialog.
 
-### 6.4 Profiles Section
+### 6.4 Action Hints
+
+Action hints show available keys close to the actionable items. Hints use
+`Comment` highlight. Format: `[key] label  [key] label  ...` — keys in
+brackets, separated by double spaces.
+
+**Header hint**: After the Root line, a `Comment` leaf shows global actions:
+`[?] help  [L] load  [<C-n>] reset`
+
+**Section title hints**: Some sections show a `Comment` hint line after the
+title listing available actions for top-level nodes.
+
+| Section | Hint line |
+|---------|-----------|
+| Profiles | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
+| Orphaned Configurations | `[D] delete` (appended to title via chunks) |
+
+**Group header hints**: Inner groups that contain actionable items append a
+hint suffix to the group label. The label uses `LoomworksActionable` highlight
+and the suffix uses `Comment` highlight (via `group` with chunks).
+
+| Group label | Section | Hint suffix |
+|-------------|---------|-------------|
+| Projects: | Profiles | `[b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
+| Tools: | Configuration Sets | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
+| Configurations: | Projects | `[b] build  [c] configure  [p] pin  [R] rebuild  [C] clean  [D] delete` |
+
+### 6.5 Profiles Section
 
 Shows all materialized (cached) and explicit profiles. Profiles only appear
 here when they exist in the cache or are declared in `loomworks.json`.
@@ -744,7 +773,7 @@ profile; it simply has fewer projects when expanded.
 | Profile | activate | build all | configure all | clean+build all | clean all | delete with dialog |
 | Project under profile | — | build config | configure config | clean+build config | clean config | delete config with dialog |
 
-### 6.5 Orphaned Configurations Section
+### 6.6 Orphaned Configurations Section
 
 Shows cached configurations with build state that are not referenced by any
 profile. Hidden when there are no orphaned configs (the common case).
@@ -777,7 +806,7 @@ keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned configs cannot be
 built, configured, or pinned. Deletion shows the standard confirmation
 dialog.
 
-### 6.6 Configuration Sets Section
+### 6.7 Configuration Sets Section
 
 Shows declared configuration sets from `loomworks.json`. Only appears when
 sets are declared.
@@ -815,7 +844,7 @@ Where:
 | `C`    | clean via profile | nil (no-op) |
 | `D`    | delete profile with dialog | nil (no-op) |
 
-### 6.7 Projects Section
+### 6.8 Projects Section
 
 Shows all projects from the active set, including orphaned projects. Projects
 are sorted alphabetically with orphaned projects at the end.
@@ -864,7 +893,7 @@ Each configuration shows its available tools:
 | `D`    | Delete config with dialog |
 | `p`    | Pin as pinned profile |
 
-### 6.8 Deletion Confirmation Dialog
+### 6.9 Deletion Confirmation Dialog
 
 Shown for all delete operations (`D` key). Floating window centered in editor.
 
@@ -879,7 +908,7 @@ Shown for all delete operations (`D` key). Floating window centered in editor.
 
 **Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
 
-### 6.9 Nuke Confirmation Dialog
+### 6.10 Nuke Confirmation Dialog
 
 Shown when `<C-n>` is pressed. Floating window centered in editor.
 
@@ -906,12 +935,12 @@ no files are deleted. These checks are specific to the nuke operation —
 the general io layer does not restrict deletion paths, because normal
 config/profile deletion may delete build directories anywhere.
 
-### 6.10 Help Dialog
+### 6.11 Help Dialog
 
 Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
 `<C-n>`) have their key character highlighted with `DiagnosticWarn`.
 
-### 6.11 Auto-refresh
+### 6.12 Auto-refresh
 
 The status page refreshes automatically on these events:
 - `task_started`, `task_stopped`, `task_result`, `task_progress`

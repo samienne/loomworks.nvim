@@ -24,7 +24,7 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
   end)
 
   if #tool_entries > 0 then
-    tree:group("Tools:", "Comment", function()
+    tree:group({{"Tools:  ", "LoomworksActionable"}, {"[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
       for _, entry in ipairs(tool_entries) do
         local profile_key = entry.profile_key
         local is_active = profile_key == active_profile_key

@@ -125,7 +125,7 @@ return function(tree, ctx)
       end
 
       if proj.configurations and next(proj.configurations) then
-        tree:group("Configurations:", "Comment", function()
+        tree:group({{"Configurations:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [p] pin  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
           local config_names = {}
           for name in pairs(proj.configurations) do
             config_names[#config_names + 1] = name
