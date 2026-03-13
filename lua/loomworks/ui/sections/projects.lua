@@ -220,7 +220,8 @@ return function(tree, ctx)
                         and actions.delete_config(key, entry.config_key) or nil,
                     on_pin = actions.pin_config(key, entry.config_key),
                   }, function()
-                    helpers.render_cached_details(tree, config_status, status_hl, entry.cached)
+                    helpers.render_cached_details(tree, config_status, status_hl, entry.cached,
+                      key .. ":" .. entry.config_key)
                   end)
                 end
               else

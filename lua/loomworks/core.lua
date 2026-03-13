@@ -1138,6 +1138,23 @@ function Core:record_task_result(result)
     end
   end
 
+  -- Parse file-api targets after successful configure
+  if action == "configure" and success and result.build_dir then
+    local proj_type = cached_proj.type
+        or (ws.config.projects[project_key] and ws.config.projects[project_key].type)
+    if proj_type then
+      local mod = self._deps.modules.get(proj_type)
+      if mod and mod.parse_file_api then
+        local variant = self._deps.merge.parse_profile_key(config_key)
+        local targets = mod.parse_file_api(result.build_dir, variant)
+        if targets then
+          cached_config.cmake = cached_config.cmake or {}
+          cached_config.cmake.targets = targets
+        end
+      end
+    end
+  end
+
   self:_save_cache()
   self:remerge()
   self._deps.events.emit("task_result", result)

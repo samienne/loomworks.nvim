@@ -84,9 +84,9 @@
 --- @field targets? table<string, loomworks.CachedTarget>
 
 --- @class loomworks.CachedTarget
---- @field type string target type ("executable", "library", etc.)
---- @field built? boolean
---- @field last_built? string ISO 8601 timestamp
+--- @field type string "executable"|"static_library"|"shared_library"|"module_library"|"object_library"|"interface_library"
+--- @field dependencies? string[] project-owned targets this target links against
+--- @field artifact? string primary output file path (relative to build directory)
 
 -- ========================== Detected Tools ==========================
 
