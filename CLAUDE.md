@@ -36,6 +36,12 @@ directly.
 
 All changes go through branches — never commit directly to master.
 
+### Plan first, then execute
+
+Before starting implementation, propose a plan and wait for approval. This
+applies to non-trivial changes — simple one-line fixes or obvious corrections
+can proceed directly.
+
 ### Commits
 
 Do not create commits automatically. Only commit when the user explicitly
