@@ -236,7 +236,7 @@ may import from its own layer or any layer below it, never above.
 | `merge.lua` | Three-file merge algorithm, profile resolution, mapping computation, orphaned project detection | Mutate state; do I/O; depend on core.lua |
 | `profile.lua` | Profile and ProfileProject classes, status aggregation, plan_deletion | Own state beyond what core provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation | Own state beyond what core provides |
-| `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag. Listener pattern via `on_state_change()` | Persist anything (runtime only); know about profiles |
+| `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag, queued action. Listener pattern via `on_state_change()` | Persist anything (runtime only); know about profiles |
 | `events.lua` | Pub/sub system: `on()`, `off()`, `emit()` | Hold domain state; know about specific event semantics |
 | `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). In-memory caching of results | Do I/O beyond process spawning for detection |
 
@@ -244,7 +244,7 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `io.lua` | Atomic file read/write, JSON encode/decode, rm_rf, directory creation | Validate domain semantics; know about loomworks data model |
+| `io.lua` | Atomic file read/write, JSON encode/decode, rm_rf (sync fallback), rm_rf_async (subprocess), directory creation | Validate domain semantics; know about loomworks data model |
 | `config.lua` | `loomworks.json` parsing, validation, project type extraction | Write files (config is read-only) |
 | `user.lua` | `loomworks.user.json` parse/save/defaults | Validate beyond structural correctness |
 | `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking | Business logic; auto-migration |
@@ -338,10 +338,16 @@ User presses D → actions.delete_profile/config/orphaned (closure)
     → mark ConfigUnits as deleting
     → stop running overseer tasks
     → wait for tasks to complete
-    → io.rm_rf(build_dirs) with workspace root safety check
-    → remove cache entries → cache.save()
+    → set cache state to "unknown" + save (crash-safe)
+    → vim.system() subprocess per build dir (parallel, async)
+      → Unix: rm -rf <dir>
+      → Windows: cmd /c rd /s /q <dir>
+    → on subprocess completion:
+      → success: remove/reset cache entries → cache.save()
+      → failure: cache already "unknown", notify with stderr
+    → check queued actions on ConfigUnits
     → unmark ConfigUnits → flush deletion waiters → remerge
-    → events.emit("deletion_completed")
+    → events.emit("deletion_completed" or "deletion_failed")
 ```
 
 ---

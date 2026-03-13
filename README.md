@@ -354,12 +354,14 @@ Each configuration tracks its build state:
 | `built` | Build succeeded |
 | `configure_failed` | Configure attempted and failed |
 | `build_failed` | Build attempted and failed |
+| `unknown` | Build directory may be partially deleted (cleanup interrupted) |
 
 Orthogonal flags: `needs_refresh` (project files changed since last configure),
 `orphaned` (project in cache but removed from loomworks.json).
 
 Failed states are never auto-cleaned — only explicit user action (`C` or `D`)
-removes them.
+removes them. Configs in `unknown` state block build/configure until cleaned
+or deleted.
 
 ## Architecture
 

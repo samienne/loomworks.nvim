@@ -159,14 +159,18 @@ end
 
 --- Check whether a task should be launched, skipped, or deferred based on ConfigUnit state.
 --- Configure tasks: only launch if unconfigured or configure_failed.
---- Build tasks: skip if already building, defer if currently configuring.
+--- Build tasks: skip if already building, defer if currently configuring,
+--- block if in unknown state.
 --- @param task_def table task definition with .loomworks
---- @return "launch"|"skip"|"defer"
+--- @return "launch"|"skip"|"defer"|"block"
 local function check_task_readiness(task_def)
   local lw = require("loomworks")
   local lw_meta = task_def.loomworks
   local unit = lw.get_config_unit(lw_meta.project_key, lw_meta.configuration_key)
   local state = unit:state()
+
+  -- Unknown state blocks all actions — user must clean/delete first
+  if state == "unknown" then return "block" end
 
   if lw_meta.action == "configure" then
     if state == "unconfigured" or state == "configure_failed" then
@@ -200,8 +204,15 @@ local function launch_tasks(overseer, task_defs, on_all_done)
       to_launch[#to_launch + 1] = task_def
     elseif readiness == "defer" then
       to_defer[#to_defer + 1] = task_def
+    elseif readiness == "block" then
+      local meta = task_def.loomworks
+      vim.notify(
+        "loomworks: " .. meta.project_key .. "/" .. meta.configuration_key
+          .. " is in unknown state — clean or delete first",
+        vim.log.levels.WARN
+      )
     end
-    -- "skip" tasks are dropped
+    -- "skip" and "block" tasks are dropped
     ::next::
   end
 

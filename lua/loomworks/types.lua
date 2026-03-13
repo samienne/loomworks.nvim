@@ -261,3 +261,4 @@
 --- | "configure_failed"
 --- | "build_failed"
 --- | "deleting"
+--- | "unknown"

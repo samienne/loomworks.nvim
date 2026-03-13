@@ -67,6 +67,7 @@ M.STATUS_HL = {
   configuring      = "LoomworksRunning",
   building         = "LoomworksRunning",
   deleting         = "LoomworksDeleting",
+  unknown          = "LoomworksUnknown",
 }
 
 M.STATUS_ICON = {
@@ -75,6 +76,7 @@ M.STATUS_ICON = {
   built            = "✔",
   failed_configure = "✘",
   failed_build     = "✘",
+  unknown          = "?",
 }
 
 --- Format a status label with its icon prefix.

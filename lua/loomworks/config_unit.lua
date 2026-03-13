@@ -26,6 +26,7 @@ ConfigUnit.__index = ConfigUnit
 --- | "configure_failed"
 --- | "build_failed"
 --- | "deleting"
+--- | "unknown"
 
 --- Create a new ConfigUnit.
 --- @param core loomworks.Core
@@ -42,6 +43,7 @@ function ConfigUnit.new(core, project_key, config_key)
   self._progress = nil
   self._start_time = nil
   self._deleting = false
+  self._queued_action = nil
   self._listeners = {}
   return self
 end
@@ -68,6 +70,7 @@ function ConfigUnit:state()
   local state = cached.state
   if state == "failed_configure" then return "configure_failed" end
   if state == "failed_build" then return "build_failed" end
+  if state == "unknown" then return "unknown" end
   return state
 end
 
@@ -158,7 +161,33 @@ end
 --- @param flag boolean
 function ConfigUnit:mark_deleting(flag)
   self._deleting = flag
+  if not flag then
+    self._queued_action = nil
+  end
   self:_notify()
+end
+
+--- Queue an action to run after the current deletion completes.
+--- Only valid while the unit is deleting. Replaces any previously queued action.
+--- @param action string "configure" or "build"
+function ConfigUnit:queue_action(action)
+  if not self._deleting then return end
+  self._queued_action = action
+  self:_notify()
+end
+
+--- Get the queued action, if any.
+--- @return string|nil "configure" or "build"
+function ConfigUnit:queued_action()
+  return self._queued_action
+end
+
+--- Pop the queued action (retrieve and clear).
+--- @return string|nil "configure" or "build"
+function ConfigUnit:pop_queued_action()
+  local action = self._queued_action
+  self._queued_action = nil
+  return action
 end
 
 -- ---------------------------------------------------------------------------

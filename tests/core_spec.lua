@@ -1187,32 +1187,20 @@ describe("Core", function()
       assert.is_nil(ws.cache.projects.App)
     end)
 
-    it("refuses to delete build dir outside .nvim/build", function()
+    it("refuses to delete build dir outside workspace root", function()
       local notifications = {}
       local core = make_core(
         { projects = { App = { typescript = {} } } },
         nil,
+        nil,
         {
-          projects = {
-            App = {
-              type = "typescript",
-              configurations = {
-                development = { state = "built", build_dir = "/root/src/App" },
-              },
-            },
-          },
-        },
-        {
-          cache = { save = function() return true end },
           notify = function(msg, level)
             notifications[#notifications + 1] = { msg = msg, level = level }
           end,
         }
       )
       core:setup({ root = "/root" })
-      core:delete_cached_configs({
-        { project_key = "App", config_key = "development" },
-      })
+      assert.is_false(core:_validate_build_dir("/other/path/App", "/root"))
       local found_refusal = false
       for _, n in ipairs(notifications) do
         if n.msg:match("refusing to delete") then
@@ -1221,6 +1209,35 @@ describe("Core", function()
         end
       end
       assert.is_true(found_refusal)
+    end)
+
+    it("refuses prefix collision (e.g. /root vs /roots)", function()
+      local notifications = {}
+      local core = make_core(
+        { projects = { App = { typescript = {} } } },
+        nil,
+        nil,
+        {
+          notify = function(msg, level)
+            notifications[#notifications + 1] = { msg = msg, level = level }
+          end,
+        }
+      )
+      core:setup({ root = "/root" })
+      -- /roots starts with /root but is NOT under /root
+      assert.is_false(core:_validate_build_dir("/roots/build/App", "/root"))
+    end)
+
+    it("allows build dir under workspace root", function()
+      local core = make_core(
+        { projects = { App = { typescript = {} } } },
+        nil,
+        nil,
+        { notify = function() end }
+      )
+      core:setup({ root = "/root" })
+      assert.is_true(core:_validate_build_dir("/root/.nvim/build/App", "/root"))
+      assert.is_true(core:_validate_build_dir("/root/build/Debug", "/root"))
     end)
   end)
 
@@ -1807,9 +1824,9 @@ describe("Core", function()
         },
         {
           io = {
-            rm_rf = function(path)
+            rm_rf_async = function(path, cb)
               deleted_dirs[#deleted_dirs + 1] = path
-              return true
+              cb(true, nil)
             end,
           },
           cache = {

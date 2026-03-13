@@ -13,6 +13,7 @@ hl(0, "LoomworksUnconfigured", { link = "Comment",         default = true })
 hl(0, "LoomworksFailed",       { link = "DiagnosticError", default = true })
 hl(0, "LoomworksRunning",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksDeleting",     { link = "DiagnosticError", default = true })
+hl(0, "LoomworksUnknown",     { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksActionable",  { link = "Normal",         default = true })
 
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)

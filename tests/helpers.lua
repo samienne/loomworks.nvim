@@ -141,6 +141,7 @@ function M.make_test_deps(files, opts)
       read_file = file_lookup,
       write_json = function() return true end,
       rm_rf = function() return true end,
+      rm_rf_async = function(_, cb) cb(true, nil) end,
       ensure_dir = function() return true end,
     },
     workspace = {
