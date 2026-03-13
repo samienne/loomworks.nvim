@@ -345,6 +345,109 @@ describe("Core", function()
       assert.equals("App", key)
       assert.is_not_nil(proj)
     end)
+
+    it("returns nil for unmatched buffer path", function()
+      local function test_normalize(p) return p:gsub("\\", "/") end
+      local core = make_core(nil, nil, nil, {
+        buf_name = function() return "/other/path/file.cpp" end,
+        normalize = test_normalize,
+      })
+      core:setup({ root = "/root" })
+      local key, proj = core:project_for_buf(1)
+      assert.is_nil(key)
+      assert.is_nil(proj)
+    end)
+
+    it("picks innermost project for nested paths", function()
+      local function test_normalize(p) return p:gsub("\\", "/") end
+      local core = make_core({
+        projects = {
+          Root = { cmake = {} },
+          ["Root/Sub"] = { cmake = {} },
+        },
+      }, nil, nil, {
+        buf_name = function() return "/root/Root/Sub/src/file.cpp" end,
+        normalize = test_normalize,
+      })
+      core:setup({ root = "/root" })
+      local key = core:project_for_buf(1)
+      assert.equals("Root/Sub", key)
+    end)
+
+    it("returns nil without workspace setup", function()
+      local core = make_core(nil, nil, nil, {
+        buf_name = function() return "/root/App/src/main.cpp" end,
+      })
+      -- Do NOT call setup
+      local key, proj = core:project_for_buf(1)
+      assert.is_nil(key)
+      assert.is_nil(proj)
+    end)
+  end)
+
+  describe("rescan_tools", function()
+    local real_merge = require("loomworks.merge")
+
+    --- Build a merge override that replaces detect_tools but keeps merge.merge.
+    local function merge_with_mock_detect(detect_fn)
+      return {
+        detect_tools = detect_fn,
+        merge = real_merge.merge,
+        module_has_keyed_tools = real_merge.module_has_keyed_tools,
+        get_all_profiles = real_merge.get_all_profiles,
+      }
+    end
+
+    it("updates tools_by_type from module detection", function()
+      local mock_tools = {
+        cmake = {
+          {
+            tool_data = { id = "ninja-gcc-12", display = "Ninja + GCC 12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
+            tool_key = "ninja-gcc-12",
+            tool_label = "Ninja + GCC 12",
+          },
+        },
+      }
+      local core = make_core(nil, nil, nil, {
+        merge = merge_with_mock_detect(function() return mock_tools end),
+      })
+      core:setup({ root = "/root" })
+
+      core:rescan_tools()
+
+      local tools = core:get_tools_by_type()
+      assert.is_not_nil(tools.cmake)
+      assert.equals(1, #tools.cmake)
+      assert.equals("ninja-gcc-12", tools.cmake[1].tool_key)
+      assert.equals("Ninja + GCC 12", tools.cmake[1].tool_label)
+    end)
+
+    it("triggers remerge and increments generation", function()
+      local core = make_core(nil, nil, nil, {
+        merge = merge_with_mock_detect(function() return {} end),
+      })
+      core:setup({ root = "/root" })
+      local gen_before = core._generation
+
+      core:rescan_tools()
+
+      assert.is_true(core._generation > gen_before)
+    end)
+
+    it("does not error without workspace", function()
+      local core = make_core(nil, nil, nil, {
+        merge = merge_with_mock_detect(function() return {} end),
+      })
+      -- Do NOT call setup
+
+      -- Should not raise
+      assert.has_no.errors(function()
+        core:rescan_tools()
+      end)
+
+      -- tools_by_type should remain empty
+      assert.same({}, core:get_tools_by_type())
+    end)
   end)
 
   describe("deactivate_profile", function()
@@ -612,6 +715,255 @@ describe("Core", function()
       local core = make_core()
       -- don't setup
       core:_on_file_changed("/root/loomworks.json", "{}") -- should not error
+    end)
+
+    it("notifies INFO on successful config reload", function()
+      local notifications = {}
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil, nil,
+        {
+          notify = function(msg, level)
+            notifications[#notifications + 1] = { msg = msg, level = level }
+          end,
+        }
+      )
+      core:setup({ root = "/root" })
+      notifications = {} -- clear setup notifications
+
+      local new_config = h.make_config_json({
+        projects = { App = { typescript = {} }, Lib = { typescript = {} } },
+        configuration_sets = { debug = { App = "development", Lib = "development" } },
+      })
+      core:_on_file_changed("/root/loomworks.json", new_config)
+
+      local found_info = false
+      for _, n in ipairs(notifications) do
+        if n.msg:match("config reloaded") and n.level == vim.log.levels.INFO then
+          found_info = true
+        end
+      end
+      assert.is_true(found_info, "should notify INFO on successful config reload")
+    end)
+
+    it("notifies WARN when config reload fails with invalid JSON", function()
+      local notifications = {}
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+        },
+        nil, nil,
+        {
+          notify = function(msg, level)
+            notifications[#notifications + 1] = { msg = msg, level = level }
+          end,
+        }
+      )
+      core:setup({ root = "/root" })
+      notifications = {} -- clear setup notifications
+
+      core:_on_file_changed("/root/loomworks.json", "not valid json {{{")
+
+      local found_warn = false
+      for _, n in ipairs(notifications) do
+        if n.msg:match("config reload failed") and n.level == vim.log.levels.WARN then
+          found_warn = true
+        end
+      end
+      assert.is_true(found_warn, "should notify WARN on config reload failure")
+    end)
+
+    it("notifies WARN when config validation fails", function()
+      local notifications = {}
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+        },
+        nil, nil,
+        {
+          notify = function(msg, level)
+            notifications[#notifications + 1] = { msg = msg, level = level }
+          end,
+          modules = {
+            get = function(mod_type)
+              if mod_type == "cmake" then
+                return {
+                  validate = function()
+                    return { valid = false, warnings = { "missing CMakeLists.txt" } }
+                  end,
+                }
+              end
+              return nil
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      notifications = {} -- clear setup notifications
+
+      -- Change config to add a cmake project that will fail validation
+      local new_config = h.make_config_json({
+        projects = { BadProject = { cmake = {} } },
+      })
+      core:_on_file_changed("/root/loomworks.json", new_config)
+
+      local found_warn = false
+      for _, n in ipairs(notifications) do
+        if n.msg:match("config reload failed") and n.level == vim.log.levels.WARN then
+          found_warn = true
+        end
+      end
+      assert.is_true(found_warn, "should notify WARN when validation fails")
+    end)
+
+    it("does not update workspace on config reload failure", function()
+      local core = make_core({
+        projects = { App = { typescript = {} } },
+      })
+      core:setup({ root = "/root" })
+      local gen_before = core._generation
+
+      core:_on_file_changed("/root/loomworks.json", "not valid json {{{")
+
+      assert.equals(gen_before, core._generation)
+      -- Original project should still be there
+      assert.is_not_nil(core._workspace.config.projects.App)
+    end)
+
+    it("emits active_set_changed when user file changes", function()
+      local core, deps = make_core({
+        projects = { App = { typescript = {} } },
+        configuration_sets = { debug = { App = "development" } },
+      })
+      core:setup({ root = "/root" })
+      -- Clear events from setup
+      for i = #deps._events_log, 1, -1 do
+        table.remove(deps._events_log, i)
+      end
+
+      local new_user = h.make_user_json({ active_profile = "debug" })
+      core:_on_file_changed("/root/.nvim/loomworks.user.json", new_user)
+
+      local found = false
+      for _, e in ipairs(deps._events_log) do
+        if e.event == "active_set_changed" then found = true end
+      end
+      assert.is_true(found, "should emit active_set_changed on user file change")
+    end)
+
+    it("emits active_set_changed when cache file changes", function()
+      local core, deps = make_core({
+        projects = { App = { typescript = {} } },
+      })
+      core:setup({ root = "/root" })
+      for i = #deps._events_log, 1, -1 do
+        table.remove(deps._events_log, i)
+      end
+
+      local new_cache = h.make_cache_json({
+        projects = {
+          App = {
+            type = "typescript",
+            configurations = { development = { state = "configured" } },
+          },
+        },
+      })
+      core:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
+
+      local found = false
+      for _, e in ipairs(deps._events_log) do
+        if e.event == "active_set_changed" then found = true end
+      end
+      assert.is_true(found, "should emit active_set_changed on cache file change")
+    end)
+
+    it("defaults user data when user file content is nil", function()
+      local core = make_core({
+        projects = { App = { typescript = {} } },
+        configuration_sets = { debug = { App = "development" } },
+      }, { active_profile = "debug" })
+      core:setup({ root = "/root" })
+      assert.equals("debug", core._workspace.user.active_profile)
+
+      -- Simulate user file being deleted (nil content)
+      core:_on_file_changed("/root/.nvim/loomworks.user.json", nil)
+
+      assert.is_nil(core._workspace.user.active_profile)
+    end)
+
+    it("defaults cache data when cache file content is nil", function()
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+        },
+        nil,
+        {
+          projects = {
+            App = {
+              type = "typescript",
+              configurations = { development = { state = "built" } },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.is_not_nil(core._workspace.cache.projects.App)
+
+      -- Simulate cache file being deleted (nil content)
+      core:_on_file_changed("/root/.nvim/loomworks.cache.json", nil)
+
+      -- Cache should be reset to default (empty projects)
+      assert.same({}, core._workspace.cache.projects)
+    end)
+
+    it("emits active_set_changed when config file changes", function()
+      local core, deps = make_core({
+        projects = { App = { typescript = {} } },
+        configuration_sets = { debug = { App = "development" } },
+      })
+      core:setup({ root = "/root" })
+      for i = #deps._events_log, 1, -1 do
+        table.remove(deps._events_log, i)
+      end
+
+      local new_config = h.make_config_json({
+        projects = { App = { typescript = {} } },
+        configuration_sets = {
+          debug = { App = "development" },
+          release = { App = "production" },
+        },
+      })
+      core:_on_file_changed("/root/loomworks.json", new_config)
+
+      local found = false
+      for _, e in ipairs(deps._events_log) do
+        if e.event == "active_set_changed" then found = true end
+      end
+      assert.is_true(found, "should emit active_set_changed on config file change")
+    end)
+
+    it("updates configuration_sets when config changes", function()
+      local core = make_core({
+        projects = { App = { typescript = {} } },
+        configuration_sets = { debug = { App = "development" } },
+      })
+      core:setup({ root = "/root" })
+      assert.is_nil(core._workspace.config.configuration_sets.release)
+
+      local new_config = h.make_config_json({
+        projects = { App = { typescript = {} } },
+        configuration_sets = {
+          debug = { App = "development" },
+          release = { App = "production" },
+        },
+      })
+      core:_on_file_changed("/root/loomworks.json", new_config)
+
+      assert.is_not_nil(core._workspace.config.configuration_sets.release)
+      assert.equals("production", core._workspace.config.configuration_sets.release.App)
     end)
   end)
 
@@ -1696,6 +2048,193 @@ describe("Core", function()
     -- Directory traversal (e.g. /test/.nvim/../secret) is handled by
     -- vim.fs.normalize which resolves ".." before the prefix check runs.
     -- Not tested here because the test mock doesn't resolve "..".
+  end)
+
+  describe("_migrate_set_names", function()
+    it("renames cached profile when config set case changes", function()
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+          configuration_sets = { Debug = { App = "Debug" } },
+        },
+        nil,
+        {
+          profiles = {
+            ["debug:ninja-gcc-12"] = {
+              configuration_set = "debug",
+              tool_key = "ninja-gcc-12",
+              projects = { App = { config_key = "Debug" } },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local ws = core:get_workspace()
+      assert.is_nil(ws.cache.profiles["debug:ninja-gcc-12"])
+      assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
+      assert.equals("Debug", ws.cache.profiles["Debug:ninja-gcc-12"].configuration_set)
+    end)
+
+    it("updates active_profile when migrated", function()
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+          configuration_sets = { Debug = { App = "Debug" } },
+        },
+        { active_profile = "debug:ninja-gcc-12" },
+        {
+          profiles = {
+            ["debug:ninja-gcc-12"] = {
+              configuration_set = "debug",
+              tool_key = "ninja-gcc-12",
+              projects = { App = { config_key = "Debug" } },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local ws = core:get_workspace()
+      assert.equals("Debug:ninja-gcc-12", ws.user.active_profile)
+    end)
+
+    it("no-op when names already match", function()
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+          configuration_sets = { debug = { App = "Debug" } },
+        },
+        nil,
+        {
+          profiles = {
+            ["debug:ninja-gcc-12"] = {
+              configuration_set = "debug",
+              tool_key = "ninja-gcc-12",
+              projects = { App = { config_key = "Debug" } },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local ws = core:get_workspace()
+      assert.is_not_nil(ws.cache.profiles["debug:ninja-gcc-12"])
+      assert.equals("debug", ws.cache.profiles["debug:ninja-gcc-12"].configuration_set)
+    end)
+
+    it("skips pinned profiles (no configuration_set)", function()
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+          configuration_sets = { Debug = { App = "Debug" } },
+        },
+        nil,
+        {
+          profiles = {
+            ["App/Debug:ninja-gcc-12"] = {
+              mappings = { App = "Debug" },
+              tool_key = "ninja-gcc-12",
+              projects = { App = { config_key = "Debug" } },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local ws = core:get_workspace()
+      assert.is_not_nil(ws.cache.profiles["App/Debug:ninja-gcc-12"])
+    end)
+
+    it("handles multiple renames in one pass", function()
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+          configuration_sets = {
+            Debug = { App = "Debug" },
+            Release = { App = "Release" },
+          },
+        },
+        nil,
+        {
+          profiles = {
+            ["debug:ninja-gcc-12"] = {
+              configuration_set = "debug",
+              tool_key = "ninja-gcc-12",
+              projects = { App = { config_key = "Debug" } },
+            },
+            ["release:ninja-gcc-12"] = {
+              configuration_set = "release",
+              tool_key = "ninja-gcc-12",
+              projects = { App = { config_key = "Release" } },
+            },
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+      local ws = core:get_workspace()
+      assert.is_nil(ws.cache.profiles["debug:ninja-gcc-12"])
+      assert.is_nil(ws.cache.profiles["release:ninja-gcc-12"])
+      assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
+      assert.is_not_nil(ws.cache.profiles["Release:ninja-gcc-12"])
+      assert.equals("Debug", ws.cache.profiles["Debug:ninja-gcc-12"].configuration_set)
+      assert.equals("Release", ws.cache.profiles["Release:ninja-gcc-12"].configuration_set)
+    end)
+
+    it("saves cache after migration", function()
+      local saved_cache = {}
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+          configuration_sets = { Debug = { App = "Debug" } },
+        },
+        nil,
+        {
+          profiles = {
+            ["debug:ninja-gcc-12"] = {
+              configuration_set = "debug",
+              tool_key = "ninja-gcc-12",
+              projects = { App = { config_key = "Debug" } },
+            },
+          },
+        },
+        {
+          cache = { save = function(root, data) saved_cache[#saved_cache + 1] = data; return true end },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.is_true(#saved_cache > 0)
+      -- The last saved cache should have the renamed profile
+      local last = saved_cache[#saved_cache]
+      assert.is_not_nil(last.profiles["Debug:ninja-gcc-12"])
+    end)
+
+    it("saves user.json when active_profile changes", function()
+      local saved_user = {}
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+          configuration_sets = { Debug = { App = "Debug" } },
+        },
+        { active_profile = "debug:ninja-gcc-12" },
+        {
+          profiles = {
+            ["debug:ninja-gcc-12"] = {
+              configuration_set = "debug",
+              tool_key = "ninja-gcc-12",
+              projects = { App = { config_key = "Debug" } },
+            },
+          },
+        },
+        {
+          user = { save = function(root, data) saved_user[#saved_user + 1] = data; return true end },
+        }
+      )
+      core:setup({ root = "/root" })
+      assert.is_true(#saved_user > 0)
+      -- The saved user data should have the new active_profile
+      local found = false
+      for _, u in ipairs(saved_user) do
+        if u.active_profile == "Debug:ninja-gcc-12" then found = true end
+      end
+      assert.is_true(found, "user.json should have been saved with migrated active_profile")
+    end)
   end)
 
 end)

@@ -194,4 +194,126 @@ describe("lsp", function()
       assert.equals("function", type(cmd_fn))
     end)
   end)
+
+  describe("get_status", function()
+    it("returns empty table when no workspace loaded", function()
+      -- The init.lua singleton won't have a workspace unless setup was called.
+      -- Temporarily ensure get_workspace returns nil.
+      local lw = require("loomworks")
+      local orig_gw = lw.get_workspace
+      lw.get_workspace = function() return nil end
+
+      local status = lsp.get_status()
+      assert.equals("table", type(status))
+      assert.equals(0, vim.tbl_count(status))
+
+      lw.get_workspace = orig_gw
+    end)
+
+    it("returns project info for cmake projects", function()
+      local core = setup_core({
+        root = "/workspace",
+        projects = { MyLib = {} },
+        config_sets = { debug = { MyLib = "Debug" } },
+        user = { active_profile = "debug" },
+        cache = {
+          profiles = {
+            debug = { configuration_set = "debug", projects = { MyLib = { config_key = "Debug" } } },
+          },
+          projects = {
+            MyLib = {
+              type = "cmake",
+              configurations = {
+                Debug = { state = "built", build_dir = "/workspace/.nvim/build/MyLib/Debug" },
+              },
+            },
+          },
+        },
+      })
+
+      -- Patch init.lua to use our test core
+      local lw = require("loomworks")
+      local orig_gw = lw.get_workspace
+      local orig_gp = lw.get_projects
+      lw.get_workspace = function() return core:get_workspace() end
+      lw.get_projects = function() return core:get_projects() end
+
+      local orig_get_clients = vim.lsp.get_clients
+      vim.lsp.get_clients = function() return {} end
+
+      local status = lsp.get_status()
+      assert.equals("table", type(status))
+      assert.is_not_nil(status["MyLib"])
+      assert.equals("/workspace/MyLib", status["MyLib"].root_dir)
+      -- compile_commands_dir is nil because fs_stat won't find the file in tests
+      assert.is_nil(status["MyLib"].compile_commands_dir)
+      -- clangd_bin is nil because no override configured and fs_stat won't find it
+      assert.is_nil(status["MyLib"].clangd_bin)
+      assert.equals(0, status["MyLib"].clients)
+
+      vim.lsp.get_clients = orig_get_clients
+      lw.get_workspace = orig_gw
+      lw.get_projects = orig_gp
+    end)
+
+    it("counts matching clangd clients", function()
+      local core = setup_core({
+        root = "/workspace",
+        projects = { MyLib = {} },
+        config_sets = { debug = { MyLib = "Debug" } },
+        user = { active_profile = "debug" },
+      })
+
+      local lw = require("loomworks")
+      local orig_gw = lw.get_workspace
+      local orig_gp = lw.get_projects
+      lw.get_workspace = function() return core:get_workspace() end
+      lw.get_projects = function() return core:get_projects() end
+
+      local orig_get_clients = vim.lsp.get_clients
+      vim.lsp.get_clients = function()
+        return {
+          { root_dir = "/workspace/MyLib", name = "clangd" },
+          { root_dir = "/workspace/Other", name = "clangd" },
+        }
+      end
+
+      local status = lsp.get_status()
+      assert.equals(1, status["MyLib"].clients)
+
+      vim.lsp.get_clients = orig_get_clients
+      lw.get_workspace = orig_gw
+      lw.get_projects = orig_gp
+    end)
+
+    it("excludes non-cmake projects", function()
+      -- Create a workspace with an ets project (not cmake)
+      local config_json = h.make_config_json({
+        projects = { Frontend = { ets = {} } },
+        configuration_sets = { debug = { Frontend = "debug" } },
+      })
+      local deps = h.make_test_deps({
+        ["loomworks.json"] = config_json,
+        ["loomworks.cache.json"] = h.make_cache_json({}),
+      })
+      local core = Core.new(deps)
+      core:setup({ root = "/workspace" })
+
+      local lw = require("loomworks")
+      local orig_gw = lw.get_workspace
+      local orig_gp = lw.get_projects
+      lw.get_workspace = function() return core:get_workspace() end
+      lw.get_projects = function() return core:get_projects() end
+
+      local orig_get_clients = vim.lsp.get_clients
+      vim.lsp.get_clients = function() return {} end
+
+      local status = lsp.get_status()
+      assert.equals(0, vim.tbl_count(status))
+
+      vim.lsp.get_clients = orig_get_clients
+      lw.get_workspace = orig_gw
+      lw.get_projects = orig_gp
+    end)
+  end)
 end)
