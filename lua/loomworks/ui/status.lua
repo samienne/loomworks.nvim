@@ -49,6 +49,7 @@ local function render_fn(tree)
   tree:blank()
   tree:leaf("Workspace: " .. ws.name, "Type")
   tree:leaf("Root:      " .. ws.root, "Comment")
+  tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
   tree:blank()
 
   local ctx = {

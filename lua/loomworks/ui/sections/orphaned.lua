@@ -15,7 +15,7 @@ return function(tree, ctx)
   local orphans = lw.get_orphaned_configs()
   if #orphans == 0 then return end
 
-  tree:leaf("Orphaned Configurations", "Title")
+  tree:leaf({{"Orphaned Configurations  ", "Title"}, {"[D] delete", "Comment"}})
   tree:blank()
 
   -- Group by project
