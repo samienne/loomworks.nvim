@@ -240,6 +240,50 @@ The merge operation produces the active set by reconciling all three files:
 | Yes       | No       | Available — unconfigured |
 | No        | Yes      | Orphaned — shown distinctly, user cleans manually |
 
+### 2.5 Environment variable resolution for toolchain paths
+
+`loomworks.json` uses `${ENV_VAR}` references for toolchain paths (e.g.,
+`"toolchain": "${OHOS_NDK_HOME}/cmake/ohos.toolchain.cmake"`). These
+references are never stored resolved in `loomworks.json` — that file stays
+portable. The cache stores the resolved absolute path alongside other tool
+properties.
+
+**Where each form lives**:
+
+| File | Stores | Example |
+|------|--------|---------|
+| `loomworks.json` | Variable reference | `${OHOS_NDK_HOME}/cmake/ohos.toolchain.cmake` |
+| `cache.json` | Resolved absolute path | `/opt/ohos-sdk/10/cmake/ohos.toolchain.cmake` |
+
+**Resolution timing**: Environment variables are resolved at **task launch
+time** (configure/build), not at startup or UI render. When the user presses
+`c` or `b`, the system resolves `${ENV_VAR}` from the current environment.
+If the variable is unset, the task is rejected immediately with an error
+notification — no task is launched.
+
+**Cache is descriptive, not prescriptive**: The resolved path stored in the
+cache records what was used at the last configure. It is never used to drive
+future builds — fresh resolution from `loomworks.json` + current environment
+always takes precedence. This means:
+
+- A profile with a built config remains fully **buildable** even when the
+  env var is unset — cmake bakes the toolchain into `CMakeCache.txt` at
+  configure time, so builds do not need re-resolution.
+- A profile can only be **re-configured** when the env var is set.
+
+**Staleness detection via `inspect()`**: The module's `inspect()` function
+can compare the cached resolved path to the currently-resolved path. If they
+differ (user updated SDK), `needs_refresh = true` with a reason like
+"toolchain path changed." If the env var is unset, `inspect()` may add an
+informational note but should NOT set `needs_refresh` since existing builds
+still work.
+
+**What is explicitly avoided**:
+- No env var resolution on startup (unnecessary, potentially noisy)
+- No toolchain/SDK existence validation at UI render time (expensive,
+  module-specific — the right place for that check is task launch)
+- No builds driven by cached paths (cache is a record, not a driver)
+
 ---
 
 ## 3. State Machine
@@ -270,13 +314,13 @@ The merge operation produces the active set by reconciling all three files:
           │  │ fail  │ success
           │  │       ▼
           │  │  ┌─────────┐
-          │  │  │  built   │
+          │  │  │  built  │
           │  │  └─────────┘
           │  │
           ▼  ▼
-   ┌──────────────────┐    ┌──────────────┐
-   │ configure_failed │    │  build_failed │
-   └──────────────────┘    └──────────────┘
+   ┌──────────────────┐    ┌────────────────┐
+   │ configure_failed │    │  build_failed  │
+   └──────────────────┘    └────────────────┘
 
    Any state ──── delete/clean ────► deleting ────► unconfigured (clean)
                                                     or removed (delete)
