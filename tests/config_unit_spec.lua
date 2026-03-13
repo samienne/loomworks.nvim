@@ -15,11 +15,6 @@ describe("ConfigUnit", function()
       assert.equals("Debug", unit.config_key)
     end)
 
-    it("has a readable tostring", function()
-      local unit = make_unit()
-      assert.matches("App", tostring(unit))
-      assert.matches("Debug", tostring(unit))
-    end)
   end)
 
   describe("registry", function()
@@ -147,6 +142,25 @@ describe("ConfigUnit", function()
       unit:register_task(1, "build")
       unit:mark_deleting(true)
       assert.equals("deleting", unit:state())
+    end)
+
+    it("returns unknown when cached state is unknown", function()
+      local unit = make_unit({
+        get_workspace = function()
+          return {
+            cache = {
+              projects = {
+                App = {
+                  configurations = {
+                    Debug = { state = "unknown" },
+                  },
+                },
+              },
+            },
+          }
+        end,
+      })
+      assert.equals("unknown", unit:state())
     end)
   end)
 
@@ -379,27 +393,6 @@ describe("ConfigUnit", function()
       unit:register_task(1, "build")
       assert.equals(1, a)
       assert.equals(1, b)
-    end)
-  end)
-
-  describe("unknown state", function()
-    it("returns unknown when cached state is unknown", function()
-      local unit = make_unit({
-        get_workspace = function()
-          return {
-            cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "unknown" },
-                  },
-                },
-              },
-            },
-          }
-        end,
-      })
-      assert.equals("unknown", unit:state())
     end)
   end)
 

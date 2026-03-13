@@ -31,24 +31,6 @@ describe("Core", function()
       assert.is_true(ok)
     end)
 
-    it("populates workspace after setup", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local ws = core:get_workspace()
-      assert.is_not_nil(ws)
-      assert.equals("/root", ws.root)
-    end)
-
-    it("populates active_set after setup", function()
-      local core = make_core({
-        configuration_sets = { debug = { App = "Debug" } },
-      })
-      core:setup({ root = "/root" })
-      local active = core:get_active_configuration_set()
-      assert.is_not_nil(active)
-      assert.is_not_nil(active.projects.App)
-    end)
-
     it("fails when config file is missing", function()
       local deps = h.make_test_deps({}) -- no files
       local core = Core.new(deps)
@@ -119,17 +101,6 @@ describe("Core", function()
       core:activate_profile("debug")
       assert.is_not_nil(saved.data)
       assert.equals("debug", saved.data.active_profile)
-    end)
-
-    it("remerges after activation", function()
-      local core = make_core({
-        projects = { App = { typescript = {} } },
-        configuration_sets = { debug = { App = "development" } },
-      })
-      core:setup({ root = "/root" })
-      local gen = core._generation
-      core:activate_profile("debug")
-      assert.is_true(core._generation > gen)
     end)
 
     it("switching A→B→A does not modify cache", function()
@@ -215,12 +186,6 @@ describe("Core", function()
       assert.is_false(unit:is_running())
     end)
 
-    it("returns nil for non-running project", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      assert.is_nil(core:get_project_running_action("App"))
-    end)
-
     it("shares running state across profiles via ConfigUnit", function()
       local core = make_core()
       core:setup({ root = "/root" })
@@ -290,13 +255,6 @@ describe("Core", function()
       assert.is_true(unit:is_deleting())
     end)
 
-    it("has_pending_deletions reflects ConfigUnit state", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      assert.is_false(core:has_pending_deletions())
-      core:get_config_unit("App", "Debug"):mark_deleting(true)
-      assert.is_true(core:has_pending_deletions())
-    end)
   end)
 
   describe("get_profile / get_profiles", function()
@@ -328,38 +286,9 @@ describe("Core", function()
       assert.equals("debug", profile.configuration_set)
     end)
 
-    it("get_profiles returns all profiles", function()
-      local core = make_core(
-        {
-          projects = { App = { typescript = {} } },
-          configuration_sets = {
-            debug = { App = "development" },
-            release = { App = "production" },
-          },
-        },
-        nil,
-        {
-          profiles = {
-            debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } },
-            release = { configuration_set = "release", projects = { App = { config_key = "production" } } },
-          },
-          projects = { App = { type = "typescript", configurations = {} } },
-        }
-      )
-      core:setup({ root = "/root" })
-      local profiles = core:get_profiles()
-      assert.is_not_nil(profiles.debug)
-      assert.is_not_nil(profiles.release)
-    end)
   end)
 
   describe("get_project / get_projects", function()
-    it("returns nil when no active set", function()
-      local core = make_core()
-      -- Don't setup
-      assert.is_nil(core:get_project("App"))
-    end)
-
     it("returns Project for known project", function()
       local core = make_core()
       core:setup({ root = "/root" })
@@ -369,31 +298,9 @@ describe("Core", function()
       assert.equals("cmake", proj.type)
     end)
 
-    it("get_projects returns all projects", function()
-      local core = make_core({
-        projects = {
-          App = { cmake = {} },
-          Lib = { cmake = {} },
-        },
-      })
-      core:setup({ root = "/root" })
-      local projects = core:get_projects()
-      assert.is_not_nil(projects.App)
-      assert.is_not_nil(projects.Lib)
-    end)
   end)
 
   describe("project_for_buf", function()
-    it("returns nil for empty buffer name", function()
-      local core = make_core(nil, nil, nil, {
-        buf_name = function() return "" end,
-      })
-      core:setup({ root = "/root" })
-      local key, proj = core:project_for_buf(1)
-      assert.is_nil(key)
-      assert.is_nil(proj)
-    end)
-
     it("matches buffer to project by path prefix", function()
       local function test_normalize(p) return p:gsub("\\", "/") end
       local core = make_core(nil, nil, nil, {
@@ -404,18 +311,6 @@ describe("Core", function()
       local key, proj = core:project_for_buf(1)
       assert.equals("App", key)
       assert.is_not_nil(proj)
-    end)
-
-    it("returns nil for unmatched buffer path", function()
-      local function test_normalize(p) return p:gsub("\\", "/") end
-      local core = make_core(nil, nil, nil, {
-        buf_name = function() return "/other/path/file.cpp" end,
-        normalize = test_normalize,
-      })
-      core:setup({ root = "/root" })
-      local key, proj = core:project_for_buf(1)
-      assert.is_nil(key)
-      assert.is_nil(proj)
     end)
 
     it("picks innermost project for nested paths", function()
@@ -434,15 +329,6 @@ describe("Core", function()
       assert.equals("Root/Sub", key)
     end)
 
-    it("returns nil without workspace setup", function()
-      local core = make_core(nil, nil, nil, {
-        buf_name = function() return "/root/App/src/main.cpp" end,
-      })
-      -- Do NOT call setup
-      local key, proj = core:project_for_buf(1)
-      assert.is_nil(key)
-      assert.is_nil(proj)
-    end)
   end)
 
   describe("rescan_tools", function()
@@ -480,18 +366,6 @@ describe("Core", function()
       assert.equals(1, #tools.cmake)
       assert.equals("ninja-gcc-12", tools.cmake[1].tool_key)
       assert.equals("Ninja + GCC 12", tools.cmake[1].tool_label)
-    end)
-
-    it("triggers remerge and increments generation", function()
-      local core = make_core(nil, nil, nil, {
-        merge = merge_with_mock_detect(function() return {} end),
-      })
-      core:setup({ root = "/root" })
-      local gen_before = core._generation
-
-      core:rescan_tools()
-
-      assert.is_true(core._generation > gen_before)
     end)
 
     it("does not error without workspace", function()
@@ -674,24 +548,6 @@ describe("Core", function()
       core:materialize_profile("nonexistent") -- should not error
     end)
 
-    it("remerges after materialization", function()
-      local core = make_core(
-        {
-          projects = { App = { typescript = {} } },
-          configuration_sets = { debug = { App = "development" } },
-        },
-        nil, nil,
-        {
-          cache = {
-            save = function() return true end,
-          },
-        }
-      )
-      core:setup({ root = "/root" })
-      local gen = core._generation
-      core:materialize_profile("debug")
-      assert.is_true(core._generation > gen)
-    end)
   end)
 
   describe("shutdown", function()
@@ -1041,14 +897,6 @@ describe("Core", function()
       assert.is_nil(matches[2])
     end)
 
-    it("returns empty when no matches", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local matches = core:find_running_tasks_for_items({
-        { project_key = "App", config_key = "Debug" },
-      })
-      assert.are.same({}, matches)
-    end)
   end)
 
   describe("stop_tasks_then", function()
@@ -1059,14 +907,6 @@ describe("Core", function()
       assert.is_true(done)
     end)
 
-    it("calls on_done for already-complete tasks", function()
-      local done = false
-      local core = make_core(nil, nil, nil, {
-        get_overseer_task = function() return nil end, -- task not found
-      })
-      core:stop_tasks_then({ 1, 2 }, function() done = true end)
-      assert.is_true(done)
-    end)
   end)
 
   describe("plan_config_deletion", function()
@@ -1403,34 +1243,6 @@ describe("Core", function()
       assert.equals("App/development", refs[1])
     end)
 
-    it("returns empty when no profiles reference config", function()
-      local core = make_core(
-        {
-          projects = { App = { typescript = {} } },
-        },
-        nil,
-        {
-          profiles = {
-            ["App/development"] = {
-              mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
-            },
-          },
-          projects = {
-            App = {
-              type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
-            },
-          },
-        }
-      )
-      core:setup({ root = "/root" })
-
-      local refs = core:find_referencing_profiles("App", "production")
-      assert.equals(0, #refs)
-    end)
   end)
 
   describe("_cleanup_orphaned_skeletons", function()

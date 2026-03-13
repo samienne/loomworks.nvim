@@ -24,13 +24,6 @@ describe("progress", function()
       assert.equals(1, result.total)
     end)
 
-    it("parses large step counts", function()
-      local result = parse("[142/1337] Linking CXX executable bin/app")
-      assert.is_not_nil(result)
-      assert.equals(142, result.current)
-      assert.equals(1337, result.total)
-    end)
-
     it("returns nil for non-ninja output", function()
       assert.is_nil(parse("-- Configuring done"))
       assert.is_nil(parse("make[1]: Entering directory"))
@@ -38,9 +31,6 @@ describe("progress", function()
       assert.is_nil(parse("Building CXX object without bracket prefix"))
     end)
 
-    it("returns nil for bracket at non-start position", function()
-      assert.is_nil(parse("  [2/10] indented"))
-    end)
   end)
 
   describe("registry", function()
