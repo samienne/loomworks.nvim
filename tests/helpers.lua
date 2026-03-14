@@ -60,7 +60,7 @@ function M.make_mock_core(overrides)
       return nil
     end,
 
-    module_has_keyed_tools = function(_, mod_type)
+    module_has_keyed_tools = function(self, mod_type)
       return mod_type == "cmake"
     end,
 
@@ -144,6 +144,12 @@ function M.make_test_deps(files, opts)
       rm_rf_async = function(_, cb) cb(true, nil) end,
       ensure_dir = function() return true end,
     },
+    read_file_async = function(path, callback) callback(file_lookup(path), nil) end,
+    read_files_async = function(paths_list, callback)
+      local results = {}
+      for _, path in ipairs(paths_list) do results[path] = file_lookup(path) end
+      callback(results)
+    end,
     workspace = {
       resolve_root = function(path)
         -- Test-friendly: return as-is, no vim path normalization
@@ -165,6 +171,7 @@ function M.make_test_deps(files, opts)
       compute_hash = real_cache.compute_hash,
       save = function() return true end,
     },
+    detect_tools_async = function(config, cache, callback) callback({}) end,
     modules = {
       get = function() return nil end,
     },

@@ -18,6 +18,15 @@ local function make_core(config_overrides, user_overrides, cache_overrides, dep_
     files["loomworks.cache.json"] = h.make_cache_json(cache_overrides)
   end
 
+  -- Auto-derive detect_tools_async from merge.detect_tools if available
+  if dep_overrides and dep_overrides.merge and dep_overrides.merge.detect_tools
+      and not dep_overrides.detect_tools_async then
+    local sync_detect = dep_overrides.merge.detect_tools
+    dep_overrides.detect_tools_async = function(config, cache, callback)
+      callback(sync_detect(config, cache))
+    end
+  end
+
   local deps = h.make_test_deps(files, dep_overrides)
   local core = Core.new(deps)
   return core, deps
@@ -27,15 +36,15 @@ describe("Core", function()
   describe("setup", function()
     it("loads workspace successfully", function()
       local core = make_core()
-      local ok = core:setup({ root = "/root" })
-      assert.is_true(ok)
+      core:setup({ root = "/root" })
+      assert.equals("initialized", core:state())
     end)
 
     it("fails when config file is missing", function()
       local deps = h.make_test_deps({}) -- no files
       local core = Core.new(deps)
-      local ok = core:setup({ root = "/root" })
-      assert.is_false(ok)
+      core:setup({ root = "/root" })
+      assert.equals("uninitialized", core:state())
       assert.is_nil(core:get_workspace())
     end)
 
@@ -55,7 +64,8 @@ describe("Core", function()
       local core = make_core()
       local gen_before = core._generation
       core:setup({ root = "/root" })
-      assert.equals(gen_before + 1, core._generation)
+      -- Setup remerges twice: once on file read, once after tool detection
+      assert.equals(gen_before + 2, core._generation)
     end)
   end)
 
@@ -356,6 +366,7 @@ describe("Core", function()
       }
       local core = make_core(nil, nil, nil, {
         merge = merge_with_mock_detect(function() return mock_tools end),
+        detect_tools_async = function(config, cache, callback) callback(mock_tools) end,
       })
       core:setup({ root = "/root" })
 
@@ -2358,8 +2369,8 @@ describe("Core", function()
 
     it("refuses to load workspace on version mismatch", function()
       local core = make_mismatch_core()
-      local ok = core:setup({ root = "/test" })
-      assert.is_false(ok)
+      core:setup({ root = "/test" })
+      assert.equals("uninitialized", core:state())
       assert.is_nil(core:get_workspace())
     end)
 

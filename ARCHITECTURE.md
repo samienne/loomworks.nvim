@@ -129,6 +129,9 @@ simpler option.
      io        = require("loomworks.io"),
      modules   = require("loomworks.modules"),
      FileTracker = require("loomworks.file_tracker"),
+     read_file_async  = require("loomworks.io").read_file_async,
+     read_files_async = require("loomworks.io").read_files_async,
+     detect_tools_async = require("loomworks.merge").detect_tools_async,
      notify    = vim.notify,
      now       = function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end,
      clock     = function() return vim.uv.hrtime() / 1e9 end,
@@ -232,27 +235,27 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `core.lua` | All mutable state (`_workspace`, `_active_set`, `_config_units`, `_generation`, `_operations`, `_tools_by_type`, `_setup_error`). Setup, remerge, object factories, profile management, task lifecycle, deletion orchestration, buffer queries | Do I/O directly (delegates to io.lua); know about UI; render anything |
-| `merge.lua` | Three-file merge algorithm, profile resolution, mapping computation, orphaned project detection | Mutate state; do I/O; depend on core.lua |
+| `core.lua` | All mutable state (`_workspace`, `_active_set`, `_config_units`, `_generation`, `_operations`, `_tools_by_type`, `_setup_error`, `_state`, `_tool_state`, `_tool_waiters`). Async setup, remerge, object factories, profile management, task lifecycle, deletion orchestration, buffer queries | Do I/O directly (delegates to io.lua); know about UI; render anything |
+| `merge.lua` | Three-file merge algorithm, profile resolution, mapping computation, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua |
 | `profile.lua` | Profile and ProfileProject classes, status aggregation, plan_deletion | Own state beyond what core provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation | Own state beyond what core provides |
 | `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag, queued action. Listener pattern via `on_state_change()` | Persist anything (runtime only); know about profiles |
 | `events.lua` | Pub/sub system: `on()`, `off()`, `emit()` | Hold domain state; know about specific event semantics |
-| `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). In-memory caching of results | Do I/O beyond process spawning for detection |
+| `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
 
 ### Data / IO Layer
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `io.lua` | Atomic file read/write, JSON encode/decode, rm_rf (sync fallback), rm_rf_async (subprocess), directory creation | Validate domain semantics; know about loomworks data model |
+| `io.lua` | Atomic file read/write (sync and async), JSON encode/decode, rm_rf (sync fallback), rm_rf_async (subprocess), directory creation, read_file_async/read_files_async (libuv callbacks) | Validate domain semantics; know about loomworks data model |
 | `config.lua` | `loomworks.json` parsing, validation, project type extraction | Write files (config is read-only) |
 | `user.lua` | `loomworks.user.json` parse/save/defaults | Validate beyond structural correctness |
 | `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking | Business logic; auto-migration |
 | `workspace.lua` | Root resolution, file path derivation, workspace assembly from raw strings | I/O (pure functions only) |
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication | Domain logic; know about merge or profiles |
 | `modules/init.lua` | Module registry, lazy loading | Implement module logic |
-| `modules/cmake.lua` | CMake module: validate, info (preset reading), tasks, inspect, detect_tools, parse_file_api (target discovery), get_options (cache variables) | Know about profiles, UI, or overseer |
-| `modules/ets.lua`, `modules/typescript.lua` | Shim modules (validate + info only) | Anything beyond the shim interface |
+| `modules/cmake.lua` | CMake module: validate, info (preset reading), tasks, inspect, detect_tools/detect_tools_async, parse_file_api (target discovery), get_options (cache variables). Static `has_keyed_tools = true` | Know about profiles, UI, or overseer |
+| `modules/ets.lua`, `modules/typescript.lua` | Shim modules (validate + info + detect_tools_async). Static `has_keyed_tools = false` | Anything beyond the shim interface |
 | `progress/init.lua` | Parser registry mapping tool names to parser functions | Parse output itself |
 | `progress/ninja.lua` | Ninja `[n/m]` output parser | Know about other build tools |
 | `types.lua` | LuaCATS type annotations for all data shapes | Contain runtime code (never `require`d) |
@@ -283,24 +286,45 @@ may import from its own layer or any layer below it, never above.
 
 ## Data Flow
 
-### Startup
+### Startup (async)
+
+Startup is non-blocking. File reads and tool detection run asynchronously
+so the Neovim UI is never frozen.
 
 ```
 plugin/loomworks.lua
   → init.lua: setup({ root = path })
+    → fidget.setup() (register event listeners — fast, no I/O)
     → core.lua: setup()
-      → io.read_json × 3 files
-      → workspace.assemble(root, config, user, cache)
-      → cache version check (refuse if incompatible)
-      → config.validate()
-      → _migrate_set_names()
-      → _cleanup_orphaned_skeletons()
-      → merge.merge() → ActiveSet
-      → wrap objects (Profile, Project, ConfigUnit)
-      → file_tracker.start() (watch for external changes)
-      → events.emit("active_set_changed")
-      → events.emit("workspace_changed")
+      → state = "initializing", emit "workspace_initializing"
+      → read_files_async([config, user, cache])        ← libuv async I/O
+        → vim.schedule → _on_files_read()
+          → workspace.assemble(root, config, user, cache)
+          → cache version check (refuse if incompatible)
+          → config.validate()
+          → _migrate_set_names()
+          → _cleanup_orphaned_skeletons()
+          → merge.merge(tools_by_type={}) → ActiveSet (no tools yet)
+          → state = "initialized", emit "workspace_changed"
+          → file_tracker.start()
+          → _scan_tools_async()
+            → tool_state = "scanning", emit "tools_scanning"
+            → detect_tools_async(config, cache)        ← vim.system for vswhere/compilers
+              → vim.schedule → store results → remerge
+              → tool_state = "scanned", emit "tools_detected"
+              → flush _tool_waiters
 ```
+
+Workspace state: `uninitialized` → `initializing` → `initialized`
+Tool state: `not_scanned` → `scanning` → `scanned`
+
+The first remerge produces an ActiveSet with empty tools. Profile sections
+render immediately. When tool detection completes, a second remerge fills in
+detected tools and the UI refreshes via `active_set_changed`.
+
+Materialization calls (`materialize_profile`, `materialize_configuration`,
+`materialize_pinned`) that arrive during `scanning` are queued in
+`_tool_waiters` and replayed when detection completes.
 
 ### File Change (hot-reload)
 

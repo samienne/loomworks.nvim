@@ -84,6 +84,24 @@ function M.setup()
 
   local lw = require("loomworks")
 
+  -- Workspace initialization progress
+  lw.on("workspace_initializing", function()
+    create_handle("init", "loomworks", "Initializing workspace...")
+  end)
+
+  lw.on("workspace_changed", function()
+    finish_handle("init")
+  end)
+
+  -- Tool detection progress
+  lw.on("tools_scanning", function()
+    create_handle("tools", "loomworks", "Detecting tools...")
+  end)
+
+  lw.on("tools_detected", function()
+    finish_handle("tools")
+  end)
+
   -- Profile-level operations
   lw.on("operation_started", function(data)
     local title = ACTION_TITLE[data.action] or data.action

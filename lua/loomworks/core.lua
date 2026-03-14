@@ -13,6 +13,9 @@
 --- @field _operations table<string, loomworks.Operation> profile_key -> active or completed operation
 --- @field _tools_by_type table<string, loomworks.DetectedTool[]> tools per module type
 --- @field _setup_error { root: string, message: string }|nil set when setup fails
+--- @field _state "uninitialized"|"initializing"|"initialized"
+--- @field _tool_state "not_scanned"|"scanning"|"scanned"
+--- @field _tool_waiters function[]
 local Core = {}
 Core.__index = Core
 
@@ -29,6 +32,9 @@ local DEFAULT_DEPS = {
   cache     = require("loomworks.cache"),
   config    = require("loomworks.config"),
   io        = require("loomworks.io"),
+  read_file_async = require("loomworks.io").read_file_async,
+  read_files_async = require("loomworks.io").read_files_async,
+  detect_tools_async = require("loomworks.merge").detect_tools_async,
   modules   = require("loomworks.modules"),
   FileTracker = require("loomworks.file_tracker"),
   notify    = vim.notify,
@@ -73,6 +79,9 @@ function Core.new(deps)
   self._profiles = {}
   self._projects = {}
   self._setup_error = nil
+  self._state = "uninitialized"
+  self._tool_state = "not_scanned"
+  self._tool_waiters = {}
   return self
 end
 
@@ -159,17 +168,44 @@ function Core:_scan_tools()
     self._workspace.config, self._workspace.cache)
 end
 
---- Re-scan tools and remerge. Used for manual rescan from UI.
-function Core:rescan_tools()
-  self:_scan_tools()
-  self:remerge()
+--- Scan tools asynchronously and remerge when complete.
+function Core:_scan_tools_async()
+  if not self._workspace then return end
+  self._tool_state = "scanning"
+  self._deps.events.emit("tools_scanning")
+
+  self._deps.detect_tools_async(
+    self._workspace.config, self._workspace.cache,
+    function(tools_by_type)
+      self._deps.schedule(function()
+        self._tools_by_type = tools_by_type
+        self:remerge()
+        self._tool_state = "scanned"
+        self._deps.events.emit("tools_detected")
+
+        -- Flush tool waiters
+        local waiters = self._tool_waiters
+        self._tool_waiters = {}
+        for _, fn in ipairs(waiters) do
+          fn()
+        end
+      end)
+    end
+  )
 end
 
---- Check if a module type has keyed tools (tools with non-nil tool_key).
+--- Re-scan tools and remerge. Used for manual rescan from UI.
+function Core:rescan_tools()
+  local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
+  if ok then cmake_kits.clear_cache() end
+  self:_scan_tools_async()
+end
+
+--- Check if a module type has keyed tools (static, no detection needed).
 --- @param mod_type string
 --- @return boolean
 function Core:module_has_keyed_tools(mod_type)
-  return self._deps.merge.module_has_keyed_tools(self._tools_by_type, mod_type)
+  return self._deps.merge.module_has_keyed_tools(mod_type)
 end
 
 --- Get detected tools organized by module type.
@@ -198,7 +234,7 @@ function Core:_on_file_changed(path, content)
       local ok, val_err = self:_validate_projects(ws.config, ws.root)
       if ok then
         self._workspace = ws
-        self:_scan_tools()
+        self:_scan_tools_async()
         self:_migrate_set_names()
         self:remerge()
         self._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
@@ -223,30 +259,64 @@ function Core:_on_file_changed(path, content)
   end
 end
 
---- Initialize the workspace and compute the initial merge.
+--- Get the workspace initialization state.
+--- @return "uninitialized"|"initializing"|"initialized"
+function Core:state()
+  return self._state
+end
+
+--- Get the tool detection state.
+--- @return "not_scanned"|"scanning"|"scanned"
+function Core:tool_state()
+  return self._tool_state
+end
+
+--- Initialize the workspace asynchronously.
+--- Reads files in parallel, then processes synchronously via vim.schedule.
 --- @param opts? { root?: string }
---- @return boolean ok
 function Core:setup(opts)
+  if self._state == "initializing" then return end
+
   self._setup_error = nil
+  self._state = "initializing"
+  self._deps.events.emit("workspace_initializing")
 
   local ws_mod = self._deps.workspace
   local root = ws_mod.resolve_root(opts and opts.root or nil)
   local paths = ws_mod.paths(root)
 
-  -- Read initial file contents via io
-  local config_content = self._deps.io.read_file(paths.config)
+  self._deps.read_files_async(
+    { paths.config, paths.user, paths.cache },
+    function(results)
+      self._deps.schedule(function()
+        self:_on_files_read(root, paths, results)
+      end)
+    end
+  )
+end
+
+--- Process read file results and complete initialization.
+--- @param root string
+--- @param paths table
+--- @param results table<string, string|nil>
+function Core:_on_files_read(root, paths, results)
+  local ws_mod = self._deps.workspace
+
+  local config_content = results[paths.config]
   if not config_content then
     self._deps.notify("loomworks: loomworks.json not found in " .. root, vim.log.levels.ERROR)
-    return false
+    self._state = "uninitialized"
+    return
   end
-  local user_content = self._deps.io.read_file(paths.user)
-  local cache_content = self._deps.io.read_file(paths.cache)
+  local user_content = results[paths.user]
+  local cache_content = results[paths.cache]
 
   -- Assemble workspace from raw content
   local ws, err = ws_mod.assemble(root, config_content, user_content, cache_content)
   if not ws then
     self._deps.notify("loomworks: " .. err, vim.log.levels.ERROR)
-    return false
+    self._state = "uninitialized"
+    return
   end
 
   -- Refuse to load when cache has incompatible version
@@ -254,24 +324,26 @@ function Core:setup(opts)
     local msg = "Cache version mismatch (expected v3). Press <C-n> to reset."
     self._setup_error = { root = root, message = msg }
     self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
-    return false
+    self._state = "uninitialized"
+    return
   end
 
   -- Validate projects
   local ok, val_err = self:_validate_projects(ws.config, ws.root)
   if not ok then
     self._deps.notify("loomworks: " .. val_err, vim.log.levels.ERROR)
-    return false
+    self._state = "uninitialized"
+    return
   end
 
   self._workspace = ws
   self._config_units = {}
   self._profiles = {}
   self._projects = {}
-  self:_scan_tools()
   self:_migrate_set_names()
   self:_cleanup_orphaned_skeletons()
   self:remerge()
+  self._state = "initialized"
   self._deps.events.emit("workspace_changed", ws)
 
   -- Start file tracking
@@ -290,7 +362,9 @@ function Core:setup(opts)
   self._tracker:watch(paths.cache)
 
   self._deps.notify("loomworks: workspace '" .. ws.name .. "' loaded (" .. ws.root .. ")", vim.log.levels.INFO)
-  return true
+
+  -- Start async tool detection
+  self:_scan_tools_async()
 end
 
 --- Validate that a path is a child of root/.nvim/ before deletion.
@@ -602,6 +676,14 @@ end
 function Core:materialize_profile(profile_key)
   if not self._workspace then return end
 
+  -- Wait for tool detection to complete before materializing
+  if self._tool_state == "scanning" then
+    self._tool_waiters[#self._tool_waiters + 1] = function()
+      self:materialize_profile(profile_key)
+    end
+    return
+  end
+
   local ws = self._workspace
 
   -- Already cached?
@@ -623,7 +705,7 @@ function Core:materialize_profile(profile_key)
     if not project_config then goto continue end
 
     local config_key = self._deps.merge.build_config_key(
-      self._tools_by_type, project_config.type, variant, profile_def.tool_key)
+      project_config.type, variant, profile_def.tool_key)
 
     profile_projects[project_key] = { config_key = config_key }
 
@@ -631,7 +713,7 @@ function Core:materialize_profile(profile_key)
     local cached_proj = self:_ensure_cached_project(project_key)
     if not cached_proj.configurations[config_key] then
       local has_keyed = self._deps.merge.module_has_keyed_tools(
-        self._tools_by_type, project_config.type)
+        project_config.type)
       cached_proj.configurations[config_key] = {
         variant = variant,
         tool_key = profile_def.tool_key,
@@ -826,6 +908,14 @@ end
 function Core:materialize_configuration(project_key, config_key)
   if not self._workspace then return end
 
+  -- Wait for tool detection to complete before materializing
+  if self._tool_state == "scanning" then
+    self._tool_waiters[#self._tool_waiters + 1] = function()
+      self:materialize_configuration(project_key, config_key)
+    end
+    return
+  end
+
   local ws = self._workspace
   local project_config = ws.config.projects[project_key]
   if not project_config then return end
@@ -860,6 +950,14 @@ end
 --- @return string|nil pinned_key
 function Core:materialize_pinned(project_key, config_key)
   if not self._workspace then return nil end
+
+  -- Wait for tool detection to complete before materializing
+  if self._tool_state == "scanning" then
+    self._tool_waiters[#self._tool_waiters + 1] = function()
+      self:materialize_pinned(project_key, config_key)
+    end
+    return nil
+  end
 
   local ws = self._workspace
   local project_config = ws.config.projects[project_key]

@@ -98,14 +98,61 @@ function M.detect_tools(config, cache)
   return tools_by_type
 end
 
---- Check if a module type has keyed tools (tools with non-nil tool_key).
---- @param tools_by_type table<string, loomworks.DetectedTool[]>
+--- Detect tools from all modules asynchronously.
+--- Calls each module's detect_tools_async sequentially, enriches results,
+--- and calls callback(tools_by_type) when all complete.
+--- @param config loomworks.Config
+--- @param cache loomworks.CacheData|nil
+--- @param callback fun(tools_by_type: table<string, loomworks.DetectedTool[]>)
+function M.detect_tools_async(config, cache, callback)
+  local module_types = collect_module_types(config, cache)
+  local tools_by_type = {}
+
+  -- Collect types into a list for sequential iteration
+  local type_list = {}
+  for mod_type in pairs(module_types) do
+    type_list[#type_list + 1] = mod_type
+  end
+
+  local idx = 0
+  local function next_module()
+    idx = idx + 1
+    if idx > #type_list then
+      callback(tools_by_type)
+      return
+    end
+
+    local mod_type = type_list[idx]
+    local mod = modules.get(mod_type)
+    if mod and mod.detect_tools_async then
+      mod.detect_tools_async(function(raw_tools)
+        local enriched = {}
+        for _, raw in ipairs(raw_tools) do
+          enriched[#enriched + 1] = {
+            tool_data = raw.tool_data,
+            tool_key = mod.tool_key and mod.tool_key(raw.tool_data) or nil,
+            tool_label = mod.tool_label and mod.tool_label(raw.tool_data) or nil,
+          }
+        end
+        if #enriched > 0 then
+          tools_by_type[mod_type] = enriched
+        end
+        next_module()
+      end)
+    else
+      next_module()
+    end
+  end
+
+  next_module()
+end
+
+--- Check if a module type has keyed tools (static, no detection needed).
 --- @param mod_type string
 --- @return boolean
-function M.module_has_keyed_tools(tools_by_type, mod_type)
-  local tools = tools_by_type[mod_type]
-  if not tools or #tools == 0 then return false end
-  return tools[1].tool_key ~= nil
+function M.module_has_keyed_tools(mod_type)
+  local mod = modules.get(mod_type)
+  return mod and mod.has_keyed_tools or false
 end
 
 --- Compare two tool_data objects using the module's comparator.
@@ -359,13 +406,12 @@ end
 
 --- Build a config key for a project given its module type and the profile's tool_key.
 --- Modules with keyed tools get the suffix; modules without don't.
---- @param tools_by_type table<string, loomworks.DetectedTool[]>
 --- @param mod_type string
 --- @param variant string
 --- @param tool_key string|nil
 --- @return string config_key
-function M.build_config_key(tools_by_type, mod_type, variant, tool_key)
-  if tool_key and M.module_has_keyed_tools(tools_by_type, mod_type) then
+function M.build_config_key(mod_type, variant, tool_key)
+  if tool_key and M.module_has_keyed_tools(mod_type) then
     return variant .. ":" .. tool_key
   end
   return variant
@@ -427,7 +473,7 @@ function M.merge(workspace, tools_by_type)
     local cache_config_key = nil
     if active_configuration then
       cache_config_key = M.build_config_key(
-        tools_by_type, project.type, active_configuration, tool_key)
+        project.type, active_configuration, tool_key)
     end
 
     local cached_project = cache.projects and cache.projects[key] or nil
@@ -450,7 +496,7 @@ function M.merge(workspace, tools_by_type)
     local cached_configurations = cached_project and cached_project.configurations or {}
 
     -- Only include tool info for projects whose module has keyed tools
-    local has_keyed = M.module_has_keyed_tools(tools_by_type, project.type)
+    local has_keyed = M.module_has_keyed_tools(project.type)
 
     projects[key] = {
       type = project.type,
@@ -554,10 +600,10 @@ function M.resolve_profile_projects(ws, profile_key, tools_by_type)
     local cache_config_key = nil
     if active_configuration then
       cache_config_key = M.build_config_key(
-        tools_by_type, project.type, active_configuration, tk)
+        project.type, active_configuration, tk)
     end
 
-    local has_keyed = M.module_has_keyed_tools(tools_by_type, project.type)
+    local has_keyed = M.module_has_keyed_tools(project.type)
 
     projects[key] = {
       type = project.type,

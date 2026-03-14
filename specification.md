@@ -71,10 +71,18 @@ cache entries.
 - **Non-keyed tools** (ets, typescript): cache key = `"variant"`. The tool
   does not affect the cache key.
 
-Tool detection runs:
-- When browsing available tools in the UI
+Tool detection runs asynchronously in the background:
+- Automatically after workspace initialization completes
 - On `rescan_tools()` / `L` key in the status page
-- NOT on every startup — startup reads tools from the cache
+
+Detection results are cached in memory for the session. Merge and
+build operations work without detection results — cached profiles
+store their own tool_data. Detection is only needed to populate the
+tool entries list in the Configuration Sets UI and to materialize
+new profiles.
+
+Each module declares a static `has_keyed_tools` property (boolean)
+so that config key construction works before detection completes.
 
 ### 1.6 Profile
 
@@ -423,7 +431,52 @@ still work.
    user actions available from `unknown` are delete and clean (retry).
    Build and configure are blocked.
 
-### 3.2 Cache state names vs ConfigUnit state names
+### 3.2 Workspace Lifecycle
+
+The workspace has three states:
+
+| State | Meaning |
+|-------|---------|
+| `uninitialized` | No workspace loaded. All queries return nil. |
+| `initializing` | Async file reads in progress. Queries return nil. |
+| `initialized` | Files read, parsed, merged. Workspace is usable. |
+
+**Initialization flow:**
+
+1. `setup()` is called — workspace enters `initializing`.
+2. Three files are read asynchronously (loomworks.json, user.json,
+   cache.json) via libuv non-blocking I/O.
+3. On completion: parse, validate, merge (without tool detection).
+4. Workspace enters `initialized`. File watchers are started.
+   `workspace_changed` event is emitted.
+5. Tool detection starts as an independent background task (see §3.3).
+
+`setup()` returns immediately. Callers must not assume the workspace
+is available synchronously after `setup()` returns.
+
+### 3.3 Tool Detection Lifecycle
+
+Tool detection is orthogonal to workspace initialization. It has
+three states:
+
+| State | Meaning |
+|-------|---------|
+| `not_scanned` | Detection has not run. Tool entries unavailable. |
+| `scanning` | Async detection in progress. |
+| `scanned` | Detection complete. Tool entries available. |
+
+Detection starts automatically after the workspace reaches
+`initialized`. On completion, the system remerges and emits
+`tools_detected`. The UI refreshes to show tool entries.
+
+Manual re-scan (`rescan_tools()` / `L` key) transitions from
+`scanned` → `scanning` → `scanned`, clearing and rebuilding the
+in-memory tool cache.
+
+During `scanning`, profile materialization (which requires detected
+tools) waits for detection to complete before proceeding.
+
+### 3.4 Cache state names vs ConfigUnit state names
 
 | Cache state        | ConfigUnit state    |
 |--------------------|---------------------|
@@ -1128,6 +1181,7 @@ Events are the primary mechanism for cross-component communication.
 | `deletion_started`     | `DeletionItem[]` | Deletion operation begins |
 | `deletion_completed`   | `DeletionItem[]` | Deletion operation ends (success) |
 | `deletion_failed`      | `{ items, errors }` | One or more build dir deletions failed |
+| `tools_detected`       | `tools_by_type` | Tool detection completed |
 
 Events pass data directly to listeners — no need to re-query, no race
 conditions.
@@ -1181,14 +1235,19 @@ cached config data for this project.
 - `notes[]` for informational observations
 - Return `{ needs_refresh = false }` when no meaningful change detected
 
-**`detect_tools() → tool_entry[]`**
+**`detect_tools(callback)`**
 
-Return available tools for this module type. Each entry has:
+Detect available tools for this module type asynchronously. Calls
+`callback(tool_entries)` when detection is complete. Each entry has:
 - `tool_data`: opaque table of tool properties (stored in cache)
 - Additional fields added by core: `tool_key`, `tool_label`
 
-Non-keyed modules (ets, typescript) return a single entry with empty
-`tool_data`.
+Non-keyed modules (ets, typescript) may call the callback
+immediately with a single entry containing empty `tool_data`.
+
+Modules that spawn subprocesses (e.g., cmake compiler detection)
+must use non-blocking APIs (libuv spawn or jobstart) and chain
+results sequentially to avoid flooding the OS with processes.
 
 ### 9.2 Tool identity methods
 
@@ -1208,6 +1267,13 @@ Return a human-readable label for the tool. `nil` means omit from display
 
 Return true if two tool_data tables represent the same tool. Used to match
 detected tools against cached tools.
+
+**`has_keyed_tools`** (boolean, static property)
+
+Declares whether this module's tools produce distinct build artifacts
+requiring separate cache entries. `true` for cmake, `false`/nil for
+ets and typescript. Used by merge to construct config keys without
+requiring tool detection to complete first.
 
 ### 9.3 Optional methods
 
@@ -1437,8 +1503,13 @@ When a trigger fires:
 
 Loading a workspace (whether via auto-load or `:LoomworksInit`) always:
 - Reads `loomworks.json`, `loomworks.cache.json`, `loomworks.user.json`
+  asynchronously (non-blocking)
 - Creates `.nvim/loomworks.cache.json` if it does not exist
-- Emits `active_set_changed` event
+- Emits `workspace_changed` and `active_set_changed` events once
+  initialized
+- Starts asynchronous tool detection in the background
+- Reports initialization and detection progress via fidget.nvim
+  (if available)
 
 ### 13.5 Limitations
 
@@ -1506,3 +1577,8 @@ Loading a workspace (whether via auto-load or `:LoomworksInit`) always:
     `loomworks.cache.json`, then re-runs setup. This is the only way to
     resolve a version mismatch — the system never silently discards or
     overwrites an incompatible cache.
+
+12. **Non-blocking initialization**: Workspace setup never blocks the
+    Neovim UI thread. File reads use async I/O. Tool detection runs
+    as a background task. Only JSON parsing and merge (both fast,
+    CPU-bound operations) run synchronously within callbacks.

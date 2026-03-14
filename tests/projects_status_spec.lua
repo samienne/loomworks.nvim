@@ -18,6 +18,15 @@ local function make_core(config_overrides, user_overrides, cache_overrides, dep_
     files["loomworks.cache.json"] = h.make_cache_json(cache_overrides)
   end
 
+  -- Auto-derive detect_tools_async from merge.detect_tools if available
+  if dep_overrides and dep_overrides.merge and dep_overrides.merge.detect_tools
+      and not dep_overrides.detect_tools_async then
+    local sync_detect = dep_overrides.merge.detect_tools
+    dep_overrides.detect_tools_async = function(config, cache, callback)
+      callback(sync_detect(config, cache))
+    end
+  end
+
   local deps = h.make_test_deps(files, dep_overrides)
   local core = Core.new(deps)
   return core, deps
@@ -62,6 +71,7 @@ local function merge_without_tools()
 end
 
 local cmake_module = {
+  has_keyed_tools = true,
   validate = function() return { valid = true, warnings = {} } end,
   info = function() return { configurations = { Debug = {}, Release = {} } } end,
 }
@@ -199,8 +209,8 @@ describe("Projects section cmake status", function()
     )
     core:setup({ root = "/root" })
 
-    -- No detected tools
-    assert.is_false(core:module_has_keyed_tools("cmake"))
+    -- has_keyed_tools is static (true for cmake regardless of detection)
+    assert.is_true(core:module_has_keyed_tools("cmake"))
 
     local results = simulate_projects_section_rendering(core, "App", "Debug")
     -- Should still find cached keyed entry
