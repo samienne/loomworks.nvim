@@ -123,6 +123,83 @@ function ConfigUnit:elapsed()
 end
 
 -- ---------------------------------------------------------------------------
+-- Config-level actions
+-- ---------------------------------------------------------------------------
+
+--- Plan a deletion for this config.
+--- If any profile references it, disposition = "reset" (clear state, keep
+--- skeleton). Otherwise "clean" (remove entirely).
+--- @return loomworks.DeletionPlan
+function ConfigUnit:plan_deletion()
+  local core = self._core
+  if not core:get_workspace() then
+    return { items = {}, project_key = self.project_key, config_key = self.config_key, defined_in_config = false }
+  end
+
+  local ws = core:get_workspace()
+  local refs = core:find_referencing_profiles(self.project_key, self.config_key)
+  local has_ref = #refs > 0
+
+  local items = { {
+    project_key = self.project_key,
+    config_key = self.config_key,
+    build_dir = self:build_dir(),
+    disposition = has_ref and "reset" or "clean",
+  } }
+
+  local defined_in_config = ws.config.projects[self.project_key] ~= nil
+
+  return {
+    items = items,
+    project_key = self.project_key,
+    config_key = self.config_key,
+    defined_in_config = defined_in_config,
+  }
+end
+
+--- Delete this config (plan + execute, no UI confirmation).
+--- @param on_done? function
+function ConfigUnit:delete(on_done)
+  local plan = self:plan_deletion()
+  self._core:execute_deletion(plan, nil, on_done)
+end
+
+--- Clean this config: delete build dir and reset to unconfigured.
+--- @param on_done? function
+function ConfigUnit:clean(on_done)
+  if not self._core:get_workspace() then
+    if on_done then on_done() end
+    return
+  end
+
+  local items = { {
+    project_key = self.project_key,
+    config_key = self.config_key,
+    build_dir = self:build_dir(),
+  } }
+  self._core:_run_deletion(items, function(effective_items)
+    self._core:reset_cached_configs(effective_items)
+  end, on_done)
+end
+
+--- Get build options by delegating to the module.
+--- @return (loomworks.OptionGroup | loomworks.Option)[]|nil
+function ConfigUnit:options()
+  local bd = self:build_dir()
+  if not bd then return nil end
+
+  local ws = self._core:get_workspace()
+  if not ws then return nil end
+  local proj_cfg = ws.config.projects[self.project_key]
+  if not proj_cfg then return nil end
+
+  local mod = self._core._deps.modules.get(proj_cfg.type)
+  if not mod or not mod.get_options then return nil end
+
+  return mod.get_options(bd, proj_cfg.type_config)
+end
+
+-- ---------------------------------------------------------------------------
 -- Task tracking (called by task_tracker component and Core)
 -- ---------------------------------------------------------------------------
 

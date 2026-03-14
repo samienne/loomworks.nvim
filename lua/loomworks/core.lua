@@ -882,23 +882,6 @@ function Core:get_orphaned_configs()
   return result
 end
 
---- Delete an orphaned config: remove cache entry + build directory.
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function Core:delete_orphaned_config(project_key, config_key, on_done)
-  local items = {
-    {
-      project_key = project_key,
-      config_key = config_key,
-      disposition = "clean",
-      build_dir = self:_cached_build_dir(project_key, config_key),
-    },
-  }
-  self:_run_deletion(items, function(effective_items)
-    self:delete_cached_configs(effective_items)
-  end, on_done)
-end
 
 --- Materialize a single configuration: ensure cache has a skeleton entry.
 --- Lighter than materializing a full profile — used for configuration-level
@@ -1201,53 +1184,6 @@ function Core:after_deletions(fn)
     return
   end
   self._delete_waiters[#self._delete_waiters + 1] = fn
-end
-
--- ---------------------------------------------------------------------------
--- Deletion: plan (config-level)
--- ---------------------------------------------------------------------------
-
---- Plan a single config deletion from the Projects section.
---- If any profile references it, disposition = "reset" (clear state, keep
---- skeleton so the profile sees "unconfigured"). Otherwise "clean" (remove).
---- Profiles are never removed — only explicit profile deletion does that.
---- @param project_key string
---- @param config_key string
---- @return loomworks.DeletionPlan
-function Core:plan_config_deletion(project_key, config_key)
-  if not self._workspace then
-    return { items = {}, project_key = project_key, config_key = config_key, defined_in_config = false }
-  end
-
-  local ws = self._workspace
-  local refs = self:find_referencing_profiles(project_key, config_key)
-  local has_ref = #refs > 0
-
-  -- Build the item with appropriate disposition
-  local build_dir = nil
-  if ws.cache.projects and ws.cache.projects[project_key] then
-    local cached = ws.cache.projects[project_key].configurations
-    if cached and cached[config_key] then
-      build_dir = cached[config_key].build_dir
-    end
-  end
-
-  local items = {}
-  items[#items + 1] = {
-    project_key = project_key,
-    config_key = config_key,
-    build_dir = build_dir,
-    disposition = has_ref and "reset" or "clean",
-  }
-
-  local defined_in_config = ws.config.projects[project_key] ~= nil
-
-  return {
-    items = items,
-    project_key = project_key,
-    config_key = config_key,
-    defined_in_config = defined_in_config,
-  }
 end
 
 -- ---------------------------------------------------------------------------
@@ -1576,21 +1512,6 @@ function Core:execute_deletion(plan, opts, on_done)
   end, on_done)
 end
 
---- Convenience: delete a single config without UI confirmation.
---- Cleans/resets the config. Profiles are never removed — they stay and
---- show "unconfigured" state.
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function Core:delete_config(project_key, config_key, on_done)
-  local plan = self:plan_config_deletion(project_key, config_key)
-  self:execute_deletion(plan, nil, on_done)
-end
-
--- ---------------------------------------------------------------------------
--- Clean: reset state without touching profiles
--- ---------------------------------------------------------------------------
-
 --- Look up the build_dir for a cached config.
 --- @param project_key string
 --- @param config_key string
@@ -1602,46 +1523,6 @@ function Core:_cached_build_dir(project_key, config_key)
   if not proj or not proj.configurations then return nil end
   local cfg = proj.configurations[config_key]
   return cfg and cfg.build_dir
-end
-
---- Return build options for a project+config by delegating to the module.
---- @param project_key string
---- @param config_key string
---- @return (loomworks.OptionGroup | loomworks.Option)[]|nil
-function Core:get_project_options(project_key, config_key)
-  local build_dir = self:_cached_build_dir(project_key, config_key)
-  if not build_dir then return nil end
-
-  local ws = self._workspace
-  if not ws then return nil end
-  local proj_cfg = ws.config.projects[project_key]
-  if not proj_cfg then return nil end
-
-  local mod = self._deps.modules.get(proj_cfg.type)
-  if not mod or not mod.get_options then return nil end
-
-  return mod.get_options(build_dir, proj_cfg.type_config)
-end
-
---- Clean a single config: delete build dir and reset to unconfigured.
---- Does NOT remove or modify any profile.
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function Core:clean_config(project_key, config_key, on_done)
-  if not self._workspace then
-    if on_done then on_done() end
-    return
-  end
-
-  local items = { {
-    project_key = project_key,
-    config_key = config_key,
-    build_dir = self:_cached_build_dir(project_key, config_key),
-  } }
-  self:_run_deletion(items, function(effective_items)
-    self:reset_cached_configs(effective_items)
-  end, on_done)
 end
 
 -- ---------------------------------------------------------------------------

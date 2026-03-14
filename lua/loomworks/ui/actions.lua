@@ -77,7 +77,8 @@ end
 
 function M.rebuild_configuration(project_key, config_key)
   return function()
-    require("loomworks").clean_config(project_key, config_key, function()
+    local unit = require("loomworks").get_config_unit(project_key, config_key)
+    unit:clean(function()
       require("loomworks.overseer").run_configuration_action(project_key, config_key, "build")
     end)
   end
@@ -85,17 +86,17 @@ end
 
 function M.clean_configuration(project_key, config_key)
   return function()
-    require("loomworks").clean_config(project_key, config_key)
+    require("loomworks").get_config_unit(project_key, config_key):clean()
   end
 end
 
 function M.delete_config(project_key, config_key)
   return function()
-    local lw = require("loomworks")
-    local plan = lw.plan_config_deletion(project_key, config_key)
+    local unit = require("loomworks").get_config_unit(project_key, config_key)
+    local plan = unit:plan_deletion()
     M._show_delete_confirmation(
       "Delete: " .. project_key .. " / " .. config_key, plan, function()
-      lw.delete_config(project_key, config_key, function()
+      unit:delete(function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
     end)
@@ -106,12 +107,12 @@ end
 --- @param config_name string
 function M.delete_configuration(project, config_name)
   return function()
-    local lw = require("loomworks")
     local config_key = project:config_cache_key(config_name)
-    local plan = lw.plan_config_deletion(project.key, config_key)
+    local unit = require("loomworks").get_config_unit(project.key, config_key)
+    local plan = unit:plan_deletion()
     M._show_delete_confirmation(
       "Delete: " .. project.key .. " / " .. config_key, plan, function()
-      lw.delete_config(project.key, config_key, function()
+      unit:delete(function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
     end)
@@ -120,7 +121,7 @@ end
 
 function M.delete_orphaned_config(project_key, config_key)
   return function()
-    local lw = require("loomworks")
+    local unit = require("loomworks").get_config_unit(project_key, config_key)
     local orphan_items = { {
       project_key = project_key,
       config_key = config_key,
@@ -130,7 +131,7 @@ function M.delete_orphaned_config(project_key, config_key)
       "Delete orphaned: " .. project_key .. " / " .. config_key,
       { items = orphan_items, defined_in_config = false },
       function()
-        lw.delete_orphaned_config(project_key, config_key, function()
+        unit:delete(function()
           vim.notify("loomworks: orphaned configuration removed", vim.log.levels.INFO)
         end)
       end)
@@ -162,7 +163,7 @@ function M.show_options(project_key, config_key)
     local Tree = require("loomworks.ui.tree")
     local View = require("loomworks.ui.view")
     local lw = require("loomworks")
-    local option_tree = lw.get_project_options(project_key, config_key)
+    local option_tree = lw.get_config_unit(project_key, config_key):options()
     if not option_tree or #option_tree == 0 then
       vim.notify("loomworks: no build options available (project may need configure)", vim.log.levels.INFO)
       return

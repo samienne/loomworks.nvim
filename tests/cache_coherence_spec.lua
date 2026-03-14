@@ -483,7 +483,7 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "after build")
 
       local done = false
-      core:delete_config("App", "development", function() done = true end)
+      core:get_config_unit("App", "development"):delete(function() done = true end)
       assert.is_true(done)
 
       assert_cache_coherent(core, "after delete_config")
@@ -510,7 +510,7 @@ describe("cache coherence", function()
 
       -- delete_config resets config (both profiles still ref it)
       local done = false
-      core:delete_config("App", "development", function() done = true end)
+      core:get_config_unit("App", "development"):delete(function() done = true end)
       assert.is_true(done)
 
       assert_cache_coherent(core, "after delete_config with full ref")
@@ -545,7 +545,7 @@ describe("cache coherence", function()
       simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
       assert.equals(2, count_cached_configs(core))
 
-      core:delete_config("Lib", "Debug:ninja-gcc")
+      core:get_config_unit("Lib", "Debug:ninja-gcc"):delete()
       assert_cache_coherent(core, "after delete one tool config")
       -- Both configs still exist (gcc was reset, clang is built)
       assert.equals(2, count_cached_configs(core))
@@ -1897,12 +1897,12 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- plan_config_deletion should return "reset" since set-based profile refs it
-      local plan = core:plan_config_deletion("App", "development")
+      local plan = core:get_config_unit("App", "development"):plan_deletion()
       assert.equals(1, #plan.items)
       assert.equals("reset", plan.items[1].disposition)
 
       -- Execute deletion
-      core:delete_config("App", "development")
+      core:get_config_unit("App", "development"):delete()
       assert_cache_coherent(core, "after config delete with full ref")
 
       -- Config reset to unconfigured (skeleton kept for set-based profile)
@@ -1948,11 +1948,11 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- plan_config_deletion should return "reset" (pinned profile still refs it)
-      local plan = core:plan_config_deletion("App", "development")
+      local plan = core:get_config_unit("App", "development"):plan_deletion()
       assert.equals(1, #plan.items)
       assert.equals("reset", plan.items[1].disposition)
 
-      core:delete_config("App", "development")
+      core:get_config_unit("App", "development"):delete()
       assert_cache_coherent(core, "after config delete with pinned ref")
       assert.equals(1, #rm_calls)
 
@@ -2082,7 +2082,7 @@ describe("cache coherence", function()
       assert.equals(2, count_cached_configs(core))
 
       -- Delete Backend config — Frontend unaffected, Backend profile stays
-      core:delete_config("Backend", "development")
+      core:get_config_unit("Backend", "development"):delete()
       assert_cache_coherent(core, "after Backend delete")
       assert.equals(2, count_profiles(core)) -- both pinned profiles stay
       assert.equals(2, count_cached_configs(core)) -- Backend reset, Frontend built
@@ -2122,7 +2122,7 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "full + pinned")
 
       -- delete_config on Backend — resets config (both profiles still ref it)
-      core:delete_config("Backend", "development")
+      core:get_config_unit("Backend", "development"):delete()
       assert_cache_coherent(core, "after delete_config")
       assert.equals(2, count_cached_configs(core)) -- both still there
       assert.equals(1, #rm_calls) -- Backend build dir cleaned on reset

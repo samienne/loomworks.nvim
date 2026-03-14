@@ -199,14 +199,6 @@ function M.get_config_unit(project_key, config_key)
   return core:get_config_unit(project_key, config_key)
 end
 
---- Get build options for a project+config key.
---- @param project_key string
---- @param config_key string
---- @return (loomworks.OptionGroup | loomworks.Option)[]|nil
-function M.get_project_options(project_key, config_key)
-  return core:get_project_options(project_key, config_key)
-end
-
 --- Get progress for a project+config key.
 --- @param project_key string
 --- @param config_key string
@@ -249,37 +241,12 @@ function M.after_deletions(fn)
   core:after_deletions(fn)
 end
 
---- Plan a config deletion (query only, no side effects).
---- @param project_key string
---- @param config_key string
---- @return loomworks.DeletionPlan
-function M.plan_config_deletion(project_key, config_key)
-  return core:plan_config_deletion(project_key, config_key)
-end
-
 --- Execute a deletion plan.
 --- @param plan loomworks.DeletionPlan
 --- @param opts? { deactivate_profile?: string }
 --- @param on_done? function
 function M.execute_deletion(plan, opts, on_done)
   core:execute_deletion(plan, opts, on_done)
-end
-
---- Delete a single config (plan + execute, no UI confirmation).
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function M.delete_config(project_key, config_key, on_done)
-  core:delete_config(project_key, config_key, on_done)
-end
-
---- Clean a single config: delete build dir and reset to unconfigured.
---- Does NOT remove or modify any profile.
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function M.clean_config(project_key, config_key, on_done)
-  core:clean_config(project_key, config_key, on_done)
 end
 
 --- Find running task IDs that match a list of project+config items.
@@ -301,14 +268,6 @@ end
 --- @return loomworks.OrphanedConfig[]
 function M.get_orphaned_configs()
   return core:get_orphaned_configs()
-end
-
---- Delete an orphaned config (cache entry + build directory).
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function M.delete_orphaned_config(project_key, config_key, on_done)
-  core:delete_orphaned_config(project_key, config_key, on_done)
 end
 
 -- ---------------------------------------------------------------------------
