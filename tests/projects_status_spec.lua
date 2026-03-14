@@ -277,8 +277,8 @@ describe("Projects section cmake status", function()
   end)
 
   it("matches cached variant case-insensitively against cmake preset name", function()
-    -- This reproduces the real-world scenario:
-    --   configuration_set maps LumeTS → "debug" (lowercase)
+    -- Reproduces a case-sensitivity scenario:
+    --   configuration_set maps App → "debug" (lowercase variant)
     --   CMakePresets defines preset "Debug" (capitalized)
     --   Cache key is "debug:ninja-clang" (uses config_set variant)
     --   Projects section iterates cmake presets: cname = "Debug"
