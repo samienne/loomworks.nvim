@@ -147,7 +147,8 @@ end
 --- @param config_status string
 --- @param status_hl string
 --- @param cached loomworks.CachedConfig|nil
-function M.render_cached_details(tree, config_status, status_hl, cached)
+--- @param fold_prefix? string prefix for foldable sub-nodes (e.g. "App:Debug:ninja-gcc-12")
+function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix)
   tree:leaf("Status: " .. config_status, status_hl)
   if not cached then return end
 
@@ -167,7 +168,84 @@ function M.render_cached_details(tree, config_status, status_hl, cached)
     if cached.cmake.compiler then
       tree:leaf("Compiler: " .. cached.cmake.compiler, "Comment")
     end
+    if cached.cmake.targets and next(cached.cmake.targets) then
+      M.render_targets(tree, cached.cmake.targets, fold_prefix)
+    end
   end
+end
+
+--- Map target type to compact display labels.
+local TARGET_TYPE_LABELS = {
+  executable       = "Executables",
+  static_library   = "Static Libraries",
+  shared_library   = "Shared Libraries",
+  module_library   = "Module Libraries",
+  object_library   = "Object Libraries",
+  interface_library = "Interface Libraries",
+}
+
+--- Display order for target type groups.
+local TARGET_TYPE_ORDER = {
+  "executable", "static_library", "shared_library",
+  "module_library", "object_library", "interface_library",
+}
+
+--- Render targets sub-tree, grouped by type.
+--- @param tree loomworks.Tree
+--- @param targets table<string, loomworks.CachedTarget>
+--- @param fold_prefix? string prefix for fold keys
+function M.render_targets(tree, targets, fold_prefix)
+  -- Group targets by type
+  local by_type = {}
+  local total = 0
+  for name, tgt in pairs(targets) do
+    local t = tgt.type
+    by_type[t] = by_type[t] or {}
+    by_type[t][#by_type[t] + 1] = { name = name, tgt = tgt }
+    total = total + 1
+  end
+  -- Sort each group alphabetically
+  for _, list in pairs(by_type) do
+    table.sort(list, function(a, b) return a.name < b.name end)
+  end
+
+  local prefix = fold_prefix and (fold_prefix .. ":") or ""
+
+  tree:node("Targets (" .. total .. ")", {
+    fold_key = prefix .. "targets",
+    hl = "Comment",
+  }, function()
+    for _, type_key in ipairs(TARGET_TYPE_ORDER) do
+      local group = by_type[type_key]
+      if group then
+        local group_label = TARGET_TYPE_LABELS[type_key] or type_key
+        tree:node(group_label .. " (" .. #group .. ")", {
+          fold_key = prefix .. "ttype:" .. type_key,
+          hl = "Comment",
+        }, function()
+          for _, entry in ipairs(group) do
+            local has_deps = entry.tgt.dependencies and #entry.tgt.dependencies > 0
+            local has_artifact = entry.tgt.artifact ~= nil
+            if has_deps or has_artifact then
+              tree:node(entry.name, {
+                fold_key = prefix .. "target:" .. entry.name,
+                hl = "Comment",
+              }, function()
+                if has_artifact then
+                  tree:leaf("Path: " .. entry.tgt.artifact, "Comment")
+                end
+                if has_deps then
+                  tree:leaf("Links: " .. table.concat(entry.tgt.dependencies, ", "), "Comment")
+                end
+              end)
+            else
+              tree:leaf(entry.name, "Comment")
+            end
+          end
+        end)
+      end
+    end
+  end)
 end
 
 return M

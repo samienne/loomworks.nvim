@@ -199,8 +199,6 @@ function M.info(path, config)
     end
   end
 
-  -- Targets: only available post-configure from CMake File API
-  -- Look for .cmake/api/v1/reply in the build directory
   local result = {
     configurations = configurations,
     compile_commands_from = config.compile_commands_from,
@@ -342,6 +340,14 @@ function M.tasks(project, active_config)
   tasks[#tasks + 1] = {
     name = project.name .. ": configure",
     builder = function()
+      -- Ensure file-api query marker exists so cmake writes target data
+      local query_dir = build_dir .. "/.cmake/api/v1/query"
+      vim.fn.mkdir(query_dir, "p")
+      local query_file = query_dir .. "/codemodel-v2"
+      if not uv.fs_stat(query_file) then
+        local fd = uv.fs_open(query_file, "w", 420) -- 0644
+        if fd then uv.fs_close(fd) end
+      end
       return {
         cmd = wrap_cmd(configure_cmd),
         cwd = abs_path,
@@ -505,6 +511,167 @@ end
 --- @return string
 function M.tool_label(tool_data)
   return tool_data.display
+end
+
+--- Map cmake target type strings to our normalized type names.
+local TARGET_TYPE_MAP = {
+  EXECUTABLE = "executable",
+  STATIC_LIBRARY = "static_library",
+  SHARED_LIBRARY = "shared_library",
+  MODULE_LIBRARY = "module_library",
+  OBJECT_LIBRARY = "object_library",
+  INTERFACE_LIBRARY = "interface_library",
+}
+
+--- Parse the cmake file-api reply to extract project-owned targets.
+--- @param build_dir string absolute path to the build directory
+--- @param config_name? string configuration name (for multi-config generators)
+--- @return table<string, loomworks.CachedTarget>|nil targets
+function M.parse_file_api(build_dir, config_name)
+  local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+  local stat = uv.fs_stat(reply_dir)
+  if not stat then return nil end
+
+  -- Find the index file (newest index-*.json)
+  local index_file
+  local handle = uv.fs_scandir(reply_dir)
+  if not handle then return nil end
+  while true do
+    local name, ftype = uv.fs_scandir_next(handle)
+    if not name then break end
+    if (ftype == "file" or ftype == nil) and name:match("^index%-.*%.json$") then
+      -- Take the latest (lexicographic sort of timestamps ensures this)
+      if not index_file or name > index_file then
+        index_file = name
+      end
+    end
+  end
+  if not index_file then return nil end
+
+  local index = read_json_file(reply_dir .. "/" .. index_file)
+  if not index then return nil end
+
+  -- Find the codemodel response object.
+  -- cmake file-api index may list responses under reply.stateless-query,
+  -- reply.client-<name>, or under the top-level objects array.
+  local codemodel_file
+  if index.reply then
+    local responses = index.reply["stateless-query"]
+        or index.reply["client-loomworks"] or {}
+    for _, response in ipairs(responses) do
+      if response.kind == "codemodel" and response.version
+          and response.version.major == 2 then
+        codemodel_file = response.jsonFile
+        break
+      end
+    end
+  end
+  if not codemodel_file and index.objects then
+    for _, obj in ipairs(index.objects) do
+      if obj.kind == "codemodel" and obj.version
+          and obj.version.major == 2 then
+        codemodel_file = obj.jsonFile
+        break
+      end
+    end
+  end
+  if not codemodel_file then return nil end
+
+  local codemodel = read_json_file(reply_dir .. "/" .. codemodel_file)
+  if not codemodel or not codemodel.configurations then return nil end
+
+  -- Select the right configuration (first for single-config, matched for multi-config)
+  local config_data
+  if config_name then
+    for _, cfg in ipairs(codemodel.configurations) do
+      if cfg.name == config_name then
+        config_data = cfg
+        break
+      end
+    end
+  end
+  if not config_data then
+    config_data = codemodel.configurations[1]
+  end
+  if not config_data or not config_data.targets then return nil end
+
+  -- Collect project-owned target names (for filtering dependencies)
+  -- Also read each target's detail file for type and dependencies
+  local project_names = {}
+  if config_data.projects then
+    for _, proj in ipairs(config_data.projects) do
+      if proj.targetIndexes then
+        for _, idx in ipairs(proj.targetIndexes) do
+          local tgt = config_data.targets[idx + 1] -- 0-based → 1-based
+          if tgt then
+            project_names[tgt.name] = true
+          end
+        end
+      end
+    end
+  else
+    -- Fallback: treat all targets as project-owned
+    for _, tgt in ipairs(config_data.targets) do
+      project_names[tgt.name] = true
+    end
+  end
+
+  -- Parse each target's detail file
+  local targets = {}
+  for _, tgt_ref in ipairs(config_data.targets) do
+    if not project_names[tgt_ref.name] then goto continue end
+    if not tgt_ref.jsonFile then goto continue end
+
+    local tgt_detail = read_json_file(reply_dir .. "/" .. tgt_ref.jsonFile)
+    if not tgt_detail then goto continue end
+
+    local target_type = TARGET_TYPE_MAP[tgt_detail.type]
+    if not target_type then goto continue end -- skip UTILITY, ALIAS, etc.
+
+    -- Extract link dependencies (only project-owned ones)
+    local deps
+    if tgt_detail.dependencies then
+      for _, dep in ipairs(tgt_detail.dependencies) do
+        if dep.id then
+          -- Resolve dependency name from the target list
+          for _, other in ipairs(config_data.targets) do
+            if other.id == dep.id and project_names[other.name] then
+              deps = deps or {}
+              deps[#deps + 1] = other.name
+              break
+            end
+          end
+        end
+      end
+      if deps then table.sort(deps) end
+    end
+
+    -- Extract primary output artifact path, normalized to be relative to build_dir
+    local artifact
+    if tgt_detail.artifacts and tgt_detail.artifacts[1] then
+      local raw = tgt_detail.artifacts[1].path
+      if raw then
+        -- cmake may emit absolute or relative paths; normalize to relative
+        local normalized = raw:gsub("\\", "/")
+        local build_prefix = build_dir:gsub("\\", "/"):gsub("/?$", "/")
+        if normalized:sub(1, #build_prefix) == build_prefix then
+          artifact = normalized:sub(#build_prefix + 1)
+        else
+          artifact = normalized
+        end
+      end
+    end
+
+    targets[tgt_ref.name] = {
+      type = target_type,
+      dependencies = deps,
+      artifact = artifact,
+    }
+
+    ::continue::
+  end
+
+  return next(targets) and targets or nil
 end
 
 --- Compare current config/files against cache.

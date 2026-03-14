@@ -941,6 +941,10 @@ Each configuration shows its available tools:
     Build dir: ...
     Last configured: ...
     Generator: ...
+    {fold_char} Targets ({total_count})       ← only when targets exist
+      {fold_char} {type_group} ({group_count})
+        {fold_char} {target_name}
+          Links: dep1, dep2
 ```
 
 **Configuration display** (non-keyed modules):
@@ -950,6 +954,26 @@ Each configuration shows its available tools:
     Build dir: ...
     ...
 ```
+
+**Targets sub-tree** (cmake projects, post-configure only):
+
+When a configuration has cached targets, a foldable "Targets (N)" node
+appears in the unfolded tool entry detail view, where N is the total
+target count. Targets are grouped by type under foldable sub-headers
+showing the group name and count (e.g., "Executables (2)"). Within each
+group, targets are sorted alphabetically by name. Targets with link
+dependencies can be unfolded to show `Links: dep1, dep2, ...` on a
+single line. Targets without dependencies are leaf nodes (no fold arrow).
+
+Type group labels and display order:
+1. `Executables`
+2. `Static Libraries`
+3. `Shared Libraries`
+4. `Module Libraries`
+5. `Object Libraries`
+6. `Interface Libraries`
+
+Only groups containing at least one target are shown.
 
 **Configuration actions** (at the tool/status level):
 
@@ -1102,14 +1126,13 @@ the absolute project directory. `config` is the type_config from
 - Return `{ valid = false, warnings = {...} }` to reject
 - Return `{ valid = true, warnings = {...} }` with non-fatal warnings
 
-**`info(path, config) → { configurations, targets? }`**
+**`info(path, config) → { configurations }`**
 
 Return what the module knows about the project from its own files. Called
 during merge to discover available configurations.
 
 - `configurations`: dict of config_name → config info (generator, binary_dir,
   toolchain_locked, toolchain)
-- `targets`: optional, only present after configure (e.g., cmake File API data)
 
 **`tasks(project, active_config) → task_def[]`**
 
@@ -1169,6 +1192,18 @@ Return the name of a registered progress parser (e.g., `"ninja"`), or `nil`
 if the module has no progress tracking. Parameters are optional — modules
 may ignore them or use them to select a parser based on context.
 
+**`parse_file_api(build_dir, config_name?) → targets?`** *(optional)*
+
+Parse module-specific post-configure data from the build directory. Returns
+a dict of `target_name → { type, dependencies? }` for project-owned targets,
+or `nil` if no data is available. Called by core after a successful configure
+task. `config_name` is provided for multi-config generators to select the
+correct configuration from the reply.
+
+Only project-owned build targets are included (executables and libraries).
+Imported, alias, and utility targets are excluded. Dependencies list only
+project-owned targets that this target links against.
+
 ### 9.4 CMakePresets integration (cmake module)
 
 The cmake module reads `CMakePresets.json` + `CMakeUserPresets.json` with
@@ -1182,6 +1217,40 @@ full preset inheritance:
   and no configurations are declared in loomworks.json**
 - Overrides in `loomworks.json` `configurations` block add to or override
   preset-derived configurations
+
+### 9.5 CMake File API integration (cmake module)
+
+The cmake module uses CMake's file-based API (codemodel v2) to discover
+build targets after configure.
+
+**Query setup**: The query file
+`<build_dir>/.cmake/api/v1/query/codemodel-v2` is created before the
+configure task runs (in the task builder). The file is an empty marker —
+its presence tells CMake to write reply data on every configure.
+
+**Reply parsing**: After a successful configure, core calls
+`parse_file_api(build_dir, config_name?)` on the module. The cmake module
+reads the codemodel reply from `<build_dir>/.cmake/api/v1/reply/`,
+extracts project-owned targets, and returns them.
+
+**Target filtering**: Only project-owned build targets are included:
+- Executables (`EXECUTABLE`)
+- Static libraries (`STATIC_LIBRARY`)
+- Shared libraries (`SHARED_LIBRARY`)
+- Module libraries (`MODULE_LIBRARY`)
+- Object libraries (`OBJECT_LIBRARY`)
+- Interface libraries (`INTERFACE_LIBRARY`)
+
+Imported targets, alias targets, and utility targets (e.g., `install`,
+`uninstall`) are excluded.
+
+**Dependencies**: Link dependencies between project-owned targets are
+recorded. Dependencies on imported or external targets are excluded.
+
+**Storage**: Targets are stored in
+`cache.projects[key].configurations[config_key].cmake.targets`. The
+entire targets dict is replaced on every successful configure (not
+merged).
 
 ---
 

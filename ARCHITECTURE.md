@@ -251,7 +251,7 @@ may import from its own layer or any layer below it, never above.
 | `workspace.lua` | Root resolution, file path derivation, workspace assembly from raw strings | I/O (pure functions only) |
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication | Domain logic; know about merge or profiles |
 | `modules/init.lua` | Module registry, lazy loading | Implement module logic |
-| `modules/cmake.lua` | CMake module: validate, info (preset reading), tasks, inspect, detect_tools | Know about profiles, UI, or overseer |
+| `modules/cmake.lua` | CMake module: validate, info (preset reading), tasks, inspect, detect_tools, parse_file_api (target discovery) | Know about profiles, UI, or overseer |
 | `modules/ets.lua`, `modules/typescript.lua` | Shim modules (validate + info only) | Anything beyond the shim interface |
 | `progress/init.lua` | Parser registry mapping tool names to parser functions | Parse output itself |
 | `progress/ninja.lua` | Ninja `[n/m]` output parser | Know about other build tools |

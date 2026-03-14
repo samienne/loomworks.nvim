@@ -2100,6 +2100,133 @@ describe("Core", function()
       assert.equals("built", cached.state)
       assert.equals("ninja-gcc-14.2.0", cached.tool_data.id)
     end)
+
+    it("calls parse_file_api on successful configure and stores targets", function()
+      local parse_called = false
+      local parse_args = {}
+      local saved_cache = nil
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+        },
+        nil, nil,
+        {
+          modules = {
+            get = function(mod_type)
+              if mod_type ~= "cmake" then return nil end
+              return {
+                validate = function() return { valid = true, warnings = {} } end,
+                info = function() return { configurations = { Debug = {} } } end,
+                parse_file_api = function(build_dir, config_name)
+                  parse_called = true
+                  parse_args = { build_dir = build_dir, config_name = config_name }
+                  return {
+                    app = { type = "executable", dependencies = { "libcore" } },
+                    libcore = { type = "static_library" },
+                  }
+                end,
+              }
+            end,
+          },
+          cache = {
+            save = function(_, data) saved_cache = data; return true end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      core:record_task_result({
+        project_key = "App",
+        action = "configure",
+        configuration_key = "Debug",
+        success = true,
+        build_dir = "/root/.nvim/build/App/Debug",
+        cmake = { generator = "Ninja" },
+      })
+
+      assert.is_true(parse_called, "parse_file_api should be called")
+      assert.equals("/root/.nvim/build/App/Debug", parse_args.build_dir)
+      assert.equals("Debug", parse_args.config_name)
+
+      -- Targets should be stored in cache
+      local cached = saved_cache.projects.App.configurations.Debug
+      assert.is_not_nil(cached.cmake.targets)
+      assert.equals("executable", cached.cmake.targets.app.type)
+      assert.are.same({ "libcore" }, cached.cmake.targets.app.dependencies)
+      assert.equals("static_library", cached.cmake.targets.libcore.type)
+    end)
+
+    it("does not call parse_file_api on failed configure", function()
+      local parse_called = false
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+        },
+        nil, nil,
+        {
+          modules = {
+            get = function(mod_type)
+              if mod_type ~= "cmake" then return nil end
+              return {
+                validate = function() return { valid = true, warnings = {} } end,
+                info = function() return { configurations = { Debug = {} } } end,
+                parse_file_api = function()
+                  parse_called = true
+                  return nil
+                end,
+              }
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      core:record_task_result({
+        project_key = "App",
+        action = "configure",
+        configuration_key = "Debug",
+        success = false,
+        build_dir = "/root/.nvim/build/App/Debug",
+      })
+
+      assert.is_false(parse_called, "parse_file_api should not be called on failure")
+    end)
+
+    it("does not call parse_file_api on build action", function()
+      local parse_called = false
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+        },
+        nil, nil,
+        {
+          modules = {
+            get = function(mod_type)
+              if mod_type ~= "cmake" then return nil end
+              return {
+                validate = function() return { valid = true, warnings = {} } end,
+                info = function() return { configurations = { Debug = {} } } end,
+                parse_file_api = function()
+                  parse_called = true
+                  return nil
+                end,
+              }
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      core:record_task_result({
+        project_key = "App",
+        action = "build",
+        configuration_key = "Debug",
+        success = true,
+        build_dir = "/root/.nvim/build/App/Debug",
+      })
+
+      assert.is_false(parse_called, "parse_file_api should not be called for build")
+    end)
   end)
 
   describe("cache version mismatch", function()
