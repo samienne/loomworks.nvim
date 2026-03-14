@@ -201,6 +201,7 @@ automatically from your system.
 | `b` | Build profile or configuration |
 | `c` | Configure (cmake configure) |
 | `p` | Pin a configuration as a standalone profile |
+| `o` | Show build options (cmake cache variables) |
 | `R` | Clean + rebuild (destructive) |
 | `C` | Clean — reset to unconfigured, delete build dir (destructive) |
 | `D` | Delete profile or configuration (destructive, with confirmation) |

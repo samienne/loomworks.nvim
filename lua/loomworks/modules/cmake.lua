@@ -340,13 +340,15 @@ function M.tasks(project, active_config)
   tasks[#tasks + 1] = {
     name = project.name .. ": configure",
     builder = function()
-      -- Ensure file-api query marker exists so cmake writes target data
+      -- Ensure file-api query markers exist so cmake writes reply data
       local query_dir = build_dir .. "/.cmake/api/v1/query"
       vim.fn.mkdir(query_dir, "p")
-      local query_file = query_dir .. "/codemodel-v2"
-      if not uv.fs_stat(query_file) then
-        local fd = uv.fs_open(query_file, "w", 420) -- 0644
-        if fd then uv.fs_close(fd) end
+      for _, marker in ipairs({ "codemodel-v2", "cache-v2" }) do
+        local query_file = query_dir .. "/" .. marker
+        if not uv.fs_stat(query_file) then
+          local fd = uv.fs_open(query_file, "w", 420) -- 0644
+          if fd then uv.fs_close(fd) end
+        end
       end
       return {
         cmd = wrap_cmd(configure_cmd),
@@ -513,6 +515,70 @@ function M.tool_label(tool_data)
   return tool_data.display
 end
 
+--- Cache entry types that are user-facing (not internal/computed).
+local USER_CACHE_TYPES = {
+  BOOL = "bool",
+  STRING = "string",
+  PATH = "path",
+  FILEPATH = "filepath",
+}
+
+--- Find the file-api reply directory and locate a reply file by kind.
+--- @param build_dir string
+--- @param kind string e.g. "cache"
+--- @param major number e.g. 2
+--- @return table|nil parsed JSON data
+local function find_file_api_reply(build_dir, kind, major)
+  local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+  if not uv.fs_stat(reply_dir) then return nil end
+
+  -- Find the index file
+  local index_file
+  local handle = uv.fs_scandir(reply_dir)
+  if not handle then return nil end
+  while true do
+    local name, ftype = uv.fs_scandir_next(handle)
+    if not name then break end
+    if (ftype == "file" or ftype == nil) and name:match("^index%-.*%.json$") then
+      if not index_file or name > index_file then
+        index_file = name
+      end
+    end
+  end
+  if not index_file then return nil end
+
+  local index = read_json_file(reply_dir .. "/" .. index_file)
+  if not index then return nil end
+
+  -- Search reply and objects for the requested kind
+  local json_file
+  if index.reply then
+    for _, key in ipairs({ "stateless-query", "client-loomworks" }) do
+      local responses = index.reply[key]
+      if responses then
+        for _, r in ipairs(responses) do
+          if r.kind == kind and r.version and r.version.major == major then
+            json_file = r.jsonFile
+            break
+          end
+        end
+        if json_file then break end
+      end
+    end
+  end
+  if not json_file and index.objects then
+    for _, obj in ipairs(index.objects) do
+      if obj.kind == kind and obj.version and obj.version.major == major then
+        json_file = obj.jsonFile
+        break
+      end
+    end
+  end
+  if not json_file then return nil end
+
+  return read_json_file(reply_dir .. "/" .. json_file)
+end
+
 --- Map cmake target type strings to our normalized type names.
 local TARGET_TYPE_MAP = {
   EXECUTABLE = "executable",
@@ -528,57 +594,10 @@ local TARGET_TYPE_MAP = {
 --- @param config_name? string configuration name (for multi-config generators)
 --- @return table<string, loomworks.CachedTarget>|nil targets
 function M.parse_file_api(build_dir, config_name)
-  local reply_dir = build_dir .. "/.cmake/api/v1/reply"
-  local stat = uv.fs_stat(reply_dir)
-  if not stat then return nil end
-
-  -- Find the index file (newest index-*.json)
-  local index_file
-  local handle = uv.fs_scandir(reply_dir)
-  if not handle then return nil end
-  while true do
-    local name, ftype = uv.fs_scandir_next(handle)
-    if not name then break end
-    if (ftype == "file" or ftype == nil) and name:match("^index%-.*%.json$") then
-      -- Take the latest (lexicographic sort of timestamps ensures this)
-      if not index_file or name > index_file then
-        index_file = name
-      end
-    end
-  end
-  if not index_file then return nil end
-
-  local index = read_json_file(reply_dir .. "/" .. index_file)
-  if not index then return nil end
-
-  -- Find the codemodel response object.
-  -- cmake file-api index may list responses under reply.stateless-query,
-  -- reply.client-<name>, or under the top-level objects array.
-  local codemodel_file
-  if index.reply then
-    local responses = index.reply["stateless-query"]
-        or index.reply["client-loomworks"] or {}
-    for _, response in ipairs(responses) do
-      if response.kind == "codemodel" and response.version
-          and response.version.major == 2 then
-        codemodel_file = response.jsonFile
-        break
-      end
-    end
-  end
-  if not codemodel_file and index.objects then
-    for _, obj in ipairs(index.objects) do
-      if obj.kind == "codemodel" and obj.version
-          and obj.version.major == 2 then
-        codemodel_file = obj.jsonFile
-        break
-      end
-    end
-  end
-  if not codemodel_file then return nil end
-
-  local codemodel = read_json_file(reply_dir .. "/" .. codemodel_file)
+  local codemodel = find_file_api_reply(build_dir, "codemodel", 2)
   if not codemodel or not codemodel.configurations then return nil end
+
+  local reply_dir = build_dir .. "/.cmake/api/v1/reply"
 
   -- Select the right configuration (first for single-config, matched for multi-config)
   local config_data
@@ -672,6 +691,80 @@ function M.parse_file_api(build_dir, config_name)
   end
 
   return next(targets) and targets or nil
+end
+
+--- Parse CMakeCache.txt as fallback when file-api cache reply is unavailable.
+--- @param build_dir string
+--- @return loomworks.ProjectOption[]|nil
+local function parse_cmake_cache_txt(build_dir)
+  local cache_path = build_dir .. "/CMakeCache.txt"
+  local content = io_mod.read_file(cache_path)
+  if not content then return nil end
+
+  local options = {}
+  local helpstring
+
+  for line in content:gmatch("[^\r\n]+") do
+    if line:match("^//") then
+      -- Help string line (strip leading //)
+      helpstring = line:sub(3)
+    elseif not line:match("^#") and not line:match("^%s*$") then
+      local name, type_str, value = line:match("^([^:]+):(%u+)=(.*)")
+      if name and type_str then
+        local mapped_type = USER_CACHE_TYPES[type_str]
+        if mapped_type then
+          options[#options + 1] = {
+            name = name,
+            type = mapped_type,
+            value = value,
+            helpstring = helpstring ~= "Value Computed by CMake" and helpstring or nil,
+          }
+        end
+        helpstring = nil
+      end
+    end
+  end
+
+  return #options > 0 and options or nil
+end
+
+--- Return user-facing build options from the file-api cache reply or CMakeCache.txt.
+--- @param build_dir string absolute path to the build directory
+--- @return loomworks.ProjectOption[]|nil
+function M.get_options(build_dir)
+  -- Try file-api cache-v2 reply first (has STRINGS/choices support)
+  local cache_data = find_file_api_reply(build_dir, "cache", 2)
+  if cache_data and cache_data.entries then
+    local options = {}
+    for _, entry in ipairs(cache_data.entries) do
+      local mapped_type = USER_CACHE_TYPES[entry.type]
+      if mapped_type then
+        local helpstring, choices
+        if entry.properties then
+          for _, prop in ipairs(entry.properties) do
+            if prop.name == "HELPSTRING" and prop.value ~= ""
+                and prop.value ~= "Value Computed by CMake" then
+              helpstring = prop.value
+            elseif prop.name == "STRINGS" and type(prop.value) == "table"
+                and #prop.value > 0 then
+              choices = prop.value
+            end
+          end
+        end
+        options[#options + 1] = {
+          name = entry.name,
+          type = mapped_type,
+          value = entry.value,
+          helpstring = helpstring,
+          choices = choices,
+        }
+      end
+    end
+    if #options > 0 then return options end
+  end
+
+  -- Fallback: parse CMakeCache.txt (no choices support)
+  return parse_cmake_cache_txt(build_dir)
 end
 
 --- Compare current config/files against cache.

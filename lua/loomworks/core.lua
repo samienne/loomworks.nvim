@@ -1597,6 +1597,25 @@ function Core:_cached_build_dir(project_key, config_key)
   return cfg and cfg.build_dir
 end
 
+--- Return build options for a project+config by delegating to the module.
+--- @param project_key string
+--- @param config_key string
+--- @return loomworks.ProjectOption[]|nil
+function Core:get_project_options(project_key, config_key)
+  local build_dir = self:_cached_build_dir(project_key, config_key)
+  if not build_dir then return nil end
+
+  local ws = self._workspace
+  if not ws then return nil end
+  local proj_cfg = ws.config.projects[project_key]
+  if not proj_cfg then return nil end
+
+  local mod = self._deps.modules.get(proj_cfg.type)
+  if not mod or not mod.get_options then return nil end
+
+  return mod.get_options(build_dir)
+end
+
 --- Clean a profile's configs: delete build dirs and reset to unconfigured.
 --- Does NOT remove or modify the profile itself.
 --- @param profile_key string

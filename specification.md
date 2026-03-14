@@ -752,6 +752,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `b`     | build       | Build (walks up to nearest node with `on_build`) |
 | `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
 | `p`     | pin         | Pin configuration as pinned profile |
+| `o`     | options     | Show build options float (on configured project nodes) |
 | `R`     | rebuild     | Clean + build (destructive) |
 | `C`     | clean       | Reset to unconfigured, delete build dir (destructive) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
@@ -761,8 +762,8 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `q`     | (close)     | Close the status page |
 
 **Action dispatch**: For `build`, `configure`, `rebuild`, `clean`, `delete`,
-and `pin`, the tree walks upward from the cursor line to find the nearest
-node that has the corresponding `on_<action>` callback. This means pressing
+`pin`, and `options`, the tree walks upward from the cursor line to find the
+nearest node that has the corresponding `on_<action>` callback. This means pressing
 `b` on a child detail line triggers the build action of the parent node.
 
 **Destructive action highlighting**: `R`, `C`, `D`, `<C-n>` keys are
@@ -793,7 +794,7 @@ and the suffix uses `Comment` highlight (via `group` with chunks).
 |-------------|---------|-------------|
 | Projects: | Profiles | `[b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
 | Tools: | Configuration Sets | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Configurations: | Projects | `[b] build  [c] configure  [p] pin  [R] rebuild  [C] clean  [D] delete` |
+| Configurations: | Projects | `[b] build  [c] configure  [p] pin  [o] options  [R] rebuild  [C] clean  [D] delete` |
 
 ### 6.5 Profiles Section
 
@@ -1052,7 +1053,30 @@ config/profile deletion may delete build directories anywhere.
 Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
 `<C-n>`) have their key character highlighted with `DiagnosticWarn`.
 
-### 6.12 Auto-refresh
+### 6.12 Options Float
+
+Triggered by `o` on a configuration or tool entry node in the Projects
+section. Opens a floating window showing the project's build options for
+that configuration. Only available for configured projects with a cached
+build directory.
+
+**`Core:get_project_options(project_key, config_key) → ProjectOption[]|nil`**
+
+Resolves the build directory from cache and delegates to the module's
+`get_options()`. Returns nil if the project is not configured or the
+module does not support options.
+
+The float displays options in two groups:
+- **Project options** — non-`CMAKE_` prefixed entries (shown first)
+- **CMake options** — `CMAKE_` prefixed entries
+
+Each option shows its name and value. BOOL values use `ON`/`OFF`
+highlighting. Options with a helpstring show it as a comment line above.
+Options with choices show them in parentheses after the value.
+
+The float is read-only. Close with `q` or `<Esc>`.
+
+### 6.13 Auto-refresh
 
 The status page refreshes automatically on these events:
 - `task_started`, `task_stopped`, `task_result`, `task_progress`
@@ -1192,6 +1216,15 @@ Return the name of a registered progress parser (e.g., `"ninja"`), or `nil`
 if the module has no progress tracking. Parameters are optional — modules
 may ignore them or use them to select a parser based on context.
 
+**`get_options(build_dir) → ProjectOption[]|nil`** *(optional)*
+
+Return the user-facing build options for a configured project. Each option
+has `name`, `type` (`"bool"`, `"string"`, `"path"`, `"filepath"`), `value`,
+optional `helpstring`, and optional `choices` (allowed values list). Only
+options meaningful to the user are included — internal/computed variables
+are excluded. Returns nil if the project is not configured or has no
+options. Called on demand, not cached.
+
 **`parse_file_api(build_dir, config_name?) → targets?`** *(optional)*
 
 Parse module-specific post-configure data from the build directory. Returns
@@ -1223,10 +1256,12 @@ full preset inheritance:
 The cmake module uses CMake's file-based API (codemodel v2) to discover
 build targets after configure.
 
-**Query setup**: The query file
-`<build_dir>/.cmake/api/v1/query/codemodel-v2` is created before the
-configure task runs (in the task builder). The file is an empty marker —
-its presence tells CMake to write reply data on every configure.
+**Query setup**: The query files
+`<build_dir>/.cmake/api/v1/query/codemodel-v2` and `cache-v2` are created
+before the configure task runs (in the task builder). These are empty
+markers — their presence tells CMake to write reply data on every
+configure. The codemodel reply provides targets; the cache reply provides
+build options.
 
 **Reply parsing**: After a successful configure, core calls
 `parse_file_api(build_dir, config_name?)` on the module. The cmake module

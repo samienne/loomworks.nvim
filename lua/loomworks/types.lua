@@ -237,6 +237,15 @@
 --- @field read_file? fun(path: string): string|nil, string|nil
 --- @field schedule? fun(fn: function)
 
+-- ========================== Project Options ==========================
+
+--- @class loomworks.ProjectOption
+--- @field name string variable name
+--- @field type string "bool"|"string"|"path"|"filepath"
+--- @field value string current value
+--- @field helpstring? string description from the build system
+--- @field choices? string[] allowed values (e.g. cmake STRINGS property)
+
 -- ========================== Progress ==========================
 
 --- @class loomworks.ProgressUpdate

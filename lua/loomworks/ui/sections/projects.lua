@@ -147,7 +147,7 @@ return function(tree, ctx)
       end
 
       if proj.configurations and next(proj.configurations) then
-        tree:group({{"Configurations:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [p] pin  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
+        tree:group({{"Configurations:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [p] pin  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
           local config_names = {}
           for name in pairs(proj.configurations) do
             config_names[#config_names + 1] = name
@@ -219,6 +219,8 @@ return function(tree, ctx)
                     on_delete = entry.cached
                         and actions.delete_config(key, entry.config_key) or nil,
                     on_pin = actions.pin_config(key, entry.config_key),
+                    on_options = entry.cached
+                        and actions.show_options(key, entry.config_key) or nil,
                   }, function()
                     helpers.render_cached_details(tree, config_status, status_hl, entry.cached,
                       key .. ":" .. entry.config_key)
@@ -244,6 +246,7 @@ return function(tree, ctx)
                   on_configure = actions.configure_configuration(key, cname),
                   on_delete = cached and actions.delete_configuration(proj, cname) or nil,
                   on_pin = actions.pin_config(key, cname),
+                  on_options = cached and actions.show_options(key, cname) or nil,
                 }, function()
                   helpers.render_cached_details(tree, config_status, status_hl, cached)
                 end)

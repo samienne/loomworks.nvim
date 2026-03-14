@@ -152,6 +152,118 @@ function M.pin_config(project_key, config_key)
 end
 
 -- ---------------------------------------------------------------------------
+-- Options float
+-- ---------------------------------------------------------------------------
+
+--- @param project_key string
+--- @param config_key string
+function M.show_options(project_key, config_key)
+  return function()
+    local lw = require("loomworks")
+    local options = lw.get_project_options(project_key, config_key)
+    if not options or #options == 0 then
+      vim.notify("loomworks: no build options available (project may need configure)", vim.log.levels.INFO)
+      return
+    end
+
+    -- Split into project options and cmake options, sort each group
+    local project_opts, cmake_opts = {}, {}
+    for _, opt in ipairs(options) do
+      if opt.name:match("^CMAKE_") then
+        cmake_opts[#cmake_opts + 1] = opt
+      else
+        project_opts[#project_opts + 1] = opt
+      end
+    end
+    table.sort(project_opts, function(a, b) return a.name < b.name end)
+    table.sort(cmake_opts, function(a, b) return a.name < b.name end)
+
+    -- Build lines and highlights
+    local lines = {}
+    local highlights = {} -- { line_idx (0-based), hl_group, col_start, col_end }
+
+    local function add_group(title, opts)
+      if #opts == 0 then return end
+      lines[#lines + 1] = "  " .. title
+      highlights[#highlights + 1] = { #lines - 1, "Title", 0, -1 }
+      lines[#lines + 1] = ""
+
+      for _, opt in ipairs(opts) do
+        if opt.helpstring then
+          lines[#lines + 1] = "  # " .. opt.helpstring
+          highlights[#highlights + 1] = { #lines - 1, "Comment", 0, -1 }
+        end
+
+        local value_str = opt.value
+        if opt.choices and #opt.choices > 0 then
+          value_str = value_str .. "  (" .. table.concat(opt.choices, ", ") .. ")"
+        end
+
+        local line = "  " .. opt.name .. " = " .. value_str
+        lines[#lines + 1] = line
+
+        -- Highlight the value portion
+        local eq_pos = #opt.name + 5 -- "  " + name + " = "
+        if opt.type == "bool" then
+          local hl = opt.value == "ON" and "DiagnosticOk" or "Comment"
+          highlights[#highlights + 1] = { #lines - 1, hl, eq_pos, eq_pos + #opt.value }
+        end
+      end
+
+      lines[#lines + 1] = ""
+    end
+
+    add_group("Project Options", project_opts)
+    add_group("CMake Options", cmake_opts)
+
+    -- Remove trailing blank line
+    if lines[#lines] == "" then lines[#lines] = nil end
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].bufhidden = "wipe"
+
+    -- Calculate dimensions
+    local max_width = 0
+    for _, line in ipairs(lines) do
+      if #line > max_width then max_width = #line end
+    end
+    local width = math.min(math.max(max_width + 2, 40), math.floor(vim.o.columns * 0.8))
+    local height = math.min(#lines, math.floor(vim.o.lines * 0.7))
+
+    local title = " " .. project_key .. " — Options "
+    local win = vim.api.nvim_open_win(buf, true, {
+      relative = "editor",
+      width = width,
+      height = height,
+      row = math.floor((vim.o.lines - height) / 2),
+      col = math.floor((vim.o.columns - width) / 2),
+      style = "minimal",
+      border = "rounded",
+      title = title,
+      title_pos = "center",
+    })
+
+    -- Apply highlights
+    local ns = vim.api.nvim_create_namespace("loomworks_options")
+    for _, hl in ipairs(highlights) do
+      vim.api.nvim_buf_add_highlight(buf, ns, hl[2], hl[1], hl[3], hl[4])
+    end
+
+    local function close()
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_close(win, true)
+      end
+    end
+
+    local map_opts = { buffer = buf, nowait = true, silent = true }
+    vim.keymap.set("n", "q", close, map_opts)
+    vim.keymap.set("n", "<Esc>", close, map_opts)
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Deletion confirmation dialog
 -- ---------------------------------------------------------------------------
 
