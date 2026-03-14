@@ -1837,105 +1837,108 @@ describe("Core", function()
     end)
   end)
 
-  describe("operations", function()
-    it("tracks a running operation", function()
-      local time = 100
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
+  describe("operations (on Profile)", function()
+    local op_config = {
+      configuration_sets = { debug = { App = "Debug" } },
+    }
+
+    local op_cache = {
+      profiles = {
+        debug = {
+          configuration_set = "debug",
+          projects = { App = { config_key = "Debug" } },
+        },
+      },
+    }
+
+    local function make_op_core(clock_fn)
+      local time = { value = 0 }
+      if not clock_fn then
+        clock_fn = function() return time.value end
+      end
+      local core = make_core(op_config, { active_profile = "debug" }, op_cache, {
+        clock = clock_fn,
       })
       core:setup({ root = "/root" })
-      core:start_operation("debug", "build")
+      local profile = core:get_profile("debug")
+      return core, profile, time
+    end
 
-      local op = core:get_operation("debug")
+    it("tracks a running operation", function()
+      local _, profile, time = make_op_core()
+      time.value = 100
+      profile:start_operation("build")
+
+      local op = profile:operation()
       assert.is_not_nil(op)
       assert.equals("build", op.action)
       assert.equals(100, op.started_at)
 
-      time = 130
-      assert.equals(30, core:get_operation_elapsed("debug"))
+      time.value = 130
+      assert.equals(30, profile:operation_elapsed())
     end)
 
     it("finishes operation with success message", function()
-      local time = 100
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "build")
-      time = 190
-      core:finish_operation("debug", true)
+      local _, profile, time = make_op_core()
+      time.value = 100
+      profile:start_operation("build")
+      time.value = 190
+      profile:finish_operation(true)
 
-      local op = core:get_operation("debug")
+      local op = profile:operation()
       assert.is_not_nil(op)
       assert.equals("built in 1m30s", op.message)
       assert.is_true(op.success)
       -- No longer running
-      assert.is_nil(core:get_operation_elapsed("debug"))
+      assert.is_nil(profile:operation_elapsed())
     end)
 
     it("finishes operation with failure message", function()
-      local time = 0
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "configure")
-      time = 45
-      core:finish_operation("debug", false)
+      local _, profile, time = make_op_core()
+      profile:start_operation("configure")
+      time.value = 45
+      profile:finish_operation(false)
 
-      local op = core:get_operation("debug")
+      local op = profile:operation()
       assert.equals("configure failed in 45s", op.message)
       assert.is_false(op.success)
     end)
 
     it("configure+build operation uses generic verb", function()
-      local time = 0
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "configure+build")
-      time = 120
-      core:finish_operation("debug", true)
+      local _, profile, time = make_op_core()
+      profile:start_operation("configure+build")
+      time.value = 120
+      profile:finish_operation(true)
 
-      assert.equals("built in 2m00s", core:get_operation("debug").message)
+      assert.equals("built in 2m00s", profile:operation().message)
     end)
 
     it("new operation replaces previous result", function()
-      local time = 0
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "build")
-      time = 10
-      core:finish_operation("debug", true)
-      assert.is_not_nil(core:get_operation("debug").message)
+      local _, profile, time = make_op_core()
+      profile:start_operation("build")
+      time.value = 10
+      profile:finish_operation(true)
+      assert.is_not_nil(profile:operation().message)
 
-      core:start_operation("debug", "build")
+      profile:start_operation("build")
       -- Previous result replaced by running state
-      assert.is_not_nil(core:get_operation("debug").started_at)
-      assert.is_nil(core:get_operation("debug").message)
+      assert.is_not_nil(profile:operation().started_at)
+      assert.is_nil(profile:operation().message)
     end)
 
-    it("returns nil for unknown profile", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      assert.is_nil(core:get_operation("nonexistent"))
-      assert.is_nil(core:get_operation_elapsed("nonexistent"))
+    it("returns nil before any operation", function()
+      local _, profile = make_op_core()
+      assert.is_nil(profile:operation())
+      assert.is_nil(profile:operation_elapsed())
     end)
 
     it("emits operation events", function()
-      local time = 0
-      local core, deps = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "build")
-      time = 10
-      core:finish_operation("debug", true)
+      local core, profile, time = make_op_core()
+      profile:start_operation("build")
+      time.value = 10
+      profile:finish_operation(true)
 
-      local events = deps._events_log
+      local events = core._deps._events_log
       local found_started, found_finished = false, false
       for _, e in ipairs(events) do
         if e.event == "operation_started" then

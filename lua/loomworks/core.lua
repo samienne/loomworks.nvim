@@ -10,7 +10,6 @@
 --- @field _delete_waiters function[]
 --- @field _generation number incremented on every remerge
 --- @field _tracker loomworks.FileTracker|nil
---- @field _operations table<string, loomworks.Operation> profile_key -> active or completed operation
 --- @field _tools_by_type table<string, loomworks.DetectedTool[]> tools per module type
 --- @field _profiles table<string, loomworks.Profile>
 --- @field _projects table<string, loomworks.Project>
@@ -72,7 +71,6 @@ function Core.new(deps)
   end
   self._workspace = nil
   self._active_set = nil
-  self._operations = {}
   self._delete_waiters = {}
   self._generation = 0
   self._tracker = nil
@@ -1049,85 +1047,6 @@ function Core:has_running_tasks()
   return false
 end
 
--- ---------------------------------------------------------------------------
--- Operations (profile-level action tracking)
--- ---------------------------------------------------------------------------
-
---- Start tracking a profile-level operation.
---- Replaces any previous operation result for this profile.
---- @param profile_key string
---- @param action string "configure", "build", or "configure+build"
-function Core:start_operation(profile_key, action)
-  self._operations[profile_key] = {
-    action = action,
-    started_at = self._deps.clock(),
-  }
-  self._deps.events.emit("operation_started", { profile_key = profile_key, action = action })
-end
-
---- Finish a profile-level operation and store a result message.
---- @param profile_key string
---- @param success boolean
-function Core:finish_operation(profile_key, success)
-  local op = self._operations[profile_key]
-  if not op or not op.started_at then return end
-
-  local elapsed = self._deps.clock() - op.started_at
-  local verb
-  if op.action == "configure" then
-    verb = success and "configured" or "configure failed"
-  elseif op.action == "build" then
-    verb = success and "built" or "build failed"
-  else
-    verb = success and "built" or "failed"
-  end
-
-  self._operations[profile_key] = {
-    message = verb .. " in " .. self:_format_duration(elapsed),
-    success = success,
-  }
-
-  self._deps.events.emit("operation_finished", {
-    profile_key = profile_key,
-    success = success,
-    message = self._operations[profile_key].message,
-  })
-end
-
---- Get the current operation state for a profile.
---- @param profile_key string
---- @return loomworks.Operation|nil
-function Core:get_operation(profile_key)
-  return self._operations[profile_key]
-end
-
---- Get elapsed seconds for a running operation.
---- @param profile_key string
---- @return number|nil seconds
-function Core:get_operation_elapsed(profile_key)
-  local op = self._operations[profile_key]
-  if not op or not op.started_at then return nil end
-  return self._deps.clock() - op.started_at
-end
-
---- Format a duration in seconds to a compact string.
---- @param seconds number
---- @return string
-function Core:_format_duration(seconds)
-  local s = math.floor(seconds)
-  if s < 60 then
-    return s .. "s"
-  end
-  local m = math.floor(s / 60)
-  s = s % 60
-  if m < 60 then
-    return m .. "m" .. string.format("%02d", s) .. "s"
-  end
-  local h = math.floor(m / 60)
-  m = m % 60
-  return h .. "h" .. string.format("%02d", m) .. "m"
-end
-
 --- Find running task IDs that match a list of project+config items.
 --- @param items loomworks.DeletionItem[]
 --- @return table<number, loomworks.RunningTaskInfo>
@@ -1657,18 +1576,6 @@ function Core:execute_deletion(plan, opts, on_done)
   end, on_done)
 end
 
---- Convenience: delete a profile without UI confirmation.
---- @param profile_key string
---- @param on_done? function
-function Core:delete_profile(profile_key, on_done)
-  local profile = self:get_profile(profile_key)
-  if not profile then
-    if on_done then on_done() end
-    return
-  end
-  profile:delete(on_done)
-end
-
 --- Convenience: delete a single config without UI confirmation.
 --- Cleans/resets the config. Profiles are never removed — they stay and
 --- show "unconfigured" state.
@@ -1714,31 +1621,6 @@ function Core:get_project_options(project_key, config_key)
   if not mod or not mod.get_options then return nil end
 
   return mod.get_options(build_dir, proj_cfg.type_config)
-end
-
---- Clean a profile's configs: delete build dirs and reset to unconfigured.
---- Does NOT remove or modify the profile itself.
---- @param profile_key string
---- @param on_done? function
-function Core:clean_profile(profile_key, on_done)
-  local profile = self:get_profile(profile_key)
-  if not profile then
-    if on_done then on_done() end
-    return
-  end
-
-  local items = {}
-  for _, pp in ipairs(profile:projects()) do
-    items[#items + 1] = {
-      project_key = pp.project_key,
-      config_key = pp.config_key,
-      build_dir = self:_cached_build_dir(pp.project_key, pp.config_key),
-    }
-  end
-
-  self:_run_deletion(items, function(effective_items)
-    self:reset_cached_configs(effective_items)
-  end, on_done)
 end
 
 --- Clean a single config: delete build dir and reset to unconfigured.

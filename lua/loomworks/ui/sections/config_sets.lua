@@ -41,11 +41,11 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
           local pps = profile:projects()
           local pct = helpers.aggregate_progress(pps)
           if pct then suffix = suffix .. " " .. pct .. "%" end
-          suffix = suffix .. helpers.format_elapsed(lw.get_operation_elapsed(profile_key))
+          suffix = suffix .. helpers.format_elapsed(profile:operation_elapsed())
           hl = is_active and "LoomworksActive" or "LoomworksRunning"
         elseif is_active then
           hl = "LoomworksActive"
-          local op = lw.get_operation(profile_key)
+          local op = profile and profile:operation()
           if op and op.message then
             local p_label = already_configured and select(1, profile:status()) or "unconfigured"
             marker = helpers.status_marker(p_label)
@@ -58,7 +58,7 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
         elseif already_configured then
           local p_label = select(1, profile:status())
           marker = helpers.status_marker(p_label)
-          local op = lw.get_operation(profile_key)
+          local op = profile:operation()
           if op and op.message then
             suffix = " — " .. op.message
           else

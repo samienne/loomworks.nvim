@@ -28,7 +28,7 @@ local function render_profile_details(tree, profile, lw)
     end
   end
 
-  local op = lw.get_operation(profile.key)
+  local op = profile:operation()
   if op and op.message then
     local op_hl = op.success and "DiagnosticOk" or "DiagnosticError"
     tree:leaf("Last: " .. op.message, op_hl)
@@ -104,10 +104,10 @@ return function(tree, ctx)
       if pct then
         display = display .. " " .. pct .. "%"
       end
-      display = display .. helpers.format_elapsed(lw.get_operation_elapsed(profile.key))
+      display = display .. helpers.format_elapsed(profile:operation_elapsed())
     elseif is_active then
       hl = "LoomworksActive"
-      local op = lw.get_operation(profile.key)
+      local op = profile:operation()
       if op and op.message then
         display = display .. " — " .. op.message
       end
@@ -120,7 +120,7 @@ return function(tree, ctx)
       else
         hl = "LoomworksConfigured"
       end
-      local op = lw.get_operation(profile.key)
+      local op = profile:operation()
       if op and op.message then
         display = display .. " — " .. op.message
       end

@@ -68,7 +68,10 @@ function M.make_mock_core(overrides)
     _config_units = {},
     _profiles = {},
     _projects = {},
-    _deps = { clock = function() return 0 end },
+    _deps = {
+      clock = function() return 0 end,
+      events = { emit = function() end },
+    },
   }
 
   -- Registry accessors (mirrors Core:get_profile/get_profiles)

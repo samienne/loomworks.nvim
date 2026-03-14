@@ -123,12 +123,6 @@ function M.activate_profile(profile_key)
   core:activate_profile(profile_key)
 end
 
---- Deactivate a profile if it is currently active.
---- @param profile_key string
-function M.deactivate_profile(profile_key)
-  core:deactivate_profile(profile_key)
-end
-
 --- Materialize a profile: write it to cache with full tool and project
 --- references before any build/configure tasks start.
 --- @param profile_key string
@@ -229,34 +223,6 @@ function M.get_elapsed(project_key, config_key)
   return core:get_config_unit(project_key, config_key):elapsed()
 end
 
---- Start tracking a profile-level operation.
---- @param profile_key string
---- @param action string
-function M.start_operation(profile_key, action)
-  core:start_operation(profile_key, action)
-end
-
---- Finish a profile-level operation.
---- @param profile_key string
---- @param success boolean
-function M.finish_operation(profile_key, success)
-  core:finish_operation(profile_key, success)
-end
-
---- Get the current operation state for a profile.
---- @param profile_key string
---- @return loomworks.Operation|nil
-function M.get_operation(profile_key)
-  return core:get_operation(profile_key)
-end
-
---- Get elapsed seconds for a running operation.
---- @param profile_key string
---- @return number|nil seconds
-function M.get_operation_elapsed(profile_key)
-  return core:get_operation_elapsed(profile_key)
-end
-
 -- ---------------------------------------------------------------------------
 -- Task results
 -- ---------------------------------------------------------------------------
@@ -299,27 +265,12 @@ function M.execute_deletion(plan, opts, on_done)
   core:execute_deletion(plan, opts, on_done)
 end
 
---- Delete a profile (plan + execute, no UI confirmation).
---- @param profile_key string
---- @param on_done? function
-function M.delete_profile(profile_key, on_done)
-  core:delete_profile(profile_key, on_done)
-end
-
 --- Delete a single config (plan + execute, no UI confirmation).
 --- @param project_key string
 --- @param config_key string
 --- @param on_done? function
 function M.delete_config(project_key, config_key, on_done)
   core:delete_config(project_key, config_key, on_done)
-end
-
---- Clean a profile: delete build dirs and reset all configs to unconfigured.
---- Does NOT remove or modify any profile.
---- @param profile_key string
---- @param on_done? function
-function M.clean_profile(profile_key, on_done)
-  core:clean_profile(profile_key, on_done)
 end
 
 --- Clean a single config: delete build dir and reset to unconfigured.

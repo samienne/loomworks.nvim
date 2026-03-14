@@ -4,6 +4,24 @@
 
 local merge = require("loomworks.merge")
 
+--- Format a duration in seconds to a compact string.
+--- @param seconds number
+--- @return string
+local function format_duration(seconds)
+  local s = math.floor(seconds)
+  if s < 60 then
+    return s .. "s"
+  end
+  local m = math.floor(s / 60)
+  s = s % 60
+  if m < 60 then
+    return m .. "m" .. string.format("%02d", s) .. "s"
+  end
+  local h = math.floor(m / 60)
+  m = m % 60
+  return h .. "h" .. string.format("%02d", m) .. "m"
+end
+
 -- ========================== ProfileProject ==========================
 
 --- @class loomworks.ProfileProject
@@ -93,6 +111,7 @@ end
 --- @field tool_mod_type? string which module type owns this tool
 --- @field explicit boolean
 --- @field mappings? table<string, string> project_key -> variant name
+--- @field _operation? loomworks.Operation current or last operation state
 local Profile = {}
 Profile.__index = Profile
 
@@ -214,6 +233,63 @@ end
 --- Configure all projects in this profile via overseer.
 function Profile:configure()
   require("loomworks.overseer").run_profile_action(self.key, "configure")
+end
+
+-- ---------------------------------------------------------------------------
+-- Operations (profile-level action tracking)
+-- ---------------------------------------------------------------------------
+
+--- Start tracking a profile-level operation.
+--- Replaces any previous operation result.
+--- @param action string "configure", "build", or "configure+build"
+function Profile:start_operation(action)
+  self._operation = {
+    action = action,
+    started_at = self._core._deps.clock(),
+  }
+  self._core._deps.events.emit("operation_started", { profile_key = self.key, action = action })
+end
+
+--- Finish the current operation and store a result message.
+--- @param success boolean
+function Profile:finish_operation(success)
+  local op = self._operation
+  if not op or not op.started_at then return end
+
+  local elapsed = self._core._deps.clock() - op.started_at
+  local verb
+  if op.action == "configure" then
+    verb = success and "configured" or "configure failed"
+  elseif op.action == "build" then
+    verb = success and "built" or "build failed"
+  else
+    verb = success and "built" or "failed"
+  end
+
+  self._operation = {
+    message = verb .. " in " .. format_duration(elapsed),
+    success = success,
+  }
+
+  self._core._deps.events.emit("operation_finished", {
+    profile_key = self.key,
+    success = success,
+    message = self._operation.message,
+  })
+end
+
+--- Get the current operation state (in-progress or completed).
+--- @return loomworks.Operation|nil
+function Profile:operation()
+  return self._operation
+end
+
+--- Get elapsed seconds for a running operation.
+--- @return number|nil seconds
+function Profile:operation_elapsed()
+  local op = self._operation
+  if not op or not op.started_at then return nil end
+  return self._core._deps.clock() - op.started_at
 end
 
 -- ---------------------------------------------------------------------------
@@ -383,7 +459,24 @@ end
 --- Does NOT remove the profile itself.
 --- @param on_done? function
 function Profile:clean(on_done)
-  self._core:clean_profile(self.key, on_done)
+  local pps = self:projects()
+  if #pps == 0 then
+    if on_done then on_done() end
+    return
+  end
+
+  local items = {}
+  for _, pp in ipairs(pps) do
+    items[#items + 1] = {
+      project_key = pp.project_key,
+      config_key = pp.config_key,
+      build_dir = self._core:_cached_build_dir(pp.project_key, pp.config_key),
+    }
+  end
+
+  self._core:_run_deletion(items, function(effective_items)
+    self._core:reset_cached_configs(effective_items)
+  end, on_done)
 end
 
 --- Rebuild: clean then build.

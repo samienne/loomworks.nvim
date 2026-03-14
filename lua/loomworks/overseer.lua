@@ -363,17 +363,20 @@ function M.run_profile_action(profile_key, action)
     -- This ensures cache reflects what will be built.
     loomworks.materialize_profile(profile_key)
 
+    local profile = loomworks.get_profile(profile_key)
+    if not profile then return end
+
     -- Re-collect tasks after potential deletion completed (cache may have changed)
     local all_tasks = collect_profile_tasks(profile_key)
     if not all_tasks then return end
 
     if action == "configure" then
-      loomworks.start_operation(profile_key, "configure")
+      profile:start_operation("configure")
       local launched = launch_tasks(overseer, all_tasks.configure, function(all_succeeded)
-        loomworks.finish_operation(profile_key, all_succeeded)
+        profile:finish_operation(all_succeeded)
       end)
       if launched == 0 then
-        loomworks.finish_operation(profile_key, true)
+        profile:finish_operation(true)
       end
       return
     end
@@ -382,28 +385,28 @@ function M.run_profile_action(profile_key, action)
       local needs_configure = filter_unconfigured_tasks(all_tasks)
 
       if #needs_configure > 0 then
-        loomworks.start_operation(profile_key, "configure+build")
+        profile:start_operation("configure+build")
         vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
         launch_tasks(overseer, needs_configure, function(all_succeeded)
           if not all_succeeded then
             vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
-            loomworks.finish_operation(profile_key, false)
+            profile:finish_operation(false)
             return
           end
           local build_launched = launch_tasks(overseer, all_tasks.build, function(build_succeeded)
-            loomworks.finish_operation(profile_key, build_succeeded)
+            profile:finish_operation(build_succeeded)
           end)
           if build_launched == 0 then
-            loomworks.finish_operation(profile_key, true)
+            profile:finish_operation(true)
           end
         end)
       else
-        loomworks.start_operation(profile_key, "build")
+        profile:start_operation("build")
         local launched = launch_tasks(overseer, all_tasks.build, function(all_succeeded)
-          loomworks.finish_operation(profile_key, all_succeeded)
+          profile:finish_operation(all_succeeded)
         end)
         if launched == 0 then
-          loomworks.finish_operation(profile_key, true)
+          profile:finish_operation(true)
         end
       end
       return
