@@ -1058,23 +1058,22 @@ Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
 ### 6.12 Options Float
 
 Triggered by `o` on a configuration or tool entry node in the Projects
-section. Opens a floating window showing the project's build options for
-that configuration. Only available for configured projects with a cached
-build directory.
+or Profiles section. Opens a floating window showing the project's build
+options for that configuration. Only available for configured projects
+with a cached build directory.
 
-**`Core:get_project_options(project_key, config_key) → ProjectOption[]|nil`**
+**`Core:get_project_options(project_key, config_key) → (OptionGroup|Option)[]|nil`**
 
 Resolves the build directory from cache and delegates to the module's
 `get_options()`. Returns nil if the project is not configured or the
 module does not support options.
 
-The float displays options in two groups:
-- **Project options** — non-`CMAKE_` prefixed entries (shown first)
-- **CMake options** — `CMAKE_` prefixed entries
-
-Each option shows its name and value. BOOL values use `ON`/`OFF`
-highlighting. Options with a helpstring show it as a comment line above.
-Options with choices show them in parentheses after the value.
+The float uses a Tree widget with foldable groups. The module returns a
+tree of `OptionGroup` and `Option` nodes. Each group shows its label and
+child count. Each option shows `key = value`. BOOL values are highlighted
+(ON = green, OFF = dimmed). Options with helpstrings show them as
+children when unfolded. Options with choices show them in parentheses
+after the value. Fold/unfold with `<Tab>`.
 
 The float is read-only. Close with `q` or `<Esc>`.
 
@@ -1218,14 +1217,22 @@ Return the name of a registered progress parser (e.g., `"ninja"`), or `nil`
 if the module has no progress tracking. Parameters are optional — modules
 may ignore them or use them to select a parser based on context.
 
-**`get_options(build_dir) → ProjectOption[]|nil`** *(optional)*
+**`get_options(build_dir, config?) → (OptionGroup|Option)[]|nil`** *(optional)*
 
-Return the user-facing build options for a configured project. Each option
-has `name`, `type` (`"bool"`, `"string"`, `"path"`, `"filepath"`), `value`,
-optional `helpstring`, and optional `choices` (allowed values list). Only
-options meaningful to the user are included — internal/computed variables
-are excluded. Returns nil if the project is not configured or has no
-options. Called on demand, not cached.
+Return the user-facing build options as a tree of groups and options.
+`OptionGroup` has `label` and `children` (nested groups or options).
+`Option` has `key`, `value`, `value_type` (`"bool"`, `"string"`, `"path"`,
+`"filepath"`), optional `helpstring`, and optional `choices`. `config` is
+the module's type_config from loomworks.json (e.g., the cmake block).
+
+Only options meaningful to the user are included — internal/computed
+variables are excluded. Returns nil if the project is not configured or
+has no options. Called on demand, not cached.
+
+The cmake module supports `option_groups` in its type_config to map
+variable name prefixes to group paths (e.g.,
+`"GFX": ["Media", "Graphics"]`). CMAKE_ prefixed variables are
+automatically separated into a "CMake Options" group.
 
 **`parse_file_api(build_dir, config_name?) → targets?`** *(optional)*
 
