@@ -239,10 +239,14 @@
 
 -- ========================== Project Options ==========================
 
---- @class loomworks.ProjectOption
---- @field name string variable name
---- @field type string "bool"|"string"|"path"|"filepath"
+--- @class loomworks.OptionGroup
+--- @field label string group display name
+--- @field children (loomworks.OptionGroup | loomworks.Option)[]
+
+--- @class loomworks.Option
+--- @field key string variable name (e.g. "CORE3D_BUILD_ENGINE")
 --- @field value string current value
+--- @field value_type string "bool"|"string"|"path"|"filepath"
 --- @field helpstring? string description from the build system
 --- @field choices? string[] allowed values (e.g. cmake STRINGS property)
 

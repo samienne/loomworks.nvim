@@ -1600,7 +1600,7 @@ end
 --- Return build options for a project+config by delegating to the module.
 --- @param project_key string
 --- @param config_key string
---- @return loomworks.ProjectOption[]|nil
+--- @return (loomworks.OptionGroup | loomworks.Option)[]|nil
 function Core:get_project_options(project_key, config_key)
   local build_dir = self:_cached_build_dir(project_key, config_key)
   if not build_dir then return nil end
@@ -1613,7 +1613,7 @@ function Core:get_project_options(project_key, config_key)
   local mod = self._deps.modules.get(proj_cfg.type)
   if not mod or not mod.get_options then return nil end
 
-  return mod.get_options(build_dir)
+  return mod.get_options(build_dir, proj_cfg.type_config)
 end
 
 --- Clean a profile's configs: delete build dirs and reset to unconfigured.

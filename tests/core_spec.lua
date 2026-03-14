@@ -2257,10 +2257,13 @@ describe("Core", function()
               return {
                 validate = function() return { valid = true, warnings = {} } end,
                 info = function() return { configurations = { Debug = {} } } end,
-                get_options = function(build_dir)
+                get_options = function(build_dir, config)
                   options_args.build_dir = build_dir
+                  options_args.config = config
                   return {
-                    { name = "BUILD_TESTING", type = "bool", value = "ON" },
+                    { label = "Project Options", children = {
+                      { key = "BUILD_TESTING", value_type = "bool", value = "ON" },
+                    }},
                   }
                 end,
               }
@@ -2273,7 +2276,8 @@ describe("Core", function()
       local options = core:get_project_options("App", "Debug")
       assert.is_not_nil(options)
       assert.equals(1, #options)
-      assert.equals("BUILD_TESTING", options[1].name)
+      assert.equals("Project Options", options[1].label)
+      assert.equals("BUILD_TESTING", options[1].children[1].key)
       assert.equals("/root/.nvim/build/App/Debug", options_args.build_dir)
     end)
 

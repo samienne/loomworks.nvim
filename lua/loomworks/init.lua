@@ -208,7 +208,7 @@ end
 --- Get build options for a project+config key.
 --- @param project_key string
 --- @param config_key string
---- @return loomworks.ProjectOption[]|nil
+--- @return (loomworks.OptionGroup | loomworks.Option)[]|nil
 function M.get_project_options(project_key, config_key)
   return core:get_project_options(project_key, config_key)
 end
