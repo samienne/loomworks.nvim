@@ -12,6 +12,8 @@
 --- @field _tracker loomworks.FileTracker|nil
 --- @field _operations table<string, loomworks.Operation> profile_key -> active or completed operation
 --- @field _tools_by_type table<string, loomworks.DetectedTool[]> tools per module type
+--- @field _profiles table<string, loomworks.Profile>
+--- @field _projects table<string, loomworks.Project>
 --- @field _setup_error { root: string, message: string }|nil set when setup fails
 --- @field _state "uninitialized"|"initializing"|"initialized"
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"

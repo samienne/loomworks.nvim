@@ -107,12 +107,7 @@
 
 --- @class loomworks.ActiveSet
 --- @field name string|nil active profile key
---- @field profile loomworks.ProfileDef|nil raw profile definition
---- @field all_profiles table<string, loomworks.ProfileDef>
 --- @field tool_key? string cache key suffix from active profile
---- @field tool_data? table opaque tool data from active profile
---- @field tool_label? string display label from active profile
---- @field tool_mod_type? string module type owning the active tool
 --- @field projects table<string, loomworks.MergedProjectData>
 --- @field configuration_sets? table<string, table<string, string>>
 
@@ -124,7 +119,7 @@
 --- @field tool_label? string display label for the tool
 --- @field tool_mod_type? string which module type owns this tool
 --- @field explicit? boolean
---- @field _removed? boolean true after profile removed from registry
+--- @field _cached_projects? table<string, loomworks.CachedProfileProject> from cache, used for orphaned profile fallback
 
 --- @class loomworks.ToolEntry
 --- @field profile_key string the profile key this tool would create
@@ -141,6 +136,8 @@
 --- @field configuration_key? string cache key for active configuration
 --- @field tool_key? string cache key suffix
 --- @field tool_data? table opaque module-specific tool data
+--- @field tool_label? string display label for the tool
+--- @field tool_mod_type? string which module type owns this tool
 --- @field status loomworks.Status
 --- @field orphaned boolean
 --- @field needs_refresh boolean
