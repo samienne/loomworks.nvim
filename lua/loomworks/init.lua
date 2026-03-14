@@ -40,10 +40,10 @@ function M.setup(opts)
     auto_load_mode = opts.auto_load
   end
 
-  if not core:setup(opts) then return end
-
-  -- Optional fidget.nvim integration for progress notifications
+  -- Optional fidget.nvim integration for progress notifications (registers listeners, fast)
   require("loomworks.fidget").setup()
+
+  core:setup(opts)
 end
 
 --- Get the current auto-load mode.

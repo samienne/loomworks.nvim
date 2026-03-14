@@ -3,6 +3,7 @@ local M = {}
 local io_mod = require("loomworks.io")
 
 M.id = "cmake"
+M.has_keyed_tools = true
 
 local uv = vim.uv or vim.loop
 
@@ -486,6 +487,37 @@ function M.detect_tools()
     }
   end
   return tools
+end
+
+--- Detect available tools (kits) asynchronously.
+--- @param callback fun(tools: { tool_data: table }[])
+function M.detect_tools_async(callback)
+  local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
+  if not ok then
+    callback({})
+    return
+  end
+
+  cmake_kits.detect_async(function(kits)
+    local tools = {}
+    for _, kit in ipairs(kits) do
+      tools[#tools + 1] = {
+        tool_data = {
+          id = kit.id,
+          display = kit.display,
+          generator = kit.generator,
+          compiler_id = kit.compiler_id,
+          compiler_path = kit.compiler_path,
+          compiler_version = kit.compiler_version,
+          clangd_path = kit.clangd_path,
+          vcvarsall = kit.vcvarsall,
+          arch = kit.arch,
+          env = kit.env and next(kit.env) and kit.env or nil,
+        },
+      }
+    end
+    callback(tools)
+  end)
 end
 
 --- Compare two cmake tool_data objects for identity.

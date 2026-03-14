@@ -1,6 +1,7 @@
 local M = {}
 
 M.id = "ets"
+M.has_keyed_tools = false
 
 local uv = vim.uv or vim.loop
 
@@ -45,6 +46,12 @@ end
 --- @return { tool_data: table }[]
 function M.detect_tools()
   return { { tool_data = {} } }
+end
+
+--- Detect available tools asynchronously. eTS has a single default tool.
+--- @param callback fun(tools: { tool_data: table }[])
+function M.detect_tools_async(callback)
+  callback({ { tool_data = {} } })
 end
 
 --- Compare two eTS tool_data objects. Always match (single tool).

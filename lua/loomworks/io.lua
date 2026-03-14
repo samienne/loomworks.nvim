@@ -241,4 +241,54 @@ function M.rm_rf_async(dir, callback)
   end)
 end
 
+--- Read a file asynchronously using libuv callbacks.
+--- @param path string
+--- @param callback fun(content: string|nil, err: string|nil)
+function M.read_file_async(path, callback)
+  uv.fs_open(path, "r", 438, function(err, fd)
+    if not fd then
+      callback(nil, err)
+      return
+    end
+    uv.fs_fstat(fd, function(stat_err, stat)
+      if not stat then
+        uv.fs_close(fd)
+        callback(nil, stat_err)
+        return
+      end
+      uv.fs_read(fd, stat.size, 0, function(read_err, data)
+        uv.fs_close(fd)
+        if not data then
+          callback(nil, read_err)
+          return
+        end
+        callback(data, nil)
+      end)
+    end)
+  end)
+end
+
+--- Read multiple files in parallel asynchronously.
+--- Calls callback(results) when all complete; results is table<string, string|nil> keyed by path.
+--- @param paths string[]
+--- @param callback fun(results: table<string, string|nil>)
+function M.read_files_async(paths, callback)
+  if #paths == 0 then
+    callback({})
+    return
+  end
+
+  local results = {}
+  local remaining = #paths
+  for _, path in ipairs(paths) do
+    M.read_file_async(path, function(content)
+      results[path] = content
+      remaining = remaining - 1
+      if remaining == 0 then
+        callback(results)
+      end
+    end)
+  end
+end
+
 return M
