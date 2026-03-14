@@ -77,6 +77,14 @@ local tree = Tree.new(render_fn)
 
 local view = View.new({
   widget = tree,
+  win = {
+    position = "float",
+    width = 100,
+    height = 0.9,
+    border = "rounded",
+    title = " loomworks ",
+    title_pos = "center",
+  },
   keymaps = {
     ["<Tab>"] = "toggle_fold",
     ["<CR>"]  = "enter",
@@ -109,7 +117,7 @@ local view = View.new({
 -- Public API
 -- ---------------------------------------------------------------------------
 
-function M.open()    view:open() end
+function M.open(win_overrides)  view:open(win_overrides) end
 function M.close()   view:close() end
 function M.toggle()  view:toggle() end
 function M.refresh() view:refresh() end
