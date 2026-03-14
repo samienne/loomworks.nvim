@@ -36,7 +36,7 @@ local function render_profile_details(tree, profile, lw)
 
   local pps = profile:projects()
   if #pps > 0 then
-    tree:group({{"Projects:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
+    tree:group({{"Projects:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
       for _, pp in ipairs(pps) do
         local cached = pp:cached_state()
         local config_status, status_hl, progress_str, is_spinning =
@@ -51,6 +51,7 @@ local function render_profile_details(tree, profile, lw)
           on_clean = actions.clean_configuration(pp.project_key, pp.config_key),
           on_configure = actions.configure_configuration(pp.project_key, pp.config_key),
           on_delete = actions.delete_config(pp.project_key, pp.config_key),
+          on_options = actions.show_options(pp.project_key, pp.config_key),
         }, function()
           helpers.render_cached_details(tree, config_status, status_hl, cached)
         end)

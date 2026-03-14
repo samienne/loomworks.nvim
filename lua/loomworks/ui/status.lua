@@ -86,6 +86,7 @@ local view = View.new({
     ["C"]     = "clean",
     ["D"]     = "delete",
     ["p"]     = "pin",
+    ["o"]     = "options",
     ["L"]     = "load",
     ["<C-n>"] = "nuke",
     ["?"]     = "help",

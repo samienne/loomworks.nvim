@@ -2229,6 +2229,115 @@ describe("Core", function()
     end)
   end)
 
+  describe("get_project_options", function()
+    it("delegates to module get_options with cached build_dir", function()
+      local options_args = {}
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+        },
+        nil,
+        {
+          projects = {
+            App = {
+              type = "cmake",
+              configurations = {
+                Debug = {
+                  state = "configured",
+                  build_dir = "/root/.nvim/build/App/Debug",
+                },
+              },
+            },
+          },
+        },
+        {
+          modules = {
+            get = function(mod_type)
+              if mod_type ~= "cmake" then return nil end
+              return {
+                validate = function() return { valid = true, warnings = {} } end,
+                info = function() return { configurations = { Debug = {} } } end,
+                get_options = function(build_dir)
+                  options_args.build_dir = build_dir
+                  return {
+                    { name = "BUILD_TESTING", type = "bool", value = "ON" },
+                  }
+                end,
+              }
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local options = core:get_project_options("App", "Debug")
+      assert.is_not_nil(options)
+      assert.equals(1, #options)
+      assert.equals("BUILD_TESTING", options[1].name)
+      assert.equals("/root/.nvim/build/App/Debug", options_args.build_dir)
+    end)
+
+    it("returns nil when project has no build_dir", function()
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+        },
+        nil, nil,
+        {
+          modules = {
+            get = function(mod_type)
+              if mod_type ~= "cmake" then return nil end
+              return {
+                validate = function() return { valid = true, warnings = {} } end,
+                info = function() return { configurations = { Debug = {} } } end,
+                get_options = function() return {} end,
+              }
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local options = core:get_project_options("App", "Debug")
+      assert.is_nil(options)
+    end)
+
+    it("returns nil when module has no get_options", function()
+      local core = make_core(
+        {
+          projects = { App = { cmake = {} } },
+        },
+        nil,
+        {
+          projects = {
+            App = {
+              type = "cmake",
+              configurations = {
+                Debug = { state = "configured", build_dir = "/root/.nvim/build/App/Debug" },
+              },
+            },
+          },
+        },
+        {
+          modules = {
+            get = function(mod_type)
+              if mod_type ~= "cmake" then return nil end
+              return {
+                validate = function() return { valid = true, warnings = {} } end,
+                info = function() return { configurations = { Debug = {} } } end,
+                -- no get_options
+              }
+            end,
+          },
+        }
+      )
+      core:setup({ root = "/root" })
+
+      local options = core:get_project_options("App", "Debug")
+      assert.is_nil(options)
+    end)
+  end)
+
   describe("cache version mismatch", function()
     local function make_mismatch_core(dep_overrides)
       -- Provide a cache file with wrong version

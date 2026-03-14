@@ -117,6 +117,7 @@ function Tree:_show_help()
     "  b       Build",
     "  c       Configure",
     "  p       Pin configuration",
+    "  o       Show build options",
     "  L       Load / rescan workspace",
     "",
     "  R       Rebuild (clean + build)",
