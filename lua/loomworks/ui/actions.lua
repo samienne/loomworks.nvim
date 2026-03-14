@@ -159,76 +159,96 @@ end
 --- @param config_key string
 function M.show_options(project_key, config_key)
   return function()
-    local dialog = require("loomworks.ui.dialog")
+    local Tree = require("loomworks.ui.tree")
+    local View = require("loomworks.ui.view")
     local lw = require("loomworks")
-    local options = lw.get_project_options(project_key, config_key)
-    if not options or #options == 0 then
+    local option_tree = lw.get_project_options(project_key, config_key)
+    if not option_tree or #option_tree == 0 then
       vim.notify("loomworks: no build options available (project may need configure)", vim.log.levels.INFO)
       return
     end
 
-    -- Split into project options and cmake options, sort each group
-    local project_opts, cmake_opts = {}, {}
-    for _, opt in ipairs(options) do
-      if opt.name:match("^CMAKE_") then
-        cmake_opts[#cmake_opts + 1] = opt
-      else
-        project_opts[#project_opts + 1] = opt
-      end
-    end
-    table.sort(project_opts, function(a, b) return a.name < b.name end)
-    table.sort(cmake_opts, function(a, b) return a.name < b.name end)
+    -- Render function for the options tree
+    local function render_options(tree)
+      tree._level = 1
 
-    -- Build lines and highlights
-    local lines = {}
-    local highlights = {}
-
-    local function add_group(title, opts)
-      if #opts == 0 then return end
-      lines[#lines + 1] = "  " .. title
-      highlights[#highlights + 1] = { line = #lines, hl_group = "Title" }
-      lines[#lines + 1] = ""
-
-      for _, opt in ipairs(opts) do
-        if opt.helpstring then
-          lines[#lines + 1] = "  # " .. opt.helpstring
-          highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
-        end
-
+      --- Render a single option as a leaf or foldable node.
+      local function render_option(opt, fold_prefix)
         local value_str = opt.value
         if opt.choices and #opt.choices > 0 then
           value_str = value_str .. "  (" .. table.concat(opt.choices, ", ") .. ")"
         end
 
-        local line = "  " .. opt.name .. " = " .. value_str
-        lines[#lines + 1] = line
+        local hl
+        if opt.value_type == "bool" then
+          hl = opt.value == "ON" and "DiagnosticOk" or "Comment"
+        else
+          hl = "Normal"
+        end
 
-        if opt.type == "bool" then
-          local eq_pos = #opt.name + 5 -- "  " + name + " = "
-          local hl = opt.value == "ON" and "DiagnosticOk" or "Comment"
-          highlights[#highlights + 1] = {
-            line = #lines, hl_group = hl,
-            col_start = eq_pos, col_end = eq_pos + #opt.value,
-          }
+        local display = opt.key .. " = " .. value_str
+        if opt.helpstring then
+          tree:node(display, {
+            fold_key = fold_prefix .. "opt:" .. opt.key,
+            hl = hl,
+          }, function()
+            tree:leaf(opt.helpstring, "Comment")
+          end)
+        else
+          tree:leaf(display, hl)
         end
       end
 
-      lines[#lines + 1] = ""
+      --- Recursively render option tree nodes.
+      local function render_node(node, fold_prefix)
+        if node.children then
+          -- It's a group
+          local count = 0
+          local function count_leaves(n)
+            if n.children then
+              for _, child in ipairs(n.children) do count_leaves(child) end
+            else
+              count = count + 1
+            end
+          end
+          count_leaves(node)
+
+          tree:node(node.label .. " (" .. count .. ")", {
+            fold_key = fold_prefix .. "group:" .. node.label,
+            hl = "Title",
+          }, function()
+            for _, child in ipairs(node.children) do
+              render_node(child, fold_prefix .. node.label .. ":")
+            end
+          end)
+        else
+          -- It's an option
+          render_option(node, fold_prefix)
+        end
+      end
+
+      for _, node in ipairs(option_tree) do
+        render_node(node, "options:")
+      end
     end
 
-    add_group("Project Options", project_opts)
-    add_group("CMake Options", cmake_opts)
-
-    -- Remove trailing blank line
-    if lines[#lines] == "" then lines[#lines] = nil end
-
-    dialog.show({
-      title = project_key .. " — Options",
-      lines = lines,
-      highlights = highlights,
-      max_width = math.floor(vim.o.columns * 0.8),
-      max_height = math.floor(vim.o.lines * 0.7),
+    local tree = Tree.new(render_options)
+    local view = View.new({
+      widget = tree,
+      win = {
+        width = 100,
+        height = 0.8,
+        zindex = 60,
+        backdrop = 60,
+        title = " " .. project_key .. " — Options ",
+        title_pos = "center",
+      },
+      keymaps = {
+        ["<Tab>"] = "toggle_fold",
+      },
+      events = {},
     })
+    view:open()
   end
 end
 

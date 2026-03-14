@@ -693,10 +693,45 @@ function M.parse_file_api(build_dir, config_name)
   return next(targets) and targets or nil
 end
 
---- Parse CMakeCache.txt as fallback when file-api cache reply is unavailable.
+--- Collect flat options from file-api cache-v2 reply.
 --- @param build_dir string
---- @return loomworks.ProjectOption[]|nil
-local function parse_cmake_cache_txt(build_dir)
+--- @return loomworks.Option[]|nil
+local function collect_options_from_file_api(build_dir)
+  local cache_data = find_file_api_reply(build_dir, "cache", 2)
+  if not cache_data or not cache_data.entries then return nil end
+
+  local options = {}
+  for _, entry in ipairs(cache_data.entries) do
+    local mapped_type = USER_CACHE_TYPES[entry.type]
+    if mapped_type then
+      local helpstring, choices
+      if entry.properties then
+        for _, prop in ipairs(entry.properties) do
+          if prop.name == "HELPSTRING" and prop.value ~= ""
+              and prop.value ~= "Value Computed by CMake" then
+            helpstring = prop.value
+          elseif prop.name == "STRINGS" and type(prop.value) == "table"
+              and #prop.value > 0 then
+            choices = prop.value
+          end
+        end
+      end
+      options[#options + 1] = {
+        key = entry.name,
+        value_type = mapped_type,
+        value = entry.value,
+        helpstring = helpstring,
+        choices = choices,
+      }
+    end
+  end
+  return #options > 0 and options or nil
+end
+
+--- Collect flat options from CMakeCache.txt (fallback, no choices support).
+--- @param build_dir string
+--- @return loomworks.Option[]|nil
+local function collect_options_from_cache_txt(build_dir)
   local cache_path = build_dir .. "/CMakeCache.txt"
   local content = io_mod.read_file(cache_path)
   if not content then return nil end
@@ -706,7 +741,6 @@ local function parse_cmake_cache_txt(build_dir)
 
   for line in content:gmatch("[^\r\n]+") do
     if line:match("^//") then
-      -- Help string line (strip leading //)
       helpstring = line:sub(3)
     elseif not line:match("^#") and not line:match("^%s*$") then
       local name, type_str, value = line:match("^([^:]+):(%u+)=(.*)")
@@ -714,8 +748,8 @@ local function parse_cmake_cache_txt(build_dir)
         local mapped_type = USER_CACHE_TYPES[type_str]
         if mapped_type then
           options[#options + 1] = {
-            name = name,
-            type = mapped_type,
+            key = name,
+            value_type = mapped_type,
             value = value,
             helpstring = helpstring ~= "Value Computed by CMake" and helpstring or nil,
           }
@@ -728,43 +762,129 @@ local function parse_cmake_cache_txt(build_dir)
   return #options > 0 and options or nil
 end
 
---- Return user-facing build options from the file-api cache reply or CMakeCache.txt.
---- @param build_dir string absolute path to the build directory
---- @return loomworks.ProjectOption[]|nil
-function M.get_options(build_dir)
-  -- Try file-api cache-v2 reply first (has STRINGS/choices support)
-  local cache_data = find_file_api_reply(build_dir, "cache", 2)
-  if cache_data and cache_data.entries then
-    local options = {}
-    for _, entry in ipairs(cache_data.entries) do
-      local mapped_type = USER_CACHE_TYPES[entry.type]
-      if mapped_type then
-        local helpstring, choices
-        if entry.properties then
-          for _, prop in ipairs(entry.properties) do
-            if prop.name == "HELPSTRING" and prop.value ~= ""
-                and prop.value ~= "Value Computed by CMake" then
-              helpstring = prop.value
-            elseif prop.name == "STRINGS" and type(prop.value) == "table"
-                and #prop.value > 0 then
-              choices = prop.value
-            end
-          end
-        end
-        options[#options + 1] = {
-          name = entry.name,
-          type = mapped_type,
-          value = entry.value,
-          helpstring = helpstring,
-          choices = choices,
-        }
-      end
+--- Build an option tree from flat options using user-defined grouping config.
+--- @param flat_options loomworks.Option[]
+--- @param option_groups? table prefix → group path from loomworks.json
+--- @return (loomworks.OptionGroup | loomworks.Option)[]
+local function build_option_tree(flat_options, option_groups)
+  -- Sort all options by key
+  table.sort(flat_options, function(a, b) return a.key < b.key end)
+
+  -- Separate CMAKE_ options from project options
+  local project_opts = {}
+  local cmake_opts = {}
+  for _, opt in ipairs(flat_options) do
+    if opt.key:match("^CMAKE_") then
+      cmake_opts[#cmake_opts + 1] = opt
+    else
+      project_opts[#project_opts + 1] = opt
     end
-    if #options > 0 then return options end
   end
 
-  -- Fallback: parse CMakeCache.txt (no choices support)
-  return parse_cmake_cache_txt(build_dir)
+  local tree = {}
+
+  if option_groups and next(option_groups) then
+    -- Apply user-defined grouping: prefix → group path
+    -- Build a sorted list of prefixes (longest first for greedy matching)
+    local prefixes = {}
+    for prefix in pairs(option_groups) do
+      prefixes[#prefixes + 1] = prefix
+    end
+    table.sort(prefixes, function(a, b) return #a > #b end)
+
+    -- Group project options by matching prefix
+    local grouped = {} -- group_key → { path, options[] }
+    local ungrouped = {}
+
+    for _, opt in ipairs(project_opts) do
+      local matched = false
+      for _, prefix in ipairs(prefixes) do
+        if opt.key:sub(1, #prefix) == prefix then
+          local group_key = prefix
+          if not grouped[group_key] then
+            local path = option_groups[prefix]
+            if type(path) == "string" then path = { path } end
+            grouped[group_key] = { path = path, options = {} }
+          end
+          grouped[group_key].options[#grouped[group_key].options + 1] = opt
+          matched = true
+          break
+        end
+      end
+      if not matched then
+        ungrouped[#ungrouped + 1] = opt
+      end
+    end
+
+    -- Build nested groups from paths
+    -- Collect all group entries, sort by path for consistent ordering
+    local group_entries = {}
+    for _, entry in pairs(grouped) do
+      group_entries[#group_entries + 1] = entry
+    end
+    table.sort(group_entries, function(a, b)
+      return table.concat(a.path, "/") < table.concat(b.path, "/")
+    end)
+
+    -- Insert groups into tree, creating nested structure from paths
+    local function ensure_path(root, path)
+      local current = root
+      for _, segment in ipairs(path) do
+        -- Find existing group at this level
+        local found
+        for _, child in ipairs(current) do
+          if child.children and child.label == segment then
+            found = child
+            break
+          end
+        end
+        if not found then
+          found = { label = segment, children = {} }
+          current[#current + 1] = found
+        end
+        current = found.children
+      end
+      return current
+    end
+
+    for _, entry in ipairs(group_entries) do
+      local target = ensure_path(tree, entry.path)
+      for _, opt in ipairs(entry.options) do
+        target[#target + 1] = opt
+      end
+    end
+
+    -- Add ungrouped project options
+    if #ungrouped > 0 then
+      local other = { label = "Other", children = ungrouped }
+      tree[#tree + 1] = other
+    end
+  else
+    -- No user grouping: project options flat (or in a single group if many)
+    if #project_opts > 0 then
+      tree[#tree + 1] = { label = "Project Options", children = project_opts }
+    end
+  end
+
+  -- Add CMAKE_ options as a separate group
+  if #cmake_opts > 0 then
+    tree[#tree + 1] = { label = "CMake Options", children = cmake_opts }
+  end
+
+  return tree
+end
+
+--- Return user-facing build options as a tree of groups and options.
+--- @param build_dir string absolute path to the build directory
+--- @param config? table type_config from loomworks.json (cmake block)
+--- @return (loomworks.OptionGroup | loomworks.Option)[]|nil
+function M.get_options(build_dir, config)
+  local flat = collect_options_from_file_api(build_dir)
+      or collect_options_from_cache_txt(build_dir)
+  if not flat then return nil end
+
+  local option_groups = config and config.option_groups or nil
+  return build_option_tree(flat, option_groups)
 end
 
 --- Compare current config/files against cache.
