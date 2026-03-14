@@ -704,8 +704,10 @@ indicate this restriction.
 
 ### 6.1 Layout
 
-The status page opens as a vertical split (60 columns wide) and contains
-these sections in order:
+The status page opens as a floating window (default 100 columns, 90%
+editor height). Window position and size can be configured via `setup()`
+options or overridden per `open()` call — the `win` table is passed
+directly to `Snacks.win`. The page contains these sections in order:
 
 1. **Header** — plugin version, workspace name, workspace root
 2. **Profiles** — all materialized and explicit profiles

@@ -108,6 +108,8 @@ end
 -- -----------------------------------------------------------------------
 
 function Tree:_show_help()
+  local dialog = require("loomworks.ui.dialog")
+
   local lines = {
     "  Keybindings",
     "",
@@ -129,46 +131,22 @@ function Tree:_show_help()
     "  ?       Show this help",
   }
 
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-  vim.bo[buf].bufhidden = "wipe"
-
-  local width = 38
-  local height = #lines
-
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    width = width,
-    height = height,
-    row = math.floor((vim.o.lines - height) / 2),
-    col = math.floor((vim.o.columns - width) / 2),
-    style = "minimal",
-    border = "rounded",
-    title = " Help ",
-    title_pos = "center",
-  })
-
-  local ns = vim.api.nvim_create_namespace("loomworks_help")
-  vim.api.nvim_buf_add_highlight(buf, ns, "Title", 0, 0, -1)
-  -- Highlight destructive keys
+  local highlights = {
+    { line = 1, hl_group = "Title" },
+  }
   for i, line in ipairs(lines) do
     if line:match("^  [RCD]%s") or line:match("^  <C%-N>") then
       local key_end = line:find("%s%s", 3) or #line
-      vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", i - 1, 2, key_end)
+      highlights[#highlights + 1] = { line = i, hl_group = "DiagnosticWarn", col_start = 2, col_end = key_end }
     end
   end
 
-  local function close()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-  end
-
-  local map_opts = { buffer = buf, nowait = true, silent = true }
-  vim.keymap.set("n", "q", close, map_opts)
-  vim.keymap.set("n", "<Esc>", close, map_opts)
-  vim.keymap.set("n", "?", close, map_opts)
+  dialog.show({
+    title = "Help",
+    lines = lines,
+    highlights = highlights,
+    keys = { ["?"] = "close" },
+  })
 end
 
 -- -----------------------------------------------------------------------
@@ -176,6 +154,7 @@ end
 -- -----------------------------------------------------------------------
 
 function Tree:_confirm_nuke()
+  local dialog = require("loomworks.ui.dialog")
   local lw = require("loomworks")
   local ws = lw.get_workspace()
   local err = lw.get_setup_error()
@@ -191,50 +170,23 @@ function Tree:_confirm_nuke()
     "  Press y to confirm, q to cancel",
   }
 
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-  vim.bo[buf].bufhidden = "wipe"
-
-  local width = 0
-  for _, l in ipairs(lines) do
-    width = math.max(width, #l + 4)
-  end
-  width = math.min(width, 80)
-  local height = #lines
-
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    width = width,
-    height = height,
-    row = math.floor((vim.o.lines - height) / 2),
-    col = math.floor((vim.o.columns - width) / 2),
-    style = "minimal",
-    border = "rounded",
-    title = " Confirm Reset ",
-    title_pos = "center",
+  dialog.show({
+    title = "Confirm Reset",
+    lines = lines,
+    highlights = {
+      { line = 1, hl_group = "DiagnosticError" },
+      { line = 3, hl_group = "DiagnosticWarn" },
+      { line = 4, hl_group = "DiagnosticWarn" },
+      { line = 5, hl_group = "DiagnosticWarn" },
+    },
+    keys = {
+      n = "close",
+      y = function(self)
+        self:close()
+        lw.nuke_cache(root)
+      end,
+    },
   })
-
-  local ns = vim.api.nvim_create_namespace("loomworks_nuke_confirm")
-  vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticError", 0, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", 2, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", 3, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticWarn", 4, 0, -1)
-
-  local function close()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-  end
-
-  local map_opts = { buffer = buf, nowait = true, silent = true }
-  vim.keymap.set("n", "q", close, map_opts)
-  vim.keymap.set("n", "<Esc>", close, map_opts)
-  vim.keymap.set("n", "n", close, map_opts)
-  vim.keymap.set("n", "y", function()
-    close()
-    lw.nuke_cache(root)
-  end, map_opts)
 end
 
 -- -----------------------------------------------------------------------

@@ -36,6 +36,7 @@ typescript modules are shims.
 ## Requirements
 
 - Neovim >= 0.9
+- [snacks.nvim](https://github.com/folke/snacks.nvim) (for window management)
 - [overseer.nvim](https://github.com/stevearc/overseer.nvim) (for task running)
 - Optional: [fidget.nvim](https://github.com/j-hui/fidget.nvim) (for progress
   notifications outside the status page)

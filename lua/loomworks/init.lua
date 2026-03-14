@@ -409,8 +409,9 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Open the workspace status page.
-function M.open()
-  require("loomworks.ui.status").open()
+--- @param win_overrides? table Snacks.win config overrides
+function M.open(win_overrides)
+  require("loomworks.ui.status").open(win_overrides)
 end
 
 return M

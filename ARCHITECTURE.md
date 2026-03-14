@@ -262,7 +262,8 @@ may import from its own layer or any layer below it, never above.
 | File | Owns | Must NOT do |
 |------|------|-------------|
 | `ui/status.lua` | Wiring: creates Tree + View, assembles `ctx` from API, requires sections in order | Contain rendering logic; do I/O |
-| `ui/view.lua` | Window lifecycle (open/close/toggle), keymap registration, event-driven refresh, animation timer | Know about section content; contain domain logic |
+| `ui/view.lua` | Window lifecycle via Snacks.win (open/close/toggle), keymap registration, event-driven refresh, animation timer | Know about section content; contain domain logic |
+| `ui/dialog.lua` | Snacks.win-based dialog helper for floating dialogs (help, confirm, options) | Domain logic |
 | `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up), buffer rendering | Know about loomworks domain; do I/O |
 | `ui/actions.lua` | Action factories: capture context at render time, return closures for deferred execution. Deletion confirmation dialog | Render tree nodes; own state |
 | `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution | Side effects; domain logic |
@@ -490,7 +491,8 @@ loomworks.nvim/
 │   │   │   └── ninja.lua              Ninja [n/m] output parser
 │   │   └── ui/
 │   │       ├── status.lua             Status page wiring
-│   │       ├── view.lua               Window lifecycle + keymaps
+│   │       ├── view.lua               Window lifecycle via Snacks.win
+│   │       ├── dialog.lua             Snacks.win dialog helper
 │   │       ├── tree.lua               Foldable tree widget
 │   │       ├── actions.lua            Action factories + delete dialog
 │   │       ├── helpers.lua            Shared formatting
