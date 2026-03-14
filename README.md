@@ -188,7 +188,9 @@ automatically from your system.
 3. **Orphaned Configurations** — cached configs no longer referenced by any
    profile (hidden when empty; common after switching git branches)
 4. **Configuration Sets** — declared sets with available tool entries
-5. **Projects** — all projects with their configurations and build state
+5. **Projects** — all projects with their configurations and build state.
+   CMake projects also show discovered build targets (grouped by type)
+   after configure, including output paths and link dependencies.
 
 ### Keybindings
 
