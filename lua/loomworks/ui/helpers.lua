@@ -131,14 +131,11 @@ function M.resolve_config_status(pp, cached)
   return M.resolve_unit_status(unit)
 end
 
---- Resolve the live status for a project+config (profile-agnostic).
---- @param project_key string
---- @param config_key string
+--- Resolve the live status for a ConfigUnit (profile-agnostic).
+--- @param unit loomworks.ConfigUnit
 --- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.resolve_config_status_global(project_key, config_key, cached)
-  local lw = require("loomworks")
-  local unit = lw.get_config_unit(project_key, config_key)
+function M.resolve_config_status_global(unit, cached)
   return M.resolve_unit_status(unit)
 end
 

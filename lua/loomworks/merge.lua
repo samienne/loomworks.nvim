@@ -532,28 +532,29 @@ function M.merge(workspace, tools_by_type)
 end
 
 --- Resolve project contexts for a specific profile without changing the active profile.
+--- Accepts any table with configuration_set, tool/tool_key, tool_data, and mappings fields.
+--- Profile objects duck-type as this.
 --- @param ws loomworks.Workspace
---- @param profile_key string
+--- @param profile_data table profile data (or Profile object) with configuration_set, mappings, etc.
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
 --- @return table<string, loomworks.MergedProjectData>|nil
-function M.resolve_profile_projects(ws, profile_key, tools_by_type)
+function M.resolve_profile_projects(ws, profile_data, tools_by_type)
   tools_by_type = tools_by_type or {}
 
-  local all_profiles = M.get_all_profiles(ws.config, ws.cache, tools_by_type)
-  local profile = all_profiles[profile_key]
-  if not profile then return nil end
-
-  local set_name = profile.configuration_set
+  local set_name = profile_data.configuration_set
   local mappings = nil
   if set_name and ws.config.configuration_sets and ws.config.configuration_sets[set_name] then
     mappings = ws.config.configuration_sets[set_name]
-  elseif profile.mappings then
-    mappings = profile.mappings
+  elseif profile_data.mappings then
+    mappings = profile_data.mappings
   end
   if not mappings then return nil end
 
-  local tk = profile.tool_key
-  local td = profile.tool_data
+  -- Support both .tool.key (Profile objects) and .tool_key (raw data)
+  local tk = profile_data.tool_key
+      or (profile_data.tool and profile_data.tool.key)
+  local td = profile_data.tool_data
+      or (profile_data.tool and profile_data.tool.data)
 
   local projects = {}
   for key, project in pairs(ws.config.projects) do

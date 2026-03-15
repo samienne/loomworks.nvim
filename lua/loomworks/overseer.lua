@@ -65,9 +65,9 @@ end
 
 --- Collect task definitions for a profile, grouped by action.
 --- Does not change the active profile.
---- @param profile_key string
+--- @param profile loomworks.Profile
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
-local function collect_profile_tasks(profile_key)
+local function collect_profile_tasks(profile)
   local loomworks = require("loomworks")
   local modules = require("loomworks.modules")
   local merge = require("loomworks.merge")
@@ -77,7 +77,7 @@ local function collect_profile_tasks(profile_key)
 
   local core = loomworks._core()
   local projects = merge.resolve_profile_projects(
-    ws, profile_key, core._tools_by_type)
+    ws, profile, core._tools_by_type)
   if not projects then return nil end
 
   local by_action = { configure = {}, build = {} }
@@ -293,10 +293,9 @@ end
 --- Run an action for a single project configuration.
 --- Creates a pinned profile entry if needed, then launches overseer tasks.
 --- If building and the configuration is unconfigured, configures first.
---- @param project_key string
---- @param config_key string cache key (variant or variant:tool_key)
+--- @param unit loomworks.ConfigUnit
 --- @param action string "configure" or "build"
-function M.run_configuration_action(project_key, config_key, action)
+function M.run_configuration_action(unit, action)
   local ok, overseer = pcall(require, "overseer")
   if not ok then
     vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
@@ -307,12 +306,11 @@ function M.run_configuration_action(project_key, config_key, action)
 
   local function do_action()
     -- Pin config only if not already referenced by a materialized profile
-    local unit = loomworks.get_config_unit(project_key, config_key)
     if #unit:referencing_profiles() == 0 then
       unit:materialize_pinned()
     end
 
-    local all_tasks = collect_configuration_tasks(project_key, config_key)
+    local all_tasks = collect_configuration_tasks(unit.project_key, unit.config_key)
     if not all_tasks then return end
 
     if action == "configure" then
@@ -324,7 +322,7 @@ function M.run_configuration_action(project_key, config_key, action)
       -- Check if any projects need configuring first
       local needs_configure = filter_unconfigured_tasks(all_tasks)
       if #needs_configure > 0 then
-        vim.notify("loomworks: configuring " .. project_key .. " before build", vim.log.levels.INFO)
+        vim.notify("loomworks: configuring " .. unit.project_key .. " before build", vim.log.levels.INFO)
         launch_tasks(overseer, needs_configure, function(all_succeeded)
           if not all_succeeded then
             vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
@@ -366,7 +364,7 @@ function M.run_profile_action(profile, action)
 
   local function do_action()
     -- Re-collect tasks after potential deletion completed (cache may have changed)
-    local all_tasks = collect_profile_tasks(profile.key)
+    local all_tasks = collect_profile_tasks(profile)
     if not all_tasks then return end
 
     if action == "configure" then

@@ -55,7 +55,6 @@ local function render_fn(tree)
   local ctx = {
     lw = lw,
     all_profiles = lw.get_profiles(),
-    active_profile_key = active_set.name or "",
     active_profile = lw.get_active_profile(),
     active_set = active_set,
     config_sets = lw.get_config_sets(),
@@ -139,7 +138,8 @@ end
 --- @param project_key string
 --- @param config_key string
 function M.delete_config(project_key, config_key)
-  actions.delete_config(project_key, config_key)()
+  local unit = require("loomworks").get_config_unit(project_key, config_key)
+  actions.delete_config(unit)()
 end
 
 return M

@@ -8,9 +8,9 @@ local actions = require("loomworks.ui.actions")
 --- @param cs loomworks.ConfigurationSet
 --- @param tool_entries loomworks.ToolEntry[]
 --- @param all_profiles table<string, loomworks.Profile>
---- @param active_profile_key string
+--- @param active_profile loomworks.Profile|nil
 --- @param lw table loomworks API
-local function render_set_details(tree, cs, tool_entries, all_profiles, active_profile_key, lw)
+local function render_set_details(tree, cs, tool_entries, all_profiles, active_profile, lw)
   local set_name = cs.name
   tree:group("Projects:", "Comment", function()
     local proj_names = {}
@@ -26,10 +26,9 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
   if #tool_entries > 0 then
     tree:group({{"Tools:  ", "LoomworksActionable"}, {"[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
       for _, entry in ipairs(tool_entries) do
-        local profile_key = entry.profile_key
-        local is_active = profile_key == active_profile_key
         -- Only show running/configured state if a cached profile exists
-        local profile = entry.cached and all_profiles[profile_key] or nil
+        local profile = entry.cached and all_profiles[entry.profile_key] or nil
+        local is_active = profile ~= nil and profile == active_profile
         local profile_running = profile and profile:is_running() or false
         local already_configured = profile and profile:is_configured() or false
 
@@ -99,13 +98,13 @@ end
 
 --- Render the configuration sets section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, all_profiles, active_profile_key, config_sets, tool_entries }
+--- @param ctx table { lw, all_profiles, active_profile, config_sets, tool_entries }
 return function(tree, ctx)
   local config_sets = ctx.config_sets
   if not config_sets or not next(config_sets) then return end
 
   local all_profiles = ctx.all_profiles
-  local active_profile_key = ctx.active_profile_key
+  local active_profile = ctx.active_profile
   local tool_entries = ctx.tool_entries or {}
   local lw = ctx.lw
 
@@ -120,8 +119,8 @@ return function(tree, ctx)
 
   for _, entry in ipairs(sorted) do
     local cs = entry.cs
-    local active_profile = all_profiles[active_profile_key]
-    local is_active_set = active_profile and active_profile.configuration_set == cs.name
+    local is_active_set = active_profile
+        and active_profile.configuration_set == cs.name
     local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
 
     tree:node(cs.name, {
@@ -129,7 +128,7 @@ return function(tree, ctx)
       hl = set_hl,
     }, function()
       render_set_details(tree, cs,
-        tool_entries[cs.name] or {}, all_profiles, active_profile_key, lw)
+        tool_entries[cs.name] or {}, all_profiles, active_profile, lw)
     end)
   end
 

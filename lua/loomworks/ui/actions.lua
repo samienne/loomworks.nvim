@@ -80,42 +80,43 @@ function M.delete_profile(profile)
 end
 
 -- ---------------------------------------------------------------------------
--- Configuration action factories (take project_key + config_key strings)
+-- Configuration action factories (take ConfigUnit objects)
 -- ---------------------------------------------------------------------------
 
-function M.build_configuration(project_key, config_key)
+--- @param unit loomworks.ConfigUnit
+function M.build_configuration(unit)
   return function()
-    require("loomworks.overseer").run_configuration_action(project_key, config_key, "build")
+    require("loomworks.overseer").run_configuration_action(unit, "build")
   end
 end
 
-function M.configure_configuration(project_key, config_key)
+--- @param unit loomworks.ConfigUnit
+function M.configure_configuration(unit)
   return function()
-    require("loomworks.overseer").run_configuration_action(project_key, config_key, "configure")
+    require("loomworks.overseer").run_configuration_action(unit, "configure")
   end
 end
 
-function M.rebuild_configuration(project_key, config_key)
+--- @param unit loomworks.ConfigUnit
+function M.rebuild_configuration(unit)
   return function()
-    local unit = require("loomworks").get_config_unit(project_key, config_key)
     unit:clean(function()
-      require("loomworks.overseer").run_configuration_action(project_key, config_key, "build")
+      require("loomworks.overseer").run_configuration_action(unit, "build")
     end)
   end
 end
 
-function M.clean_configuration(project_key, config_key)
-  return function()
-    require("loomworks").get_config_unit(project_key, config_key):clean()
-  end
+--- @param unit loomworks.ConfigUnit
+function M.clean_configuration(unit)
+  return function() unit:clean() end
 end
 
-function M.delete_config(project_key, config_key)
+--- @param unit loomworks.ConfigUnit
+function M.delete_config(unit)
   return function()
-    local unit = require("loomworks").get_config_unit(project_key, config_key)
     local plan = unit:plan_deletion()
     M._show_delete_confirmation(
-      "Delete: " .. project_key .. " / " .. config_key, plan, function()
+      "Delete: " .. unit.project_key .. " / " .. unit.config_key, plan, function()
       unit:delete(function()
         vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
       end)
@@ -123,32 +124,16 @@ function M.delete_config(project_key, config_key)
   end
 end
 
---- @param project loomworks.Project
---- @param config_name string
-function M.delete_configuration(project, config_name)
+--- @param unit loomworks.ConfigUnit
+function M.delete_orphaned_config(unit)
   return function()
-    local config_key = project:config_cache_key(config_name)
-    local unit = require("loomworks").get_config_unit(project.key, config_key)
-    local plan = unit:plan_deletion()
-    M._show_delete_confirmation(
-      "Delete: " .. project.key .. " / " .. config_key, plan, function()
-      unit:delete(function()
-        vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-      end)
-    end)
-  end
-end
-
-function M.delete_orphaned_config(project_key, config_key)
-  return function()
-    local unit = require("loomworks").get_config_unit(project_key, config_key)
     local orphan_items = { {
-      project_key = project_key,
-      config_key = config_key,
+      project_key = unit.project_key,
+      config_key = unit.config_key,
       disposition = "clean",
     } }
     M._show_delete_confirmation(
-      "Delete orphaned: " .. project_key .. " / " .. config_key,
+      "Delete orphaned: " .. unit.project_key .. " / " .. unit.config_key,
       { items = orphan_items, defined_in_config = false },
       function()
         unit:delete(function()
@@ -158,16 +143,15 @@ function M.delete_orphaned_config(project_key, config_key)
   end
 end
 
-function M.pin_config(project_key, config_key)
+--- @param unit loomworks.ConfigUnit
+function M.pin_config(unit)
   return function()
-    local lw = require("loomworks")
-    local unit = lw.get_config_unit(project_key, config_key)
     if #unit:referencing_profiles() > 0 then
-      vim.notify("loomworks: already pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
+      vim.notify("loomworks: already pinned " .. unit.project_key .. " / " .. unit.config_key, vim.log.levels.INFO)
       return
     end
     unit:materialize_pinned()
-    vim.notify("loomworks: pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
+    vim.notify("loomworks: pinned " .. unit.project_key .. " / " .. unit.config_key, vim.log.levels.INFO)
   end
 end
 
@@ -175,14 +159,12 @@ end
 -- Options float
 -- ---------------------------------------------------------------------------
 
---- @param project_key string
---- @param config_key string
-function M.show_options(project_key, config_key)
+--- @param unit loomworks.ConfigUnit
+function M.show_options(unit)
   return function()
     local Tree = require("loomworks.ui.tree")
     local View = require("loomworks.ui.view")
-    local lw = require("loomworks")
-    local option_tree = lw.get_config_unit(project_key, config_key):options()
+    local option_tree = unit:options()
     if not option_tree or #option_tree == 0 then
       vim.notify("loomworks: no build options available (project may need configure)", vim.log.levels.INFO)
       return
@@ -260,7 +242,7 @@ function M.show_options(project_key, config_key)
         height = 0.8,
         zindex = 60,
         backdrop = 60,
-        title = " " .. project_key .. " — Options ",
+        title = " " .. unit.project_key .. " — Options ",
         title_pos = "center",
       },
       keymaps = {
