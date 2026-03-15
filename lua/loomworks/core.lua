@@ -7,6 +7,7 @@
 --- @field _workspace loomworks.Workspace|nil
 --- @field _active_set loomworks.ActiveSet|nil
 --- @field _config_units table<string, loomworks.ConfigUnit> "project\0config" -> unit
+--- @field _config_sets table<string, loomworks.ConfigurationSet> name -> ConfigurationSet
 --- @field _delete_waiters function[]
 --- @field _generation number incremented on every remerge
 --- @field _tracker loomworks.FileTracker|nil
@@ -23,6 +24,7 @@ Core.__index = Core
 local Profile = require("loomworks.profile").Profile
 local Project = require("loomworks.project")
 local ConfigUnit = require("loomworks.config_unit")
+local ConfigurationSet = require("loomworks.configuration_set")
 
 --- Default dependency table. Tests override individual entries.
 local DEFAULT_DEPS = {
@@ -76,6 +78,7 @@ function Core.new(deps)
   self._tracker = nil
   self._tools_by_type = {}
   self._config_units = {}
+  self._config_sets = {}
   self._profiles = {}
   self._projects = {}
   self._setup_error = nil
@@ -338,6 +341,7 @@ function Core:_on_files_read(root, paths, results)
 
   self._workspace = ws
   self._config_units = {}
+  self._config_sets = {}
   self._profiles = {}
   self._projects = {}
   self:_migrate_set_names()
@@ -435,6 +439,7 @@ function Core:remerge()
   self._generation = self._generation + 1
   self:_sync_profiles(all_profile_defs)
   self:_sync_projects()
+  self:_sync_config_sets()
   self._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -461,18 +466,28 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Resolve mappings for a profile definition.
---- Set-based profiles derive mappings from configuration_sets (reactive).
+--- Set-based profiles derive mappings from ConfigurationSet objects (reactive),
+--- converting Project→variant mappings to project_key→variant strings.
 --- Pinned profiles use their stored mappings directly.
 --- Falls back to cached profile project data when the configuration_set
 --- no longer exists in config (orphaned profile).
 --- @param data loomworks.ProfileDef
---- @param config_sets table|nil
+--- @param config_sets_registry table<string, loomworks.ConfigurationSet>
 --- @return table<string, string>|nil mappings
 --- @return boolean orphaned true if mappings came from cache fallback
-local function resolve_profile_mappings(data, config_sets)
-  -- Set-based profiles: derive from config_sets (reactive)
-  if data.configuration_set and config_sets and config_sets[data.configuration_set] then
-    return config_sets[data.configuration_set], false
+local function resolve_profile_mappings(data, config_sets_registry)
+  -- Set-based profiles: derive from ConfigurationSet objects (reactive)
+  if data.configuration_set then
+    for _, cs in pairs(config_sets_registry) do
+      if cs.name == data.configuration_set then
+        -- Convert Project→variant to project_key→variant
+        local mappings = {}
+        for project, variant in pairs(cs.mappings) do
+          mappings[project.key] = variant
+        end
+        return mappings, false
+      end
+    end
   end
 
   -- Pinned profiles or set-based with stored mappings
@@ -505,8 +520,6 @@ function Core:_sync_profiles(all_defs)
   local ws = self._workspace
   if not ws then return end
 
-  local config_sets = ws.config.configuration_sets
-
   -- Mark removed profiles
   for key, profile in pairs(self._profiles) do
     if not all_defs[key] then
@@ -517,7 +530,7 @@ function Core:_sync_profiles(all_defs)
 
   -- Create or update
   for key, data in pairs(all_defs) do
-    local mappings, orphaned_set = resolve_profile_mappings(data, config_sets)
+    local mappings, orphaned_set = resolve_profile_mappings(data, self._config_sets)
     local profile_data = {
       configuration_set = data.configuration_set,
       tool_key = data.tool_key,
@@ -564,6 +577,31 @@ function Core:_sync_projects()
   end
 end
 
+--- Sync the config sets registry with current config data.
+--- Runs after _sync_projects so Project objects are available.
+function Core:_sync_config_sets()
+  self._config_sets = {}
+  local ws = self._workspace
+  if not ws or not ws.config.configuration_sets then return end
+  for name, raw_mappings in pairs(ws.config.configuration_sets) do
+    -- Resolve project key strings to Project objects
+    local mappings = {}
+    for project_key, variant in pairs(raw_mappings) do
+      local project = self._projects[project_key]
+      if project then
+        mappings[project] = variant
+      end
+    end
+    self._config_sets[name] = ConfigurationSet.new(self, name, mappings)
+  end
+end
+
+--- Get all ConfigurationSet objects.
+--- @return table<string, loomworks.ConfigurationSet>
+function Core:get_config_sets()
+  return self._config_sets
+end
+
 --- Get a Profile object by key.
 --- @param key string profile key
 --- @return loomworks.Profile|nil
@@ -602,43 +640,6 @@ end
 -- Profile management
 -- ---------------------------------------------------------------------------
 
---- Activate a profile that may not exist yet.
---- For profiles from the config_sets UI: validates, materializes if needed,
---- then activates via the Profile object.
---- @param set_name string configuration set name
---- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
-function Core:activate_new_profile(set_name, tool_entry)
-  if not self._workspace then
-    self._deps.notify("loomworks: no workspace loaded", vim.log.levels.ERROR)
-    return
-  end
-
-  -- Validate set_name exists in config
-  if not self._workspace.config.configuration_sets
-      or not self._workspace.config.configuration_sets[set_name] then
-    self._deps.notify("loomworks: configuration set '" .. set_name .. "' not found", vim.log.levels.ERROR)
-    return
-  end
-
-  -- Compute profile key from structured data
-  local profile_key = self._deps.merge.profile_key(
-    set_name, tool_entry and tool_entry.tool_key)
-
-  -- If profile already exists in registry, just activate it
-  local profile = self._profiles[profile_key]
-  if profile then
-    profile:activate()
-    return
-  end
-
-  -- Materialize from structured data, then activate the newly created profile
-  self:_materialize_from_data(profile_key, set_name, tool_entry)
-  profile = self._profiles[profile_key]
-  if profile then
-    profile:activate()
-  end
-end
-
 --- Deactivate a profile if it is currently active.
 --- @param profile_key string
 function Core:deactivate_profile(profile_key)
@@ -651,79 +652,52 @@ function Core:deactivate_profile(profile_key)
   end
 end
 
---- Activate a named configuration set, preserving the current tool selection.
---- @param name string
-function Core:activate_set(name)
-  if not self._workspace then
-    self._deps.notify("loomworks: no workspace loaded", vim.log.levels.ERROR)
-    return
-  end
-
-  if not self._workspace.config.configuration_sets or not self._workspace.config.configuration_sets[name] then
-    self._deps.notify("loomworks: configuration set '" .. name .. "' not found", vim.log.levels.ERROR)
-    return
-  end
-
-  -- Build tool_entry from the active profile's fields
-  local active_profile = self._active_set and self._active_set.name
-      and self._profiles[self._active_set.name] or nil
-  local tool_entry = active_profile and active_profile.tool_key and {
-    tool_key = active_profile.tool_key,
-    tool_data = active_profile.tool_data,
-    tool_label = active_profile.tool_label,
-    tool_mod_type = active_profile.tool_mod_type,
-  } or nil
-
-  self:activate_new_profile(name, tool_entry)
-end
-
 -- ---------------------------------------------------------------------------
 -- Profile materialization
 -- ---------------------------------------------------------------------------
 
 --- Materialize a profile from structured data: write it to cache with full
 --- tool and project references. Creates skeleton configuration entries.
---- No-op if the profile is already materialized.
---- @param profile_key string
---- @param set_name string configuration set name
+--- No-op if the profile is already materialized (by property match).
+--- @param config_set loomworks.ConfigurationSet
 --- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
-function Core:_materialize_from_data(profile_key, set_name, tool_entry)
+function Core:_materialize_from_data(config_set, tool_entry)
   if not self._workspace then return end
 
   -- Wait for tool detection to complete before materializing
   if self._tool_state == "scanning" then
     self._tool_waiters[#self._tool_waiters + 1] = function()
-      self:_materialize_from_data(profile_key, set_name, tool_entry)
+      self:_materialize_from_data(config_set, tool_entry)
     end
     return
   end
 
   local ws = self._workspace
+  local set_name = config_set.name
+
+  -- Compute profile key (pure cache identifier)
+  local tool_key = tool_entry and tool_entry.tool_key or nil
+  local profile_key = self._deps.merge.profile_key(set_name, tool_key)
 
   -- Already cached?
   if ws.cache.profiles and ws.cache.profiles[profile_key] then return end
 
-  -- Build project mappings from configuration set
-  local set_mappings = ws.config.configuration_sets
-      and ws.config.configuration_sets[set_name] or {}
-
-  local tool_key = tool_entry and tool_entry.tool_key or nil
   local tool_data = tool_entry and tool_entry.tool_data or nil
   local tool_label = tool_entry and tool_entry.tool_label or nil
   local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
 
   local profile_projects = {}
-  for project_key, variant in pairs(set_mappings) do
-    local project_config = ws.config.projects[project_key]
+  for project, variant in pairs(config_set.mappings) do
+    local project_config = ws.config.projects[project.key]
     if not project_config then goto continue end
 
     local config_key = self._deps.merge.build_config_key(
       project_config.type, variant, tool_key)
 
-    profile_projects[project_key] = { config_key = config_key }
+    profile_projects[project.key] = { config_key = config_key }
 
     -- Ensure skeleton config entry exists in cache.projects
-    local cached_proj = self:_ensure_cached_project(project_key)
+    local cached_proj = self:_ensure_cached_project(project.key)
     if not cached_proj.configurations[config_key] then
       local has_keyed = self._deps.merge.module_has_keyed_tools(
         project_config.type)

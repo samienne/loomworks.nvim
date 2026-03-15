@@ -132,7 +132,7 @@ use `:`. The config_key already includes the tool_key for keyed modules (e.g.,
 Materialization happens when:
 - User presses `<CR>` on a tool entry in Configuration Sets (activate)
 - User presses `b` or `c` on a tool entry (build/configure)
-- `activate_new_profile()` API is called (materializes then activates)
+- `ConfigurationSet:activate()` is called (materializes then activates)
 - User presses `p` on a configuration (creates a pinned profile)
 
 On materialization:
@@ -499,8 +499,8 @@ tools) waits for detection to complete before proceeding.
 Materialization writes a profile to the cache so that build tasks can be
 launched against it. A profile must be materialized before any task runs.
 
-**Trigger**: `activate_new_profile()`, `build()`, `configure()`, `<CR>` in UI,
-or `p` key (pinned).
+**Trigger**: `ConfigurationSet:activate()`, `build()`, `configure()`, `<CR>` in
+UI, or `p` key (pinned).
 
 **Process (set-based profiles)**:
 1. Receive structured data: set_name and optional tool_entry (tool_key,
@@ -532,8 +532,8 @@ Activation makes a profile the "active" profile. The active profile determines:
 - Which profile is highlighted with `LoomworksActive` in the status page
 
 **Process**:
-1. For new profiles: `activate_new_profile(set_name, tool_entry)` validates,
-   materializes if needed, then activates the resulting Profile object
+1. For new profiles: `ConfigurationSet:activate(tool_entry)` finds or
+   materializes the profile, then activates it via the Profile object
 2. For existing profiles: `Profile:activate()` writes `active_profile` to
    `loomworks.user.json` and triggers remerge (fires `active_set_changed`)
 
@@ -1563,8 +1563,8 @@ Loading a workspace (whether via auto-load or `:LoomworksInit`) always:
    triggered by events from the core system.
 
 9. **Idempotent materialization**: Materializing an already-cached profile
-   is a no-op. `activate_new_profile()` skips materialization when the
-   profile already exists in the registry.
+   is a no-op. `ConfigurationSet:activate()` finds the existing profile by
+   property matching and skips materialization.
 
 10. **Generation counter**: Objects (Profile, Project) track staleness via a
     generation counter incremented on every remerge. Stale objects may have

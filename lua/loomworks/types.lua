@@ -103,13 +103,18 @@
 --- @field configuration? string active configuration name (e.g. "Debug")
 --- @field status? loomworks.ConfigUnitState current ConfigUnit state
 
+-- ========================== ConfigurationSet ==========================
+
+--- @class loomworks.ConfigurationSet
+--- @field name string configuration set name
+--- @field mappings table<loomworks.Project, string> project -> variant
+
 -- ========================== Merge Result ==========================
 
 --- @class loomworks.ActiveSet
 --- @field name string|nil active profile key
 --- @field tool_key? string cache key suffix from active profile
 --- @field projects table<string, loomworks.MergedProjectData>
---- @field configuration_sets? table<string, table<string, string>>
 
 --- @class loomworks.ProfileDef
 --- @field configuration_set? string nil for pinned profiles

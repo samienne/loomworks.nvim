@@ -177,6 +177,16 @@ function Profile:is_stale()
   return self._generation ~= self._core._generation
 end
 
+--- Get the ConfigurationSet object for this profile.
+--- @return loomworks.ConfigurationSet|nil
+function Profile:config_set()
+  if not self.configuration_set then return nil end
+  for _, cs in pairs(self._core._config_sets) do
+    if cs.name == self.configuration_set then return cs end
+  end
+  return nil
+end
+
 --- Compute the cache key for a variant, accounting for kit_id.
 --- @param variant string
 --- @return string

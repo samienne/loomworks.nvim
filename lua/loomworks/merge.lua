@@ -528,7 +528,6 @@ function M.merge(workspace, tools_by_type)
     name = active_profile_key,
     tool_key = tool_key,
     projects = projects,
-    configuration_sets = config.configuration_sets,
   }, all_profiles
 end
 

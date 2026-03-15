@@ -113,17 +113,15 @@ function M.get_projects()
   return core:get_projects()
 end
 
+--- Get all ConfigurationSet objects.
+--- @return table<string, loomworks.ConfigurationSet>
+function M.get_config_sets()
+  return core:get_config_sets()
+end
+
 -- ---------------------------------------------------------------------------
 -- Profile management
 -- ---------------------------------------------------------------------------
-
---- Activate a profile that may not exist yet.
---- Validates, materializes if needed, then activates.
---- @param set_name string configuration set name
---- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
-function M.activate_new_profile(set_name, tool_entry)
-  core:activate_new_profile(set_name, tool_entry)
-end
 
 --- Re-scan tools from all modules and remerge.
 function M.rescan_tools()
@@ -164,12 +162,6 @@ end
 --- @return string pinned_profile_key
 function M.materialize_pinned(project_key, config_key)
   return core:materialize_pinned(project_key, config_key)
-end
-
---- Activate a named configuration set.
---- @param name string
-function M.activate_set(name)
-  core:activate_set(name)
 end
 
 -- ---------------------------------------------------------------------------

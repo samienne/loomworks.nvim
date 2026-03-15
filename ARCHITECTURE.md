@@ -42,12 +42,12 @@ system does (data model, state machines, UI behavior, invariants), see
 
                          core.lua
                              |
-          +------------------+------------------+
-          |                  |                  |
-    config_unit.lua    profile.lua         project.lua
-    Runtime state      Profile +            Project
-    per (proj,cfg)     ProfileProject       wrapper
-    flyweight          objects              object
+     +------------+----------+----------+-----------+
+     |            |                     |           |
+configuration  config_unit.lua   profile.lua   project.lua
+  _set.lua     Runtime state     Profile +      Project
+ConfigSet      per (proj,cfg)    ProfileProject  wrapper
+  object       flyweight         objects         object
           |
           +-- progress/init.lua + ninja.lua
               Parser registry for build output
@@ -237,6 +237,7 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `core.lua` | All mutable state (`_workspace`, `_active_set`, `_config_units`, `_generation`, `_operations`, `_tools_by_type`, `_setup_error`, `_state`, `_tool_state`, `_tool_waiters`). Async setup, remerge, object factories, profile management, task lifecycle, deletion orchestration, buffer queries | Do I/O directly (delegates to io.lua); know about UI; render anything |
 | `merge.lua` | Three-file merge algorithm, profile resolution, mapping computation, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua |
+| `configuration_set.lua` | ConfigurationSet class: owns activation (`activate()`), property-based profile lookup (`find_profile()`) | Own state beyond config data; do I/O |
 | `profile.lua` | Profile and ProfileProject classes, status aggregation, plan_deletion | Own state beyond what core provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation | Own state beyond what core provides |
 | `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag, queued action. Listener pattern via `on_state_change()` | Persist anything (runtime only); know about profiles |
@@ -418,11 +419,15 @@ for live queries. See specification.md §1.6, §1.7 for behavioral rules.
 
 ```
 Core (singleton via init.lua)
+  ├── ConfigurationSet[]  ← from config, one per configuration_sets entry
   ├── Profile[]           ← from merge, one per cached/explicit profile
   │     └── ProfileProject[]  ← one per project in profile's mappings
   ├── Project[]           ← from active set, one per project
   └── ConfigUnit{}        ← flyweight registry, one per (project, config) pair
 ```
+
+**ConfigurationSet** owns activation: `cs:activate(tool_entry)` finds or
+materializes a profile by property matching, never by computing a key.
 
 All objects carry a `_generation` stamp from Core. When Core remerges,
 `_generation` increments and `object:is_stale()` returns true for
@@ -497,6 +502,7 @@ loomworks.nvim/
 │   │   ├── cache.lua                  cache.json read/write
 │   │   ├── merge.lua                  Three-file merge → ActiveSet
 │   │   ├── events.lua                 Event/signal system
+│   │   ├── configuration_set.lua       ConfigurationSet class (owns activation)
 │   │   ├── profile.lua                Profile + ProfileProject classes
 │   │   ├── project.lua                Project class
 │   │   ├── config_unit.lua            Per-config runtime state (flyweight)

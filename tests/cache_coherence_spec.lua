@@ -12,6 +12,14 @@
 local Core = require("loomworks.core")
 local h = require("tests.helpers")
 
+--- Find a ConfigurationSet by name from a core's registry.
+--- @param core loomworks.Core
+--- @param name string
+--- @return loomworks.ConfigurationSet
+local function get_cs(core, name)
+  return core._config_sets[name]
+end
+
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
@@ -276,7 +284,7 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- Materialize a set-based profile
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after set-based profile build")
 
@@ -419,7 +427,7 @@ describe("cache coherence", function()
       setup({ root = "/root" })
 
       -- Materialize the debug:ninja-gcc profile
-      core:activate_new_profile("debug", tool_entry_for(core, "ninja-gcc"))
+      get_cs(core, "debug"):activate(tool_entry_for(core, "ninja-gcc"))
       simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/Debug")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
       assert_cache_coherent(core, "after full build")
@@ -459,7 +467,7 @@ describe("cache coherence", function()
       setup({ root = "/root" })
 
       -- Full profile build
-      core:activate_new_profile("debug", tool_entry_for(core, "ninja-gcc"))
+      get_cs(core, "debug"):activate(tool_entry_for(core, "ninja-gcc"))
       simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/Debug")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
@@ -523,7 +531,7 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- Full profile + pinned both reference the config
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
       core:materialize_pinned("App", "development")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
@@ -1289,7 +1297,7 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
 
       -- Configure succeeds
       core:record_task_result({
@@ -1521,7 +1529,7 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
       assert_cache_coherent(core, "after materialize")
       assert.equals(1, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
@@ -1661,7 +1669,7 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- First cycle: materialize, build, delete
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "first build")
 
@@ -1671,7 +1679,7 @@ describe("cache coherence", function()
       assert_cache_empty(core, "after first delete")
 
       -- Second cycle: re-materialize the same profile
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
       assert_cache_coherent(core, "after re-materialize")
       assert.equals(1, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
@@ -2133,7 +2141,7 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
       simulate_build(core, "Backend", "development", "/root/.nvim/build/Backend/dev")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 

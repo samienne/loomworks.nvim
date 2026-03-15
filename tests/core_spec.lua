@@ -1,6 +1,14 @@
 local Core = require("loomworks.core")
 local h = require("tests.helpers")
 
+--- Find a ConfigurationSet by name from a core's registry.
+--- @param core loomworks.Core
+--- @param name string
+--- @return loomworks.ConfigurationSet|nil
+local function get_cs(core, name)
+  return core._config_sets[name]
+end
+
 --- Create a Core with mocked deps and standard test files.
 --- @param config_overrides? table
 --- @param user_overrides? table
@@ -87,7 +95,7 @@ describe("Core", function()
     end)
   end)
 
-  describe("activate_new_profile", function()
+  describe("ConfigurationSet:activate", function()
     it("materializes and activates a new profile", function()
       local saved = {}
       -- Use typescript to avoid cmake kit detection changing profile keys
@@ -108,7 +116,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
       assert.is_not_nil(saved.data)
       assert.equals("debug", saved.data.active_profile)
     end)
@@ -162,37 +170,21 @@ describe("Core", function()
       local saves_after_setup = #cache_saves
 
       -- Activate A
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
       -- Activate B
-      core:activate_new_profile("release")
+      get_cs(core, "release"):activate()
       -- Return to A
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
 
       -- No cache writes should have happened during profile switching
       assert.equals(saves_after_setup, #cache_saves,
         "switching between materialized profiles should not write to cache")
     end)
 
-    it("rejects unknown configuration set", function()
-      local notified = {}
-      local core = make_core(
-        {
-          projects = { App = { typescript = {} } },
-          configuration_sets = { debug = { App = "development" } },
-        },
-        nil, nil,
-        {
-          notify = function(msg, level) notified = { msg = msg, level = level } end,
-        }
-      )
-      core:setup({ root = "/root" })
-      core:activate_new_profile("nonexistent")
-      assert.truthy(notified.msg and notified.msg:match("not found"))
-    end)
-
     it("is safe without workspace", function()
       local core = make_core()
-      core:activate_new_profile("debug") -- should not error
+      -- No config sets exist without workspace — test that accessing nil is safe
+      assert.is_nil(get_cs(core, "debug"))
     end)
   end)
 
@@ -472,7 +464,7 @@ describe("Core", function()
     end)
   end)
 
-  describe("activate_set", function()
+  describe("ConfigurationSet:activate (switch set)", function()
     it("activates profile for known configuration set", function()
       local saved = {}
       local core = make_core(
@@ -495,13 +487,8 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:activate_set("release")
+      get_cs(core, "release"):activate()
       assert.equals("release", saved.data.active_profile)
-    end)
-
-    it("is safe without workspace", function()
-      local core = make_core()
-      core:activate_set("debug") -- should not error
     end)
   end)
 
@@ -524,7 +511,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:_materialize_from_data("debug", "debug")
+      core:_materialize_from_data(get_cs(core, "debug"))
 
       assert.is_not_nil(saved_cache)
       -- Profile entry
@@ -558,16 +545,18 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:_materialize_from_data("debug", "debug")
+      core:_materialize_from_data(get_cs(core, "debug"))
       local count_after_first = save_count
-      core:_materialize_from_data("debug", "debug")
+      core:_materialize_from_data(get_cs(core, "debug"))
       assert.equals(count_after_first, save_count) -- no additional save
     end)
 
     it("is safe without workspace", function()
+      local ConfigurationSet = require("loomworks.configuration_set")
       local core = make_core()
-      -- don't setup
-      core:_materialize_from_data("debug", "debug") -- should not error
+      -- don't setup — _materialize_from_data checks for workspace
+      local dummy_cs = ConfigurationSet.new(core, "debug", {})
+      core:_materialize_from_data(dummy_cs) -- should not error
     end)
 
     it("stores tool data when tool_entry provided", function()
@@ -588,7 +577,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:_materialize_from_data("debug:ninja-gcc", "debug", {
+      core:_materialize_from_data(get_cs(core, "debug"), {
         tool_key = "ninja-gcc",
         tool_data = { generator = "Ninja", compiler_id = "gcc" },
         tool_label = "Ninja GCC",
@@ -1767,9 +1756,9 @@ describe("Core", function()
       core:setup({ root = "/root" })
       local saves_after_setup = #cache_saves
 
-      core:activate_new_profile("debug")
-      core:activate_new_profile("release")
-      core:activate_new_profile("debug")
+      get_cs(core, "debug"):activate()
+      get_cs(core, "release"):activate()
+      get_cs(core, "debug"):activate()
 
       assert.equals(saves_after_setup, #cache_saves,
         "switching between materialized profiles should not write to cache")

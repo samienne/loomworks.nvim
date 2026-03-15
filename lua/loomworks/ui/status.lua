@@ -58,7 +58,7 @@ local function render_fn(tree)
     active_profile_key = active_set.name or "",
     active_profile = active_set.name and lw.get_profile(active_set.name) or nil,
     active_set = active_set,
-    config_sets = active_set.configuration_sets,
+    config_sets = lw.get_config_sets(),
     tool_entries = lw.get_tool_entries(),
   }
 

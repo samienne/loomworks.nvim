@@ -17,11 +17,11 @@ function M.activate(profile)
 end
 
 --- Activate a profile that may not exist yet (config_sets UI).
---- @param set_name string
+--- @param config_set loomworks.ConfigurationSet
 --- @param tool_entry? table
-function M.activate_new(set_name, tool_entry)
+function M.activate_new(config_set, tool_entry)
   return function()
-    require("loomworks").activate_new_profile(set_name, tool_entry)
+    config_set:activate(tool_entry)
   end
 end
 
@@ -32,14 +32,11 @@ function M.build(profile)
 end
 
 --- Materialize a new profile then build it.
---- @param set_name string
+--- @param config_set loomworks.ConfigurationSet
 --- @param tool_entry? table
-function M.build_new(set_name, tool_entry)
+function M.build_new(config_set, tool_entry)
   return function()
-    local lw = require("loomworks")
-    lw.activate_new_profile(set_name, tool_entry)
-    local key = require("loomworks.merge").profile_key(set_name, tool_entry and tool_entry.tool_key)
-    local profile = lw.get_profile(key)
+    local profile = config_set:activate(tool_entry)
     if profile then profile:build() end
   end
 end
@@ -51,14 +48,11 @@ function M.configure(profile)
 end
 
 --- Materialize a new profile then configure it.
---- @param set_name string
+--- @param config_set loomworks.ConfigurationSet
 --- @param tool_entry? table
-function M.configure_new(set_name, tool_entry)
+function M.configure_new(config_set, tool_entry)
   return function()
-    local lw = require("loomworks")
-    lw.activate_new_profile(set_name, tool_entry)
-    local key = require("loomworks.merge").profile_key(set_name, tool_entry and tool_entry.tool_key)
-    local profile = lw.get_profile(key)
+    local profile = config_set:activate(tool_entry)
     if profile then profile:configure() end
   end
 end

@@ -5,21 +5,21 @@ local actions = require("loomworks.ui.actions")
 
 --- Render configuration set details when expanded.
 --- @param tree loomworks.Tree
---- @param set_name string
---- @param mappings table<string, string>
+--- @param cs loomworks.ConfigurationSet
 --- @param tool_entries loomworks.ToolEntry[]
 --- @param all_profiles table<string, loomworks.Profile>
 --- @param active_profile_key string
 --- @param lw table loomworks API
-local function render_set_details(tree, set_name, mappings, tool_entries, all_profiles, active_profile_key, lw)
+local function render_set_details(tree, cs, tool_entries, all_profiles, active_profile_key, lw)
+  local set_name = cs.name
   tree:group("Projects:", "Comment", function()
     local proj_names = {}
-    for name in pairs(mappings) do
-      proj_names[#proj_names + 1] = name
+    for project, variant in pairs(cs.mappings) do
+      proj_names[#proj_names + 1] = { key = project.key, variant = variant }
     end
-    table.sort(proj_names)
-    for _, pname in ipairs(proj_names) do
-      tree:leaf(pname .. " → " .. mappings[pname], "Comment")
+    table.sort(proj_names, function(a, b) return a.key < b.key end)
+    for _, entry in ipairs(proj_names) do
+      tree:leaf(entry.key .. " → " .. entry.variant, "Comment")
     end
   end)
 
@@ -83,11 +83,11 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
           spinning = profile_running,
           hl = hl,
           on_enter = profile and actions.activate(profile)
-              or actions.activate_new(set_name, entry),
+              or actions.activate_new(cs, entry),
           on_build = profile and actions.build(profile)
-              or actions.build_new(set_name, entry),
+              or actions.build_new(cs, entry),
           on_configure = profile and actions.configure(profile)
-              or actions.configure_new(set_name, entry),
+              or actions.configure_new(cs, entry),
           on_rebuild = profile and actions.rebuild(profile) or nil,
           on_clean = profile and actions.clean(profile) or nil,
           on_delete = profile and actions.delete_profile(profile) or nil,
@@ -112,23 +112,24 @@ return function(tree, ctx)
   tree:leaf("Configuration Sets", "Title")
   tree:blank()
 
-  local set_names = {}
-  for name in pairs(config_sets) do
-    set_names[#set_names + 1] = name
+  local sorted = {}
+  for name, cs in pairs(config_sets) do
+    sorted[#sorted + 1] = { name = name, cs = cs }
   end
-  table.sort(set_names)
+  table.sort(sorted, function(a, b) return a.name < b.name end)
 
-  for _, set_name in ipairs(set_names) do
+  for _, entry in ipairs(sorted) do
+    local cs = entry.cs
     local active_profile = all_profiles[active_profile_key]
-    local is_active_set = active_profile and active_profile.configuration_set == set_name
+    local is_active_set = active_profile and active_profile.configuration_set == cs.name
     local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
 
-    tree:node(set_name, {
-      fold_key = "set:" .. set_name,
+    tree:node(cs.name, {
+      fold_key = "set:" .. cs.name,
       hl = set_hl,
     }, function()
-      render_set_details(tree, set_name, config_sets[set_name],
-        tool_entries[set_name] or {}, all_profiles, active_profile_key, lw)
+      render_set_details(tree, cs,
+        tool_entries[cs.name] or {}, all_profiles, active_profile_key, lw)
     end)
   end
 
