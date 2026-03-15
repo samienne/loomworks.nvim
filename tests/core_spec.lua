@@ -195,7 +195,7 @@ describe("Core", function()
       local unit = core:get_config_unit("App", "Debug")
       unit:register_task(42, "build")
       assert.is_true(core:has_running_tasks())
-      assert.equals("build", core:get_project_running_action("App"))
+      assert.equals("build", core._projects["App"]:running_action())
       assert.is_true(unit:is_running())
       assert.equals("build", unit:running_action())
     end)
@@ -281,14 +281,14 @@ describe("Core", function()
 
   end)
 
-  describe("get_profile / get_profiles", function()
-    it("returns nil for unknown profile", function()
+  describe("get_profiles", function()
+    it("returns nil for unknown profile key", function()
       local core = make_core({
         projects = { App = { typescript = {} } },
         configuration_sets = { debug = { App = "development" } },
       })
       core:setup({ root = "/root" })
-      assert.is_nil(core:get_profile("nonexistent"))
+      assert.is_nil(core:get_profiles()["nonexistent"])
     end)
 
     it("returns Profile object for known profile", function()
@@ -304,7 +304,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       assert.is_not_nil(profile)
       assert.equals("debug", profile.key)
       assert.equals("debug", profile.configuration_set)
@@ -312,11 +312,11 @@ describe("Core", function()
 
   end)
 
-  describe("get_project / get_projects", function()
+  describe("get_projects", function()
     it("returns Project for known project", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      local proj = core:get_project("App")
+      local proj = core:get_projects()["App"]
       assert.is_not_nil(proj)
       assert.equals("App", proj.key)
       assert.equals("cmake", proj.type)
@@ -409,7 +409,7 @@ describe("Core", function()
     end)
   end)
 
-  describe("deactivate_profile", function()
+  describe("Profile:deactivate (via Core)", function()
     it("clears active profile when it matches", function()
       local saved = {}
       local core = make_core(
@@ -418,7 +418,12 @@ describe("Core", function()
           configuration_sets = { debug = { App = "development" } },
         },
         { active_profile = "debug" },
-        nil,
+        {
+          profiles = {
+            debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } },
+          },
+          projects = { App = { type = "typescript", configurations = { development = {} } } },
+        },
         {
           user = {
             save = function(root, data)
@@ -429,7 +434,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:deactivate_profile("debug")
+      core:get_profiles()["debug"]:deactivate()
       assert.is_nil(saved.data.active_profile)
     end)
 
@@ -438,10 +443,18 @@ describe("Core", function()
       local core = make_core(
         {
           projects = { App = { typescript = {} } },
-          configuration_sets = { debug = { App = "development" } },
+          configuration_sets = {
+            debug = { App = "development" },
+            release = { App = "development" },
+          },
         },
         { active_profile = "debug" },
-        nil,
+        {
+          profiles = {
+            release = { configuration_set = "release", projects = { App = { config_key = "development" } } },
+          },
+          projects = { App = { type = "typescript", configurations = { development = { state = "configured" } } } },
+        },
         {
           user = {
             save = function()
@@ -453,14 +466,8 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
       save_called = false -- reset from setup
-      core:deactivate_profile("release")
+      core:get_profiles()["release"]:deactivate()
       assert.is_false(save_called)
-    end)
-
-    it("is safe without workspace", function()
-      local core = make_core()
-      -- don't setup
-      core:deactivate_profile("debug") -- should not error
     end)
   end)
 
@@ -1247,7 +1254,8 @@ describe("Core", function()
       }
 
       local done = false
-      core:execute_deletion(plan, { deactivate_profile = "debug" }, function() done = true end)
+      local debug_profile = core:get_profiles()["debug"]
+      core:execute_deletion(plan, { deactivate_profile = debug_profile }, function() done = true end)
       assert.is_true(done)
       assert.is_not_nil(saved_cache)
       assert.is_nil(saved_cache.profiles.debug)
@@ -1283,9 +1291,9 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
 
-      local refs = core:find_referencing_profiles("App", "development")
+      local refs = core:get_config_unit("App", "development"):referencing_profiles()
       assert.equals(1, #refs)
-      assert.equals("App/development", refs[1])
+      assert.equals("App/development", refs[1].key)
     end)
 
   end)
@@ -1605,13 +1613,13 @@ describe("Core", function()
       assert.same({}, core:get_orphaned_configs())
 
       -- The "feature" profile should still exist but with orphaned_set=true
-      local profile = core:get_profile("feature")
+      local profile = core:get_profiles()["feature"]
       assert.is_not_nil(profile)
       assert.is_true(profile.orphaned_set)
     end)
 
     it("unreferenced configs from branch switching are orphaned", function()
-      -- Scenario: user built configs directly (via materialize_configuration)
+      -- Scenario: user built configs directly (via ConfigUnit:materialize)
       -- on feature branch, then switched to master. The configs have no
       -- profile referencing them.
       local core = make_core(
@@ -1894,7 +1902,7 @@ describe("Core", function()
         clock = clock_fn,
       })
       core:setup({ root = "/root" })
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       return core, profile, time
     end
 

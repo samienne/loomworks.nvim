@@ -46,9 +46,9 @@ function ProfileProject.new(profile, project_key, variant)
   local ws = profile._core:get_workspace()
   local config_projects = ws and ws.config and ws.config.projects
   local project_def = config_projects and config_projects[project_key]
-  if profile.tool_key and project_def
+  if profile.tool and profile.tool.key and project_def
       and profile._core:module_has_keyed_tools(project_def.type) then
-    self.config_key = variant .. ":" .. profile.tool_key
+    self.config_key = variant .. ":" .. profile.tool.key
   else
     self.config_key = variant
   end
@@ -105,10 +105,7 @@ end
 --- @class loomworks.Profile
 --- @field key string profile key
 --- @field configuration_set? string nil for pinned profiles
---- @field tool_key? string cache key suffix from the keyed module
---- @field tool_data? table opaque module-specific tool data
---- @field tool_label? string display label for the tool
---- @field tool_mod_type? string which module type owns this tool
+--- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
 --- @field explicit boolean
 --- @field mappings? table<string, string> project_key -> variant name
 --- @field _operation? loomworks.Operation current or last operation state
@@ -130,7 +127,7 @@ local STATUS_HL = {
 --- Create a new Profile object.
 --- @param core loomworks.Core
 --- @param key string profile key
---- @param data? { configuration_set?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
+--- @param data? { configuration_set?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
 --- @return loomworks.Profile
 function Profile.new(core, key, data)
   local self = setmetatable({}, Profile)
@@ -146,10 +143,12 @@ end
 function Profile:_update(data)
   self._generation = self._core._generation
   self.configuration_set = data.configuration_set
-  self.tool_key = data.tool_key
-  self.tool_data = data.tool_data
-  self.tool_label = data.tool_label
-  self.tool_mod_type = data.tool_mod_type
+  self.tool = data.tool_key and {
+    key = data.tool_key,
+    data = data.tool_data,
+    label = data.tool_label,
+    mod_type = data.tool_mod_type,
+  } or nil
   self.explicit = data.explicit or false
   self.mappings = data.mappings
   self.orphaned_set = data.orphaned_set or false
@@ -191,8 +190,8 @@ end
 --- @param variant string
 --- @return string
 function Profile:config_key(variant)
-  if self.tool_key then
-    return variant .. ":" .. self.tool_key
+  if self.tool and self.tool.key then
+    return variant .. ":" .. self.tool.key
   end
   return variant
 end
@@ -237,7 +236,13 @@ end
 
 --- Deactivate this profile if it is currently active.
 function Profile:deactivate()
-  self._core:deactivate_profile(self.key)
+  local ws = self._core:get_workspace()
+  if not ws then return end
+  if ws.user.active_profile == self.key then
+    ws.user.active_profile = nil
+    self._core._deps.user.save(ws.root, ws.user)
+    self._core:remerge()
+  end
 end
 
 --- Build all projects in this profile via overseer.
@@ -323,7 +328,7 @@ function Profile:is_configured()
     -- Fallback: value matching for set-based profiles
     if self.configuration_set then
       cached_profile = merge.find_cached_profile(
-        ws.cache, self.configuration_set, self.tool_data)
+        ws.cache, self.configuration_set, self.tool and self.tool.data)
     end
     if not cached_profile or not cached_profile.projects then return false end
   end
@@ -467,7 +472,7 @@ end
 --- @param on_done? function
 function Profile:delete(on_done)
   self._core:execute_deletion(
-    self:plan_deletion(), { deactivate_profile = self.key }, on_done)
+    self:plan_deletion(), { deactivate_profile = self }, on_done)
 end
 
 --- Clean this profile's configs: delete build dirs and reset to unconfigured.
@@ -485,7 +490,7 @@ function Profile:clean(on_done)
     items[#items + 1] = {
       project_key = pp.project_key,
       config_key = pp.config_key,
-      build_dir = self._core:_cached_build_dir(pp.project_key, pp.config_key),
+      build_dir = pp:build_dir(),
     }
   end
 

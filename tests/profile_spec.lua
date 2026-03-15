@@ -272,7 +272,6 @@ describe("Profile", function()
           return {} -- no other profiles
         end,
       })
-      -- Need to override get_profiles on core too
       local plan = p:plan_deletion()
       assert.equals(2, #plan.items)
       assert.equals("App", plan.items[1].project_key)
@@ -310,13 +309,52 @@ describe("Profile", function()
       p:activate() -- should not error
     end)
 
-    it("deactivate delegates to core", function()
-      local deactivated = nil
+    it("deactivate clears active_profile and remerges", function()
+      local saved_user = nil
+      local remerged = false
+      local ws = {
+        root = "/root",
+        user = { _meta = { version = 1 }, active_profile = "debug" },
+      }
       local p = make_profile(nil, {
-        deactivate_profile = function(_, key) deactivated = key end,
+        get_workspace = function() return ws end,
+        remerge = function() remerged = true end,
+        _deps = {
+          clock = function() return 0 end,
+          events = { emit = function() end },
+          user = { save = function(root, data) saved_user = data return true end },
+        },
       })
       p:deactivate()
-      assert.equals("debug", deactivated)
+      assert.is_nil(ws.user.active_profile)
+      assert.is_nil(saved_user.active_profile)
+      assert.is_true(remerged)
+    end)
+
+    it("deactivate is no-op when not active", function()
+      local save_called = false
+      local ws = {
+        root = "/root",
+        user = { _meta = { version = 1 }, active_profile = "release" },
+      }
+      local p = make_profile(nil, {
+        get_workspace = function() return ws end,
+        _deps = {
+          clock = function() return 0 end,
+          events = { emit = function() end },
+          user = { save = function() save_called = true return true end },
+        },
+      })
+      p:deactivate()
+      assert.equals("release", ws.user.active_profile)
+      assert.is_false(save_called)
+    end)
+
+    it("deactivate is no-op without workspace", function()
+      local p = make_profile(nil, {
+        get_workspace = function() return nil end,
+      })
+      p:deactivate() -- should not error
     end)
   end)
 end)

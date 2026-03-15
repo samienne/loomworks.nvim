@@ -126,6 +126,121 @@ end
 -- Config-level actions
 -- ---------------------------------------------------------------------------
 
+--- Find all profiles that reference this (project_key, config_key) pair.
+--- @return loomworks.Profile[]
+function ConfigUnit:referencing_profiles()
+  local result = {}
+  for _, profile in pairs(self._core._profiles) do
+    for _, pp in ipairs(profile:projects()) do
+      if pp.project_key == self.project_key and pp.config_key == self.config_key then
+        result[#result + 1] = profile
+        break
+      end
+    end
+  end
+  table.sort(result, function(a, b) return a.key < b.key end)
+  return result
+end
+
+--- Materialize a skeleton cache entry for this configuration.
+--- Used for configuration-level build/configure actions.
+function ConfigUnit:materialize()
+  local core = self._core
+  if not core._workspace then return end
+
+  -- Wait for tool detection to complete before materializing
+  if core._tool_state == "scanning" then
+    core._tool_waiters[#core._tool_waiters + 1] = function()
+      self:materialize()
+    end
+    return
+  end
+
+  local ws = core._workspace
+  local project_config = ws.config.projects[self.project_key]
+  if not project_config then return end
+
+  -- Parse config_key for variant and tool_key
+  local variant, tool_key = core._deps.merge.parse_profile_key(self.config_key)
+
+  -- Resolve tool_data from detected tools
+  local dt = tool_key
+      and core._deps.merge.resolve_detected_tool(core._tools_by_type, tool_key)
+      or nil
+
+  -- Ensure cache structure exists
+  local cached_proj = core:_ensure_cached_project(self.project_key)
+  if not cached_proj.configurations[self.config_key] then
+    cached_proj.configurations[self.config_key] = {
+      variant = variant,
+      tool_key = tool_key,
+      tool_data = dt and dt.tool_data or nil,
+    }
+
+    core:_save_cache()
+    core:remerge()
+  end
+end
+
+--- Materialize a pinned profile for this configuration.
+--- Creates the config skeleton and a pinned profile entry in cache.
+--- @return loomworks.Profile|nil
+function ConfigUnit:materialize_pinned()
+  local core = self._core
+  if not core._workspace then return nil end
+
+  -- Wait for tool detection to complete before materializing
+  if core._tool_state == "scanning" then
+    core._tool_waiters[#core._tool_waiters + 1] = function()
+      self:materialize_pinned()
+    end
+    return nil
+  end
+
+  local ws = core._workspace
+  local project_config = ws.config.projects[self.project_key]
+  if not project_config then return nil end
+
+  local ak = core._deps.merge.pinned_key(self.project_key, self.config_key)
+
+  -- Ensure config skeleton exists
+  self:materialize()
+
+  -- Check if pinned profile already exists
+  ws.cache.profiles = ws.cache.profiles or {}
+  if ws.cache.profiles[ak] then return core._profiles[ak] end
+
+  -- Parse config_key for variant and tool_key
+  local variant, tool_key = core._deps.merge.parse_profile_key(self.config_key)
+
+  -- Resolve tool data
+  local tool_data, tool_label, tool_mod_type = nil, nil, nil
+  if tool_key then
+    local det, mt = core._deps.merge.resolve_detected_tool(
+      core._tools_by_type, tool_key)
+    if det then
+      tool_data = det.tool_data
+      tool_label = det.tool_label
+      tool_mod_type = mt
+    end
+  end
+
+  ws.cache.profiles[ak] = {
+    mappings = { [self.project_key] = variant },
+    tool_key = tool_key,
+    tool_data = tool_data,
+    tool_label = tool_label,
+    tool_mod_type = tool_mod_type,
+    projects = {
+      [self.project_key] = { config_key = self.config_key },
+    },
+  }
+
+  core:_save_cache()
+  core:remerge()
+  return core._profiles[ak]
+end
+
 --- Plan a deletion for this config.
 --- If any profile references it, disposition = "reset" (clear state, keep
 --- skeleton). Otherwise "clean" (remove entirely).
@@ -137,8 +252,7 @@ function ConfigUnit:plan_deletion()
   end
 
   local ws = core:get_workspace()
-  local refs = core:find_referencing_profiles(self.project_key, self.config_key)
-  local has_ref = #refs > 0
+  local has_ref = #self:referencing_profiles() > 0
 
   local items = { {
     project_key = self.project_key,

@@ -238,9 +238,9 @@ may import from its own layer or any layer below it, never above.
 | `core.lua` | All mutable state (`_workspace`, `_active_set`, `_config_units`, `_generation`, `_operations`, `_tools_by_type`, `_setup_error`, `_state`, `_tool_state`, `_tool_waiters`). Async setup, remerge, object factories, profile management, task lifecycle, deletion orchestration, buffer queries | Do I/O directly (delegates to io.lua); know about UI; render anything |
 | `merge.lua` | Three-file merge algorithm, profile resolution, mapping computation, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua |
 | `configuration_set.lua` | ConfigurationSet class: owns activation (`activate()`), property-based profile lookup (`find_profile()`) | Own state beyond config data; do I/O |
-| `profile.lua` | Profile and ProfileProject classes, status aggregation, plan_deletion | Own state beyond what core provides; do I/O |
+| `profile.lua` | Profile and ProfileProject classes, status aggregation, plan_deletion, activate/deactivate | Own state beyond what core provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation | Own state beyond what core provides |
-| `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag, queued action. Listener pattern via `on_state_change()` | Persist anything (runtime only); know about profiles |
+| `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag, queued action. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `referencing_profiles()` | Persist anything (runtime only) |
 | `events.lua` | Pub/sub system: `on()`, `off()`, `emit()` | Hold domain state; know about specific event semantics |
 | `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
 

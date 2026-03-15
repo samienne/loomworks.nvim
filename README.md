@@ -291,7 +291,7 @@ lw.get_active_configuration_set()           -- merged ActiveSet
 
 -- Profiles
 lw.get_profiles()                           -- all Profile objects
-lw.get_profile("Debug:ninja-gcc-14.2.0")   -- single Profile
+lw.get_active_profile()                     -- active Profile or nil
 
 -- Configuration sets
 local config_sets = lw.get_config_sets()    -- all ConfigurationSet objects
@@ -302,7 +302,6 @@ end
 
 -- Projects
 lw.get_projects()                           -- all Project objects
-lw.get_project("MyApp")                     -- single Project
 lw.project_for_buf(bufnr)                   -- find project for buffer
 
 -- Buffer status (for statusline/winbar)
@@ -317,7 +316,7 @@ end)
 ### Profile object
 
 ```lua
-local profile = lw.get_profile("Debug:ninja-gcc-14.2.0")
+local profile = lw.get_profiles()["Debug:ninja-gcc-14.2.0"]
 
 profile.key                   -- "Debug:ninja-gcc-14.2.0"
 profile.configuration_set     -- "Debug"
@@ -338,7 +337,7 @@ profile:delete(on_done)
 ### Project object
 
 ```lua
-local proj = lw.get_project("MyApp")
+local proj = lw.get_projects()["MyApp"]
 
 proj.key                      -- "MyApp"
 proj.type                     -- "cmake"

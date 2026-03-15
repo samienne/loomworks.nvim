@@ -241,7 +241,7 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:materialize_pinned("App", "development")
+      core:get_config_unit("App", "development"):materialize_pinned()
       assert_cache_coherent(core, "after materialize_pinned")
       assert.equals(1, count_profiles(core))
 
@@ -255,19 +255,19 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:materialize_pinned("App", "development")
+      core:get_config_unit("App", "development"):materialize_pinned()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert.equals(1, count_cached_configs(core))
 
       -- Delete via plan+execute (as UI would)
-      local profile = core:get_profile("App/development")
+      local profile = core:get_profiles()["App/development"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       -- Config is unreferenced after removing sole profile
       assert.equals(1, #plan.items)
 
       local done = false
-      core:execute_deletion(plan, { deactivate_profile = profile.key },
+      core:execute_deletion(plan, { deactivate_profile = profile },
         function() done = true end)
       assert.is_true(done)
 
@@ -289,20 +289,20 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "after set-based profile build")
 
       -- Also create an pinned for the same config
-      core:materialize_pinned("App", "development")
+      core:get_config_unit("App", "development"):materialize_pinned()
       assert_cache_coherent(core, "after also creating pinned")
       local n_profiles = count_profiles(core)
       assert.is_true(n_profiles >= 2)
 
       -- Delete pinned — config should survive intact (set-based profile still references it)
-      local adhoc = core:get_profile("App/development")
+      local adhoc = core:get_profiles()["App/development"]
       assert.is_not_nil(adhoc)
       local plan = adhoc:plan_deletion()
       assert.equals(1, #plan.items)
       assert.equals("keep", plan.items[1].disposition)
 
       local done = false
-      core:execute_deletion(plan, { deactivate_profile = adhoc.key },
+      core:execute_deletion(plan, { deactivate_profile = adhoc },
         function() done = true end)
       assert.is_true(done)
 
@@ -335,24 +335,24 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "after setup")
 
       -- Build with gcc
-      core:materialize_pinned("Lib", "Debug:ninja-gcc")
+      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned()
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
       assert_cache_coherent(core, "after gcc build")
 
       -- Build with clang
-      core:materialize_pinned("Lib", "Debug:ninja-clang")
+      core:get_config_unit("Lib", "Debug:ninja-clang"):materialize_pinned()
       simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
       assert_cache_coherent(core, "after clang build")
       assert.equals(2, count_cached_configs(core))
 
       -- Delete gcc profile
-      local gcc_profile = core:get_profile("Lib/Debug:ninja-gcc")
+      local gcc_profile = core:get_profiles()["Lib/Debug:ninja-gcc"]
       assert.is_not_nil(gcc_profile)
       local plan = gcc_profile:plan_deletion()
       assert.equals(1, #plan.items)
 
       local done = false
-      core:execute_deletion(plan, { deactivate_profile = gcc_profile.key },
+      core:execute_deletion(plan, { deactivate_profile = gcc_profile },
         function() done = true end)
       assert.is_true(done)
 
@@ -382,24 +382,24 @@ describe("cache coherence", function()
       )
       setup({ root = "/root" })
 
-      core:materialize_pinned("Lib", "Debug:ninja-gcc")
+      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned()
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug")
-      core:materialize_pinned("Lib", "Release:ninja-gcc")
+      core:get_config_unit("Lib", "Release:ninja-gcc"):materialize_pinned()
       simulate_build(core, "Lib", "Release:ninja-gcc", "/root/.nvim/build/Lib/Release")
       assert.equals(2, count_cached_configs(core))
       assert_cache_coherent(core, "after two builds")
 
       -- Delete first
-      local p1 = core:get_profile("Lib/Debug:ninja-gcc")
+      local p1 = core:get_profiles()["Lib/Debug:ninja-gcc"]
       local plan1 = p1:plan_deletion()
-      core:execute_deletion(plan1, { deactivate_profile = p1.key })
+      core:execute_deletion(plan1, { deactivate_profile = p1 })
       assert_cache_coherent(core, "after first delete")
       assert.equals(1, count_cached_configs(core))
 
       -- Delete second
-      local p2 = core:get_profile("Lib/Release:ninja-gcc")
+      local p2 = core:get_profiles()["Lib/Release:ninja-gcc"]
       local plan2 = p2:plan_deletion()
-      core:execute_deletion(plan2, { deactivate_profile = p2.key })
+      core:execute_deletion(plan2, { deactivate_profile = p2 })
 
       assert_cache_empty(core, "after deleting all profiles")
       assert.equals(2, #rm_calls)
@@ -434,13 +434,13 @@ describe("cache coherence", function()
       assert.equals(2, count_cached_configs(core))
 
       -- Delete the profile
-      local profile = core:get_profile("debug:ninja-gcc")
+      local profile = core:get_profiles()["debug:ninja-gcc"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       assert.equals(2, #plan.items) -- both configs unreferenced
 
       local done = false
-      core:execute_deletion(plan, { deactivate_profile = profile.key },
+      core:execute_deletion(plan, { deactivate_profile = profile },
         function() done = true end)
       assert.is_true(done)
 
@@ -472,26 +472,26 @@ describe("cache coherence", function()
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
       -- Pinned: build Backend with same config (overlapping reference)
-      core:materialize_pinned("Backend", "Debug:ninja-gcc")
+      core:get_config_unit("Backend", "Debug:ninja-gcc"):materialize_pinned()
       assert_cache_coherent(core, "after pinned overlapping")
 
       -- Delete pinned — config shared by set-based profile, kept intact
-      local adhoc = core:get_profile("Backend/Debug:ninja-gcc")
+      local adhoc = core:get_profiles()["Backend/Debug:ninja-gcc"]
       assert.is_not_nil(adhoc)
       local plan = adhoc:plan_deletion()
       assert.equals(1, #plan.items)
       assert.equals("keep", plan.items[1].disposition)
-      core:execute_deletion(plan, { deactivate_profile = adhoc.key })
+      core:execute_deletion(plan, { deactivate_profile = adhoc })
       assert_cache_coherent(core, "after pinned delete")
       assert.equals(2, count_cached_configs(core))
       assert.equals(0, #rm_calls) -- "keep" does not touch build dir
 
       -- Now delete set-based profile — both configs should be cleaned
-      local full = core:get_profile("debug:ninja-gcc")
+      local full = core:get_profiles()["debug:ninja-gcc"]
       assert.is_not_nil(full)
       local plan2 = full:plan_deletion()
       assert.equals(2, #plan2.items)
-      core:execute_deletion(plan2, { deactivate_profile = full.key })
+      core:execute_deletion(plan2, { deactivate_profile = full })
 
       assert_cache_empty(core, "after set-based profile delete")
       assert.equals(2, #rm_calls)
@@ -506,7 +506,7 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:materialize_pinned("App", "development")
+      core:get_config_unit("App", "development"):materialize_pinned()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
 
@@ -532,7 +532,7 @@ describe("cache coherence", function()
 
       -- Full profile + pinned both reference the config
       get_cs(core, "debug"):activate()
-      core:materialize_pinned("App", "development")
+      core:get_config_unit("App", "development"):materialize_pinned()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
 
@@ -567,9 +567,9 @@ describe("cache coherence", function()
       })
       setup({ root = "/root" })
 
-      core:materialize_pinned("Lib", "Debug:ninja-gcc")
+      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned()
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
-      core:materialize_pinned("Lib", "Debug:ninja-clang")
+      core:get_config_unit("Lib", "Debug:ninja-clang"):materialize_pinned()
       simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
       assert.equals(2, count_cached_configs(core))
 
@@ -1128,11 +1128,11 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
       assert_cache_coherent(core, "before delete")
 
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       assert.equals(1, #plan.items)
-      core:execute_deletion(plan, { deactivate_profile = profile.key })
+      core:execute_deletion(plan, { deactivate_profile = profile })
 
       assert_cache_empty(core, "after deleting pre-populated profile")
       assert.equals(1, #rm_calls)
@@ -1181,13 +1181,13 @@ describe("cache coherence", function()
       assert.equals("production", orphans[1].config_key)
 
       -- Delete the set-based profile — only "development" gets cleaned
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       assert.equals(1, #plan.items)
       assert.equals("development", plan.items[1].config_key)
 
-      core:execute_deletion(plan, { deactivate_profile = profile.key })
+      core:execute_deletion(plan, { deactivate_profile = profile })
       assert_cache_coherent(core, "after delete, orphan survives")
       assert.equals(0, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
@@ -1267,25 +1267,25 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- First build
-      core:materialize_pinned("App", "development")
+      core:get_config_unit("App", "development"):materialize_pinned()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "first build")
 
       -- Delete
-      local p1 = core:get_profile("App/development")
+      local p1 = core:get_profiles()["App/development"]
       local plan1 = p1:plan_deletion()
-      core:execute_deletion(plan1, { deactivate_profile = p1.key })
+      core:execute_deletion(plan1, { deactivate_profile = p1 })
       assert_cache_empty(core, "first delete")
 
       -- Rebuild (materialize_pinned creates a new pinned)
-      core:materialize_pinned("App", "development")
+      core:get_config_unit("App", "development"):materialize_pinned()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "rebuild")
 
       -- Delete again
-      local p2 = core:get_profile("App/development")
+      local p2 = core:get_profiles()["App/development"]
       local plan2 = p2:plan_deletion()
-      core:execute_deletion(plan2, { deactivate_profile = p2.key })
+      core:execute_deletion(plan2, { deactivate_profile = p2 })
       assert_cache_empty(core, "second delete")
       assert.equals(2, #rm_calls)
     end)
@@ -1319,11 +1319,11 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "after failed build")
 
       -- Delete profile
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       assert.equals(1, #plan.items)
-      core:execute_deletion(plan, { deactivate_profile = profile.key })
+      core:execute_deletion(plan, { deactivate_profile = profile })
 
       assert_cache_empty(core, "after deleting failed build profile")
       assert.equals(1, #rm_calls)
@@ -1335,8 +1335,8 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      local key1 = core:materialize_pinned("App", "development")
-      local key2 = core:materialize_pinned("App", "development")
+      local key1 = core:get_config_unit("App", "development"):materialize_pinned()
+      local key2 = core:get_config_unit("App", "development"):materialize_pinned()
       assert.equals(key1, key2)
       assert.equals(1, count_profiles(core))
       assert_cache_coherent(core, "idempotent materialize")
@@ -1384,12 +1384,12 @@ describe("cache coherence", function()
       assert.equals(2, count_profiles(core))
 
       -- Delete first profile — config kept (staging still refs it)
-      local p1 = core:get_profile("debug")
+      local p1 = core:get_profiles()["debug"]
       assert.is_not_nil(p1)
       local plan1 = p1:plan_deletion()
       assert.equals(1, #plan1.items)
       assert.equals("keep", plan1.items[1].disposition)
-      core:execute_deletion(plan1, { deactivate_profile = p1.key })
+      core:execute_deletion(plan1, { deactivate_profile = p1 })
 
       assert_cache_coherent(core, "after first delete")
       assert.equals(1, count_profiles(core))
@@ -1401,12 +1401,12 @@ describe("cache coherence", function()
       assert.equals("built", ws.cache.projects.App.configurations.development.state)
 
       -- Delete second profile — config now unreferenced, cleaned
-      local p2 = core:get_profile("staging")
+      local p2 = core:get_profiles()["staging"]
       assert.is_not_nil(p2)
       local plan2 = p2:plan_deletion()
       assert.equals(1, #plan2.items)
       assert.equals("clean", plan2.items[1].disposition)
-      core:execute_deletion(plan2, { deactivate_profile = p2.key })
+      core:execute_deletion(plan2, { deactivate_profile = p2 })
 
       assert_cache_empty(core, "after deleting both")
       assert.equals(1, #rm_calls)
@@ -1481,14 +1481,14 @@ describe("cache coherence", function()
       assert.equals(3, count_cached_configs(core))
 
       -- Delete B — P2/dev held by A (keep), P3/dev held by C (keep)
-      local pB = core:get_profile("setB")
+      local pB = core:get_profiles()["setB"]
       assert.is_not_nil(pB)
       local planB = pB:plan_deletion()
       assert.equals(2, #planB.items)
       for _, item in ipairs(planB.items) do
         assert.equals("keep", item.disposition)
       end
-      core:execute_deletion(planB, { deactivate_profile = pB.key })
+      core:execute_deletion(planB, { deactivate_profile = pB })
 
       assert_cache_coherent(core, "after B deleted")
       assert.equals(2, count_profiles(core))
@@ -1496,11 +1496,11 @@ describe("cache coherence", function()
       assert.equals(0, #rm_calls) -- "keep" does not touch build dirs
 
       -- Delete A — P1/dev unreferenced (cleaned), P2/dev unreferenced (cleaned)
-      local pA = core:get_profile("setA")
+      local pA = core:get_profiles()["setA"]
       assert.is_not_nil(pA)
       local planA = pA:plan_deletion()
       assert.equals(2, #planA.items)
-      core:execute_deletion(planA, { deactivate_profile = pA.key })
+      core:execute_deletion(planA, { deactivate_profile = pA })
 
       assert_cache_coherent(core, "after A deleted")
       assert.equals(1, count_profiles(core))
@@ -1508,12 +1508,12 @@ describe("cache coherence", function()
       assert.equals(2, #rm_calls) -- P1 + P2 build dirs cleaned
 
       -- Delete C — P3/dev unreferenced (cleaned)
-      local pC = core:get_profile("setC")
+      local pC = core:get_profiles()["setC"]
       assert.is_not_nil(pC)
       local planC = pC:plan_deletion()
       assert.equals(1, #planC.items)
       assert.equals("clean", planC.items[1].disposition)
-      core:execute_deletion(planC, { deactivate_profile = pC.key })
+      core:execute_deletion(planC, { deactivate_profile = pC })
 
       assert_cache_empty(core, "after all deleted")
       assert.equals(3, #rm_calls) -- P1 + P2 + P3
@@ -1541,11 +1541,11 @@ describe("cache coherence", function()
       assert.is_nil(cached.build_dir)
 
       -- Delete — skeleton should be cleaned even though there's nothing on disk
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       assert.equals(1, #plan.items)
-      core:execute_deletion(plan, { deactivate_profile = profile.key })
+      core:execute_deletion(plan, { deactivate_profile = profile })
 
       assert_cache_empty(core, "after deleting unbuild profile")
       assert.equals(0, #rm_calls) -- no build dir to delete
@@ -1557,15 +1557,15 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:materialize_pinned("App", "production")
+      core:get_config_unit("App", "production"):materialize_pinned()
       assert_cache_coherent(core, "after materialize_pinned")
       assert.equals(1, count_profiles(core))
 
-      local profile = core:get_profile("App/production")
+      local profile = core:get_profiles()["App/production"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       assert.equals(1, #plan.items)
-      core:execute_deletion(plan, { deactivate_profile = profile.key })
+      core:execute_deletion(plan, { deactivate_profile = profile })
 
       assert_cache_empty(core, "after deleting unbuilt pinned")
       assert.equals(0, #rm_calls)
@@ -1603,9 +1603,9 @@ describe("cache coherence", function()
       local ws = core:get_workspace()
       assert.equals("debug", ws.user.active_profile)
 
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       local plan = profile:plan_deletion()
-      core:execute_deletion(plan, { deactivate_profile = profile.key })
+      core:execute_deletion(plan, { deactivate_profile = profile })
 
       assert.is_nil(ws.user.active_profile)
       assert_cache_empty(core, "after active profile deleted")
@@ -1649,9 +1649,9 @@ describe("cache coherence", function()
       assert.equals("debug", ws.user.active_profile)
 
       -- Delete release (not active)
-      local release = core:get_profile("release")
+      local release = core:get_profiles()["release"]
       local plan = release:plan_deletion()
-      core:execute_deletion(plan, { deactivate_profile = release.key })
+      core:execute_deletion(plan, { deactivate_profile = release })
 
       assert.equals("debug", ws.user.active_profile)
       assert_cache_coherent(core, "active profile untouched")
@@ -1673,9 +1673,9 @@ describe("cache coherence", function()
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "first build")
 
-      local p1 = core:get_profile("debug")
+      local p1 = core:get_profiles()["debug"]
       local plan1 = p1:plan_deletion()
-      core:execute_deletion(plan1, { deactivate_profile = p1.key })
+      core:execute_deletion(plan1, { deactivate_profile = p1 })
       assert_cache_empty(core, "after first delete")
 
       -- Second cycle: re-materialize the same profile
@@ -1688,10 +1688,10 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "after rebuild")
 
       -- Can delete again cleanly
-      local p2 = core:get_profile("debug")
+      local p2 = core:get_profiles()["debug"]
       local plan2 = p2:plan_deletion()
       assert.equals(1, #plan2.items)
-      core:execute_deletion(plan2, { deactivate_profile = p2.key })
+      core:execute_deletion(plan2, { deactivate_profile = p2 })
       assert_cache_empty(core, "after second delete")
       assert.equals(2, #rm_calls)
     end)
@@ -1760,13 +1760,13 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "initial")
 
       -- Delete debug profile — config shared with staging → keep
-      local profile = core:get_profile("debug:ninja-gcc")
+      local profile = core:get_profiles()["debug:ninja-gcc"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
       assert.equals(1, #plan.items)
       assert.equals("keep", plan.items[1].disposition)
 
-      core:execute_deletion(plan, { deactivate_profile = profile.key })
+      core:execute_deletion(plan, { deactivate_profile = profile })
       assert_cache_coherent(core, "after keep")
 
       -- Config entry still exists with all fields intact
@@ -1827,10 +1827,10 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- Delete debug → config kept
-      local p1 = core:get_profile("debug")
+      local p1 = core:get_profiles()["debug"]
       local plan = p1:plan_deletion()
       assert.equals("keep", plan.items[1].disposition)
-      core:execute_deletion(plan, { deactivate_profile = p1.key })
+      core:execute_deletion(plan, { deactivate_profile = p1 })
 
       -- Config still built
       local ws = core:get_workspace()
@@ -1883,7 +1883,7 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       local plan = profile:plan_deletion()
 
       -- All items present (not filtered out)
@@ -2027,13 +2027,13 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- No "debug" profile exists (config_sets don't auto-generate profiles)
-      local debug_profile = core:get_profile("debug")
+      local debug_profile = core:get_profiles()["debug"]
       assert.is_nil(debug_profile)
 
-      -- find_referencing_profiles should only find the cached pinned
-      local refs = core:find_referencing_profiles("App", "development")
+      -- referencing_profiles should only find the cached pinned
+      local refs = core:get_config_unit("App", "development"):referencing_profiles()
       assert.equals(1, #refs)
-      assert.equals("App/development", refs[1])
+      assert.equals("App/development", refs[1].key)
     end)
 
     it("returns empty when no cached profiles reference config", function()
@@ -2044,7 +2044,7 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- No cached profiles at all
-      local refs = core:find_referencing_profiles("App", "development")
+      local refs = core:get_config_unit("App", "development"):referencing_profiles()
       assert.equals(0, #refs)
     end)
 
@@ -2081,11 +2081,11 @@ describe("cache coherence", function()
       )
       core:setup({ root = "/root" })
 
-      local refs = core:find_referencing_profiles("App", "development")
+      local refs = core:get_config_unit("App", "development"):referencing_profiles()
       assert.equals(2, #refs)
       -- Sorted alphabetically
-      assert.equals("debug", refs[1])
-      assert.equals("staging", refs[2])
+      assert.equals("debug", refs[1].key)
+      assert.equals("staging", refs[2].key)
     end)
   end)
 
@@ -2101,9 +2101,9 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- Build both projects via pinned
-      core:materialize_pinned("Backend", "development")
+      core:get_config_unit("Backend", "development"):materialize_pinned()
       simulate_build(core, "Backend", "development", "/root/.nvim/build/Backend/dev")
-      core:materialize_pinned("Frontend", "development")
+      core:get_config_unit("Frontend", "development"):materialize_pinned()
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
       assert_cache_coherent(core, "both built")
       assert.equals(2, count_profiles(core))
@@ -2146,7 +2146,7 @@ describe("cache coherence", function()
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
       -- Also pin Backend via pinned
-      core:materialize_pinned("Backend", "development")
+      core:get_config_unit("Backend", "development"):materialize_pinned()
       assert_cache_coherent(core, "full + pinned")
 
       -- delete_config on Backend — resets config (both profiles still ref it)

@@ -15,15 +15,15 @@ local function render_profile_details(tree, profile, lw)
     tree:leaf("Set: " .. profile.configuration_set, "Comment")
   end
 
-  if profile.tool_label then
-    tree:leaf("Tool: " .. profile.tool_label, "Comment")
+  if profile.tool and profile.tool.label then
+    tree:leaf("Tool: " .. profile.tool.label, "Comment")
     -- Show tool details if available (cmake-specific for now)
-    if profile.tool_data then
-      if profile.tool_data.generator then
-        tree:leaf("Generator: " .. profile.tool_data.generator, "Comment")
+    if profile.tool.data then
+      if profile.tool.data.generator then
+        tree:leaf("Generator: " .. profile.tool.data.generator, "Comment")
       end
-      if profile.tool_data.compiler_id then
-        tree:leaf("Compiler: " .. profile.tool_data.compiler_id, "Comment")
+      if profile.tool.data.compiler_id then
+        tree:leaf("Compiler: " .. profile.tool.data.compiler_id, "Comment")
       end
     end
   end

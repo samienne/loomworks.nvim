@@ -81,11 +81,10 @@ end
 -- Object factories
 -- ---------------------------------------------------------------------------
 
---- Get a Profile object by key.
---- @param key string profile key
+--- Get the active Profile object.
 --- @return loomworks.Profile|nil
-function M.get_profile(key)
-  return core:get_profile(key)
+function M.get_active_profile()
+  return core:get_active_profile()
 end
 
 --- Get all Profile objects as a dict.
@@ -98,13 +97,6 @@ end
 --- @return table<string, loomworks.ToolEntry[]> set_name -> entries
 function M.get_tool_entries()
   return core:get_tool_entries()
-end
-
---- Get a Project object by key (from the active set).
---- @param key string project key
---- @return loomworks.Project|nil
-function M.get_project(key)
-  return core:get_project(key)
 end
 
 --- Get all Project objects from the active set as a dict.
@@ -152,16 +144,16 @@ end
 --- @param project_key string
 --- @param config_key string
 function M.materialize_configuration(project_key, config_key)
-  core:materialize_configuration(project_key, config_key)
+  core:get_config_unit(project_key, config_key):materialize()
 end
 
 --- Create a pinned profile entry that pins a single config in cache.
---- Returns the pinned profile key (format: "project/config_key").
+--- Returns the pinned Profile object.
 --- @param project_key string
 --- @param config_key string
---- @return string pinned_profile_key
+--- @return loomworks.Profile|nil
 function M.materialize_pinned(project_key, config_key)
-  return core:materialize_pinned(project_key, config_key)
+  return core:get_config_unit(project_key, config_key):materialize_pinned()
 end
 
 -- ---------------------------------------------------------------------------
@@ -230,7 +222,7 @@ end
 
 --- Execute a deletion plan.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: string }
+--- @param opts? { deactivate_profile?: loomworks.Profile }
 --- @param on_done? function
 function M.execute_deletion(plan, opts, on_done)
   core:execute_deletion(plan, opts, on_done)
@@ -243,12 +235,12 @@ function M.find_running_tasks_for_items(items)
   return core:find_running_tasks_for_items(items)
 end
 
---- Find all materialized profile keys that reference a specific cached config.
+--- Find all profiles that reference a specific cached config.
 --- @param project_key string
 --- @param config_key string
---- @return string[] profile_keys
+--- @return loomworks.Profile[]
 function M.find_referencing_profiles(project_key, config_key)
-  return core:find_referencing_profiles(project_key, config_key)
+  return core:get_config_unit(project_key, config_key):referencing_profiles()
 end
 
 --- Get orphaned cached configs (configs with state not referenced by any profile).
@@ -279,8 +271,7 @@ function M.buf_status(bufnr)
   local project_key, project = core:project_for_buf(bufnr)
   if not project_key then return nil end
 
-  local profile_key = active_set.name
-  local profile = profile_key and core:get_profile(profile_key) or nil
+  local profile = core:get_active_profile()
   local set_name = profile and profile.configuration_set or nil
 
   local status
@@ -289,9 +280,9 @@ function M.buf_status(bufnr)
   end
 
   return {
-    profile_key = profile_key,
+    profile_key = active_set.name,
     set_name = set_name,
-    tool_key = project.tool_key,
+    tool_key = project.tool and project.tool.key or nil,
     project = project_key,
     configuration = project.configuration,
     status = status,

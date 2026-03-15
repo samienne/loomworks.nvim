@@ -301,9 +301,9 @@ function M.run_configuration_action(project_key, config_key, action)
 
   local function do_action()
     -- Pin config only if not already referenced by a materialized profile
-    local refs = loomworks.find_referencing_profiles(project_key, config_key)
-    if #refs == 0 then
-      loomworks.materialize_pinned(project_key, config_key)
+    local unit = loomworks.get_config_unit(project_key, config_key)
+    if #unit:referencing_profiles() == 0 then
+      unit:materialize_pinned()
     end
 
     local all_tasks = collect_configuration_tasks(project_key, config_key)

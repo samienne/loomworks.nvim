@@ -72,7 +72,7 @@ function M.delete_profile(profile)
   return function()
     local plan = profile:plan_deletion()
     M._show_delete_confirmation("Delete profile: " .. profile.key, plan, function()
-      require("loomworks").execute_deletion(plan, { deactivate_profile = profile.key }, function()
+      require("loomworks").execute_deletion(plan, { deactivate_profile = profile }, function()
         vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
       end)
     end)
@@ -161,13 +161,12 @@ end
 function M.pin_config(project_key, config_key)
   return function()
     local lw = require("loomworks")
-    local pkey = require("loomworks.merge").pinned_key(project_key, config_key)
-    local existing = lw.get_profile(pkey)
-    if existing then
+    local unit = lw.get_config_unit(project_key, config_key)
+    if #unit:referencing_profiles() > 0 then
       vim.notify("loomworks: already pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
       return
     end
-    lw.materialize_pinned(project_key, config_key)
+    unit:materialize_pinned()
     vim.notify("loomworks: pinned " .. project_key .. " / " .. config_key, vim.log.levels.INFO)
   end
 end

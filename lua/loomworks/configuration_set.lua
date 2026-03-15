@@ -41,10 +41,12 @@ function ConfigurationSet:find_profile(tool_entry)
   local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
   for _, profile in pairs(self._core._profiles) do
     if profile.configuration_set == self.name then
-      if not tool_data and not profile.tool_data then
+      local profile_tool_data = profile.tool and profile.tool.data or nil
+      local profile_mod_type = profile.tool and profile.tool.mod_type or nil
+      if not tool_data and not profile_tool_data then
         return profile
       end
-      if tool_mod_type and profile.tool_mod_type == tool_mod_type then
+      if tool_mod_type and profile_mod_type == tool_mod_type then
         local merge = require("loomworks.merge")
         if merge.cached_profile_matches(profile, self.name, tool_data) then
           return profile

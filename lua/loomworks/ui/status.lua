@@ -56,7 +56,7 @@ local function render_fn(tree)
     lw = lw,
     all_profiles = lw.get_profiles(),
     active_profile_key = active_set.name or "",
-    active_profile = active_set.name and lw.get_profile(active_set.name) or nil,
+    active_profile = lw.get_active_profile(),
     active_set = active_set,
     config_sets = lw.get_config_sets(),
     tool_entries = lw.get_tool_entries(),
@@ -130,7 +130,7 @@ end
 --- Delete a profile interactively (with confirmation dialog).
 --- @param profile_key string
 function M.delete_profile(profile_key)
-  local profile = require("loomworks").get_profile(profile_key)
+  local profile = require("loomworks").get_profiles()[profile_key]
   if not profile then return end
   actions.delete_profile(profile)()
 end

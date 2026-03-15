@@ -74,15 +74,9 @@ function M.make_mock_core(overrides)
     },
   }
 
-  -- Registry accessors (mirrors Core:get_profile/get_profiles)
-  core.get_profile = function(self, key)
-    return self._profiles[key]
-  end
+  -- Registry accessors
   core.get_profiles = function(self)
     return self._profiles
-  end
-  core.get_project = function(self, key)
-    return self._projects[key]
   end
   core.get_projects = function(self)
     return self._projects
@@ -100,15 +94,6 @@ function M.make_mock_core(overrides)
     return unit
   end
 
-  -- ConfigUnit-based running task queries
-  core.get_project_running_action = function(self, project_key)
-    for _, unit in pairs(self._config_units) do
-      if unit.project_key == project_key and unit:is_running() then
-        return unit:running_action()
-      end
-    end
-    return nil
-  end
   if overrides then
     for k, v in pairs(overrides) do
       core[k] = v

@@ -82,7 +82,7 @@ local cmake_module = {
 --- @param variant string configuration name (e.g. "Debug")
 --- @return table[] entries with { config_key, tool_key, state }
 local function simulate_projects_section_rendering(core, project_key, variant)
-  local proj = core:get_project(project_key)
+  local proj = core:get_projects()[project_key]
   if not proj then return {} end
 
   local tools_by_type = core:get_tools_by_type()
@@ -383,7 +383,7 @@ describe("Projects section cmake status", function()
     core:setup({ root = "/root" })
 
     -- Verify the Project object has correct cached_configurations
-    local proj = core:get_project("App")
+    local proj = core:get_projects()["App"]
     assert.is_not_nil(proj.cached_configurations["Debug:ninja-gcc-12"],
       "Project.cached_configurations should have tool-qualified key")
 
@@ -424,7 +424,7 @@ end
 --- @param active_profile_key string|nil
 --- @return table[] entries with { config_key, tool_key, state, hl }
 local function simulate_with_highlights(core, project_key, variant, active_profile_key)
-  local proj = core:get_project(project_key)
+  local proj = core:get_projects()[project_key]
   if not proj then return {} end
 
   local tools_by_type = core:get_tools_by_type()

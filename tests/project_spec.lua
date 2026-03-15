@@ -136,6 +136,7 @@ describe("Project", function()
     it("builds module context with correct fields", function()
       local p = make_project({
         configuration_key = "Debug:ninja-gcc",
+        tool_key = "ninja-gcc",
         tool_data = { generator = "Ninja", env = { CC = "gcc" } },
       })
       local ctx = p:to_module_context("/workspace")

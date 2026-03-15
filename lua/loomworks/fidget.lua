@@ -61,10 +61,10 @@ end
 local function find_handle_for_task(data)
   -- Check if this task belongs to a profile operation
   local lw = require("loomworks")
-  local refs = lw.find_referencing_profiles(data.project_key, data.configuration_key)
-  for _, profile_key in ipairs(refs) do
-    if handles[profile_key] then
-      return profile_key
+  local refs = lw.get_config_unit(data.project_key, data.configuration_key):referencing_profiles()
+  for _, profile in ipairs(refs) do
+    if handles[profile.key] then
+      return profile.key
     end
   end
   -- Standalone task

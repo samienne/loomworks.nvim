@@ -602,11 +602,11 @@ function Core:get_config_sets()
   return self._config_sets
 end
 
---- Get a Profile object by key.
---- @param key string profile key
+--- Get the active Profile object.
 --- @return loomworks.Profile|nil
-function Core:get_profile(key)
-  return self._profiles[key]
+function Core:get_active_profile()
+  if not self._active_set or not self._active_set.name then return nil end
+  return self._profiles[self._active_set.name]
 end
 
 --- Get all Profile objects as a dict.
@@ -623,33 +623,10 @@ function Core:get_tool_entries()
     self._workspace.config, self._workspace.cache, self._tools_by_type)
 end
 
---- Get a Project object by key (from the active set).
---- @param key string project key
---- @return loomworks.Project|nil
-function Core:get_project(key)
-  return self._projects[key]
-end
-
 --- Get all Project objects from the active set as a dict.
 --- @return table<string, loomworks.Project>
 function Core:get_projects()
   return self._projects
-end
-
--- ---------------------------------------------------------------------------
--- Profile management
--- ---------------------------------------------------------------------------
-
---- Deactivate a profile if it is currently active.
---- @param profile_key string
-function Core:deactivate_profile(profile_key)
-  if not self._workspace then return end
-
-  if self._workspace.user.active_profile == profile_key then
-    self._workspace.user.active_profile = nil
-    self._deps.user.save(self._workspace.root, self._workspace.user)
-    self:remerge()
-  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -870,143 +847,10 @@ function Core:get_orphaned_configs()
 end
 
 
---- Materialize a single configuration: ensure cache has a skeleton entry.
---- Lighter than materializing a full profile — used for configuration-level
---- build/configure actions.
---- @param project_key string
---- @param config_key string cache key (variant or variant:kit_id)
-function Core:materialize_configuration(project_key, config_key)
-  if not self._workspace then return end
-
-  -- Wait for tool detection to complete before materializing
-  if self._tool_state == "scanning" then
-    self._tool_waiters[#self._tool_waiters + 1] = function()
-      self:materialize_configuration(project_key, config_key)
-    end
-    return
-  end
-
-  local ws = self._workspace
-  local project_config = ws.config.projects[project_key]
-  if not project_config then return end
-
-  -- Parse config_key for variant and tool_key
-  local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
-
-  -- Resolve tool_data from detected tools
-  local dt = tool_key
-      and self._deps.merge.resolve_detected_tool(self._tools_by_type, tool_key)
-      or nil
-
-  -- Ensure cache structure exists
-  local cached_proj = self:_ensure_cached_project(project_key)
-  if not cached_proj.configurations[config_key] then
-    cached_proj.configurations[config_key] = {
-      variant = variant,
-      tool_key = tool_key,
-      tool_data = dt and dt.tool_data or nil,
-    }
-
-    self:_save_cache()
-    self:remerge()
-  end
-end
-
---- Materialize a pinned profile: a lightweight single-config pin.
---- Creates the config skeleton and a pinned profile entry in cache.
---- Returns the pinned profile key.
---- @param project_key string
---- @param config_key string
---- @return string|nil pinned_key
-function Core:materialize_pinned(project_key, config_key)
-  if not self._workspace then return nil end
-
-  -- Wait for tool detection to complete before materializing
-  if self._tool_state == "scanning" then
-    self._tool_waiters[#self._tool_waiters + 1] = function()
-      self:materialize_pinned(project_key, config_key)
-    end
-    return nil
-  end
-
-  local ws = self._workspace
-  local project_config = ws.config.projects[project_key]
-  if not project_config then return nil end
-
-  local ak = self._deps.merge.pinned_key(project_key, config_key)
-
-  -- Ensure config skeleton exists
-  self:materialize_configuration(project_key, config_key)
-
-  -- Check if pinned profile already exists
-  ws.cache.profiles = ws.cache.profiles or {}
-  if ws.cache.profiles[ak] then return ak end
-
-  -- Parse config_key for variant and tool_key
-  local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
-
-  -- Resolve tool data
-  local tool_data, tool_label, tool_mod_type = nil, nil, nil
-  if tool_key then
-    local det, mt = self._deps.merge.resolve_detected_tool(
-      self._tools_by_type, tool_key)
-    if det then
-      tool_data = det.tool_data
-      tool_label = det.tool_label
-      tool_mod_type = mt
-    end
-  end
-
-  ws.cache.profiles[ak] = {
-    mappings = { [project_key] = variant },
-    tool_key = tool_key,
-    tool_data = tool_data,
-    tool_label = tool_label,
-    tool_mod_type = tool_mod_type,
-    projects = {
-      [project_key] = { config_key = config_key },
-    },
-  }
-
-  self:_save_cache()
-  self:remerge()
-  return ak
-end
-
---- Find all profile keys that reference a specific cached config.
---- @param project_key string
---- @param config_key string
---- @return string[] profile_keys
-function Core:find_referencing_profiles(project_key, config_key)
-  local profiles = self:get_profiles()
-  local result = {}
-  for pkey, profile in pairs(profiles) do
-    for _, pp in ipairs(profile:projects()) do
-      if pp.project_key == project_key and pp.config_key == config_key then
-        result[#result + 1] = pkey
-        break
-      end
-    end
-  end
-  table.sort(result)
-  return result
-end
 
 -- ---------------------------------------------------------------------------
 -- Running task tracking
 -- ---------------------------------------------------------------------------
-
---- Check if any task is running for a given project (any config).
---- @param project_key string
---- @return string|nil action
-function Core:get_project_running_action(project_key)
-  for _, unit in pairs(self._config_units) do
-    if unit.project_key == project_key and unit:is_running() then
-      return unit:running_action()
-    end
-  end
-  return nil
-end
 
 --- Check if any tasks are currently running.
 --- @return boolean
@@ -1432,14 +1276,14 @@ end
 --- Items with disposition "keep" are left untouched (referenced by another profile).
 --- Also removes the profile entry from cache if plan.profile_key is set.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: string }
+--- @param opts? { deactivate_profile?: loomworks.Profile }
 --- @param on_done? function called when deletion is complete
 function Core:execute_deletion(plan, opts, on_done)
   opts = opts or {}
 
   -- Deactivate profile if requested
   if opts.deactivate_profile then
-    self:deactivate_profile(opts.deactivate_profile)
+    opts.deactivate_profile:deactivate()
   end
 
   -- Remove profile entry from cache (before async work)
@@ -1499,19 +1343,6 @@ function Core:execute_deletion(plan, opts, on_done)
   end, on_done)
 end
 
---- Look up the build_dir for a cached config.
---- @param project_key string
---- @param config_key string
---- @return string|nil
-function Core:_cached_build_dir(project_key, config_key)
-  if not self._workspace then return nil end
-  local ws = self._workspace
-  local proj = ws.cache.projects and ws.cache.projects[project_key]
-  if not proj or not proj.configurations then return nil end
-  local cfg = proj.configurations[config_key]
-  return cfg and cfg.build_dir
-end
-
 -- ---------------------------------------------------------------------------
 -- Queries
 -- ---------------------------------------------------------------------------
@@ -1536,7 +1367,7 @@ function Core:project_for_buf(bufnr)
   end
 
   if best_key then
-    return best_key, self:get_project(best_key)
+    return best_key, self._projects[best_key]
   end
   return nil, nil
 end
