@@ -46,6 +46,7 @@ describe("ConfigUnit", function()
       local unit = make_unit({
         get_workspace = function()
           return {
+            config = { projects = { App = { type = "cmake" } } },
             cache = {
               projects = {
                 App = {
@@ -65,6 +66,7 @@ describe("ConfigUnit", function()
       local unit = make_unit({
         get_workspace = function()
           return {
+            config = { projects = { App = { type = "cmake" } } },
             cache = {
               projects = {
                 App = {
@@ -84,6 +86,7 @@ describe("ConfigUnit", function()
       local unit = make_unit({
         get_workspace = function()
           return {
+            config = { projects = { App = { type = "cmake" } } },
             cache = {
               projects = {
                 App = {
@@ -115,6 +118,7 @@ describe("ConfigUnit", function()
       local unit = make_unit({
         get_workspace = function()
           return {
+            config = { projects = { App = { type = "cmake" } } },
             cache = {
               projects = {
                 App = {
@@ -148,6 +152,7 @@ describe("ConfigUnit", function()
       local unit = make_unit({
         get_workspace = function()
           return {
+            config = { projects = { App = { type = "cmake" } } },
             cache = {
               projects = {
                 App = {
@@ -283,6 +288,7 @@ describe("ConfigUnit", function()
       local unit = make_unit({
         get_workspace = function()
           return {
+            config = { projects = { App = { type = "cmake" } } },
             cache = {
               projects = {
                 App = {
@@ -311,6 +317,7 @@ describe("ConfigUnit", function()
       local unit = make_unit({
         get_workspace = function()
           return {
+            config = { projects = { App = { type = "cmake" } } },
             cache = {
               projects = {
                 App = {

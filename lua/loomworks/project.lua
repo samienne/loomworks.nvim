@@ -136,6 +136,7 @@ function Project:to_module_context(ws_root)
     configuration = self.configuration,
     configuration_key = self.configuration_key,
     configurations = self.configurations,
+    tool_key = self.tool and self.tool.key or nil,
     tool_data = self.tool and self.tool.data or nil,
     workspace_root = ws_root,
     env = self.tool and self.tool.data and self.tool.data.env or {},

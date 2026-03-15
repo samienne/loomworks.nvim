@@ -498,13 +498,18 @@ local function resolve_profile_mappings(data, config_sets_registry)
   end
 
   -- Fallback: derive mappings from cached profile projects
-  if data._cached_projects then
-    local merge = require("loomworks.merge")
+  if data._cached_projects and data._ws_cache then
     local mappings = {}
     for project_key, proj_ref in pairs(data._cached_projects) do
       if proj_ref.config_key then
-        local variant = merge.parse_profile_key(proj_ref.config_key)
-        mappings[project_key] = variant
+        -- Read variant from cached config entry (never parse the key)
+        local cached_proj = data._ws_cache.projects
+            and data._ws_cache.projects[project_key]
+        local cached_config = cached_proj and cached_proj.configurations
+            and cached_proj.configurations[proj_ref.config_key]
+        if cached_config and cached_config.variant then
+          mappings[project_key] = cached_config.variant
+        end
       end
     end
     if next(mappings) then return mappings, data.configuration_set ~= nil end
@@ -530,6 +535,7 @@ function Core:_sync_profiles(all_defs)
 
   -- Create or update
   for key, data in pairs(all_defs) do
+    data._ws_cache = ws.cache
     local mappings, orphaned_set = resolve_profile_mappings(data, self._config_sets)
     local profile_data = {
       configuration_set = data.configuration_set,
@@ -726,8 +732,7 @@ function Core:_migrate_set_names()
     -- Try case-insensitive match
     local new_set = config_sets_lower[old_set:lower()]
     if new_set then
-      local _, tool_key = self._deps.merge.parse_profile_key(profile_key)
-      local new_key = self._deps.merge.profile_key(new_set, tool_key)
+      local new_key = self._deps.merge.profile_key(new_set, cached_profile.tool_key)
       renames[profile_key] = { new_key = new_key, new_set = new_set }
     end
 
@@ -930,10 +935,9 @@ function Core:record_task_result(result)
   local cached_proj = self:_ensure_cached_project(project_key)
 
   if not cached_proj.configurations[config_key] then
-    local variant, tool_key = self._deps.merge.parse_profile_key(config_key)
     cached_proj.configurations[config_key] = {
-      variant = variant,
-      tool_key = tool_key,
+      variant = result.variant,
+      tool_key = result.tool and result.tool.key or nil,
     }
   end
 
@@ -961,8 +965,8 @@ function Core:record_task_result(result)
   if result.build_dir then
     cached_config.build_dir = result.build_dir
   end
-  if result.tool_data then
-    cached_config.tool_data = result.tool_data
+  if result.tool and result.tool.data then
+    cached_config.tool_data = result.tool.data
   end
   if result.cmake then
     cached_config.cmake = cached_config.cmake or {}
@@ -978,7 +982,7 @@ function Core:record_task_result(result)
     if proj_type then
       local mod = self._deps.modules.get(proj_type)
       if mod and mod.parse_file_api then
-        local variant = self._deps.merge.parse_profile_key(config_key)
+        local variant = result.variant
         local targets = mod.parse_file_api(result.build_dir, variant)
         if targets then
           cached_config.cmake = cached_config.cmake or {}

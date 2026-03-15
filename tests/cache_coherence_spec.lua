@@ -335,12 +335,12 @@ describe("cache coherence", function()
       assert_cache_coherent(core, "after setup")
 
       -- Build with gcc
-      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned()
+      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
       assert_cache_coherent(core, "after gcc build")
 
       -- Build with clang
-      core:get_config_unit("Lib", "Debug:ninja-clang"):materialize_pinned()
+      core:get_config_unit("Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
       simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
       assert_cache_coherent(core, "after clang build")
       assert.equals(2, count_cached_configs(core))
@@ -382,9 +382,9 @@ describe("cache coherence", function()
       )
       setup({ root = "/root" })
 
-      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned()
+      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug")
-      core:get_config_unit("Lib", "Release:ninja-gcc"):materialize_pinned()
+      core:get_config_unit("Lib", "Release:ninja-gcc"):materialize_pinned("Release", { key = "ninja-gcc" })
       simulate_build(core, "Lib", "Release:ninja-gcc", "/root/.nvim/build/Lib/Release")
       assert.equals(2, count_cached_configs(core))
       assert_cache_coherent(core, "after two builds")
@@ -472,7 +472,7 @@ describe("cache coherence", function()
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
       -- Pinned: build Backend with same config (overlapping reference)
-      core:get_config_unit("Backend", "Debug:ninja-gcc"):materialize_pinned()
+      core:get_config_unit("Backend", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
       assert_cache_coherent(core, "after pinned overlapping")
 
       -- Delete pinned — config shared by set-based profile, kept intact
@@ -567,9 +567,9 @@ describe("cache coherence", function()
       })
       setup({ root = "/root" })
 
-      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned()
+      core:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
       simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
-      core:get_config_unit("Lib", "Debug:ninja-clang"):materialize_pinned()
+      core:get_config_unit("Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
       simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
       assert.equals(2, count_cached_configs(core))
 

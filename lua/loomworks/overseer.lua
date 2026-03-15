@@ -18,16 +18,11 @@ local function collect_configuration_tasks(project_key, config_key)
   local mod = modules.get(project_config.type)
   if not mod or not mod.tasks then return nil end
 
-  -- Parse config_key to get variant and tool_key
-  local variant, tool_key = merge.parse_profile_key(config_key)
-
-  -- Resolve tool_data from detected tools
-  local core = loomworks._core()
-  local tool_data = nil
-  if tool_key then
-    local dt = merge.resolve_detected_tool(core._tools_by_type, tool_key)
-    if dt then tool_data = dt.tool_data end
-  end
+  -- Get variant and tool from ConfigUnit (never parse config_key)
+  local unit = loomworks.get_config_unit(project_key, config_key)
+  local variant = unit.variant
+  local tool = unit:resolve_tool()
+  local tool_data = tool and tool.data or nil
 
   -- Get module info
   local abs_path = ws.root .. "/" .. (project_config.path or project_key)
@@ -57,6 +52,8 @@ local function collect_configuration_tasks(project_key, config_key)
     local lw_meta = task_def.loomworks
     if lw_meta then
       lw_meta.progress_tool = pt
+      lw_meta.variant = variant
+      lw_meta.tool = tool
       if by_action[lw_meta.action] then
         by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
       end
@@ -108,11 +105,19 @@ local function collect_profile_tasks(profile_key)
         and mod.progress_parser(project_ctx, active_config)
         or nil
 
+    -- Build tool reference from project data
+    local tool_ref = proj.tool_key and {
+      key = proj.tool_key,
+      data = proj.tool_data,
+    } or nil
+
     local mod_tasks = mod.tasks(project_ctx, active_config)
     for _, task_def in ipairs(mod_tasks) do
       local lw_meta = task_def.loomworks
       if lw_meta then
         lw_meta.progress_tool = pt
+        lw_meta.variant = active_config
+        lw_meta.tool = tool_ref
         if by_action[lw_meta.action] then
           by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
         end
@@ -140,7 +145,8 @@ local function start_one_task(overseer, task_def, on_complete)
     action = lw_meta.action,
     configuration_key = lw_meta.configuration_key,
     build_dir = lw_meta.build_dir,
-    tool_data = lw_meta.tool_data,
+    variant = lw_meta.variant,
+    tool = lw_meta.tool,
     cmake = lw_meta.cmake,
     progress_tool = lw_meta.progress_tool,
   }

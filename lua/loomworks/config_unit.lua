@@ -7,6 +7,8 @@
 --- @class loomworks.ConfigUnit
 --- @field project_key string
 --- @field config_key string
+--- @field variant? string configuration variant name (from cache data)
+--- @field tool? loomworks.ToolRef bundled tool reference (from cache data)
 --- @field _core loomworks.Core
 --- @field _task_id number|nil current overseer task ID
 --- @field _action string|nil "configure" or "build" while a task is running
@@ -45,6 +47,24 @@ function ConfigUnit.new(core, project_key, config_key)
   self._deleting = false
   self._queued_action = nil
   self._listeners = {}
+  -- Populate variant and tool from cached data (never parse config_key)
+  local cached = self:cached_state()
+  self.variant = cached and cached.variant or nil
+  self.tool = nil
+  if cached and cached.tool_key then
+    self.tool = {
+      key = cached.tool_key,
+      data = cached.tool_data,
+    }
+  end
+  -- Fallback: for non-keyed modules, config_key IS the variant
+  if not self.variant then
+    local ws = core:get_workspace()
+    local proj_cfg = ws and ws.config and ws.config.projects and ws.config.projects[project_key]
+    if proj_cfg and not core:module_has_keyed_tools(proj_cfg.type) then
+      self.variant = config_key
+    end
+  end
   return self
 end
 
@@ -109,6 +129,21 @@ function ConfigUnit:build_dir()
   return cached and cached.build_dir
 end
 
+--- Resolve the detected tool, enriching self.tool with label and mod_type.
+--- @return loomworks.ToolRef|nil
+function ConfigUnit:resolve_tool()
+  if not self.tool or not self.tool.key then return self.tool end
+  if self.tool.label then return self.tool end  -- already resolved
+  local dt, mod_type = self._core._deps.merge.resolve_detected_tool(
+    self._core._tools_by_type, self.tool.key)
+  if dt then
+    self.tool.label = dt.tool_label
+    self.tool.mod_type = mod_type
+    self.tool.data = dt.tool_data
+  end
+  return self.tool
+end
+
 --- Get the current progress update, if any.
 --- @return loomworks.ProgressUpdate|nil
 function ConfigUnit:progress()
@@ -144,14 +179,16 @@ end
 
 --- Materialize a skeleton cache entry for this configuration.
 --- Used for configuration-level build/configure actions.
-function ConfigUnit:materialize()
+--- @param variant? string configuration variant name (uses self.variant if nil)
+--- @param tool? loomworks.ToolRef tool reference (uses self.tool if nil)
+function ConfigUnit:materialize(variant, tool)
   local core = self._core
   if not core._workspace then return end
 
   -- Wait for tool detection to complete before materializing
   if core._tool_state == "scanning" then
     core._tool_waiters[#core._tool_waiters + 1] = function()
-      self:materialize()
+      self:materialize(variant, tool)
     end
     return
   end
@@ -160,21 +197,28 @@ function ConfigUnit:materialize()
   local project_config = ws.config.projects[self.project_key]
   if not project_config then return end
 
-  -- Parse config_key for variant and tool_key
-  local variant, tool_key = core._deps.merge.parse_profile_key(self.config_key)
+  -- Update fields from caller data
+  if variant then self.variant = variant end
+  if tool then self.tool = tool end
 
-  -- Resolve tool_data from detected tools
-  local dt = tool_key
-      and core._deps.merge.resolve_detected_tool(core._tools_by_type, tool_key)
-      or nil
+  -- Resolve tool_data from detected tools if not already available
+  local tool_key = self.tool and self.tool.key or nil
+  local tool_data = self.tool and self.tool.data or nil
+  if tool_key and not tool_data then
+    local dt = core._deps.merge.resolve_detected_tool(core._tools_by_type, tool_key)
+    if dt then
+      tool_data = dt.tool_data
+      self.tool.data = tool_data
+    end
+  end
 
   -- Ensure cache structure exists
   local cached_proj = core:_ensure_cached_project(self.project_key)
   if not cached_proj.configurations[self.config_key] then
     cached_proj.configurations[self.config_key] = {
-      variant = variant,
+      variant = self.variant,
       tool_key = tool_key,
-      tool_data = dt and dt.tool_data or nil,
+      tool_data = tool_data,
     }
 
     core:_save_cache()
@@ -184,15 +228,17 @@ end
 
 --- Materialize a pinned profile for this configuration.
 --- Creates the config skeleton and a pinned profile entry in cache.
+--- @param variant? string configuration variant name (uses self.variant if nil)
+--- @param tool? loomworks.ToolRef tool reference (uses self.tool if nil)
 --- @return loomworks.Profile|nil
-function ConfigUnit:materialize_pinned()
+function ConfigUnit:materialize_pinned(variant, tool)
   local core = self._core
   if not core._workspace then return nil end
 
   -- Wait for tool detection to complete before materializing
   if core._tool_state == "scanning" then
     core._tool_waiters[#core._tool_waiters + 1] = function()
-      self:materialize_pinned()
+      self:materialize_pinned(variant, tool)
     end
     return nil
   end
@@ -204,29 +250,21 @@ function ConfigUnit:materialize_pinned()
   local ak = core._deps.merge.pinned_key(self.project_key, self.config_key)
 
   -- Ensure config skeleton exists
-  self:materialize()
+  self:materialize(variant, tool)
 
   -- Check if pinned profile already exists
   ws.cache.profiles = ws.cache.profiles or {}
   if ws.cache.profiles[ak] then return core._profiles[ak] end
 
-  -- Parse config_key for variant and tool_key
-  local variant, tool_key = core._deps.merge.parse_profile_key(self.config_key)
-
-  -- Resolve tool data
-  local tool_data, tool_label, tool_mod_type = nil, nil, nil
-  if tool_key then
-    local det, mt = core._deps.merge.resolve_detected_tool(
-      core._tools_by_type, tool_key)
-    if det then
-      tool_data = det.tool_data
-      tool_label = det.tool_label
-      tool_mod_type = mt
-    end
-  end
+  -- Use self.variant and self.tool (set by materialize or caller)
+  self:resolve_tool()
+  local tool_key = self.tool and self.tool.key or nil
+  local tool_data = self.tool and self.tool.data or nil
+  local tool_label = self.tool and self.tool.label or nil
+  local tool_mod_type = self.tool and self.tool.mod_type or nil
 
   ws.cache.profiles[ak] = {
-    mappings = { [self.project_key] = variant },
+    mappings = { [self.project_key] = self.variant },
     tool_key = tool_key,
     tool_data = tool_data,
     tool_label = tool_label,

@@ -19,8 +19,13 @@ return {
       type = "string",
       optional = true,
     },
-    tool_data = {
-      desc = "Opaque module-specific tool data (cached for profile materialization)",
+    variant = {
+      desc = "Configuration variant name",
+      type = "string",
+      optional = true,
+    },
+    tool = {
+      desc = "Bundled tool reference (key, data, label, mod_type)",
       type = "opaque",
       optional = true,
     },
@@ -92,8 +97,9 @@ return {
           project_key = params.project_key,
           action = params.action,
           configuration_key = params.configuration_key,
+          variant = params.variant,
+          tool = params.tool,
           build_dir = params.build_dir,
-          tool_data = params.tool_data,
           cmake = params.cmake,
           success = success,
         })

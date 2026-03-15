@@ -1599,8 +1599,8 @@ describe("Core", function()
             App = {
               type = "typescript",
               configurations = {
-                development = { state = "built" },
-                staging = { state = "built" },
+                development = { state = "built", variant = "development" },
+                staging = { state = "built", variant = "staging" },
               },
             },
           },
@@ -2124,8 +2124,9 @@ describe("Core", function()
         project_key = "App",
         action = "configure",
         configuration_key = "Debug:ninja-gcc-14.2.0",
+        variant = "Debug",
         success = true,
-        tool_data = tool_data,
+        tool = { key = "ninja-gcc-14.2.0", data = tool_data },
       })
       local cached_td = get_cache().projects.App.configurations["Debug:ninja-gcc-14.2.0"].tool_data
       assert.is_not_nil(cached_td)
@@ -2137,19 +2138,21 @@ describe("Core", function()
 
     it("preserves existing tool_data when result has no tool_data", function()
       local core, get_cache = make_recording_core()
-      -- First, record with tool_data
+      -- First, record with tool
       core:record_task_result({
         project_key = "App",
         action = "configure",
         configuration_key = "Debug",
+        variant = "Debug",
         success = true,
-        tool_data = { id = "ninja-gcc-14.2.0", display = "Ninja - GCC 14.2.0" },
+        tool = { key = "ninja-gcc-14.2.0", data = { id = "ninja-gcc-14.2.0", display = "Ninja - GCC 14.2.0" } },
       })
-      -- Second, record build without tool_data
+      -- Second, record build without tool
       core:record_task_result({
         project_key = "App",
         action = "build",
         configuration_key = "Debug",
+        variant = "Debug",
         success = true,
       })
       local cached = get_cache().projects.App.configurations.Debug
@@ -2195,6 +2198,7 @@ describe("Core", function()
         project_key = "App",
         action = "configure",
         configuration_key = "Debug",
+        variant = "Debug",
         success = true,
         build_dir = "/root/.nvim/build/App/Debug",
         cmake = { generator = "Ninja" },

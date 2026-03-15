@@ -60,7 +60,8 @@ local function collect_tool_entries(proj, variant, tools_by_type)
   -- 1. Cached entries for this variant (case-insensitive match)
   if proj.cached_configurations then
     for config_key, cached_config in pairs(proj.cached_configurations) do
-      local v, tk = merge.parse_profile_key(config_key)
+      local v = cached_config.variant
+      local tk = cached_config.tool_key
       if v and tk and v:lower() == variant_lower then
         entries[#entries + 1] = {
           config_key = config_key,
