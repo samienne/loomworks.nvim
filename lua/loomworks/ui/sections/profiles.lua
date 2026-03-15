@@ -131,7 +131,7 @@ return function(tree, ctx)
       marker = marker,
       spinning = profile_running,
       hl = hl,
-      on_enter = actions.activate(profile.key),
+      on_enter = actions.activate(profile),
       on_build = actions.build(profile),
       on_rebuild = actions.rebuild(profile),
       on_clean = actions.clean(profile),

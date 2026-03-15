@@ -117,17 +117,12 @@ end
 -- Profile management
 -- ---------------------------------------------------------------------------
 
---- Activate a named profile.
---- @param profile_key string
-function M.activate_profile(profile_key)
-  core:activate_profile(profile_key)
-end
-
---- Materialize a profile: write it to cache with full tool and project
---- references before any build/configure tasks start.
---- @param profile_key string
-function M.materialize_profile(profile_key)
-  core:materialize_profile(profile_key)
+--- Activate a profile that may not exist yet.
+--- Validates, materializes if needed, then activates.
+--- @param set_name string configuration set name
+--- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
+function M.activate_new_profile(set_name, tool_entry)
+  core:activate_new_profile(set_name, tool_entry)
 end
 
 --- Re-scan tools from all modules and remerge.
@@ -292,12 +287,9 @@ function M.buf_status(bufnr)
   local project_key, project = core:project_for_buf(bufnr)
   if not project_key then return nil end
 
-  local merge = require("loomworks.merge")
   local profile_key = active_set.name
-  local set_name
-  if profile_key then
-    set_name = merge.parse_profile_key(profile_key)
-  end
+  local profile = profile_key and core:get_profile(profile_key) or nil
+  local set_name = profile and profile.configuration_set or nil
 
   local status
   if project.configuration_key then

@@ -139,6 +139,26 @@ local function simulate_build(core, project_key, config_key, build_dir)
   })
 end
 
+--- Build a tool_entry from core's _tools_by_type for a given tool_key.
+--- @param core loomworks.Core
+--- @param tool_key string
+--- @return table|nil tool_entry
+local function tool_entry_for(core, tool_key)
+  for mod_type, tools in pairs(core._tools_by_type) do
+    for _, tool in ipairs(tools) do
+      if tool.tool_key == tool_key then
+        return {
+          tool_key = tool.tool_key,
+          tool_data = tool.tool_data,
+          tool_label = tool.tool_label,
+          tool_mod_type = mod_type,
+        }
+      end
+    end
+  end
+  return nil
+end
+
 --- Create a Core with tracked cache saves and rm_rf calls.
 --- extra_opts.tools_by_type is extracted and injected after setup to
 --- override module detection (which requires real modules).
@@ -256,7 +276,7 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- Materialize a set-based profile
-      core:materialize_profile("debug")
+      core:activate_new_profile("debug")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after set-based profile build")
 
@@ -399,7 +419,7 @@ describe("cache coherence", function()
       setup({ root = "/root" })
 
       -- Materialize the debug:ninja-gcc profile
-      core:materialize_profile("debug:ninja-gcc")
+      core:activate_new_profile("debug", tool_entry_for(core, "ninja-gcc"))
       simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/Debug")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
       assert_cache_coherent(core, "after full build")
@@ -439,7 +459,7 @@ describe("cache coherence", function()
       setup({ root = "/root" })
 
       -- Full profile build
-      core:materialize_profile("debug:ninja-gcc")
+      core:activate_new_profile("debug", tool_entry_for(core, "ninja-gcc"))
       simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/Debug")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
@@ -503,7 +523,7 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- Full profile + pinned both reference the config
-      core:materialize_profile("debug")
+      core:activate_new_profile("debug")
       core:materialize_pinned("App", "development")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "after build")
@@ -1269,7 +1289,7 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:materialize_profile("debug")
+      core:activate_new_profile("debug")
 
       -- Configure succeeds
       core:record_task_result({
@@ -1501,7 +1521,7 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:materialize_profile("debug")
+      core:activate_new_profile("debug")
       assert_cache_coherent(core, "after materialize")
       assert.equals(1, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
@@ -1641,7 +1661,7 @@ describe("cache coherence", function()
       core:setup({ root = "/root" })
 
       -- First cycle: materialize, build, delete
-      core:materialize_profile("debug")
+      core:activate_new_profile("debug")
       simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
       assert_cache_coherent(core, "first build")
 
@@ -1651,7 +1671,7 @@ describe("cache coherence", function()
       assert_cache_empty(core, "after first delete")
 
       -- Second cycle: re-materialize the same profile
-      core:materialize_profile("debug")
+      core:activate_new_profile("debug")
       assert_cache_coherent(core, "after re-materialize")
       assert.equals(1, count_profiles(core))
       assert.equals(1, count_cached_configs(core))
@@ -2113,7 +2133,7 @@ describe("cache coherence", function()
       })
       core:setup({ root = "/root" })
 
-      core:materialize_profile("debug")
+      core:activate_new_profile("debug")
       simulate_build(core, "Backend", "development", "/root/.nvim/build/Backend/dev")
       simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 

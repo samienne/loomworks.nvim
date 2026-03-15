@@ -292,7 +292,10 @@ lw.get_active_configuration_set()           -- merged ActiveSet
 -- Profiles
 lw.get_profiles()                           -- all Profile objects
 lw.get_profile("Debug:ninja-gcc-14.2.0")   -- single Profile
-lw.activate_profile("Debug:ninja-gcc-14.2.0")
+lw.activate_new_profile("Debug", {           -- activate (materializes if new)
+  tool_key = "ninja-gcc-14.2.0",
+  tool_data = ..., tool_label = ..., tool_mod_type = "cmake",
+})
 lw.activate_set("Debug")                   -- keep current tool, switch set
 
 -- Projects

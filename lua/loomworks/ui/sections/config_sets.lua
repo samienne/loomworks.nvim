@@ -82,9 +82,12 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
           marker = marker,
           spinning = profile_running,
           hl = hl,
-          on_enter = actions.activate(profile_key),
-          on_build = actions.build(profile or profile_key),
-          on_configure = actions.configure(profile or profile_key),
+          on_enter = profile and actions.activate(profile)
+              or actions.activate_new(set_name, entry),
+          on_build = profile and actions.build(profile)
+              or actions.build_new(set_name, entry),
+          on_configure = profile and actions.configure(profile)
+              or actions.configure_new(set_name, entry),
           on_rebuild = profile and actions.rebuild(profile) or nil,
           on_clean = profile and actions.clean(profile) or nil,
           on_delete = profile and actions.delete_profile(profile) or nil,

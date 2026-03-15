@@ -322,7 +322,7 @@ The first remerge produces an ActiveSet with empty tools. Profile sections
 render immediately. When tool detection completes, a second remerge fills in
 detected tools and the UI refreshes via `active_set_changed`.
 
-Materialization calls (`materialize_profile`, `materialize_configuration`,
+Materialization calls (`_materialize_from_data`, `materialize_configuration`,
 `materialize_pinned`) that arrive during `scanning` are queued in
 `_tool_waiters` and replayed when detection completes.
 

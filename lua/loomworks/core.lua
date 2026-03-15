@@ -602,30 +602,41 @@ end
 -- Profile management
 -- ---------------------------------------------------------------------------
 
---- Activate a named profile.
---- @param profile_key string
-function Core:activate_profile(profile_key)
+--- Activate a profile that may not exist yet.
+--- For profiles from the config_sets UI: validates, materializes if needed,
+--- then activates via the Profile object.
+--- @param set_name string configuration set name
+--- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
+function Core:activate_new_profile(set_name, tool_entry)
   if not self._workspace then
     self._deps.notify("loomworks: no workspace loaded", vim.log.levels.ERROR)
     return
   end
 
-  -- Ensure the profile exists — materialize if it can be resolved from config
-  if not self._profiles[profile_key] then
-    -- Try to resolve and materialize from config_sets + detected tools
-    local def = self._deps.merge.resolve_profile_def(
-      self._workspace.config, self._tools_by_type, profile_key)
-    if not def then
-      self._deps.notify("loomworks: profile '" .. profile_key .. "' not found", vim.log.levels.ERROR)
-      return
-    end
-    self:materialize_profile(profile_key)
+  -- Validate set_name exists in config
+  if not self._workspace.config.configuration_sets
+      or not self._workspace.config.configuration_sets[set_name] then
+    self._deps.notify("loomworks: configuration set '" .. set_name .. "' not found", vim.log.levels.ERROR)
+    return
   end
 
-  self._workspace.user.active_profile = profile_key
-  self._deps.user.save(self._workspace.root, self._workspace.user)
+  -- Compute profile key from structured data
+  local profile_key = self._deps.merge.profile_key(
+    set_name, tool_entry and tool_entry.tool_key)
 
-  self:remerge()
+  -- If profile already exists in registry, just activate it
+  local profile = self._profiles[profile_key]
+  if profile then
+    profile:activate()
+    return
+  end
+
+  -- Materialize from structured data, then activate the newly created profile
+  self:_materialize_from_data(profile_key, set_name, tool_entry)
+  profile = self._profiles[profile_key]
+  if profile then
+    profile:activate()
+  end
 end
 
 --- Deactivate a profile if it is currently active.
@@ -640,7 +651,7 @@ function Core:deactivate_profile(profile_key)
   end
 end
 
---- Activate a named configuration set (legacy convenience wrapper).
+--- Activate a named configuration set, preserving the current tool selection.
 --- @param name string
 function Core:activate_set(name)
   if not self._workspace then
@@ -653,33 +664,36 @@ function Core:activate_set(name)
     return
   end
 
-  local current_kit_id = self._active_set and self._active_set.tool_key or nil
-  local new_profile_key
-  if current_kit_id then
-    new_profile_key = self._deps.merge.profile_key(name, current_kit_id)
-  else
-    new_profile_key = name
-  end
+  -- Build tool_entry from the active profile's fields
+  local active_profile = self._active_set and self._active_set.name
+      and self._profiles[self._active_set.name] or nil
+  local tool_entry = active_profile and active_profile.tool_key and {
+    tool_key = active_profile.tool_key,
+    tool_data = active_profile.tool_data,
+    tool_label = active_profile.tool_label,
+    tool_mod_type = active_profile.tool_mod_type,
+  } or nil
 
-  self:activate_profile(new_profile_key)
+  self:activate_new_profile(name, tool_entry)
 end
 
 -- ---------------------------------------------------------------------------
 -- Profile materialization
 -- ---------------------------------------------------------------------------
 
---- Materialize a profile: write it to cache with full tool and project
---- references BEFORE any build/configure tasks start.
---- Creates skeleton configuration entries in cache.projects.
+--- Materialize a profile from structured data: write it to cache with full
+--- tool and project references. Creates skeleton configuration entries.
 --- No-op if the profile is already materialized.
 --- @param profile_key string
-function Core:materialize_profile(profile_key)
+--- @param set_name string configuration set name
+--- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
+function Core:_materialize_from_data(profile_key, set_name, tool_entry)
   if not self._workspace then return end
 
   -- Wait for tool detection to complete before materializing
   if self._tool_state == "scanning" then
     self._tool_waiters[#self._tool_waiters + 1] = function()
-      self:materialize_profile(profile_key)
+      self:_materialize_from_data(profile_key, set_name, tool_entry)
     end
     return
   end
@@ -689,15 +703,14 @@ function Core:materialize_profile(profile_key)
   -- Already cached?
   if ws.cache.profiles and ws.cache.profiles[profile_key] then return end
 
-  -- Resolve from config_sets + detected tools
-  local profile_def = self._deps.merge.resolve_profile_def(
-    ws.config, self._tools_by_type, profile_key)
-  if not profile_def then return end
-
   -- Build project mappings from configuration set
-  local set_name = profile_def.configuration_set
-  local set_mappings = set_name and ws.config.configuration_sets
+  local set_mappings = ws.config.configuration_sets
       and ws.config.configuration_sets[set_name] or {}
+
+  local tool_key = tool_entry and tool_entry.tool_key or nil
+  local tool_data = tool_entry and tool_entry.tool_data or nil
+  local tool_label = tool_entry and tool_entry.tool_label or nil
+  local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
 
   local profile_projects = {}
   for project_key, variant in pairs(set_mappings) do
@@ -705,7 +718,7 @@ function Core:materialize_profile(profile_key)
     if not project_config then goto continue end
 
     local config_key = self._deps.merge.build_config_key(
-      project_config.type, variant, profile_def.tool_key)
+      project_config.type, variant, tool_key)
 
     profile_projects[project_key] = { config_key = config_key }
 
@@ -716,8 +729,8 @@ function Core:materialize_profile(profile_key)
         project_config.type)
       cached_proj.configurations[config_key] = {
         variant = variant,
-        tool_key = profile_def.tool_key,
-        tool_data = has_keyed and profile_def.tool_data or nil,
+        tool_key = tool_key,
+        tool_data = has_keyed and tool_data or nil,
       }
     end
 
@@ -728,10 +741,10 @@ function Core:materialize_profile(profile_key)
   ws.cache.profiles = ws.cache.profiles or {}
   ws.cache.profiles[profile_key] = {
     configuration_set = set_name,
-    tool_key = profile_def.tool_key,
-    tool_data = profile_def.tool_data,
-    tool_label = profile_def.tool_label,
-    tool_mod_type = profile_def.tool_mod_type,
+    tool_key = tool_key,
+    tool_data = tool_data,
+    tool_label = tool_label,
+    tool_mod_type = tool_mod_type,
     projects = profile_projects,
   }
 

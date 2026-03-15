@@ -5,7 +5,6 @@
 
 local Core = require("loomworks.core")
 local h = require("tests.helpers")
-local merge = require("loomworks.merge")
 
 local function make_core(config_overrides, user_overrides, cache_overrides, dep_overrides)
   local files = {
@@ -22,7 +21,7 @@ local function make_core(config_overrides, user_overrides, cache_overrides, dep_
   return core, deps
 end
 
---- Reproduce buf_status logic (from init.lua lines 341-369)
+--- Reproduce buf_status logic (mirrors init.lua)
 local function buf_status(core, bufnr)
   bufnr = bufnr or 0
   local active_set = core:get_active_configuration_set()
@@ -32,10 +31,8 @@ local function buf_status(core, bufnr)
   if not project_key then return nil end
 
   local profile_key = active_set.name
-  local set_name
-  if profile_key then
-    set_name = merge.parse_profile_key(profile_key)
-  end
+  local profile = profile_key and core:get_profile(profile_key) or nil
+  local set_name = profile and profile.configuration_set or nil
 
   local status
   if project.configuration_key then

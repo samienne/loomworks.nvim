@@ -322,38 +322,6 @@ function M.get_all_profiles(config, cache, tools_by_type)
   return profiles
 end
 
---- Resolve a profile definition from a profile_key by parsing it into
---- (set_name, tool_key) and resolving against config + detected tools.
---- Returns nil if the set_name doesn't exist in configuration_sets.
---- @param config loomworks.Config
---- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @param profile_key string
---- @return loomworks.ProfileDef|nil
-function M.resolve_profile_def(config, tools_by_type, profile_key)
-  local set_name, tool_key = M.parse_profile_key(profile_key)
-  if not config.configuration_sets or not config.configuration_sets[set_name] then
-    return nil
-  end
-
-  local tool_data, tool_label, tool_mod_type = nil, nil, nil
-  if tool_key then
-    local dt, mod_type = M.resolve_detected_tool(tools_by_type, tool_key)
-    if dt then
-      tool_data = dt.tool_data
-      tool_label = dt.tool_label
-      tool_mod_type = mod_type
-    end
-  end
-
-  return {
-    configuration_set = set_name,
-    tool_key = tool_key,
-    tool_data = tool_data,
-    tool_label = tool_label,
-    tool_mod_type = tool_mod_type,
-  }
-end
-
 --- Get tool entries for the configuration sets UI.
 --- Returns detected tools with their materialized profile key (if cached).
 --- @param config loomworks.Config

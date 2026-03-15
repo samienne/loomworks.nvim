@@ -281,13 +281,33 @@ describe("Profile", function()
   end)
 
   describe("activate / deactivate", function()
-    it("activate delegates to core", function()
-      local activated = nil
+    it("activate writes user.json and remerges", function()
+      local saved_user = nil
+      local remerged = false
+      local ws = {
+        root = "/root",
+        user = { _meta = { version = 1 }, active_profile = nil },
+      }
       local p = make_profile(nil, {
-        activate_profile = function(_, key) activated = key end,
+        get_workspace = function() return ws end,
+        remerge = function() remerged = true end,
+        _deps = {
+          clock = function() return 0 end,
+          events = { emit = function() end },
+          user = { save = function(root, data) saved_user = data return true end },
+        },
       })
       p:activate()
-      assert.equals("debug", activated)
+      assert.equals("debug", ws.user.active_profile)
+      assert.equals("debug", saved_user.active_profile)
+      assert.is_true(remerged)
+    end)
+
+    it("activate is no-op without workspace", function()
+      local p = make_profile(nil, {
+        get_workspace = function() return nil end,
+      })
+      p:activate() -- should not error
     end)
 
     it("deactivate delegates to core", function()

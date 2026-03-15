@@ -87,8 +87,8 @@ describe("Core", function()
     end)
   end)
 
-  describe("activate_profile", function()
-    it("sets active profile in user data", function()
+  describe("activate_new_profile", function()
+    it("materializes and activates a new profile", function()
       local saved = {}
       -- Use typescript to avoid cmake kit detection changing profile keys
       local core = make_core(
@@ -108,12 +108,12 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:activate_profile("debug")
+      core:activate_new_profile("debug")
       assert.is_not_nil(saved.data)
       assert.equals("debug", saved.data.active_profile)
     end)
 
-    it("switching A→B→A does not modify cache", function()
+    it("activates existing profile without re-materializing", function()
       local cache_saves = {}
       local core = make_core(
         {
@@ -162,15 +162,37 @@ describe("Core", function()
       local saves_after_setup = #cache_saves
 
       -- Activate A
-      core:activate_profile("debug")
+      core:activate_new_profile("debug")
       -- Activate B
-      core:activate_profile("release")
+      core:activate_new_profile("release")
       -- Return to A
-      core:activate_profile("debug")
+      core:activate_new_profile("debug")
 
       -- No cache writes should have happened during profile switching
       assert.equals(saves_after_setup, #cache_saves,
         "switching between materialized profiles should not write to cache")
+    end)
+
+    it("rejects unknown configuration set", function()
+      local notified = {}
+      local core = make_core(
+        {
+          projects = { App = { typescript = {} } },
+          configuration_sets = { debug = { App = "development" } },
+        },
+        nil, nil,
+        {
+          notify = function(msg, level) notified = { msg = msg, level = level } end,
+        }
+      )
+      core:setup({ root = "/root" })
+      core:activate_new_profile("nonexistent")
+      assert.truthy(notified.msg and notified.msg:match("not found"))
+    end)
+
+    it("is safe without workspace", function()
+      local core = make_core()
+      core:activate_new_profile("debug") -- should not error
     end)
   end)
 
@@ -483,7 +505,7 @@ describe("Core", function()
     end)
   end)
 
-  describe("materialize_profile", function()
+  describe("_materialize_from_data", function()
     it("writes profile and skeleton configs to cache", function()
       local saved_cache = nil
       local core = make_core(
@@ -502,7 +524,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:materialize_profile("debug")
+      core:_materialize_from_data("debug", "debug")
 
       assert.is_not_nil(saved_cache)
       -- Profile entry
@@ -536,27 +558,50 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:materialize_profile("debug")
+      core:_materialize_from_data("debug", "debug")
       local count_after_first = save_count
-      core:materialize_profile("debug")
+      core:_materialize_from_data("debug", "debug")
       assert.equals(count_after_first, save_count) -- no additional save
     end)
 
     it("is safe without workspace", function()
       local core = make_core()
       -- don't setup
-      core:materialize_profile("debug") -- should not error
+      core:_materialize_from_data("debug", "debug") -- should not error
     end)
 
-    it("is safe with unknown profile", function()
+    it("stores tool data when tool_entry provided", function()
+      local saved_cache = nil
       local core = make_core(
         {
-          projects = { App = { typescript = {} } },
-          configuration_sets = { debug = { App = "development" } },
+          projects = { Lib = { cmake = {} } },
+          configuration_sets = { debug = { Lib = "Debug" } },
+        },
+        nil, nil,
+        {
+          cache = {
+            save = function(root, data)
+              saved_cache = data
+              return true
+            end,
+          },
         }
       )
       core:setup({ root = "/root" })
-      core:materialize_profile("nonexistent") -- should not error
+      core:_materialize_from_data("debug:ninja-gcc", "debug", {
+        tool_key = "ninja-gcc",
+        tool_data = { generator = "Ninja", compiler_id = "gcc" },
+        tool_label = "Ninja GCC",
+        tool_mod_type = "cmake",
+      })
+
+      assert.is_not_nil(saved_cache)
+      local profile = saved_cache.profiles["debug:ninja-gcc"]
+      assert.is_not_nil(profile)
+      assert.equals("debug", profile.configuration_set)
+      assert.equals("ninja-gcc", profile.tool_key)
+      assert.equals("Ninja GCC", profile.tool_label)
+      assert.equals("cmake", profile.tool_mod_type)
     end)
 
   end)
@@ -1722,9 +1767,9 @@ describe("Core", function()
       core:setup({ root = "/root" })
       local saves_after_setup = #cache_saves
 
-      core:activate_profile("debug")
-      core:activate_profile("release")
-      core:activate_profile("debug")
+      core:activate_new_profile("debug")
+      core:activate_new_profile("release")
+      core:activate_new_profile("debug")
 
       assert.equals(saves_after_setup, #cache_saves,
         "switching between materialized profiles should not write to cache")

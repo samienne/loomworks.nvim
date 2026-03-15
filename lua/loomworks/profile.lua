@@ -216,8 +216,13 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Activate this profile.
+--- Writes to user.json and remerges directly.
 function Profile:activate()
-  self._core:activate_profile(self.key)
+  local ws = self._core:get_workspace()
+  if not ws then return end
+  ws.user.active_profile = self.key
+  self._core._deps.user.save(ws.root, ws.user)
+  self._core:remerge()
 end
 
 --- Deactivate this profile if it is currently active.
@@ -227,12 +232,12 @@ end
 
 --- Build all projects in this profile via overseer.
 function Profile:build()
-  require("loomworks.overseer").run_profile_action(self.key, "build")
+  require("loomworks.overseer").run_profile_action(self, "build")
 end
 
 --- Configure all projects in this profile via overseer.
 function Profile:configure()
-  require("loomworks.overseer").run_profile_action(self.key, "configure")
+  require("loomworks.overseer").run_profile_action(self, "configure")
 end
 
 -- ---------------------------------------------------------------------------

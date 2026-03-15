@@ -345,11 +345,11 @@ function M.run_configuration_action(project_key, config_key, action)
 end
 
 --- Run all tasks of a given action for a profile.
---- Activates the profile first, then launches overseer tasks.
+--- The profile must already be materialized (caller ensures this).
 --- If building and some projects are unconfigured, configures them first.
---- @param profile_key string
+--- @param profile loomworks.Profile
 --- @param action string "configure" or "build"
-function M.run_profile_action(profile_key, action)
+function M.run_profile_action(profile, action)
   local ok, overseer = pcall(require, "overseer")
   if not ok then
     vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
@@ -359,15 +359,8 @@ function M.run_profile_action(profile_key, action)
   local loomworks = require("loomworks")
 
   local function do_action()
-    -- Materialize profile to cache before any tasks start.
-    -- This ensures cache reflects what will be built.
-    loomworks.materialize_profile(profile_key)
-
-    local profile = loomworks.get_profile(profile_key)
-    if not profile then return end
-
     -- Re-collect tasks after potential deletion completed (cache may have changed)
-    local all_tasks = collect_profile_tasks(profile_key)
+    local all_tasks = collect_profile_tasks(profile.key)
     if not all_tasks then return end
 
     if action == "configure" then

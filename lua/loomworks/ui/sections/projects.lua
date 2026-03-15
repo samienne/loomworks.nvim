@@ -120,7 +120,7 @@ return function(tree, ctx)
 
   local tools_by_type = lw.get_tools_by_type()
   local sorted = sorted_project_keys(projects)
-  local _, active_tool_key = merge.parse_profile_key(ctx.active_profile_key or "")
+  local active_tool_key = ctx.active_profile and ctx.active_profile.tool_key or nil
 
   for _, key in ipairs(sorted) do
     local proj = projects[key]
