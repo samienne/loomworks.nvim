@@ -173,34 +173,15 @@ describe("Core", function()
   end)
 
   describe("running tasks", function()
-    it("registers and queries via ConfigUnit", function()
+    it("has_running_tasks delegates to ConfigUnit registry", function()
       local core = make_core()
       core:setup({ root = "/root" })
+      assert.is_false(core:has_running_tasks())
       local unit = core:get_config_unit("App", "Debug")
       unit:register_task(42, "build")
       assert.is_true(core:has_running_tasks())
-      assert.equals("build", core._projects["App"]:running_action())
-      assert.is_true(unit:is_running())
-      assert.equals("build", unit:running_action())
-    end)
-
-    it("unregisters running tasks", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local unit = core:get_config_unit("App", "Debug")
-      unit:register_task(42, "build")
       unit:unregister_task(42)
       assert.is_false(core:has_running_tasks())
-      assert.is_false(unit:is_running())
-    end)
-
-    it("shares running state across profiles via ConfigUnit", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local unit = core:get_config_unit("App", "debug")
-      unit:register_task(50, "configure")
-      assert.equals("configure", unit:running_action())
-      assert.is_true(core:has_running_tasks())
     end)
   end)
 
@@ -253,17 +234,6 @@ describe("Core", function()
     end)
   end)
 
-  describe("deletion", function()
-    it("tracks deleting state via ConfigUnit", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local unit = core:get_config_unit("App", "Debug")
-      assert.is_false(unit:is_deleting())
-      unit:mark_deleting(true)
-      assert.is_true(unit:is_deleting())
-    end)
-
-  end)
 
   describe("get_profiles", function()
     it("returns nil for unknown profile key", function()
@@ -1975,7 +1945,10 @@ describe("Core", function()
     end)
   end)
 
-  describe("record_task_result state machine", function()
+  -- State transition tests (configured, failed_configure, built, failed_build)
+  -- are covered exhaustively in config_unit_spec.lua. These tests focus on
+  -- Core.record_task_result's cache persistence and module integration.
+  describe("record_task_result cache persistence", function()
     local function make_recording_core()
       local saved_cache = nil
       local core = make_core(
@@ -1997,50 +1970,6 @@ describe("Core", function()
       core:setup({ root = "/root" })
       return core, function() return saved_cache end
     end
-
-    it("configure success → configured", function()
-      local core, get_cache = make_recording_core()
-      core:record_task_result({
-        project_key = "App",
-        action = "configure",
-        configuration_key = "development",
-        success = true,
-      })
-      assert.equals("configured", get_cache().projects.App.configurations.development.state)
-    end)
-
-    it("configure failure → failed_configure", function()
-      local core, get_cache = make_recording_core()
-      core:record_task_result({
-        project_key = "App",
-        action = "configure",
-        configuration_key = "development",
-        success = false,
-      })
-      assert.equals("failed_configure", get_cache().projects.App.configurations.development.state)
-    end)
-
-    it("build success → built", function()
-      local core, get_cache = make_recording_core()
-      core:record_task_result({
-        project_key = "App",
-        action = "build",
-        configuration_key = "development",
-        success = true,
-      })
-      assert.equals("built", get_cache().projects.App.configurations.development.state)
-    end)
-
-    it("build failure → failed_build", function()
-      local core, get_cache = make_recording_core()
-      core:record_task_result({
-        project_key = "App",
-        action = "build",
-        configuration_key = "development",
-        success = false,
-      })
-      assert.equals("failed_build", get_cache().projects.App.configurations.development.state)
-    end)
 
     it("configure then build → built", function()
       local core, get_cache = make_recording_core()
