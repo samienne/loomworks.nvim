@@ -314,34 +314,7 @@ describe("ConfigUnit", function()
     end)
   end)
 
-  describe("build_dir", function()
-    it("returns nil when no cached state", function()
-      local unit = make_unit()
-      assert.is_nil(unit:build_dir())
-    end)
-
-    it("returns build_dir from cached state", function()
-      local unit = make_unit({
-        get_workspace = function()
-          return {
-            config = { projects = { App = { type = "cmake" } } },
-            cache = {
-              configurations = {
-                ["App/Debug"] = {
-                  project_key = "App",
-                  config_key = "Debug",
-                  type = "cmake",
-                  state = "configured",
-                  build_dir = "/build/App/Debug",
-                },
-              },
-            },
-          }
-        end,
-      })
-      assert.equals("/build/App/Debug", unit:build_dir())
-    end)
-  end)
+  -- build_dir() is a trivial accessor over cached_state() — covered by cached_state tests above.
 
   describe("is_deleting", function()
     it("returns false by default", function()

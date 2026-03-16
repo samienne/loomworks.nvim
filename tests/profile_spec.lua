@@ -503,71 +503,7 @@ describe("ProfileProject", function()
     end)
   end)
 
-  describe("cached_state", function()
-    it("returns nil when no workspace", function()
-      local pp = make_pp(nil)
-      assert.is_nil(pp:cached_state())
-    end)
-
-    it("returns cached config when present", function()
-      local pp = make_pp(nil, {
-        get_workspace = function()
-          return {
-            cache = {
-              configurations = {
-                ["App/Debug"] = {
-                  project_key = "App",
-                  config_key = "Debug",
-                  type = "cmake",
-                  state = "built",
-                  last_built = "2025-01-01",
-                },
-              },
-            },
-          }
-        end,
-      })
-      local cached = pp:cached_state()
-      assert.is_not_nil(cached)
-      assert.equals("built", cached.state)
-    end)
-
-    it("returns nil for unknown project", function()
-      local pp = make_pp(nil, {
-        get_workspace = function()
-          return { cache = { configurations = {} } }
-        end,
-      })
-      assert.is_nil(pp:cached_state())
-    end)
-  end)
-
-  describe("build_dir", function()
-    it("returns nil when no cached state", function()
-      local pp = make_pp(nil)
-      assert.is_nil(pp:build_dir())
-    end)
-
-    it("returns build_dir from cached state", function()
-      local pp = make_pp(nil, {
-        get_workspace = function()
-          return {
-            cache = {
-              configurations = {
-                ["App/Debug"] = {
-                  project_key = "App",
-                  config_key = "Debug",
-                  type = "cmake",
-                  state = "configured",
-                  build_dir = "/root/.nvim/build/App/Debug",
-                },
-              },
-            },
-          }
-        end,
-      })
-      assert.equals("/root/.nvim/build/App/Debug", pp:build_dir())
-    end)
-  end)
+  -- cached_state() and build_dir() delegate to ConfigUnit.cached_state() —
+  -- covered by config_unit_spec.lua cached_state tests.
 
 end)
