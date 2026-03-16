@@ -19,7 +19,7 @@ local parsers = {}
 --- @param tool string tool name (e.g. "ninja", "msbuild")
 --- @param parser loomworks.ProgressParser
 function M.register(tool, parser)
-  parsers[tool] = parser
+    parsers[tool] = parser
 end
 
 --- Get a progress parser by tool name.
@@ -27,13 +27,13 @@ end
 --- @param tool string
 --- @return loomworks.ProgressParser|nil
 function M.get(tool)
-  if not parsers[tool] then
-    local ok, mod = pcall(require, "loomworks.progress." .. tool)
-    if ok and type(mod) == "function" then
-      parsers[tool] = mod
+    if not parsers[tool] then
+        local ok, mod = pcall(require, "loomworks.progress." .. tool)
+        if ok and type(mod) == "function" then
+            parsers[tool] = mod
+        end
     end
-  end
-  return parsers[tool]
+    return parsers[tool]
 end
 
 return M

@@ -5,16 +5,16 @@
 --- @param line string
 --- @return loomworks.ProgressUpdate|nil
 local function parse(line)
-  local current, total = line:match("^%[(%d+)/(%d+)%]")
-  if not current then return nil end
+    local current, total = line:match("^%[(%d+)/(%d+)%]")
+    if not current then return nil end
 
-  local message = line:match("^%[%d+/%d+%]%s+(.*)")
+    local message = line:match("^%[%d+/%d+%]%s+(.*)")
 
-  return {
-    current = tonumber(current),
-    total = tonumber(total),
-    message = message,
-  }
+    return {
+        current = tonumber(current),
+        total = tonumber(total),
+        message = message,
+    }
 end
 
 return parse
