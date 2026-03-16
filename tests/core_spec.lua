@@ -68,30 +68,14 @@ describe("Core", function()
       assert.is_not_nil(vim.tbl_contains(names, "active_set_changed"))
     end)
 
-    it("increments generation on setup", function()
-      local core = make_core()
-      local gen_before = core._generation
-      core:setup({ root = "/root" })
-      -- Setup remerges twice: once on file read, once after tool detection
-      assert.equals(gen_before + 2, core._generation)
-    end)
   end)
 
   describe("remerge", function()
-    it("increments generation", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local gen = core._generation
-      core:remerge()
-      assert.equals(gen + 1, core._generation)
-    end)
-
     it("is a no-op when no workspace", function()
       local core = make_core()
       -- Don't setup
-      local gen = core._generation
       core:remerge()
-      assert.equals(gen, core._generation)
+      assert.is_nil(core:get_active_configuration_set())
     end)
   end)
 
@@ -624,7 +608,6 @@ describe("Core", function()
         configuration_sets = { debug = { App = "development" } },
       })
       core:setup({ root = "/root" })
-      local gen_before = core._generation
 
       -- Simulate config file change with updated content
       local new_config = h.make_config_json({
@@ -632,7 +615,6 @@ describe("Core", function()
         configuration_sets = { debug = { App = "development", Lib = "development" } },
       })
       core:_on_file_changed("/root/loomworks.json", new_config)
-      assert.is_true(core._generation > gen_before)
       -- New project should be in workspace
       assert.is_not_nil(core._workspace.config.projects.Lib)
     end)
@@ -643,11 +625,9 @@ describe("Core", function()
         configuration_sets = { debug = { App = "development" } },
       })
       core:setup({ root = "/root" })
-      local gen_before = core._generation
 
       local new_user = h.make_user_json({ active_profile = "debug" })
       core:_on_file_changed("/root/.nvim/loomworks.user.json", new_user)
-      assert.is_true(core._generation > gen_before)
       assert.equals("debug", core._workspace.user.active_profile)
     end)
 
@@ -656,7 +636,6 @@ describe("Core", function()
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
-      local gen_before = core._generation
 
       local new_cache = h.make_cache_json({
         projects = {
@@ -667,16 +646,16 @@ describe("Core", function()
         },
       })
       core:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
-      assert.is_true(core._generation > gen_before)
       assert.is_not_nil(core._workspace.cache.projects.App)
     end)
 
     it("does nothing for unrecognized path", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      local gen_before = core._generation
+      local ws_before = core._workspace
       core:_on_file_changed("/root/some_other_file.txt", "content")
-      assert.equals(gen_before, core._generation)
+      -- Workspace unchanged (same reference)
+      assert.equals(ws_before, core._workspace)
     end)
 
     it("is safe without workspace", function()
@@ -792,12 +771,10 @@ describe("Core", function()
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
-      local gen_before = core._generation
 
       core:_on_file_changed("/root/loomworks.json", "not valid json {{{")
 
-      assert.equals(gen_before, core._generation)
-      -- Original project should still be there
+      -- Original project should still be there (no remerge on invalid JSON)
       assert.is_not_nil(core._workspace.config.projects.App)
     end)
 

@@ -28,31 +28,42 @@ end
 --- @field project_key string
 --- @field variant string configuration variant name
 --- @field config_key string precomputed cache key (variant or variant:kit_id)
+--- @field _profile loomworks.Profile direct reference to parent profile
+--- @field _project loomworks.Project|nil direct reference to project object
 local ProfileProject = {}
 ProfileProject.__index = ProfileProject
 
 --- Create a ProfileProject.
+--- @param core loomworks.Core
 --- @param profile loomworks.Profile parent Profile
 --- @param project_key string
 --- @param variant string configuration variant name
 --- @return loomworks.ProfileProject
-function ProfileProject.new(profile, project_key, variant)
+function ProfileProject.new(core, profile, project_key, variant)
   local self = setmetatable({}, ProfileProject)
-  self._profile = profile
-  self._core = profile._core
+  self._core = core
   self.project_key = project_key
+  self._removed = false
+  self:_update(profile, variant)
+  return self
+end
+
+--- Update in place (preserves table identity).
+--- Resolves direct references to Profile and Project from Core registries.
+--- @param profile loomworks.Profile
+--- @param variant string
+function ProfileProject:_update(profile, variant)
+  self._profile = profile
+  self._project = self._core._projects[self.project_key]
   self.variant = variant
   -- Only modules with keyed tools get the tool_key suffix
-  local ws = profile._core:get_workspace()
-  local config_projects = ws and ws.config and ws.config.projects
-  local project_def = config_projects and config_projects[project_key]
-  if profile.tool and profile.tool.key and project_def
-      and profile._core:module_has_keyed_tools(project_def.type) then
+  local project = self._project
+  if profile.tool and profile.tool.key and project
+      and self._core:module_has_keyed_tools(project.type) then
     self.config_key = variant .. ":" .. profile.tool.key
   else
     self.config_key = variant
   end
-  return self
 end
 
 function ProfileProject:__tostring()
@@ -139,9 +150,9 @@ function Profile.new(core, key, data)
 end
 
 --- Update all data fields in place (preserves table identity).
---- @param data { configuration_set?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string> }
+--- Resolves mappings and ConfigurationSet reference from Core's registries.
+--- @param data loomworks.ProfileDef
 function Profile:_update(data)
-  self._generation = self._core._generation
   self.configuration_set = data.configuration_set
   self.tool = data.tool_key and {
     key = data.tool_key,
@@ -150,8 +161,10 @@ function Profile:_update(data)
     mod_type = data.tool_mod_type,
   } or nil
   self.explicit = data.explicit or false
-  self.mappings = data.mappings
-  self.orphaned_set = data.orphaned_set or false
+
+  -- Resolve mappings and ConfigurationSet reference
+  self._config_set_ref = nil
+  self.mappings, self.orphaned_set = self:_resolve_mappings(data)
 
   -- Precompute valid variants for is_configured checks
   self._valid_variants = {}
@@ -162,6 +175,52 @@ function Profile:_update(data)
   end
 end
 
+--- Resolve mappings for this profile from Core's registries.
+--- Three tiers: (1) reactive from ConfigurationSet, (2) stored mappings,
+--- (3) fallback from cached profile project data.
+--- @param data loomworks.ProfileDef
+--- @return table<string, string>|nil mappings
+--- @return boolean orphaned
+function Profile:_resolve_mappings(data)
+  -- Tier 1: Set-based profiles — derive from live ConfigurationSet (reactive)
+  if data.configuration_set then
+    local cs = self._core._config_sets[data.configuration_set]
+    if cs then
+      self._config_set_ref = cs
+      local mappings = {}
+      for project, variant in pairs(cs.mappings) do
+        mappings[project.key] = variant
+      end
+      return mappings, false
+    end
+  end
+
+  -- Tier 2: Pinned profiles or set-based with stored mappings
+  if data.mappings then
+    local orphaned = data.configuration_set ~= nil
+    return data.mappings, orphaned
+  end
+
+  -- Tier 3: Fallback from cached profile project data
+  if data._cached_projects and data._ws_cache then
+    local mappings = {}
+    for project_key, proj_ref in pairs(data._cached_projects) do
+      if proj_ref.config_key then
+        local cached_proj = data._ws_cache.projects
+            and data._ws_cache.projects[project_key]
+        local cached_config = cached_proj and cached_proj.configurations
+            and cached_proj.configurations[proj_ref.config_key]
+        if cached_config and cached_config.variant then
+          mappings[project_key] = cached_config.variant
+        end
+      end
+    end
+    if next(mappings) then return mappings, data.configuration_set ~= nil end
+  end
+
+  return nil, false
+end
+
 function Profile:__tostring()
   return "Profile(" .. self.key .. ")"
 end
@@ -170,20 +229,10 @@ function Profile:__eq(other)
   return self.key == other.key
 end
 
---- Check if this object's data may be outdated.
---- @return boolean
-function Profile:is_stale()
-  return self._generation ~= self._core._generation
-end
-
 --- Get the ConfigurationSet object for this profile.
 --- @return loomworks.ConfigurationSet|nil
 function Profile:config_set()
-  if not self.configuration_set then return nil end
-  for _, cs in pairs(self._core._config_sets) do
-    if cs.name == self.configuration_set then return cs end
-  end
-  return nil
+  return self._config_set_ref
 end
 
 --- Compute the cache key for a variant, accounting for kit_id.
@@ -201,20 +250,26 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Get a ProfileProject for a specific project in this profile.
+--- Looks up from Core's registry.
 --- @param project_key string
 --- @return loomworks.ProfileProject|nil
 function Profile:project(project_key)
   if not self.mappings or not self.mappings[project_key] then return nil end
-  return ProfileProject.new(self, project_key, self.mappings[project_key])
+  local reg_key = self.key .. "\0" .. project_key
+  return self._core._profile_projects[reg_key]
 end
 
 --- Get all ProfileProjects in this profile, sorted by project_key.
+--- Filters Core's registry by this profile's key.
 --- @return loomworks.ProfileProject[]
 function Profile:projects()
   if not self.mappings then return {} end
+  local prefix = self.key .. "\0"
   local result = {}
-  for pname, variant in pairs(self.mappings) do
-    result[#result + 1] = ProfileProject.new(self, pname, variant)
+  for reg_key, pp in pairs(self._core._profile_projects) do
+    if reg_key:sub(1, #prefix) == prefix then
+      result[#result + 1] = pp
+    end
   end
   table.sort(result, function(a, b) return a.project_key < b.project_key end)
   return result

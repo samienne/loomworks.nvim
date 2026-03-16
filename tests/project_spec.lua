@@ -38,19 +38,6 @@ describe("Project", function()
     end)
   end)
 
-  describe("is_stale", function()
-    it("returns false when generation matches", function()
-      local p = make_project()
-      assert.is_false(p:is_stale())
-    end)
-
-    it("returns true after core remerges", function()
-      local p, core = make_project()
-      core._generation = core._generation + 1
-      assert.is_true(p:is_stale())
-    end)
-  end)
-
   describe("running_action", function()
     it("returns nil when nothing running", function()
       local p = make_project()

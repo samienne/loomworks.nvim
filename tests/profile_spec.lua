@@ -11,7 +11,16 @@ describe("Profile", function()
       explicit = false,
       mappings = { App = "Debug", Lib = "Debug" },
     }, overrides or {})
-    return Profile.new(core, "debug", data), core
+    local profile = Profile.new(core, "debug", data)
+    -- Populate profile_projects registry (mirrors Core._sync_profile_projects)
+    if profile.mappings then
+      for project_key, variant in pairs(profile.mappings) do
+        local reg_key = profile.key .. "\0" .. project_key
+        core._profile_projects[reg_key] = ProfileProject.new(
+          core, profile, project_key, variant)
+      end
+    end
+    return profile, core
   end
 
   describe("new", function()
@@ -374,12 +383,26 @@ describe("ProfileProject", function()
       get_workspace = function() return default_ws end,
     }, core_overrides or {})
     local core = h.make_mock_core(merged)
+    -- Add a Project object so ProfileProject can resolve it
+    local Project = require("loomworks.project")
+    core._projects["App"] = Project.new(core, "App", {
+      type = "cmake", path = "App", status = "unconfigured",
+      configurations = {}, cached_configurations = {},
+    })
     local data = {
       configuration_set = "debug",
       tool_key = tool_key,
       mappings = { App = "Debug" },
     }
     local profile = Profile.new(core, "debug", data)
+    -- Populate profile_projects registry
+    if profile.mappings then
+      for project_key, variant in pairs(profile.mappings) do
+        local reg_key = profile.key .. "\0" .. project_key
+        core._profile_projects[reg_key] = ProfileProject.new(
+          core, profile, project_key, variant)
+      end
+    end
     return profile:project("App"), core
   end
 
@@ -439,7 +462,13 @@ describe("ProfileProject", function()
           }
         end,
       })
+      local Project = require("loomworks.project")
+      core._projects["App"] = Project.new(core, "App", {
+        type = "cmake", path = "App", status = "unconfigured",
+        configurations = {}, cached_configurations = {},
+      })
       local Profile = require("loomworks.profile").Profile
+      local PP = require("loomworks.profile").ProfileProject
       local p1 = Profile.new(core, "debug:ninja-gcc", {
         configuration_set = "debug",
         mappings = { App = "Debug" },
@@ -448,6 +477,12 @@ describe("ProfileProject", function()
         configuration_set = "debug",
         mappings = { App = "Debug" },
       })
+      -- Populate profile_projects registry
+      for _, p in ipairs({ p1, p2 }) do
+        for pk, v in pairs(p.mappings) do
+          core._profile_projects[p.key .. "\0" .. pk] = PP.new(core, p, pk, v)
+        end
+      end
       -- Start a task on the shared unit
       local unit = core:get_config_unit("App", "Debug")
       unit:register_task(1, "build")

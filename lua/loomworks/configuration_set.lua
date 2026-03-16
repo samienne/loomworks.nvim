@@ -11,14 +11,29 @@ ConfigurationSet.__index = ConfigurationSet
 --- Create a new ConfigurationSet.
 --- @param core loomworks.Core
 --- @param name string
---- @param mappings table<loomworks.Project, string>
+--- @param raw_mappings table<string, string> project_key -> variant (from config)
 --- @return loomworks.ConfigurationSet
-function ConfigurationSet.new(core, name, mappings)
+function ConfigurationSet.new(core, name, raw_mappings)
   local self = setmetatable({}, ConfigurationSet)
   self._core = core
   self.name = name
-  self.mappings = mappings
+  self._removed = false
+  self:_update(raw_mappings)
   return self
+end
+
+--- Update mappings in place (preserves table identity).
+--- Receives raw { project_key: variant } from config.configuration_sets and
+--- resolves project_key → Project objects from Core's registry.
+--- @param raw_mappings table<string, string> project_key -> variant
+function ConfigurationSet:_update(raw_mappings)
+  self.mappings = {}
+  for project_key, variant in pairs(raw_mappings) do
+    local project = self._core._projects[project_key]
+    if project then
+      self.mappings[project] = variant
+    end
+  end
 end
 
 function ConfigurationSet:__tostring()

@@ -9,7 +9,6 @@
 --- @field _config_units table<string, loomworks.ConfigUnit> "project\0config" -> unit
 --- @field _config_sets table<string, loomworks.ConfigurationSet> name -> ConfigurationSet
 --- @field _delete_waiters function[]
---- @field _generation number incremented on every remerge
 --- @field _tracker loomworks.FileTracker|nil
 --- @field _tools_by_type table<string, loomworks.DetectedTool[]> tools per module type
 --- @field _profiles table<string, loomworks.Profile>
@@ -74,13 +73,13 @@ function Core.new(deps)
   self._workspace = nil
   self._active_set = nil
   self._delete_waiters = {}
-  self._generation = 0
   self._tracker = nil
   self._tools_by_type = {}
   self._config_units = {}
   self._config_sets = {}
   self._profiles = {}
   self._projects = {}
+  self._profile_projects = {}
   self._setup_error = nil
   self._state = "uninitialized"
   self._tool_state = "not_scanned"
@@ -344,6 +343,7 @@ function Core:_on_files_read(root, paths, results)
   self._config_sets = {}
   self._profiles = {}
   self._projects = {}
+  self._profile_projects = {}
   self:_migrate_set_names()
   self:_cleanup_orphaned_skeletons()
   self:remerge()
@@ -431,15 +431,16 @@ function Core:nuke_cache(root)
 end
 
 --- Re-merge workspace state, sync object registries, and emit events.
+--- Order matters: each step may depend on objects synced in previous steps.
 function Core:remerge()
   if not self._workspace then return end
   local active_set, all_profile_defs = self._deps.merge.merge(
     self._workspace, self._tools_by_type)
   self._active_set = active_set
-  self._generation = self._generation + 1
-  self:_sync_profiles(all_profile_defs)
-  self:_sync_projects()
-  self:_sync_config_sets()
+  self:_sync_projects()                    -- 1. no deps
+  self:_sync_config_sets()                 -- 2. needs Projects
+  self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets
+  self:_sync_profile_projects()            -- 4. needs Profiles
   self._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -465,61 +466,9 @@ end
 -- Object registries
 -- ---------------------------------------------------------------------------
 
---- Resolve mappings for a profile definition.
---- Set-based profiles derive mappings from ConfigurationSet objects (reactive),
---- converting Project→variant mappings to project_key→variant strings.
---- Pinned profiles use their stored mappings directly.
---- Falls back to cached profile project data when the configuration_set
---- no longer exists in config (orphaned profile).
---- @param data loomworks.ProfileDef
---- @param config_sets_registry table<string, loomworks.ConfigurationSet>
---- @return table<string, string>|nil mappings
---- @return boolean orphaned true if mappings came from cache fallback
-local function resolve_profile_mappings(data, config_sets_registry)
-  -- Set-based profiles: derive from ConfigurationSet objects (reactive)
-  if data.configuration_set then
-    for _, cs in pairs(config_sets_registry) do
-      if cs.name == data.configuration_set then
-        -- Convert Project→variant to project_key→variant
-        local mappings = {}
-        for project, variant in pairs(cs.mappings) do
-          mappings[project.key] = variant
-        end
-        return mappings, false
-      end
-    end
-  end
-
-  -- Pinned profiles or set-based with stored mappings
-  if data.mappings then
-    -- If this has a configuration_set that's no longer in config, it's orphaned
-    local orphaned = data.configuration_set ~= nil
-    return data.mappings, orphaned
-  end
-
-  -- Fallback: derive mappings from cached profile projects
-  if data._cached_projects and data._ws_cache then
-    local mappings = {}
-    for project_key, proj_ref in pairs(data._cached_projects) do
-      if proj_ref.config_key then
-        -- Read variant from cached config entry (never parse the key)
-        local cached_proj = data._ws_cache.projects
-            and data._ws_cache.projects[project_key]
-        local cached_config = cached_proj and cached_proj.configurations
-            and cached_proj.configurations[proj_ref.config_key]
-        if cached_config and cached_config.variant then
-          mappings[project_key] = cached_config.variant
-        end
-      end
-    end
-    if next(mappings) then return mappings, data.configuration_set ~= nil end
-  end
-
-  return nil, false
-end
-
 --- Sync the profiles registry with current merge data.
 --- Creates new Profile objects, updates existing ones in place, removes stale ones.
+--- Profile._update resolves its own mappings from Core's config sets registry.
 --- @param all_defs table<string, loomworks.ProfileDef> profile definitions from merge
 function Core:_sync_profiles(all_defs)
   local ws = self._workspace
@@ -533,26 +482,14 @@ function Core:_sync_profiles(all_defs)
     end
   end
 
-  -- Create or update
+  -- Create or update — Profile._update handles mapping resolution internally
   for key, data in pairs(all_defs) do
     data._ws_cache = ws.cache
-    local mappings, orphaned_set = resolve_profile_mappings(data, self._config_sets)
-    local profile_data = {
-      configuration_set = data.configuration_set,
-      tool_key = data.tool_key,
-      tool_data = data.tool_data,
-      tool_label = data.tool_label,
-      tool_mod_type = data.tool_mod_type,
-      explicit = data.explicit or false,
-      mappings = mappings,
-      orphaned_set = orphaned_set,
-    }
-
     local existing = self._profiles[key]
     if existing then
-      existing:_update(profile_data)
+      existing:_update(data)
     else
-      self._profiles[key] = Profile.new(self, key, profile_data)
+      self._profiles[key] = Profile.new(self, key, data)
     end
   end
 end
@@ -585,20 +522,66 @@ end
 
 --- Sync the config sets registry with current config data.
 --- Runs after _sync_projects so Project objects are available.
+--- ConfigurationSet._update resolves project_key → Project internally.
 function Core:_sync_config_sets()
-  self._config_sets = {}
   local ws = self._workspace
-  if not ws or not ws.config.configuration_sets then return end
-  for name, raw_mappings in pairs(ws.config.configuration_sets) do
-    -- Resolve project key strings to Project objects
-    local mappings = {}
-    for project_key, variant in pairs(raw_mappings) do
-      local project = self._projects[project_key]
-      if project then
-        mappings[project] = variant
+  local defs = ws and ws.config.configuration_sets or {}
+
+  -- Mark removed
+  for name, cs in pairs(self._config_sets) do
+    if not defs[name] then
+      cs._removed = true
+      self._config_sets[name] = nil
+    end
+  end
+
+  -- Create or update
+  for name, raw_mappings in pairs(defs) do
+    local existing = self._config_sets[name]
+    if existing then
+      existing:_update(raw_mappings)
+    else
+      self._config_sets[name] = ConfigurationSet.new(self, name, raw_mappings)
+    end
+  end
+end
+
+--- Sync the profile projects registry.
+--- Derives data from synced profiles' mappings.
+--- Runs after _sync_profiles so Profile objects and their mappings are available.
+function Core:_sync_profile_projects()
+  local ProfileProject = require("loomworks.profile").ProfileProject
+
+  -- Build the set of expected (profile_key, project_key) pairs
+  local expected = {}
+  for profile_key, profile in pairs(self._profiles) do
+    if profile.mappings then
+      for project_key, variant in pairs(profile.mappings) do
+        local reg_key = profile_key .. "\0" .. project_key
+        expected[reg_key] = { profile = profile, variant = variant }
       end
     end
-    self._config_sets[name] = ConfigurationSet.new(self, name, mappings)
+  end
+
+  -- Mark removed
+  for reg_key, pp in pairs(self._profile_projects) do
+    if not expected[reg_key] then
+      pp._removed = true
+      self._profile_projects[reg_key] = nil
+    end
+  end
+
+  -- Create or update
+  for reg_key, info in pairs(expected) do
+    local existing = self._profile_projects[reg_key]
+    if existing then
+      existing:_update(info.profile, info.variant)
+    else
+      -- Extract project_key from reg_key (after the \0 separator)
+      local project_key = reg_key:match("%z(.+)$")
+      self._profile_projects[reg_key] = ProfileProject.new(
+        self, info.profile, project_key, info.variant)
+    end
   end
 end
 

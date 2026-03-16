@@ -36,7 +36,6 @@ end
 --- Update all data fields in place (preserves table identity).
 --- @param data loomworks.MergedProjectData
 function Project:_update(data)
-  self._generation = self._core._generation
   self.type = data.type
   self.path = data.path
   self.configuration = data.configuration
@@ -59,12 +58,6 @@ end
 
 function Project:__tostring()
   return "Project(" .. self.key .. ")"
-end
-
---- Check if this object's data may be outdated.
---- @return boolean
-function Project:is_stale()
-  return self._generation ~= self._core._generation
 end
 
 --- Get the running action for this project (any config).

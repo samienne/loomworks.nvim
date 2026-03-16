@@ -55,7 +55,6 @@ end
 --- @return table mock_core
 function M.make_mock_core(overrides)
   local core = {
-    _generation = 1,
     get_workspace = function()
       return nil
     end,
@@ -66,8 +65,10 @@ function M.make_mock_core(overrides)
 
     _tools_by_type = {},
     _config_units = {},
+    _config_sets = {},
     _profiles = {},
     _projects = {},
+    _profile_projects = {},
     _deps = {
       clock = function() return 0 end,
       events = { emit = function() end },
