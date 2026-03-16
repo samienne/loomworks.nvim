@@ -441,6 +441,7 @@ function Core:remerge()
   self:_sync_config_sets()                 -- 2. needs Projects
   self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets
   self:_sync_profile_projects()            -- 4. needs Profiles
+  self:_sync_config_units()                -- 5. needs Profiles (for config_keys)
   self._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -581,6 +582,55 @@ function Core:_sync_profile_projects()
       local project_key = reg_key:match("%z(.+)$")
       self._profile_projects[reg_key] = ProfileProject.new(
         self, info.profile, project_key, info.variant)
+    end
+  end
+end
+
+--- Sync the config units registry.
+--- Collects all valid (project_key, config_key) pairs from profiles and cache,
+--- creates/updates/removes ConfigUnit objects. Preserves runtime state.
+function Core:_sync_config_units()
+  local ws = self._workspace
+  if not ws then return end
+
+  -- Collect all valid (project_key, config_key) pairs
+  local expected = {} -- reg_key -> true
+
+  -- From all profiles' mappings (via profile_projects)
+  for _, pp in pairs(self._profile_projects) do
+    local reg_key = pp.project_key .. "\0" .. pp.config_key
+    expected[reg_key] = true
+  end
+
+  -- From cache entries
+  if ws.cache.projects then
+    for project_key, cached_proj in pairs(ws.cache.projects) do
+      if cached_proj.configurations then
+        for config_key in pairs(cached_proj.configurations) do
+          local reg_key = project_key .. "\0" .. config_key
+          expected[reg_key] = true
+        end
+      end
+    end
+  end
+
+  -- Mark removed (only if not running/deleting — don't remove active units)
+  for reg_key, unit in pairs(self._config_units) do
+    if not expected[reg_key] and not unit:is_running() and not unit:is_deleting() then
+      unit._removed = true
+      self._config_units[reg_key] = nil
+    end
+  end
+
+  -- Create or update
+  for reg_key in pairs(expected) do
+    local existing = self._config_units[reg_key]
+    if existing then
+      existing:_update()
+    else
+      local project_key = reg_key:match("^(.-)%z")
+      local config_key = reg_key:match("%z(.+)$")
+      self._config_units[reg_key] = ConfigUnit.new(self, project_key, config_key)
     end
   end
 end

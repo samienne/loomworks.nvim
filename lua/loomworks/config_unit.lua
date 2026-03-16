@@ -47,7 +47,14 @@ function ConfigUnit.new(core, project_key, config_key)
   self._deleting = false
   self._queued_action = nil
   self._listeners = {}
-  -- Populate variant and tool from cached data (never parse config_key)
+  self._removed = false
+  self:_update()
+  return self
+end
+
+--- Refresh variant and tool from cache.
+--- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners).
+function ConfigUnit:_update()
   local cached = self:cached_state()
   self.variant = cached and cached.variant or nil
   self.tool = nil
@@ -59,13 +66,13 @@ function ConfigUnit.new(core, project_key, config_key)
   end
   -- Fallback: for non-keyed modules, config_key IS the variant
   if not self.variant then
-    local ws = core:get_workspace()
-    local proj_cfg = ws and ws.config and ws.config.projects and ws.config.projects[project_key]
-    if proj_cfg and not core:module_has_keyed_tools(proj_cfg.type) then
-      self.variant = config_key
+    local ws = self._core:get_workspace()
+    local proj_cfg = ws and ws.config and ws.config.projects
+        and ws.config.projects[self.project_key]
+    if proj_cfg and not self._core:module_has_keyed_tools(proj_cfg.type) then
+      self.variant = self.config_key
     end
   end
-  return self
 end
 
 function ConfigUnit:__tostring()

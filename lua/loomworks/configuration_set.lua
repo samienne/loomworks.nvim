@@ -62,8 +62,13 @@ function ConfigurationSet:find_profile(tool_entry)
         return profile
       end
       if tool_mod_type and profile_mod_type == tool_mod_type then
-        local merge = require("loomworks.merge")
-        if merge.cached_profile_matches(profile, self.name, tool_data) then
+        local modules = require("loomworks.modules")
+        local mod = modules.get(tool_mod_type)
+        if mod and mod.tools_match then
+          if mod.tools_match(profile_tool_data, tool_data) then
+            return profile
+          end
+        elseif profile_tool_data == tool_data then
           return profile
         end
       end
@@ -72,28 +77,31 @@ function ConfigurationSet:find_profile(tool_entry)
   return nil
 end
 
---- Activate this configuration set, optionally with a tool.
---- Materializes the profile if it doesn't exist yet.
+--- Ensure a profile exists for this configuration set + tool, materializing if needed.
+--- Does NOT activate the profile.
 --- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
 --- @return loomworks.Profile|nil
-function ConfigurationSet:activate(tool_entry)
+function ConfigurationSet:ensure_profile(tool_entry)
   if not self._core:get_workspace() then
     self._core._deps.notify("loomworks: no workspace loaded", vim.log.levels.ERROR)
     return nil
   end
 
-  -- Find existing profile by property matching
   local profile = self:find_profile(tool_entry)
-  if profile then
-    profile:activate()
-    return profile
-  end
+  if profile then return profile end
 
   -- Materialize from structured data
   self._core:_materialize_from_data(self, tool_entry)
 
-  -- Find the newly created profile by property matching
-  profile = self:find_profile(tool_entry)
+  return self:find_profile(tool_entry)
+end
+
+--- Activate this configuration set, optionally with a tool.
+--- Materializes the profile if it doesn't exist yet.
+--- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
+--- @return loomworks.Profile|nil
+function ConfigurationSet:activate(tool_entry)
+  local profile = self:ensure_profile(tool_entry)
   if profile then
     profile:activate()
   end

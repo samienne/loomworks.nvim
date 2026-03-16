@@ -7,7 +7,6 @@ local M = {}
 local function collect_configuration_tasks(project_key, config_key)
   local loomworks = require("loomworks")
   local modules = require("loomworks.modules")
-  local merge = require("loomworks.merge")
 
   local ws = loomworks.get_workspace()
   if not ws then return nil end
@@ -64,52 +63,49 @@ local function collect_configuration_tasks(project_key, config_key)
 end
 
 --- Collect task definitions for a profile, grouped by action.
---- Does not change the active profile.
+--- Does not change the active profile. Uses registered ProfileProject and
+--- Project objects instead of recomputing from scratch.
 --- @param profile loomworks.Profile
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_profile_tasks(profile)
   local loomworks = require("loomworks")
   local modules = require("loomworks.modules")
-  local merge = require("loomworks.merge")
 
   local ws = loomworks.get_workspace()
   if not ws then return nil end
 
-  local core = loomworks._core()
-  local projects = merge.resolve_profile_projects(
-    ws, profile, core._tools_by_type)
-  if not projects then return nil end
+  local pps = profile:projects()
+  if #pps == 0 then return nil end
+
+  local tool_data = profile.tool and profile.tool.data or nil
 
   local by_action = { configure = {}, build = {} }
 
-  for key, proj in pairs(projects) do
-    local mod = modules.get(proj.type)
+  for _, pp in ipairs(pps) do
+    local project = pp._project
+    if not project then goto continue end
+
+    local mod = modules.get(project.type)
     if not mod or not mod.tasks then goto continue end
 
-    local active_config = proj.configuration
+    local active_config = pp.variant
     if not active_config then goto continue end
 
     local project_ctx = {
-      name = key,
-      path = proj.path or key,
-      type = proj.type,
+      name = pp.project_key,
+      path = project.path or pp.project_key,
+      type = project.type,
       configuration = active_config,
-      configuration_key = proj.configuration_key,
-      configurations = proj.configurations,
-      tool_data = proj.tool_data,
+      configuration_key = pp.config_key,
+      configurations = project.configurations,
+      tool_data = tool_data,
       workspace_root = ws.root,
-      env = proj.tool_data and proj.tool_data.env or {},
+      env = tool_data and tool_data.env or {},
     }
 
     local pt = mod.progress_parser
         and mod.progress_parser(project_ctx, active_config)
         or nil
-
-    -- Build tool reference from project data
-    local tool_ref = proj.tool_key and {
-      key = proj.tool_key,
-      data = proj.tool_data,
-    } or nil
 
     local mod_tasks = mod.tasks(project_ctx, active_config)
     for _, task_def in ipairs(mod_tasks) do
@@ -117,7 +113,7 @@ local function collect_profile_tasks(profile)
       if lw_meta then
         lw_meta.progress_tool = pt
         lw_meta.variant = active_config
-        lw_meta.tool = tool_ref
+        lw_meta.tool = profile.tool
         if by_action[lw_meta.action] then
           by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
         end

@@ -36,7 +36,7 @@ end
 --- @param tool_entry? table
 function M.build_new(config_set, tool_entry)
   return function()
-    local profile = config_set:activate(tool_entry)
+    local profile = config_set:ensure_profile(tool_entry)
     if profile then profile:build() end
   end
 end
@@ -52,7 +52,7 @@ end
 --- @param tool_entry? table
 function M.configure_new(config_set, tool_entry)
   return function()
-    local profile = config_set:activate(tool_entry)
+    local profile = config_set:ensure_profile(tool_entry)
     if profile then profile:configure() end
   end
 end
