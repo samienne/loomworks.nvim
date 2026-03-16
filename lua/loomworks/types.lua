@@ -76,6 +76,7 @@
 --- @field compiler? string compiler identifier
 --- @field multi_config? boolean
 --- @field source_dir? string
+
 --- @class loomworks.CachedTarget
 --- Runtime-only (stored on ConfigUnit.targets, not persisted in cache).
 --- @field type string "executable"|"static_library"|"shared_library"|"module_library"|"object_library"|"interface_library"
@@ -111,6 +112,8 @@
 --- @class loomworks.ConfigurationSet
 --- @field name string configuration set name
 --- @field mappings table<loomworks.Project, string> project -> variant
+--- @field _core loomworks.Core
+--- @field _removed boolean
 
 -- ========================== Merge Result ==========================
 

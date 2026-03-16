@@ -29,8 +29,10 @@ end
 --- @field project_key string
 --- @field variant string configuration variant name
 --- @field config_key string precomputed cache key (variant or variant:kit_id)
+--- @field _core loomworks.Core
 --- @field _profile loomworks.Profile direct reference to parent profile
 --- @field _project loomworks.Project|nil direct reference to project object
+--- @field _removed boolean
 local ProfileProject = {}
 ProfileProject.__index = ProfileProject
 
@@ -119,6 +121,11 @@ end
 --- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
 --- @field explicit boolean
 --- @field mappings? table<string, string> project_key -> variant name
+--- @field orphaned_set boolean true if configuration_set no longer exists in config
+--- @field _core loomworks.Core
+--- @field _removed boolean
+--- @field _config_set_ref? loomworks.ConfigurationSet direct reference, resolved during _update
+--- @field _valid_variants table<string, boolean> precomputed variant set
 --- @field _operation? loomworks.Operation current or last operation state
 local Profile = {}
 Profile.__index = Profile

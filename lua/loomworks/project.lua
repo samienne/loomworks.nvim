@@ -16,6 +16,8 @@
 --- @field cached? loomworks.CachedConfig active configuration's cached state
 --- @field cached_configurations table<string, loomworks.CachedConfig>
 --- @field cmake? loomworks.ProjectCmakeInfo
+--- @field _core loomworks.Core
+--- @field _removed boolean
 local Project = {}
 Project.__index = Project
 

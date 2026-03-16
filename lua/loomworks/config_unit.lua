@@ -17,7 +17,10 @@ local cache_mod = require("loomworks.cache")
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
 --- @field _deleting boolean
+--- @field _queued_action string|nil action to run after deletion completes
 --- @field _listeners function[]
+--- @field _removed boolean
+--- @field targets? table<string, loomworks.CachedTarget> runtime-only, from parse_file_api
 local ConfigUnit = {}
 ConfigUnit.__index = ConfigUnit
 
