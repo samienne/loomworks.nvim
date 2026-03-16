@@ -51,10 +51,27 @@ describe("merge", function()
         nil,
         {
           profiles = {
-            debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } },
-            release = { configuration_set = "release", projects = { App = { config_key = "production" } } },
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
+            release = {
+              configuration_set = "release",
+              configurations = { "App/production" },
+            },
           },
-          projects = { App = { type = "typescript", configurations = {} } },
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
+              type = "typescript",
+            },
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
+              type = "typescript",
+            },
+          },
         }
       )
       local profiles = merge.get_all_profiles(ws.config, ws.cache)
@@ -113,8 +130,19 @@ describe("merge", function()
         { configuration_sets = { debug = { App = "development" } } },
         { active_profile = "debug" },
         {
-          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
-          projects = { App = { type = "typescript", configurations = {} } },
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
+          },
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
+              type = "typescript",
+            },
+          },
         }
       )
       local result = merge.merge(ws)
@@ -126,13 +154,18 @@ describe("merge", function()
         { configuration_sets = { debug = { App = "development" } } },
         { active_profile = "debug" },
         {
-          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
-          projects = {
-            App = {
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
+          },
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         }
@@ -146,8 +179,19 @@ describe("merge", function()
         { configuration_sets = { debug = { App = "development" } } },
         { active_profile = "debug" },
         {
-          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
-          projects = { App = { type = "typescript", configurations = {} } },
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
+          },
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
+              type = "typescript",
+            },
+          },
         }
       )
       local result = merge.merge(ws)
@@ -167,8 +211,19 @@ describe("merge", function()
         { configuration_sets = { debug = { App = "development" } } },
         { active_profile = "debug" },
         {
-          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
-          projects = { App = { type = "typescript", configurations = {} } },
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
+          },
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
+              type = "typescript",
+            },
+          },
         }
       )
       local result = merge.merge(ws)
@@ -180,12 +235,12 @@ describe("merge", function()
         nil,
         nil,
         {
-          projects = {
-            OldProject = {
+          configurations = {
+            ["OldProject/development"] = {
+              project_key = "OldProject",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         }

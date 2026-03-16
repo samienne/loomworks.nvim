@@ -121,20 +121,25 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             release = {
               configuration_set = "release",
-              projects = { App = { config_key = "production" } },
+              configurations = { "App/production" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-                production = { state = "configured" },
-              },
+              state = "built",
+            },
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
+              type = "typescript",
+              state = "configured",
             },
           },
         },
@@ -205,7 +210,7 @@ describe("Core", function()
         build_dir = "/root/.nvim/build/App/Debug",
       })
       assert.is_not_nil(saved_cache)
-      local cached = saved_cache.projects.App.configurations.Debug
+      local cached = saved_cache.configurations["App/Debug"]
       assert.equals("configured", cached.state)
       assert.is_not_nil(cached.last_configured)
       assert.equals("/root/.nvim/build/App/Debug", cached.build_dir)
@@ -229,7 +234,7 @@ describe("Core", function()
         success = false,
       })
       assert.is_not_nil(saved_cache)
-      local cached = saved_cache.projects.App.configurations.Debug
+      local cached = saved_cache.configurations["App/Debug"]
       assert.equals("failed_build", cached.state)
     end)
   end)
@@ -253,8 +258,19 @@ describe("Core", function()
         },
         nil,
         {
-          profiles = { debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } } },
-          projects = { App = { type = "typescript", configurations = {} } },
+          profiles = {
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
+          },
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
+              type = "typescript",
+            },
+          },
         }
       )
       core:setup({ root = "/root" })
@@ -374,9 +390,18 @@ describe("Core", function()
         { active_profile = "debug" },
         {
           profiles = {
-            debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } },
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
           },
-          projects = { App = { type = "typescript", configurations = { development = {} } } },
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
+              type = "typescript",
+            },
+          },
         },
         {
           user = {
@@ -405,9 +430,19 @@ describe("Core", function()
         { active_profile = "debug" },
         {
           profiles = {
-            release = { configuration_set = "release", projects = { App = { config_key = "development" } } },
+            release = {
+              configuration_set = "release",
+              configurations = { "App/development" },
+            },
           },
-          projects = { App = { type = "typescript", configurations = { development = { state = "configured" } } } },
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
+              type = "typescript",
+              state = "configured",
+            },
+          },
         },
         {
           user = {
@@ -479,13 +514,10 @@ describe("Core", function()
       assert.is_not_nil(saved_cache.profiles)
       assert.is_not_nil(saved_cache.profiles.debug)
       assert.equals("debug", saved_cache.profiles.debug.configuration_set)
-      assert.is_not_nil(saved_cache.profiles.debug.projects)
-      assert.is_not_nil(saved_cache.profiles.debug.projects.App)
-      assert.equals("development", saved_cache.profiles.debug.projects.App.config_key)
-      -- Skeleton config entry
-      assert.is_not_nil(saved_cache.projects.App)
-      assert.is_not_nil(saved_cache.projects.App.configurations.development)
-      assert.equals("development", saved_cache.projects.App.configurations.development.variant)
+      assert.is_not_nil(saved_cache.profiles.debug.configurations)
+      -- Skeleton config entry in flat cache
+      assert.is_not_nil(saved_cache.configurations["App/development"])
+      assert.equals("development", saved_cache.configurations["App/development"].variant)
     end)
 
     it("is idempotent (no-op when already materialized)", function()
@@ -608,15 +640,17 @@ describe("Core", function()
       core:setup({ root = "/root" })
 
       local new_cache = h.make_cache_json({
-        projects = {
-          App = {
+        configurations = {
+          ["App/development"] = {
+            project_key = "App",
+            config_key = "development",
             type = "typescript",
-            configurations = { development = { state = "built" } },
+            state = "built",
           },
         },
       })
       core:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
-      assert.is_not_nil(core._workspace.cache.projects.App)
+      assert.is_not_nil(core._workspace.cache.configurations["App/development"])
     end)
 
     it("does nothing for unrecognized path", function()
@@ -779,10 +813,12 @@ describe("Core", function()
       end
 
       local new_cache = h.make_cache_json({
-        projects = {
-          App = {
+        configurations = {
+          ["App/development"] = {
+            project_key = "App",
+            config_key = "development",
             type = "typescript",
-            configurations = { development = { state = "configured" } },
+            state = "configured",
           },
         },
       })
@@ -816,22 +852,24 @@ describe("Core", function()
         },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = { development = { state = "built" } },
+              state = "built",
             },
           },
         }
       )
       core:setup({ root = "/root" })
-      assert.is_not_nil(core._workspace.cache.projects.App)
+      assert.is_not_nil(core._workspace.cache.configurations["App/development"])
 
       -- Simulate cache file being deleted (nil content)
       core:_on_file_changed("/root/.nvim/loomworks.cache.json", nil)
 
-      -- Cache should be reset to default (empty projects)
-      assert.same({}, core._workspace.cache.projects)
+      -- Cache should be reset to default (empty configurations)
+      assert.same({}, core._workspace.cache.configurations)
     end)
 
     it("emits active_set_changed when config file changes", function()
@@ -919,15 +957,16 @@ describe("Core", function()
           profiles = {
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "configured", build_dir = "/root/.nvim/build/App/development" },
-              },
+              state = "configured",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -963,19 +1002,18 @@ describe("Core", function()
               configuration_set = "debug",
               tool_key = "ninja-gcc",
               tool_data = { generator = "Ninja", compiler_id = "gcc" },
+              configurations = { "App/Debug:ninja-gcc" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/Debug:ninja-gcc"] = {
+              project_key = "App",
+              config_key = "Debug:ninja-gcc",
               type = "cmake",
-              configurations = {
-                ["Debug:ninja-gcc"] = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/Debug",
-                  variant = "Debug",
-                  tool_key = "ninja-gcc",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/Debug",
+              variant = "Debug",
+              tool_key = "ninja-gcc",
             },
           },
         },
@@ -1004,15 +1042,16 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built", build_dir = "/root/.nvim/build/App/development" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -1022,8 +1061,8 @@ describe("Core", function()
         { project_key = "App", config_key = "development" },
       })
       local ws = core:get_workspace()
-      -- Project should be removed since no configs left
-      assert.is_nil(ws.cache.projects.App)
+      -- Config should be removed from flat cache
+      assert.is_nil(ws.cache.configurations["App/development"])
     end)
 
     it("refuses to delete build dir outside workspace root", function()
@@ -1086,12 +1125,12 @@ describe("Core", function()
         { projects = { App = { typescript = {} } } },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/dev"] = {
+              project_key = "App",
+              config_key = "dev",
               type = "typescript",
-              configurations = {
-                dev = { state = "configured" },
-              },
+              state = "configured",
             },
           },
         },
@@ -1124,14 +1163,17 @@ describe("Core", function()
         nil,
         {
           profiles = {
-            debug = { configuration_set = "debug" },
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         },
@@ -1171,15 +1213,21 @@ describe("Core", function()
         nil,
         {
           profiles = {
-            debug = { configuration_set = "debug" },
-            release = { configuration_set = "debug" },
+            debug = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
+            release = {
+              configuration_set = "debug",
+              configurations = { "App/development" },
+            },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         },
@@ -1208,7 +1256,7 @@ describe("Core", function()
       assert.is_nil(saved_cache.profiles.debug)
       assert.is_not_nil(saved_cache.profiles.release)
       -- Config preserved (no items to delete)
-      assert.is_not_nil(saved_cache.projects.App.configurations.development)
+      assert.is_not_nil(saved_cache.configurations["App/development"])
     end)
   end)
 
@@ -1223,15 +1271,15 @@ describe("Core", function()
           profiles = {
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         }
@@ -1255,12 +1303,12 @@ describe("Core", function()
         },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {}, -- no state = unconfigured
-              },
+              -- no state = unconfigured
             },
           },
         },
@@ -1276,7 +1324,7 @@ describe("Core", function()
       core:setup({ root = "/root" })
       assert.is_not_nil(saved_cache)
       -- Config should have been dropped
-      assert.is_nil(saved_cache.projects)
+      assert.is_nil(saved_cache.configurations["App/development"])
     end)
 
     it("preserves configs with state (leaves them as orphans)", function()
@@ -1288,12 +1336,12 @@ describe("Core", function()
         nil,
         {
           -- No profiles, but a built config exists
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         }
@@ -1301,10 +1349,9 @@ describe("Core", function()
       core:setup({ root = "/root" })
       -- Config should NOT be dropped — it has state
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.projects)
-      assert.is_not_nil(ws.cache.projects.App)
-      assert.is_not_nil(ws.cache.projects.App.configurations.development)
-      assert.equals("built", ws.cache.projects.App.configurations.development.state)
+      assert.is_not_nil(ws.cache.configurations)
+      assert.is_not_nil(ws.cache.configurations["App/development"])
+      assert.equals("built", ws.cache.configurations["App/development"].state)
       -- No pinned profile should be created
       assert.is_nil(ws.cache.profiles)
     end)
@@ -1321,15 +1368,15 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         },
@@ -1365,15 +1412,15 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         }
@@ -1393,16 +1440,21 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-                production = { state = "configured" },
-              },
+              state = "built",
+            },
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
+              type = "typescript",
+              state = "configured",
             },
           },
         }
@@ -1422,12 +1474,12 @@ describe("Core", function()
         },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {}, -- unconfigured skeleton — should be dropped by cleanup
-              },
+              -- unconfigured skeleton — should be dropped by cleanup
             },
           },
         }
@@ -1446,19 +1498,24 @@ describe("Core", function()
         },
         nil,
         {
-          projects = {
-            Bravo = {
+          configurations = {
+            ["Bravo/prod"] = {
+              project_key = "Bravo",
+              config_key = "prod",
               type = "typescript",
-              configurations = {
-                prod = { state = "built" },
-              },
+              state = "built",
             },
-            Alpha = {
+            ["Alpha/staging"] = {
+              project_key = "Alpha",
+              config_key = "staging",
               type = "typescript",
-              configurations = {
-                staging = { state = "configured" },
-                dev = { state = "built" },
-              },
+              state = "configured",
+            },
+            ["Alpha/dev"] = {
+              project_key = "Alpha",
+              config_key = "dev",
+              type = "typescript",
+              state = "built",
             },
           },
         }
@@ -1484,12 +1541,13 @@ describe("Core", function()
         },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
               type = "typescript",
-              configurations = {
-                production = { state = "built", build_dir = "/root/.nvim/build/App/production" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/production",
             },
           },
         },
@@ -1509,9 +1567,7 @@ describe("Core", function()
       assert.equals(0, #core:get_orphaned_configs())
       -- Cache should no longer have the config
       assert.is_not_nil(saved_cache)
-      if saved_cache.projects and saved_cache.projects.App then
-        assert.is_nil(saved_cache.projects.App.configurations.production)
-      end
+      assert.is_nil(saved_cache.configurations["App/production"])
     end)
   end)
 
@@ -1535,20 +1591,27 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             feature = {
               configuration_set = "feature",
-              projects = { App = { config_key = "staging" } },
+              configurations = { "App/staging" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built", variant = "development" },
-                staging = { state = "built", variant = "staging" },
-              },
+              state = "built",
+              variant = "development",
+            },
+            ["App/staging"] = {
+              project_key = "App",
+              config_key = "staging",
+              type = "typescript",
+              state = "built",
+              variant = "staging",
             },
           },
         }
@@ -1579,20 +1642,23 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-                -- This config was built on another branch, no profile references it
-                ["feature-config"] = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/feature-config",
-                },
-              },
+              state = "built",
+            },
+            -- This config was built on another branch, no profile references it
+            ["App/feature-config"] = {
+              project_key = "App",
+              config_key = "feature-config",
+              type = "typescript",
+              state = "built",
+              build_dir = "/root/.nvim/build/App/feature-config",
             },
           },
         }
@@ -1618,19 +1684,22 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-                ["feature-config"] = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/feature-config",
-                },
-              },
+              state = "built",
+            },
+            ["App/feature-config"] = {
+              project_key = "App",
+              config_key = "feature-config",
+              type = "typescript",
+              state = "built",
+              build_dir = "/root/.nvim/build/App/feature-config",
             },
           },
         },
@@ -1661,11 +1730,11 @@ describe("Core", function()
       assert.is_true(found_dir, "build directory should be deleted")
       -- Referenced config should still exist
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.projects.App.configurations.development)
+      assert.is_not_nil(ws.cache.configurations["App/development"])
     end)
 
-    it("round-trip: master→feature→master leaves cache intact", function()
-      -- This is the A→B→A test but framed as branch switching.
+    it("round-trip: master->feature->master leaves cache intact", function()
+      -- This is the A->B->A test but framed as branch switching.
       -- Master config, then feature config, then back to master.
       -- The user switches profiles (not branches) but the cache should not change.
       local cache_saves = {}
@@ -1682,20 +1751,25 @@ describe("Core", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             release = {
               configuration_set = "release",
-              projects = { App = { config_key = "production" } },
+              configurations = { "App/production" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-                production = { state = "configured" },
-              },
+              state = "built",
+            },
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
+              type = "typescript",
+              state = "configured",
             },
           },
         },
@@ -1835,7 +1909,14 @@ describe("Core", function()
       profiles = {
         debug = {
           configuration_set = "debug",
-          projects = { App = { config_key = "Debug" } },
+          configurations = { "App/Debug" },
+        },
+      },
+      configurations = {
+        ["App/Debug"] = {
+          project_key = "App",
+          config_key = "Debug",
+          type = "cmake",
         },
       },
     }
@@ -1971,7 +2052,7 @@ describe("Core", function()
       return core, function() return saved_cache end
     end
 
-    it("configure then build → built", function()
+    it("configure then build -> built", function()
       local core, get_cache = make_recording_core()
       core:record_task_result({
         project_key = "App",
@@ -1985,7 +2066,7 @@ describe("Core", function()
         configuration_key = "development",
         success = true,
       })
-      local state = get_cache().projects.App.configurations.development
+      local state = get_cache().configurations["App/development"]
       assert.equals("built", state.state)
       assert.is_not_nil(state.last_configured)
       assert.is_not_nil(state.last_built)
@@ -2001,7 +2082,7 @@ describe("Core", function()
         build_dir = "/root/.nvim/build/App/development",
       })
       assert.equals("/root/.nvim/build/App/development",
-        get_cache().projects.App.configurations.development.build_dir)
+        get_cache().configurations["App/development"].build_dir)
     end)
 
     it("records cmake data from result", function()
@@ -2014,7 +2095,7 @@ describe("Core", function()
         cmake = { compile_commands_dir = "/root/.nvim/build/App/development" },
       })
       assert.equals("/root/.nvim/build/App/development",
-        get_cache().projects.App.configurations.development.cmake.compile_commands_dir)
+        get_cache().configurations["App/development"].cmake.compile_commands_dir)
     end)
 
     it("records tool_data from result", function()
@@ -2034,7 +2115,7 @@ describe("Core", function()
         success = true,
         tool = { key = "ninja-gcc-14.2.0", data = tool_data },
       })
-      local cached_td = get_cache().projects.App.configurations["Debug:ninja-gcc-14.2.0"].tool_data
+      local cached_td = get_cache().configurations["App/Debug:ninja-gcc-14.2.0"].tool_data
       assert.is_not_nil(cached_td)
       assert.equals("ninja-gcc-14.2.0", cached_td.id)
       assert.equals("Ninja - GCC 14.2.0", cached_td.display)
@@ -2061,7 +2142,7 @@ describe("Core", function()
         variant = "Debug",
         success = true,
       })
-      local cached = get_cache().projects.App.configurations.Debug
+      local cached = get_cache().configurations["App/Debug"]
       assert.equals("built", cached.state)
       assert.equals("ninja-gcc-14.2.0", cached.tool_data.id)
     end)
@@ -2200,15 +2281,13 @@ describe("Core", function()
         },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/Debug"] = {
+              project_key = "App",
+              config_key = "Debug",
               type = "cmake",
-              configurations = {
-                Debug = {
-                  state = "configured",
-                  build_dir = "/root/.nvim/build/App/Debug",
-                },
-              },
+              state = "configured",
+              build_dir = "/root/.nvim/build/App/Debug",
             },
           },
         },
@@ -2275,12 +2354,13 @@ describe("Core", function()
         },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/Debug"] = {
+              project_key = "App",
+              config_key = "Debug",
               type = "cmake",
-              configurations = {
-                Debug = { state = "configured", build_dir = "/root/.nvim/build/App/Debug" },
-              },
+              state = "configured",
+              build_dir = "/root/.nvim/build/App/Debug",
             },
           },
         },
@@ -2311,7 +2391,7 @@ describe("Core", function()
         ["loomworks.json"] = h.make_config_json(),
         ["loomworks.cache.json"] = vim.json.encode({
           _meta = { version = 1, loomworks_hash = "", cached_at = "" },
-          projects = {},
+          configurations = {},
         }),
       }
       local deps = h.make_test_deps(files, dep_overrides)
@@ -2515,7 +2595,7 @@ describe("Core", function()
             ["debug:ninja-gcc-12"] = {
               configuration_set = "debug",
               tool_key = "ninja-gcc-12",
-              projects = { App = { config_key = "Debug" } },
+              configurations = { "App/Debug" },
             },
           },
         }
@@ -2539,7 +2619,7 @@ describe("Core", function()
             ["debug:ninja-gcc-12"] = {
               configuration_set = "debug",
               tool_key = "ninja-gcc-12",
-              projects = { App = { config_key = "Debug" } },
+              configurations = { "App/Debug" },
             },
           },
         }
@@ -2561,7 +2641,7 @@ describe("Core", function()
             ["debug:ninja-gcc-12"] = {
               configuration_set = "debug",
               tool_key = "ninja-gcc-12",
-              projects = { App = { config_key = "Debug" } },
+              configurations = { "App/Debug" },
             },
           },
         }
@@ -2584,7 +2664,7 @@ describe("Core", function()
             ["App/Debug:ninja-gcc-12"] = {
               mappings = { App = "Debug" },
               tool_key = "ninja-gcc-12",
-              projects = { App = { config_key = "Debug" } },
+              configurations = { "App/Debug" },
             },
           },
         }
@@ -2609,12 +2689,12 @@ describe("Core", function()
             ["debug:ninja-gcc-12"] = {
               configuration_set = "debug",
               tool_key = "ninja-gcc-12",
-              projects = { App = { config_key = "Debug" } },
+              configurations = { "App/Debug" },
             },
             ["release:ninja-gcc-12"] = {
               configuration_set = "release",
               tool_key = "ninja-gcc-12",
-              projects = { App = { config_key = "Release" } },
+              configurations = { "App/Release" },
             },
           },
         }
@@ -2642,7 +2722,7 @@ describe("Core", function()
             ["debug:ninja-gcc-12"] = {
               configuration_set = "debug",
               tool_key = "ninja-gcc-12",
-              projects = { App = { config_key = "Debug" } },
+              configurations = { "App/Debug" },
             },
           },
         },
@@ -2670,7 +2750,7 @@ describe("Core", function()
             ["debug:ninja-gcc-12"] = {
               configuration_set = "debug",
               tool_key = "ninja-gcc-12",
-              projects = { App = { config_key = "Debug" } },
+              configurations = { "App/Debug" },
             },
           },
         },

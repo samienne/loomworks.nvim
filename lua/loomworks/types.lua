@@ -41,8 +41,8 @@
 
 --- @class loomworks.CacheData
 --- @field _meta loomworks.CacheMeta
+--- @field configurations table<string, loomworks.CachedConfig> flat dict keyed by "project_key/config_key"
 --- @field profiles? table<string, loomworks.CachedProfile>
---- @field projects table<string, loomworks.CachedProject>
 
 --- @class loomworks.CachedProfile
 --- @field configuration_set? string nil for pinned profiles
@@ -51,22 +51,17 @@
 --- @field tool_data? table opaque module-specific tool data
 --- @field tool_label? string display label for the tool
 --- @field tool_mod_type? string which module type owns this tool
---- @field projects table<string, loomworks.CachedProfileProject>
-
---- @class loomworks.CachedProfileProject
---- @field config_key string cache key reference into projects.<name>.configurations
+--- @field configurations? string[] array of cache keys ("project_key/config_key")
 
 --- @class loomworks.CacheMeta
 --- @field version number
 --- @field loomworks_hash string
 --- @field cached_at string ISO 8601 timestamp
 
---- @class loomworks.CachedProject
---- @field type string module type
---- @field path? string relative path
---- @field configurations table<string, loomworks.CachedConfig>
-
 --- @class loomworks.CachedConfig
+--- @field project_key string
+--- @field config_key string
+--- @field type string module type
 --- @field state? loomworks.Status
 --- @field variant? string
 --- @field tool_key? string cache key suffix
@@ -132,7 +127,7 @@
 --- @field tool_label? string display label for the tool
 --- @field tool_mod_type? string which module type owns this tool
 --- @field explicit? boolean
---- @field _cached_projects? table<string, loomworks.CachedProfileProject> from cache, used for orphaned profile fallback
+--- @field _cached_configurations? string[] array of cache keys from cached profile, used for orphaned profile fallback
 
 --- @class loomworks.ToolEntry
 --- @field profile_key string the profile key this tool would create

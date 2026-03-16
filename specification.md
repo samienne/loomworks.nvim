@@ -262,46 +262,30 @@ Sparse record of what has actually been configured and built.
 
 ```json
 {
-  "_meta": { "version": 3, "cached_at": "..." },
+  "_meta": { "version": 4, "cached_at": "..." },
+  "configurations": {
+    "App/Debug:ninja-gcc-12": {
+      "project_key": "App",
+      "config_key": "Debug:ninja-gcc-12",
+      "type": "cmake",
+      "state": "built",
+      "variant": "Debug",
+      "build_dir": "/workspace/.nvim/build/App/Debug",
+      "last_configured": "2026-03-10T12:00:00Z",
+      "last_built": "2026-03-10T12:05:00Z",
+      "tool_key": "ninja-gcc-12",
+      "tool_data": { ... },
+      "cmake": { "generator": "Ninja", "compiler": "GCC 12.3" }
+    }
+  },
   "profiles": {
     "Debug:ninja-gcc-12": {
       "configuration_set": "Debug",
-      "mappings": { "App": "Debug", "Frontend": "development" },
       "tool_key": "ninja-gcc-12",
       "tool_data": { ... },
       "tool_label": "Ninja + GCC 12.3",
       "tool_mod_type": "cmake",
-      "projects": {
-        "App": { "config_key": "Debug:ninja-gcc-12" }
-      }
-    },
-    "App/Debug:ninja-gcc-12": {
-      "mappings": { "App": "Debug" },
-      "tool_key": "ninja-gcc-12",
-      "tool_data": { ... },
-      "tool_label": "Ninja + GCC 12.3",
-      "tool_mod_type": "cmake",
-      "projects": {
-        "App": { "config_key": "Debug:ninja-gcc-12" }
-      }
-    }
-  },
-  "projects": {
-    "App": {
-      "type": "cmake",
-      "path": "App",
-      "configurations": {
-        "Debug:ninja-gcc-12": {
-          "state": "built",
-          "build_dir": "/workspace/.nvim/build/App/Debug",
-          "last_configured": "2026-03-10T12:00:00Z",
-          "last_built": "2026-03-10T12:05:00Z",
-          "variant": "Debug",
-          "tool_key": "ninja-gcc-12",
-          "tool_data": { ... },
-          "cmake": { "generator": "Ninja", "compiler": "GCC 12.3" }
-        }
-      }
+      "configurations": ["App/Debug:ninja-gcc-12"]
     }
   }
 }
@@ -310,7 +294,9 @@ Sparse record of what has actually been configured and built.
 - Always gitignored.
 - Never auto-removes entries — survives git branch switches intact.
 - Grows as builds happen; shrinks only on explicit delete/clean.
-- Self-describing: each configuration stores its tool properties.
+- Flat `configurations` dict keyed by opaque `"project_key/config_key"`.
+  Each entry is self-describing (includes project_key, config_key, type,
+  tool properties). Profiles reference configurations by cache key.
 - Atomic writes (temp + fsync + rename) with .bak recovery.
 
 ### 2.4 Three-file reconciliation

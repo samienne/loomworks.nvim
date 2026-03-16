@@ -52,7 +52,7 @@ describe("workspace", function()
       assert.is_not_nil(ws.user)
       assert.is_not_nil(ws.cache)
       assert.equals(1, ws.user._meta.version)
-      assert.equals(3, ws.cache._meta.version)
+      assert.equals(4, ws.cache._meta.version)
     end)
 
     it("parses user.json when provided", function()
@@ -65,17 +65,17 @@ describe("workspace", function()
     it("parses cache.json when provided", function()
       local config_json = h.make_config_json()
       local cache_json = h.make_cache_json({
-        projects = {
-          App = {
+        configurations = {
+          ["App/Debug"] = {
+            project_key = "App",
+            config_key = "Debug",
             type = "cmake",
-            configurations = {
-              Debug = { state = "built" },
-            },
+            state = "built",
           },
         },
       })
       local ws = workspace.assemble("/root", config_json, nil, cache_json)
-      assert.equals("built", ws.cache.projects.App.configurations.Debug.state)
+      assert.equals("built", ws.cache.configurations["App/Debug"].state)
     end)
 
     it("derives name from directory when not in config", function()
@@ -126,7 +126,7 @@ describe("workspace", function()
       local ws = workspace.assemble("/root", config_json, nil, cache_json)
       assert.is_true(ws.cache_version_mismatch)
       -- Cache data should be defaults (empty)
-      assert.are.same({}, ws.cache.projects)
+      assert.are.same({}, ws.cache.configurations)
     end)
   end)
 end)

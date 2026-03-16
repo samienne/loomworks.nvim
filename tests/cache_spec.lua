@@ -2,35 +2,36 @@ local cache = require("loomworks.cache")
 
 describe("cache", function()
   describe("default", function()
-    it("returns table with version 3 and empty projects", function()
+    it("returns table with version 4 and empty configurations", function()
       local d = cache.default()
-      assert.equals(3, d._meta.version)
-      assert.are.same({}, d.projects)
+      assert.equals(4, d._meta.version)
+      assert.are.same({}, d.configurations)
     end)
   end)
 
   describe("parse", function()
     it("parses valid cache.json", function()
       local json = vim.json.encode({
-        _meta = { version = 3, loomworks_hash = "abc", cached_at = "2025-01-01" },
-        projects = {
-          App = {
+        _meta = { version = 4, loomworks_hash = "abc", cached_at = "2025-01-01" },
+        configurations = {
+          ["App/Debug"] = {
+            project_key = "App",
+            config_key = "Debug",
             type = "cmake",
-            configurations = {
-              Debug = { state = "built", last_built = "2025-01-01" },
-            },
+            state = "built",
+            last_built = "2025-01-01",
           },
         },
       })
       local result = cache.parse(json)
-      assert.equals(3, result._meta.version)
-      assert.equals("built", result.projects.App.configurations.Debug.state)
+      assert.equals(4, result._meta.version)
+      assert.equals("built", result.configurations["App/Debug"].state)
     end)
 
     it("returns no version mismatch on valid parse", function()
       local json = vim.json.encode({
-        _meta = { version = 3, loomworks_hash = "abc", cached_at = "2025-01-01" },
-        projects = {},
+        _meta = { version = 4, loomworks_hash = "abc", cached_at = "2025-01-01" },
+        configurations = {},
       })
       local _, mismatch = cache.parse(json)
       assert.is_false(mismatch)
@@ -38,36 +39,56 @@ describe("cache", function()
 
     it("returns defaults on invalid JSON without version mismatch", function()
       local result, mismatch = cache.parse("broken {{{")
-      assert.equals(3, result._meta.version)
-      assert.are.same({}, result.projects)
+      assert.equals(4, result._meta.version)
+      assert.are.same({}, result.configurations)
       assert.is_false(mismatch)
     end)
 
     it("returns defaults and version mismatch on wrong version", function()
       local json = vim.json.encode({
         _meta = { version = 999 },
-        projects = { App = {} },
+        configurations = {},
       })
       local result, mismatch = cache.parse(json)
-      assert.are.same({}, result.projects)
+      assert.are.same({}, result.configurations)
       assert.is_true(mismatch)
     end)
 
     it("returns version mismatch on old version", function()
       local json = vim.json.encode({
         _meta = { version = 2 },
-        projects = {},
+        configurations = {},
       })
       local _, mismatch = cache.parse(json)
       assert.is_true(mismatch)
     end)
 
-    it("ensures projects field exists", function()
+    it("returns version mismatch on v3", function()
       local json = vim.json.encode({
-        _meta = { version = 2 },
+        _meta = { version = 3 },
+        projects = {},
+      })
+      local result, mismatch = cache.parse(json)
+      assert.are.same({}, result.configurations)
+      assert.is_true(mismatch)
+    end)
+
+    it("ensures configurations field exists", function()
+      local json = vim.json.encode({
+        _meta = { version = 4 },
       })
       local result = cache.parse(json)
-      assert.are.same({}, result.projects)
+      assert.are.same({}, result.configurations)
+    end)
+  end)
+
+  describe("config_cache_key", function()
+    it("combines project_key and config_key with slash", function()
+      assert.equals("App/Debug", cache.config_cache_key("App", "Debug"))
+    end)
+
+    it("works with tool-qualified config keys", function()
+      assert.equals("App/Debug:ninja-gcc-12", cache.config_cache_key("App", "Debug:ninja-gcc-12"))
     end)
   end)
 

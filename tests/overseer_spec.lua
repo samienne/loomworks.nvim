@@ -26,14 +26,16 @@ local function make_unit(project_key, config_key, state)
     local cache_state = state
     if state == "configure_failed" then cache_state = "failed_configure" end
     if state == "build_failed" then cache_state = "failed_build" end
+    local cache_key = project_key .. "/" .. config_key
     core.get_workspace = function()
       return {
         cache = {
-          projects = {
-            [project_key] = {
-              configurations = {
-                [config_key] = { state = cache_state },
-              },
+          configurations = {
+            [cache_key] = {
+              project_key = project_key,
+              config_key = config_key,
+              type = "cmake",
+              state = cache_state,
             },
           },
         },
@@ -167,11 +169,12 @@ describe("overseer launch_tasks", function()
         get_workspace = function()
           return {
             cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "failed_configure" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "failed_configure",
                 },
               },
             },
@@ -272,13 +275,15 @@ describe("record_task_result state protection", function()
     local config_json = h.make_config_json({
       projects = { [project_key] = { cmake = {} } },
     })
+    local cache_key = project_key .. "/" .. config_key
     local cache_json = h.make_cache_json({
-      projects = {
-        [project_key] = {
+      configurations = {
+        [cache_key] = {
+          project_key = project_key,
+          config_key = config_key,
           type = "cmake",
-          configurations = {
-            [config_key] = { state = cached_state, variant = config_key },
-          },
+          state = cached_state,
+          variant = config_key,
         },
       },
     })

@@ -1,6 +1,7 @@
 local M = {}
 
 local modules = require("loomworks.modules")
+local cache_mod = require("loomworks.cache")
 
 --- Build a profile key from configuration set name and tool key.
 --- @param set_name string
@@ -47,10 +48,10 @@ local function collect_module_types(config, cache)
       types[project.type] = true
     end
   end
-  if cache and cache.projects then
-    for _, cached_project in pairs(cache.projects) do
-      if cached_project.type then
-        types[cached_project.type] = true
+  if cache and cache.configurations then
+    for _, cached_config in pairs(cache.configurations) do
+      if cached_config.type then
+        types[cached_config.type] = true
       end
     end
   end
@@ -288,7 +289,7 @@ function M.get_all_profiles(config, cache, tools_by_type)
               and mod.tool_label(cp.tool_data))
             or nil,
         tool_mod_type = cp.tool_mod_type,
-        _cached_projects = cp.projects,
+        _cached_configurations = cp.configurations,
       }
     end
   end
@@ -434,24 +435,32 @@ function M.merge(workspace, tools_by_type)
         project.type, active_configuration, tool_key)
     end
 
-    local cached_project = cache.projects and cache.projects[key] or nil
     local cached_config_data = nil
     local status = "unconfigured"
 
-    if cached_project and cached_project.configurations and cache_config_key then
-      cached_config_data = cached_project.configurations[cache_config_key]
+    if cache.configurations and cache_config_key then
+      local full_ck = cache_mod.config_cache_key(key, cache_config_key)
+      cached_config_data = cache.configurations[full_ck]
       status = resolve_status(cached_config_data)
+    end
+
+    -- Collect all cached configs for this project from the flat dict
+    local cached_configurations = {}
+    if cache.configurations then
+      for _, cc in pairs(cache.configurations) do
+        if cc.project_key == key then
+          cached_configurations[cc.config_key] = cc
+        end
+      end
     end
 
     local needs_refresh = false
     local refresh_reasons = {}
-    if mod and mod.inspect and cached_project and cached_project.configurations then
-      local inspect_result = mod.inspect(abs_path, project.type_config, cached_project.configurations)
+    if mod and mod.inspect and next(cached_configurations) then
+      local inspect_result = mod.inspect(abs_path, project.type_config, cached_configurations)
       needs_refresh = inspect_result.needs_refresh
       refresh_reasons = inspect_result.reasons
     end
-
-    local cached_configurations = cached_project and cached_project.configurations or {}
 
     -- Only include tool info for projects whose module has keyed tools
     local has_keyed = M.module_has_keyed_tools(project.type)
@@ -486,29 +495,30 @@ function M.merge(workspace, tools_by_type)
   end
 
   -- Find orphaned projects (in cache but not in config)
-  if cache.projects then
-    for key, cached_project in pairs(cache.projects) do
-      if not config.projects[key] then
-        local ptype = cached_project.type or "unknown"
-        local status = "unconfigured"
-
-        if cached_project.configurations then
-          for _, config_data in pairs(cached_project.configurations) do
-            if config_data.state then
-              status = config_data.state
-            end
-          end
-        end
-
-        projects[key] = {
-          type = ptype,
-          status = status,
-          orphaned = true,
-          needs_refresh = false,
-          refresh_reasons = { "not in current loomworks.json" },
-          configurations = {},
+  if cache.configurations then
+    -- Collect unique project_keys from cache that aren't in config
+    local orphaned_projects = {} -- project_key -> { type, status }
+    for _, cc in pairs(cache.configurations) do
+      local pk = cc.project_key
+      if pk and not config.projects[pk] and not orphaned_projects[pk] then
+        orphaned_projects[pk] = {
+          type = cc.type or "unknown",
+          status = cc.state or "unconfigured",
         }
+      elseif pk and orphaned_projects[pk] and cc.state then
+        orphaned_projects[pk].status = cc.state
       end
+    end
+
+    for key, info in pairs(orphaned_projects) do
+      projects[key] = {
+        type = info.type,
+        status = info.status,
+        orphaned = true,
+        needs_refresh = false,
+        refresh_reasons = { "not in current loomworks.json" },
+        configurations = {},
+      }
     end
   end
 

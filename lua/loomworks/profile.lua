@@ -3,6 +3,7 @@
 --- ProfileProject represents a single project within a profile.
 
 local merge = require("loomworks.merge")
+local cache_mod = require("loomworks.cache")
 
 --- Format a duration in seconds to a compact string.
 --- @param seconds number
@@ -98,10 +99,9 @@ end
 --- @return loomworks.CachedConfig|nil
 function ProfileProject:cached_state()
   local ws = self._core:get_workspace()
-  if not ws or not ws.cache.projects then return nil end
-  local proj = ws.cache.projects[self.project_key]
-  if not proj or not proj.configurations then return nil end
-  return proj.configurations[self.config_key]
+  if not ws or not ws.cache.configurations then return nil end
+  local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
+  return ws.cache.configurations[ck]
 end
 
 --- Get the build directory from cache.
@@ -201,18 +201,14 @@ function Profile:_resolve_mappings(data)
     return data.mappings, orphaned
   end
 
-  -- Tier 3: Fallback from cached profile project data
-  if data._cached_projects and data._ws_cache then
+  -- Tier 3: Fallback from cached profile configuration keys
+  if data._cached_configurations and data._ws_cache then
     local mappings = {}
-    for project_key, proj_ref in pairs(data._cached_projects) do
-      if proj_ref.config_key then
-        local cached_proj = data._ws_cache.projects
-            and data._ws_cache.projects[project_key]
-        local cached_config = cached_proj and cached_proj.configurations
-            and cached_proj.configurations[proj_ref.config_key]
-        if cached_config and cached_config.variant then
-          mappings[project_key] = cached_config.variant
-        end
+    for _, ck in ipairs(data._cached_configurations) do
+      local cached_config = data._ws_cache.configurations
+          and data._ws_cache.configurations[ck]
+      if cached_config and cached_config.variant then
+        mappings[cached_config.project_key] = cached_config.variant
       end
     end
     if next(mappings) then return mappings, data.configuration_set ~= nil end
@@ -379,24 +375,21 @@ function Profile:is_configured()
 
   -- Look up profile in cache by key
   local cached_profile = ws.cache.profiles and ws.cache.profiles[self.key]
-  if not cached_profile or not cached_profile.projects then
+  if not cached_profile or not cached_profile.configurations then
     -- Fallback: value matching for set-based profiles
     if self.configuration_set then
       cached_profile = merge.find_cached_profile(
         ws.cache, self.configuration_set, self.tool and self.tool.data)
     end
-    if not cached_profile or not cached_profile.projects then return false end
+    if not cached_profile or not cached_profile.configurations then return false end
   end
 
   -- Check if any referenced configuration has actual build state
-  for project_key, proj_ref in pairs(cached_profile.projects) do
-    local cached_proj = ws.cache.projects and ws.cache.projects[project_key]
-    if cached_proj and cached_proj.configurations then
-      local cached_config = cached_proj.configurations[proj_ref.config_key]
-      if cached_config and cached_config.state
-          and cached_config.state ~= "unconfigured" then
-        return true
-      end
+  for _, ck in ipairs(cached_profile.configurations) do
+    local cached_config = ws.cache.configurations and ws.cache.configurations[ck]
+    if cached_config and cached_config.state
+        and cached_config.state ~= "unconfigured" then
+      return true
     end
   end
   return false

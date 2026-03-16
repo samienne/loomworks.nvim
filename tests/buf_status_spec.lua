@@ -74,7 +74,14 @@ describe("buf_status", function()
       profiles = {
         debug = {
           configuration_set = "debug",
-          projects = { App = { config_key = "Debug" } },
+          configurations = { "App/Debug" },
+        },
+      },
+      configurations = {
+        ["App/Debug"] = {
+          project_key = "App",
+          config_key = "Debug",
+          type = "cmake",
         },
       },
     }, {
@@ -100,7 +107,14 @@ describe("buf_status", function()
           tool_key = "ninja-gcc-12",
           tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
           tool_mod_type = "cmake",
-          projects = { App = { config_key = "Debug:ninja-gcc-12" } },
+          configurations = { "App/Debug:ninja-gcc-12" },
+        },
+      },
+      configurations = {
+        ["App/Debug:ninja-gcc-12"] = {
+          project_key = "App",
+          config_key = "Debug:ninja-gcc-12",
+          type = "cmake",
         },
       },
     }, {
@@ -137,15 +151,16 @@ describe("buf_status", function()
       profiles = {
         debug = {
           configuration_set = "debug",
-          projects = { App = { config_key = "Debug" } },
+          configurations = { "App/Debug" },
         },
       },
-      projects = {
-        App = {
+      configurations = {
+        ["App/Debug"] = {
+          project_key = "App",
+          config_key = "Debug",
           type = "cmake",
-          configurations = {
-            Debug = { state = "built", build_dir = "/root/.nvim/build/App/Debug" },
-          },
+          state = "built",
+          build_dir = "/root/.nvim/build/App/Debug",
         },
       },
     }, {
@@ -188,7 +203,14 @@ describe("buf_status", function()
       profiles = {
         debug = {
           configuration_set = "debug",
-          projects = { Frontend = { config_key = "debug" } },
+          configurations = { "Frontend/debug" },
+        },
+      },
+      configurations = {
+        ["Frontend/debug"] = {
+          project_key = "Frontend",
+          config_key = "debug",
+          type = "ets",
         },
       },
     }, {

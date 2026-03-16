@@ -41,8 +41,8 @@ end
 --- @return string JSON content
 function M.make_cache_json(overrides)
   local base = {
-    _meta = { version = 3, loomworks_hash = "", cached_at = "" },
-    projects = {},
+    _meta = { version = 4, loomworks_hash = "", cached_at = "" },
+    configurations = {},
   }
   if overrides then
     base = vim.tbl_deep_extend("force", base, overrides)
@@ -158,6 +158,7 @@ function M.make_test_deps(files, opts)
       default = real_cache.default,
       filepath = real_cache.filepath,
       compute_hash = real_cache.compute_hash,
+      config_cache_key = real_cache.config_cache_key,
       save = function() return true end,
     },
     detect_tools_async = function(config, cache, callback) callback({}) end,

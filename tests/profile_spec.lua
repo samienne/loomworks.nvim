@@ -85,16 +85,15 @@ describe("Profile", function()
               profiles = {
                 debug = {
                   configuration_set = "debug",
-                  projects = {
-                    App = { config_key = "Debug" },
-                  },
+                  configurations = { "App/Debug" },
                 },
               },
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "configured" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "configured",
                 },
               },
             },
@@ -112,16 +111,15 @@ describe("Profile", function()
               profiles = {
                 debug = {
                   configuration_set = "debug",
-                  projects = {
-                    App = { config_key = "Debug" },
-                  },
+                  configurations = { "App/Debug" },
                 },
               },
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { variant = "Debug" }, -- skeleton, no state
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  variant = "Debug", -- skeleton, no state
                 },
               },
             },
@@ -139,16 +137,15 @@ describe("Profile", function()
               profiles = {
                 release = {
                   configuration_set = "release",
-                  projects = {
-                    App = { config_key = "Release" },
-                  },
+                  configurations = { "App/Release" },
                 },
               },
-              projects = {
-                App = {
-                  configurations = {
-                    Release = { state = "configured" },
-                  },
+              configurations = {
+                ["App/Release"] = {
+                  project_key = "App",
+                  config_key = "Release",
+                  type = "cmake",
+                  state = "configured",
                 },
               },
             },
@@ -194,9 +191,9 @@ describe("Profile", function()
         get_workspace = function()
           return {
             cache = {
-              projects = {
-                App = { configurations = { Debug = { state = "built" } } },
-                Lib = { configurations = { Debug = { state = "built" } } },
+              configurations = {
+                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
+                ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "built" },
               },
             },
           }
@@ -212,8 +209,8 @@ describe("Profile", function()
         get_workspace = function()
           return {
             cache = {
-              projects = {
-                App = { configurations = { Debug = { state = "built" } } },
+              configurations = {
+                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
               },
             },
           }
@@ -230,9 +227,9 @@ describe("Profile", function()
         get_workspace = function()
           return {
             cache = {
-              projects = {
-                App = { configurations = { Debug = { state = "failed_build" } } },
-                Lib = { configurations = { Debug = { state = "built" } } },
+              configurations = {
+                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "failed_build" },
+                ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "built" },
               },
             },
           }
@@ -274,7 +271,7 @@ describe("Profile", function()
         get_workspace = function()
           return {
             config = { projects = { App = {}, Lib = {} } },
-            cache = { projects = {} },
+            cache = { configurations = {} },
           }
         end,
         get_profiles = function()
@@ -377,7 +374,7 @@ describe("ProfileProject", function()
           App = { type = "cmake", path = "App", type_config = {} },
         },
       },
-      cache = { projects = {} },
+      cache = { configurations = {} },
     }
     local merged = vim.tbl_deep_extend("force", {
       get_workspace = function() return default_ws end,
@@ -458,7 +455,7 @@ describe("ProfileProject", function()
                 App = { type = "cmake", path = "App", type_config = {} },
               },
             },
-            cache = { projects = {} },
+            cache = { configurations = {} },
           }
         end,
       })
@@ -506,67 +503,7 @@ describe("ProfileProject", function()
     end)
   end)
 
-  describe("cached_state", function()
-    it("returns nil when no workspace", function()
-      local pp = make_pp(nil)
-      assert.is_nil(pp:cached_state())
-    end)
-
-    it("returns cached config when present", function()
-      local pp = make_pp(nil, {
-        get_workspace = function()
-          return {
-            cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "built", last_built = "2025-01-01" },
-                  },
-                },
-              },
-            },
-          }
-        end,
-      })
-      local cached = pp:cached_state()
-      assert.is_not_nil(cached)
-      assert.equals("built", cached.state)
-    end)
-
-    it("returns nil for unknown project", function()
-      local pp = make_pp(nil, {
-        get_workspace = function()
-          return { cache = { projects = {} } }
-        end,
-      })
-      assert.is_nil(pp:cached_state())
-    end)
-  end)
-
-  describe("build_dir", function()
-    it("returns nil when no cached state", function()
-      local pp = make_pp(nil)
-      assert.is_nil(pp:build_dir())
-    end)
-
-    it("returns build_dir from cached state", function()
-      local pp = make_pp(nil, {
-        get_workspace = function()
-          return {
-            cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "configured", build_dir = "/root/.nvim/build/App/Debug" },
-                  },
-                },
-              },
-            },
-          }
-        end,
-      })
-      assert.equals("/root/.nvim/build/App/Debug", pp:build_dir())
-    end)
-  end)
+  -- cached_state() and build_dir() delegate to ConfigUnit.cached_state() —
+  -- covered by config_unit_spec.lua cached_state tests.
 
 end)
