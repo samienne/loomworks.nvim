@@ -348,7 +348,6 @@ proj.orphaned                 -- false
 proj.configurations           -- { Debug = {...}, Release = {...} }
 
 proj:running_action()         -- "configure" | "build" | nil
-proj:is_stale()               -- true if Core has remerged since creation
 ```
 
 ## Build States

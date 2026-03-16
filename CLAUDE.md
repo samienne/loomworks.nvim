@@ -129,7 +129,7 @@ directory safety before merging:
 These are implementation-specific details not covered by the spec or architecture:
 
 - Constructor pattern: `Core.new(deps)` with injectable dependencies for testing
-- Generation counter: `Core._generation` increments on remerge, objects detect staleness
+- All objects identity-preserving across remerges via `_update()`; `_removed` flag for dead references
 - `types.lua` defines LuaCATS type annotations (data shapes, not runtime code)
 - init.lua is thin facade; core.lua holds business logic; status.lua is pure rendering
 - Progress tracking: ninja parser, operation timing, weighted aggregate
