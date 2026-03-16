@@ -47,7 +47,7 @@ return function(tree, ctx)
           hl = status_hl,
           on_delete = actions.delete_orphaned_config(unit),
         }, function()
-          helpers.render_cached_details(tree, config_status, status_hl, orphan.cached)
+          helpers.render_cached_details(tree, config_status, status_hl, orphan.cached, nil, unit)
         end)
       end
     end)

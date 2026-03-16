@@ -2066,10 +2066,9 @@ describe("Core", function()
       assert.equals("ninja-gcc-14.2.0", cached.tool_data.id)
     end)
 
-    it("calls parse_file_api on successful configure and stores targets", function()
+    it("calls parse_file_api on successful configure and stores targets on ConfigUnit", function()
       local parse_called = false
       local parse_args = {}
-      local saved_cache = nil
       local core = make_core(
         {
           projects = { App = { cmake = {} } },
@@ -2093,9 +2092,6 @@ describe("Core", function()
               }
             end,
           },
-          cache = {
-            save = function(_, data) saved_cache = data; return true end,
-          },
         }
       )
       core:setup({ root = "/root" })
@@ -2114,12 +2110,12 @@ describe("Core", function()
       assert.equals("/root/.nvim/build/App/Debug", parse_args.build_dir)
       assert.equals("Debug", parse_args.config_name)
 
-      -- Targets should be stored in cache
-      local cached = saved_cache.projects.App.configurations.Debug
-      assert.is_not_nil(cached.cmake.targets)
-      assert.equals("executable", cached.cmake.targets.app.type)
-      assert.are.same({ "libcore" }, cached.cmake.targets.app.dependencies)
-      assert.equals("static_library", cached.cmake.targets.libcore.type)
+      -- Targets should be stored on ConfigUnit (not in cache)
+      local unit = core:get_config_unit("App", "Debug")
+      assert.is_not_nil(unit.targets)
+      assert.equals("executable", unit.targets.app.type)
+      assert.are.same({ "libcore" }, unit.targets.app.dependencies)
+      assert.equals("static_library", unit.targets.libcore.type)
     end)
 
     it("does not call parse_file_api on failed configure", function()

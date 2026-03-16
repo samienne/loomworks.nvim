@@ -48,6 +48,7 @@ function ConfigUnit.new(core, project_key, config_key)
   self._queued_action = nil
   self._listeners = {}
   self._removed = false
+  self.targets = nil
   self:_update()
   return self
 end

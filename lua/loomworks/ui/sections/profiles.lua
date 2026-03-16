@@ -54,7 +54,7 @@ local function render_profile_details(tree, profile, lw)
           on_delete = actions.delete_config(unit),
           on_options = actions.show_options(unit),
         }, function()
-          helpers.render_cached_details(tree, config_status, status_hl, cached)
+          helpers.render_cached_details(tree, config_status, status_hl, cached, nil, unit)
         end)
       end
     end)

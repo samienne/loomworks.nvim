@@ -230,7 +230,7 @@ return function(tree, ctx)
                     on_options = entry.cached and actions.show_options(unit) or nil,
                   }, function()
                     helpers.render_cached_details(tree, config_status, status_hl, entry.cached,
-                      key .. ":" .. entry.config_key)
+                      key .. ":" .. entry.config_key, unit)
                   end)
                 end
               else
@@ -256,7 +256,7 @@ return function(tree, ctx)
                   on_pin = actions.pin_config(unit),
                   on_options = cached and actions.show_options(unit) or nil,
                 }, function()
-                  helpers.render_cached_details(tree, config_status, status_hl, cached)
+                  helpers.render_cached_details(tree, config_status, status_hl, cached, nil, unit)
                 end)
               end
             end)

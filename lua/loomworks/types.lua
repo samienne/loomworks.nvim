@@ -81,9 +81,8 @@
 --- @field compiler? string compiler identifier
 --- @field multi_config? boolean
 --- @field source_dir? string
---- @field targets? table<string, loomworks.CachedTarget>
-
 --- @class loomworks.CachedTarget
+--- Runtime-only (stored on ConfigUnit.targets, not persisted in cache).
 --- @field type string "executable"|"static_library"|"shared_library"|"module_library"|"object_library"|"interface_library"
 --- @field dependencies? string[] project-owned targets this target links against
 --- @field artifact? string primary output file path (relative to build directory)
@@ -172,7 +171,6 @@
 --- @class loomworks.ProjectCmakeInfo
 --- @field compile_commands_from? string configuration to source compile_commands.json from
 --- @field clangd? string project-level clangd binary override (from loomworks.json, supports ${ENV_VAR})
---- @field targets? table<string, loomworks.CachedTarget>
 
 -- ========================== Module Interface ==========================
 

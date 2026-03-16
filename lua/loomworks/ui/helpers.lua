@@ -145,7 +145,8 @@ end
 --- @param status_hl string
 --- @param cached loomworks.CachedConfig|nil
 --- @param fold_prefix? string prefix for foldable sub-nodes (e.g. "App:Debug:ninja-gcc-12")
-function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix)
+--- @param unit? loomworks.ConfigUnit for runtime-only data (targets)
+function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix, unit)
   tree:leaf("Status: " .. config_status, status_hl)
   if not cached then return end
 
@@ -165,9 +166,11 @@ function M.render_cached_details(tree, config_status, status_hl, cached, fold_pr
     if cached.cmake.compiler then
       tree:leaf("Compiler: " .. cached.cmake.compiler, "Comment")
     end
-    if cached.cmake.targets and next(cached.cmake.targets) then
-      M.render_targets(tree, cached.cmake.targets, fold_prefix)
-    end
+  end
+  -- Targets from ConfigUnit (runtime, not cached)
+  local targets = unit and unit.targets or nil
+  if targets and next(targets) then
+    M.render_targets(tree, targets, fold_prefix)
   end
 end
 
