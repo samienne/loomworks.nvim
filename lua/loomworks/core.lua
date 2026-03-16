@@ -110,7 +110,18 @@ end
 --- @return boolean ok
 function Core:_save_cache()
   if not self._workspace then return false end
-  local ok, err = self._deps.cache.save(self._workspace.root, self._workspace.cache)
+  -- Strip runtime-only data (targets) before persisting
+  local cache = self._workspace.cache
+  if cache.projects then
+    for _, proj in pairs(cache.projects) do
+      if proj.configurations then
+        for _, cfg in pairs(proj.configurations) do
+          if cfg.cmake then cfg.cmake.targets = nil end
+        end
+      end
+    end
+  end
+  local ok, err = self._deps.cache.save(self._workspace.root, cache)
   if not ok then
     self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
   end
@@ -191,9 +202,64 @@ function Core:_scan_tools_async()
         for _, fn in ipairs(waiters) do
           fn()
         end
+
+        -- Scan targets for existing build dirs (async, runtime only)
+        self:_scan_targets_async()
       end)
     end
   )
+end
+
+--- Scan targets for all ConfigUnits that have a build directory.
+--- Runs asynchronously, processing units sequentially to avoid blocking.
+--- Results stored on ConfigUnit.targets (runtime only, not cached).
+function Core:_scan_targets_async()
+  if not self._workspace then return end
+
+  -- Collect units that have a build_dir and a cmake project type
+  local units = {}
+  for _, unit in pairs(self._config_units) do
+    local build_dir = unit:build_dir()
+    if build_dir then
+      local ws = self._workspace
+      local proj_cfg = ws and ws.config.projects and ws.config.projects[unit.project_key]
+      if proj_cfg then
+        local mod = self._deps.modules.get(proj_cfg.type)
+        if mod and mod.parse_file_api_async then
+          units[#units + 1] = { unit = unit, mod = mod, build_dir = build_dir }
+        end
+      end
+    end
+  end
+
+  if #units == 0 then return end
+
+  local idx = 0
+  local any_found = false
+  local function next_unit()
+    idx = idx + 1
+    if idx > #units then
+      if any_found then
+        self._deps.events.emit("active_set_changed", self._active_set)
+      end
+      return
+    end
+
+    local entry = units[idx]
+    entry.mod.parse_file_api_async(entry.build_dir, entry.unit.variant,
+      function(targets)
+        self._deps.schedule(function()
+          if targets then
+            entry.unit.targets = targets
+            any_found = true
+          end
+          next_unit()
+        end)
+      end
+    )
+  end
+
+  next_unit()
 end
 
 --- Re-scan tools and remerge. Used for manual rescan from UI.
@@ -1008,25 +1074,21 @@ function Core:record_task_result(result)
     end
   end
 
-  -- Parse file-api targets after successful configure
+  self:_save_cache()
+  self:remerge()
+
+  -- Parse file-api targets after successful configure (runtime only, not cached)
   if action == "configure" and success and result.build_dir then
     local proj_type = cached_proj.type
         or (ws.config.projects[project_key] and ws.config.projects[project_key].type)
     if proj_type then
       local mod = self._deps.modules.get(proj_type)
       if mod and mod.parse_file_api then
-        local variant = result.variant
-        local targets = mod.parse_file_api(result.build_dir, variant)
-        if targets then
-          cached_config.cmake = cached_config.cmake or {}
-          cached_config.cmake.targets = targets
-        end
+        local unit = self:get_config_unit(project_key, config_key)
+        unit.targets = mod.parse_file_api(result.build_dir, result.variant)
       end
     end
   end
-
-  self:_save_cache()
-  self:remerge()
   self._deps.events.emit("task_result", result)
 end
 

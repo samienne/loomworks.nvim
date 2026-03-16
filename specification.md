@@ -1342,7 +1342,8 @@ build options.
 **Reply parsing**: After a successful configure, core calls
 `parse_file_api(build_dir, config_name?)` on the module. The cmake module
 reads the codemodel reply from `<build_dir>/.cmake/api/v1/reply/`,
-extracts project-owned targets, and returns them.
+extracts project-owned targets, and returns them. On startup, existing
+build directories are scanned asynchronously via `parse_file_api_async`.
 
 **Target filtering**: Only project-owned build targets are included:
 - Executables (`EXECUTABLE`)
@@ -1358,10 +1359,10 @@ Imported targets, alias targets, and utility targets (e.g., `install`,
 **Dependencies**: Link dependencies between project-owned targets are
 recorded. Dependencies on imported or external targets are excluded.
 
-**Storage**: Targets are stored in
-`cache.projects[key].configurations[config_key].cmake.targets`. The
-entire targets dict is replaced on every successful configure (not
-merged).
+**Storage**: Targets are runtime-only data stored on `ConfigUnit.targets`
+(not persisted in cache). They are re-parsed from the file-api reply on
+startup (async) and after each successful configure (sync). The entire
+targets dict is replaced on every parse (not merged).
 
 ---
 

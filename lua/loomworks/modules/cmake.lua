@@ -726,6 +726,17 @@ function M.parse_file_api(build_dir, config_name)
   return next(targets) and targets or nil
 end
 
+--- Async wrapper for parse_file_api. Yields to the event loop before
+--- parsing to avoid blocking during batch scanning on init.
+--- @param build_dir string
+--- @param config_name? string
+--- @param callback fun(targets: table<string, loomworks.CachedTarget>|nil)
+function M.parse_file_api_async(build_dir, config_name, callback)
+  vim.schedule(function()
+    callback(M.parse_file_api(build_dir, config_name))
+  end)
+end
+
 --- Collect flat options from file-api cache-v2 reply.
 --- @param build_dir string
 --- @return loomworks.Option[]|nil
