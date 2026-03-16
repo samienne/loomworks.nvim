@@ -5,31 +5,30 @@ local actions = require("loomworks.ui.actions")
 
 --- Render configuration set details when expanded.
 --- @param tree loomworks.Tree
---- @param set_name string
---- @param mappings table<string, string>
+--- @param cs loomworks.ConfigurationSet
 --- @param tool_entries loomworks.ToolEntry[]
 --- @param all_profiles table<string, loomworks.Profile>
---- @param active_profile_key string
+--- @param active_profile loomworks.Profile|nil
 --- @param lw table loomworks API
-local function render_set_details(tree, set_name, mappings, tool_entries, all_profiles, active_profile_key, lw)
+local function render_set_details(tree, cs, tool_entries, all_profiles, active_profile, lw)
+  local set_name = cs.name
   tree:group("Projects:", "Comment", function()
     local proj_names = {}
-    for name in pairs(mappings) do
-      proj_names[#proj_names + 1] = name
+    for project, variant in pairs(cs.mappings) do
+      proj_names[#proj_names + 1] = { key = project.key, variant = variant }
     end
-    table.sort(proj_names)
-    for _, pname in ipairs(proj_names) do
-      tree:leaf(pname .. " → " .. mappings[pname], "Comment")
+    table.sort(proj_names, function(a, b) return a.key < b.key end)
+    for _, entry in ipairs(proj_names) do
+      tree:leaf(entry.key .. " → " .. entry.variant, "Comment")
     end
   end)
 
   if #tool_entries > 0 then
     tree:group({{"Tools:  ", "LoomworksActionable"}, {"[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
       for _, entry in ipairs(tool_entries) do
-        local profile_key = entry.profile_key
-        local is_active = profile_key == active_profile_key
         -- Only show running/configured state if a cached profile exists
-        local profile = entry.cached and all_profiles[profile_key] or nil
+        local profile = entry.cached and all_profiles[entry.profile_key] or nil
+        local is_active = profile ~= nil and profile == active_profile
         local profile_running = profile and profile:is_running() or false
         local already_configured = profile and profile:is_configured() or false
 
@@ -41,11 +40,11 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
           local pps = profile:projects()
           local pct = helpers.aggregate_progress(pps)
           if pct then suffix = suffix .. " " .. pct .. "%" end
-          suffix = suffix .. helpers.format_elapsed(lw.get_operation_elapsed(profile_key))
+          suffix = suffix .. helpers.format_elapsed(profile:operation_elapsed())
           hl = is_active and "LoomworksActive" or "LoomworksRunning"
         elseif is_active then
           hl = "LoomworksActive"
-          local op = lw.get_operation(profile_key)
+          local op = profile and profile:operation()
           if op and op.message then
             local p_label = already_configured and select(1, profile:status()) or "unconfigured"
             marker = helpers.status_marker(p_label)
@@ -58,7 +57,7 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
         elseif already_configured then
           local p_label = select(1, profile:status())
           marker = helpers.status_marker(p_label)
-          local op = lw.get_operation(profile_key)
+          local op = profile:operation()
           if op and op.message then
             suffix = " — " .. op.message
           else
@@ -82,9 +81,12 @@ local function render_set_details(tree, set_name, mappings, tool_entries, all_pr
           marker = marker,
           spinning = profile_running,
           hl = hl,
-          on_enter = actions.activate(profile_key),
-          on_build = actions.build(profile or profile_key),
-          on_configure = actions.configure(profile or profile_key),
+          on_enter = profile and actions.activate(profile)
+              or actions.activate_new(cs, entry),
+          on_build = profile and actions.build(profile)
+              or actions.build_new(cs, entry),
+          on_configure = profile and actions.configure(profile)
+              or actions.configure_new(cs, entry),
           on_rebuild = profile and actions.rebuild(profile) or nil,
           on_clean = profile and actions.clean(profile) or nil,
           on_delete = profile and actions.delete_profile(profile) or nil,
@@ -96,36 +98,37 @@ end
 
 --- Render the configuration sets section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, all_profiles, active_profile_key, config_sets, tool_entries }
+--- @param ctx table { lw, all_profiles, active_profile, config_sets, tool_entries }
 return function(tree, ctx)
   local config_sets = ctx.config_sets
   if not config_sets or not next(config_sets) then return end
 
   local all_profiles = ctx.all_profiles
-  local active_profile_key = ctx.active_profile_key
+  local active_profile = ctx.active_profile
   local tool_entries = ctx.tool_entries or {}
   local lw = ctx.lw
 
   tree:leaf("Configuration Sets", "Title")
   tree:blank()
 
-  local set_names = {}
-  for name in pairs(config_sets) do
-    set_names[#set_names + 1] = name
+  local sorted = {}
+  for name, cs in pairs(config_sets) do
+    sorted[#sorted + 1] = { name = name, cs = cs }
   end
-  table.sort(set_names)
+  table.sort(sorted, function(a, b) return a.name < b.name end)
 
-  for _, set_name in ipairs(set_names) do
-    local active_profile = all_profiles[active_profile_key]
-    local is_active_set = active_profile and active_profile.configuration_set == set_name
+  for _, entry in ipairs(sorted) do
+    local cs = entry.cs
+    local is_active_set = active_profile
+        and active_profile.configuration_set == cs.name
     local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
 
-    tree:node(set_name, {
-      fold_key = "set:" .. set_name,
+    tree:node(cs.name, {
+      fold_key = "set:" .. cs.name,
       hl = set_hl,
     }, function()
-      render_set_details(tree, set_name, config_sets[set_name],
-        tool_entries[set_name] or {}, all_profiles, active_profile_key, lw)
+      render_set_details(tree, cs,
+        tool_entries[cs.name] or {}, all_profiles, active_profile, lw)
     end)
   end
 

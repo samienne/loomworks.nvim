@@ -1,6 +1,14 @@
 local Core = require("loomworks.core")
 local h = require("tests.helpers")
 
+--- Find a ConfigurationSet by name from a core's registry.
+--- @param core loomworks.Core
+--- @param name string
+--- @return loomworks.ConfigurationSet|nil
+local function get_cs(core, name)
+  return core._config_sets[name]
+end
+
 --- Create a Core with mocked deps and standard test files.
 --- @param config_overrides? table
 --- @param user_overrides? table
@@ -60,35 +68,19 @@ describe("Core", function()
       assert.is_not_nil(vim.tbl_contains(names, "active_set_changed"))
     end)
 
-    it("increments generation on setup", function()
-      local core = make_core()
-      local gen_before = core._generation
-      core:setup({ root = "/root" })
-      -- Setup remerges twice: once on file read, once after tool detection
-      assert.equals(gen_before + 2, core._generation)
-    end)
   end)
 
   describe("remerge", function()
-    it("increments generation", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local gen = core._generation
-      core:remerge()
-      assert.equals(gen + 1, core._generation)
-    end)
-
     it("is a no-op when no workspace", function()
       local core = make_core()
       -- Don't setup
-      local gen = core._generation
       core:remerge()
-      assert.equals(gen, core._generation)
+      assert.is_nil(core:get_active_configuration_set())
     end)
   end)
 
-  describe("activate_profile", function()
-    it("sets active profile in user data", function()
+  describe("ConfigurationSet:activate", function()
+    it("materializes and activates a new profile", function()
       local saved = {}
       -- Use typescript to avoid cmake kit detection changing profile keys
       local core = make_core(
@@ -108,12 +100,12 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:activate_profile("debug")
+      get_cs(core, "debug"):activate()
       assert.is_not_nil(saved.data)
       assert.equals("debug", saved.data.active_profile)
     end)
 
-    it("switching A→B→A does not modify cache", function()
+    it("activates existing profile without re-materializing", function()
       local cache_saves = {}
       local core = make_core(
         {
@@ -162,47 +154,34 @@ describe("Core", function()
       local saves_after_setup = #cache_saves
 
       -- Activate A
-      core:activate_profile("debug")
+      get_cs(core, "debug"):activate()
       -- Activate B
-      core:activate_profile("release")
+      get_cs(core, "release"):activate()
       -- Return to A
-      core:activate_profile("debug")
+      get_cs(core, "debug"):activate()
 
       -- No cache writes should have happened during profile switching
       assert.equals(saves_after_setup, #cache_saves,
         "switching between materialized profiles should not write to cache")
     end)
+
+    it("is safe without workspace", function()
+      local core = make_core()
+      -- No config sets exist without workspace — test that accessing nil is safe
+      assert.is_nil(get_cs(core, "debug"))
+    end)
   end)
 
   describe("running tasks", function()
-    it("registers and queries via ConfigUnit", function()
+    it("has_running_tasks delegates to ConfigUnit registry", function()
       local core = make_core()
       core:setup({ root = "/root" })
+      assert.is_false(core:has_running_tasks())
       local unit = core:get_config_unit("App", "Debug")
       unit:register_task(42, "build")
       assert.is_true(core:has_running_tasks())
-      assert.equals("build", core:get_project_running_action("App"))
-      assert.is_true(unit:is_running())
-      assert.equals("build", unit:running_action())
-    end)
-
-    it("unregisters running tasks", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local unit = core:get_config_unit("App", "Debug")
-      unit:register_task(42, "build")
       unit:unregister_task(42)
       assert.is_false(core:has_running_tasks())
-      assert.is_false(unit:is_running())
-    end)
-
-    it("shares running state across profiles via ConfigUnit", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local unit = core:get_config_unit("App", "debug")
-      unit:register_task(50, "configure")
-      assert.equals("configure", unit:running_action())
-      assert.is_true(core:has_running_tasks())
     end)
   end)
 
@@ -255,26 +234,15 @@ describe("Core", function()
     end)
   end)
 
-  describe("deletion", function()
-    it("tracks deleting state via ConfigUnit", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      local unit = core:get_config_unit("App", "Debug")
-      assert.is_false(unit:is_deleting())
-      unit:mark_deleting(true)
-      assert.is_true(unit:is_deleting())
-    end)
 
-  end)
-
-  describe("get_profile / get_profiles", function()
-    it("returns nil for unknown profile", function()
+  describe("get_profiles", function()
+    it("returns nil for unknown profile key", function()
       local core = make_core({
         projects = { App = { typescript = {} } },
         configuration_sets = { debug = { App = "development" } },
       })
       core:setup({ root = "/root" })
-      assert.is_nil(core:get_profile("nonexistent"))
+      assert.is_nil(core:get_profiles()["nonexistent"])
     end)
 
     it("returns Profile object for known profile", function()
@@ -290,7 +258,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      local profile = core:get_profile("debug")
+      local profile = core:get_profiles()["debug"]
       assert.is_not_nil(profile)
       assert.equals("debug", profile.key)
       assert.equals("debug", profile.configuration_set)
@@ -298,11 +266,11 @@ describe("Core", function()
 
   end)
 
-  describe("get_project / get_projects", function()
+  describe("get_projects", function()
     it("returns Project for known project", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      local proj = core:get_project("App")
+      local proj = core:get_projects()["App"]
       assert.is_not_nil(proj)
       assert.equals("App", proj.key)
       assert.equals("cmake", proj.type)
@@ -395,7 +363,7 @@ describe("Core", function()
     end)
   end)
 
-  describe("deactivate_profile", function()
+  describe("Profile:deactivate (via Core)", function()
     it("clears active profile when it matches", function()
       local saved = {}
       local core = make_core(
@@ -404,7 +372,12 @@ describe("Core", function()
           configuration_sets = { debug = { App = "development" } },
         },
         { active_profile = "debug" },
-        nil,
+        {
+          profiles = {
+            debug = { configuration_set = "debug", projects = { App = { config_key = "development" } } },
+          },
+          projects = { App = { type = "typescript", configurations = { development = {} } } },
+        },
         {
           user = {
             save = function(root, data)
@@ -415,7 +388,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:deactivate_profile("debug")
+      core:get_profiles()["debug"]:deactivate()
       assert.is_nil(saved.data.active_profile)
     end)
 
@@ -424,10 +397,18 @@ describe("Core", function()
       local core = make_core(
         {
           projects = { App = { typescript = {} } },
-          configuration_sets = { debug = { App = "development" } },
+          configuration_sets = {
+            debug = { App = "development" },
+            release = { App = "development" },
+          },
         },
         { active_profile = "debug" },
-        nil,
+        {
+          profiles = {
+            release = { configuration_set = "release", projects = { App = { config_key = "development" } } },
+          },
+          projects = { App = { type = "typescript", configurations = { development = { state = "configured" } } } },
+        },
         {
           user = {
             save = function()
@@ -439,18 +420,12 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
       save_called = false -- reset from setup
-      core:deactivate_profile("release")
+      core:get_profiles()["release"]:deactivate()
       assert.is_false(save_called)
-    end)
-
-    it("is safe without workspace", function()
-      local core = make_core()
-      -- don't setup
-      core:deactivate_profile("debug") -- should not error
     end)
   end)
 
-  describe("activate_set", function()
+  describe("ConfigurationSet:activate (switch set)", function()
     it("activates profile for known configuration set", function()
       local saved = {}
       local core = make_core(
@@ -473,17 +448,12 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:activate_set("release")
+      get_cs(core, "release"):activate()
       assert.equals("release", saved.data.active_profile)
-    end)
-
-    it("is safe without workspace", function()
-      local core = make_core()
-      core:activate_set("debug") -- should not error
     end)
   end)
 
-  describe("materialize_profile", function()
+  describe("_materialize_from_data", function()
     it("writes profile and skeleton configs to cache", function()
       local saved_cache = nil
       local core = make_core(
@@ -502,7 +472,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:materialize_profile("debug")
+      core:_materialize_from_data(get_cs(core, "debug"))
 
       assert.is_not_nil(saved_cache)
       -- Profile entry
@@ -536,27 +506,52 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      core:materialize_profile("debug")
+      core:_materialize_from_data(get_cs(core, "debug"))
       local count_after_first = save_count
-      core:materialize_profile("debug")
+      core:_materialize_from_data(get_cs(core, "debug"))
       assert.equals(count_after_first, save_count) -- no additional save
     end)
 
     it("is safe without workspace", function()
+      local ConfigurationSet = require("loomworks.configuration_set")
       local core = make_core()
-      -- don't setup
-      core:materialize_profile("debug") -- should not error
+      -- don't setup — _materialize_from_data checks for workspace
+      local dummy_cs = ConfigurationSet.new(core, "debug", {})
+      core:_materialize_from_data(dummy_cs) -- should not error
     end)
 
-    it("is safe with unknown profile", function()
+    it("stores tool data when tool_entry provided", function()
+      local saved_cache = nil
       local core = make_core(
         {
-          projects = { App = { typescript = {} } },
-          configuration_sets = { debug = { App = "development" } },
+          projects = { Lib = { cmake = {} } },
+          configuration_sets = { debug = { Lib = "Debug" } },
+        },
+        nil, nil,
+        {
+          cache = {
+            save = function(root, data)
+              saved_cache = data
+              return true
+            end,
+          },
         }
       )
       core:setup({ root = "/root" })
-      core:materialize_profile("nonexistent") -- should not error
+      core:_materialize_from_data(get_cs(core, "debug"), {
+        tool_key = "ninja-gcc",
+        tool_data = { generator = "Ninja", compiler_id = "gcc" },
+        tool_label = "Ninja GCC",
+        tool_mod_type = "cmake",
+      })
+
+      assert.is_not_nil(saved_cache)
+      local profile = saved_cache.profiles["debug:ninja-gcc"]
+      assert.is_not_nil(profile)
+      assert.equals("debug", profile.configuration_set)
+      assert.equals("ninja-gcc", profile.tool_key)
+      assert.equals("Ninja GCC", profile.tool_label)
+      assert.equals("cmake", profile.tool_mod_type)
     end)
 
   end)
@@ -583,7 +578,6 @@ describe("Core", function()
         configuration_sets = { debug = { App = "development" } },
       })
       core:setup({ root = "/root" })
-      local gen_before = core._generation
 
       -- Simulate config file change with updated content
       local new_config = h.make_config_json({
@@ -591,7 +585,6 @@ describe("Core", function()
         configuration_sets = { debug = { App = "development", Lib = "development" } },
       })
       core:_on_file_changed("/root/loomworks.json", new_config)
-      assert.is_true(core._generation > gen_before)
       -- New project should be in workspace
       assert.is_not_nil(core._workspace.config.projects.Lib)
     end)
@@ -602,11 +595,9 @@ describe("Core", function()
         configuration_sets = { debug = { App = "development" } },
       })
       core:setup({ root = "/root" })
-      local gen_before = core._generation
 
       local new_user = h.make_user_json({ active_profile = "debug" })
       core:_on_file_changed("/root/.nvim/loomworks.user.json", new_user)
-      assert.is_true(core._generation > gen_before)
       assert.equals("debug", core._workspace.user.active_profile)
     end)
 
@@ -615,7 +606,6 @@ describe("Core", function()
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
-      local gen_before = core._generation
 
       local new_cache = h.make_cache_json({
         projects = {
@@ -626,16 +616,16 @@ describe("Core", function()
         },
       })
       core:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
-      assert.is_true(core._generation > gen_before)
       assert.is_not_nil(core._workspace.cache.projects.App)
     end)
 
     it("does nothing for unrecognized path", function()
       local core = make_core()
       core:setup({ root = "/root" })
-      local gen_before = core._generation
+      local ws_before = core._workspace
       core:_on_file_changed("/root/some_other_file.txt", "content")
-      assert.equals(gen_before, core._generation)
+      -- Workspace unchanged (same reference)
+      assert.equals(ws_before, core._workspace)
     end)
 
     it("is safe without workspace", function()
@@ -751,12 +741,10 @@ describe("Core", function()
         projects = { App = { typescript = {} } },
       })
       core:setup({ root = "/root" })
-      local gen_before = core._generation
 
       core:_on_file_changed("/root/loomworks.json", "not valid json {{{")
 
-      assert.equals(gen_before, core._generation)
-      -- Original project should still be there
+      -- Original project should still be there (no remerge on invalid JSON)
       assert.is_not_nil(core._workspace.config.projects.App)
     end)
 
@@ -945,7 +933,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      local plan = core:plan_config_deletion("App", "development")
+      local plan = core:get_config_unit("App", "development"):plan_deletion()
       assert.equals(1, #plan.items)
       assert.equals("App", plan.items[1].project_key)
       assert.equals("/root/.nvim/build/App/development", plan.items[1].build_dir)
@@ -957,7 +945,7 @@ describe("Core", function()
     it("returns empty plan when no workspace", function()
       local core = make_core()
       -- don't setup
-      local plan = core:plan_config_deletion("App", "Debug")
+      local plan = core:get_config_unit("App", "Debug"):plan_deletion()
       assert.are.same({}, plan.items)
       assert.is_false(plan.defined_in_config)
     end)
@@ -1000,7 +988,7 @@ describe("Core", function()
         }
       )
       core:setup({ root = "/root" })
-      local plan = core:plan_config_deletion("App", "Debug:ninja-gcc")
+      local plan = core:get_config_unit("App", "Debug:ninja-gcc"):plan_deletion()
       -- Config is referenced by set-based profile — disposition is "reset"
       assert.equals(1, #plan.items)
       assert.equals("reset", plan.items[1].disposition)
@@ -1213,7 +1201,8 @@ describe("Core", function()
       }
 
       local done = false
-      core:execute_deletion(plan, { deactivate_profile = "debug" }, function() done = true end)
+      local debug_profile = core:get_profiles()["debug"]
+      core:execute_deletion(plan, { deactivate_profile = debug_profile }, function() done = true end)
       assert.is_true(done)
       assert.is_not_nil(saved_cache)
       assert.is_nil(saved_cache.profiles.debug)
@@ -1249,9 +1238,9 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
 
-      local refs = core:find_referencing_profiles("App", "development")
+      local refs = core:get_config_unit("App", "development"):referencing_profiles()
       assert.equals(1, #refs)
-      assert.equals("App/development", refs[1])
+      assert.equals("App/development", refs[1].key)
     end)
 
   end)
@@ -1516,7 +1505,7 @@ describe("Core", function()
       core:setup({ root = "/root" })
       assert.equals(1, #core:get_orphaned_configs())
 
-      core:delete_orphaned_config("App", "production")
+      core:get_config_unit("App", "production"):delete()
       assert.equals(0, #core:get_orphaned_configs())
       -- Cache should no longer have the config
       assert.is_not_nil(saved_cache)
@@ -1557,8 +1546,8 @@ describe("Core", function()
             App = {
               type = "typescript",
               configurations = {
-                development = { state = "built" },
-                staging = { state = "built" },
+                development = { state = "built", variant = "development" },
+                staging = { state = "built", variant = "staging" },
               },
             },
           },
@@ -1571,13 +1560,13 @@ describe("Core", function()
       assert.same({}, core:get_orphaned_configs())
 
       -- The "feature" profile should still exist but with orphaned_set=true
-      local profile = core:get_profile("feature")
+      local profile = core:get_profiles()["feature"]
       assert.is_not_nil(profile)
       assert.is_true(profile.orphaned_set)
     end)
 
     it("unreferenced configs from branch switching are orphaned", function()
-      -- Scenario: user built configs directly (via materialize_configuration)
+      -- Scenario: user built configs directly (via ConfigUnit:materialize)
       -- on feature branch, then switched to master. The configs have no
       -- profile referencing them.
       local core = make_core(
@@ -1660,7 +1649,7 @@ describe("Core", function()
       core:setup({ root = "/root" })
       assert.equals(1, #core:get_orphaned_configs())
 
-      core:delete_orphaned_config("App", "feature-config")
+      core:get_config_unit("App", "feature-config"):delete()
 
       -- Orphan should be gone
       assert.equals(0, #core:get_orphaned_configs())
@@ -1722,9 +1711,9 @@ describe("Core", function()
       core:setup({ root = "/root" })
       local saves_after_setup = #cache_saves
 
-      core:activate_profile("debug")
-      core:activate_profile("release")
-      core:activate_profile("debug")
+      get_cs(core, "debug"):activate()
+      get_cs(core, "release"):activate()
+      get_cs(core, "debug"):activate()
 
       assert.equals(saves_after_setup, #cache_saves,
         "switching between materialized profiles should not write to cache")
@@ -1837,105 +1826,108 @@ describe("Core", function()
     end)
   end)
 
-  describe("operations", function()
-    it("tracks a running operation", function()
-      local time = 100
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
+  describe("operations (on Profile)", function()
+    local op_config = {
+      configuration_sets = { debug = { App = "Debug" } },
+    }
+
+    local op_cache = {
+      profiles = {
+        debug = {
+          configuration_set = "debug",
+          projects = { App = { config_key = "Debug" } },
+        },
+      },
+    }
+
+    local function make_op_core(clock_fn)
+      local time = { value = 0 }
+      if not clock_fn then
+        clock_fn = function() return time.value end
+      end
+      local core = make_core(op_config, { active_profile = "debug" }, op_cache, {
+        clock = clock_fn,
       })
       core:setup({ root = "/root" })
-      core:start_operation("debug", "build")
+      local profile = core:get_profiles()["debug"]
+      return core, profile, time
+    end
 
-      local op = core:get_operation("debug")
+    it("tracks a running operation", function()
+      local _, profile, time = make_op_core()
+      time.value = 100
+      profile:start_operation("build")
+
+      local op = profile:operation()
       assert.is_not_nil(op)
       assert.equals("build", op.action)
       assert.equals(100, op.started_at)
 
-      time = 130
-      assert.equals(30, core:get_operation_elapsed("debug"))
+      time.value = 130
+      assert.equals(30, profile:operation_elapsed())
     end)
 
     it("finishes operation with success message", function()
-      local time = 100
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "build")
-      time = 190
-      core:finish_operation("debug", true)
+      local _, profile, time = make_op_core()
+      time.value = 100
+      profile:start_operation("build")
+      time.value = 190
+      profile:finish_operation(true)
 
-      local op = core:get_operation("debug")
+      local op = profile:operation()
       assert.is_not_nil(op)
       assert.equals("built in 1m30s", op.message)
       assert.is_true(op.success)
       -- No longer running
-      assert.is_nil(core:get_operation_elapsed("debug"))
+      assert.is_nil(profile:operation_elapsed())
     end)
 
     it("finishes operation with failure message", function()
-      local time = 0
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "configure")
-      time = 45
-      core:finish_operation("debug", false)
+      local _, profile, time = make_op_core()
+      profile:start_operation("configure")
+      time.value = 45
+      profile:finish_operation(false)
 
-      local op = core:get_operation("debug")
+      local op = profile:operation()
       assert.equals("configure failed in 45s", op.message)
       assert.is_false(op.success)
     end)
 
     it("configure+build operation uses generic verb", function()
-      local time = 0
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "configure+build")
-      time = 120
-      core:finish_operation("debug", true)
+      local _, profile, time = make_op_core()
+      profile:start_operation("configure+build")
+      time.value = 120
+      profile:finish_operation(true)
 
-      assert.equals("built in 2m00s", core:get_operation("debug").message)
+      assert.equals("built in 2m00s", profile:operation().message)
     end)
 
     it("new operation replaces previous result", function()
-      local time = 0
-      local core = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "build")
-      time = 10
-      core:finish_operation("debug", true)
-      assert.is_not_nil(core:get_operation("debug").message)
+      local _, profile, time = make_op_core()
+      profile:start_operation("build")
+      time.value = 10
+      profile:finish_operation(true)
+      assert.is_not_nil(profile:operation().message)
 
-      core:start_operation("debug", "build")
+      profile:start_operation("build")
       -- Previous result replaced by running state
-      assert.is_not_nil(core:get_operation("debug").started_at)
-      assert.is_nil(core:get_operation("debug").message)
+      assert.is_not_nil(profile:operation().started_at)
+      assert.is_nil(profile:operation().message)
     end)
 
-    it("returns nil for unknown profile", function()
-      local core = make_core()
-      core:setup({ root = "/root" })
-      assert.is_nil(core:get_operation("nonexistent"))
-      assert.is_nil(core:get_operation_elapsed("nonexistent"))
+    it("returns nil before any operation", function()
+      local _, profile = make_op_core()
+      assert.is_nil(profile:operation())
+      assert.is_nil(profile:operation_elapsed())
     end)
 
     it("emits operation events", function()
-      local time = 0
-      local core, deps = make_core(nil, nil, nil, {
-        clock = function() return time end,
-      })
-      core:setup({ root = "/root" })
-      core:start_operation("debug", "build")
-      time = 10
-      core:finish_operation("debug", true)
+      local core, profile, time = make_op_core()
+      profile:start_operation("build")
+      time.value = 10
+      profile:finish_operation(true)
 
-      local events = deps._events_log
+      local events = core._deps._events_log
       local found_started, found_finished = false, false
       for _, e in ipairs(events) do
         if e.event == "operation_started" then
@@ -1953,7 +1945,10 @@ describe("Core", function()
     end)
   end)
 
-  describe("record_task_result state machine", function()
+  -- State transition tests (configured, failed_configure, built, failed_build)
+  -- are covered exhaustively in config_unit_spec.lua. These tests focus on
+  -- Core.record_task_result's cache persistence and module integration.
+  describe("record_task_result cache persistence", function()
     local function make_recording_core()
       local saved_cache = nil
       local core = make_core(
@@ -1975,50 +1970,6 @@ describe("Core", function()
       core:setup({ root = "/root" })
       return core, function() return saved_cache end
     end
-
-    it("configure success → configured", function()
-      local core, get_cache = make_recording_core()
-      core:record_task_result({
-        project_key = "App",
-        action = "configure",
-        configuration_key = "development",
-        success = true,
-      })
-      assert.equals("configured", get_cache().projects.App.configurations.development.state)
-    end)
-
-    it("configure failure → failed_configure", function()
-      local core, get_cache = make_recording_core()
-      core:record_task_result({
-        project_key = "App",
-        action = "configure",
-        configuration_key = "development",
-        success = false,
-      })
-      assert.equals("failed_configure", get_cache().projects.App.configurations.development.state)
-    end)
-
-    it("build success → built", function()
-      local core, get_cache = make_recording_core()
-      core:record_task_result({
-        project_key = "App",
-        action = "build",
-        configuration_key = "development",
-        success = true,
-      })
-      assert.equals("built", get_cache().projects.App.configurations.development.state)
-    end)
-
-    it("build failure → failed_build", function()
-      local core, get_cache = make_recording_core()
-      core:record_task_result({
-        project_key = "App",
-        action = "build",
-        configuration_key = "development",
-        success = false,
-      })
-      assert.equals("failed_build", get_cache().projects.App.configurations.development.state)
-    end)
 
     it("configure then build → built", function()
       local core, get_cache = make_recording_core()
@@ -2079,8 +2030,9 @@ describe("Core", function()
         project_key = "App",
         action = "configure",
         configuration_key = "Debug:ninja-gcc-14.2.0",
+        variant = "Debug",
         success = true,
-        tool_data = tool_data,
+        tool = { key = "ninja-gcc-14.2.0", data = tool_data },
       })
       local cached_td = get_cache().projects.App.configurations["Debug:ninja-gcc-14.2.0"].tool_data
       assert.is_not_nil(cached_td)
@@ -2092,19 +2044,21 @@ describe("Core", function()
 
     it("preserves existing tool_data when result has no tool_data", function()
       local core, get_cache = make_recording_core()
-      -- First, record with tool_data
+      -- First, record with tool
       core:record_task_result({
         project_key = "App",
         action = "configure",
         configuration_key = "Debug",
+        variant = "Debug",
         success = true,
-        tool_data = { id = "ninja-gcc-14.2.0", display = "Ninja - GCC 14.2.0" },
+        tool = { key = "ninja-gcc-14.2.0", data = { id = "ninja-gcc-14.2.0", display = "Ninja - GCC 14.2.0" } },
       })
-      -- Second, record build without tool_data
+      -- Second, record build without tool
       core:record_task_result({
         project_key = "App",
         action = "build",
         configuration_key = "Debug",
+        variant = "Debug",
         success = true,
       })
       local cached = get_cache().projects.App.configurations.Debug
@@ -2150,6 +2104,7 @@ describe("Core", function()
         project_key = "App",
         action = "configure",
         configuration_key = "Debug",
+        variant = "Debug",
         success = true,
         build_dir = "/root/.nvim/build/App/Debug",
         cmake = { generator = "Ninja" },
@@ -2284,7 +2239,7 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
 
-      local options = core:get_project_options("App", "Debug")
+      local options = core:get_config_unit("App", "Debug"):options()
       assert.is_not_nil(options)
       assert.equals(1, #options)
       assert.equals("Project Options", options[1].label)
@@ -2313,7 +2268,7 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
 
-      local options = core:get_project_options("App", "Debug")
+      local options = core:get_config_unit("App", "Debug"):options()
       assert.is_nil(options)
     end)
 
@@ -2348,7 +2303,7 @@ describe("Core", function()
       )
       core:setup({ root = "/root" })
 
-      local options = core:get_project_options("App", "Debug")
+      local options = core:get_config_unit("App", "Debug"):options()
       assert.is_nil(options)
     end)
   end)

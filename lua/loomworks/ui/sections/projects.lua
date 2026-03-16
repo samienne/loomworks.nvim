@@ -60,7 +60,8 @@ local function collect_tool_entries(proj, variant, tools_by_type)
   -- 1. Cached entries for this variant (case-insensitive match)
   if proj.cached_configurations then
     for config_key, cached_config in pairs(proj.cached_configurations) do
-      local v, tk = merge.parse_profile_key(config_key)
+      local v = cached_config.variant
+      local tk = cached_config.tool_key
       if v and tk and v:lower() == variant_lower then
         entries[#entries + 1] = {
           config_key = config_key,
@@ -120,7 +121,8 @@ return function(tree, ctx)
 
   local tools_by_type = lw.get_tools_by_type()
   local sorted = sorted_project_keys(projects)
-  local _, active_tool_key = merge.parse_profile_key(ctx.active_profile_key or "")
+  local active_tool_key = ctx.active_profile and ctx.active_profile.tool
+      and ctx.active_profile.tool.key or nil
 
   for _, key in ipairs(sorted) do
     local proj = projects[key]
@@ -187,7 +189,8 @@ return function(tree, ctx)
               fold_key = "config:" .. key .. ":" .. cname,
               spinning = config_has_running,
               hl = config_hl,
-              on_delete = actions.delete_configuration(key, cname),
+              on_delete = not project_has_keyed_tools
+                  and actions.delete_config(lw.get_config_unit(key, cname)) or nil,
             }, function()
               if cdata.toolchain then
                 tree:leaf("Toolchain: " .. tostring(cdata.toolchain), "Comment")
@@ -202,8 +205,14 @@ return function(tree, ctx)
                     and proj.configuration:lower() == cname:lower()
                 local entries = collect_tool_entries(proj, cname, tools_by_type)
                 for _, entry in ipairs(entries) do
+                  local unit = lw.get_config_unit(key, entry.config_key)
+                  -- Ensure variant/tool are set for uncached entries
+                  if not unit.variant then
+                    unit.variant = cname
+                    unit.tool = entry.tool_key and { key = entry.tool_key } or nil
+                  end
                   local config_status, status_hl, progress_str, is_spinning =
-                      helpers.resolve_config_status_global(key, entry.config_key, entry.cached)
+                      helpers.resolve_config_status_global(unit, entry.cached)
                   local is_active = is_active_variant
                       and active_tool_key == entry.tool_key
                   local hl = entry_highlight(config_status, status_hl, is_spinning, is_active)
@@ -212,15 +221,13 @@ return function(tree, ctx)
                     fold_key = "config_tool:" .. key .. ":" .. entry.config_key,
                     spinning = is_spinning,
                     hl = hl,
-                    on_build = actions.build_configuration(key, entry.config_key),
-                    on_rebuild = actions.rebuild_configuration(key, entry.config_key),
-                    on_clean = actions.clean_configuration(key, entry.config_key),
-                    on_configure = actions.configure_configuration(key, entry.config_key),
-                    on_delete = entry.cached
-                        and actions.delete_config(key, entry.config_key) or nil,
-                    on_pin = actions.pin_config(key, entry.config_key),
-                    on_options = entry.cached
-                        and actions.show_options(key, entry.config_key) or nil,
+                    on_build = actions.build_configuration(unit),
+                    on_rebuild = actions.rebuild_configuration(unit),
+                    on_clean = actions.clean_configuration(unit),
+                    on_configure = actions.configure_configuration(unit),
+                    on_delete = entry.cached and actions.delete_config(unit) or nil,
+                    on_pin = actions.pin_config(unit),
+                    on_options = entry.cached and actions.show_options(unit) or nil,
                   }, function()
                     helpers.render_cached_details(tree, config_status, status_hl, entry.cached,
                       key .. ":" .. entry.config_key)
@@ -228,10 +235,11 @@ return function(tree, ctx)
                 end
               else
                 -- Non-keyed modules: show single status
+                local unit = lw.get_config_unit(key, cname)
                 local cached = proj.cached_configurations
                     and proj.cached_configurations[cname]
                 local config_status, status_hl, progress_str, is_spinning =
-                    helpers.resolve_config_status_global(key, cname, cached)
+                    helpers.resolve_config_status_global(unit, cached)
                 local is_active_variant = is_active_project
                     and proj.configuration:lower() == cname:lower()
                 local hl = entry_highlight(config_status, status_hl, is_spinning, is_active_variant)
@@ -240,13 +248,13 @@ return function(tree, ctx)
                   fold_key = "config_status:" .. key .. ":" .. cname,
                   spinning = is_spinning,
                   hl = hl,
-                  on_build = actions.build_configuration(key, cname),
-                  on_rebuild = actions.rebuild_configuration(key, cname),
-                  on_clean = actions.clean_configuration(key, cname),
-                  on_configure = actions.configure_configuration(key, cname),
-                  on_delete = cached and actions.delete_configuration(proj, cname) or nil,
-                  on_pin = actions.pin_config(key, cname),
-                  on_options = cached and actions.show_options(key, cname) or nil,
+                  on_build = actions.build_configuration(unit),
+                  on_rebuild = actions.rebuild_configuration(unit),
+                  on_clean = actions.clean_configuration(unit),
+                  on_configure = actions.configure_configuration(unit),
+                  on_delete = cached and actions.delete_config(unit) or nil,
+                  on_pin = actions.pin_config(unit),
+                  on_options = cached and actions.show_options(unit) or nil,
                 }, function()
                   helpers.render_cached_details(tree, config_status, status_hl, cached)
                 end)

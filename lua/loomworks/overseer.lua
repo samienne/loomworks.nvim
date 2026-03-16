@@ -7,7 +7,6 @@ local M = {}
 local function collect_configuration_tasks(project_key, config_key)
   local loomworks = require("loomworks")
   local modules = require("loomworks.modules")
-  local merge = require("loomworks.merge")
 
   local ws = loomworks.get_workspace()
   if not ws then return nil end
@@ -18,16 +17,11 @@ local function collect_configuration_tasks(project_key, config_key)
   local mod = modules.get(project_config.type)
   if not mod or not mod.tasks then return nil end
 
-  -- Parse config_key to get variant and tool_key
-  local variant, tool_key = merge.parse_profile_key(config_key)
-
-  -- Resolve tool_data from detected tools
-  local core = loomworks._core()
-  local tool_data = nil
-  if tool_key then
-    local dt = merge.resolve_detected_tool(core._tools_by_type, tool_key)
-    if dt then tool_data = dt.tool_data end
-  end
+  -- Get variant and tool from ConfigUnit (never parse config_key)
+  local unit = loomworks.get_config_unit(project_key, config_key)
+  local variant = unit.variant
+  local tool = unit:resolve_tool()
+  local tool_data = tool and tool.data or nil
 
   -- Get module info
   local abs_path = ws.root .. "/" .. (project_config.path or project_key)
@@ -57,6 +51,8 @@ local function collect_configuration_tasks(project_key, config_key)
     local lw_meta = task_def.loomworks
     if lw_meta then
       lw_meta.progress_tool = pt
+      lw_meta.variant = variant
+      lw_meta.tool = tool
       if by_action[lw_meta.action] then
         by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
       end
@@ -67,41 +63,44 @@ local function collect_configuration_tasks(project_key, config_key)
 end
 
 --- Collect task definitions for a profile, grouped by action.
---- Does not change the active profile.
---- @param profile_key string
+--- Does not change the active profile. Uses registered ProfileProject and
+--- Project objects instead of recomputing from scratch.
+--- @param profile loomworks.Profile
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
-local function collect_profile_tasks(profile_key)
+local function collect_profile_tasks(profile)
   local loomworks = require("loomworks")
   local modules = require("loomworks.modules")
-  local merge = require("loomworks.merge")
 
   local ws = loomworks.get_workspace()
   if not ws then return nil end
 
-  local core = loomworks._core()
-  local projects = merge.resolve_profile_projects(
-    ws, profile_key, core._tools_by_type)
-  if not projects then return nil end
+  local pps = profile:projects()
+  if #pps == 0 then return nil end
+
+  local tool_data = profile.tool and profile.tool.data or nil
 
   local by_action = { configure = {}, build = {} }
 
-  for key, proj in pairs(projects) do
-    local mod = modules.get(proj.type)
+  for _, pp in ipairs(pps) do
+    local project = pp._project
+    if not project then goto continue end
+
+    local mod = modules.get(project.type)
     if not mod or not mod.tasks then goto continue end
 
-    local active_config = proj.configuration
+    local active_config = pp.variant
     if not active_config then goto continue end
 
     local project_ctx = {
-      name = key,
-      path = proj.path or key,
-      type = proj.type,
+      name = pp.project_key,
+      path = project.path or pp.project_key,
+      type = project.type,
       configuration = active_config,
-      configuration_key = proj.configuration_key,
-      configurations = proj.configurations,
-      tool_data = proj.tool_data,
+      configuration_key = pp.config_key,
+      configurations = project.configurations,
+      tool_data = tool_data,
       workspace_root = ws.root,
-      env = proj.tool_data and proj.tool_data.env or {},
+      env = tool_data and tool_data.env or {},
     }
 
     local pt = mod.progress_parser
@@ -113,6 +112,8 @@ local function collect_profile_tasks(profile_key)
       local lw_meta = task_def.loomworks
       if lw_meta then
         lw_meta.progress_tool = pt
+        lw_meta.variant = active_config
+        lw_meta.tool = profile.tool
         if by_action[lw_meta.action] then
           by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
         end
@@ -140,7 +141,8 @@ local function start_one_task(overseer, task_def, on_complete)
     action = lw_meta.action,
     configuration_key = lw_meta.configuration_key,
     build_dir = lw_meta.build_dir,
-    tool_data = lw_meta.tool_data,
+    variant = lw_meta.variant,
+    tool = lw_meta.tool,
     cmake = lw_meta.cmake,
     progress_tool = lw_meta.progress_tool,
   }
@@ -287,10 +289,9 @@ end
 --- Run an action for a single project configuration.
 --- Creates a pinned profile entry if needed, then launches overseer tasks.
 --- If building and the configuration is unconfigured, configures first.
---- @param project_key string
---- @param config_key string cache key (variant or variant:tool_key)
+--- @param unit loomworks.ConfigUnit
 --- @param action string "configure" or "build"
-function M.run_configuration_action(project_key, config_key, action)
+function M.run_configuration_action(unit, action)
   local ok, overseer = pcall(require, "overseer")
   if not ok then
     vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
@@ -301,12 +302,11 @@ function M.run_configuration_action(project_key, config_key, action)
 
   local function do_action()
     -- Pin config only if not already referenced by a materialized profile
-    local refs = loomworks.find_referencing_profiles(project_key, config_key)
-    if #refs == 0 then
-      loomworks.materialize_pinned(project_key, config_key)
+    if #unit:referencing_profiles() == 0 then
+      unit:materialize_pinned()
     end
 
-    local all_tasks = collect_configuration_tasks(project_key, config_key)
+    local all_tasks = collect_configuration_tasks(unit.project_key, unit.config_key)
     if not all_tasks then return end
 
     if action == "configure" then
@@ -318,7 +318,7 @@ function M.run_configuration_action(project_key, config_key, action)
       -- Check if any projects need configuring first
       local needs_configure = filter_unconfigured_tasks(all_tasks)
       if #needs_configure > 0 then
-        vim.notify("loomworks: configuring " .. project_key .. " before build", vim.log.levels.INFO)
+        vim.notify("loomworks: configuring " .. unit.project_key .. " before build", vim.log.levels.INFO)
         launch_tasks(overseer, needs_configure, function(all_succeeded)
           if not all_succeeded then
             vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
@@ -345,11 +345,11 @@ function M.run_configuration_action(project_key, config_key, action)
 end
 
 --- Run all tasks of a given action for a profile.
---- Activates the profile first, then launches overseer tasks.
+--- The profile must already be materialized (caller ensures this).
 --- If building and some projects are unconfigured, configures them first.
---- @param profile_key string
+--- @param profile loomworks.Profile
 --- @param action string "configure" or "build"
-function M.run_profile_action(profile_key, action)
+function M.run_profile_action(profile, action)
   local ok, overseer = pcall(require, "overseer")
   if not ok then
     vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
@@ -359,21 +359,17 @@ function M.run_profile_action(profile_key, action)
   local loomworks = require("loomworks")
 
   local function do_action()
-    -- Materialize profile to cache before any tasks start.
-    -- This ensures cache reflects what will be built.
-    loomworks.materialize_profile(profile_key)
-
     -- Re-collect tasks after potential deletion completed (cache may have changed)
-    local all_tasks = collect_profile_tasks(profile_key)
+    local all_tasks = collect_profile_tasks(profile)
     if not all_tasks then return end
 
     if action == "configure" then
-      loomworks.start_operation(profile_key, "configure")
+      profile:start_operation("configure")
       local launched = launch_tasks(overseer, all_tasks.configure, function(all_succeeded)
-        loomworks.finish_operation(profile_key, all_succeeded)
+        profile:finish_operation(all_succeeded)
       end)
       if launched == 0 then
-        loomworks.finish_operation(profile_key, true)
+        profile:finish_operation(true)
       end
       return
     end
@@ -382,28 +378,28 @@ function M.run_profile_action(profile_key, action)
       local needs_configure = filter_unconfigured_tasks(all_tasks)
 
       if #needs_configure > 0 then
-        loomworks.start_operation(profile_key, "configure+build")
+        profile:start_operation("configure+build")
         vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
         launch_tasks(overseer, needs_configure, function(all_succeeded)
           if not all_succeeded then
             vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
-            loomworks.finish_operation(profile_key, false)
+            profile:finish_operation(false)
             return
           end
           local build_launched = launch_tasks(overseer, all_tasks.build, function(build_succeeded)
-            loomworks.finish_operation(profile_key, build_succeeded)
+            profile:finish_operation(build_succeeded)
           end)
           if build_launched == 0 then
-            loomworks.finish_operation(profile_key, true)
+            profile:finish_operation(true)
           end
         end)
       else
-        loomworks.start_operation(profile_key, "build")
+        profile:start_operation("build")
         local launched = launch_tasks(overseer, all_tasks.build, function(all_succeeded)
-          loomworks.finish_operation(profile_key, all_succeeded)
+          profile:finish_operation(all_succeeded)
         end)
         if launched == 0 then
-          loomworks.finish_operation(profile_key, true)
+          profile:finish_operation(true)
         end
       end
       return

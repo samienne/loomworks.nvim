@@ -15,20 +15,20 @@ local function render_profile_details(tree, profile, lw)
     tree:leaf("Set: " .. profile.configuration_set, "Comment")
   end
 
-  if profile.tool_label then
-    tree:leaf("Tool: " .. profile.tool_label, "Comment")
+  if profile.tool and profile.tool.label then
+    tree:leaf("Tool: " .. profile.tool.label, "Comment")
     -- Show tool details if available (cmake-specific for now)
-    if profile.tool_data then
-      if profile.tool_data.generator then
-        tree:leaf("Generator: " .. profile.tool_data.generator, "Comment")
+    if profile.tool.data then
+      if profile.tool.data.generator then
+        tree:leaf("Generator: " .. profile.tool.data.generator, "Comment")
       end
-      if profile.tool_data.compiler_id then
-        tree:leaf("Compiler: " .. profile.tool_data.compiler_id, "Comment")
+      if profile.tool.data.compiler_id then
+        tree:leaf("Compiler: " .. profile.tool.data.compiler_id, "Comment")
       end
     end
   end
 
-  local op = lw.get_operation(profile.key)
+  local op = profile:operation()
   if op and op.message then
     local op_hl = op.success and "DiagnosticOk" or "DiagnosticError"
     tree:leaf("Last: " .. op.message, op_hl)
@@ -42,16 +42,17 @@ local function render_profile_details(tree, profile, lw)
         local config_status, status_hl, progress_str, is_spinning =
             helpers.resolve_config_status(pp, cached)
 
+        local unit = lw.get_config_unit(pp.project_key, pp.config_key)
         tree:node(pp.project_key .. " → " .. pp.variant .. progress_str, {
           fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key,
           spinning = is_spinning,
           hl = status_hl,
-          on_build = actions.build_configuration(pp.project_key, pp.config_key),
-          on_rebuild = actions.rebuild_configuration(pp.project_key, pp.config_key),
-          on_clean = actions.clean_configuration(pp.project_key, pp.config_key),
-          on_configure = actions.configure_configuration(pp.project_key, pp.config_key),
-          on_delete = actions.delete_config(pp.project_key, pp.config_key),
-          on_options = actions.show_options(pp.project_key, pp.config_key),
+          on_build = actions.build_configuration(unit),
+          on_rebuild = actions.rebuild_configuration(unit),
+          on_clean = actions.clean_configuration(unit),
+          on_configure = actions.configure_configuration(unit),
+          on_delete = actions.delete_config(unit),
+          on_options = actions.show_options(unit),
         }, function()
           helpers.render_cached_details(tree, config_status, status_hl, cached)
         end)
@@ -62,11 +63,10 @@ end
 
 --- Render the profiles section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, all_profiles, active_profile_key }
+--- @param ctx table { lw, all_profiles, active_profile }
 return function(tree, ctx)
   local lw = ctx.lw
   local all_profiles = ctx.all_profiles
-  local active_profile_key = ctx.active_profile_key
 
   -- Collect and sort all profiles alphabetically
   local profiles = {}
@@ -82,7 +82,7 @@ return function(tree, ctx)
   tree:blank()
 
   for _, profile in ipairs(profiles) do
-    local is_active = profile.key == active_profile_key
+    local is_active = profile == ctx.active_profile
     local profile_running = profile:is_running()
 
     local status_label, status_hl = profile:status()
@@ -104,10 +104,10 @@ return function(tree, ctx)
       if pct then
         display = display .. " " .. pct .. "%"
       end
-      display = display .. helpers.format_elapsed(lw.get_operation_elapsed(profile.key))
+      display = display .. helpers.format_elapsed(profile:operation_elapsed())
     elseif is_active then
       hl = "LoomworksActive"
-      local op = lw.get_operation(profile.key)
+      local op = profile:operation()
       if op and op.message then
         display = display .. " — " .. op.message
       end
@@ -120,7 +120,7 @@ return function(tree, ctx)
       else
         hl = "LoomworksConfigured"
       end
-      local op = lw.get_operation(profile.key)
+      local op = profile:operation()
       if op and op.message then
         display = display .. " — " .. op.message
       end
@@ -131,7 +131,7 @@ return function(tree, ctx)
       marker = marker,
       spinning = profile_running,
       hl = hl,
-      on_enter = actions.activate(profile.key),
+      on_enter = actions.activate(profile),
       on_build = actions.build(profile),
       on_rebuild = actions.rebuild(profile),
       on_clean = actions.clean(profile),

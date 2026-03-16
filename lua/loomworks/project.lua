@@ -7,8 +7,7 @@
 --- @field path? string relative path from workspace root
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
---- @field tool_key? string cache key suffix
---- @field tool_data? table opaque module-specific tool data
+--- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
 --- @field status loomworks.Status
 --- @field orphaned boolean
 --- @field needs_refresh boolean
@@ -37,13 +36,16 @@ end
 --- Update all data fields in place (preserves table identity).
 --- @param data loomworks.MergedProjectData
 function Project:_update(data)
-  self._generation = self._core._generation
   self.type = data.type
   self.path = data.path
   self.configuration = data.configuration
   self.configuration_key = data.configuration_key
-  self.tool_key = data.tool_key
-  self.tool_data = data.tool_data
+  self.tool = data.tool_key and {
+    key = data.tool_key,
+    data = data.tool_data,
+    label = data.tool_label,
+    mod_type = data.tool_mod_type,
+  } or nil
   self.status = data.status
   self.orphaned = data.orphaned or false
   self.needs_refresh = data.needs_refresh or false
@@ -58,24 +60,23 @@ function Project:__tostring()
   return "Project(" .. self.key .. ")"
 end
 
---- Check if this object's data may be outdated.
---- @return boolean
-function Project:is_stale()
-  return self._generation ~= self._core._generation
-end
-
 --- Get the running action for this project (any config).
 --- @return string|nil action ("configure" or "build")
 function Project:running_action()
-  return self._core:get_project_running_action(self.key)
+  for _, unit in pairs(self._core._config_units) do
+    if unit.project_key == self.key and unit:is_running() then
+      return unit:running_action()
+    end
+  end
+  return nil
 end
 
 --- Compute the cache key for a configuration name, accounting for kit_id.
 --- @param config_name string
 --- @return string
 function Project:config_cache_key(config_name)
-  if self.tool_key then
-    return config_name .. ":" .. self.tool_key
+  if self.tool and self.tool.key then
+    return config_name .. ":" .. self.tool.key
   end
   return config_name
 end
@@ -102,8 +103,8 @@ end
 --- @return loomworks.CachedConfig|nil
 function Project:cached_config(config_name)
   if not self.cached_configurations then return nil end
-  if self.tool_key then
-    local cached = self.cached_configurations[config_name .. ":" .. self.tool_key]
+  if self.tool and self.tool.key then
+    local cached = self.cached_configurations[config_name .. ":" .. self.tool.key]
     if cached then return cached end
   end
   return self.cached_configurations[config_name]
@@ -128,9 +129,10 @@ function Project:to_module_context(ws_root)
     configuration = self.configuration,
     configuration_key = self.configuration_key,
     configurations = self.configurations,
-    tool_data = self.tool_data,
+    tool_key = self.tool and self.tool.key or nil,
+    tool_data = self.tool and self.tool.data or nil,
     workspace_root = ws_root,
-    env = self.tool_data and self.tool_data.env or {},
+    env = self.tool and self.tool.data and self.tool.data.env or {},
   }
 end
 

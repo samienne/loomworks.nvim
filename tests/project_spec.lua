@@ -38,19 +38,6 @@ describe("Project", function()
     end)
   end)
 
-  describe("is_stale", function()
-    it("returns false when generation matches", function()
-      local p = make_project()
-      assert.is_false(p:is_stale())
-    end)
-
-    it("returns true after core remerges", function()
-      local p, core = make_project()
-      core._generation = core._generation + 1
-      assert.is_true(p:is_stale())
-    end)
-  end)
-
   describe("running_action", function()
     it("returns nil when nothing running", function()
       local p = make_project()
@@ -136,6 +123,7 @@ describe("Project", function()
     it("builds module context with correct fields", function()
       local p = make_project({
         configuration_key = "Debug:ninja-gcc",
+        tool_key = "ninja-gcc",
         tool_data = { generator = "Ninja", env = { CC = "gcc" } },
       })
       local ctx = p:to_module_context("/workspace")

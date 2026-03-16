@@ -42,12 +42,12 @@ system does (data model, state machines, UI behavior, invariants), see
 
                          core.lua
                              |
-          +------------------+------------------+
-          |                  |                  |
-    config_unit.lua    profile.lua         project.lua
-    Runtime state      Profile +            Project
-    per (proj,cfg)     ProfileProject       wrapper
-    flyweight          objects              object
+     +------------+----------+----------+-----------+
+     |            |                     |           |
+configuration  config_unit.lua   profile.lua   project.lua
+  _set.lua     Runtime state     Profile +      Project
+ConfigSet      per (proj,cfg)    ProfileProject  wrapper
+  object       synced + lazy     objects         object
           |
           +-- progress/init.lua + ninja.lua
               Parser registry for build output
@@ -156,9 +156,10 @@ simpler option.
 6. **Objects over keys.** In runtime code, pass objects (Profile, Project,
    ConfigUnit) rather than string keys that require lookup. Objects carry
    their context — the recipient can query state directly without reaching
-   back into core or the data model. In disk formats (cache.json), use
-   lightweight references (e.g., `{ "config_key": "Debug:ninja-gcc-12" }`)
-   that point to the canonical data rather than duplicating it.
+   back into core or the data model. Keys are opaque identifiers — they
+   exist for disk format (cache.json), internal registries, display, and
+   event data, but are never parsed at runtime to extract structure. Read
+   structured data from object fields instead.
 
 7. **Methods over free functions.** If a function takes an object as its
    first parameter and is clearly about that object, it should be a method
@@ -235,11 +236,12 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `core.lua` | All mutable state (`_workspace`, `_active_set`, `_config_units`, `_generation`, `_operations`, `_tools_by_type`, `_setup_error`, `_state`, `_tool_state`, `_tool_waiters`). Async setup, remerge, object factories, profile management, task lifecycle, deletion orchestration, buffer queries | Do I/O directly (delegates to io.lua); know about UI; render anything |
-| `merge.lua` | Three-file merge algorithm, profile resolution, mapping computation, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua |
-| `profile.lua` | Profile and ProfileProject classes, status aggregation, plan_deletion | Own state beyond what core provides; do I/O |
+| `core.lua` | All mutable state (`_workspace`, `_active_set`, `_config_units`, `_config_sets`, `_profiles`, `_projects`, `_profile_projects`, `_tools_by_type`, `_setup_error`, `_state`, `_tool_state`, `_tool_waiters`). Async setup, remerge, object sync, profile management, task lifecycle, deletion orchestration, buffer queries | Do I/O directly (delegates to io.lua); know about UI; render anything |
+| `merge.lua` | Three-file merge algorithm, profile collection, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua |
+| `configuration_set.lua` | ConfigurationSet class: identity-preserving with `_update()`, owns activation (`activate()`/`ensure_profile()`), property-based profile lookup (`find_profile()`), resolves Project references internally | Own state beyond config data; do I/O |
+| `profile.lua` | Profile and ProfileProject classes (tool fields bundled into `.tool` ToolRef), status aggregation, plan_deletion, activate/deactivate. Profile resolves mappings + ConfigurationSet reference in `_update()`. ProfileProject registered in Core, holds direct refs to Profile + Project | Own state beyond what core provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation | Own state beyond what core provides |
-| `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag, queued action. Listener pattern via `on_state_change()` | Persist anything (runtime only); know about profiles |
+| `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag, queued action. Synced during remerge (`_update()` refreshes variant/tool from cache, preserves runtime state) + lazy creation via `get_config_unit()`. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `resolve_tool()`, `referencing_profiles()` | Persist anything (runtime only) |
 | `events.lua` | Pub/sub system: `on()`, `off()`, `emit()` | Hold domain state; know about specific event semantics |
 | `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
 
@@ -322,7 +324,7 @@ The first remerge produces an ActiveSet with empty tools. Profile sections
 render immediately. When tool detection completes, a second remerge fills in
 detected tools and the UI refreshes via `active_set_changed`.
 
-Materialization calls (`materialize_profile`, `materialize_configuration`,
+Materialization calls (`_materialize_from_data`, `materialize_configuration`,
 `materialize_pinned`) that arrive during `scanning` are queued in
 `_tool_waiters` and replayed when detection completes.
 
@@ -418,19 +420,37 @@ for live queries. See specification.md §1.6, §1.7 for behavioral rules.
 
 ```
 Core (singleton via init.lua)
-  ├── Profile[]           ← from merge, one per cached/explicit profile
-  │     └── ProfileProject[]  ← one per project in profile's mappings
-  ├── Project[]           ← from active set, one per project
-  └── ConfigUnit{}        ← flyweight registry, one per (project, config) pair
+  ├── ConfigurationSet[]  ← from config, identity-preserving
+  ├── Profile[]           ← from merge, identity-preserving
+  ├── ProfileProject[]    ← registered, one per (profile, project) pair
+  ├── Project[]           ← from active set, identity-preserving
+  └── ConfigUnit{}        ← synced during remerge + lazy fallback
 ```
 
-All objects carry a `_generation` stamp from Core. When Core remerges,
-`_generation` increments and `object:is_stale()` returns true for
-previously-created objects.
+All objects are **identity-preserving** across remerges: the same table is
+updated in-place via `_update()`, never replaced. Construction uses the same
+path (`new` calls `_update`). Removed objects are marked `_removed = true`.
+
+**Objects own their updates**: given merge output, each object resolves its own
+references by reaching into Core's registries. Cross-object navigation uses
+direct references stored during `_update()`, not runtime key lookups.
+
+**Remerge dependency order** (each step depends on the previous):
+1. `_sync_projects` — no deps
+2. `_sync_config_sets` — resolves Project references
+3. `_sync_profiles` — resolves ConfigurationSet references
+4. `_sync_profile_projects` — resolves Profile + Project references
+5. `_sync_config_units` — collects pairs from profiles + cache
+
+**ConfigurationSet** owns activation: `cs:activate(tool_entry)` finds or
+materializes a profile by property matching, never by computing a key.
+`cs:ensure_profile(tool_entry)` materializes without activating.
 
 **ConfigUnit** is the meeting point — Profile, Project, and task_tracker all
 reference the same ConfigUnit for a given (project_key, config_key). State
-changes on a ConfigUnit are immediately visible to all consumers.
+changes on a ConfigUnit are immediately visible to all consumers. ConfigUnits
+are synced during remerge (variant/tool refreshed from cache, runtime state
+preserved) and also created lazily via `get_config_unit()` between remerges.
 
 ---
 
@@ -497,9 +517,10 @@ loomworks.nvim/
 │   │   ├── cache.lua                  cache.json read/write
 │   │   ├── merge.lua                  Three-file merge → ActiveSet
 │   │   ├── events.lua                 Event/signal system
+│   │   ├── configuration_set.lua       ConfigurationSet class (owns activation)
 │   │   ├── profile.lua                Profile + ProfileProject classes
 │   │   ├── project.lua                Project class
-│   │   ├── config_unit.lua            Per-config runtime state (flyweight)
+│   │   ├── config_unit.lua            Per-config runtime state (synced + lazy)
 │   │   ├── cmake_kits.lua             CMake tool detection
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
 │   │   ├── overseer.lua               Overseer template provider + launching

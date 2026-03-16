@@ -11,7 +11,16 @@ describe("Profile", function()
       explicit = false,
       mappings = { App = "Debug", Lib = "Debug" },
     }, overrides or {})
-    return Profile.new(core, "debug", data), core
+    local profile = Profile.new(core, "debug", data)
+    -- Populate profile_projects registry (mirrors Core._sync_profile_projects)
+    if profile.mappings then
+      for project_key, variant in pairs(profile.mappings) do
+        local reg_key = profile.key .. "\0" .. project_key
+        core._profile_projects[reg_key] = ProfileProject.new(
+          core, profile, project_key, variant)
+      end
+    end
+    return profile, core
   end
 
   describe("new", function()
@@ -272,7 +281,6 @@ describe("Profile", function()
           return {} -- no other profiles
         end,
       })
-      -- Need to override get_profiles on core too
       local plan = p:plan_deletion()
       assert.equals(2, #plan.items)
       assert.equals("App", plan.items[1].project_key)
@@ -281,22 +289,81 @@ describe("Profile", function()
   end)
 
   describe("activate / deactivate", function()
-    it("activate delegates to core", function()
-      local activated = nil
+    it("activate writes user.json and remerges", function()
+      local saved_user = nil
+      local remerged = false
+      local ws = {
+        root = "/root",
+        user = { _meta = { version = 1 }, active_profile = nil },
+      }
       local p = make_profile(nil, {
-        activate_profile = function(_, key) activated = key end,
+        get_workspace = function() return ws end,
+        remerge = function() remerged = true end,
+        _deps = {
+          clock = function() return 0 end,
+          events = { emit = function() end },
+          user = { save = function(root, data) saved_user = data return true end },
+        },
       })
       p:activate()
-      assert.equals("debug", activated)
+      assert.equals("debug", ws.user.active_profile)
+      assert.equals("debug", saved_user.active_profile)
+      assert.is_true(remerged)
     end)
 
-    it("deactivate delegates to core", function()
-      local deactivated = nil
+    it("activate is no-op without workspace", function()
       local p = make_profile(nil, {
-        deactivate_profile = function(_, key) deactivated = key end,
+        get_workspace = function() return nil end,
+      })
+      p:activate() -- should not error
+    end)
+
+    it("deactivate clears active_profile and remerges", function()
+      local saved_user = nil
+      local remerged = false
+      local ws = {
+        root = "/root",
+        user = { _meta = { version = 1 }, active_profile = "debug" },
+      }
+      local p = make_profile(nil, {
+        get_workspace = function() return ws end,
+        remerge = function() remerged = true end,
+        _deps = {
+          clock = function() return 0 end,
+          events = { emit = function() end },
+          user = { save = function(root, data) saved_user = data return true end },
+        },
       })
       p:deactivate()
-      assert.equals("debug", deactivated)
+      assert.is_nil(ws.user.active_profile)
+      assert.is_nil(saved_user.active_profile)
+      assert.is_true(remerged)
+    end)
+
+    it("deactivate is no-op when not active", function()
+      local save_called = false
+      local ws = {
+        root = "/root",
+        user = { _meta = { version = 1 }, active_profile = "release" },
+      }
+      local p = make_profile(nil, {
+        get_workspace = function() return ws end,
+        _deps = {
+          clock = function() return 0 end,
+          events = { emit = function() end },
+          user = { save = function() save_called = true return true end },
+        },
+      })
+      p:deactivate()
+      assert.equals("release", ws.user.active_profile)
+      assert.is_false(save_called)
+    end)
+
+    it("deactivate is no-op without workspace", function()
+      local p = make_profile(nil, {
+        get_workspace = function() return nil end,
+      })
+      p:deactivate() -- should not error
     end)
   end)
 end)
@@ -316,12 +383,26 @@ describe("ProfileProject", function()
       get_workspace = function() return default_ws end,
     }, core_overrides or {})
     local core = h.make_mock_core(merged)
+    -- Add a Project object so ProfileProject can resolve it
+    local Project = require("loomworks.project")
+    core._projects["App"] = Project.new(core, "App", {
+      type = "cmake", path = "App", status = "unconfigured",
+      configurations = {}, cached_configurations = {},
+    })
     local data = {
       configuration_set = "debug",
       tool_key = tool_key,
       mappings = { App = "Debug" },
     }
     local profile = Profile.new(core, "debug", data)
+    -- Populate profile_projects registry
+    if profile.mappings then
+      for project_key, variant in pairs(profile.mappings) do
+        local reg_key = profile.key .. "\0" .. project_key
+        core._profile_projects[reg_key] = ProfileProject.new(
+          core, profile, project_key, variant)
+      end
+    end
     return profile:project("App"), core
   end
 
@@ -381,7 +462,13 @@ describe("ProfileProject", function()
           }
         end,
       })
+      local Project = require("loomworks.project")
+      core._projects["App"] = Project.new(core, "App", {
+        type = "cmake", path = "App", status = "unconfigured",
+        configurations = {}, cached_configurations = {},
+      })
       local Profile = require("loomworks.profile").Profile
+      local PP = require("loomworks.profile").ProfileProject
       local p1 = Profile.new(core, "debug:ninja-gcc", {
         configuration_set = "debug",
         mappings = { App = "Debug" },
@@ -390,6 +477,12 @@ describe("ProfileProject", function()
         configuration_set = "debug",
         mappings = { App = "Debug" },
       })
+      -- Populate profile_projects registry
+      for _, p in ipairs({ p1, p2 }) do
+        for pk, v in pairs(p.mappings) do
+          core._profile_projects[p.key .. "\0" .. pk] = PP.new(core, p, pk, v)
+        end
+      end
       -- Start a task on the shared unit
       local unit = core:get_config_unit("App", "Debug")
       unit:register_task(1, "build")

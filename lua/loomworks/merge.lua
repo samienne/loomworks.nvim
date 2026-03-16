@@ -13,16 +13,6 @@ function M.profile_key(set_name, tool_key)
   return set_name
 end
 
---- Parse a profile key into its components.
---- @param key string
---- @return string set_name, string|nil tool_key
-function M.parse_profile_key(key)
-  local set_name, tool_key = key:match("^([^:]+):(.+)$")
-  if set_name then
-    return set_name, tool_key
-  end
-  return key, nil
-end
 
 --- Build a pinned profile key from project and config keys.
 --- @param project_key string
@@ -322,38 +312,6 @@ function M.get_all_profiles(config, cache, tools_by_type)
   return profiles
 end
 
---- Resolve a profile definition from a profile_key by parsing it into
---- (set_name, tool_key) and resolving against config + detected tools.
---- Returns nil if the set_name doesn't exist in configuration_sets.
---- @param config loomworks.Config
---- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @param profile_key string
---- @return loomworks.ProfileDef|nil
-function M.resolve_profile_def(config, tools_by_type, profile_key)
-  local set_name, tool_key = M.parse_profile_key(profile_key)
-  if not config.configuration_sets or not config.configuration_sets[set_name] then
-    return nil
-  end
-
-  local tool_data, tool_label, tool_mod_type = nil, nil, nil
-  if tool_key then
-    local dt, mod_type = M.resolve_detected_tool(tools_by_type, tool_key)
-    if dt then
-      tool_data = dt.tool_data
-      tool_label = dt.tool_label
-      tool_mod_type = mod_type
-    end
-  end
-
-  return {
-    configuration_set = set_name,
-    tool_key = tool_key,
-    tool_data = tool_data,
-    tool_label = tool_label,
-    tool_mod_type = tool_mod_type,
-  }
-end
-
 --- Get tool entries for the configuration sets UI.
 --- Returns detected tools with their materialized profile key (if cached).
 --- @param config loomworks.Config
@@ -560,63 +518,7 @@ function M.merge(workspace, tools_by_type)
     name = active_profile_key,
     tool_key = tool_key,
     projects = projects,
-    configuration_sets = config.configuration_sets,
   }, all_profiles
-end
-
---- Resolve project contexts for a specific profile without changing the active profile.
---- @param ws loomworks.Workspace
---- @param profile_key string
---- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @return table<string, loomworks.MergedProjectData>|nil
-function M.resolve_profile_projects(ws, profile_key, tools_by_type)
-  tools_by_type = tools_by_type or {}
-
-  local all_profiles = M.get_all_profiles(ws.config, ws.cache, tools_by_type)
-  local profile = all_profiles[profile_key]
-  if not profile then return nil end
-
-  local set_name = profile.configuration_set
-  local mappings = nil
-  if set_name and ws.config.configuration_sets and ws.config.configuration_sets[set_name] then
-    mappings = ws.config.configuration_sets[set_name]
-  elseif profile.mappings then
-    mappings = profile.mappings
-  end
-  if not mappings then return nil end
-
-  local tk = profile.tool_key
-  local td = profile.tool_data
-
-  local projects = {}
-  for key, project in pairs(ws.config.projects) do
-    local mod = modules.get(project.type)
-    local abs_path = ws.root .. "/" .. project.path
-    local mod_info = mod and mod.info and mod.info(abs_path, project.type_config)
-        or { configurations = {} }
-
-    local active_configuration = mappings[key] or nil
-
-    local cache_config_key = nil
-    if active_configuration then
-      cache_config_key = M.build_config_key(
-        project.type, active_configuration, tk)
-    end
-
-    local has_keyed = M.module_has_keyed_tools(project.type)
-
-    projects[key] = {
-      type = project.type,
-      path = project.path,
-      configuration = active_configuration,
-      configuration_key = cache_config_key,
-      tool_key = has_keyed and tk or nil,
-      tool_data = has_keyed and td or nil,
-      configurations = mod_info.configurations or {},
-    }
-  end
-
-  return projects
 end
 
 return M

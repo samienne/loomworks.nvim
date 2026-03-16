@@ -391,7 +391,8 @@ function M.tasks(project, active_config)
       local build_config_key = configuration_key
       if config_name ~= active_config then
         -- Replace variant portion if it differs from active
-        local _, kit_id = require("loomworks.merge").parse_profile_key(configuration_key)
+        local kit_id = project.tool_key
+            or (project.tool and project.tool.key)
         if kit_id then
           build_config_key = config_name .. ":" .. kit_id
         else

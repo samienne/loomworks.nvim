@@ -132,13 +132,13 @@ use `:`. The config_key already includes the tool_key for keyed modules (e.g.,
 Materialization happens when:
 - User presses `<CR>` on a tool entry in Configuration Sets (activate)
 - User presses `b` or `c` on a tool entry (build/configure)
-- `materialize_profile()` API is called
+- `ConfigurationSet:activate()` is called (materializes then activates)
 - User presses `p` on a configuration (creates a pinned profile)
 
 On materialization:
-1. Profile definition is resolved (from config sets + detected tools, or
-   from a direct project+config reference for pinned profiles)
-2. Mappings are computed and stored on the profile
+1. Structured data (set_name, tool_entry) is passed directly — no profile
+   key parsing needed
+2. Mappings are derived from the configuration set
 3. For each project in the mappings, a skeleton cache entry is created
 4. Profile entry is written to `cache.profiles`
 5. Cache is saved; merge is triggered
@@ -499,19 +499,19 @@ tools) waits for detection to complete before proceeding.
 Materialization writes a profile to the cache so that build tasks can be
 launched against it. A profile must be materialized before any task runs.
 
-**Trigger**: `activate_profile()`, `build()`, `configure()`, `<CR>` in UI,
-or `p` key (pinned).
+**Trigger**: `ConfigurationSet:activate()`, `build()`, `configure()`, `<CR>` in
+UI, or `p` key (pinned).
 
 **Process (set-based profiles)**:
-1. Parse profile key → (set_name, tool_key)
+1. Receive structured data: set_name and optional tool_entry (tool_key,
+   tool_data, tool_label, tool_mod_type)
 2. Look up set_name in `configuration_sets` → mappings
-3. Resolve tool_data from detected tools or cache
-4. For each project in the mappings:
+3. For each project in the mappings:
    - Compute config_key (variant + tool_key for keyed modules)
    - Create skeleton cache entry if absent
-5. Write profile entry (with `configuration_set` and `mappings`) to
+4. Write profile entry (with `configuration_set` and tool fields) to
    `cache.profiles`
-6. Save cache, trigger remerge
+5. Save cache, trigger remerge
 
 **Process (pinned profiles)**:
 1. Receive project_key and config_key directly
@@ -532,9 +532,10 @@ Activation makes a profile the "active" profile. The active profile determines:
 - Which profile is highlighted with `LoomworksActive` in the status page
 
 **Process**:
-1. If profile doesn't exist in cache → materialize first
-2. Write `active_profile` to `loomworks.user.json`
-3. Trigger remerge (fires `active_set_changed` event)
+1. For new profiles: `ConfigurationSet:activate(tool_entry)` finds or
+   materializes the profile, then activates it via the Profile object
+2. For existing profiles: `Profile:activate()` writes `active_profile` to
+   `loomworks.user.json` and triggers remerge (fires `active_set_changed`)
 
 ### 4.3 Set Name Migration
 
@@ -1561,8 +1562,9 @@ Loading a workspace (whether via auto-load or `:LoomworksInit`) always:
 8. **Event-driven UI refresh**: The status page never polls. All updates are
    triggered by events from the core system.
 
-9. **Idempotent materialization**: Calling `materialize_profile()` on an
-   already-materialized profile is a no-op.
+9. **Idempotent materialization**: Materializing an already-cached profile
+   is a no-op. `ConfigurationSet:activate()` finds the existing profile by
+   property matching and skips materialization.
 
 10. **Generation counter**: Objects (Profile, Project) track staleness via a
     generation counter incremented on every remerge. Stale objects may have

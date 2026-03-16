@@ -81,11 +81,10 @@ end
 -- Object factories
 -- ---------------------------------------------------------------------------
 
---- Get a Profile object by key.
---- @param key string profile key
+--- Get the active Profile object.
 --- @return loomworks.Profile|nil
-function M.get_profile(key)
-  return core:get_profile(key)
+function M.get_active_profile()
+  return core:get_active_profile()
 end
 
 --- Get all Profile objects as a dict.
@@ -100,41 +99,21 @@ function M.get_tool_entries()
   return core:get_tool_entries()
 end
 
---- Get a Project object by key (from the active set).
---- @param key string project key
---- @return loomworks.Project|nil
-function M.get_project(key)
-  return core:get_project(key)
-end
-
 --- Get all Project objects from the active set as a dict.
 --- @return table<string, loomworks.Project>
 function M.get_projects()
   return core:get_projects()
 end
 
+--- Get all ConfigurationSet objects.
+--- @return table<string, loomworks.ConfigurationSet>
+function M.get_config_sets()
+  return core:get_config_sets()
+end
+
 -- ---------------------------------------------------------------------------
 -- Profile management
 -- ---------------------------------------------------------------------------
-
---- Activate a named profile.
---- @param profile_key string
-function M.activate_profile(profile_key)
-  core:activate_profile(profile_key)
-end
-
---- Deactivate a profile if it is currently active.
---- @param profile_key string
-function M.deactivate_profile(profile_key)
-  core:deactivate_profile(profile_key)
-end
-
---- Materialize a profile: write it to cache with full tool and project
---- references before any build/configure tasks start.
---- @param profile_key string
-function M.materialize_profile(profile_key)
-  core:materialize_profile(profile_key)
-end
 
 --- Re-scan tools from all modules and remerge.
 function M.rescan_tools()
@@ -165,22 +144,16 @@ end
 --- @param project_key string
 --- @param config_key string
 function M.materialize_configuration(project_key, config_key)
-  core:materialize_configuration(project_key, config_key)
+  core:get_config_unit(project_key, config_key):materialize()
 end
 
 --- Create a pinned profile entry that pins a single config in cache.
---- Returns the pinned profile key (format: "project/config_key").
+--- Returns the pinned Profile object.
 --- @param project_key string
 --- @param config_key string
---- @return string pinned_profile_key
+--- @return loomworks.Profile|nil
 function M.materialize_pinned(project_key, config_key)
-  return core:materialize_pinned(project_key, config_key)
-end
-
---- Activate a named configuration set.
---- @param name string
-function M.activate_set(name)
-  core:activate_set(name)
+  return core:get_config_unit(project_key, config_key):materialize_pinned()
 end
 
 -- ---------------------------------------------------------------------------
@@ -205,14 +178,6 @@ function M.get_config_unit(project_key, config_key)
   return core:get_config_unit(project_key, config_key)
 end
 
---- Get build options for a project+config key.
---- @param project_key string
---- @param config_key string
---- @return (loomworks.OptionGroup | loomworks.Option)[]|nil
-function M.get_project_options(project_key, config_key)
-  return core:get_project_options(project_key, config_key)
-end
-
 --- Get progress for a project+config key.
 --- @param project_key string
 --- @param config_key string
@@ -227,34 +192,6 @@ end
 --- @return number|nil seconds
 function M.get_elapsed(project_key, config_key)
   return core:get_config_unit(project_key, config_key):elapsed()
-end
-
---- Start tracking a profile-level operation.
---- @param profile_key string
---- @param action string
-function M.start_operation(profile_key, action)
-  core:start_operation(profile_key, action)
-end
-
---- Finish a profile-level operation.
---- @param profile_key string
---- @param success boolean
-function M.finish_operation(profile_key, success)
-  core:finish_operation(profile_key, success)
-end
-
---- Get the current operation state for a profile.
---- @param profile_key string
---- @return loomworks.Operation|nil
-function M.get_operation(profile_key)
-  return core:get_operation(profile_key)
-end
-
---- Get elapsed seconds for a running operation.
---- @param profile_key string
---- @return number|nil seconds
-function M.get_operation_elapsed(profile_key)
-  return core:get_operation_elapsed(profile_key)
 end
 
 -- ---------------------------------------------------------------------------
@@ -283,52 +220,12 @@ function M.after_deletions(fn)
   core:after_deletions(fn)
 end
 
---- Plan a config deletion (query only, no side effects).
---- @param project_key string
---- @param config_key string
---- @return loomworks.DeletionPlan
-function M.plan_config_deletion(project_key, config_key)
-  return core:plan_config_deletion(project_key, config_key)
-end
-
 --- Execute a deletion plan.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: string }
+--- @param opts? { deactivate_profile?: loomworks.Profile }
 --- @param on_done? function
 function M.execute_deletion(plan, opts, on_done)
   core:execute_deletion(plan, opts, on_done)
-end
-
---- Delete a profile (plan + execute, no UI confirmation).
---- @param profile_key string
---- @param on_done? function
-function M.delete_profile(profile_key, on_done)
-  core:delete_profile(profile_key, on_done)
-end
-
---- Delete a single config (plan + execute, no UI confirmation).
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function M.delete_config(project_key, config_key, on_done)
-  core:delete_config(project_key, config_key, on_done)
-end
-
---- Clean a profile: delete build dirs and reset all configs to unconfigured.
---- Does NOT remove or modify any profile.
---- @param profile_key string
---- @param on_done? function
-function M.clean_profile(profile_key, on_done)
-  core:clean_profile(profile_key, on_done)
-end
-
---- Clean a single config: delete build dir and reset to unconfigured.
---- Does NOT remove or modify any profile.
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function M.clean_config(project_key, config_key, on_done)
-  core:clean_config(project_key, config_key, on_done)
 end
 
 --- Find running task IDs that match a list of project+config items.
@@ -338,26 +235,18 @@ function M.find_running_tasks_for_items(items)
   return core:find_running_tasks_for_items(items)
 end
 
---- Find all materialized profile keys that reference a specific cached config.
+--- Find all profiles that reference a specific cached config.
 --- @param project_key string
 --- @param config_key string
---- @return string[] profile_keys
+--- @return loomworks.Profile[]
 function M.find_referencing_profiles(project_key, config_key)
-  return core:find_referencing_profiles(project_key, config_key)
+  return core:get_config_unit(project_key, config_key):referencing_profiles()
 end
 
 --- Get orphaned cached configs (configs with state not referenced by any profile).
 --- @return loomworks.OrphanedConfig[]
 function M.get_orphaned_configs()
   return core:get_orphaned_configs()
-end
-
---- Delete an orphaned config (cache entry + build directory).
---- @param project_key string
---- @param config_key string
---- @param on_done? function
-function M.delete_orphaned_config(project_key, config_key, on_done)
-  core:delete_orphaned_config(project_key, config_key, on_done)
 end
 
 -- ---------------------------------------------------------------------------
@@ -382,12 +271,8 @@ function M.buf_status(bufnr)
   local project_key, project = core:project_for_buf(bufnr)
   if not project_key then return nil end
 
-  local merge = require("loomworks.merge")
-  local profile_key = active_set.name
-  local set_name
-  if profile_key then
-    set_name = merge.parse_profile_key(profile_key)
-  end
+  local profile = core:get_active_profile()
+  local set_name = profile and profile.configuration_set or nil
 
   local status
   if project.configuration_key then
@@ -395,9 +280,9 @@ function M.buf_status(bufnr)
   end
 
   return {
-    profile_key = profile_key,
+    profile_key = active_set.name,
     set_name = set_name,
-    tool_key = project.tool_key,
+    tool_key = project.tool and project.tool.key or nil,
     project = project_key,
     configuration = project.configuration,
     status = status,

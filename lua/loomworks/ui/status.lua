@@ -55,9 +55,9 @@ local function render_fn(tree)
   local ctx = {
     lw = lw,
     all_profiles = lw.get_profiles(),
-    active_profile_key = active_set.name or "",
+    active_profile = lw.get_active_profile(),
     active_set = active_set,
-    config_sets = active_set.configuration_sets,
+    config_sets = lw.get_config_sets(),
     tool_entries = lw.get_tool_entries(),
   }
 
@@ -129,7 +129,7 @@ end
 --- Delete a profile interactively (with confirmation dialog).
 --- @param profile_key string
 function M.delete_profile(profile_key)
-  local profile = require("loomworks").get_profile(profile_key)
+  local profile = require("loomworks").get_profiles()[profile_key]
   if not profile then return end
   actions.delete_profile(profile)()
 end
@@ -138,7 +138,8 @@ end
 --- @param project_key string
 --- @param config_key string
 function M.delete_config(project_key, config_key)
-  actions.delete_config(project_key, config_key)()
+  local unit = require("loomworks").get_config_unit(project_key, config_key)
+  actions.delete_config(unit)()
 end
 
 return M
