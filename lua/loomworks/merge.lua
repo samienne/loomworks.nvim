@@ -13,16 +13,6 @@ function M.profile_key(set_name, tool_key)
   return set_name
 end
 
---- Parse a profile key into its components.
---- @param key string
---- @return string set_name, string|nil tool_key
-function M.parse_profile_key(key)
-  local set_name, tool_key = key:match("^([^:]+):(.+)$")
-  if set_name then
-    return set_name, tool_key
-  end
-  return key, nil
-end
 
 --- Build a pinned profile key from project and config keys.
 --- @param project_key string

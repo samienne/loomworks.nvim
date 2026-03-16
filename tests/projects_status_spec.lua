@@ -4,7 +4,6 @@
 
 local Core = require("loomworks.core")
 local h = require("tests.helpers")
-local merge = require("loomworks.merge")
 
 --- Create a Core with mocked deps and standard test files.
 local function make_core(config_overrides, user_overrides, cache_overrides, dep_overrides)
@@ -50,7 +49,7 @@ local function merge_with_cmake_tools()
     merge = real_merge.merge,
     module_has_keyed_tools = real_merge.module_has_keyed_tools,
     get_all_profiles = real_merge.get_all_profiles,
-    parse_profile_key = real_merge.parse_profile_key,
+
     build_config_key = real_merge.build_config_key,
     profile_key = real_merge.profile_key,
     detect_tools_for_type = real_merge.detect_tools_for_type,
@@ -63,7 +62,7 @@ local function merge_without_tools()
     merge = real_merge.merge,
     module_has_keyed_tools = real_merge.module_has_keyed_tools,
     get_all_profiles = real_merge.get_all_profiles,
-    parse_profile_key = real_merge.parse_profile_key,
+
     build_config_key = real_merge.build_config_key,
     profile_key = real_merge.profile_key,
     detect_tools_for_type = real_merge.detect_tools_for_type,
@@ -94,7 +93,8 @@ local function simulate_projects_section_rendering(core, project_key, variant)
 
   if proj.cached_configurations then
     for config_key, cached_config in pairs(proj.cached_configurations) do
-      local v, tk = merge.parse_profile_key(config_key)
+      local v = cached_config.variant
+      local tk = cached_config.tool_key
       if v and tk and v:lower() == variant_lower then
         entries[#entries + 1] = {
           config_key = config_key,
@@ -428,7 +428,10 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
   if not proj then return {} end
 
   local tools_by_type = core:get_tools_by_type()
-  local _, active_tool_key = merge.parse_profile_key(active_profile_key or "")
+  -- Derive active_tool_key from the active profile object, matching production code
+  local active_profile = active_profile_key and core:get_profiles()[active_profile_key] or nil
+  local active_tool_key = active_profile and active_profile.tool
+      and active_profile.tool.key or nil
   local is_active_project = proj.configuration ~= nil and not proj.orphaned
   local is_active_variant = is_active_project
       and proj.configuration:lower() == variant:lower()
@@ -440,7 +443,8 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
 
   if proj.cached_configurations then
     for config_key, cached_config in pairs(proj.cached_configurations) do
-      local v, tk = merge.parse_profile_key(config_key)
+      local v = cached_config.variant
+      local tk = cached_config.tool_key
       if v and tk and v:lower() == variant_lower then
         entries[#entries + 1] = {
           config_key = config_key,

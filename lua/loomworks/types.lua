@@ -88,6 +88,15 @@
 --- @field dependencies? string[] project-owned targets this target links against
 --- @field artifact? string primary output file path (relative to build directory)
 
+-- ========================== Tool References ==========================
+
+--- Bundled tool reference carried by Profile, Project, and ConfigUnit.
+--- @class loomworks.ToolRef
+--- @field key? string cache key suffix (e.g. "ninja-gcc-12")
+--- @field data? table opaque module-specific tool data
+--- @field label? string display label (e.g. "Ninja + GCC 12")
+--- @field mod_type? string which module type owns this tool (e.g. "cmake")
+
 -- ========================== Detected Tools ==========================
 
 --- @class loomworks.DetectedTool
@@ -198,8 +207,9 @@
 --- @field project_key string
 --- @field action string "configure" or "build"
 --- @field configuration_key string
+--- @field variant? string configuration variant name
+--- @field tool? loomworks.ToolRef bundled tool reference
 --- @field build_dir? string
---- @field tool_data? table opaque tool data to store in cache
 --- @field cmake? loomworks.CachedCmakeInfo
 --- @field success boolean
 
