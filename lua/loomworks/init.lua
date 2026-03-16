@@ -299,4 +299,8 @@ function M.open(win_overrides)
     require("loomworks.ui.status").open(win_overrides)
 end
 
+function M.toggle()
+    require("loomworks.ui.status").toggle()
+end
+
 return M
