@@ -48,11 +48,12 @@ describe("ConfigUnit", function()
           return {
             config = { projects = { App = { type = "cmake" } } },
             cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "built" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "built",
                 },
               },
             },
@@ -68,11 +69,12 @@ describe("ConfigUnit", function()
           return {
             config = { projects = { App = { type = "cmake" } } },
             cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "failed_configure" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "failed_configure",
                 },
               },
             },
@@ -88,11 +90,12 @@ describe("ConfigUnit", function()
           return {
             config = { projects = { App = { type = "cmake" } } },
             cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "failed_build" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "failed_build",
                 },
               },
             },
@@ -120,11 +123,12 @@ describe("ConfigUnit", function()
           return {
             config = { projects = { App = { type = "cmake" } } },
             cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "configured" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "configured",
                 },
               },
             },
@@ -154,11 +158,12 @@ describe("ConfigUnit", function()
           return {
             config = { projects = { App = { type = "cmake" } } },
             cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "unknown" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "unknown",
                 },
               },
             },
@@ -290,11 +295,13 @@ describe("ConfigUnit", function()
           return {
             config = { projects = { App = { type = "cmake" } } },
             cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "built", build_dir = "/build/App/Debug" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "built",
+                  build_dir = "/build/App/Debug",
                 },
               },
             },
@@ -319,11 +326,13 @@ describe("ConfigUnit", function()
           return {
             config = { projects = { App = { type = "cmake" } } },
             cache = {
-              projects = {
-                App = {
-                  configurations = {
-                    Debug = { state = "configured", build_dir = "/build/App/Debug" },
-                  },
+              configurations = {
+                ["App/Debug"] = {
+                  project_key = "App",
+                  config_key = "Debug",
+                  type = "cmake",
+                  state = "configured",
+                  build_dir = "/build/App/Debug",
                 },
               },
             },

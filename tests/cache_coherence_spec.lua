@@ -33,15 +33,13 @@ local function assert_cache_coherent(core, msg)
 
   local prefix = msg and (msg .. ": ") or ""
 
-  -- Build a set of all (project_key, config_key) referenced by profiles
+  -- Build a set of all cache keys referenced by profiles
   local referenced = {}
   if ws.cache.profiles then
     for _, profile in pairs(ws.cache.profiles) do
-      if profile.projects then
-        for pkey, pdata in pairs(profile.projects) do
-          if pdata.config_key then
-            referenced[pkey .. "\0" .. pdata.config_key] = true
-          end
+      if profile.configurations then
+        for _, ck in ipairs(profile.configurations) do
+          referenced[ck] = true
         end
       end
     end
@@ -52,22 +50,18 @@ local function assert_cache_coherent(core, msg)
   local orphans = core:get_orphaned_configs()
   local orphan_set = {}
   for _, o in ipairs(orphans) do
-    orphan_set[o.project_key .. "\0" .. o.config_key] = true
+    local ck = o.project_key .. "/" .. o.config_key
+    orphan_set[ck] = true
   end
 
   -- Check every cached config is either referenced or a known orphan
-  if ws.cache.projects then
-    for project_key, cached_proj in pairs(ws.cache.projects) do
-      if cached_proj.configurations then
-        for config_key, cached_config in pairs(cached_proj.configurations) do
-          local state = cached_config.state
-          if state and state ~= "unconfigured" then
-            local lookup = project_key .. "\0" .. config_key
-            assert(referenced[lookup] or orphan_set[lookup],
-              prefix .. "orphaned config: " .. project_key .. "/" .. config_key
-              .. " (state=" .. state .. ") not referenced by any profile")
-          end
-        end
+  if ws.cache.configurations then
+    for cache_key, cached_config in pairs(ws.cache.configurations) do
+      local state = cached_config.state
+      if state and state ~= "unconfigured" then
+        assert(referenced[cache_key] or orphan_set[cache_key],
+          prefix .. "orphaned config: " .. cache_key
+          .. " (state=" .. state .. ") not referenced by any profile")
       end
     end
   end
@@ -88,32 +82,20 @@ local function assert_cache_empty(core, msg)
   local prefix = msg and (msg .. ": ") or ""
   assert(ws, prefix .. "workspace should exist")
 
-  local has_configs = false
-  if ws.cache.projects then
-    for _, proj in pairs(ws.cache.projects) do
-      if proj.configurations and next(proj.configurations) then
-        has_configs = true
-        break
-      end
-    end
-  end
+  local has_configs = ws.cache.configurations and next(ws.cache.configurations)
   assert(not has_configs, prefix .. "cache should have no configurations")
 
   local has_profiles = ws.cache.profiles and next(ws.cache.profiles)
   assert(not has_profiles, prefix .. "cache should have no profiles")
 end
 
---- Count cached configs across all projects.
+--- Count cached configs in the flat dict.
 local function count_cached_configs(core)
   local ws = core:get_workspace()
-  if not ws or not ws.cache.projects then return 0 end
+  if not ws or not ws.cache.configurations then return 0 end
   local count = 0
-  for _, proj in pairs(ws.cache.projects) do
-    if proj.configurations then
-      for _ in pairs(proj.configurations) do
-        count = count + 1
-      end
-    end
+  for _ in pairs(ws.cache.configurations) do
+    count = count + 1
   end
   return count
 end
@@ -310,7 +292,7 @@ describe("cache coherence", function()
       assert.equals(1, count_cached_configs(core))
       -- Config entry exists with state preserved
       local ws = core:get_workspace()
-      assert.equals("built", ws.cache.projects.App.configurations.development.state)
+      assert.equals("built", ws.cache.configurations["App/development"].state)
     end)
   end)
 
@@ -363,7 +345,7 @@ describe("cache coherence", function()
 
       -- Clang config should still be there
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.projects.Lib.configurations["Debug:ninja-clang"])
+      assert.is_not_nil(ws.cache.configurations["Lib/Debug:ninja-clang"])
     end)
 
     it("delete all profiles leaves cache empty", function()
@@ -520,7 +502,7 @@ describe("cache coherence", function()
       -- Config reset but pinned profile stays
       local ws = core:get_workspace()
       assert.is_not_nil(ws.cache.profiles["App/development"])
-      assert.is_nil(ws.cache.projects.App.configurations.development.state)
+      assert.is_nil(ws.cache.configurations["App/development"].state)
     end)
 
     it("keeps config when set-based profile references it", function()
@@ -547,7 +529,7 @@ describe("cache coherence", function()
 
       -- Config entry exists but state cleared to unconfigured
       local ws = core:get_workspace()
-      assert.is_nil(ws.cache.projects.App.configurations.development.state)
+      assert.is_nil(ws.cache.configurations["App/development"].state)
 
       -- Both profiles still intact
       assert.is_not_nil(ws.cache.profiles.debug)
@@ -581,9 +563,9 @@ describe("cache coherence", function()
 
       -- GCC config reset, clang config still built
       local ws = core:get_workspace()
-      assert.is_nil(ws.cache.projects.Lib.configurations["Debug:ninja-gcc"].state)
-      assert.is_not_nil(ws.cache.projects.Lib.configurations["Debug:ninja-clang"])
-      assert.equals("built", ws.cache.projects.Lib.configurations["Debug:ninja-clang"].state)
+      assert.is_nil(ws.cache.configurations["Lib/Debug:ninja-gcc"].state)
+      assert.is_not_nil(ws.cache.configurations["Lib/Debug:ninja-clang"])
+      assert.equals("built", ws.cache.configurations["Lib/Debug:ninja-clang"].state)
 
       -- Both pinned profiles still intact
       assert.is_not_nil(ws.cache.profiles["Lib/Debug:ninja-gcc"])
@@ -599,15 +581,13 @@ describe("cache coherence", function()
         nil,
         {
           -- Built config with no profile referencing it
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -630,12 +610,12 @@ describe("cache coherence", function()
         { projects = { App = { typescript = {} } } },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {}, -- no state
-              },
+              -- no state
             },
           },
         }
@@ -652,15 +632,15 @@ describe("cache coherence", function()
           profiles = {
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         }
@@ -676,12 +656,12 @@ describe("cache coherence", function()
         { projects = { App = { typescript = {} } } },
         nil,
         {
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "failed_configure" },
-              },
+              state = "failed_configure",
             },
           },
         }
@@ -700,17 +680,15 @@ describe("cache coherence", function()
         { projects = { Lib = { cmake = {} } } },
         nil,
         {
-          projects = {
-            Lib = {
+          configurations = {
+            ["Lib/Debug:ninja-gcc"] = {
+              project_key = "Lib",
+              config_key = "Debug:ninja-gcc",
               type = "cmake",
-              configurations = {
-                ["Debug:ninja-gcc"] = {
-                  state = "built",
-                  variant = "Debug",
-                  tool_key = "ninja-gcc",
-                  build_dir = "/root/.nvim/build/Lib/Debug",
-                },
-              },
+              state = "built",
+              variant = "Debug",
+              tool_key = "ninja-gcc",
+              build_dir = "/root/.nvim/build/Lib/Debug",
             },
           },
         },
@@ -747,18 +725,16 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -771,7 +747,7 @@ describe("cache coherence", function()
 
       local ws = core:get_workspace()
       assert.is_not_nil(ws.cache.profiles.debug)
-      assert.equals("built", ws.cache.projects.App.configurations.development.state)
+      assert.equals("built", ws.cache.configurations["App/development"].state)
     end)
 
     it("multiple set-based profiles sharing same config stays coherent", function()
@@ -789,22 +765,20 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             staging = {
               configuration_set = "staging",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -827,22 +801,20 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -865,18 +837,16 @@ describe("cache coherence", function()
           profiles = {
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -905,40 +875,34 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = {
-                Backend = { config_key = "Debug" },
-                Frontend = { config_key = "development" },
-                Docs = { config_key = "development" },
+              configurations = {
+                "Backend/Debug",
+                "Frontend/development",
+                "Docs/development",
               },
             },
           },
-          projects = {
-            Backend = {
+          configurations = {
+            ["Backend/Debug"] = {
+              project_key = "Backend",
+              config_key = "Debug",
               type = "cmake",
-              configurations = {
-                Debug = {
-                  state = "configured",
-                  build_dir = "/root/.nvim/build/Backend/Debug",
-                },
-              },
+              state = "configured",
+              build_dir = "/root/.nvim/build/Backend/Debug",
             },
-            Frontend = {
+            ["Frontend/development"] = {
+              project_key = "Frontend",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/Frontend/dev",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/Frontend/dev",
             },
-            Docs = {
+            ["Docs/development"] = {
+              project_key = "Docs",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "failed_build",
-                  build_dir = "/root/.nvim/build/Docs/dev",
-                },
-              },
+              state = "failed_build",
+              build_dir = "/root/.nvim/build/Docs/dev",
             },
           },
         }
@@ -963,19 +927,17 @@ describe("cache coherence", function()
           profiles = {
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            -- "App/development" is missing! (profile references it but it's gone)
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
               type = "typescript",
-              configurations = {
-                -- "development" is missing! (profile references it but it's gone)
-                production = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/production",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/production",
             },
           },
         }
@@ -1001,26 +963,27 @@ describe("cache coherence", function()
           profiles = {
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             ["App/production"] = {
               mappings = { App = "production" },
-              projects = { App = { config_key = "production" } },
+              configurations = { "App/production" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-                production = {
-                  state = "configured",
-                  build_dir = "/root/.nvim/build/App/production",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
+            },
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
+              type = "typescript",
+              state = "configured",
+              build_dir = "/root/.nvim/build/App/production",
             },
           },
         }
@@ -1047,7 +1010,7 @@ describe("cache coherence", function()
               tool_data = { generator = "Ninja", compiler_id = "gcc" },
               tool_label = "Ninja GCC",
               tool_mod_type = "cmake",
-              projects = { Lib = { config_key = "Debug:ninja-gcc" } },
+              configurations = { "Lib/Debug:ninja-gcc" },
             },
             ["debug:ninja-clang"] = {
               configuration_set = "debug",
@@ -1055,26 +1018,27 @@ describe("cache coherence", function()
               tool_data = { generator = "Ninja", compiler_id = "clang" },
               tool_label = "Ninja Clang",
               tool_mod_type = "cmake",
-              projects = { Lib = { config_key = "Debug:ninja-clang" } },
+              configurations = { "Lib/Debug:ninja-clang" },
             },
           },
-          projects = {
-            Lib = {
+          configurations = {
+            ["Lib/Debug:ninja-gcc"] = {
+              project_key = "Lib",
+              config_key = "Debug:ninja-gcc",
               type = "cmake",
-              configurations = {
-                ["Debug:ninja-gcc"] = {
-                  state = "built",
-                  variant = "Debug",
-                  tool_key = "ninja-gcc",
-                  build_dir = "/root/.nvim/build/Lib/Debug-gcc",
-                },
-                ["Debug:ninja-clang"] = {
-                  state = "configured",
-                  variant = "Debug",
-                  tool_key = "ninja-clang",
-                  build_dir = "/root/.nvim/build/Lib/Debug-clang",
-                },
-              },
+              state = "built",
+              variant = "Debug",
+              tool_key = "ninja-gcc",
+              build_dir = "/root/.nvim/build/Lib/Debug-gcc",
+            },
+            ["Lib/Debug:ninja-clang"] = {
+              project_key = "Lib",
+              config_key = "Debug:ninja-clang",
+              type = "cmake",
+              state = "configured",
+              variant = "Debug",
+              tool_key = "ninja-clang",
+              build_dir = "/root/.nvim/build/Lib/Debug-clang",
             },
           },
         },
@@ -1109,18 +1073,16 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -1149,22 +1111,23 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-                production = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/production",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
+            },
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
+              type = "typescript",
+              state = "built",
+              build_dir = "/root/.nvim/build/App/production",
             },
           },
         }
@@ -1195,7 +1158,7 @@ describe("cache coherence", function()
 
       -- The orphaned production config should still exist (not auto-deleted)
       local ws = core:get_workspace()
-      assert.is_not_nil(ws.cache.projects.App.configurations.production)
+      assert.is_not_nil(ws.cache.configurations["App/production"])
 
       -- And it's still an orphan
       orphans = core:get_orphaned_configs()
@@ -1220,21 +1183,19 @@ describe("cache coherence", function()
               tool_data = { generator = "Ninja", compiler_id = "old-compiler" },
               tool_label = "Ninja Old",
               tool_mod_type = "cmake",
-              projects = { Lib = { config_key = "Debug:ninja-old-compiler" } },
+              configurations = { "Lib/Debug:ninja-old-compiler" },
             },
           },
-          projects = {
-            Lib = {
+          configurations = {
+            ["Lib/Debug:ninja-old-compiler"] = {
+              project_key = "Lib",
+              config_key = "Debug:ninja-old-compiler",
               type = "cmake",
-              configurations = {
-                ["Debug:ninja-old-compiler"] = {
-                  state = "built",
-                  variant = "Debug",
-                  tool_key = "ninja-old-compiler",
-                  tool_data = { generator = "Ninja", compiler_id = "old-compiler" },
-                  build_dir = "/root/.nvim/build/Lib/Debug-old",
-                },
-              },
+              state = "built",
+              variant = "Debug",
+              tool_key = "ninja-old-compiler",
+              tool_data = { generator = "Ninja", compiler_id = "old-compiler" },
+              build_dir = "/root/.nvim/build/Lib/Debug-old",
             },
           },
         },
@@ -1260,7 +1221,7 @@ describe("cache coherence", function()
 
   describe("sequential workflow", function()
 
-    it("build → delete → rebuild → delete leaves cache clean", function()
+    it("build -> delete -> rebuild -> delete leaves cache clean", function()
       local core, rm_calls = make_tracked_core({
         projects = { App = { typescript = {} } },
       })
@@ -1290,7 +1251,7 @@ describe("cache coherence", function()
       assert.equals(2, #rm_calls)
     end)
 
-    it("set-based profile configure → failed build → delete cleans up", function()
+    it("set-based profile configure -> failed build -> delete cleans up", function()
       local core, rm_calls = make_tracked_core({
         projects = { App = { typescript = {} } },
         configuration_sets = { debug = { App = "development" } },
@@ -1359,22 +1320,20 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             staging = {
               configuration_set = "staging",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -1398,7 +1357,7 @@ describe("cache coherence", function()
 
       -- Config still has its state
       local ws = core:get_workspace()
-      assert.equals("built", ws.cache.projects.App.configurations.development.state)
+      assert.equals("built", ws.cache.configurations["App/development"].state)
 
       -- Delete second profile — config now unreferenced, cleaned
       local p2 = core:get_profiles()["staging"]
@@ -1413,7 +1372,7 @@ describe("cache coherence", function()
       assert.truthy(rm_calls[1]:match("development"))
     end)
 
-    it("three-way sharing: A→XY, B→YZ, C→Z — delete B keeps Y (A) and Z (C)", function()
+    it("three-way sharing: A->XY, B->YZ, C->Z — delete B keeps Y (A) and Z (C)", function()
       -- Profile A refs configs X,Y; Profile B refs Y,Z; Profile C refs Z
       -- Deleting B: Y still held by A, Z still held by C — nothing cleaned
       local core, rm_calls = make_tracked_core(
@@ -1434,43 +1393,38 @@ describe("cache coherence", function()
           profiles = {
             setA = {
               configuration_set = "setA",
-              projects = {
-                P1 = { config_key = "dev" },
-                P2 = { config_key = "dev" },
-              },
+              configurations = { "P1/dev", "P2/dev" },
             },
             setB = {
               configuration_set = "setB",
-              projects = {
-                P2 = { config_key = "dev" },
-                P3 = { config_key = "dev" },
-              },
+              configurations = { "P2/dev", "P3/dev" },
             },
             setC = {
               configuration_set = "setC",
-              projects = {
-                P3 = { config_key = "dev" },
-              },
+              configurations = { "P3/dev" },
             },
           },
-          projects = {
-            P1 = {
+          configurations = {
+            ["P1/dev"] = {
+              project_key = "P1",
+              config_key = "dev",
               type = "typescript",
-              configurations = {
-                dev = { state = "built", build_dir = "/root/.nvim/build/P1/dev" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/P1/dev",
             },
-            P2 = {
+            ["P2/dev"] = {
+              project_key = "P2",
+              config_key = "dev",
               type = "typescript",
-              configurations = {
-                dev = { state = "built", build_dir = "/root/.nvim/build/P2/dev" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/P2/dev",
             },
-            P3 = {
+            ["P3/dev"] = {
+              project_key = "P3",
+              config_key = "dev",
               type = "typescript",
-              configurations = {
-                dev = { state = "built", build_dir = "/root/.nvim/build/P3/dev" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/P3/dev",
             },
           },
         }
@@ -1536,7 +1490,7 @@ describe("cache coherence", function()
 
       -- Config is a skeleton (no state, no build_dir)
       local ws = core:get_workspace()
-      local cached = ws.cache.projects.App.configurations.development
+      local cached = ws.cache.configurations["App/development"]
       assert.is_nil(cached.state)
       assert.is_nil(cached.build_dir)
 
@@ -1585,15 +1539,16 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built", build_dir = "/root/.nvim/build/App/dev" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/dev",
             },
           },
         }
@@ -1625,20 +1580,27 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             release = {
               configuration_set = "release",
-              projects = { App = { config_key = "production" } },
+              configurations = { "App/production" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built", build_dir = "/root/.nvim/build/App/dev" },
-                production = { state = "built", build_dir = "/root/.nvim/build/App/prod" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/dev",
+            },
+            ["App/production"] = {
+              project_key = "App",
+              config_key = "production",
+              type = "typescript",
+              state = "built",
+              build_dir = "/root/.nvim/build/App/prod",
             },
           },
         }
@@ -1700,7 +1662,7 @@ describe("cache coherence", function()
   describe("disposition: keep vs clean", function()
 
     it("keep leaves config completely untouched", function()
-      -- Two set-based profiles share same config. Delete one → keep.
+      -- Two set-based profiles share same config. Delete one -> keep.
       -- Verify config entry survives with all fields intact.
       local core, rm_calls, setup = make_tracked_core(
         {
@@ -1719,7 +1681,7 @@ describe("cache coherence", function()
               tool_data = { generator = "Ninja", compiler_id = "gcc" },
               tool_label = "Ninja GCC",
               tool_mod_type = "cmake",
-              projects = { Lib = { config_key = "Debug:ninja-gcc" } },
+              configurations = { "Lib/Debug:ninja-gcc" },
             },
             ["staging:ninja-gcc"] = {
               configuration_set = "staging",
@@ -1727,24 +1689,22 @@ describe("cache coherence", function()
               tool_data = { generator = "Ninja", compiler_id = "gcc" },
               tool_label = "Ninja GCC",
               tool_mod_type = "cmake",
-              projects = { Lib = { config_key = "Debug:ninja-gcc" } },
+              configurations = { "Lib/Debug:ninja-gcc" },
             },
           },
-          projects = {
-            Lib = {
+          configurations = {
+            ["Lib/Debug:ninja-gcc"] = {
+              project_key = "Lib",
+              config_key = "Debug:ninja-gcc",
               type = "cmake",
-              configurations = {
-                ["Debug:ninja-gcc"] = {
-                  state = "built",
-                  variant = "Debug",
-                  tool_key = "ninja-gcc",
-                  tool_data = { generator = "Ninja", compiler_id = "gcc" },
-                  build_dir = "/root/.nvim/build/Lib/Debug-gcc",
-                  last_configured = "2026-03-01",
-                  last_built = "2026-03-01",
-                  cmake = { compile_commands = "/root/.nvim/build/Lib/Debug-gcc/compile_commands.json" },
-                },
-              },
+              state = "built",
+              variant = "Debug",
+              tool_key = "ninja-gcc",
+              tool_data = { generator = "Ninja", compiler_id = "gcc" },
+              build_dir = "/root/.nvim/build/Lib/Debug-gcc",
+              last_configured = "2026-03-01",
+              last_built = "2026-03-01",
+              cmake = { compile_commands = "/root/.nvim/build/Lib/Debug-gcc/compile_commands.json" },
             },
           },
         },
@@ -1759,7 +1719,7 @@ describe("cache coherence", function()
       setup({ root = "/root" })
       assert_cache_coherent(core, "initial")
 
-      -- Delete debug profile — config shared with staging → keep
+      -- Delete debug profile — config shared with staging -> keep
       local profile = core:get_profiles()["debug:ninja-gcc"]
       assert.is_not_nil(profile)
       local plan = profile:plan_deletion()
@@ -1771,7 +1731,7 @@ describe("cache coherence", function()
 
       -- Config entry still exists with all fields intact
       local ws = core:get_workspace()
-      local cached = ws.cache.projects.Lib.configurations["Debug:ninja-gcc"]
+      local cached = ws.cache.configurations["Lib/Debug:ninja-gcc"]
       assert.is_not_nil(cached, "config entry should still exist after keep")
 
       -- All fields preserved
@@ -1804,29 +1764,27 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             staging = {
               configuration_set = "staging",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
       )
       core:setup({ root = "/root" })
 
-      -- Delete debug → config kept
+      -- Delete debug -> config kept
       local p1 = core:get_profiles()["debug"]
       local plan = p1:plan_deletion()
       assert.equals("keep", plan.items[1].disposition)
@@ -1834,7 +1792,7 @@ describe("cache coherence", function()
 
       -- Config still built
       local ws = core:get_workspace()
-      local cached = ws.cache.projects.App.configurations.development
+      local cached = ws.cache.configurations["App/development"]
       assert.equals("built", cached.state)
       assert.equals("/root/.nvim/build/App/development", cached.build_dir)
       assert_cache_coherent(core, "config stays built")
@@ -1858,25 +1816,27 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { A = { config_key = "dev" }, B = { config_key = "dev" } },
+              configurations = { "A/dev", "B/dev" },
             },
             staging = {
               configuration_set = "staging",
-              projects = { A = { config_key = "dev" }, B = { config_key = "dev" } },
+              configurations = { "A/dev", "B/dev" },
             },
           },
-          projects = {
-            A = {
+          configurations = {
+            ["A/dev"] = {
+              project_key = "A",
+              config_key = "dev",
               type = "typescript",
-              configurations = {
-                dev = { state = "built", build_dir = "/root/.nvim/build/A/dev" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/A/dev",
             },
-            B = {
+            ["B/dev"] = {
+              project_key = "B",
+              config_key = "dev",
               type = "typescript",
-              configurations = {
-                dev = { state = "built", build_dir = "/root/.nvim/build/B/dev" },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/B/dev",
             },
           },
         }
@@ -1906,18 +1866,16 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -1935,7 +1893,7 @@ describe("cache coherence", function()
 
       -- Config reset to unconfigured (skeleton kept for set-based profile)
       local ws = core:get_workspace()
-      local cached = ws.cache.projects.App.configurations.development
+      local cached = ws.cache.configurations["App/development"]
       assert.is_not_nil(cached, "config should survive reset")
       assert.is_nil(cached.state)
       assert.is_nil(cached.build_dir)
@@ -1957,18 +1915,16 @@ describe("cache coherence", function()
           profiles = {
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = {
-                  state = "built",
-                  build_dir = "/root/.nvim/build/App/development",
-                },
-              },
+              state = "built",
+              build_dir = "/root/.nvim/build/App/development",
             },
           },
         }
@@ -1986,7 +1942,7 @@ describe("cache coherence", function()
 
       -- Config reset to unconfigured (skeleton kept for pinned profile)
       local ws = core:get_workspace()
-      local cached = ws.cache.projects.App.configurations.development
+      local cached = ws.cache.configurations["App/development"]
       assert.is_not_nil(cached, "config should survive reset")
       assert.is_nil(cached.state)
       assert.is_nil(cached.build_dir)
@@ -2011,15 +1967,15 @@ describe("cache coherence", function()
           profiles = {
             ["App/development"] = {
               mappings = { App = "development" },
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         }
@@ -2062,19 +2018,19 @@ describe("cache coherence", function()
           profiles = {
             debug = {
               configuration_set = "debug",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
             staging = {
               configuration_set = "staging",
-              projects = { App = { config_key = "development" } },
+              configurations = { "App/development" },
             },
           },
-          projects = {
-            App = {
+          configurations = {
+            ["App/development"] = {
+              project_key = "App",
+              config_key = "development",
               type = "typescript",
-              configurations = {
-                development = { state = "built" },
-              },
+              state = "built",
             },
           },
         }
@@ -2119,12 +2075,12 @@ describe("cache coherence", function()
       -- Backend config reset, pinned profile still exists
       local ws = core:get_workspace()
       assert.is_not_nil(ws.cache.profiles["Backend/development"])
-      assert.is_nil(ws.cache.projects.Backend.configurations.development.state)
+      assert.is_nil(ws.cache.configurations["Backend/development"].state)
 
       -- Frontend still fully intact
       assert.is_not_nil(ws.cache.profiles["Frontend/development"])
-      assert.is_not_nil(ws.cache.projects.Frontend.configurations.development)
-      assert.equals("built", ws.cache.projects.Frontend.configurations.development.state)
+      assert.is_not_nil(ws.cache.configurations["Frontend/development"])
+      assert.equals("built", ws.cache.configurations["Frontend/development"].state)
     end)
 
     it("delete_config removes only target from multi-config profile's reachable set", function()
@@ -2157,12 +2113,12 @@ describe("cache coherence", function()
 
       -- Backend config reset to unconfigured
       local ws = core:get_workspace()
-      assert.is_nil(ws.cache.projects.Backend.configurations.development.state)
+      assert.is_nil(ws.cache.configurations["Backend/development"].state)
 
       -- Both profiles still intact
       assert.is_not_nil(ws.cache.profiles["Backend/development"])
       assert.is_not_nil(ws.cache.profiles.debug)
-      assert.equals("built", ws.cache.projects.Frontend.configurations.development.state)
+      assert.equals("built", ws.cache.configurations["Frontend/development"].state)
     end)
   end)
 end)

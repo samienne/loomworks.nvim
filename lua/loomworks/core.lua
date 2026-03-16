@@ -112,13 +112,9 @@ function Core:_save_cache()
   if not self._workspace then return false end
   -- Strip runtime-only data (targets) before persisting
   local cache = self._workspace.cache
-  if cache.projects then
-    for _, proj in pairs(cache.projects) do
-      if proj.configurations then
-        for _, cfg in pairs(proj.configurations) do
-          if cfg.cmake then cfg.cmake.targets = nil end
-        end
-      end
+  if cache.configurations then
+    for _, cfg in pairs(cache.configurations) do
+      if cfg.cmake then cfg.cmake.targets = nil end
     end
   end
   local ok, err = self._deps.cache.save(self._workspace.root, cache)
@@ -126,25 +122,6 @@ function Core:_save_cache()
     self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
   end
   return ok
-end
-
---- Ensure a project entry exists in the cache. Returns the cached project table.
---- @param project_key string
---- @return table cached_project
-function Core:_ensure_cached_project(project_key)
-  local ws = self._workspace
-  ws.cache.projects = ws.cache.projects or {}
-  if not ws.cache.projects[project_key] then
-    local project_config = ws.config.projects[project_key]
-    ws.cache.projects[project_key] = {
-      type = project_config and project_config.type or "unknown",
-      path = project_config and (project_config.path or project_key) or project_key,
-      configurations = {},
-    }
-  end
-  local cached_proj = ws.cache.projects[project_key]
-  cached_proj.configurations = cached_proj.configurations or {}
-  return cached_proj
 end
 
 -- ---------------------------------------------------------------------------
@@ -669,14 +646,10 @@ function Core:_sync_config_units()
   end
 
   -- From cache entries
-  if ws.cache.projects then
-    for project_key, cached_proj in pairs(ws.cache.projects) do
-      if cached_proj.configurations then
-        for config_key in pairs(cached_proj.configurations) do
-          local reg_key = project_key .. "\0" .. config_key
-          expected[reg_key] = true
-        end
-      end
+  if ws.cache.configurations then
+    for _, cached_config in pairs(ws.cache.configurations) do
+      local reg_key = cached_config.project_key .. "\0" .. cached_config.config_key
+      expected[reg_key] = true
     end
   end
 
@@ -768,7 +741,9 @@ function Core:_materialize_from_data(config_set, tool_entry)
   local tool_label = tool_entry and tool_entry.tool_label or nil
   local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
 
-  local profile_projects = {}
+  local profile_configurations = {}
+  ws.cache.configurations = ws.cache.configurations or {}
+
   for project, variant in pairs(config_set.mappings) do
     local project_config = ws.config.projects[project.key]
     if not project_config then goto continue end
@@ -776,14 +751,17 @@ function Core:_materialize_from_data(config_set, tool_entry)
     local config_key = self._deps.merge.build_config_key(
       project_config.type, variant, tool_key)
 
-    profile_projects[project.key] = { config_key = config_key }
+    local cache_key = self._deps.cache.config_cache_key(project.key, config_key)
+    profile_configurations[#profile_configurations + 1] = cache_key
 
-    -- Ensure skeleton config entry exists in cache.projects
-    local cached_proj = self:_ensure_cached_project(project.key)
-    if not cached_proj.configurations[config_key] then
+    -- Ensure skeleton config entry exists in flat cache
+    if not ws.cache.configurations[cache_key] then
       local has_keyed = self._deps.merge.module_has_keyed_tools(
         project_config.type)
-      cached_proj.configurations[config_key] = {
+      ws.cache.configurations[cache_key] = {
+        project_key = project.key,
+        config_key = config_key,
+        type = project_config.type,
         variant = variant,
         tool_key = tool_key,
         tool_data = has_keyed and tool_data or nil,
@@ -801,7 +779,7 @@ function Core:_materialize_from_data(config_set, tool_entry)
     tool_data = tool_data,
     tool_label = tool_label,
     tool_mod_type = tool_mod_type,
-    projects = profile_projects,
+    configurations = profile_configurations,
   }
 
   self:_save_cache()
@@ -856,18 +834,16 @@ function Core:_migrate_set_names()
   self:_save_cache()
 end
 
---- Build a set of all (project_key, config_key) pairs referenced by profiles.
---- @return table<string, boolean> referenced set keyed by "project_key\0config_key"
+--- Build a set of all cache keys referenced by profiles.
+--- @return table<string, boolean> referenced set keyed by cache key ("project_key/config_key")
 function Core:_build_referenced_set()
   local ws = self._workspace
   local referenced = {}
   if ws and ws.cache.profiles then
     for _, profile in pairs(ws.cache.profiles) do
-      if profile.projects then
-        for pkey, pdata in pairs(profile.projects) do
-          if pdata.config_key then
-            referenced[pkey .. "\0" .. pdata.config_key] = true
-          end
+      if profile.configurations then
+        for _, ck in ipairs(profile.configurations) do
+          referenced[ck] = true
         end
       end
     end
@@ -880,35 +856,25 @@ end
 --- Configs with state are left as orphaned (shown in UI).
 function Core:_cleanup_orphaned_skeletons()
   local ws = self._workspace
-  if not ws or not ws.cache.projects then return end
+  if not ws or not ws.cache.configurations then return end
 
   local referenced = self:_build_referenced_set()
 
   local changed = false
+  local to_drop = {}
 
-  for project_key, cached_proj in pairs(ws.cache.projects) do
-    if cached_proj.configurations then
-      local to_drop = {}
-      for config_key, cached_config in pairs(cached_proj.configurations) do
-        if not referenced[project_key .. "\0" .. config_key] then
-          local state = cached_config.state
-          if not state or state == "unconfigured" then
-            to_drop[#to_drop + 1] = config_key
-            changed = true
-          end
-        end
-      end
-      for _, config_key in ipairs(to_drop) do
-        cached_proj.configurations[config_key] = nil
-      end
-      if not next(cached_proj.configurations) then
-        ws.cache.projects[project_key] = nil
+  for cache_key, cached_config in pairs(ws.cache.configurations) do
+    if not referenced[cache_key] then
+      local state = cached_config.state
+      if not state or state == "unconfigured" then
+        to_drop[#to_drop + 1] = cache_key
+        changed = true
       end
     end
   end
 
-  if ws.cache.projects and not next(ws.cache.projects) then
-    ws.cache.projects = nil
+  for _, cache_key in ipairs(to_drop) do
+    ws.cache.configurations[cache_key] = nil
   end
 
   if changed then
@@ -920,24 +886,20 @@ end
 --- @return loomworks.OrphanedConfig[]
 function Core:get_orphaned_configs()
   local ws = self._workspace
-  if not ws or not ws.cache.projects then return {} end
+  if not ws or not ws.cache.configurations then return {} end
 
   local referenced = self:_build_referenced_set()
 
   local result = {}
-  for project_key, cached_proj in pairs(ws.cache.projects) do
-    if cached_proj.configurations then
-      for config_key, cached_config in pairs(cached_proj.configurations) do
-        local state = cached_config.state
-        if state and state ~= "unconfigured"
-            and not referenced[project_key .. "\0" .. config_key] then
-          result[#result + 1] = {
-            project_key = project_key,
-            config_key = config_key,
-            cached = cached_config,
-          }
-        end
-      end
+  for cache_key, cached_config in pairs(ws.cache.configurations) do
+    local state = cached_config.state
+    if state and state ~= "unconfigured"
+        and not referenced[cache_key] then
+      result[#result + 1] = {
+        project_key = cached_config.project_key,
+        config_key = cached_config.config_key,
+        cached = cached_config,
+      }
     end
   end
 
@@ -1031,16 +993,23 @@ function Core:record_task_result(result)
   local now = self._deps.now()
 
   -- Ensure cache structure exists
-  local cached_proj = self:_ensure_cached_project(project_key)
+  local cache_key = self._deps.cache.config_cache_key(project_key, config_key)
+  ws.cache.configurations = ws.cache.configurations or {}
 
-  if not cached_proj.configurations[config_key] then
-    cached_proj.configurations[config_key] = {
+  local proj_type = ws.config.projects[project_key]
+      and ws.config.projects[project_key].type or "unknown"
+
+  if not ws.cache.configurations[cache_key] then
+    ws.cache.configurations[cache_key] = {
+      project_key = project_key,
+      config_key = config_key,
+      type = proj_type,
       variant = result.variant,
       tool_key = result.tool and result.tool.key or nil,
     }
   end
 
-  local cached_config = cached_proj.configurations[config_key]
+  local cached_config = ws.cache.configurations[cache_key]
 
   if action == "configure" then
     if success then
@@ -1079,9 +1048,7 @@ function Core:record_task_result(result)
 
   -- Parse file-api targets after successful configure (runtime only, not cached)
   if action == "configure" and success and result.build_dir then
-    local proj_type = cached_proj.type
-        or (ws.config.projects[project_key] and ws.config.projects[project_key].type)
-    if proj_type then
+    if proj_type ~= "unknown" then
       local mod = self._deps.modules.get(proj_type)
       if mod and mod.parse_file_api then
         local unit = self:get_config_unit(project_key, config_key)
@@ -1165,14 +1132,10 @@ function Core:delete_cached_configs(items)
   if not self._workspace then return end
 
   local ws = self._workspace
+  if not ws.cache.configurations then return end
   for _, item in ipairs(items) do
-    local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
-    if cached_proj and cached_proj.configurations then
-      cached_proj.configurations[item.config_key] = nil
-      if not next(cached_proj.configurations) then
-        ws.cache.projects[item.project_key] = nil
-      end
-    end
+    local cache_key = self._deps.cache.config_cache_key(item.project_key, item.config_key)
+    ws.cache.configurations[cache_key] = nil
   end
 end
 
@@ -1183,17 +1146,16 @@ function Core:reset_cached_configs(items)
   if not self._workspace then return end
 
   local ws = self._workspace
+  if not ws.cache.configurations then return end
   for _, item in ipairs(items) do
-    local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
-    if cached_proj and cached_proj.configurations then
-      local cached_config = cached_proj.configurations[item.config_key]
-      if cached_config then
-        cached_config.state = nil
-        cached_config.build_dir = nil
-        cached_config.last_configured = nil
-        cached_config.last_built = nil
-        cached_config.cmake = nil
-      end
+    local cache_key = self._deps.cache.config_cache_key(item.project_key, item.config_key)
+    local cached_config = ws.cache.configurations[cache_key]
+    if cached_config then
+      cached_config.state = nil
+      cached_config.build_dir = nil
+      cached_config.last_configured = nil
+      cached_config.last_built = nil
+      cached_config.cmake = nil
     end
   end
 end
@@ -1204,13 +1166,12 @@ function Core:_mark_cache_unknown(items)
   if not self._workspace then return end
 
   local ws = self._workspace
+  if not ws.cache.configurations then return end
   for _, item in ipairs(items) do
-    local cached_proj = ws.cache.projects and ws.cache.projects[item.project_key]
-    if cached_proj and cached_proj.configurations then
-      local cached_config = cached_proj.configurations[item.config_key]
-      if cached_config and cached_config.build_dir then
-        cached_config.state = "unknown"
-      end
+    local cache_key = self._deps.cache.config_cache_key(item.project_key, item.config_key)
+    local cached_config = ws.cache.configurations[cache_key]
+    if cached_config and cached_config.build_dir then
+      cached_config.state = "unknown"
     end
   end
 end

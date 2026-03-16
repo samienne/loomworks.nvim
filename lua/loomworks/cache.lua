@@ -2,7 +2,7 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local CURRENT_VERSION = 3
+local CURRENT_VERSION = 4
 
 --- Return the file path for a workspace root.
 --- @param root string
@@ -19,12 +19,21 @@ function M.compute_hash(config_content)
   return hash:sub(1, 12)
 end
 
+--- Build the cache key for a configuration entry.
+--- Opaque identifier — never parse this to extract parts.
+--- @param project_key string
+--- @param config_key string
+--- @return string
+function M.config_cache_key(project_key, config_key)
+  return project_key .. "/" .. config_key
+end
+
 --- Return a default (empty) CacheData structure.
 --- @return loomworks.CacheData
 function M.default()
   return {
     _meta = { version = CURRENT_VERSION, loomworks_hash = "", cached_at = "" },
-    projects = {},
+    configurations = {},
   }
 end
 
@@ -41,7 +50,7 @@ function M.parse(content)
   if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
     return M.default(), true
   end
-  raw.projects = raw.projects or {}
+  raw.configurations = raw.configurations or {}
   return raw, false
 end
 
@@ -60,8 +69,7 @@ function M.load(root)
     return M.default()
   end
 
-  -- Ensure projects field exists
-  data.projects = data.projects or {}
+  data.configurations = data.configurations or {}
 
   return data
 end

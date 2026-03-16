@@ -4,6 +4,8 @@
 --- a single derived state value. Multiple profiles may reference the same
 --- ConfigUnit; state changes are visible to all of them.
 
+local cache_mod = require("loomworks.cache")
+
 --- @class loomworks.ConfigUnit
 --- @field project_key string
 --- @field config_key string
@@ -124,10 +126,9 @@ end
 --- @return loomworks.CachedConfig|nil
 function ConfigUnit:cached_state()
   local ws = self._core:get_workspace()
-  if not ws or not ws.cache.projects then return nil end
-  local proj = ws.cache.projects[self.project_key]
-  if not proj or not proj.configurations then return nil end
-  return proj.configurations[self.config_key]
+  if not ws or not ws.cache.configurations then return nil end
+  local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
+  return ws.cache.configurations[ck]
 end
 
 --- Get the build directory from cache.
@@ -220,10 +221,14 @@ function ConfigUnit:materialize(variant, tool)
     end
   end
 
-  -- Ensure cache structure exists
-  local cached_proj = core:_ensure_cached_project(self.project_key)
-  if not cached_proj.configurations[self.config_key] then
-    cached_proj.configurations[self.config_key] = {
+  -- Write directly to flat cache
+  local cache_key = cache_mod.config_cache_key(self.project_key, self.config_key)
+  ws.cache.configurations = ws.cache.configurations or {}
+  if not ws.cache.configurations[cache_key] then
+    ws.cache.configurations[cache_key] = {
+      project_key = self.project_key,
+      config_key = self.config_key,
+      type = project_config.type,
       variant = self.variant,
       tool_key = tool_key,
       tool_data = tool_data,
@@ -271,15 +276,14 @@ function ConfigUnit:materialize_pinned(variant, tool)
   local tool_label = self.tool and self.tool.label or nil
   local tool_mod_type = self.tool and self.tool.mod_type or nil
 
+  local cache_key = cache_mod.config_cache_key(self.project_key, self.config_key)
   ws.cache.profiles[ak] = {
     mappings = { [self.project_key] = self.variant },
     tool_key = tool_key,
     tool_data = tool_data,
     tool_label = tool_label,
     tool_mod_type = tool_mod_type,
-    projects = {
-      [self.project_key] = { config_key = self.config_key },
-    },
+    configurations = { cache_key },
   }
 
   core:_save_cache()
