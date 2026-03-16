@@ -5,61 +5,61 @@ local M = {}
 --- @param config_key string cache key (variant or variant:tool_key)
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_configuration_tasks(project_key, config_key)
-  local loomworks = require("loomworks")
-  local modules = require("loomworks.modules")
+    local loomworks = require("loomworks")
+    local modules = require("loomworks.modules")
 
-  local ws = loomworks.get_workspace()
-  if not ws then return nil end
+    local ws = loomworks.get_workspace()
+    if not ws then return nil end
 
-  local project_config = ws.config.projects[project_key]
-  if not project_config then return nil end
+    local project_config = ws.config.projects[project_key]
+    if not project_config then return nil end
 
-  local mod = modules.get(project_config.type)
-  if not mod or not mod.tasks then return nil end
+    local mod = modules.get(project_config.type)
+    if not mod or not mod.tasks then return nil end
 
-  -- Get variant and tool from ConfigUnit (never parse config_key)
-  local unit = loomworks.get_config_unit(project_key, config_key)
-  local variant = unit.variant
-  local tool = unit:resolve_tool()
-  local tool_data = tool and tool.data or nil
+    -- Get variant and tool from ConfigUnit (never parse config_key)
+    local unit = loomworks.get_config_unit(project_key, config_key)
+    local variant = unit.variant
+    local tool = unit:resolve_tool()
+    local tool_data = tool and tool.data or nil
 
-  -- Get module info
-  local abs_path = ws.root .. "/" .. (project_config.path or project_key)
-  local mod_info = mod.info and mod.info(abs_path, project_config.type_config)
-      or { configurations = {} }
+    -- Get module info
+    local abs_path = ws.root .. "/" .. (project_config.path or project_key)
+    local mod_info = mod.info and mod.info(abs_path, project_config.type_config)
+            or { configurations = {} }
 
-  local project_ctx = {
-    name = project_key,
-    path = project_config.path or project_key,
-    type = project_config.type,
-    configuration = variant,
-    configuration_key = config_key,
-    configurations = mod_info.configurations or {},
-    tool_data = tool_data,
-    workspace_root = ws.root,
-    env = tool_data and tool_data.env or {},
-  }
+    local project_ctx = {
+        name = project_key,
+        path = project_config.path or project_key,
+        type = project_config.type,
+        configuration = variant,
+        configuration_key = config_key,
+        configurations = mod_info.configurations or {},
+        tool_data = tool_data,
+        workspace_root = ws.root,
+        env = tool_data and tool_data.env or {},
+    }
 
-  local pt = mod.progress_parser
-      and mod.progress_parser(project_ctx, variant)
-      or nil
+    local pt = mod.progress_parser
+            and mod.progress_parser(project_ctx, variant)
+            or nil
 
-  local mod_tasks = mod.tasks(project_ctx, variant)
-  local by_action = { configure = {}, build = {} }
+    local mod_tasks = mod.tasks(project_ctx, variant)
+    local by_action = { configure = {}, build = {} }
 
-  for _, task_def in ipairs(mod_tasks) do
-    local lw_meta = task_def.loomworks
-    if lw_meta then
-      lw_meta.progress_tool = pt
-      lw_meta.variant = variant
-      lw_meta.tool = tool
-      if by_action[lw_meta.action] then
-        by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
-      end
+    for _, task_def in ipairs(mod_tasks) do
+        local lw_meta = task_def.loomworks
+        if lw_meta then
+            lw_meta.progress_tool = pt
+            lw_meta.variant = variant
+            lw_meta.tool = tool
+            if by_action[lw_meta.action] then
+                by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
+            end
+        end
     end
-  end
 
-  return by_action
+    return by_action
 end
 
 --- Collect task definitions for a profile, grouped by action.
@@ -68,62 +68,62 @@ end
 --- @param profile loomworks.Profile
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_profile_tasks(profile)
-  local loomworks = require("loomworks")
-  local modules = require("loomworks.modules")
+    local loomworks = require("loomworks")
+    local modules = require("loomworks.modules")
 
-  local ws = loomworks.get_workspace()
-  if not ws then return nil end
+    local ws = loomworks.get_workspace()
+    if not ws then return nil end
 
-  local pps = profile:projects()
-  if #pps == 0 then return nil end
+    local pps = profile:projects()
+    if #pps == 0 then return nil end
 
-  local tool_data = profile.tool and profile.tool.data or nil
+    local tool_data = profile.tool and profile.tool.data or nil
 
-  local by_action = { configure = {}, build = {} }
+    local by_action = { configure = {}, build = {} }
 
-  for _, pp in ipairs(pps) do
-    local project = pp._project
-    if not project then goto continue end
+    for _, pp in ipairs(pps) do
+        local project = pp._project
+        if not project then goto continue end
 
-    local mod = modules.get(project.type)
-    if not mod or not mod.tasks then goto continue end
+        local mod = modules.get(project.type)
+        if not mod or not mod.tasks then goto continue end
 
-    local active_config = pp.variant
-    if not active_config then goto continue end
+        local active_config = pp.variant
+        if not active_config then goto continue end
 
-    local project_ctx = {
-      name = pp.project_key,
-      path = project.path or pp.project_key,
-      type = project.type,
-      configuration = active_config,
-      configuration_key = pp.config_key,
-      configurations = project.configurations,
-      tool_data = tool_data,
-      workspace_root = ws.root,
-      env = tool_data and tool_data.env or {},
-    }
+        local project_ctx = {
+            name = pp.project_key,
+            path = project.path or pp.project_key,
+            type = project.type,
+            configuration = active_config,
+            configuration_key = pp.config_key,
+            configurations = project.configurations,
+            tool_data = tool_data,
+            workspace_root = ws.root,
+            env = tool_data and tool_data.env or {},
+        }
 
-    local pt = mod.progress_parser
-        and mod.progress_parser(project_ctx, active_config)
-        or nil
+        local pt = mod.progress_parser
+                and mod.progress_parser(project_ctx, active_config)
+                or nil
 
-    local mod_tasks = mod.tasks(project_ctx, active_config)
-    for _, task_def in ipairs(mod_tasks) do
-      local lw_meta = task_def.loomworks
-      if lw_meta then
-        lw_meta.progress_tool = pt
-        lw_meta.variant = active_config
-        lw_meta.tool = profile.tool
-        if by_action[lw_meta.action] then
-          by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
+        local mod_tasks = mod.tasks(project_ctx, active_config)
+        for _, task_def in ipairs(mod_tasks) do
+            local lw_meta = task_def.loomworks
+            if lw_meta then
+                lw_meta.progress_tool = pt
+                lw_meta.variant = active_config
+                lw_meta.tool = profile.tool
+                if by_action[lw_meta.action] then
+                    by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
+                end
+            end
         end
-      end
+
+        ::continue::
     end
 
-    ::continue::
-  end
-
-  return by_action
+    return by_action
 end
 
 --- Build and start a single overseer task from a task definition.
@@ -131,32 +131,32 @@ end
 --- @param task_def table task definition with .builder and .loomworks
 --- @param on_complete? function called with boolean success when task completes
 local function start_one_task(overseer, task_def, on_complete)
-  local lw_meta = task_def.loomworks
+    local lw_meta = task_def.loomworks
 
-  local build_result = task_def.builder()
-  build_result.components = build_result.components or { "default" }
-  build_result.components[#build_result.components + 1] = {
-    "loomworks.task_tracker",
-    project_key = lw_meta.project_key,
-    action = lw_meta.action,
-    configuration_key = lw_meta.configuration_key,
-    build_dir = lw_meta.build_dir,
-    variant = lw_meta.variant,
-    tool = lw_meta.tool,
-    cmake = lw_meta.cmake,
-    progress_tool = lw_meta.progress_tool,
-  }
+    local build_result = task_def.builder()
+    build_result.components = build_result.components or { "default" }
+    build_result.components[#build_result.components + 1] = {
+        "loomworks.task_tracker",
+        project_key = lw_meta.project_key,
+        action = lw_meta.action,
+        configuration_key = lw_meta.configuration_key,
+        build_dir = lw_meta.build_dir,
+        variant = lw_meta.variant,
+        tool = lw_meta.tool,
+        cmake = lw_meta.cmake,
+        progress_tool = lw_meta.progress_tool,
+    }
 
-  build_result.name = task_def.name
-  local task = overseer.new_task(build_result)
+    build_result.name = task_def.name
+    local task = overseer.new_task(build_result)
 
-  if on_complete then
-    task:subscribe("on_complete", function(_, status)
-      on_complete(status == "SUCCESS")
-    end)
-  end
+    if on_complete then
+        task:subscribe("on_complete", function(_, status)
+            on_complete(status == "SUCCESS")
+        end)
+    end
 
-  task:start()
+    task:start()
 end
 
 --- Check whether a task should be launched, skipped, or deferred based on ConfigUnit state.
@@ -166,25 +166,25 @@ end
 --- @param task_def table task definition with .loomworks
 --- @return "launch"|"skip"|"defer"|"block"
 local function check_task_readiness(task_def)
-  local lw = require("loomworks")
-  local lw_meta = task_def.loomworks
-  local unit = lw.get_config_unit(lw_meta.project_key, lw_meta.configuration_key)
-  local state = unit:state()
+    local lw = require("loomworks")
+    local lw_meta = task_def.loomworks
+    local unit = lw.get_config_unit(lw_meta.project_key, lw_meta.configuration_key)
+    local state = unit:state()
 
-  -- Unknown state blocks all actions — user must clean/delete first
-  if state == "unknown" then return "block" end
+    -- Unknown state blocks all actions — user must clean/delete first
+    if state == "unknown" then return "block" end
 
-  if lw_meta.action == "configure" then
-    if state == "unconfigured" or state == "configure_failed" then
-      return "launch"
+    if lw_meta.action == "configure" then
+        if state == "unconfigured" or state == "configure_failed" then
+            return "launch"
+        end
+        return "skip"
     end
-    return "skip"
-  end
 
-  -- action == "build"
-  if state == "building" then return "skip" end
-  if state == "configuring" then return "defer" end
-  return "launch"
+    -- action == "build"
+    if state == "building" then return "skip" end
+    if state == "configuring" then return "defer" end
+    return "launch"
 end
 
 --- Launch a list of task definitions via overseer.
@@ -195,95 +195,95 @@ end
 --- @param on_all_done? function called when all tasks complete, with boolean all_succeeded
 --- @return number launched count of tasks started or deferred
 local function launch_tasks(overseer, task_defs, on_all_done)
-  local lw = require("loomworks")
+    local lw = require("loomworks")
 
-  -- Classify each task
-  local to_launch, to_defer = {}, {}
-  for _, task_def in ipairs(task_defs) do
-    if not task_def.loomworks then goto next end
-    local readiness = check_task_readiness(task_def)
-    if readiness == "launch" then
-      to_launch[#to_launch + 1] = task_def
-    elseif readiness == "defer" then
-      to_defer[#to_defer + 1] = task_def
-    elseif readiness == "block" then
-      local meta = task_def.loomworks
-      vim.notify(
-        "loomworks: " .. meta.project_key .. "/" .. meta.configuration_key
-          .. " is in unknown state — clean or delete first",
-        vim.log.levels.WARN
-      )
+    -- Classify each task
+    local to_launch, to_defer = {}, {}
+    for _, task_def in ipairs(task_defs) do
+        if not task_def.loomworks then goto next end
+        local readiness = check_task_readiness(task_def)
+        if readiness == "launch" then
+            to_launch[#to_launch + 1] = task_def
+        elseif readiness == "defer" then
+            to_defer[#to_defer + 1] = task_def
+        elseif readiness == "block" then
+            local meta = task_def.loomworks
+            vim.notify(
+                "loomworks: " .. meta.project_key .. "/" .. meta.configuration_key
+                    .. " is in unknown state — clean or delete first",
+                vim.log.levels.WARN
+            )
+        end
+        -- "skip" and "block" tasks are dropped
+        ::next::
     end
-    -- "skip" and "block" tasks are dropped
-    ::next::
-  end
 
-  local total = #to_launch + #to_defer
-  if total == 0 then
-    if on_all_done then
-      vim.schedule(function() on_all_done(true) end)
+    local total = #to_launch + #to_defer
+    if total == 0 then
+        if on_all_done then
+            vim.schedule(function() on_all_done(true) end)
+        end
+        return 0
     end
-    return 0
-  end
 
-  -- Shared completion tracking across immediate and deferred tasks
-  local remaining = total
-  local all_ok = true
+    -- Shared completion tracking across immediate and deferred tasks
+    local remaining = total
+    local all_ok = true
 
-  local function on_one_done(success)
-    if not success then all_ok = false end
-    remaining = remaining - 1
-    if remaining == 0 and on_all_done then
-      vim.schedule(function() on_all_done(all_ok) end)
+    local function on_one_done(success)
+        if not success then all_ok = false end
+        remaining = remaining - 1
+        if remaining == 0 and on_all_done then
+            vim.schedule(function() on_all_done(all_ok) end)
+        end
     end
-  end
 
-  -- Launch ready tasks immediately
-  for _, task_def in ipairs(to_launch) do
-    start_one_task(overseer, task_def, on_all_done and on_one_done or nil)
-  end
+    -- Launch ready tasks immediately
+    for _, task_def in ipairs(to_launch) do
+        start_one_task(overseer, task_def, on_all_done and on_one_done or nil)
+    end
 
-  -- Defer build tasks waiting for an in-progress configure
-  for _, task_def in ipairs(to_defer) do
-    local lw_meta = task_def.loomworks
-    local unit = lw.get_config_unit(lw_meta.project_key, lw_meta.configuration_key)
-    local fired = false
-    unit:on_state_change(function(u)
-      if fired then return end
-      local new_state = u:state()
-      if new_state == "configuring" then return end -- still going
-      fired = true
-      if new_state == "configure_failed" then
-        on_one_done(false)
-        return
-      end
-      start_one_task(overseer, task_def, on_all_done and on_one_done or nil)
-    end)
-  end
+    -- Defer build tasks waiting for an in-progress configure
+    for _, task_def in ipairs(to_defer) do
+        local lw_meta = task_def.loomworks
+        local unit = lw.get_config_unit(lw_meta.project_key, lw_meta.configuration_key)
+        local fired = false
+        unit:on_state_change(function(u)
+            if fired then return end
+            local new_state = u:state()
+            if new_state == "configuring" then return end -- still going
+            fired = true
+            if new_state == "configure_failed" then
+                on_one_done(false)
+                return
+            end
+            start_one_task(overseer, task_def, on_all_done and on_one_done or nil)
+        end)
+    end
 
-  return total
+    return total
 end
 
 --- Filter configure tasks to only those whose ConfigUnit needs configuring.
 --- @param all_tasks table { configure: table[], build: table[] }
 --- @return table[] configure tasks that actually need running
 local function filter_unconfigured_tasks(all_tasks)
-  local loomworks = require("loomworks")
+    local loomworks = require("loomworks")
 
-  local needs_configure = {}
-  for _, task_def in ipairs(all_tasks.configure) do
-    local lw_meta = task_def.loomworks
-    if not lw_meta then goto next end
+    local needs_configure = {}
+    for _, task_def in ipairs(all_tasks.configure) do
+        local lw_meta = task_def.loomworks
+        if not lw_meta then goto next end
 
-    local state = loomworks.get_config_unit(lw_meta.project_key, lw_meta.configuration_key):state()
-    if state == "unconfigured" or state == "configure_failed" then
-      needs_configure[#needs_configure + 1] = task_def
+        local state = loomworks.get_config_unit(lw_meta.project_key, lw_meta.configuration_key):state()
+        if state == "unconfigured" or state == "configure_failed" then
+            needs_configure[#needs_configure + 1] = task_def
+        end
+
+        ::next::
     end
 
-    ::next::
-  end
-
-  return needs_configure
+    return needs_configure
 end
 
 --- Run an action for a single project configuration.
@@ -292,56 +292,56 @@ end
 --- @param unit loomworks.ConfigUnit
 --- @param action string "configure" or "build"
 function M.run_configuration_action(unit, action)
-  local ok, overseer = pcall(require, "overseer")
-  if not ok then
-    vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
-    return
-  end
-
-  local loomworks = require("loomworks")
-
-  local function do_action()
-    -- Pin config only if not already referenced by a materialized profile
-    if #unit:referencing_profiles() == 0 then
-      unit:materialize_pinned()
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        return
     end
 
-    local all_tasks = collect_configuration_tasks(unit.project_key, unit.config_key)
-    if not all_tasks then return end
+    local loomworks = require("loomworks")
 
-    if action == "configure" then
-      launch_tasks(overseer, all_tasks.configure)
-      return
-    end
+    local function do_action()
+        -- Pin config only if not already referenced by a materialized profile
+        if #unit:referencing_profiles() == 0 then
+            unit:materialize_pinned()
+        end
 
-    if action == "build" then
-      -- Check if any projects need configuring first
-      local needs_configure = filter_unconfigured_tasks(all_tasks)
-      if #needs_configure > 0 then
-        vim.notify("loomworks: configuring " .. unit.project_key .. " before build", vim.log.levels.INFO)
-        launch_tasks(overseer, needs_configure, function(all_succeeded)
-          if not all_succeeded then
-            vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
+        local all_tasks = collect_configuration_tasks(unit.project_key, unit.config_key)
+        if not all_tasks then return end
+
+        if action == "configure" then
+            launch_tasks(overseer, all_tasks.configure)
             return
-          end
-          launch_tasks(overseer, all_tasks.build)
-        end)
-      else
-        launch_tasks(overseer, all_tasks.build)
-      end
-      return
+        end
+
+        if action == "build" then
+            -- Check if any projects need configuring first
+            local needs_configure = filter_unconfigured_tasks(all_tasks)
+            if #needs_configure > 0 then
+                vim.notify("loomworks: configuring " .. unit.project_key .. " before build", vim.log.levels.INFO)
+                launch_tasks(overseer, needs_configure, function(all_succeeded)
+                    if not all_succeeded then
+                        vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
+                        return
+                    end
+                    launch_tasks(overseer, all_tasks.build)
+                end)
+            else
+                launch_tasks(overseer, all_tasks.build)
+            end
+            return
+        end
+
+        vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
     end
 
-    vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
-  end
-
-  -- Wait for pending deletions before starting
-  if loomworks.has_pending_deletions() then
-    vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
-    loomworks.after_deletions(do_action)
-  else
-    do_action()
-  end
+    -- Wait for pending deletions before starting
+    if loomworks.has_pending_deletions() then
+        vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
+        loomworks.after_deletions(do_action)
+    else
+        do_action()
+    end
 end
 
 --- Run all tasks of a given action for a profile.
@@ -350,71 +350,71 @@ end
 --- @param profile loomworks.Profile
 --- @param action string "configure" or "build"
 function M.run_profile_action(profile, action)
-  local ok, overseer = pcall(require, "overseer")
-  if not ok then
-    vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
-    return
-  end
-
-  local loomworks = require("loomworks")
-
-  local function do_action()
-    -- Re-collect tasks after potential deletion completed (cache may have changed)
-    local all_tasks = collect_profile_tasks(profile)
-    if not all_tasks then return end
-
-    if action == "configure" then
-      profile:start_operation("configure")
-      local launched = launch_tasks(overseer, all_tasks.configure, function(all_succeeded)
-        profile:finish_operation(all_succeeded)
-      end)
-      if launched == 0 then
-        profile:finish_operation(true)
-      end
-      return
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        return
     end
 
-    if action == "build" then
-      local needs_configure = filter_unconfigured_tasks(all_tasks)
+    local loomworks = require("loomworks")
 
-      if #needs_configure > 0 then
-        profile:start_operation("configure+build")
-        vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
-        launch_tasks(overseer, needs_configure, function(all_succeeded)
-          if not all_succeeded then
-            vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
-            profile:finish_operation(false)
+    local function do_action()
+        -- Re-collect tasks after potential deletion completed (cache may have changed)
+        local all_tasks = collect_profile_tasks(profile)
+        if not all_tasks then return end
+
+        if action == "configure" then
+            profile:start_operation("configure")
+            local launched = launch_tasks(overseer, all_tasks.configure, function(all_succeeded)
+                profile:finish_operation(all_succeeded)
+            end)
+            if launched == 0 then
+                profile:finish_operation(true)
+            end
             return
-          end
-          local build_launched = launch_tasks(overseer, all_tasks.build, function(build_succeeded)
-            profile:finish_operation(build_succeeded)
-          end)
-          if build_launched == 0 then
-            profile:finish_operation(true)
-          end
-        end)
-      else
-        profile:start_operation("build")
-        local launched = launch_tasks(overseer, all_tasks.build, function(all_succeeded)
-          profile:finish_operation(all_succeeded)
-        end)
-        if launched == 0 then
-          profile:finish_operation(true)
         end
-      end
-      return
+
+        if action == "build" then
+            local needs_configure = filter_unconfigured_tasks(all_tasks)
+
+            if #needs_configure > 0 then
+                profile:start_operation("configure+build")
+                vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
+                launch_tasks(overseer, needs_configure, function(all_succeeded)
+                    if not all_succeeded then
+                        vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
+                        profile:finish_operation(false)
+                        return
+                    end
+                    local build_launched = launch_tasks(overseer, all_tasks.build, function(build_succeeded)
+                        profile:finish_operation(build_succeeded)
+                    end)
+                    if build_launched == 0 then
+                        profile:finish_operation(true)
+                    end
+                end)
+            else
+                profile:start_operation("build")
+                local launched = launch_tasks(overseer, all_tasks.build, function(all_succeeded)
+                    profile:finish_operation(all_succeeded)
+                end)
+                if launched == 0 then
+                    profile:finish_operation(true)
+                end
+            end
+            return
+        end
+
+        vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
     end
 
-    vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
-  end
-
-  -- Wait for pending deletions before starting
-  if loomworks.has_pending_deletions() then
-    vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
-    loomworks.after_deletions(do_action)
-  else
-    do_action()
-  end
+    -- Wait for pending deletions before starting
+    if loomworks.has_pending_deletions() then
+        vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
+        loomworks.after_deletions(do_action)
+    else
+        do_action()
+    end
 end
 
 return M

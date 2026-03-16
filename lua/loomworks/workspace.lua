@@ -12,21 +12,21 @@ local cache_mod = require("loomworks.cache")
 --- @param normalize? fun(path: string): string path normalizer (injectable)
 --- @return string root
 function M.resolve_root(path, normalize)
-  normalize = normalize or function(p) return vim.fs.normalize(vim.fn.fnamemodify(p, ":p")) end
-  local root = normalize(path or vim.fn.getcwd())
-  -- Strip trailing slash (normalize may leave one for root dirs)
-  return root:gsub("/$", "")
+    normalize = normalize or function(p) return vim.fs.normalize(vim.fn.fnamemodify(p, ":p")) end
+    local root = normalize(path or vim.fn.getcwd())
+    -- Strip trailing slash (normalize may leave one for root dirs)
+    return root:gsub("/$", "")
 end
 
 --- Return the file paths that a workspace root implies.
 --- @param root string absolute workspace root
 --- @return { config: string, user: string, cache: string }
 function M.paths(root)
-  return {
-    config = root .. "/loomworks.json",
-    user = user_mod.filepath(root),
-    cache = cache_mod.filepath(root),
-  }
+    return {
+        config = root .. "/loomworks.json",
+        user = user_mod.filepath(root),
+        cache = cache_mod.filepath(root),
+    }
 end
 
 --- Assemble a Workspace from raw file contents.
@@ -37,40 +37,40 @@ end
 --- @param cache_content string|nil raw cache.json content
 --- @return loomworks.Workspace|nil ws, string|nil err
 function M.assemble(root, config_content, user_content, cache_content)
-  if not config_content then
-    return nil, "loomworks.json not found or empty in " .. root
-  end
+    if not config_content then
+        return nil, "loomworks.json not found or empty in " .. root
+    end
 
-  local config, config_err = config_mod.parse(config_content, root)
-  if not config then
-    return nil, config_err
-  end
+    local config, config_err = config_mod.parse(config_content, root)
+    if not config then
+        return nil, config_err
+    end
 
-  local user_data = user_content and user_mod.parse(user_content) or user_mod.default()
+    local user_data = user_content and user_mod.parse(user_content) or user_mod.default()
 
-  local cache_data, cache_version_mismatch
-  if cache_content then
-    cache_data, cache_version_mismatch = cache_mod.parse(cache_content)
-  else
-    cache_data = cache_mod.default()
-    cache_version_mismatch = false
-  end
+    local cache_data, cache_version_mismatch
+    if cache_content then
+        cache_data, cache_version_mismatch = cache_mod.parse(cache_content)
+    else
+        cache_data = cache_mod.default()
+        cache_version_mismatch = false
+    end
 
-  -- Update cache hash from raw content
-  if cache_data._meta then
-    cache_data._meta.loomworks_hash = cache_mod.compute_hash(config_content)
-  end
+    -- Update cache hash from raw content
+    if cache_data._meta then
+        cache_data._meta.loomworks_hash = cache_mod.compute_hash(config_content)
+    end
 
-  local dir_name = root:match("([^/]+)$") or root
+    local dir_name = root:match("([^/]+)$") or root
 
-  return {
-    root = root,
-    name = config.name or dir_name,
-    config = config,
-    user = user_data,
-    cache = cache_data,
-    cache_version_mismatch = cache_version_mismatch,
-  }, nil
+    return {
+        root = root,
+        name = config.name or dir_name,
+        config = config,
+        user = user_data,
+        cache = cache_data,
+        cache_version_mismatch = cache_version_mismatch,
+    }, nil
 end
 
 return M

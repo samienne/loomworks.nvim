@@ -15,58 +15,58 @@ local M = {}
 -- ---------------------------------------------------------------------------
 
 local function render_fn(tree)
-  local lw = require("loomworks")
-  local ws = lw.get_workspace()
-  if not ws then
-    local err = lw.get_setup_error()
-    if err then
-      tree._level = 1
-      tree:leaf("loomworks.nvim " .. lw._version, "Title")
-      tree:blank()
-      tree:leaf("Failed to load workspace", "DiagnosticError")
-      tree:leaf("Root: " .. err.root, "Comment")
-      tree:blank()
-      tree:leaf(err.message, "DiagnosticWarn")
-    else
-      tree:leaf("No workspace loaded.", "Comment")
-      tree:blank()
-      tree:leaf("Press L to load from:", "Comment")
-      tree:leaf("  " .. vim.fn.getcwd(), "DiagnosticInfo")
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then
+        local err = lw.get_setup_error()
+        if err then
+            tree._level = 1
+            tree:leaf("loomworks.nvim " .. lw._version, "Title")
+            tree:blank()
+            tree:leaf("Failed to load workspace", "DiagnosticError")
+            tree:leaf("Root: " .. err.root, "Comment")
+            tree:blank()
+            tree:leaf(err.message, "DiagnosticWarn")
+        else
+            tree:leaf("No workspace loaded.", "Comment")
+            tree:blank()
+            tree:leaf("Press L to load from:", "Comment")
+            tree:leaf("  " .. vim.fn.getcwd(), "DiagnosticInfo")
+        end
+        return
     end
-    return
-  end
 
-  local active_set = lw.get_active_configuration_set()
-  if not active_set then
-    tree:leaf("No workspace loaded.", "Comment")
-    return
-  end
+    local active_set = lw.get_active_configuration_set()
+    if not active_set then
+        tree:leaf("No workspace loaded.", "Comment")
+        return
+    end
 
-  tree._level = 1
+    tree._level = 1
 
-  -- Header
-  tree:leaf("loomworks.nvim " .. lw._version, "Title")
-  tree:blank()
-  tree:leaf("Workspace: " .. ws.name, "Type")
-  tree:leaf("Root:      " .. ws.root, "Comment")
-  tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
-  tree:blank()
+    -- Header
+    tree:leaf("loomworks.nvim " .. lw._version, "Title")
+    tree:blank()
+    tree:leaf("Workspace: " .. ws.name, "Type")
+    tree:leaf("Root:      " .. ws.root, "Comment")
+    tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
+    tree:blank()
 
-  local ctx = {
-    lw = lw,
-    all_profiles = lw.get_profiles(),
-    active_profile = lw.get_active_profile(),
-    active_set = active_set,
-    config_sets = lw.get_config_sets(),
-    tool_entries = lw.get_tool_entries(),
-  }
+    local ctx = {
+        lw = lw,
+        all_profiles = lw.get_profiles(),
+        active_profile = lw.get_active_profile(),
+        active_set = active_set,
+        config_sets = lw.get_config_sets(),
+        tool_entries = lw.get_tool_entries(),
+    }
 
-  require("loomworks.ui.sections.profiles")(tree, ctx)
-  require("loomworks.ui.sections.orphaned")(tree, ctx)
-  require("loomworks.ui.sections.config_sets")(tree, ctx)
+    require("loomworks.ui.sections.profiles")(tree, ctx)
+    require("loomworks.ui.sections.orphaned")(tree, ctx)
+    require("loomworks.ui.sections.config_sets")(tree, ctx)
 
-  ctx.projects = lw.get_projects()
-  require("loomworks.ui.sections.projects")(tree, ctx)
+    ctx.projects = lw.get_projects()
+    require("loomworks.ui.sections.projects")(tree, ctx)
 end
 
 -- ---------------------------------------------------------------------------
@@ -76,41 +76,41 @@ end
 local tree = Tree.new(render_fn)
 
 local view = View.new({
-  widget = tree,
-  win = {
-    position = "float",
-    width = 100,
-    height = 0.9,
-    border = "rounded",
-    title = " loomworks ",
-    title_pos = "center",
-  },
-  keymaps = {
-    ["<Tab>"] = "toggle_fold",
-    ["<CR>"]  = "enter",
-    ["b"]     = "build",
-    ["R"]     = "rebuild",
-    ["c"]     = "configure",
-    ["C"]     = "clean",
-    ["D"]     = "delete",
-    ["p"]     = "pin",
-    ["o"]     = "options",
-    ["L"]     = "load",
-    ["<C-n>"] = "nuke",
-    ["?"]     = "help",
-  },
-  events = {
-    "task_started",
-    "task_stopped",
-    "task_result",
-    "task_progress",
-    "deletion_started",
-    "deletion_completed",
-    "deletion_failed",
-    "active_set_changed",
-    "operation_started",
-    "operation_finished",
-  },
+    widget = tree,
+    win = {
+        position = "float",
+        width = 100,
+        height = 0.9,
+        border = "rounded",
+        title = " loomworks ",
+        title_pos = "center",
+    },
+    keymaps = {
+        ["<Tab>"] = "toggle_fold",
+        ["<CR>"]  = "enter",
+        ["b"]     = "build",
+        ["R"]     = "rebuild",
+        ["c"]     = "configure",
+        ["C"]     = "clean",
+        ["D"]     = "delete",
+        ["p"]     = "pin",
+        ["o"]     = "options",
+        ["L"]     = "load",
+        ["<C-n>"] = "nuke",
+        ["?"]     = "help",
+    },
+    events = {
+        "task_started",
+        "task_stopped",
+        "task_result",
+        "task_progress",
+        "deletion_started",
+        "deletion_completed",
+        "deletion_failed",
+        "active_set_changed",
+        "operation_started",
+        "operation_finished",
+    },
 })
 
 -- ---------------------------------------------------------------------------
@@ -123,23 +123,23 @@ function M.toggle()  view:toggle() end
 function M.refresh() view:refresh() end
 
 function M.is_open()
-  return view:is_open()
+    return view:is_open()
 end
 
 --- Delete a profile interactively (with confirmation dialog).
 --- @param profile_key string
 function M.delete_profile(profile_key)
-  local profile = require("loomworks").get_profiles()[profile_key]
-  if not profile then return end
-  actions.delete_profile(profile)()
+    local profile = require("loomworks").get_profiles()[profile_key]
+    if not profile then return end
+    actions.delete_profile(profile)()
 end
 
 --- Delete a configuration interactively (with confirmation dialog).
 --- @param project_key string
 --- @param config_key string
 function M.delete_config(project_key, config_key)
-  local unit = require("loomworks").get_config_unit(project_key, config_key)
-  actions.delete_config(unit)()
+    local unit = require("loomworks").get_config_unit(project_key, config_key)
+    actions.delete_config(unit)()
 end
 
 return M
