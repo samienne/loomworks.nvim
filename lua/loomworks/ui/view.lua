@@ -174,6 +174,9 @@ function View:_dispatch(action)
     local win = self._snacks_win.win
     local line = vim.api.nvim_win_get_cursor(win)[1]
     local result = self._widget:on_key(action, line)
+    if result.cursor then
+        pcall(vim.api.nvim_win_set_cursor, win, { result.cursor, 0 })
+    end
     if result.refresh then
         self:refresh()
         if result.restore_fold then

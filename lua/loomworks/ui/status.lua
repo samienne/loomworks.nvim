@@ -86,8 +86,11 @@ local view = View.new({
         title_pos = "center",
     },
     keymaps = {
-        ["<Tab>"] = "toggle_fold",
-        ["<CR>"]  = "enter",
+        ["<Tab>"]   = "next_item",
+        ["<S-Tab>"] = "prev_item",
+        ["l"]       = "open_fold",
+        ["h"]       = "close_fold",
+        ["<CR>"]    = "enter",
         ["b"]     = "build",
         ["R"]     = "rebuild",
         ["c"]     = "configure",
