@@ -228,7 +228,7 @@ function Core:_scan_targets_async()
             function(targets)
                 self._deps.schedule(function()
                     if targets then
-                        entry.unit.targets = targets
+                        entry.unit:set_targets(targets)
                         any_found = true
                     end
                     next_unit()
@@ -1053,7 +1053,7 @@ function Core:record_task_result(result)
             local mod = self._deps.modules.get(proj_type)
             if mod and mod.parse_file_api then
                 local unit = self:get_config_unit(project_key, config_key)
-                unit.targets = mod.parse_file_api(result.build_dir, result.variant)
+                unit:set_targets(mod.parse_file_api(result.build_dir, result.variant))
             end
         end
     end

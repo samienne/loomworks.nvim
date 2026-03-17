@@ -8,7 +8,8 @@
 --- @field _profile loomworks.Profile direct reference
 --- @field _project loomworks.Project|nil direct reference
 --- @field _config_unit loomworks.ConfigUnit|nil direct reference
---- @field _target_id string|nil opaque target identifier (module-specific)
+--- @field _target loomworks.Target|nil direct reference to resolved target
+--- @field _target_id string|nil fallback identifier for re-resolution
 --- @field _removed boolean
 local LaunchTarget = {}
 LaunchTarget.__index = LaunchTarget
@@ -35,14 +36,18 @@ function LaunchTarget:_update(descriptor)
     -- Resolve project string to Project object
     self._project = self._core._projects[descriptor.project]
 
-    -- Resolve ConfigUnit: find the ProfileProject for this project in the
-    -- profile, then get the ConfigUnit it delegates to.
+    -- Resolve ConfigUnit
     self._config_unit = nil
+    self._target = nil
     if self._project and self._profile.mappings then
         local variant = self._profile.mappings[descriptor.project]
         if variant then
             local config_key = self._profile:config_key(variant)
             self._config_unit = self._core:get_config_unit(descriptor.project, config_key)
+            -- Resolve Target object from ConfigUnit.targets
+            if self._config_unit and self._config_unit.targets then
+                self._target = self._config_unit.targets[self._target_id]
+            end
         end
     end
 end
@@ -53,31 +58,32 @@ function LaunchTarget:__tostring()
 end
 
 --- Build this target.
---- Delegates to ConfigUnit:build_target for module targets.
+--- Delegates to the Target object's build method.
 function LaunchTarget:build()
-    if not self._config_unit or not self._target_id then return end
-    self._config_unit:build_target(self._target_id)
+    if self._target then
+        self._target:build()
+    end
 end
 
---- Check if this target is still valid (exists in ConfigUnit.targets).
+--- Check if this target is still valid (Target object exists and is resolved).
 --- @return boolean
 function LaunchTarget:is_valid()
-    if not self._config_unit or self._config_unit._removed then return false end
-    if not self._target_id then return false end
-    local targets = self._config_unit.targets
-    if not targets then return false end
-    return targets[self._target_id] ~= nil
+    return self._target ~= nil
 end
 
 --- Check if this target has a build step.
 --- @return boolean
 function LaunchTarget:is_buildable()
-    return self._project ~= nil and self._target_id ~= nil
+    return self._target ~= nil
 end
 
 --- Get a display name for this target.
 --- @return string
 function LaunchTarget:display_name()
+    if self._target then
+        local project_name = self._project and self._project.key or "?"
+        return project_name .. ": " .. self._target:display_name()
+    end
     local project_name = self._project and self._project.key or "?"
     return project_name .. ": " .. (self._target_id or "?")
 end

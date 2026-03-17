@@ -190,35 +190,18 @@ function ConfigUnit:referencing_profiles()
     return result
 end
 
---- Build a specific target for this configuration.
---- Delegates to the module's build_target_task via overseer.
---- Falls back to full build if the module doesn't support target builds.
---- @param target_id string opaque target identifier
-function ConfigUnit:build_target(target_id)
-    if not self._project then return end
-    local modules = require("loomworks.modules")
-    local mod = modules.get(self._project.type)
-    if not mod then return end
-
-    -- If module supports target-specific builds, use it
-    if mod.build_target_task then
-        local ws = self._core:get_workspace()
-        if not ws then return end
-        local project_ctx = self._project:to_module_context(ws.root)
-        project_ctx.configuration = self.variant
-        project_ctx.configuration_key = self.config_key
-        project_ctx.tool_data = self.tool and self.tool.data or nil
-        project_ctx.env = project_ctx.tool_data and project_ctx.tool_data.env or {}
-
-        local task_def = mod.build_target_task(project_ctx, target_id)
-        if task_def then
-            require("loomworks.overseer").launch_single_task(task_def, self)
-            return
-        end
+--- Set targets from raw parse data, wrapping each in a Target object.
+--- @param raw table<string, { type: string, dependencies?: string[], artifact?: string }>|nil
+function ConfigUnit:set_targets(raw)
+    if not raw then
+        self.targets = nil
+        return
     end
-
-    -- Fallback: full build via existing action
-    require("loomworks.overseer").run_configuration_action(self, "build")
+    local Target = require("loomworks.target")
+    self.targets = {}
+    for id, data in pairs(raw) do
+        self.targets[id] = Target.new(self, id, data)
+    end
 end
 
 --- Materialize a skeleton cache entry for this configuration.

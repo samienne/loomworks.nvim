@@ -217,12 +217,15 @@ function M.render_targets(tree, targets, fold_prefix)
     }, function()
         for _, type_key in ipairs(TARGET_TYPE_ORDER) do
             local group = by_type[type_key]
-            if group then
+            -- Always show Executables (even when empty), only show others if non-empty
+            if group or type_key == "executable" then
+                local count = group and #group or 0
                 local group_label = TARGET_TYPE_LABELS[type_key] or type_key
-                tree:node(group_label .. " (" .. #group .. ")", {
+                tree:node(group_label .. " (" .. count .. ")", {
                     fold_key = prefix .. "ttype:" .. type_key,
                     hl = "Comment",
                 }, function()
+                    if not group then return end
                     for _, entry in ipairs(group) do
                         local has_deps = entry.tgt.dependencies and #entry.tgt.dependencies > 0
                         local has_artifact = entry.tgt.artifact ~= nil

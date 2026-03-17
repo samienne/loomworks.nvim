@@ -329,9 +329,11 @@ function M.build_target()
 
     -- No default or stale: show picker
     M._pick_target(profile, function(project, target_id)
-        profile:set_default_target(project, target_id)
-        local new_target = profile:default_target()
-        if new_target then new_target:build() end
+        if project and target_id then
+            profile:set_default_target(project, target_id)
+            local new_target = profile:default_target()
+            if new_target then new_target:build() end
+        end
     end)
 end
 
@@ -345,25 +347,51 @@ function M.build_profile()
     profile:build()
 end
 
---- Show a picker for selecting a target from the active profile's projects.
+--- Show a picker for selecting a default target from the active profile.
+--- Includes "None" to clear and optionally "Default: X" if loomworks.json
+--- defines a default that the user has overridden.
 --- @param profile loomworks.Profile
---- @param on_select fun(project: loomworks.Project, target_id: string)
+--- @param on_select fun(project: loomworks.Project|nil, target_id: string|nil)
 function M._pick_target(profile, on_select)
-    -- Collect executable targets from all projects in the profile
+    local ws = M.get_workspace()
     local items = {}
+
+    -- "None" option to clear the default target
+    items[#items + 1] = {
+        label = "None (clear target)",
+        action = "clear",
+    }
+
+    -- "Default" option if loomworks.json defines a default and user has overridden
+    if ws then
+        local user_has_override = ws.user.default_target
+            and ws.user.default_target[profile.key]
+        local config_default = ws.config.profiles
+            and ws.config.profiles[profile.key]
+            and ws.config.profiles[profile.key].default_target
+        if user_has_override and config_default then
+            items[#items + 1] = {
+                label = "Default (" .. config_default.project .. ": " .. config_default.target .. ")",
+                action = "reset_to_default",
+            }
+        end
+    end
+
+    -- Collect executable targets from all projects in the profile
     local total_targets = 0
     for _, pp in ipairs(profile:projects()) do
         local unit = M.get_config_unit(pp.project_key, pp.config_key)
         if unit and unit.targets then
             local project = pp._project
             if project then
-                for target_id, target_info in pairs(unit.targets) do
+                for target_id, target in pairs(unit.targets) do
                     total_targets = total_targets + 1
-                    if target_info.type == "executable" then
+                    if target:is_executable() then
                         items[#items + 1] = {
-                            label = project.key .. ": " .. target_id,
+                            label = project.key .. ": " .. target:display_name(),
                             project = project,
                             target_id = target_id,
+                            action = "select",
                         }
                     end
                 end
@@ -371,24 +399,19 @@ function M._pick_target(profile, on_select)
         end
     end
 
-    if #items == 0 then
-        if total_targets > 0 then
-            vim.notify("loomworks: " .. total_targets .. " target(s) found but none are executables",
-                vim.log.levels.INFO)
-        else
-            vim.notify("loomworks: no targets available (configure first?)", vim.log.levels.WARN)
-        end
-        return
-    end
-
-    table.sort(items, function(a, b) return a.label < b.label end)
-
     vim.ui.select(items, {
         prompt = "Select default target:",
         format_item = function(item) return item.label end,
     }, function(choice)
         if not choice then return end -- cancelled
-        on_select(choice.project, choice.target_id)
+        if choice.action == "clear" then
+            profile:clear_default_target()
+        elseif choice.action == "reset_to_default" then
+            profile:clear_default_target()
+        elseif choice.action == "select" then
+            on_select(choice.project, choice.target_id)
+        end
+        -- "info" action does nothing
     end)
 end
 

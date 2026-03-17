@@ -34,6 +34,26 @@ local function render_profile_details(tree, profile, lw)
         tree:leaf("Last: " .. op.message, op_hl)
     end
 
+    -- Default target line
+    local launch_target = profile:default_target()
+    local target_display, target_hl
+    if launch_target and launch_target:is_valid() then
+        target_display = "Target: " .. launch_target:display_name()
+        target_hl = "LoomworksActionable"
+    elseif launch_target then
+        target_display = "Target: " .. launch_target:display_name() .. " (stale)"
+        target_hl = "DiagnosticWarn"
+    else
+        target_display = "Target: (no target set)"
+        target_hl = "Comment"
+    end
+    tree:item(target_display, {
+        hl = target_hl,
+        on_enter = function()
+            lw.build_target()
+        end,
+    })
+
     local pps = profile:projects()
     if #pps > 0 then
         tree:group({{"Projects:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
