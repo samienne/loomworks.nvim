@@ -1346,9 +1346,38 @@ Imported targets, alias targets, and utility targets (e.g., `install`,
 recorded. Dependencies on imported or external targets are excluded.
 
 **Storage**: Targets are runtime-only data stored on `ConfigUnit.targets`
-(not persisted in cache). They are re-parsed from the file-api reply on
-startup (async) and after each successful configure (sync). The entire
-targets dict is replaced on every parse (not merged).
+as `Target` objects (not persisted in cache). They are re-parsed from the
+file-api reply on startup (async) and after each successful configure
+(sync). The entire targets dict is replaced on every parse (not merged).
+Each `Target` object holds the target id, type, dependencies, artifact
+path, and a back-reference to its owning `ConfigUnit`.
+
+### 9.6 Per-target builds
+
+Each profile can have a **default target** — a single executable target
+that `build_target()` builds instead of the full project.
+
+**Default target storage**:
+- `loomworks.user.json`: `default_target = { "<profile_key>": { "project": "<key>", "target": "<id>" } }`
+- `loomworks.json` profile definitions: `default_target = { "project": "<key>", "target": "<id>" }`
+- User.json overrides loomworks.json.
+
+**Resolution**: `Profile:default_target()` returns a `LaunchTarget` object
+that holds direct references to the `Project`, `ConfigUnit`, and `Target`
+objects. No key-based lookups at runtime.
+
+**Build flow** (`build_target()` API):
+1. Get active profile's default target.
+2. If not set: show `vim.ui.select` picker with executable targets.
+   Picker includes "None" to clear and "Default" to revert to
+   loomworks.json setting. On selection, sets default and builds.
+3. If set but stale (target no longer exists): notify and show picker.
+4. If valid: `Target:build()` delegates to the module's
+   `build_target_task()` (e.g., cmake adds `--target <name>`).
+
+**Module interface**: `build_target_task(project_ctx, target_id)` returns
+an overseer task definition for building a single target. Falls back to
+full build if the module doesn't implement it.
 
 ---
 
