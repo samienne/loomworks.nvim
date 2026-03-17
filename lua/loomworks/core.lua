@@ -247,13 +247,6 @@ function Core:rescan_tools()
     self:_scan_tools_async()
 end
 
---- Check if a module type has keyed tools (static, no detection needed).
---- @param mod_type string
---- @return boolean
-function Core:module_has_keyed_tools(mod_type)
-    return self._deps.merge.module_has_keyed_tools(mod_type)
-end
-
 --- Get detected tools organized by module type.
 --- @return table<string, loomworks.DetectedTool[]>
 function Core:get_tools_by_type()
@@ -749,23 +742,26 @@ function Core:_materialize_from_data(config_set, tool_entry)
         local project_config = ws.config.projects[project.key]
         if not project_config then goto continue end
 
-        local config_key = self._deps.merge.build_config_key(
-            project_config.type, variant, tool_key)
+        -- tool_key applies only to projects whose module type matches the tool.
+        -- When tool_mod_type is nil (e.g. older cache), fall back to including tool_key.
+        local project_tool_key = tool_key
+        if tool_mod_type and tool_mod_type ~= project_config.type then
+            project_tool_key = nil
+        end
+        local config_key = self._deps.merge.build_config_key(variant, project_tool_key)
 
         local cache_key = self._deps.cache.config_cache_key(project.key, config_key)
         profile_configurations[#profile_configurations + 1] = cache_key
 
         -- Ensure skeleton config entry exists in flat cache
         if not ws.cache.configurations[cache_key] then
-            local has_keyed = self._deps.merge.module_has_keyed_tools(
-                project_config.type)
             ws.cache.configurations[cache_key] = {
                 project_key = project.key,
                 config_key = config_key,
                 type = project_config.type,
                 variant = variant,
-                tool_key = tool_key,
-                tool_data = has_keyed and tool_data or nil,
+                tool_key = project_tool_key,
+                tool_data = project_tool_key and tool_data or nil,
             }
         end
 

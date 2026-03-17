@@ -3,7 +3,6 @@ local M = {}
 local io_mod = require("loomworks.io")
 
 M.id = "cmake"
-M.has_keyed_tools = true
 
 local uv = vim.uv or vim.loop
 

@@ -42,7 +42,7 @@ function LaunchTarget:_update(descriptor)
     if self._project and self._profile.mappings then
         local variant = self._profile.mappings[descriptor.project]
         if variant then
-            local config_key = self._profile:config_key(variant)
+            local config_key = self._profile:config_key(variant, self._project.type)
             self._config_unit = self._core:get_config_unit(descriptor.project, config_key)
             -- Resolve Target object from ConfigUnit.targets
             if self._config_unit and self._config_unit.targets then

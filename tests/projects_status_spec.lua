@@ -47,7 +47,7 @@ local function merge_with_cmake_tools()
             }
         end,
         merge = real_merge.merge,
-        module_has_keyed_tools = real_merge.module_has_keyed_tools,
+
         get_all_profiles = real_merge.get_all_profiles,
 
         build_config_key = real_merge.build_config_key,
@@ -60,7 +60,7 @@ local function merge_without_tools()
     return {
         detect_tools = function() return {} end,
         merge = real_merge.merge,
-        module_has_keyed_tools = real_merge.module_has_keyed_tools,
+
         get_all_profiles = real_merge.get_all_profiles,
 
         build_config_key = real_merge.build_config_key,
@@ -70,7 +70,6 @@ local function merge_without_tools()
 end
 
 local cmake_module = {
-    has_keyed_tools = true,
     validate = function() return { valid = true, warnings = {} } end,
     info = function() return { configurations = { Debug = {}, Release = {} } } end,
 }
@@ -204,9 +203,6 @@ describe("Projects section cmake status", function()
             }
         )
         core:setup({ root = "/root" })
-
-        -- has_keyed_tools is static (true for cmake regardless of detection)
-        assert.is_true(core:module_has_keyed_tools("cmake"))
 
         local results = simulate_projects_section_rendering(core, "App", "Debug")
         -- Should still find cached keyed entry
