@@ -73,6 +73,31 @@ local function scan_tsconfig_variants(project_path)
     return variants
 end
 
+--- Read the scripts section from package.json.
+--- @param project_path string absolute project path
+--- @return table<string, string>|nil scripts name -> command
+local function read_package_scripts(project_path)
+    local content = io_mod.read_file(project_path .. "/package.json")
+    if not content then return nil end
+    local ok, data = pcall(vim.json.decode, content)
+    if not ok or type(data) ~= "table" then return nil end
+    return data.scripts
+end
+
+--- Resolve the npm script name for a loomworks action.
+--- Checks type_config overrides first, then falls back to convention.
+--- @param config table type_config from loomworks.json
+--- @param action string "configure"|"build"|"clean"
+--- @return string|nil script name (nil means use direct command, not npm run)
+local function resolve_script(config, action)
+    -- Explicit mapping: typescript.scripts.build = "compile"
+    if config.scripts and config.scripts[action] then
+        return config.scripts[action]
+    end
+    -- Convention: action name matches script name
+    return action == "configure" and nil or action
+end
+
 --- Wrap a command for Windows (prepend cmd /c for npm/npx).
 --- @param cmd string[] command array
 --- @return string[]
@@ -183,28 +208,36 @@ function M.tool_label(tool_data)
 end
 
 --- Return overseer task templates for a project.
---- Configure = npm install, Build = tsc --build.
---- Supports command overrides via type_config.
+--- Uses npm scripts when available, falls back to direct tsc commands.
+--- Script mapping configurable via type_config.scripts.
 --- @param project loomworks.ModuleContext
 --- @param active_config string
 --- @return table[] tasks
 function M.tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local configuration_key = project.configuration_key or active_config
+    local config = project.type_config or {}
+    local scripts = read_package_scripts(abs_path)
 
-    -- Resolve tsconfig for this variant (use config info if available)
+    -- Resolve tsconfig for this variant
     local config_info = project.configurations and project.configurations[active_config]
     local tsconfig = resolve_tsconfig(abs_path, active_config, config_info)
 
-    -- Configure command: npm install
+    -- Configure command: always npm install (not a script)
     local configure_cmd = { "npm", "install" }
 
-    -- Build command: npx tsc --build [tsconfig] --force
-    local build_cmd = { "npx", "tsc", "--build" }
-    if tsconfig and tsconfig ~= "tsconfig.json" then
-        build_cmd[#build_cmd + 1] = tsconfig
+    -- Build command: prefer npm run <script>, fall back to direct tsc
+    local build_script = resolve_script(config, "build")
+    local build_cmd
+    if build_script and scripts and scripts[build_script] then
+        build_cmd = { "npm", "run", build_script }
+    else
+        build_cmd = { "npx", "tsc", "--build" }
+        if tsconfig and tsconfig ~= "tsconfig.json" then
+            build_cmd[#build_cmd + 1] = tsconfig
+        end
+        build_cmd[#build_cmd + 1] = "--force"
     end
-    build_cmd[#build_cmd + 1] = "--force"
 
     return {
         {
@@ -239,21 +272,30 @@ function M.tasks(project, active_config)
 end
 
 --- Return overseer task templates for cleaning build artifacts.
+--- Uses npm run <clean_script> when available, falls back to tsc --clean.
 --- @param project loomworks.ModuleContext
 --- @param active_config string
 --- @return table[] tasks
 function M.clean_tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local configuration_key = project.configuration_key or active_config
+    local config = project.type_config or {}
+    local scripts = read_package_scripts(abs_path)
 
     local config_info = project.configurations and project.configurations[active_config]
     local tsconfig = resolve_tsconfig(abs_path, active_config, config_info)
 
-    local clean_cmd = { "npx", "tsc", "--build" }
-    if tsconfig and tsconfig ~= "tsconfig.json" then
-        clean_cmd[#clean_cmd + 1] = tsconfig
+    local clean_script = resolve_script(config, "clean")
+    local clean_cmd
+    if clean_script and scripts and scripts[clean_script] then
+        clean_cmd = { "npm", "run", clean_script }
+    else
+        clean_cmd = { "npx", "tsc", "--build" }
+        if tsconfig and tsconfig ~= "tsconfig.json" then
+            clean_cmd[#clean_cmd + 1] = tsconfig
+        end
+        clean_cmd[#clean_cmd + 1] = "--clean"
     end
-    clean_cmd[#clean_cmd + 1] = "--clean"
 
     return {
         {
