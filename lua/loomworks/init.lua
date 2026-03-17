@@ -370,15 +370,33 @@ function M._pick_target(profile, on_select)
         end
     end
 
+    -- Collect launch configs from loomworks.json projects
+    if ws then
+        for _, pp in ipairs(profile:projects()) do
+            local project = pp._project
+            if not project then goto next_pp end
+            local proj_cfg = ws.config.projects[project.key]
+            if proj_cfg and proj_cfg.launch then
+                for launch_name, _ in pairs(proj_cfg.launch) do
+                    items[#items + 1] = {
+                        label = project.key .. " [launch: " .. launch_name .. "]",
+                        project = project,
+                        launch_name = launch_name,
+                        action = "launch",
+                    }
+                end
+            end
+            ::next_pp::
+        end
+    end
+
     -- Collect executable targets from all projects in the profile
-    local total_targets = 0
     for _, pp in ipairs(profile:projects()) do
         local unit = M.get_config_unit(pp.project_key, pp.config_key)
         if unit and unit.targets then
             local project = pp._project
             if project then
                 for target_id, target in pairs(unit.targets) do
-                    total_targets = total_targets + 1
                     if target:is_executable() then
                         items[#items + 1] = {
                             label = project.key .. ": " .. target:display_name(),
@@ -401,11 +419,70 @@ function M._pick_target(profile, on_select)
             profile:clear_default_target()
         elseif choice.action == "reset_to_default" then
             profile:clear_default_target()
+        elseif choice.action == "launch" then
+            profile:set_default_target(choice.project, nil, choice.launch_name)
+            on_select(nil, nil) -- signal that default was set, trigger re-resolve
         elseif choice.action == "select" then
             on_select(choice.project, choice.target_id)
         end
-        -- "info" action does nothing
     end)
+end
+
+-- Track the active LaunchTarget for stop_target()
+local _active_launch = nil
+
+--- Launch the active profile's default target.
+--- Builds first (if buildable), then launches.
+--- Shows picker if no default set or target is stale.
+function M.launch_target()
+    local profile = M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+
+    local launch_target = profile:default_target()
+
+    if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
+        _active_launch = launch_target
+        -- Build first if buildable, then launch
+        if launch_target:is_buildable() then
+            -- TODO: build then launch on success
+            launch_target:launch()
+        else
+            launch_target:launch()
+        end
+        return
+    end
+
+    -- Stale target
+    if launch_target and not launch_target:is_valid() then
+        vim.notify("loomworks: target '" .. launch_target:display_name()
+            .. "' no longer available", vim.log.levels.WARN)
+        profile:clear_default_target()
+    end
+
+    -- No default or stale: show picker, then launch the selection
+    M._pick_target(profile, function(project, target_id)
+        if project and target_id then
+            profile:set_default_target(project, target_id)
+        end
+        -- Re-resolve and launch
+        local new_target = profile:default_target()
+        if new_target and new_target:is_launchable() then
+            _active_launch = new_target
+            new_target:launch()
+        end
+    end)
+end
+
+--- Stop the running launch task.
+function M.stop_target()
+    if _active_launch and _active_launch:is_running() then
+        _active_launch:stop()
+        return
+    end
+    vim.notify("loomworks: no running launch task", vim.log.levels.INFO)
 end
 
 return M

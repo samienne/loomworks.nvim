@@ -193,21 +193,38 @@ end
 --- Results stored on ConfigUnit.targets (runtime only, not cached).
 function Core:_scan_targets_async()
     if not self._workspace then return end
+    local ws = self._workspace
 
-    -- Collect units that have a build_dir and a cmake project type
+    -- Collect scannable units: modules with parse_file_api_async (need build_dir)
+    -- or parse_targets_async (need project path)
     local units = {}
+    local seen_projects = {} -- avoid duplicate project-level scans
     for _, unit in pairs(self._config_units) do
+        local proj_cfg = ws.config.projects and ws.config.projects[unit.project_key]
+        if not proj_cfg then goto continue end
+
+        local mod = self._deps.modules.get(proj_cfg.type)
+        if not mod then goto continue end
+
         local build_dir = unit:build_dir()
-        if build_dir then
-            local ws = self._workspace
-            local proj_cfg = ws and ws.config.projects and ws.config.projects[unit.project_key]
-            if proj_cfg then
-                local mod = self._deps.modules.get(proj_cfg.type)
-                if mod and mod.parse_file_api_async then
-                    units[#units + 1] = { unit = unit, mod = mod, build_dir = build_dir }
-                end
-            end
+        if build_dir and mod.parse_file_api_async then
+            units[#units + 1] = {
+                unit = unit, mod = mod,
+                scan_type = "file_api",
+                build_dir = build_dir,
+            }
+        elseif mod.parse_targets_async and not seen_projects[unit.project_key] then
+            -- Project-level target scan (e.g., npm scripts) — once per project
+            seen_projects[unit.project_key] = true
+            local abs_path = ws.root .. "/" .. (proj_cfg.path or unit.project_key)
+            units[#units + 1] = {
+                unit = unit, mod = mod,
+                scan_type = "project",
+                project_path = abs_path,
+            }
         end
+
+        ::continue::
     end
 
     if #units == 0 then return end
@@ -217,6 +234,8 @@ function Core:_scan_targets_async()
     local function next_unit()
         idx = idx + 1
         if idx > #units then
+            -- Add launch configs from loomworks.json as targets
+            self:_add_launch_config_targets()
             if any_found then
                 self._deps.events.emit("active_set_changed", self._active_set)
             end
@@ -224,20 +243,48 @@ function Core:_scan_targets_async()
         end
 
         local entry = units[idx]
-        entry.mod.parse_file_api_async(entry.build_dir, entry.unit.variant,
-            function(targets)
-                self._deps.schedule(function()
-                    if targets then
-                        entry.unit:set_targets(targets)
-                        any_found = true
-                    end
-                    next_unit()
-                end)
-            end
-        )
+        local function on_targets(targets)
+            self._deps.schedule(function()
+                if targets then
+                    entry.unit:set_targets(targets)
+                    any_found = true
+                end
+                next_unit()
+            end)
+        end
+
+        if entry.scan_type == "file_api" then
+            entry.mod.parse_file_api_async(entry.build_dir, entry.unit.variant, on_targets)
+        else
+            entry.mod.parse_targets_async(entry.project_path, entry.unit.variant, on_targets)
+        end
     end
 
     next_unit()
+end
+
+--- Add launch configs from loomworks.json as targets on ConfigUnits.
+--- Called after module target scanning completes.
+function Core:_add_launch_config_targets()
+    local ws = self._workspace
+    if not ws then return end
+    local Target = require("loomworks.target")
+
+    for _, unit in pairs(self._config_units) do
+        local proj_cfg = ws.config.projects and ws.config.projects[unit.project_key]
+        if proj_cfg and proj_cfg.launch then
+            unit.targets = unit.targets or {}
+            for name, cfg in pairs(proj_cfg.launch) do
+                local launch_key = "launch:" .. name
+                if not unit.targets[launch_key] then
+                    unit.targets[launch_key] = Target.new(unit, launch_key, {
+                        type = "launch_config",
+                        artifact = cfg.command,
+                    })
+                end
+            end
+        end
+    end
 end
 
 --- Re-scan tools and remerge. Used for manual rescan from UI.

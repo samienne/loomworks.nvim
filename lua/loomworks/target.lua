@@ -83,4 +83,28 @@ function Target:build()
     require("loomworks.overseer").run_configuration_action(unit, "build")
 end
 
+--- Launch this target (run the built artifact).
+--- Only works for executables with an artifact path.
+function Target:launch()
+    if not self:is_executable() or not self.artifact then return end
+    local unit = self._config_unit
+    if not unit then return end
+
+    local build_dir = unit:build_dir()
+    if not build_dir then
+        vim.notify("loomworks: no build directory for " .. self.id, vim.log.levels.WARN)
+        return
+    end
+
+    local artifact_path = build_dir .. "/" .. self.artifact
+    local project_name = unit._project and unit._project.key or unit.project_key
+
+    local overseer = require("loomworks.overseer")
+    return overseer.launch_run_task({
+        name = project_name .. ": run " .. self.id,
+        cmd = { artifact_path },
+        cwd = build_dir,
+    })
+end
+
 return Target

@@ -60,6 +60,18 @@ TypeScript configure (npm install) is per-ConfigUnit but npm install is
 project-level (shared node_modules). Could deduplicate by making configure
 project-level rather than configuration-level.
 
+## Post-build file copy support
+
+Some projects need files copied after build (e.g., cmake-built native
+libraries copied to TypeScript project's Debug/Release folder). Need a
+post-build step or copy-file mechanism in loomworks.json.
+
+## Fidget spinner stuck on workspace load failure
+
+When loomworks.json parsing fails (e.g., "multiple type keys" error), the
+"loading workspace" fidget spinner stays indefinitely. The initialization
+event flow doesn't emit completion on parse failure.
+
 ## ConfigUnit listener accumulation
 
 `on_state_change` listeners on ConfigUnit accumulate and are never cleared.

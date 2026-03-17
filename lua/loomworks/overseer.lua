@@ -344,6 +344,30 @@ function M.run_configuration_action(unit, action)
     end
 end
 
+--- Launch a run/launch task via overseer.
+--- Unlike build tasks, this doesn't use task_tracker or ConfigUnit state.
+--- Opens the overseer window automatically.
+--- @param opts { name: string, cmd: string[], cwd?: string, env?: table }
+--- @return number|nil task_id
+function M.launch_run_task(opts)
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        return nil
+    end
+
+    local task = overseer.new_task({
+        name = opts.name,
+        cmd = opts.cmd,
+        cwd = opts.cwd,
+        env = opts.env,
+        components = { "default" },
+    })
+    task:start()
+    overseer.open({ enter = false })
+    return task.id
+end
+
 --- Launch a single task definition via overseer.
 --- Used by ConfigUnit:build_target for per-target builds.
 --- @param task_def table task definition with .builder and .loomworks
@@ -356,8 +380,10 @@ function M.launch_single_task(task_def, unit, on_complete)
         return
     end
 
-    local readiness = check_task_readiness(unit, "build")
-    if readiness == "skip" or readiness == "block" then return end
+    -- Check ConfigUnit state directly (not via check_task_readiness which expects task_def)
+    local state = unit:state()
+    if state == "unknown" then return end
+    if state == "building" then return end
 
     start_one_task(overseer, task_def, on_complete)
 end

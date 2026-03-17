@@ -3,7 +3,7 @@ local M = {}
 local io_mod = require("loomworks.io")
 
 local KNOWN_TYPES = { cmake = true, ets = true, typescript = true }
-local NON_TYPE_KEYS = { path = true, depends_on = true }
+local NON_TYPE_KEYS = { path = true, depends_on = true, launch = true }
 
 --- Extract project type from the project definition table.
 --- Type is implicit from the inner key: {"cmake": {}} -> type = "cmake"
@@ -62,6 +62,7 @@ function M.validate(raw, root)
             type = ptype,
             type_config = type_config,
             depends_on = def.depends_on,
+            launch = def.launch,
         }
     end
 
