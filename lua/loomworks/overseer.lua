@@ -344,6 +344,24 @@ function M.run_configuration_action(unit, action)
     end
 end
 
+--- Launch a single task definition via overseer.
+--- Used by ConfigUnit:build_target for per-target builds.
+--- @param task_def table task definition with .builder and .loomworks
+--- @param unit loomworks.ConfigUnit the configuration unit being built
+--- @param on_complete? function called with boolean success
+function M.launch_single_task(task_def, unit, on_complete)
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        return
+    end
+
+    local readiness = check_task_readiness(unit, "build")
+    if readiness == "skip" or readiness == "block" then return end
+
+    start_one_task(overseer, task_def, on_complete)
+end
+
 --- Run all tasks of a given action for a profile.
 --- The profile must already be materialized (caller ensures this).
 --- If building and some projects are unconfigured, configures them first.

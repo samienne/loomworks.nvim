@@ -441,6 +441,50 @@ function M.tasks(project, active_config)
     return tasks
 end
 
+--- Generate an overseer task for building a specific cmake target.
+--- @param project loomworks.ModuleContext
+--- @param target_id string cmake target name
+--- @return table task_def overseer-compatible task definition
+function M.build_target_task(project, target_id)
+    local abs_path = project.workspace_root .. "/" .. project.path
+    local active_config = project.configuration
+    local config_info = project.configurations and project.configurations[active_config] or nil
+    local kit = project.tool_data
+    local env = project.env or {}
+
+    local generator = (config_info and config_info.generator)
+            or (kit and kit.generator)
+            or nil
+    local multi_config = is_multi_config(generator)
+
+    local build_dir = resolve_build_dir(
+        project.name, active_config, config_info, project.workspace_root, multi_config, kit)
+
+    local cmd = { "cmake", "--build", build_dir, "--target", target_id }
+    if multi_config then
+        cmd[#cmd + 1] = "--config"
+        cmd[#cmd + 1] = active_config
+    end
+
+    return {
+        name = project.name .. ": build " .. target_id,
+        builder = function()
+            return {
+                cmd = wrap_cmd(cmd),
+                cwd = abs_path,
+                env = env,
+            }
+        end,
+        loomworks = {
+            project_key = project.name,
+            action = "build",
+            configuration_key = project.configuration_key,
+            build_dir = build_dir,
+            tool_data = kit,
+        },
+    }
+end
+
 --- Return the progress parser tool name for a project's active configuration.
 --- @param project loomworks.ModuleContext
 --- @param active_config string

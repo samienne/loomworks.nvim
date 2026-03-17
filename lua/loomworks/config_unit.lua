@@ -20,6 +20,7 @@ local cache_mod = require("loomworks.cache")
 --- @field _queued_action string|nil action to run after deletion completes
 --- @field _listeners function[]
 --- @field _removed boolean
+--- @field _project loomworks.Project|nil direct reference to project object
 --- @field targets? table<string, loomworks.CachedTarget> runtime-only, from parse_file_api
 local ConfigUnit = {}
 ConfigUnit.__index = ConfigUnit
@@ -58,9 +59,12 @@ function ConfigUnit.new(core, project_key, config_key)
     return self
 end
 
---- Refresh variant and tool from cache.
---- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners).
+--- Refresh variant, tool, and project reference from cache/registries.
+--- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners, targets).
 function ConfigUnit:_update()
+    -- Resolve direct project reference
+    self._project = self._core._projects[self.project_key]
+
     local cached = self:cached_state()
     self.variant = cached and cached.variant or nil
     self.tool = nil
@@ -72,10 +76,7 @@ function ConfigUnit:_update()
     end
     -- Fallback: for non-keyed modules, config_key IS the variant
     if not self.variant then
-        local ws = self._core:get_workspace()
-        local proj_cfg = ws and ws.config and ws.config.projects
-                and ws.config.projects[self.project_key]
-        if proj_cfg and not self._core:module_has_keyed_tools(proj_cfg.type) then
+        if self._project and not self._core:module_has_keyed_tools(self._project.type) then
             self.variant = self.config_key
         end
     end
@@ -187,6 +188,37 @@ function ConfigUnit:referencing_profiles()
     end
     table.sort(result, function(a, b) return a.key < b.key end)
     return result
+end
+
+--- Build a specific target for this configuration.
+--- Delegates to the module's build_target_task via overseer.
+--- Falls back to full build if the module doesn't support target builds.
+--- @param target_id string opaque target identifier
+function ConfigUnit:build_target(target_id)
+    if not self._project then return end
+    local modules = require("loomworks.modules")
+    local mod = modules.get(self._project.type)
+    if not mod then return end
+
+    -- If module supports target-specific builds, use it
+    if mod.build_target_task then
+        local ws = self._core:get_workspace()
+        if not ws then return end
+        local project_ctx = self._project:to_module_context(ws.root)
+        project_ctx.configuration = self.variant
+        project_ctx.configuration_key = self.config_key
+        project_ctx.tool_data = self.tool and self.tool.data or nil
+        project_ctx.env = project_ctx.tool_data and project_ctx.tool_data.env or {}
+
+        local task_def = mod.build_target_task(project_ctx, target_id)
+        if task_def then
+            require("loomworks.overseer").launch_single_task(task_def, self)
+            return
+        end
+    end
+
+    -- Fallback: full build via existing action
+    require("loomworks.overseer").run_configuration_action(self, "build")
 end
 
 --- Materialize a skeleton cache entry for this configuration.

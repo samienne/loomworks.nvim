@@ -303,4 +303,93 @@ function M.toggle()
     require("loomworks.ui.status").toggle()
 end
 
+--- Build the active profile's default target.
+--- Shows a picker if no default is set or the target is stale.
+function M.build_target()
+    local profile = M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+
+    local launch_target = profile:default_target()
+
+    -- Valid default target: build it
+    if launch_target and launch_target:is_valid() then
+        launch_target:build()
+        return
+    end
+
+    -- Stale target: notify and show picker
+    if launch_target and not launch_target:is_valid() then
+        vim.notify("loomworks: target '" .. launch_target:display_name()
+            .. "' no longer available", vim.log.levels.WARN)
+        profile:clear_default_target()
+    end
+
+    -- No default or stale: show picker
+    M._pick_target(profile, function(project, target_id)
+        profile:set_default_target(project, target_id)
+        local new_target = profile:default_target()
+        if new_target then new_target:build() end
+    end)
+end
+
+--- Build the full active profile (all targets).
+function M.build_profile()
+    local profile = M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+    profile:build()
+end
+
+--- Show a picker for selecting a target from the active profile's projects.
+--- @param profile loomworks.Profile
+--- @param on_select fun(project: loomworks.Project, target_id: string)
+function M._pick_target(profile, on_select)
+    -- Collect executable targets from all projects in the profile
+    local items = {}
+    local total_targets = 0
+    for _, pp in ipairs(profile:projects()) do
+        local unit = M.get_config_unit(pp.project_key, pp.config_key)
+        if unit and unit.targets then
+            local project = pp._project
+            if project then
+                for target_id, target_info in pairs(unit.targets) do
+                    total_targets = total_targets + 1
+                    if target_info.type == "executable" then
+                        items[#items + 1] = {
+                            label = project.key .. ": " .. target_id,
+                            project = project,
+                            target_id = target_id,
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    if #items == 0 then
+        if total_targets > 0 then
+            vim.notify("loomworks: " .. total_targets .. " target(s) found but none are executables",
+                vim.log.levels.INFO)
+        else
+            vim.notify("loomworks: no targets available (configure first?)", vim.log.levels.WARN)
+        end
+        return
+    end
+
+    table.sort(items, function(a, b) return a.label < b.label end)
+
+    vim.ui.select(items, {
+        prompt = "Select default target:",
+        format_item = function(item) return item.label end,
+    }, function(choice)
+        if not choice then return end -- cancelled
+        on_select(choice.project, choice.target_id)
+    end)
+end
+
 return M
