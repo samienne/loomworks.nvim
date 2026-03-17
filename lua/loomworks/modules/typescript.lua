@@ -10,15 +10,27 @@ local io_mod = require("loomworks.io")
 -- ---------------------------------------------------------------------------
 
 --- Resolve the tsconfig file for a given variant.
---- Checks for tsconfig.<variant>.json first, falls back to tsconfig.json.
+--- Resolution order:
+--- 1. Explicit tsconfig from config (e.g. { tsconfig = "tsconfig.prod.json" })
+--- 2. tsconfig.<variant>.json if it exists on disk
+--- 3. Fall back to tsconfig.json
 --- @param project_path string absolute project path
 --- @param variant string configuration variant name
---- @return string|nil tsconfig_path relative to project (e.g. "tsconfig.development.json")
-local function resolve_tsconfig(project_path, variant)
+--- @param config_entry? { tsconfig?: string } explicit config from type_config
+--- @return string|nil tsconfig_path relative to project
+local function resolve_tsconfig(project_path, variant, config_entry)
+    -- 1. Explicit tsconfig from loomworks.json
+    if config_entry and config_entry.tsconfig then
+        if uv.fs_stat(project_path .. "/" .. config_entry.tsconfig) then
+            return config_entry.tsconfig
+        end
+    end
+    -- 2. Variant-specific tsconfig
     local variant_tsconfig = "tsconfig." .. variant .. ".json"
     if uv.fs_stat(project_path .. "/" .. variant_tsconfig) then
         return variant_tsconfig
     end
+    -- 3. Base tsconfig.json
     if uv.fs_stat(project_path .. "/tsconfig.json") then
         return "tsconfig.json"
     end
@@ -103,23 +115,15 @@ function M.info(path, config)
     local configurations = {}
 
     if config.configurations then
-        -- Explicit configuration list from loomworks.json
-        if type(config.configurations) == "table" then
-            -- Support both array and dict forms
-            if #config.configurations > 0 then
-                -- Array: ["development", "production"]
-                for _, name in ipairs(config.configurations) do
-                    local tsconfig = resolve_tsconfig(path, name)
-                    configurations[name] = {
-                        outDir = tsconfig and read_outdir(path, tsconfig) or nil,
-                    }
-                end
-            else
-                -- Dict: { development = {}, production = {} }
-                for name, cfg in pairs(config.configurations) do
-                    configurations[name] = cfg
-                end
-            end
+        -- Explicit configurations from loomworks.json
+        -- Dict form: { "MyConfig": { "tsconfig": "tsconfig.prod.json" }, "dev": {} }
+        for name, cfg in pairs(config.configurations) do
+            local entry = type(cfg) == "table" and cfg or {}
+            local tsconfig = resolve_tsconfig(path, name, entry)
+            configurations[name] = {
+                tsconfig = tsconfig,
+                outDir = tsconfig and read_outdir(path, tsconfig) or nil,
+            }
         end
     else
         -- Auto-detect from tsconfig.*.json files
@@ -128,12 +132,14 @@ function M.info(path, config)
             for _, name in ipairs(variants) do
                 local tsconfig = "tsconfig." .. name .. ".json"
                 configurations[name] = {
+                    tsconfig = tsconfig,
                     outDir = read_outdir(path, tsconfig),
                 }
             end
         else
-            -- Fallback: single default configuration
+            -- Fallback: single default configuration using tsconfig.json
             configurations["default"] = {
+                tsconfig = "tsconfig.json",
                 outDir = read_outdir(path, "tsconfig.json"),
             }
         end
@@ -186,8 +192,9 @@ function M.tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local configuration_key = project.configuration_key or active_config
 
-    -- Resolve tsconfig for this variant
-    local tsconfig = resolve_tsconfig(abs_path, active_config)
+    -- Resolve tsconfig for this variant (use config info if available)
+    local config_info = project.configurations and project.configurations[active_config]
+    local tsconfig = resolve_tsconfig(abs_path, active_config, config_info)
 
     -- Configure command: npm install
     local configure_cmd = { "npm", "install" }
@@ -239,7 +246,8 @@ function M.clean_tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local configuration_key = project.configuration_key or active_config
 
-    local tsconfig = resolve_tsconfig(abs_path, active_config)
+    local config_info = project.configurations and project.configurations[active_config]
+    local tsconfig = resolve_tsconfig(abs_path, active_config, config_info)
 
     local clean_cmd = { "npx", "tsc", "--build" }
     if tsconfig and tsconfig ~= "tsconfig.json" then
