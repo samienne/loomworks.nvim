@@ -303,4 +303,116 @@ function M.toggle()
     require("loomworks.ui.status").toggle()
 end
 
+--- Build the active profile's default target.
+--- Shows a picker if no default is set or the target is stale.
+function M.build_target()
+    local profile = M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+
+    local launch_target = profile:default_target()
+
+    -- Valid default target: build it
+    if launch_target and launch_target:is_valid() then
+        launch_target:build()
+        return
+    end
+
+    -- Stale target: notify and show picker
+    if launch_target and not launch_target:is_valid() then
+        vim.notify("loomworks: target '" .. launch_target:display_name()
+            .. "' no longer available", vim.log.levels.WARN)
+        profile:clear_default_target()
+    end
+
+    -- No default or stale: show picker
+    M._pick_target(profile, function(project, target_id)
+        if project and target_id then
+            profile:set_default_target(project, target_id)
+            local new_target = profile:default_target()
+            if new_target then new_target:build() end
+        end
+    end)
+end
+
+--- Build the full active profile (all targets).
+function M.build_profile()
+    local profile = M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+    profile:build()
+end
+
+--- Show a picker for selecting a default target from the active profile.
+--- Includes "None" to clear and optionally "Default: X" if loomworks.json
+--- defines a default that the user has overridden.
+--- @param profile loomworks.Profile
+--- @param on_select fun(project: loomworks.Project|nil, target_id: string|nil)
+function M._pick_target(profile, on_select)
+    local ws = M.get_workspace()
+    local items = {}
+
+    -- "None" option to clear the default target
+    items[#items + 1] = {
+        label = "None (clear target)",
+        action = "clear",
+    }
+
+    -- "Default" option if loomworks.json defines a default and user has overridden
+    if ws then
+        local user_has_override = ws.user.default_target
+            and ws.user.default_target[profile.key]
+        local config_default = ws.config.profiles
+            and ws.config.profiles[profile.key]
+            and ws.config.profiles[profile.key].default_target
+        if user_has_override and config_default then
+            items[#items + 1] = {
+                label = "Default (" .. config_default.project .. ": " .. config_default.target .. ")",
+                action = "reset_to_default",
+            }
+        end
+    end
+
+    -- Collect executable targets from all projects in the profile
+    local total_targets = 0
+    for _, pp in ipairs(profile:projects()) do
+        local unit = M.get_config_unit(pp.project_key, pp.config_key)
+        if unit and unit.targets then
+            local project = pp._project
+            if project then
+                for target_id, target in pairs(unit.targets) do
+                    total_targets = total_targets + 1
+                    if target:is_executable() then
+                        items[#items + 1] = {
+                            label = project.key .. ": " .. target:display_name(),
+                            project = project,
+                            target_id = target_id,
+                            action = "select",
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    vim.ui.select(items, {
+        prompt = "Select default target:",
+        format_item = function(item) return item.label end,
+    }, function(choice)
+        if not choice then return end -- cancelled
+        if choice.action == "clear" then
+            profile:clear_default_target()
+        elseif choice.action == "reset_to_default" then
+            profile:clear_default_target()
+        elseif choice.action == "select" then
+            on_select(choice.project, choice.target_id)
+        end
+        -- "info" action does nothing
+    end)
+end
+
 return M

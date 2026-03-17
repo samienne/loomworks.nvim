@@ -314,6 +314,59 @@ function Profile:configure()
 end
 
 -- ---------------------------------------------------------------------------
+-- Default target
+-- ---------------------------------------------------------------------------
+
+--- Get the default LaunchTarget for this profile.
+--- Resolves from user.json, falls back to loomworks.json profile definition.
+--- @return loomworks.LaunchTarget|nil
+function Profile:default_target()
+    local ws = self._core:get_workspace()
+    if not ws then return nil end
+
+    -- Check user.json first
+    local descriptor = ws.user.default_target
+        and ws.user.default_target[self.key]
+    -- Fall back to loomworks.json profile definition
+    if not descriptor and ws.config.profiles then
+        local profile_def = ws.config.profiles[self.key]
+        if profile_def then
+            descriptor = profile_def.default_target
+        end
+    end
+    if not descriptor or not descriptor.project or not descriptor.target then
+        return nil
+    end
+
+    local LaunchTarget = require("loomworks.launch_target")
+    return LaunchTarget.new(self._core, self, descriptor)
+end
+
+--- Set the default target for this profile.
+--- @param project loomworks.Project
+--- @param target_id string opaque target identifier
+function Profile:set_default_target(project, target_id)
+    local ws = self._core:get_workspace()
+    if not ws then return end
+    ws.user.default_target = ws.user.default_target or {}
+    ws.user.default_target[self.key] = {
+        project = project.key,
+        target = target_id,
+    }
+    self._core._deps.user.save(ws.root, ws.user)
+end
+
+--- Clear the default target for this profile.
+function Profile:clear_default_target()
+    local ws = self._core:get_workspace()
+    if not ws then return end
+    if ws.user.default_target then
+        ws.user.default_target[self.key] = nil
+        self._core._deps.user.save(ws.root, ws.user)
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- Operations (profile-level action tracking)
 -- ---------------------------------------------------------------------------
 

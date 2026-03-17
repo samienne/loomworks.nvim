@@ -422,9 +422,11 @@ for live queries. See specification.md §1.6, §1.7 for behavioral rules.
 Core (singleton via init.lua)
   ├── ConfigurationSet[]  ← from config, identity-preserving
   ├── Profile[]           ← from merge, identity-preserving
+  │     └── LaunchTarget? ← per-profile default target (from user/config)
   ├── ProfileProject[]    ← registered, one per (profile, project) pair
   ├── Project[]           ← from active set, identity-preserving
   └── ConfigUnit{}        ← synced during remerge + lazy fallback
+        └── Target{}      ← runtime, from module detection (set_targets)
 ```
 
 All objects are **identity-preserving** across remerges: the same table is
@@ -451,6 +453,17 @@ reference the same ConfigUnit for a given (project_key, config_key). State
 changes on a ConfigUnit are immediately visible to all consumers. ConfigUnits
 are synced during remerge (variant/tool refreshed from cache, runtime state
 preserved) and also created lazily via `get_config_unit()` between remerges.
+
+**Target** wraps raw module detection data (type, dependencies, artifact)
+into an object with query methods (`is_executable()`, `display_name()`) and
+a `build()` method that delegates to the module. Stored on
+`ConfigUnit.targets` via `set_targets()`. Runtime-only, recreated on each
+parse. Back-references its owning ConfigUnit.
+
+**LaunchTarget** represents a profile's selected default target. Resolves
+a disk descriptor (`{ project, target }` from user.json/loomworks.json) into
+direct object references (Project, ConfigUnit, Target). Created on demand
+by `Profile:default_target()`.
 
 ---
 
