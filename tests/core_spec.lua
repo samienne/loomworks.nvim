@@ -333,7 +333,6 @@ describe("Core", function()
             return {
                 detect_tools = detect_fn,
                 merge = real_merge.merge,
-                module_has_keyed_tools = real_merge.module_has_keyed_tools,
                 get_all_profiles = real_merge.get_all_profiles,
             }
         end

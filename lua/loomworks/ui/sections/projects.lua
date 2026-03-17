@@ -5,7 +5,6 @@
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
-local merge = require("loomworks.merge")
 
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
 --- @param projects table<string, loomworks.Project>
@@ -156,16 +155,15 @@ return function(tree, ctx)
                     end
                     table.sort(config_names)
 
-                    local project_has_keyed_tools = lw.module_has_keyed_tools(proj.type)
-
                     for _, cname in ipairs(config_names) do
                         local cdata = proj.configurations[cname]
+                        local tool_entries = collect_tool_entries(proj, cname, tools_by_type)
+                        local has_tool_entries = #tool_entries > 0
 
                         -- Check running state across all config_keys for this variant
                         local config_has_running = false
-                        if project_has_keyed_tools then
-                            local entries = collect_tool_entries(proj, cname, tools_by_type)
-                            for _, entry in ipairs(entries) do
+                        if has_tool_entries then
+                            for _, entry in ipairs(tool_entries) do
                                 if lw.get_config_unit(key, entry.config_key):is_running() then
                                     config_has_running = true
                                     break
@@ -189,7 +187,7 @@ return function(tree, ctx)
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = config_has_running,
                             hl = config_hl,
-                            on_delete = not project_has_keyed_tools
+                            on_delete = not has_tool_entries
                                     and actions.delete_config(lw.get_config_unit(key, cname)) or nil,
                         }, function()
                             if cdata.toolchain then
@@ -199,12 +197,11 @@ return function(tree, ctx)
                                 tree:leaf("Generator: " .. cdata.generator, "Comment")
                             end
 
-                            if project_has_keyed_tools then
+                            if has_tool_entries then
                                 -- Keyed-tool modules: show each tool (cached + unconfigured)
                                 local is_active_variant = is_active_project
                                         and proj.configuration:lower() == cname:lower()
-                                local entries = collect_tool_entries(proj, cname, tools_by_type)
-                                for _, entry in ipairs(entries) do
+                                for _, entry in ipairs(tool_entries) do
                                     local unit = lw.get_config_unit(key, entry.config_key)
                                     -- Ensure variant/tool are set for uncached entries
                                     if not unit.variant then

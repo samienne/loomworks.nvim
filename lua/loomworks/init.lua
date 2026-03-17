@@ -127,13 +127,6 @@ function M.nuke_cache(root)
     core:nuke_cache(root)
 end
 
---- Check if a module type has keyed tools (tools with non-nil tool_key).
---- @param mod_type string
---- @return boolean
-function M.module_has_keyed_tools(mod_type)
-    return core:module_has_keyed_tools(mod_type)
-end
-
 --- Get detected tools organized by module type.
 --- @return table<string, loomworks.DetectedTool[]>
 function M.get_tools_by_type()

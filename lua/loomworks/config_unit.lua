@@ -74,11 +74,9 @@ function ConfigUnit:_update()
             data = cached.tool_data,
         }
     end
-    -- Fallback: for non-keyed modules, config_key IS the variant
-    if not self.variant then
-        if self._project and not self._core:module_has_keyed_tools(self._project.type) then
-            self.variant = self.config_key
-        end
+    -- Fallback: when there's no tool, config_key IS the variant
+    if not self.variant and not self.tool then
+        self.variant = self.config_key
     end
 end
 

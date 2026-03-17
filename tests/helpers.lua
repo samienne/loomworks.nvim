@@ -59,10 +59,6 @@ function M.make_mock_core(overrides)
             return nil
         end,
 
-        module_has_keyed_tools = function(self, mod_type)
-            return mod_type == "cmake"
-        end,
-
         _tools_by_type = {},
         _config_units = {},
         _config_sets = {},

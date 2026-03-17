@@ -138,14 +138,6 @@ function M.detect_tools_async(config, cache, callback)
     next_module()
 end
 
---- Check if a module type has keyed tools (static, no detection needed).
---- @param mod_type string
---- @return boolean
-function M.module_has_keyed_tools(mod_type)
-    local mod = modules.get(mod_type)
-    return mod and mod.has_keyed_tools or false
-end
-
 --- Compare two tool_data objects using the module's comparator.
 --- @param mod_type string
 --- @param a table|nil
@@ -363,14 +355,13 @@ end
 -- Config key helpers
 -- ---------------------------------------------------------------------------
 
---- Build a config key for a project given its module type and the profile's tool_key.
---- Modules with keyed tools get the suffix; modules without don't.
---- @param mod_type string
+--- Build a config key for a project given the variant and tool_key.
+--- When tool_key is non-nil, it is appended as a suffix; otherwise bare variant.
 --- @param variant string
 --- @param tool_key string|nil
 --- @return string config_key
-function M.build_config_key(mod_type, variant, tool_key)
-    if tool_key and M.module_has_keyed_tools(mod_type) then
+function M.build_config_key(variant, tool_key)
+    if tool_key then
         return variant .. ":" .. tool_key
     end
     return variant
@@ -429,10 +420,17 @@ function M.merge(workspace, tools_by_type)
 
         local active_configuration = set_mappings and set_mappings[key] or nil
 
+        -- tool_key applies only to projects whose module type matches the tool.
+        -- When tool_mod_type is nil (e.g. older cache), fall back to including tool_key.
+        local project_tool_key = tool_key
+        if tool_mod_type and tool_mod_type ~= project.type then
+            project_tool_key = nil
+        end
+
         local cache_config_key = nil
         if active_configuration then
             cache_config_key = M.build_config_key(
-                project.type, active_configuration, tool_key)
+                active_configuration, project_tool_key)
         end
 
         local cached_config_data = nil
@@ -462,18 +460,15 @@ function M.merge(workspace, tools_by_type)
             refresh_reasons = inspect_result.reasons
         end
 
-        -- Only include tool info for projects whose module has keyed tools
-        local has_keyed = M.module_has_keyed_tools(project.type)
-
         projects[key] = {
             type = project.type,
             path = project.path,
             configuration = active_configuration,
             configuration_key = cache_config_key,
-            tool_key = has_keyed and tool_key or nil,
-            tool_data = has_keyed and tool_data or nil,
-            tool_label = has_keyed and tool_label or nil,
-            tool_mod_type = has_keyed and tool_mod_type or nil,
+            tool_key = project_tool_key,
+            tool_data = project_tool_key and tool_data or nil,
+            tool_label = project_tool_key and tool_label or nil,
+            tool_mod_type = project_tool_key and tool_mod_type or nil,
             status = status,
             orphaned = false,
             needs_refresh = needs_refresh,

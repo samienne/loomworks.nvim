@@ -59,11 +59,17 @@ function ProfileProject:_update(profile, variant)
     self._profile = profile
     self._project = self._core._projects[self.project_key]
     self.variant = variant
-    -- Only modules with keyed tools get the tool_key suffix
+    -- Tool key suffix when the profile has a keyed tool relevant to this project.
+    -- If the tool's mod_type is known, only suffix matching module types.
+    -- If mod_type is nil (e.g. older cache data), fall back to suffixing.
     local project = self._project
-    if profile.tool and profile.tool.key and project
-            and self._core:module_has_keyed_tools(project.type) then
-        self.config_key = variant .. ":" .. profile.tool.key
+    if profile.tool and profile.tool.key then
+        local mod_type = profile.tool.mod_type
+        if not mod_type or not project or mod_type == project.type then
+            self.config_key = variant .. ":" .. profile.tool.key
+        else
+            self.config_key = variant
+        end
     else
         self.config_key = variant
     end
@@ -239,11 +245,17 @@ function Profile:config_set()
 end
 
 --- Compute the cache key for a variant, accounting for kit_id.
+--- When project_type is provided and the tool's mod_type is known,
+--- the suffix is only added if the module types match.
 --- @param variant string
+--- @param project_type? string module type of the project
 --- @return string
-function Profile:config_key(variant)
+function Profile:config_key(variant, project_type)
     if self.tool and self.tool.key then
-        return variant .. ":" .. self.tool.key
+        local mod_type = self.tool.mod_type
+        if not project_type or not mod_type or project_type == mod_type then
+            return variant .. ":" .. self.tool.key
+        end
     end
     return variant
 end

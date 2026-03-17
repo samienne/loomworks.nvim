@@ -1,7 +1,6 @@
 local M = {}
 
 M.id = "ets"
-M.has_keyed_tools = false
 
 local uv = vim.uv or vim.loop
 
