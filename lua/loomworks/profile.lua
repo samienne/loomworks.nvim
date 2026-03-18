@@ -5,24 +5,6 @@
 local merge = require("loomworks.merge")
 local cache_mod = require("loomworks.cache")
 
---- Format a duration in seconds to a compact string.
---- @param seconds number
---- @return string
-local function format_duration(seconds)
-    local s = math.floor(seconds)
-    if s < 60 then
-        return s .. "s"
-    end
-    local m = math.floor(s / 60)
-    s = s % 60
-    if m < 60 then
-        return m .. "m" .. string.format("%02d", s) .. "s"
-    end
-    local h = math.floor(m / 60)
-    m = m % 60
-    return h .. "h" .. string.format("%02d", m) .. "m"
-end
-
 -- ========================== ProfileProject ==========================
 
 --- @class loomworks.ProfileProject
@@ -132,7 +114,8 @@ end
 --- @field _removed boolean
 --- @field _config_set_ref? loomworks.ConfigurationSet direct reference, resolved during _update
 --- @field _valid_variants table<string, boolean> precomputed variant set
---- @field _operation? loomworks.Operation current or last operation state
+--- @field _operations loomworks.Operation[] active operations on this profile
+--- @field _last_operation? { message: string, success: boolean } last completed operation result
 local Profile = {}
 Profile.__index = Profile
 
@@ -393,57 +376,55 @@ end
 -- Operations (profile-level action tracking)
 -- ---------------------------------------------------------------------------
 
---- Start tracking a profile-level operation.
---- Replaces any previous operation result.
---- @param action string "configure", "build", or "configure+build"
-function Profile:start_operation(action)
-    self._operation = {
-        action = action,
-        started_at = self._core._deps.clock(),
-    }
-    self._core._deps.events.emit("operation_started", { profile_key = self.key, action = action })
+--- Register an Operation on this profile.
+--- @param operation loomworks.Operation
+function Profile:add_operation(operation)
+    self._operations = self._operations or {}
+    self._operations[#self._operations + 1] = operation
 end
 
---- Finish the current operation and store a result message.
---- @param success boolean
-function Profile:finish_operation(success)
-    local op = self._operation
-    if not op or not op.started_at then return end
-
-    local elapsed = self._core._deps.clock() - op.started_at
-    local verb
-    if op.action == "configure" then
-        verb = success and "configured" or "configure failed"
-    elseif op.action == "build" then
-        verb = success and "built" or "build failed"
-    else
-        verb = success and "built" or "failed"
+--- Called when an Operation completes — stores the result and removes it
+--- from the active list.
+--- @param operation loomworks.Operation
+function Profile:complete_operation(operation)
+    self._last_operation = {
+        message = operation.message,
+        success = operation.success,
+    }
+    -- Remove from active list
+    if self._operations then
+        for i, op in ipairs(self._operations) do
+            if op == operation then
+                table.remove(self._operations, i)
+                break
+            end
+        end
     end
-
-    self._operation = {
-        message = verb .. " in " .. format_duration(elapsed),
-        success = success,
-    }
-
-    self._core._deps.events.emit("operation_finished", {
-        profile_key = self.key,
-        success = success,
-        message = self._operation.message,
-    })
 end
 
---- Get the current operation state (in-progress or completed).
---- @return loomworks.Operation|nil
+--- Get active operations on this profile.
+--- @return loomworks.Operation[]
+function Profile:active_operations()
+    return self._operations or {}
+end
+
+--- Check if this profile has any active operations.
+--- @return boolean
+function Profile:has_active_operation()
+    return self._operations ~= nil and #self._operations > 0
+end
+
+--- Get the last completed operation result.
+--- @return { message: string, success: boolean }|nil
 function Profile:operation()
-    return self._operation
+    return self._last_operation
 end
 
---- Get elapsed seconds for a running operation.
+--- Get elapsed seconds for the first active operation.
 --- @return number|nil seconds
 function Profile:operation_elapsed()
-    local op = self._operation
-    if not op or not op.started_at then return nil end
-    return self._core._deps.clock() - op.started_at
+    if not self._operations or #self._operations == 0 then return nil end
+    return self._operations[1]:elapsed()
 end
 
 -- ---------------------------------------------------------------------------
@@ -512,7 +493,19 @@ function Profile:status()
     end
 
     if counts.deleting > 0 then
-        return counts.deleting .. "/" .. total .. " deleting", STATUS_HL.deleting
+        -- Check if all deleting units are "cleaning" vs "deleting"
+        local all_cleaning = true
+        for _, pp in ipairs(pps) do
+            if pp:status() == "deleting" then
+                local unit = self._core:get_config_unit(pp.project_key, pp.config_key)
+                if unit:deleting_reason() ~= "cleaning" then
+                    all_cleaning = false
+                    break
+                end
+            end
+        end
+        local label = all_cleaning and "cleaning" or "deleting"
+        return counts.deleting .. "/" .. total .. " " .. label, STATUS_HL.deleting
     end
 
     local running = counts.configuring + counts.building
@@ -627,7 +620,7 @@ function Profile:clean(on_done)
 
     self._core:_run_deletion(items, function(effective_items)
         self._core:reset_cached_configs(effective_items)
-    end, on_done)
+    end, on_done, "cleaning")
 end
 
 --- Rebuild: clean then build.

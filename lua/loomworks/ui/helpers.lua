@@ -67,6 +67,7 @@ M.STATUS_HL = {
     configuring      = "LoomworksRunning",
     building         = "LoomworksRunning",
     deleting         = "LoomworksDeleting",
+    cleaning         = "LoomworksDeleting",
     unknown          = "LoomworksUnknown",
 }
 
@@ -107,7 +108,8 @@ end
 function M.resolve_unit_status(unit)
     local state = unit:state()
     if state == "deleting" then
-        return "deleting", M.STATUS_HL.deleting, "", true
+        local label = unit:deleting_reason() or "deleting"
+        return label, M.STATUS_HL.deleting, "", true
     end
     if state == "configuring" or state == "building" then
         local progress_str = M.format_progress(unit:progress())
@@ -152,12 +154,6 @@ function M.render_cached_details(tree, config_status, status_hl, cached, fold_pr
 
     if cached.build_dir then
         tree:leaf("Build dir: " .. cached.build_dir, "Comment")
-    end
-    if cached.last_configured then
-        tree:leaf("Last configured: " .. cached.last_configured, "Comment")
-    end
-    if cached.last_built then
-        tree:leaf("Last built: " .. cached.last_built, "Comment")
     end
     if cached.cmake then
         if cached.cmake.generator then

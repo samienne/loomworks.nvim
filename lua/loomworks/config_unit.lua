@@ -17,6 +17,7 @@ local cache_mod = require("loomworks.cache")
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
 --- @field _deleting boolean
+--- @field _deleting_reason "deleting"|"cleaning"|nil
 --- @field _queued_action string|nil action to run after deletion completes
 --- @field _listeners function[]
 --- @field _removed boolean
@@ -51,6 +52,7 @@ function ConfigUnit.new(core, project_key, config_key)
     self._progress = nil
     self._start_time = nil
     self._deleting = false
+    self._deleting_reason = nil
     self._queued_action = nil
     self._listeners = {}
     self._removed = false
@@ -359,7 +361,7 @@ function ConfigUnit:clean(on_done)
     } }
     self._core:_run_deletion(items, function(effective_items)
         self._core:reset_cached_configs(effective_items)
-    end, on_done)
+    end, on_done, "cleaning")
 end
 
 --- Get build options by delegating to the module.
@@ -416,12 +418,20 @@ end
 
 --- Mark this unit as deleting/cleaning (or clear the flag).
 --- @param flag boolean
-function ConfigUnit:mark_deleting(flag)
+--- @param reason? "deleting"|"cleaning" defaults to "deleting"
+function ConfigUnit:mark_deleting(flag, reason)
     self._deleting = flag
+    self._deleting_reason = flag and (reason or "deleting") or nil
     if not flag then
         self._queued_action = nil
     end
     self:_notify()
+end
+
+--- Get the reason this unit is being deleted/cleaned.
+--- @return "deleting"|"cleaning"|nil
+function ConfigUnit:deleting_reason()
+    return self._deleting_reason
 end
 
 --- Queue an action to run after the current deletion completes.

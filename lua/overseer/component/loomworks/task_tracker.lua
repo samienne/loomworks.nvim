@@ -83,25 +83,31 @@ return {
             on_complete = function(_, task, status)
                 local lw = require("loomworks")
                 local unit = lw.get_config_unit(params.project_key, params.configuration_key)
+
+                -- Record result first (updates cache state), then unregister
+                -- (clears running flag). This order ensures that when
+                -- unregister fires ConfigUnit listeners, the cache already
+                -- reflects the final state — so Operations see "built" rather
+                -- than the stale pre-completion state.
+                if status ~= "CANCELED" then
+                    local success = status == "SUCCESS"
+                    lw.record_task_result({
+                        project_key = params.project_key,
+                        action = params.action,
+                        configuration_key = params.configuration_key,
+                        variant = params.variant,
+                        tool = params.tool,
+                        build_dir = params.build_dir,
+                        cmake = params.cmake,
+                        success = success,
+                    })
+                end
+
                 unit:unregister_task(task.id)
                 lw._emit("task_stopped", {
                     task_id = task.id,
                     project_key = params.project_key,
                     configuration_key = params.configuration_key,
-                })
-
-                if status == "CANCELED" then return end
-
-                local success = status == "SUCCESS"
-                lw.record_task_result({
-                    project_key = params.project_key,
-                    action = params.action,
-                    configuration_key = params.configuration_key,
-                    variant = params.variant,
-                    tool = params.tool,
-                    build_dir = params.build_dir,
-                    cmake = params.cmake,
-                    success = success,
                 })
             end,
             on_dispose = function(_, task)

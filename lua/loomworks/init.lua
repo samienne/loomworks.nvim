@@ -221,6 +221,16 @@ function M.execute_deletion(plan, opts, on_done)
     core:execute_deletion(plan, opts, on_done)
 end
 
+--- Create an Operation for a profile action.
+--- @param profile loomworks.Profile
+--- @param action string
+--- @param units loomworks.ConfigUnit[]
+--- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
+--- @return loomworks.Operation
+function M.create_operation(profile, action, units, target_states)
+    return core:create_operation(profile, action, units, target_states)
+end
+
 --- Find running task IDs that match a list of project+config items.
 --- @param items loomworks.DeletionItem[]
 --- @return table<number, loomworks.RunningTaskInfo>
