@@ -274,8 +274,9 @@ function Profile:project(project_key)
     return self._core._profile_projects[reg_key]
 end
 
---- Get all ProfileProjects in this profile, sorted by project_key.
---- Filters Core's registry by this profile's key.
+--- Get all ProfileProjects in this profile, sorted by dependency order.
+--- Projects with no dependencies come first. Falls back to alphabetical
+--- if no dependencies exist.
 --- @return loomworks.ProfileProject[]
 function Profile:projects()
     if not self.mappings then return {} end
@@ -286,8 +287,13 @@ function Profile:projects()
             result[#result + 1] = pp
         end
     end
-    table.sort(result, function(a, b) return a.project_key < b.project_key end)
-    return result
+    -- Sort by dependency order (falls back to alphabetical for no deps)
+    local dependency = require("loomworks.dependency")
+    local sorted, err = dependency.toposort(result)
+    if err then
+        vim.notify("loomworks: " .. err, vim.log.levels.WARN)
+    end
+    return sorted
 end
 
 -- ---------------------------------------------------------------------------

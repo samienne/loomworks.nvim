@@ -68,22 +68,6 @@ When loomworks.json parsing fails (e.g., "multiple type keys" error), the
 "loading workspace" fidget spinner stays indefinitely. The initialization
 event flow doesn't emit completion on parse failure.
 
-## Cross-project dependency resolution
-
-`depends_on` field is parsed from loomworks.json but not enforced at
-runtime. When launching ScenePluginTest (typescript), LumeTS (cmake)
-should be built first since it produces the .node addons and DLLs that
-ScenePluginTest needs.
-
-Build/launch flow with dependencies:
-1. Check if dependencies are built (for active config set)
-2. Build dependencies first if needed
-3. Then build the target project
-4. Then launch
-
-The dependency graph is already in `config.projects[key].depends_on`.
-Need: topological sort, state checking, sequential build orchestration.
-
 ## UI status should show "cleaning" instead of "deleting" for clean action
 
 When cleaning a configuration, the UI shows "deleting" state. Should show

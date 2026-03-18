@@ -476,6 +476,7 @@ function M.merge(workspace, tools_by_type)
             configurations = mod_info.configurations or {},
             cached = cached_config_data,
             cached_configurations = cached_configurations,
+            depends_on = project.depends_on,
         }
 
         -- Add module-specific info (cmake compile_commands, etc.)
