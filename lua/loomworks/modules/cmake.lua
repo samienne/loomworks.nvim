@@ -11,11 +11,51 @@ local uv = vim.uv or vim.loop
 --- @param kit table|nil tool data with optional vcvarsall/arch
 --- @param generator string|nil cmake generator name
 --- @return string[]
-local function wrap_cmd(cmd, kit, generator)
-    if kit and kit.vcvarsall and generator == "Ninja" then
-        local vcvars = kit.vcvarsall:gsub("/", "\\")
-        local arch = kit.arch or "x64"
-        return { "cmd", "/C", '"' .. vcvars .. '" ' .. arch .. " && " .. table.concat(cmd, " ") }
+--- Write a .bat file for MSVC+Ninja builds into the build directory.
+--- Using a .bat file instead of inline cmd /C avoids issues with
+--- Git Bash environment inheritance and quoting on Windows.
+--- @param build_dir string absolute path to the build directory
+--- @param vcvarsall string path to vcvarsall.bat
+--- @param arch string architecture (e.g., "x64")
+--- @param cmd string[] command to run after vcvarsall
+--- @return string bat_path
+local function write_vcvarsall_bat(build_dir, vcvarsall, arch, cmd)
+    local bat_path = build_dir .. "/loomworks_build.bat"
+    local f = io.open(bat_path, "w")
+    if not f then return nil end
+    f:write("@echo off\r\n")
+    f:write('call "' .. vcvarsall:gsub("/", "\\") .. '" ' .. arch .. "\r\n")
+    f:write("if errorlevel 1 exit /b 1\r\n")
+    -- Quote each argument that contains spaces
+    local parts = {}
+    for _, c in ipairs(cmd) do
+        if c:find(" ") then
+            parts[#parts + 1] = '"' .. c .. '"'
+        else
+            parts[#parts + 1] = c
+        end
+    end
+    f:write(table.concat(parts, " ") .. "\r\n")
+    f:close()
+    return bat_path
+end
+
+--- Wrap a command for MSVC+Ninja builds on Windows.
+--- Uses a .bat file in the build dir to ensure clean cmd.exe environment
+--- regardless of Neovim's shell setting (e.g., Git Bash).
+--- On non-Windows or non-MSVC kits, returns the command unchanged.
+--- @param cmd string[] command array
+--- @param kit table|nil tool data with optional vcvarsall/arch
+--- @param generator string|nil cmake generator name
+--- @param build_dir string|nil build directory for .bat file placement
+--- @return string[]
+local function wrap_cmd(cmd, kit, generator, build_dir)
+    if kit and kit.vcvarsall and generator == "Ninja" and build_dir then
+        local bat_path = write_vcvarsall_bat(
+            build_dir, kit.vcvarsall, kit.arch or "x64", cmd)
+        if bat_path then
+            return { "cmd", "/C", bat_path }
+        end
     end
     return cmd
 end
@@ -335,7 +375,7 @@ function M.tasks(project, active_config)
 
     -- Closure to wrap commands with vcvarsall for this project's kit+generator
     local function wrap(cmd)
-        return wrap_cmd(cmd, kit, generator)
+        return wrap_cmd(cmd, kit, generator, build_dir)
     end
 
     -- Build the configuration key for cache tracking
@@ -449,7 +489,7 @@ function M.build_target_task(project, target_id)
         name = project.name .. ": build " .. target_id,
         builder = function()
             return {
-                cmd = wrap_cmd(cmd, kit, generator),
+                cmd = wrap_cmd(cmd, kit, generator, build_dir),
                 cwd = abs_path,
                 env = env,
             }
