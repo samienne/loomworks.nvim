@@ -102,6 +102,25 @@ task. Need to reproduce and investigate — may be related to
 has_keyed_tools removal, ProfileProject config_key computation, or
 task collection logic.
 
+## MSVC builds fail when Neovim shell is Git Bash
+
+**Root cause confirmed**: When `vim.o.shell` is set to Git Bash, MSVC
+builds fail even though wrap_cmd uses `{ "cmd", "/C", ... }`. The bash
+parent process environment is inherited — PATH includes mingw paths
+that interfere with MSVC toolchain. Builds work fine in a cmd.exe
+terminal.
+
+**Fix options**:
+1. Write a temp .bat file and execute it — gives cmd.exe a clean env
+2. Use `vim.fn.jobstart` with `env` option to override PATH
+3. Strip mingw paths from PATH before spawning MSVC builds
+4. Document that users should not set vim.o.shell to bash on Windows
+   (least desirable — user's terminal manager needs it)
+
+Option 1 (temp .bat file) is the most robust. The .bat file would
+contain the vcvarsall call and cmake command, executed by cmd.exe
+directly.
+
 ## Deleting orphaned configurations from UI broken
 
 The delete action on orphaned configurations in the status page doesn't
