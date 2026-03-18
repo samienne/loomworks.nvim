@@ -346,7 +346,11 @@ function Profile:default_target()
             descriptor = profile_def.default_target
         end
     end
-    if not descriptor or not descriptor.project or not descriptor.target then
+    if not descriptor or not descriptor.project then
+        return nil
+    end
+    -- Need either a target (module target) or a launch config name
+    if not descriptor.target and not descriptor.launch then
         return nil
     end
 
@@ -356,15 +360,16 @@ end
 
 --- Set the default target for this profile.
 --- @param project loomworks.Project
---- @param target_id string opaque target identifier
-function Profile:set_default_target(project, target_id)
+--- @param target_id? string opaque target identifier (module targets)
+--- @param launch_name? string launch config name (command launches)
+function Profile:set_default_target(project, target_id, launch_name)
     local ws = self._core:get_workspace()
     if not ws then return end
     ws.user.default_target = ws.user.default_target or {}
-    ws.user.default_target[self.key] = {
-        project = project.key,
-        target = target_id,
-    }
+    local descriptor = { project = project.key }
+    if target_id then descriptor.target = target_id end
+    if launch_name then descriptor.launch = launch_name end
+    ws.user.default_target[self.key] = descriptor
     self._core._deps.user.save(ws.root, ws.user)
 end
 

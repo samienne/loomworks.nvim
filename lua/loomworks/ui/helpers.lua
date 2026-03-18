@@ -182,11 +182,14 @@ local TARGET_TYPE_LABELS = {
     module_library   = "Module Libraries",
     object_library   = "Object Libraries",
     interface_library = "Interface Libraries",
+    npm_script       = "Scripts",
+    launch_config    = "Launch Configs",
 }
 
 --- Display order for target type groups.
 local TARGET_TYPE_ORDER = {
-    "executable", "static_library", "shared_library",
+    "executable", "npm_script", "launch_config",
+    "static_library", "shared_library",
     "module_library", "object_library", "interface_library",
 }
 

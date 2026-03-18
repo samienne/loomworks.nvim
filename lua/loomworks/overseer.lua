@@ -291,10 +291,12 @@ end
 --- If building and the configuration is unconfigured, configures first.
 --- @param unit loomworks.ConfigUnit
 --- @param action string "configure" or "build"
-function M.run_configuration_action(unit, action)
+--- @param on_complete? fun(success: boolean) called when all tasks finish
+function M.run_configuration_action(unit, action, on_complete)
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        if on_complete then on_complete(false) end
         return
     end
 
@@ -307,10 +309,13 @@ function M.run_configuration_action(unit, action)
         end
 
         local all_tasks = collect_configuration_tasks(unit.project_key, unit.config_key)
-        if not all_tasks then return end
+        if not all_tasks then
+            if on_complete then on_complete(false) end
+            return
+        end
 
         if action == "configure" then
-            launch_tasks(overseer, all_tasks.configure)
+            launch_tasks(overseer, all_tasks.configure, on_complete)
             return
         end
 
@@ -322,17 +327,19 @@ function M.run_configuration_action(unit, action)
                 launch_tasks(overseer, needs_configure, function(all_succeeded)
                     if not all_succeeded then
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
+                        if on_complete then on_complete(false) end
                         return
                     end
-                    launch_tasks(overseer, all_tasks.build)
+                    launch_tasks(overseer, all_tasks.build, on_complete)
                 end)
             else
-                launch_tasks(overseer, all_tasks.build)
+                launch_tasks(overseer, all_tasks.build, on_complete)
             end
             return
         end
 
         vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
+        if on_complete then on_complete(false) end
     end
 
     -- Wait for pending deletions before starting
@@ -342,6 +349,38 @@ function M.run_configuration_action(unit, action)
     else
         do_action()
     end
+end
+
+--- Launch a run/launch task via overseer.
+--- Unlike build tasks, this doesn't use task_tracker or ConfigUnit state.
+--- Opens the overseer window automatically.
+--- @param opts { name: string, cmd: string[], cwd?: string, env?: table }
+--- @return number|nil task_id
+function M.launch_run_task(opts)
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        return nil
+    end
+
+    -- overseer expects cmd as a list (argv) for direct execution
+    local cmd = opts.cmd
+    if type(cmd) == "string" then
+        cmd = { cmd }
+    end
+    if opts.args then
+        cmd = vim.list_extend(vim.deepcopy(cmd), opts.args)
+    end
+    local task = overseer.new_task({
+        name = opts.name,
+        cmd = cmd,
+        cwd = opts.cwd,
+        env = opts.env,
+        components = { "default" },
+    })
+    task:start()
+    overseer.open({ enter = false })
+    return task.id
 end
 
 --- Launch a single task definition via overseer.
@@ -356,8 +395,10 @@ function M.launch_single_task(task_def, unit, on_complete)
         return
     end
 
-    local readiness = check_task_readiness(unit, "build")
-    if readiness == "skip" or readiness == "block" then return end
+    -- Check ConfigUnit state directly (not via check_task_readiness which expects task_def)
+    local state = unit:state()
+    if state == "unknown" then return end
+    if state == "building" then return end
 
     start_one_task(overseer, task_def, on_complete)
 end

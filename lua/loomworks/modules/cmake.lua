@@ -6,6 +6,20 @@ M.id = "cmake"
 
 local uv = vim.uv or vim.loop
 
+--- Wrap a command with vcvarsall.bat for MSVC Ninja builds.
+--- @param cmd string[] command array
+--- @param kit table|nil tool data with optional vcvarsall/arch
+--- @param generator string|nil cmake generator name
+--- @return string[]
+local function wrap_cmd(cmd, kit, generator)
+    if kit and kit.vcvarsall and generator == "Ninja" then
+        local vcvars = kit.vcvarsall:gsub("/", "\\")
+        local arch = kit.arch or "x64"
+        return { "cmd", "/C", '"' .. vcvars .. '" ' .. arch .. " && " .. table.concat(cmd, " ") }
+    end
+    return cmd
+end
+
 --- Read and parse a JSON file, returning nil on failure.
 --- @param path string
 --- @return table|nil
@@ -319,16 +333,9 @@ function M.tasks(project, active_config)
         configure_cmd[#configure_cmd + 1] = "-DCMAKE_TOOLCHAIN_FILE=" .. tc
     end
 
-    -- For MSVC Ninja kits, wrap command with vcvarsall
-    local wrap_vcvarsall = kit and kit.vcvarsall and generator == "Ninja"
-    local function wrap_cmd(cmd)
-        if wrap_vcvarsall then
-            -- Call vcvarsall.bat to set up MSVC environment, then run the command
-            local vcvars = kit.vcvarsall:gsub("/", "\\")
-            local arch = kit.arch or "x64"
-            return { "cmd", "/C", '"' .. vcvars .. '" ' .. arch .. " && " .. table.concat(cmd, " ") }
-        end
-        return cmd
+    -- Closure to wrap commands with vcvarsall for this project's kit+generator
+    local function wrap(cmd)
+        return wrap_cmd(cmd, kit, generator)
     end
 
     -- Build the configuration key for cache tracking
@@ -351,7 +358,7 @@ function M.tasks(project, active_config)
                 end
             end
             return {
-                cmd = wrap_cmd(configure_cmd),
+                cmd = wrap(configure_cmd),
                 cwd = abs_path,
                 env = env,
             }
@@ -403,7 +410,7 @@ function M.tasks(project, active_config)
                 name = project.name .. ": build " .. config_name,
                 builder = function()
                     return {
-                        cmd = wrap_cmd({ "cmake", "--build", build_dir, "--config", config_name }),
+                        cmd = wrap({ "cmake", "--build", build_dir, "--config", config_name }),
                         cwd = abs_path,
                         env = env,
                     }
@@ -422,7 +429,7 @@ function M.tasks(project, active_config)
             name = project.name .. ": build " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap_cmd({ "cmake", "--build", build_dir }),
+                    cmd = wrap({ "cmake", "--build", build_dir }),
                     cwd = abs_path,
                     env = env,
                 }
@@ -469,7 +476,7 @@ function M.build_target_task(project, target_id)
         name = project.name .. ": build " .. target_id,
         builder = function()
             return {
-                cmd = wrap_cmd(cmd),
+                cmd = wrap_cmd(cmd, kit, generator),
                 cwd = abs_path,
                 env = env,
             }
