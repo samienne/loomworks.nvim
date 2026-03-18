@@ -291,10 +291,12 @@ end
 --- If building and the configuration is unconfigured, configures first.
 --- @param unit loomworks.ConfigUnit
 --- @param action string "configure" or "build"
-function M.run_configuration_action(unit, action)
+--- @param on_complete? fun(success: boolean) called when all tasks finish
+function M.run_configuration_action(unit, action, on_complete)
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        if on_complete then on_complete(false) end
         return
     end
 
@@ -307,10 +309,13 @@ function M.run_configuration_action(unit, action)
         end
 
         local all_tasks = collect_configuration_tasks(unit.project_key, unit.config_key)
-        if not all_tasks then return end
+        if not all_tasks then
+            if on_complete then on_complete(false) end
+            return
+        end
 
         if action == "configure" then
-            launch_tasks(overseer, all_tasks.configure)
+            launch_tasks(overseer, all_tasks.configure, on_complete)
             return
         end
 
@@ -322,17 +327,19 @@ function M.run_configuration_action(unit, action)
                 launch_tasks(overseer, needs_configure, function(all_succeeded)
                     if not all_succeeded then
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
+                        if on_complete then on_complete(false) end
                         return
                     end
-                    launch_tasks(overseer, all_tasks.build)
+                    launch_tasks(overseer, all_tasks.build, on_complete)
                 end)
             else
-                launch_tasks(overseer, all_tasks.build)
+                launch_tasks(overseer, all_tasks.build, on_complete)
             end
             return
         end
 
         vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
+        if on_complete then on_complete(false) end
     end
 
     -- Wait for pending deletions before starting

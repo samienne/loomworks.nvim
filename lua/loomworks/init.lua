@@ -445,10 +445,15 @@ function M.launch_target()
 
     if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
         _active_launch = launch_target
-        -- Build first if buildable, then launch
         if launch_target:is_buildable() then
-            -- TODO: build then launch on success
-            launch_target:launch()
+            -- Build first, then launch on success
+            launch_target:build(function(success)
+                if success then
+                    launch_target:launch()
+                else
+                    vim.notify("loomworks: build failed, not launching", vim.log.levels.ERROR)
+                end
+            end)
         else
             launch_target:launch()
         end

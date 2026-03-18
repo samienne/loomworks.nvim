@@ -55,7 +55,8 @@ end
 --- Build this target.
 --- Delegates to the module's build_target_task via overseer.
 --- Falls back to full configuration build if module doesn't support it.
-function Target:build()
+--- @param on_complete? fun(success: boolean) called when build finishes
+function Target:build(on_complete)
     local unit = self._config_unit
     if not unit or not unit._project then return end
 
@@ -74,13 +75,17 @@ function Target:build()
 
         local task_def = mod.build_target_task(project_ctx, self.id)
         if task_def then
-            require("loomworks.overseer").launch_single_task(task_def, unit)
+            require("loomworks.overseer").launch_single_task(task_def, unit, on_complete)
             return
         end
     end
 
     -- Fallback: full build
     require("loomworks.overseer").run_configuration_action(unit, "build")
+    -- Can't track completion for full build fallback
+    if on_complete then
+        vim.schedule(function() on_complete(true) end)
+    end
 end
 
 --- Launch this target (run the built artifact).

@@ -79,10 +79,18 @@ function LaunchTarget:__tostring()
 end
 
 --- Build this target.
---- Delegates to the Target object's build method (module targets only).
-function LaunchTarget:build()
+--- Module targets: delegates to Target:build().
+--- Command-type launches: builds the full project configuration via overseer.
+--- @param on_complete? fun(success: boolean) called when build finishes
+function LaunchTarget:build(on_complete)
     if self._target then
-        self._target:build()
+        self._target:build(on_complete)
+    elseif self._config_unit then
+        -- Command-type launch: build the whole configuration first
+        require("loomworks.overseer").run_configuration_action(
+            self._config_unit, "build", on_complete)
+    elseif on_complete then
+        vim.schedule(function() on_complete(true) end)
     end
 end
 
@@ -148,9 +156,12 @@ function LaunchTarget:is_valid()
 end
 
 --- Check if this target has a build step.
+--- Module targets build via Target:build(). Command-type launches build
+--- the whole project configuration via overseer.
 --- @return boolean
 function LaunchTarget:is_buildable()
-    return self._target ~= nil
+    if self._target then return true end
+    return self._config_unit ~= nil
 end
 
 --- Check if this target can be launched.
