@@ -5,16 +5,12 @@ they don't get lost.
 
 ---
 
-## Phase 2: Target launching & process management
+## Overseer template references as launch targets
 
-- `Target:launch()` — run built artifact via overseer
-- cmake `launch_target_task()` — constructs command from artifact path
-- LaunchTarget types: overseer template references, custom commands
-- Launch args, env, working_dir fields on LaunchTarget
-- `<F5>` / `<leader>wr` — build then launch
-- `<S-F5>` — kill running process
-- Auto-open overseer for launch tasks
-- Process tracking (which launched task is running)
+LaunchTarget currently supports module targets (cmake executables) and
+command-type configs (loomworks.json launch section). Could also support
+referencing overseer task templates (e.g., from VS Code launch.json)
+as launch targets.
 
 ## Overlapping profile operations
 
@@ -87,6 +83,30 @@ Build/launch flow with dependencies:
 
 The dependency graph is already in `config.projects[key].depends_on`.
 Need: topological sort, state checking, sequential build orchestration.
+
+## UI status should show "cleaning" instead of "deleting" for clean action
+
+When cleaning a configuration, the UI shows "deleting" state. Should show
+"cleaning" instead. Either add a separate ConfigUnit state or map the
+display label based on the action that triggered the deletion flag.
+
+## Clean directories per configuration
+
+Allow specifying additional directories to delete when cleaning a
+configuration. For example, cmake deploy steps copy DLLs and .node files
+to `ScenePluginTest/Debug/` — these should be cleaned when the
+configuration is cleaned.
+
+Could be defined in loomworks.json per project:
+```json
+"ScenePluginTest": {
+    "typescript": {},
+    "clean_dirs": ["${project_path}/Debug", "${project_path}/Release"]
+}
+```
+
+Variable expansion (${project_path}, ${config_set}) applies. Directories
+are deleted during the clean action alongside module clean_tasks.
 
 ## Deleting orphaned configurations from UI broken
 
