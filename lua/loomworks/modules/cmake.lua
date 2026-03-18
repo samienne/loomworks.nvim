@@ -378,52 +378,25 @@ function M.tasks(project, active_config)
         },
     }
 
-    -- Build tasks
+    -- Build tasks — always build only the active configuration
     if multi_config then
-        local config_names = {}
-        if project.configurations then
-            for name, cinfo in pairs(project.configurations) do
-                if not (cinfo.role == "compile_commands") then
-                    config_names[#config_names + 1] = name
-                end
-            end
-        else
-            config_names = { active_config }
-        end
-        table.sort(config_names)
-
-        for _, config_name in ipairs(config_names) do
-            -- For multi-config, the config key uses the specific variant
-            local build_config_key = configuration_key
-            if config_name ~= active_config then
-                -- Replace variant portion if it differs from active
-                local kit_id = project.tool_key
-                        or (project.tool and project.tool.key)
-                if kit_id then
-                    build_config_key = config_name .. ":" .. kit_id
-                else
-                    build_config_key = config_name
-                end
-            end
-
-            tasks[#tasks + 1] = {
-                name = project.name .. ": build " .. config_name,
-                builder = function()
-                    return {
-                        cmd = wrap({ "cmake", "--build", build_dir, "--config", config_name }),
-                        cwd = abs_path,
-                        env = env,
-                    }
-                end,
-                loomworks = {
-                    project_key = project.name,
-                    action = "build",
-                    configuration_key = build_config_key,
-                    build_dir = build_dir,
-                    tool_data = cached_tool_data,
-                },
-            }
-        end
+        tasks[#tasks + 1] = {
+            name = project.name .. ": build " .. active_config,
+            builder = function()
+                return {
+                    cmd = wrap({ "cmake", "--build", build_dir, "--config", active_config }),
+                    cwd = abs_path,
+                    env = env,
+                }
+            end,
+            loomworks = {
+                project_key = project.name,
+                action = "build",
+                configuration_key = configuration_key,
+                build_dir = build_dir,
+                tool_data = cached_tool_data,
+            },
+        }
     else
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
