@@ -78,20 +78,75 @@ function LaunchTarget:__tostring()
     return "LaunchTarget(" .. project_name .. ": " .. (self._target_id or "?") .. ")"
 end
 
---- Build this target.
---- Module targets: delegates to Target:build().
---- Command-type launches: builds the full project configuration via overseer.
+--- Build this target, including dependencies.
+--- Builds dependency projects first (in order), then builds this target.
 --- @param on_complete? fun(success: boolean) called when build finishes
 function LaunchTarget:build(on_complete)
-    if self._target then
-        self._target:build(on_complete)
-    elseif self._config_unit then
-        -- Command-type launch: build the whole configuration first
-        require("loomworks.overseer").run_configuration_action(
-            self._config_unit, "build", on_complete)
-    elseif on_complete then
-        vim.schedule(function() on_complete(true) end)
+    local function build_self(cb)
+        if self._target then
+            self._target:build(cb)
+        elseif self._config_unit then
+            require("loomworks.overseer").run_configuration_action(
+                self._config_unit, "build", cb)
+        elseif cb then
+            vim.schedule(function() cb(true) end)
+        end
     end
+
+    -- Check for dependencies that need building first
+    if self._project and self._project.depends_on then
+        self:_build_deps(self._project.depends_on, 1, function(success)
+            if not success then
+                if on_complete then on_complete(false) end
+                return
+            end
+            build_self(on_complete)
+        end)
+    else
+        build_self(on_complete)
+    end
+end
+
+--- Build dependency projects sequentially.
+--- @param deps loomworks.Project[] dependency projects to build
+--- @param idx number current index
+--- @param on_complete fun(success: boolean)
+function LaunchTarget:_build_deps(deps, idx, on_complete)
+    if idx > #deps then
+        on_complete(true)
+        return
+    end
+
+    local dep = deps[idx]
+    -- Find the ConfigUnit for this dependency in the active profile
+    local pp = self._profile:project(dep.key)
+    if not pp then
+        -- Dependency not in this profile, skip
+        self:_build_deps(deps, idx + 1, on_complete)
+        return
+    end
+
+    local unit = self._core:get_config_unit(pp.project_key, pp.config_key)
+    local state = unit:state()
+
+    -- Already built or configured — skip
+    if state == "built" or state == "configured" then
+        self:_build_deps(deps, idx + 1, on_complete)
+        return
+    end
+
+    -- Need to build this dependency
+    vim.notify("loomworks: building dependency " .. dep.key, vim.log.levels.INFO)
+    require("loomworks.overseer").run_configuration_action(unit, "build",
+        function(success)
+            if not success then
+                vim.notify("loomworks: dependency " .. dep.key .. " build failed",
+                    vim.log.levels.ERROR)
+                on_complete(false)
+                return
+            end
+            self:_build_deps(deps, idx + 1, on_complete)
+        end)
 end
 
 --- Launch this target.

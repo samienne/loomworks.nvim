@@ -16,6 +16,8 @@
 --- @field cached? loomworks.CachedConfig active configuration's cached state
 --- @field cached_configurations table<string, loomworks.CachedConfig>
 --- @field cmake? loomworks.ProjectCmakeInfo
+--- @field depends_on? loomworks.Project[] direct references to dependency projects
+--- @field _depends_on_keys? string[] raw keys from merge (resolved to objects in _update)
 --- @field _core loomworks.Core
 --- @field _removed boolean
 local Project = {}
@@ -56,6 +58,22 @@ function Project:_update(data)
     self.cached = data.cached
     self.cached_configurations = data.cached_configurations or {}
     self.cmake = data.cmake
+    -- Store raw keys for deferred resolution (projects may not all exist yet)
+    self._depends_on_keys = data.depends_on
+    -- Resolve to Project objects (best effort — some deps may not exist)
+    self.depends_on = nil
+    if data.depends_on then
+        local deps = {}
+        for _, dep_key in ipairs(data.depends_on) do
+            local dep = self._core._projects[dep_key]
+            if dep then
+                deps[#deps + 1] = dep
+            end
+        end
+        if #deps > 0 then
+            self.depends_on = deps
+        end
+    end
 end
 
 function Project:__tostring()
