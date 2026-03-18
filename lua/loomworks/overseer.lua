@@ -323,7 +323,6 @@ function M.run_configuration_action(unit, action, on_complete)
             -- Check if any projects need configuring first
             local needs_configure = filter_unconfigured_tasks(all_tasks)
             if #needs_configure > 0 then
-                vim.notify("loomworks: configuring " .. unit.project_key .. " before build", vim.log.levels.INFO)
                 launch_tasks(overseer, needs_configure, function(all_succeeded)
                     if not all_succeeded then
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
@@ -480,7 +479,6 @@ function M.run_profile_action(profile, action)
                     loomworks.create_operation(profile, "configure+build", units, target_states)
                 end
 
-                vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
                 launch_tasks(overseer, needs_configure, function(all_succeeded)
                     if not all_succeeded then
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
