@@ -110,17 +110,21 @@ function LaunchTarget:_launch_command()
     local ctx = expand.launch_context(ws, self._profile, self._project.key)
 
     -- Expand variables
-    local cmd = { expand.expand_string(cfg.command, ctx) }
-    local args = expand.expand_array(cfg.args, ctx)
-    if args then
-        for _, arg in ipairs(args) do
-            cmd[#cmd + 1] = arg
-        end
-    end
+    local cmd = expand.expand_string(cfg.command, ctx)
+    local args = expand.expand_array(cfg.args, ctx) or {}
 
-    local cwd = cfg.working_dir
-        and (ws.root .. "/" .. expand.expand_string(cfg.working_dir, ctx))
-        or (ws.root .. "/" .. (self._project.path or self._project.key))
+    local cwd
+    if cfg.working_dir then
+        local expanded_cwd = expand.expand_string(cfg.working_dir, ctx)
+        -- If expansion produced an absolute path, use as-is; otherwise prepend workspace root
+        if expanded_cwd:match("^/") or expanded_cwd:match("^%a:") then
+            cwd = expanded_cwd
+        else
+            cwd = ws.root .. "/" .. expanded_cwd
+        end
+    else
+        cwd = ws.root .. "/" .. (self._project.path or self._project.key)
+    end
 
     local env = expand.expand_dict(cfg.env, ctx)
 
@@ -130,6 +134,7 @@ function LaunchTarget:_launch_command()
     self._launch_task_id = overseer.launch_run_task({
         name = task_name,
         cmd = cmd,
+        args = args,
         cwd = cwd,
         env = env,
     })

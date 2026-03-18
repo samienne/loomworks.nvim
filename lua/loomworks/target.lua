@@ -102,7 +102,7 @@ function Target:launch()
     local overseer = require("loomworks.overseer")
     return overseer.launch_run_task({
         name = project_name .. ": run " .. self.id,
-        cmd = { artifact_path },
+        cmd = artifact_path,
         cwd = build_dir,
     })
 end

@@ -356,9 +356,17 @@ function M.launch_run_task(opts)
         return nil
     end
 
+    -- overseer expects cmd as a list (argv) for direct execution
+    local cmd = opts.cmd
+    if type(cmd) == "string" then
+        cmd = { cmd }
+    end
+    if opts.args then
+        cmd = vim.list_extend(vim.deepcopy(cmd), opts.args)
+    end
     local task = overseer.new_task({
         name = opts.name,
-        cmd = opts.cmd,
+        cmd = cmd,
         cwd = opts.cwd,
         env = opts.env,
         components = { "default" },
