@@ -1379,6 +1379,56 @@ objects. No key-based lookups at runtime.
 an overseer task definition for building a single target. Falls back to
 full build if the module doesn't implement it.
 
+### 9.7 Target launching
+
+Each profile can have a default launch target — a configuration that
+defines how to run the project after building. Two types:
+
+**Module targets** (cmake executables): `Target:launch()` resolves the
+artifact path from the build directory and runs it via overseer.
+
+**Command-type launches** (loomworks.json `launch` section): Named launch
+configurations per project with command, args, env, working_dir.
+
+```json
+"ScenePluginTest": {
+    "typescript": {},
+    "launch": {
+        "debug": {
+            "command": "node",
+            "args": ["assets/scripts/app.js"],
+            "working_dir": "${workspace_root}/ScenePluginTest",
+            "env": {
+                "NODE_PATH": "${workspace_root}/ScenePluginTest/Debug"
+            }
+        }
+    }
+}
+```
+
+**Variable expansion** in args, env values, working_dir:
+- `${workspace_root}` — absolute workspace root path
+- `${config_set}` — active configuration set name
+- `${variant}` — project's variant in the active config set
+- `${project_path}` — project's relative path
+
+**Launch flow** (`launch_target()` API):
+1. Get active profile's default target (LaunchTarget)
+2. If buildable: build first, launch on success
+3. Auto-configure before build if unconfigured
+4. Open overseer window for launch output
+5. Track launched process for `stop_target()`
+
+**Default target storage** in user.json per profile:
+```json
+"default_target": {
+    "Debug:ninja-gcc-12": {
+        "project": "ScenePluginTest",
+        "launch": "debug"
+    }
+}
+```
+
 ---
 
 ## 10. LSP Integration
