@@ -92,6 +92,16 @@ Could be defined in loomworks.json per project:
 Variable expansion (${project_path}, ${config_set}) applies. Directories
 are deleted during the clean action alongside module clean_tasks.
 
+## Profile build triggers builds for unrelated configurations
+
+Reported on LumeTS workspace with ninja+clang. Building a profile
+triggered Debug, RelWithDebInfo and Release builds from an unrelated
+profile, and created orphaned configurations for an unused tool.
+Ninja is single-config so cmake tasks() should only generate one build
+task. Need to reproduce and investigate — may be related to
+has_keyed_tools removal, ProfileProject config_key computation, or
+task collection logic.
+
 ## Deleting orphaned configurations from UI broken
 
 The delete action on orphaned configurations in the status page doesn't
