@@ -383,6 +383,28 @@ describe("ConfigUnit", function()
             assert.equals(1, a)
             assert.equals(1, b)
         end)
+
+        it("on_state_change returns unsubscribe function", function()
+            local unit = make_unit()
+            local count = 0
+            local unsub = unit:on_state_change(function() count = count + 1 end)
+            unit:register_task(1, "build")
+            assert.equals(1, count)
+
+            unsub()
+            unit:unregister_task(1)
+            -- Should not fire after unsubscribe
+            assert.equals(1, count)
+        end)
+
+        it("unsubscribed listeners are removed from list", function()
+            local unit = make_unit()
+            local initial_count = #unit._listeners
+            local unsub = unit:on_state_change(function() end)
+            assert.equals(initial_count + 1, #unit._listeners)
+            unsub()
+            assert.equals(initial_count, #unit._listeners)
+        end)
     end)
 
 
