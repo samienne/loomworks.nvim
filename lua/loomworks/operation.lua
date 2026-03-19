@@ -73,28 +73,15 @@ function Operation.new(core, profile, action, units, target_states, on_complete)
     self._unsubscribers = {}
     self._on_complete = on_complete
 
-    -- For rank mode: check if units are already in target state.
-    -- For deletion mode: skip initial check — units will be marked deleting
-    -- after the Operation is created, and we complete when that flag clears.
-    if self._mode == "rank" then
-        for _, unit in ipairs(units) do
-            self:_check_unit(unit)
-        end
-    end
-
-    -- Subscribe to state changes on each unit
+    -- Subscribe to state changes on all units. Do NOT check initial state —
+    -- Operations complete only when they observe a state transition after
+    -- creation. This prevents premature completion when units happen to be
+    -- in the target state from a previous action.
     for _, unit in ipairs(units) do
-        if not self._unit_done[unit] then
-            local unsub = unit:on_state_change(function(u)
-                self:_on_unit_change(u)
-            end)
-            self._unsubscribers[#self._unsubscribers + 1] = unsub
-        end
-    end
-
-    -- If all units were already done (rank mode only), complete immediately
-    if self._mode == "rank" and not self.completed then
-        self:_check_completion()
+        local unsub = unit:on_state_change(function(u)
+            self:_on_unit_change(u)
+        end)
+        self._unsubscribers[#self._unsubscribers + 1] = unsub
     end
 
     return self
