@@ -110,8 +110,8 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Create an Operation for a profile action.
---- @param profile loomworks.Profile
---- @param action string "build"|"configure"|"configure+build"
+--- @param profile loomworks.Profile|nil nil for config-level operations
+--- @param action string "build"|"configure"|"configure+build"|"clean"|"delete"
 --- @param units loomworks.ConfigUnit[]
 --- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
 --- @return loomworks.Operation
@@ -120,20 +120,30 @@ function Core:create_operation(profile, action, units, target_states)
     local core = self
     local op = OperationClass.new(self, profile, action, units, target_states, function(completed_op)
         -- On completion: clean up from core and profile registries
-        profile:complete_operation(completed_op)
+        if profile then
+            profile:complete_operation(completed_op)
+        end
         for i, o in ipairs(core._operations) do
             if o == completed_op then
                 table.remove(core._operations, i)
                 break
             end
         end
+        -- Flush deletion waiters if no more deletion operations are active
+        if completed_op:is_deletion() and not core:has_pending_deletions() then
+            local waiters = core._delete_waiters
+            core._delete_waiters = {}
+            for _, fn in ipairs(waiters) do fn() end
+        end
     end)
 
     self._operations[#self._operations + 1] = op
-    profile:add_operation(op)
+    if profile then
+        profile:add_operation(op)
+    end
 
     self._deps.events.emit("operation_started", {
-        profile_key = profile.key,
+        profile_key = profile and profile.key or nil,
         action = action,
         operation = op,
     })
@@ -145,6 +155,31 @@ end
 --- @return loomworks.Operation[]
 function Core:get_operations()
     return self._operations
+end
+
+--- Cancel all active build/configure Operations that overlap with the given units.
+--- Called before clean/delete to stop conflicting work.
+--- @param units loomworks.ConfigUnit[]
+function Core:cancel_conflicting_operations(units)
+    local unit_set = {}
+    for _, u in ipairs(units) do
+        unit_set[u] = true
+    end
+    -- Iterate a copy since cancel modifies _operations via callback
+    local ops = {}
+    for _, op in ipairs(self._operations) do
+        ops[#ops + 1] = op
+    end
+    for _, op in ipairs(ops) do
+        if not op.completed and not op:is_deletion() then
+            for _, u in ipairs(op.units) do
+                if unit_set[u] then
+                    op:cancel()
+                    break
+                end
+            end
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1154,8 +1189,8 @@ end
 --- Check if any items are currently being deleted.
 --- @return boolean
 function Core:has_pending_deletions()
-    for _, unit in pairs(self._config_units) do
-        if unit:is_deleting() then return true end
+    for _, op in ipairs(self._operations) do
+        if not op.completed and op:is_deletion() then return true end
     end
     return false
 end
@@ -1264,8 +1299,9 @@ function Core:_mark_cache_unknown(items)
     end
 end
 
---- Common async deletion workflow: mark items as deleting, stop running tasks,
---- delete build dirs via async subprocess, then apply cache mutations.
+--- Common async deletion workflow: cancel conflicting operations, mark items
+--- as deleting, stop running tasks, delete build dirs via async subprocess,
+--- then apply cache mutations.
 --- Crash-safe: cache is set to "unknown" before async deletion starts.
 --- @param items table[] list of { project_key, config_key, ... }
 --- @param work_fn function called after build dirs are successfully deleted (cache mutations)
@@ -1277,8 +1313,15 @@ function Core:_run_deletion(items, work_fn, on_done, reason)
         return
     end
 
+    -- Cancel any active build/configure Operations on the affected units
+    local units = {}
     for _, item in ipairs(items) do
-        self:get_config_unit(item.project_key, item.config_key):mark_deleting(true, reason)
+        units[#units + 1] = self:get_config_unit(item.project_key, item.config_key)
+    end
+    self:cancel_conflicting_operations(units)
+
+    for _, unit in ipairs(units) do
+        unit:mark_deleting(true, reason)
     end
     self._deps.events.emit("deletion_started", items)
 
@@ -1327,92 +1370,29 @@ function Core:_run_deletion(items, work_fn, on_done, reason)
                     self._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
                 end
 
-                -- Discard any queued actions on failed items
-                for _, item in ipairs(items) do
-                    local unit = self:get_config_unit(item.project_key, item.config_key)
+                for _, unit in ipairs(units) do
                     unit:mark_deleting(false)
                 end
 
                 self:_save_cache()
                 self:remerge()
 
-                if not self:has_pending_deletions() then
-                    local waiters = self._delete_waiters
-                    self._delete_waiters = {}
-                    for _, fn in ipairs(waiters) do fn() end
-                end
-
                 self._deps.events.emit("deletion_failed", { items = items, errors = errors })
                 if on_done then on_done() end
                 return
             end
 
-            -- Success: check for queued actions before applying cache mutations
-            local queued = {}
-            for _, item in ipairs(items) do
-                local unit = self:get_config_unit(item.project_key, item.config_key)
-                local action = unit:pop_queued_action()
-                if action then
-                    queued[#queued + 1] = { item = item, action = action }
-                end
-            end
-
-            -- Apply cache mutations for items without queued actions
-            if #queued > 0 then
-                -- Items with queued actions: reset to unconfigured (keep cache entry)
-                local queued_items = {}
-                local normal_items = {}
-                local queued_set = {}
-                for _, q in ipairs(queued) do
-                    local key = q.item.project_key .. "\0" .. q.item.config_key
-                    queued_set[key] = true
-                    queued_items[#queued_items + 1] = q.item
-                end
-                for _, item in ipairs(items) do
-                    local key = item.project_key .. "\0" .. item.config_key
-                    if not queued_set[key] then
-                        normal_items[#normal_items + 1] = item
-                    end
-                end
-                -- Reset queued items to unconfigured
-                self:reset_cached_configs(queued_items)
-                -- Apply normal work_fn only to non-queued items
-                -- For simplicity, run work_fn for all then restore queued ones
-                -- Actually, the work_fn operates on all items - we need to exclude queued ones
-                -- Split: run work_fn replacement logic manually
-                -- The work_fn is either delete_cached_configs or reset_cached_configs
-                -- We handle this by not calling work_fn for queued items
-                if #normal_items > 0 then
-                    -- Re-scope work_fn: this is called with the original items, so we need
-                    -- to apply the mutation to normal items only. The caller passes work_fn
-                    -- that operates on the full item list. Instead, we apply mutations directly.
-                    work_fn(normal_items)
-                end
-            else
-                work_fn(items)
-            end
+            -- Success: apply cache mutations
+            work_fn(items)
 
             self:_save_cache()
             self:remerge()
 
-            for _, item in ipairs(items) do
-                self:get_config_unit(item.project_key, item.config_key):mark_deleting(false)
-            end
-            if not self:has_pending_deletions() then
-                local waiters = self._delete_waiters
-                self._delete_waiters = {}
-                for _, fn in ipairs(waiters) do fn() end
+            for _, unit in ipairs(units) do
+                unit:mark_deleting(false)
             end
 
             self._deps.events.emit("deletion_completed", items)
-
-            -- Execute queued actions after everything is settled
-            for _, q in ipairs(queued) do
-                self._deps.schedule(function()
-                    local overseer = require("loomworks.overseer")
-                    overseer.run_config_action(q.item.project_key, q.item.config_key, q.action)
-                end)
-            end
 
             if on_done then on_done() end
         end)

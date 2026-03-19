@@ -18,7 +18,6 @@ local cache_mod = require("loomworks.cache")
 --- @field _start_time number|nil clock() value when task started
 --- @field _deleting boolean
 --- @field _deleting_reason "deleting"|"cleaning"|nil
---- @field _queued_action string|nil action to run after deletion completes
 --- @field _listeners function[]
 --- @field _removed boolean
 --- @field _project loomworks.Project|nil direct reference to project object
@@ -53,7 +52,6 @@ function ConfigUnit.new(core, project_key, config_key)
     self._start_time = nil
     self._deleting = false
     self._deleting_reason = nil
-    self._queued_action = nil
     self._listeners = {}
     self._removed = false
     self.targets = nil
@@ -340,19 +338,44 @@ function ConfigUnit:plan_deletion()
 end
 
 --- Delete this config (plan + execute, no UI confirmation).
+--- Creates a delete Operation to track progress.
 --- @param on_done? function
 function ConfigUnit:delete(on_done)
     local plan = self:plan_deletion()
+
+    -- Create Operation (profile is optional — use first referencing profile if available)
+    local units = {}
+    local target_states = {}
+    for _, item in ipairs(plan.items) do
+        if item.disposition ~= "keep" then
+            local unit = self._core:get_config_unit(item.project_key, item.config_key)
+            units[#units + 1] = unit
+            target_states[unit] = "unconfigured"
+        end
+    end
+    if #units > 0 then
+        local refs = self:referencing_profiles()
+        local profile = refs[1] or nil
+        self._core:create_operation(profile, "delete", units, target_states)
+    end
+
     self._core:execute_deletion(plan, nil, on_done)
 end
 
 --- Clean this config: delete build dir and reset to unconfigured.
+--- Creates a clean Operation to track progress.
 --- @param on_done? function
 function ConfigUnit:clean(on_done)
     if not self._core:get_workspace() then
         if on_done then on_done() end
         return
     end
+
+    -- Create Operation
+    local target_states = { [self] = "unconfigured" }
+    local refs = self:referencing_profiles()
+    local profile = refs[1] or nil
+    self._core:create_operation(profile, "clean", { self }, target_states)
 
     local items = { {
         project_key = self.project_key,
@@ -422,9 +445,6 @@ end
 function ConfigUnit:mark_deleting(flag, reason)
     self._deleting = flag
     self._deleting_reason = flag and (reason or "deleting") or nil
-    if not flag then
-        self._queued_action = nil
-    end
     self:_notify()
 end
 
@@ -432,29 +452,6 @@ end
 --- @return "deleting"|"cleaning"|nil
 function ConfigUnit:deleting_reason()
     return self._deleting_reason
-end
-
---- Queue an action to run after the current deletion completes.
---- Only valid while the unit is deleting. Replaces any previously queued action.
---- @param action string "configure" or "build"
-function ConfigUnit:queue_action(action)
-    if not self._deleting then return end
-    self._queued_action = action
-    self:_notify()
-end
-
---- Get the queued action, if any.
---- @return string|nil "configure" or "build"
-function ConfigUnit:queued_action()
-    return self._queued_action
-end
-
---- Pop the queued action (retrieve and clear).
---- @return string|nil "configure" or "build"
-function ConfigUnit:pop_queued_action()
-    local action = self._queued_action
-    self._queued_action = nil
-    return action
 end
 
 -- ---------------------------------------------------------------------------

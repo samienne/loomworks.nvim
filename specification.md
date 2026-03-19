@@ -678,40 +678,49 @@ When building a profile and some projects are unconfigured or in
 
 ### 5.3 Profile-level operations
 
-Profile actions (build/configure) are tracked as Operation objects for
-progress reporting and UI scoping. An Operation is a first-class object
-that:
+All user-initiated actions (build, configure, clean, delete) are tracked
+as Operation objects for progress reporting and UI scoping. An Operation
+is a first-class object that:
 
-1. Is created when a user initiates a profile action (build/configure)
+1. Is created when a user initiates an action
 2. Watches the affected ConfigUnits' state changes
 3. Completes when ALL units reach their target state (or fail)
-4. Produces a single result message (e.g., "built in 1m23s")
+4. Produces a single result message (e.g., "built in 1m23s", "cleaned in 3s")
+
+Operations have two completion modes:
+- **Rank mode** (build/configure): uses a state hierarchy where higher
+  states imply lower ones (e.g., "building" satisfies a "configured"
+  target). Completes when units reach or exceed the target state.
+- **Deletion mode** (clean/delete): completes when the `_deleting` flag
+  clears on all affected units. Success if units return to "unconfigured",
+  failure if they end up in "unknown" state (partial deletion).
 
 Multiple Operations can coexist — they are independent objects, not a
 single slot on Profile. This means overlapping actions on different
-profiles don't clobber each other, and a second build can start before
-the first finishes.
+profiles don't clobber each other.
+
+**Preemption rules**:
+- Clean/delete **cancel** any active build/configure Operations on the
+  same ConfigUnits (stopping their overseer tasks).
+- Build/configure issued during a clean/delete are **deferred** via
+  `after_deletions()` until the deletion Operation completes.
 
 **UI scoping rules**:
-- **Spinner**: shown on any profile with running ConfigUnits (indicates
-  activity regardless of who initiated it)
+- **Spinner**: shown on any profile with running ConfigUnits or an active
+  Operation (including clean/delete Operations)
 - **Orange highlight + timer/progress**: only on profiles with an active
   Operation (the profile that initiated the action)
 - **Last operation message**: displayed after the profile name when no
   operation is active
 
-This separation means when Profile A builds a ConfigUnit that Profile B
-also references, Profile B shows a spinner (activity) but NOT the orange
-highlight or timer (not its action).
-
 Individual task completions produce no user-visible notifications.
 Operation completion produces a single notification.
 
-Deletion and clean operations use separate `deletion_started`,
-`deletion_completed`, and `deletion_failed` events (not operation tracking).
-Fidget shows a spinner with a message like "Deleting Debug:ninja-gcc-12"
-(no percentage — just a spinner). The status page shows the standard
-spinner animation for deleting configs.
+The `profile` field on an Operation is optional — config-level clean/delete
+may not have a profile context. The `deletion_started`, `deletion_completed`,
+and `deletion_failed` events are still emitted from `_run_deletion` for
+external consumers, but fidget and the status page use Operation events
+exclusively.
 
 ### 5.4 Progress tracking
 
@@ -725,33 +734,13 @@ spinner animation for deleting configs.
 
 ### 5.5 Deletion waiter pattern
 
-If a build/configure action is requested while a deletion is in progress:
+If a build/configure action is requested while a deletion Operation is
+active:
 
-1. `has_pending_deletions()` returns true
+1. `has_pending_deletions()` checks for active clean/delete Operations
 2. Action is deferred via `after_deletions(fn)`
-3. When all deletions complete, deferred actions are flushed in order
-
-### 5.6 Queued actions on deleting configs
-
-If a build or configure action is requested on a ConfigUnit that is currently
-in the `deleting` state:
-
-1. The action is stored as a **queued action** on the ConfigUnit
-   (`_queued_action`).
-2. Only one action can be queued per ConfigUnit. If a new action is queued,
-   it replaces the previous one.
-3. Queueing a build/configure on a config mid-deletion **preserves the cache
-   entry** — even if the original disposition was `clean` (full removal), the
-   cache entry is kept and the deletion effectively becomes a clean+rebuild.
-4. When deletion completes successfully:
-   - If a queued action exists: reset cache entry to `unconfigured`, then
-     execute the queued action
-   - If no queued action: proceed with normal disposal (remove or reset per
-     original disposition)
-5. When deletion fails (`unknown` state):
-   - Queued action is discarded — the user must retry the delete first
-6. Queueing a delete or clean on a config that is already deleting is
-   prevented (cannot stack deletions).
+3. When the last deletion Operation completes, deferred actions are
+   flushed in order
 
 ### 5.7 Task readiness: unknown state
 

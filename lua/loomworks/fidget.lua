@@ -109,11 +109,12 @@ function M.setup()
         finish_handle("tools")
     end)
 
-    -- Profile-level operations (keyed by operation ID)
+    -- All operations (build, configure, clean, delete) — keyed by operation ID
     lw.on("operation_started", function(data)
         local title = ACTION_TITLE[data.action] or data.action
         local key = data.operation and ("op:" .. data.operation.id) or data.profile_key
-        create_handle(key, title, data.profile_key)
+        local message = data.profile_key or "workspace"
+        create_handle(key, title, message)
     end)
 
     lw.on("operation_finished", function(data)
@@ -132,7 +133,7 @@ function M.setup()
     lw.on("task_started", function(data)
         local handle_key = find_handle_for_task(data)
         if handle_key then
-            -- Already tracked by a profile operation — just update message
+            -- Already tracked by an operation — just update message
             local handle = handles[handle_key]
             if handle then
                 local action_label = data.action == "configure" and "configuring" or "building"
@@ -161,39 +162,9 @@ function M.setup()
     end)
 
     lw.on("task_stopped", function(data)
-        -- Only finish standalone task handles; profile handles finish via operation_finished
+        -- Only finish standalone task handles; operation handles finish via operation_finished
         local task_key = "task:" .. data.task_id
         finish_handle(task_key)
-    end)
-
-    -- Deletion events (standalone deletions not covered by profile operations)
-    lw.on("deletion_started", function(items)
-        for _, item in ipairs(items) do
-            local key = "del:" .. item.project_key .. "/" .. item.config_key
-            -- Only create handle if not already tracked by a profile operation
-            if not handles[key] then
-                create_handle(key, "Deleting", item.project_key .. "/" .. item.config_key)
-            end
-        end
-    end)
-
-    lw.on("deletion_completed", function(items)
-        for _, item in ipairs(items) do
-            local key = "del:" .. item.project_key .. "/" .. item.config_key
-            finish_handle(key)
-        end
-    end)
-
-    lw.on("deletion_failed", function(data)
-        for _, item in ipairs(data.items) do
-            local key = "del:" .. item.project_key .. "/" .. item.config_key
-            local handle = handles[key]
-            if handle then
-                handle:report({ message = "failed" })
-                handle:cancel()
-                handles[key] = nil
-            end
-        end
     end)
 end
 

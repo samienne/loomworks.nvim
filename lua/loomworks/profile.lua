@@ -593,14 +593,30 @@ function Profile:plan_deletion()
 end
 
 --- Delete this profile (plan + execute, no UI confirmation).
+--- Creates a delete Operation to track progress.
 --- @param on_done? function
 function Profile:delete(on_done)
-    self._core:execute_deletion(
-        self:plan_deletion(), { deactivate_profile = self }, on_done)
+    local plan = self:plan_deletion()
+
+    -- Collect units for the Operation
+    local units = {}
+    local target_states = {}
+    for _, item in ipairs(plan.items) do
+        if item.disposition ~= "keep" then
+            local unit = self._core:get_config_unit(item.project_key, item.config_key)
+            units[#units + 1] = unit
+            target_states[unit] = "unconfigured"
+        end
+    end
+    if #units > 0 then
+        self._core:create_operation(self, "delete", units, target_states)
+    end
+
+    self._core:execute_deletion(plan, { deactivate_profile = self }, on_done)
 end
 
 --- Clean this profile's configs: delete build dirs and reset to unconfigured.
---- Does NOT remove the profile itself.
+--- Does NOT remove the profile itself. Creates a clean Operation to track progress.
 --- @param on_done? function
 function Profile:clean(on_done)
     local pps = self:projects()
@@ -610,13 +626,20 @@ function Profile:clean(on_done)
     end
 
     local items = {}
+    local units = {}
+    local target_states = {}
     for _, pp in ipairs(pps) do
         items[#items + 1] = {
             project_key = pp.project_key,
             config_key = pp.config_key,
             build_dir = pp:build_dir(),
         }
+        local unit = self._core:get_config_unit(pp.project_key, pp.config_key)
+        units[#units + 1] = unit
+        target_states[unit] = "unconfigured"
     end
+
+    self._core:create_operation(self, "clean", units, target_states)
 
     self._core:_run_deletion(items, function(effective_items)
         self._core:reset_cached_configs(effective_items)

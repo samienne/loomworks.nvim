@@ -80,23 +80,6 @@ Could be defined in loomworks.json per project:
 Variable expansion (${project_path}, ${config_set}) applies. Directories
 are deleted during the clean action alongside module clean_tasks.
 
-## Unify clean/delete under Operation model
-
-Clean and delete actions use separate machinery (`_deleting` flag,
-`_queued_action`, `deletion_started`/`deletion_completed` events,
-separate fidget handles) instead of the Operation class used by
-build/configure. Unifying would give:
-
-- "cleaned in 3s" / "deleted in 5s" as last-operation messages
-- Natural queuing: build waits for clean to finish via Operation
-  watching, replacing the ad-hoc `_queued_action` mechanism
-- Single fidget handle model (per-Operation, not separate `del:` keys)
-
-Semantics: clean/delete should stop running build/configure immediately.
-Build/configure issued during clean should queue (wait for clean to
-finish, then proceed). The `_deleting` flag and crash-safety flow
-(`unknown` state before async deletion) must be preserved.
-
 ## ConfigUnit listener accumulation
 
 `on_state_change` listeners on ConfigUnit accumulate and are never cleared.
