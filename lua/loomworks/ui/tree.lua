@@ -163,6 +163,7 @@ function Tree:_show_help()
         "",
         "  b       Build",
         "  c       Configure",
+        "  t       Open task output",
         "  p       Pin configuration",
         "  o       Show build options",
         "  L       Load / rescan workspace",

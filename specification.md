@@ -805,6 +805,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
 | `p`     | pin         | Pin configuration as pinned profile |
 | `o`     | options     | Show build options float (on configured project nodes) |
+| `t`     | task        | Open overseer task output for nearest config (float) |
 | `R`     | rebuild     | Clean + build (destructive, with confirmation) |
 | `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
@@ -895,10 +896,10 @@ Profiles that share ConfigUnits with the initiating profile show spinners
 
 **Profile actions**:
 
-| Node type | `<CR>` | `b` | `c` | `R` | `C` | `D` |
-|-----------|--------|-----|-----|-----|-----|-----|
-| Profile | activate | build all | configure all | clean+build all | clean all | delete with dialog |
-| Project under profile | — | build config | configure config | clean+build config | clean config | delete config with dialog |
+| Node type | `<CR>` | `b` | `c` | `t` | `R` | `C` | `D` |
+|-----------|--------|-----|-----|-----|-----|-----|-----|
+| Profile | activate | build all | configure all | — | clean+build all | clean all | delete with dialog |
+| Project under profile | open task output | build config | configure config | open task output | clean+build config | clean config | delete config with dialog |
 
 ### 6.6 Orphaned Configurations Section
 

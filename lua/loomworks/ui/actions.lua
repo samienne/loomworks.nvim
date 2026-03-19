@@ -63,7 +63,7 @@ function M.rebuild(profile)
         local items = M._collect_clean_items(profile)
         M._show_clean_confirmation("Rebuild profile: " .. profile.key, items, function()
             profile:rebuild()
-        end)
+        end, { rebuild = true })
     end
 end
 
@@ -115,7 +115,7 @@ function M.rebuild_configuration(unit)
             unit:clean(function()
                 require("loomworks.overseer").run_configuration_action(unit, "build")
             end)
-        end)
+        end, { rebuild = true })
     end
 end
 
@@ -158,6 +158,31 @@ function M.delete_orphaned_config(unit)
                     vim.notify("loomworks: orphaned configuration removed", vim.log.levels.INFO)
                 end)
             end)
+    end
+end
+
+--- Open the overseer task output for a ConfigUnit.
+--- Closes the status page first (terminal buffers can't layer in floats),
+--- reopens it with cursor restored when the task output is dismissed.
+--- @param unit loomworks.ConfigUnit
+function M.open_task(unit)
+    return function()
+        if not unit:last_task_id() then
+            vim.notify("loomworks: no task output available", vim.log.levels.INFO)
+            return
+        end
+        local lw = require("loomworks")
+        local status = require("loomworks.ui.status")
+        local win_opts = lw.get_task_output_win()
+        status.close()
+        vim.schedule(function()
+            if not unit:open_task_output(win_opts, function()
+                status.open()
+            end) then
+                vim.notify("loomworks: task output buffer no longer available", vim.log.levels.INFO)
+                status.open()
+            end
+        end)
     end
 end
 
@@ -324,7 +349,8 @@ end
 --- @param title string
 --- @param items table[] { project_key, config_key, build_dir? }
 --- @param on_confirm fun()
-function M._show_clean_confirmation(title, items, on_confirm)
+--- @param opts? { rebuild?: boolean }
+function M._show_clean_confirmation(title, items, on_confirm, opts)
     local lw = require("loomworks")
     local lines = {}
     local highlights = {}
@@ -352,7 +378,11 @@ function M._show_clean_confirmation(title, items, on_confirm)
         add("")
     end
 
-    add("  Will clean build artifacts and reset to configured:", "DiagnosticWarn")
+    opts = opts or {}
+    local desc = opts.rebuild
+        and "  Will clean build artifacts then rebuild:"
+        or "  Will clean build artifacts and reset to configured:"
+    add(desc, "DiagnosticWarn")
     for _, item in ipairs(items) do
         add("    " .. item.project_key .. " / " .. item.config_key, "DiagnosticWarn")
     end

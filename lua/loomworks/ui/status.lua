@@ -96,6 +96,7 @@ local view = View.new({
         ["c"]     = "configure",
         ["C"]     = "clean",
         ["D"]     = "delete",
+        ["t"]     = "task",
         ["p"]     = "pin",
         ["o"]     = "options",
         ["L"]     = "load",
@@ -121,8 +122,32 @@ local view = View.new({
 -- Public API
 -- ---------------------------------------------------------------------------
 
-function M.open(win_overrides)  view:open(win_overrides) end
-function M.close()   view:close() end
+local _saved_cursor = nil
+
+function M.open(win_overrides)
+    view:open(win_overrides)
+    if _saved_cursor and view:is_open() then
+        local win = view._snacks_win and view._snacks_win.win
+        if win and vim.api.nvim_win_is_valid(win) then
+            local buf = vim.api.nvim_win_get_buf(win)
+            local line_count = vim.api.nvim_buf_line_count(buf)
+            if _saved_cursor <= line_count then
+                vim.api.nvim_win_set_cursor(win, { _saved_cursor, 0 })
+            end
+        end
+        _saved_cursor = nil
+    end
+end
+function M.close()
+    -- Save cursor before closing
+    if view:is_open() then
+        local win = view._snacks_win and view._snacks_win.win
+        if win and vim.api.nvim_win_is_valid(win) then
+            _saved_cursor = vim.api.nvim_win_get_cursor(win)[1]
+        end
+    end
+    view:close()
+end
 function M.toggle()  view:toggle() end
 function M.refresh() view:refresh() end
 

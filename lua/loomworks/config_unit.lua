@@ -13,6 +13,7 @@ local cache_mod = require("loomworks.cache")
 --- @field tool? loomworks.ToolRef bundled tool reference (from cache data)
 --- @field _core loomworks.Core
 --- @field _task_id number|nil current overseer task ID
+--- @field _last_task_id number|nil most recent overseer task ID (persists after completion)
 --- @field _action string|nil "configure" or "build" while a task is running
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
@@ -47,6 +48,7 @@ function ConfigUnit.new(core, project_key, config_key)
     self.project_key = project_key
     self.config_key = config_key
     self._task_id = nil
+    self._last_task_id = nil
     self._action = nil
     self._progress = nil
     self._start_time = nil
@@ -429,6 +431,7 @@ end
 --- @param action string "configure" or "build"
 function ConfigUnit:register_task(task_id, action)
     self._task_id = task_id
+    self._last_task_id = task_id
     self._action = action
     self._progress = nil
     self._start_time = self._core._deps.clock()
@@ -453,6 +456,63 @@ function ConfigUnit:update_progress(task_id, progress)
     if self._task_id ~= task_id then return end
     self._progress = progress
     self:_notify()
+end
+
+--- Get the most recent overseer task ID (running or completed).
+--- @return number|nil
+function ConfigUnit:last_task_id()
+    return self._last_task_id
+end
+
+--- Open the output of the most recent overseer task in a Snacks.win float.
+--- @param win_opts? table Snacks.win overrides from plugin config
+--- @param on_close? fun() called when the window is closed
+--- @return boolean opened true if a task was found and opened
+function ConfigUnit:open_task_output(win_opts, on_close)
+    if not self._last_task_id then return false end
+    local task = self._core._deps.get_overseer_task(self._last_task_id)
+    if not task then return false end
+    local bufnr = task:get_bufnr()
+    if not bufnr then return false end
+
+    local Snacks = require("snacks")
+    local config = vim.tbl_deep_extend("force", {
+        position = "float",
+        buf = bufnr,
+        enter = true,
+        width = 0.9,
+        height = 0.85,
+        border = "rounded",
+        title = " " .. (task.name or "Task") .. " ",
+        title_pos = "center",
+        keys = { q = "close" },
+        wo = {
+            number = false,
+            relativenumber = false,
+            signcolumn = "no",
+            wrap = false,
+        },
+    }, win_opts or {})
+
+    if on_close then
+        local orig_on_close = config.on_close
+        config.on_close = function(self_win)
+            if orig_on_close then orig_on_close(self_win) end
+            on_close()
+        end
+    end
+
+    local win = Snacks.win(config)
+
+    -- Scroll to end
+    if win.win and vim.api.nvim_win_is_valid(win.win) then
+        local line_count = vim.api.nvim_buf_line_count(bufnr)
+        if line_count > 0 then
+            vim.api.nvim_win_set_cursor(win.win, { line_count, 0 })
+        end
+    end
+
+    return true
 end
 
 --- Mark this unit as deleting/cleaning (or clear the flag).
