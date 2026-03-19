@@ -26,10 +26,9 @@ local function create_handle(key, title, message)
     if handles[key] then return handles[key] end
 
     local handle = fidget_progress.handle.create({
-        title = title,
-        message = message,
+        title = message,
+        message = title,
         lsp_client = { name = "loomworks" },
-        percentage = 0,
     })
     handles[key] = handle
     return handle
@@ -93,20 +92,30 @@ function M.setup()
 
     -- Workspace initialization progress
     lw.on("workspace_initializing", function()
-        create_handle("init", "loomworks", "Initializing workspace...")
+        create_handle("init", "", "Initializing...")
     end)
 
     lw.on("workspace_changed", function()
-        finish_handle("init")
+        local handle = handles["init"]
+        if handle then
+            handle:report({ message = "Done" })
+            handle:finish()
+            handles["init"] = nil
+        end
     end)
 
     -- Tool detection progress
     lw.on("tools_scanning", function()
-        create_handle("tools", "loomworks", "Detecting tools...")
+        create_handle("tools", "", "Detecting tools...")
     end)
 
     lw.on("tools_detected", function()
-        finish_handle("tools")
+        local handle = handles["tools"]
+        if handle then
+            handle:report({ message = "Done" })
+            handle:finish()
+            handles["tools"] = nil
+        end
     end)
 
     -- All operations (build, configure, clean, delete) — keyed by operation ID

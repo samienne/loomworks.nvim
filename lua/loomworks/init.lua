@@ -16,6 +16,10 @@ local core = Core.new()
 --- @type string|false
 local auto_load_mode = "auto"
 
+--- Task output window config (Snacks.win overrides).
+--- @type table
+local task_output_win = {}
+
 --- Access the underlying core instance (for advanced use / testing).
 --- @return loomworks.Core
 function M._core()
@@ -34,10 +38,13 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Initialize loomworks workspace.
---- @param opts? { root?: string, auto_load?: string|false }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table }
 function M.setup(opts)
     if opts and opts.auto_load ~= nil then
         auto_load_mode = opts.auto_load
+    end
+    if opts and opts.task_output_win then
+        task_output_win = opts.task_output_win
     end
 
     -- Optional fidget.nvim integration for progress notifications (registers listeners, fast)
@@ -68,6 +75,12 @@ end
 --- @return { root: string, message: string }|nil
 function M.get_setup_error()
     return core:get_setup_error()
+end
+
+--- Get the task output window config (Snacks.win overrides).
+--- @return table
+function M.get_task_output_win()
+    return task_output_win
 end
 
 --- Register an event listener.
