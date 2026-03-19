@@ -810,6 +810,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
+| `<C-d>` | delete_user | Delete user.json and reload (with confirmation) |
 | `?`     | help        | Show help dialog |
 | `q`     | (close)     | Close the status page |
 
@@ -818,7 +819,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 nearest node that has the corresponding `on_<action>` callback. This means pressing
 `b` on a child detail line triggers the build action of the parent node.
 
-**Destructive action highlighting**: `R`, `C`, `D`, `<C-n>` keys are
+**Destructive action highlighting**: `R`, `C`, `D`, `<C-n>`, `<C-d>` keys are
 highlighted with `DiagnosticWarn` in the help dialog.
 
 ### 6.4 Action Hints

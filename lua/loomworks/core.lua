@@ -486,8 +486,17 @@ function Core:_on_files_read(root, paths, results)
 
     -- Refuse to load when cache has incompatible version
     if ws.cache_version_mismatch then
-        local msg = "Cache version mismatch (expected v3). Press <C-n> to reset."
+        local msg = "Cache version mismatch. Press <C-n> to reset."
         self._setup_error = { root = root, message = msg }
+        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        self._state = "uninitialized"
+        return
+    end
+
+    -- Refuse to load when user.json has incompatible version
+    if ws.user_version_mismatch then
+        local msg = "user.json version mismatch. Press <C-d> to delete user preferences and reload."
+        self._setup_error = { root = root, message = msg, user_version_mismatch = true }
         self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
         self._state = "uninitialized"
         return
@@ -590,6 +599,29 @@ function Core:nuke_cache(root)
     self._deps.io.rm_rf(cache_bak)
 
     -- Re-setup from scratch
+    self:setup({ root = norm_root })
+end
+
+--- Delete user.json and reload the workspace.
+--- Called when user.json has a version mismatch and user confirms deletion.
+--- @param root string
+function Core:delete_user_prefs(root)
+    local norm_root = self._deps.normalize(root)
+
+    local user_path = self._deps.user.filepath(norm_root)
+    if not self:_safe_nvim_path(user_path, norm_root) then
+        self._deps.notify("loomworks: refusing to delete path outside .nvim/: " .. user_path, vim.log.levels.ERROR)
+        return
+    end
+
+    local ok, err = self._deps.io.rm_rf(user_path)
+    if not ok then
+        self._deps.notify("loomworks: failed to delete user.json: " .. (err or "unknown"), vim.log.levels.ERROR)
+        return
+    end
+
+    self._deps.notify("loomworks: user preferences deleted, reloading", vim.log.levels.INFO)
+    self._setup_error = nil
     self:setup({ root = norm_root })
 end
 

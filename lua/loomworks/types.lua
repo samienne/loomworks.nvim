@@ -18,6 +18,7 @@
 --- @field user loomworks.UserData user preferences (.nvim/loomworks.user.json)
 --- @field cache loomworks.CacheData build state (.nvim/loomworks.cache.json)
 --- @field cache_version_mismatch? boolean set during assembly, checked by Core.setup()
+--- @field user_version_mismatch? boolean set during assembly, checked by Core.setup()
 
 --- @class loomworks.Config
 --- @field name? string workspace name override (falls back to dir name)

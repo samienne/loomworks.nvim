@@ -127,6 +127,12 @@ function M.nuke_cache(root)
     core:nuke_cache(root)
 end
 
+--- Delete user.json and reload the workspace.
+--- @param root string
+function M.delete_user_prefs(root)
+    core:delete_user_prefs(root)
+end
+
 --- Get detected tools organized by module type.
 --- @return table<string, loomworks.DetectedTool[]>
 function M.get_tools_by_type()

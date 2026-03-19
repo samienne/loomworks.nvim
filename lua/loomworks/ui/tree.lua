@@ -123,6 +123,10 @@ function Tree:on_key(action, line)
         self:_confirm_nuke()
         return {}
 
+    elseif action == "delete_user_prefs" then
+        self:_confirm_delete_user_prefs()
+        return {}
+
     elseif action == "help" then
         self:_show_help()
         return {}
@@ -164,9 +168,10 @@ function Tree:_show_help()
         "  L       Load / rescan workspace",
         "",
         "  R       Rebuild (clean + build)",
-        "  C       Clean (reset to unconfigured)",
+        "  C       Clean (run module clean tasks)",
         "  D       Delete",
         "  <C-n>   Nuke cache + build dirs",
+        "  <C-d>   Delete user preferences",
         "",
         "  q       Close",
         "  ?       Show this help",
@@ -176,7 +181,7 @@ function Tree:_show_help()
         { line = 1, hl_group = "Title" },
     }
     for i, line in ipairs(lines) do
-        if line:match("^  [RCD]%s") or line:match("^  <C%-N>") then
+        if line:match("^  [RCD]%s") or line:match("^  <C%-") then
             local key_end = line:find("%s%s", 3) or #line
             highlights[#highlights + 1] = { line = i, hl_group = "DiagnosticWarn", col_start = 2, col_end = key_end }
         end
@@ -225,6 +230,48 @@ function Tree:_confirm_nuke()
             y = function(self)
                 self:close()
                 lw.nuke_cache(root)
+            end,
+        },
+    })
+end
+
+-- -----------------------------------------------------------------------
+-- User preferences deletion confirmation
+-- -----------------------------------------------------------------------
+
+function Tree:_confirm_delete_user_prefs()
+    local dialog = require("loomworks.ui.dialog")
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    local err = lw.get_setup_error()
+    local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
+    local user_path = require("loomworks.user").filepath(root)
+
+    local lines = {
+        "  Delete user preferences",
+        "",
+        "  This will delete:",
+        "    " .. user_path,
+        "",
+        "  Active profile and default targets will be reset.",
+        "",
+        "  Press y to confirm, q to cancel",
+    }
+
+    dialog.show({
+        title = "Confirm Delete",
+        lines = lines,
+        highlights = {
+            { line = 1, hl_group = "DiagnosticWarn" },
+            { line = 3, hl_group = "DiagnosticWarn" },
+            { line = 4, hl_group = "DiagnosticWarn" },
+            { line = 6, hl_group = "Comment" },
+        },
+        keys = {
+            n = "close",
+            y = function(self)
+                self:close()
+                lw.delete_user_prefs(root)
             end,
         },
     })
