@@ -476,9 +476,19 @@ end
 
 --- Subscribe to state changes on this unit.
 --- The callback receives the unit as its argument.
+--- Returns an unsubscribe function.
 --- @param fn fun(unit: loomworks.ConfigUnit)
+--- @return fun() unsubscribe
 function ConfigUnit:on_state_change(fn)
     self._listeners[#self._listeners + 1] = fn
+    return function()
+        for i, listener in ipairs(self._listeners) do
+            if listener == fn then
+                table.remove(self._listeners, i)
+                return
+            end
+        end
+    end
 end
 
 --- Fire all listeners.

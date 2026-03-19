@@ -49,12 +49,6 @@ Some projects need files copied after build (e.g., cmake-built native
 libraries copied to TypeScript project's Debug/Release folder). Need a
 post-build step or copy-file mechanism in loomworks.json.
 
-## Fidget spinner stuck on workspace load failure
-
-When loomworks.json parsing fails (e.g., "multiple type keys" error), the
-"loading workspace" fidget spinner stays indefinitely. The initialization
-event flow doesn't emit completion on parse failure.
-
 ## Clean directories per configuration
 
 Allow specifying additional directories to delete when cleaning a
@@ -73,9 +67,3 @@ Could be defined in loomworks.json per project:
 Variable expansion (${project_path}, ${config_set}) applies. Directories
 are deleted during the clean action alongside module clean_tasks.
 
-## ConfigUnit listener accumulation
-
-`on_state_change` listeners on ConfigUnit accumulate and are never cleared.
-If `launch_tasks()` deferred builds register listeners repeatedly, they
-pile up. Consider clearing listeners on state transitions or using a
-one-shot pattern.

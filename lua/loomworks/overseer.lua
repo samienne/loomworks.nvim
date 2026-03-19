@@ -341,12 +341,11 @@ local function launch_tasks(overseer, task_defs, on_all_done)
     for _, task_def in ipairs(to_defer) do
         local lw_meta = task_def.loomworks
         local unit = lw.get_config_unit(lw_meta.project_key, lw_meta.configuration_key)
-        local fired = false
-        unit:on_state_change(function(u)
-            if fired then return end
+        local unsub
+        unsub = unit:on_state_change(function(u)
             local new_state = u:state()
             if new_state == "configuring" then return end -- still going
-            fired = true
+            unsub()
             if new_state == "configure_failed" then
                 on_one_done(false)
                 return

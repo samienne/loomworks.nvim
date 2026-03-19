@@ -85,19 +85,10 @@ function Operation.new(core, profile, action, units, target_states, on_complete)
     -- Subscribe to state changes on each unit
     for _, unit in ipairs(units) do
         if not self._unit_done[unit] then
-            local listener = function(u)
+            local unsub = unit:on_state_change(function(u)
                 self:_on_unit_change(u)
-            end
-            unit:on_state_change(listener)
-            self._unsubscribers[#self._unsubscribers + 1] = function()
-                -- Remove listener from unit's listener list
-                for i, fn in ipairs(unit._listeners) do
-                    if fn == listener then
-                        table.remove(unit._listeners, i)
-                        break
-                    end
-                end
-            end
+            end)
+            self._unsubscribers[#self._unsubscribers + 1] = unsub
         end
     end
 
