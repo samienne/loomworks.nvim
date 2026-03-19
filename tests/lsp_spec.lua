@@ -205,7 +205,7 @@ describe("lsp", function()
 
             local status = lsp.get_status()
             assert.equals("table", type(status))
-            assert.equals(0, vim.tbl_count(status))
+            assert.equals(0, #status)
 
             lw.get_workspace = orig_gw
         end)
@@ -242,21 +242,18 @@ describe("lsp", function()
             vim.lsp.get_clients = function() return {} end
 
             local status = lsp.get_status()
-            assert.equals("table", type(status))
-            assert.is_not_nil(status["MyLib"])
-            assert.equals("/workspace/MyLib", status["MyLib"].root_dir)
-            -- compile_commands_dir is nil because fs_stat won't find the file in tests
-            assert.is_nil(status["MyLib"].compile_commands_dir)
-            -- clangd_bin is nil because no override configured and fs_stat won't find it
-            assert.is_nil(status["MyLib"].clangd_bin)
-            assert.equals(0, status["MyLib"].clients)
+            assert.equals(1, #status)
+            assert.equals("MyLib", status[1].project_key)
+            assert.equals("cmake", status[1].project_type)
+            assert.equals("/workspace/MyLib", status[1].root_dir)
+            assert.equals(0, #status[1].clients)
 
             vim.lsp.get_clients = orig_get_clients
             lw.get_workspace = orig_gw
             lw.get_projects = orig_gp
         end)
 
-        it("counts matching clangd clients", function()
+        it("matches clangd clients by root_dir", function()
             local core = setup_core({
                 root = "/workspace",
                 projects = { MyLib = {} },
@@ -271,23 +268,28 @@ describe("lsp", function()
             lw.get_projects = function() return core:get_projects() end
 
             local orig_get_clients = vim.lsp.get_clients
-            vim.lsp.get_clients = function()
-                return {
-                    { root_dir = "/workspace/MyLib", name = "clangd" },
-                    { root_dir = "/workspace/Other", name = "clangd" },
-                }
+            vim.lsp.get_clients = function(opts)
+                if opts and opts.name == "clangd" then
+                    return {
+                        { root_dir = "/workspace/MyLib", name = "clangd", id = 1, config = { cmd = { "clangd" } } },
+                        { root_dir = "/workspace/Other", name = "clangd", id = 2, config = { cmd = { "clangd" } } },
+                    }
+                end
+                return {}
             end
 
             local status = lsp.get_status()
-            assert.equals(1, status["MyLib"].clients)
+            assert.equals(1, #status)
+            assert.equals(1, #status[1].clients)
+            assert.equals("clangd", status[1].clients[1].name)
 
             vim.lsp.get_clients = orig_get_clients
             lw.get_workspace = orig_gw
             lw.get_projects = orig_gp
         end)
 
-        it("excludes non-cmake projects", function()
-            -- Create a workspace with an ets project (not cmake)
+        it("excludes project types without LSP server mapping", function()
+            -- ets has no LSP_SERVERS entry
             local config_json = h.make_config_json({
                 projects = { Frontend = { ets = {} } },
                 configuration_sets = { debug = { Frontend = "debug" } },
@@ -309,7 +311,7 @@ describe("lsp", function()
             vim.lsp.get_clients = function() return {} end
 
             local status = lsp.get_status()
-            assert.equals(0, vim.tbl_count(status))
+            assert.equals(0, #status)
 
             vim.lsp.get_clients = orig_get_clients
             lw.get_workspace = orig_gw

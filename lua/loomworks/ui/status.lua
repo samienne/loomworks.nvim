@@ -67,6 +67,8 @@ local function render_fn(tree)
 
     ctx.projects = lw.get_projects()
     require("loomworks.ui.sections.projects")(tree, ctx)
+
+    require("loomworks.ui.sections.lsp")(tree, ctx)
 end
 
 -- ---------------------------------------------------------------------------
