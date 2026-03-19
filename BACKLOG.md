@@ -43,6 +43,18 @@ Some projects need files copied after build (e.g., cmake-built native
 libraries copied to TypeScript project's Debug/Release folder). Need a
 post-build step or copy-file mechanism in loomworks.json.
 
+## TypeScript LSP integration (tsconfig switching)
+
+Similar to clangd integration for cmake: provide factory functions that
+route ts_ls/vtsls to the correct tsconfig per profile. Would need a
+`typescript.tsconfig` field per configuration in loomworks.json, and a
+`ts_ls_root_dir` factory similar to `clangd_root_dir`. Auto-restart
+ts_ls on profile switch when tsconfig changes.
+
+Low priority — most TypeScript projects use a single tsconfig.json.
+Only needed when profiles map to different tsconfig files (e.g.,
+tsconfig.debug.json vs tsconfig.release.json).
+
 ## Clean directories per configuration
 
 Allow specifying additional directories to delete when cleaning a
