@@ -18,18 +18,19 @@ function M.default()
 end
 
 --- Parse raw JSON content into UserData.
---- Returns defaults on invalid content.
+--- Returns defaults on invalid content. Second return value is true when a
+--- version mismatch was detected (valid JSON but wrong version number).
 --- @param content string raw JSON content
---- @return loomworks.UserData
+--- @return loomworks.UserData data, boolean version_mismatch
 function M.parse(content)
     local ok, raw = pcall(vim.json.decode, content)
     if not ok or type(raw) ~= "table" then
-        return M.default()
+        return M.default(), false
     end
     if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
-        return M.default()
+        return M.default(), true
     end
-    return raw
+    return raw, false
 end
 
 --- Load user preferences for a workspace.

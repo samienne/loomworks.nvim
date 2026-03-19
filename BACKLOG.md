@@ -12,12 +12,6 @@ command-type configs (loomworks.json launch section). Could also support
 referencing overseer task templates (e.g., from VS Code launch.json)
 as launch targets.
 
-## user.json version check
-
-Add version validation for `loomworks.user.json` like cache.json has.
-On mismatch, refuse to load (use defaults). Show warning in status page
-with option to delete the user config.
-
 ## Configuration conflict detection
 
 Detect when two configurations share the same output directory (e.g.,

@@ -2480,6 +2480,80 @@ describe("Core", function()
         end)
     end)
 
+    describe("user.json version mismatch", function()
+        local function make_user_mismatch_core(dep_overrides)
+            local files = {
+                ["loomworks.json"] = h.make_config_json(),
+                ["loomworks.user.json"] = vim.json.encode({
+                    _meta = { version = 999 },
+                    active_profile = "debug",
+                }),
+            }
+            local deps = h.make_test_deps(files, dep_overrides)
+            return Core.new(deps), deps
+        end
+
+        it("refuses to load workspace on version mismatch", function()
+            local core = make_user_mismatch_core()
+            core:setup({ root = "/test" })
+            assert.equals("uninitialized", core:state())
+            assert.is_nil(core:get_workspace())
+        end)
+
+        it("stores setup error with user_version_mismatch flag", function()
+            local core = make_user_mismatch_core()
+            core:setup({ root = "/test" })
+            local err = core:get_setup_error()
+            assert.is_not_nil(err)
+            assert.equals("/test", err.root)
+            assert.matches("user.json", err.message)
+            assert.is_true(err.user_version_mismatch)
+        end)
+
+        it("notifies user on version mismatch", function()
+            local notifications = {}
+            local core = make_user_mismatch_core({
+                notify = function(msg, level) notifications[#notifications + 1] = { msg = msg, level = level } end,
+            })
+            core:setup({ root = "/test" })
+            assert.equals(1, #notifications)
+            assert.matches("user.json", notifications[1].msg)
+            assert.equals(vim.log.levels.ERROR, notifications[1].level)
+        end)
+
+        it("delete_user_prefs removes file and reloads", function()
+            local deleted = {}
+            local files = {
+                ["loomworks.json"] = h.make_config_json(),
+                ["loomworks.user.json"] = vim.json.encode({
+                    _meta = { version = 999 },
+                    active_profile = "debug",
+                }),
+            }
+            local deps = h.make_test_deps(files, {
+                io = {
+                    rm_rf = function(path)
+                        deleted[#deleted + 1] = path
+                        -- Remove from mock filesystem so reload doesn't find it
+                        files["loomworks.user.json"] = nil
+                        return true
+                    end,
+                },
+            })
+            local core = Core.new(deps)
+            core:setup({ root = "/test" })
+            assert.is_not_nil(core:get_setup_error())
+
+            core:delete_user_prefs("/test")
+            -- Should have deleted the user.json file
+            assert.equals(1, #deleted)
+            assert.matches("user.json", deleted[1])
+            -- Should have reloaded successfully (no more setup error)
+            assert.is_nil(core:get_setup_error())
+            assert.is_not_nil(core:get_workspace())
+        end)
+    end)
+
     describe("nuke_cache", function()
         it("deletes build dir, cache file, and backup then reloads", function()
             local deleted = {}

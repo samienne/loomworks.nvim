@@ -46,7 +46,13 @@ function M.assemble(root, config_content, user_content, cache_content)
         return nil, config_err
     end
 
-    local user_data = user_content and user_mod.parse(user_content) or user_mod.default()
+    local user_data, user_version_mismatch
+    if user_content then
+        user_data, user_version_mismatch = user_mod.parse(user_content)
+    else
+        user_data = user_mod.default()
+        user_version_mismatch = false
+    end
 
     local cache_data, cache_version_mismatch
     if cache_content then
@@ -70,6 +76,7 @@ function M.assemble(root, config_content, user_content, cache_content)
         user = user_data,
         cache = cache_data,
         cache_version_mismatch = cache_version_mismatch,
+        user_version_mismatch = user_version_mismatch,
     }, nil
 end
 
