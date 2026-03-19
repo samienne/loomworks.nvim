@@ -59,12 +59,22 @@ end
 
 --- @param profile loomworks.Profile
 function M.rebuild(profile)
-    return function() profile:rebuild() end
+    return function()
+        local items = M._collect_clean_items(profile)
+        M._show_clean_confirmation("Rebuild profile: " .. profile.key, items, function()
+            profile:rebuild()
+        end)
+    end
 end
 
 --- @param profile loomworks.Profile
 function M.clean(profile)
-    return function() profile:clean() end
+    return function()
+        local items = M._collect_clean_items(profile)
+        M._show_clean_confirmation("Clean profile: " .. profile.key, items, function()
+            profile:clean()
+        end)
+    end
 end
 
 --- @param profile loomworks.Profile
@@ -100,15 +110,23 @@ end
 --- @param unit loomworks.ConfigUnit
 function M.rebuild_configuration(unit)
     return function()
-        unit:clean(function()
-            require("loomworks.overseer").run_configuration_action(unit, "build")
+        local items = M._collect_clean_items_for_unit(unit)
+        M._show_clean_confirmation("Rebuild: " .. unit.project_key .. " / " .. unit.config_key, items, function()
+            unit:clean(function()
+                require("loomworks.overseer").run_configuration_action(unit, "build")
+            end)
         end)
     end
 end
 
 --- @param unit loomworks.ConfigUnit
 function M.clean_configuration(unit)
-    return function() unit:clean() end
+    return function()
+        local items = M._collect_clean_items_for_unit(unit)
+        M._show_clean_confirmation("Clean: " .. unit.project_key .. " / " .. unit.config_key, items, function()
+            unit:clean()
+        end)
+    end
 end
 
 --- @param unit loomworks.ConfigUnit
@@ -255,8 +273,34 @@ function M.show_options(unit)
 end
 
 -- ---------------------------------------------------------------------------
--- Deletion confirmation dialog
+-- Clean/rebuild confirmation dialog
 -- ---------------------------------------------------------------------------
+
+--- Collect clean items for a profile (project_key, config_key, build_dir).
+--- @param profile loomworks.Profile
+--- @return table[]
+function M._collect_clean_items(profile)
+    local items = {}
+    for _, pp in ipairs(profile:projects()) do
+        items[#items + 1] = {
+            project_key = pp.project_key,
+            config_key = pp.config_key,
+            build_dir = pp:build_dir(),
+        }
+    end
+    return items
+end
+
+--- Collect clean items for a single ConfigUnit.
+--- @param unit loomworks.ConfigUnit
+--- @return table[]
+function M._collect_clean_items_for_unit(unit)
+    return { {
+        project_key = unit.project_key,
+        config_key = unit.config_key,
+        build_dir = unit:build_dir(),
+    } }
+end
 
 --- Make a path relative to workspace root for display.
 --- @param abs string|nil
@@ -275,6 +319,68 @@ local function rel_path(abs)
     end
     return abs
 end
+
+--- Show a confirmation dialog for clean/rebuild actions.
+--- @param title string
+--- @param items table[] { project_key, config_key, build_dir? }
+--- @param on_confirm fun()
+function M._show_clean_confirmation(title, items, on_confirm)
+    local lw = require("loomworks")
+    local lines = {}
+    local highlights = {}
+
+    local function add(text, hl)
+        lines[#lines + 1] = text
+        if hl then
+            highlights[#highlights + 1] = { line = #lines, hl_group = hl }
+        end
+    end
+
+    add("  " .. title, "DiagnosticWarn")
+    add("")
+
+    local running_tasks = lw.find_running_tasks_for_items(items)
+    local has_running = false
+    for _ in pairs(running_tasks) do has_running = true; break end
+
+    if has_running then
+        add("  Will stop running tasks:", "DiagnosticWarn")
+        for _, info in pairs(running_tasks) do
+            add("    " .. info.project_key .. ": " .. info.action .. " " .. info.configuration_key,
+                "DiagnosticWarn")
+        end
+        add("")
+    end
+
+    add("  Will delete build directories and reset to unconfigured:", "DiagnosticWarn")
+    for _, item in ipairs(items) do
+        local dir = item.build_dir and rel_path(item.build_dir) or nil
+        local suffix = dir and ("  " .. dir) or "  (no build dir)"
+        add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticWarn")
+    end
+    add("")
+
+    add("  Press y to confirm, q to cancel", "Comment")
+
+    local dialog = require("loomworks.ui.dialog")
+    dialog.show({
+        title = "Confirm",
+        lines = lines,
+        highlights = highlights,
+        max_height = 20,
+        keys = {
+            n = "close",
+            y = function(self)
+                self:close()
+                on_confirm()
+            end,
+        },
+    })
+end
+
+-- ---------------------------------------------------------------------------
+-- Deletion confirmation dialog
+-- ---------------------------------------------------------------------------
 
 --- Show a confirmation dialog for deleting configurations.
 --- @param title string
