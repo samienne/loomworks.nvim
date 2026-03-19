@@ -200,7 +200,12 @@ function Operation:_check_completion()
 
     -- Call completion callback (Core uses this to clean up registries)
     if self._on_complete then
-        self._on_complete(self)
+        local ok, err = pcall(self._on_complete, self)
+        if not ok then
+            vim.notify("DEBUG: _on_complete error: " .. tostring(err), vim.log.levels.ERROR)
+        end
+    else
+        vim.notify("DEBUG: _on_complete is nil!", vim.log.levels.ERROR)
     end
 
     -- Emit event
