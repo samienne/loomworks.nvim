@@ -65,6 +65,7 @@ function M.make_mock_core(overrides)
         _profiles = {},
         _projects = {},
         _profile_projects = {},
+        _operations = {},
         _deps = {
             clock = function() return 0 end,
             events = { emit = function() end },

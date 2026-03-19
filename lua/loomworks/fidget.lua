@@ -59,12 +59,19 @@ end
 --- @param data table event data with project_key, configuration_key
 --- @return string|nil key
 local function find_handle_for_task(data)
-    -- Check if this task belongs to a profile operation
+    -- Check if this task's config unit belongs to an active operation
     local lw = require("loomworks")
-    local refs = lw.get_config_unit(data.project_key, data.configuration_key):referencing_profiles()
+    local unit = lw.get_config_unit(data.project_key, data.configuration_key)
+    -- Check active operations on referencing profiles
+    local refs = unit:referencing_profiles()
     for _, profile in ipairs(refs) do
-        if handles[profile.key] then
-            return profile.key
+        for _, op in ipairs(profile:active_operations()) do
+            if op:has_unit(unit) then
+                local key = "op:" .. op.id
+                if handles[key] then
+                    return key
+                end
+            end
         end
     end
     -- Standalone task
@@ -102,20 +109,22 @@ function M.setup()
         finish_handle("tools")
     end)
 
-    -- Profile-level operations
+    -- Profile-level operations (keyed by operation ID)
     lw.on("operation_started", function(data)
         local title = ACTION_TITLE[data.action] or data.action
-        create_handle(data.profile_key, title, data.profile_key)
+        local key = data.operation and ("op:" .. data.operation.id) or data.profile_key
+        create_handle(key, title, data.profile_key)
     end)
 
     lw.on("operation_finished", function(data)
-        local handle = handles[data.profile_key]
+        local key = data.operation and ("op:" .. data.operation.id) or data.profile_key
+        local handle = handles[key]
         if handle then
             handle:report({
                 message = data.message,
             })
             handle:finish()
-            handles[data.profile_key] = nil
+            handles[key] = nil
         end
     end)
 

@@ -411,7 +411,10 @@ still work.
 4. `last_configured` and `last_built` are stored separately — a failed build
    does not invalidate the configure timestamp.
 5. The `deleting` state is transient — it exists only while a deletion
-   operation is in flight.
+   operation is in flight. The UI displays "cleaning" when the action is
+   a clean (reset state, keep cache skeleton) vs "deleting" when it is a
+   full delete (remove cache entry entirely). ConfigUnit tracks the reason
+   via `mark_deleting(flag, reason)`.
 6. The `unknown` state means the build directory may be partially deleted
    (e.g., subprocess was killed, or files were locked on Windows). The only
    user actions available from `unknown` are delete and clean (retry).
@@ -675,16 +678,34 @@ When building a profile and some projects are unconfigured or in
 
 ### 5.3 Profile-level operations
 
-Profile actions (build/configure/delete/clean) are tracked as "operations"
-for progress reporting:
+Profile actions (build/configure) are tracked as Operation objects for
+progress reporting and UI scoping. An Operation is a first-class object
+that:
 
-1. `start_operation(profile_key, action)` — records start time
-2. Tasks run (potentially multiple projects in parallel)
-3. `finish_operation(profile_key, success)` — computes duration message
-   (e.g., "built in 1m23s", "configure failed in 42s")
+1. Is created when a user initiates a profile action (build/configure)
+2. Watches the affected ConfigUnits' state changes
+3. Completes when ALL units reach their target state (or fail)
+4. Produces a single result message (e.g., "built in 1m23s")
 
-The operation message is displayed in the Profiles section after the profile
-name.
+Multiple Operations can coexist — they are independent objects, not a
+single slot on Profile. This means overlapping actions on different
+profiles don't clobber each other, and a second build can start before
+the first finishes.
+
+**UI scoping rules**:
+- **Spinner**: shown on any profile with running ConfigUnits (indicates
+  activity regardless of who initiated it)
+- **Orange highlight + timer/progress**: only on profiles with an active
+  Operation (the profile that initiated the action)
+- **Last operation message**: displayed after the profile name when no
+  operation is active
+
+This separation means when Profile A builds a ConfigUnit that Profile B
+also references, Profile B shows a spinner (activity) but NOT the orange
+highlight or timer (not its action).
+
+Individual task completions produce no user-visible notifications.
+Operation completion produces a single notification.
 
 Deletion and clean operations use separate `deletion_started`,
 `deletion_completed`, and `deletion_failed` events (not operation tracking).
@@ -795,8 +816,8 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
 | `p`     | pin         | Pin configuration as pinned profile |
 | `o`     | options     | Show build options float (on configured project nodes) |
-| `R`     | rebuild     | Clean + build (destructive) |
-| `C`     | clean       | Reset to unconfigured, delete build dir (destructive) |
+| `R`     | rebuild     | Clean + build (destructive, with confirmation) |
+| `C`     | clean       | Reset to unconfigured, delete build dir (destructive, with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
@@ -863,20 +884,24 @@ profile; it simply has fewer projects when expanded.
 **Profile highlight rules**:
 | Condition | Highlight |
 |-----------|-----------|
-| Running + active | `LoomworksActive` |
-| Running + not active | `LoomworksRunning` |
-| Active (not running) | `LoomworksActive` |
+| Has active Operation + active | `LoomworksActive` |
+| Has active Operation + not active | `LoomworksRunning` |
+| Active (no operation) | `LoomworksActive` |
 | Failed status | `LoomworksFailed` |
 | Unconfigured | `LoomworksUnconfigured` |
 | Otherwise | `LoomworksConfigured` |
+
+Note: "Has active Operation" means this profile initiated the action.
+Profiles that share ConfigUnits with the initiating profile show spinners
+(from running ConfigUnit state) but not the orange highlight or timer.
 
 **Profile children** (when unfolded):
 - Set name (with warning if orphaned/stale) — only for set-based profiles
 - Tool label (with generator/compiler details)
 - Last operation message
 - Projects sub-group:
-  - Each project: `project_key → variant {progress}` with status highlight
-  - When unfolded: status, build dir, timestamps, cmake details
+  - Each project: `project_key [module_type] → variant {progress}` with status highlight
+  - When unfolded: status, build dir, cmake details (generator, compiler)
 
 **Profile actions**:
 
@@ -1159,8 +1184,8 @@ Events are the primary mechanism for cross-component communication.
 |------------------------|------|---------|
 | `workspace_changed`    | `Workspace` | Workspace loaded |
 | `active_set_changed`   | `ActiveSet` | Profile activated, remerge |
-| `operation_started`    | `{ profile_key, action }` | Profile-level action begins |
-| `operation_finished`   | `{ profile_key, success, message }` | Profile-level action ends |
+| `operation_started`    | `{ profile_key, action, operation }` | Profile-level action begins |
+| `operation_finished`   | `{ profile_key, success, message, operation }` | Profile-level action ends |
 | `task_result`          | `TaskResult` | Individual task completes |
 | `task_started`         | (via ConfigUnit) | Task registered on a unit |
 | `task_stopped`         | (via ConfigUnit) | Task unregistered |

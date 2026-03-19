@@ -1934,12 +1934,13 @@ describe("Core", function()
         end
 
         it("tracks a running operation", function()
-            local _, profile, time = make_op_core()
+            local core, profile, time = make_op_core()
             time.value = 100
-            profile:start_operation("build")
+            local unit = core:get_config_unit("App", "Debug")
+            unit:register_task(1, "build")
+            local op = core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
-            local op = profile:operation()
-            assert.is_not_nil(op)
+            assert.is_true(profile:has_active_operation())
             assert.equals("build", op.action)
             assert.equals(100, op.started_at)
 
@@ -1948,51 +1949,76 @@ describe("Core", function()
         end)
 
         it("finishes operation with success message", function()
-            local _, profile, time = make_op_core()
+            local core, profile, time = make_op_core()
             time.value = 100
-            profile:start_operation("build")
-            time.value = 190
-            profile:finish_operation(true)
+            local unit = core:get_config_unit("App", "Debug")
+            unit:register_task(1, "build")
+            core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
-            local op = profile:operation()
-            assert.is_not_nil(op)
-            assert.equals("built in 1m30s", op.message)
-            assert.is_true(op.success)
+            -- Simulate build completing: cache state = "built", unregister task
+            local ws = core:get_workspace()
+            ws.cache.configurations["App/Debug"].state = "built"
+            time.value = 190
+            unit:unregister_task(1)
+
+            local last = profile:operation()
+            assert.is_not_nil(last)
+            assert.equals("built in 1m30s", last.message)
+            assert.is_true(last.success)
             -- No longer running
             assert.is_nil(profile:operation_elapsed())
         end)
 
         it("finishes operation with failure message", function()
-            local _, profile, time = make_op_core()
-            profile:start_operation("configure")
-            time.value = 45
-            profile:finish_operation(false)
+            local core, profile, time = make_op_core()
+            local unit = core:get_config_unit("App", "Debug")
+            unit:register_task(1, "configure")
+            core:create_operation(profile, "configure", { unit }, { [unit] = "configured" })
 
-            local op = profile:operation()
-            assert.equals("configure failed in 45s", op.message)
-            assert.is_false(op.success)
+            -- Simulate configure failure
+            local ws = core:get_workspace()
+            ws.cache.configurations["App/Debug"].state = "failed_configure"
+            time.value = 45
+            unit:unregister_task(1)
+
+            local last = profile:operation()
+            assert.equals("configure failed in 45s", last.message)
+            assert.is_false(last.success)
         end)
 
         it("configure+build operation uses generic verb", function()
-            local _, profile, time = make_op_core()
-            profile:start_operation("configure+build")
+            local core, profile, time = make_op_core()
+            local unit = core:get_config_unit("App", "Debug")
+            unit:register_task(1, "build")
+            core:create_operation(profile, "configure+build", { unit }, { [unit] = "built" })
+
+            local ws = core:get_workspace()
+            ws.cache.configurations["App/Debug"].state = "built"
             time.value = 120
-            profile:finish_operation(true)
+            unit:unregister_task(1)
 
             assert.equals("built in 2m00s", profile:operation().message)
         end)
 
         it("new operation replaces previous result", function()
-            local _, profile, time = make_op_core()
-            profile:start_operation("build")
+            local core, profile, time = make_op_core()
+            local unit = core:get_config_unit("App", "Debug")
+
+            -- First operation completes
+            unit:register_task(1, "build")
+            core:create_operation(profile, "build", { unit }, { [unit] = "built" })
+            local ws = core:get_workspace()
+            ws.cache.configurations["App/Debug"].state = "built"
             time.value = 10
-            profile:finish_operation(true)
+            unit:unregister_task(1)
             assert.is_not_nil(profile:operation().message)
 
-            profile:start_operation("build")
-            -- Previous result replaced by running state
-            assert.is_not_nil(profile:operation().started_at)
-            assert.is_nil(profile:operation().message)
+            -- Second operation starts
+            unit:register_task(2, "build")
+            ws.cache.configurations["App/Debug"].state = "configured"
+            core:create_operation(profile, "build", { unit }, { [unit] = "built" })
+            -- Has active operation, previous result still available until new one completes
+            assert.is_true(profile:has_active_operation())
         end)
 
         it("returns nil before any operation", function()
@@ -2003,9 +2029,14 @@ describe("Core", function()
 
         it("emits operation events", function()
             local core, profile, time = make_op_core()
-            profile:start_operation("build")
+            local unit = core:get_config_unit("App", "Debug")
+            unit:register_task(1, "build")
+            core:create_operation(profile, "build", { unit }, { [unit] = "built" })
+
+            local ws = core:get_workspace()
+            ws.cache.configurations["App/Debug"].state = "built"
             time.value = 10
-            profile:finish_operation(true)
+            unit:unregister_task(1)
 
             local events = core._deps._events_log
             local found_started, found_finished = false, false

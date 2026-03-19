@@ -12,12 +12,6 @@ command-type configs (loomworks.json launch section). Could also support
 referencing overseer task templates (e.g., from VS Code launch.json)
 as launch targets.
 
-## Overlapping profile operations
-
-When user triggers build while configure is still running, the second
-`start_operation()` clobbers the first operation state. Fidget handle
-gets finished prematurely. Need operation queuing or stacking.
-
 ## user.json version check
 
 Add version validation for `loomworks.user.json` like cache.json has.
@@ -68,12 +62,6 @@ When loomworks.json parsing fails (e.g., "multiple type keys" error), the
 "loading workspace" fidget spinner stays indefinitely. The initialization
 event flow doesn't emit completion on parse failure.
 
-## UI status should show "cleaning" instead of "deleting" for clean action
-
-When cleaning a configuration, the UI shows "deleting" state. Should show
-"cleaning" instead. Either add a separate ConfigUnit state or map the
-display label based on the action that triggered the deletion flag.
-
 ## Clean directories per configuration
 
 Allow specifying additional directories to delete when cleaning a
@@ -92,40 +80,22 @@ Could be defined in loomworks.json per project:
 Variable expansion (${project_path}, ${config_set}) applies. Directories
 are deleted during the clean action alongside module clean_tasks.
 
-## Profile build triggers builds for unrelated configurations
+## Unify clean/delete under Operation model
 
-Reported on LumeTS workspace with ninja+clang. Building a profile
-triggered Debug, RelWithDebInfo and Release builds from an unrelated
-profile, and created orphaned configurations for an unused tool.
-Ninja is single-config so cmake tasks() should only generate one build
-task. Need to reproduce and investigate — may be related to
-has_keyed_tools removal, ProfileProject config_key computation, or
-task collection logic.
+Clean and delete actions use separate machinery (`_deleting` flag,
+`_queued_action`, `deletion_started`/`deletion_completed` events,
+separate fidget handles) instead of the Operation class used by
+build/configure. Unifying would give:
 
-## MSVC builds fail when Neovim shell is Git Bash
+- "cleaned in 3s" / "deleted in 5s" as last-operation messages
+- Natural queuing: build waits for clean to finish via Operation
+  watching, replacing the ad-hoc `_queued_action` mechanism
+- Single fidget handle model (per-Operation, not separate `del:` keys)
 
-**Root cause confirmed**: When `vim.o.shell` is set to Git Bash, MSVC
-builds fail even though wrap_cmd uses `{ "cmd", "/C", ... }`. The bash
-parent process environment is inherited — PATH includes mingw paths
-that interfere with MSVC toolchain. Builds work fine in a cmd.exe
-terminal.
-
-**Fix options**:
-1. Write a temp .bat file and execute it — gives cmd.exe a clean env
-2. Use `vim.fn.jobstart` with `env` option to override PATH
-3. Strip mingw paths from PATH before spawning MSVC builds
-4. Document that users should not set vim.o.shell to bash on Windows
-   (least desirable — user's terminal manager needs it)
-
-Option 1 (temp .bat file) is the most robust. The .bat file would
-contain the vcvarsall call and cmake command, executed by cmd.exe
-directly.
-
-## Deleting orphaned configurations from UI broken
-
-The delete action on orphaned configurations in the status page doesn't
-work. Needs investigation — may be related to the object model refactoring
-or the flat cache format change.
+Semantics: clean/delete should stop running build/configure immediately.
+Build/configure issued during clean should queue (wait for clean to
+finish, then proceed). The `_deleting` flag and crash-safety flow
+(`unknown` state before async deletion) must be preserved.
 
 ## ConfigUnit listener accumulation
 

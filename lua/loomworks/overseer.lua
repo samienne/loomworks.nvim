@@ -323,7 +323,6 @@ function M.run_configuration_action(unit, action, on_complete)
             -- Check if any projects need configuring first
             local needs_configure = filter_unconfigured_tasks(all_tasks)
             if #needs_configure > 0 then
-                vim.notify("loomworks: configuring " .. unit.project_key .. " before build", vim.log.levels.INFO)
                 launch_tasks(overseer, needs_configure, function(all_succeeded)
                     if not all_succeeded then
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
@@ -403,9 +402,35 @@ function M.launch_single_task(task_def, unit, on_complete)
     start_one_task(overseer, task_def, on_complete)
 end
 
+--- Collect ConfigUnits and their target states from task definitions.
+--- @param task_defs table[] task definitions with .loomworks
+--- @param target_state string target ConfigUnit state (e.g. "configured", "built")
+--- @return loomworks.ConfigUnit[] units
+--- @return table<loomworks.ConfigUnit, string> target_states
+local function collect_units_from_tasks(task_defs, target_state)
+    local lw = require("loomworks")
+    local units = {}
+    local target_states = {}
+    local seen = {}
+    for _, task_def in ipairs(task_defs) do
+        local meta = task_def.loomworks
+        if meta then
+            local key = meta.project_key .. "\0" .. meta.configuration_key
+            if not seen[key] then
+                seen[key] = true
+                local unit = lw.get_config_unit(meta.project_key, meta.configuration_key)
+                units[#units + 1] = unit
+                target_states[unit] = target_state
+            end
+        end
+    end
+    return units, target_states
+end
+
 --- Run all tasks of a given action for a profile.
 --- The profile must already be materialized (caller ensures this).
 --- If building and some projects are unconfigured, configures them first.
+--- Creates an Operation to track progress and completion.
 --- @param profile loomworks.Profile
 --- @param action string "configure" or "build"
 function M.run_profile_action(profile, action)
@@ -423,12 +448,13 @@ function M.run_profile_action(profile, action)
         if not all_tasks then return end
 
         if action == "configure" then
-            profile:start_operation("configure")
-            local launched = launch_tasks(overseer, all_tasks.configure, function(all_succeeded)
-                profile:finish_operation(all_succeeded)
-            end)
-            if launched == 0 then
-                profile:finish_operation(true)
+            local units, target_states = collect_units_from_tasks(all_tasks.configure, "configured")
+            if #units > 0 then
+                loomworks.create_operation(profile, "configure", units, target_states)
+            end
+            local launched = launch_tasks(overseer, all_tasks.configure)
+            if launched == 0 and #units == 0 then
+                -- Nothing to do — no operation was created
             end
             return
         end
@@ -436,30 +462,35 @@ function M.run_profile_action(profile, action)
         if action == "build" then
             local needs_configure = filter_unconfigured_tasks(all_tasks)
 
+            -- Collect all build units as the target
+            local units, target_states = collect_units_from_tasks(all_tasks.build, "built")
+
             if #needs_configure > 0 then
-                profile:start_operation("configure+build")
-                vim.notify("loomworks: configuring " .. #needs_configure .. " project(s) before build", vim.log.levels.INFO)
+                -- Also include configure units that aren't already in the build set
+                local configure_units, configure_targets = collect_units_from_tasks(needs_configure, "built")
+                for _, u in ipairs(configure_units) do
+                    if not target_states[u] then
+                        units[#units + 1] = u
+                        target_states[u] = "built"
+                    end
+                end
+
+                if #units > 0 then
+                    loomworks.create_operation(profile, "configure+build", units, target_states)
+                end
+
                 launch_tasks(overseer, needs_configure, function(all_succeeded)
                     if not all_succeeded then
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
-                        profile:finish_operation(false)
                         return
                     end
-                    local build_launched = launch_tasks(overseer, all_tasks.build, function(build_succeeded)
-                        profile:finish_operation(build_succeeded)
-                    end)
-                    if build_launched == 0 then
-                        profile:finish_operation(true)
-                    end
+                    launch_tasks(overseer, all_tasks.build)
                 end)
             else
-                profile:start_operation("build")
-                local launched = launch_tasks(overseer, all_tasks.build, function(all_succeeded)
-                    profile:finish_operation(all_succeeded)
-                end)
-                if launched == 0 then
-                    profile:finish_operation(true)
+                if #units > 0 then
+                    loomworks.create_operation(profile, "build", units, target_states)
                 end
+                launch_tasks(overseer, all_tasks.build)
             end
             return
         end

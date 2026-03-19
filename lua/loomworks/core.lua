@@ -14,6 +14,7 @@
 --- @field _profiles table<string, loomworks.Profile>
 --- @field _projects table<string, loomworks.Project>
 --- @field _profile_projects table<string, loomworks.ProfileProject> "profile\0project" -> ProfileProject
+--- @field _operations loomworks.Operation[] active operations
 --- @field _setup_error { root: string, message: string }|nil set when setup fails
 --- @field _state "uninitialized"|"initializing"|"initialized"
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"
@@ -81,6 +82,7 @@ function Core.new(deps)
     self._profiles = {}
     self._projects = {}
     self._profile_projects = {}
+    self._operations = {}
     self._setup_error = nil
     self._state = "uninitialized"
     self._tool_state = "not_scanned"
@@ -101,6 +103,48 @@ function Core:get_config_unit(project_key, config_key)
         self._config_units[key] = unit
     end
     return unit
+end
+
+-- ---------------------------------------------------------------------------
+-- Operations
+-- ---------------------------------------------------------------------------
+
+--- Create an Operation for a profile action.
+--- @param profile loomworks.Profile
+--- @param action string "build"|"configure"|"configure+build"
+--- @param units loomworks.ConfigUnit[]
+--- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
+--- @return loomworks.Operation
+function Core:create_operation(profile, action, units, target_states)
+    local OperationClass = require("loomworks.operation")
+    local core = self
+    local op = OperationClass.new(self, profile, action, units, target_states, function(completed_op)
+        -- On completion: clean up from core and profile registries
+        profile:complete_operation(completed_op)
+        for i, o in ipairs(core._operations) do
+            if o == completed_op then
+                table.remove(core._operations, i)
+                break
+            end
+        end
+    end)
+
+    self._operations[#self._operations + 1] = op
+    profile:add_operation(op)
+
+    self._deps.events.emit("operation_started", {
+        profile_key = profile.key,
+        action = action,
+        operation = op,
+    })
+
+    return op
+end
+
+--- Get all active operations.
+--- @return loomworks.Operation[]
+function Core:get_operations()
+    return self._operations
 end
 
 -- ---------------------------------------------------------------------------
@@ -1226,14 +1270,15 @@ end
 --- @param items table[] list of { project_key, config_key, ... }
 --- @param work_fn function called after build dirs are successfully deleted (cache mutations)
 --- @param on_done? function called when complete
-function Core:_run_deletion(items, work_fn, on_done)
+--- @param reason? "deleting"|"cleaning" reason for the deletion flag (default "deleting")
+function Core:_run_deletion(items, work_fn, on_done, reason)
     if #items == 0 then
         if on_done then on_done() end
         return
     end
 
     for _, item in ipairs(items) do
-        self:get_config_unit(item.project_key, item.config_key):mark_deleting(true)
+        self:get_config_unit(item.project_key, item.config_key):mark_deleting(true, reason)
     end
     self._deps.events.emit("deletion_started", items)
 

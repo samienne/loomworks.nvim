@@ -1,0 +1,234 @@
+--- loomworks/operation.lua — Operation: a user-initiated action on a profile.
+--- An Operation tracks ConfigUnit state changes to determine when all
+--- affected units have reached their target state (or failed).
+
+--- @class loomworks.Operation
+--- @field id number unique ID
+--- @field action string "build"|"configure"|"configure+build"|"clean"|"rebuild"
+--- @field profile loomworks.Profile
+--- @field units loomworks.ConfigUnit[] affected units
+--- @field target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState> expected end state per unit
+--- @field started_at number
+--- @field completed boolean
+--- @field success boolean|nil nil while running, true/false when completed
+--- @field message string|nil result message (set on completion)
+--- @field _unit_done table<loomworks.ConfigUnit, boolean> tracks which units are done
+--- @field _unit_ok table<loomworks.ConfigUnit, boolean> tracks which units succeeded
+--- @field _unsubscribers function[] listener cleanup functions
+--- @field _on_complete? fun(op: loomworks.Operation) completion callback
+--- @field _core loomworks.Core
+local Operation = {}
+Operation.__index = Operation
+
+local next_id = 1
+
+--- Format a duration in seconds to a compact string.
+--- @param seconds number
+--- @return string
+local function format_duration(seconds)
+    local s = math.floor(seconds)
+    if s < 60 then
+        return s .. "s"
+    end
+    local m = math.floor(s / 60)
+    s = s % 60
+    if m < 60 then
+        return m .. "m" .. string.format("%02d", s) .. "s"
+    end
+    local h = math.floor(m / 60)
+    m = m % 60
+    return h .. "h" .. string.format("%02d", m) .. "m"
+end
+
+--- Create a new Operation.
+--- @param core loomworks.Core
+--- @param profile loomworks.Profile
+--- @param action string
+--- @param units loomworks.ConfigUnit[]
+--- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
+--- @param on_complete? fun(op: loomworks.Operation) called when operation completes
+--- @return loomworks.Operation
+function Operation.new(core, profile, action, units, target_states, on_complete)
+    local self = setmetatable({}, Operation)
+    self.id = next_id
+    next_id = next_id + 1
+    self._core = core
+    self.profile = profile
+    self.action = action
+    self.units = units
+    self.target_states = target_states
+    self.started_at = core._deps.clock()
+    self.completed = false
+    self.success = nil
+    self.message = nil
+    self._unit_done = {}
+    self._unit_ok = {}
+    self._unsubscribers = {}
+    self._on_complete = on_complete
+
+    -- Check units already in target state
+    for _, unit in ipairs(units) do
+        self:_check_unit(unit)
+    end
+
+    -- Subscribe to state changes on each unit
+    for _, unit in ipairs(units) do
+        if not self._unit_done[unit] then
+            local listener = function(u)
+                self:_on_unit_change(u)
+            end
+            unit:on_state_change(listener)
+            self._unsubscribers[#self._unsubscribers + 1] = function()
+                -- Remove listener from unit's listener list
+                for i, fn in ipairs(unit._listeners) do
+                    if fn == listener then
+                        table.remove(unit._listeners, i)
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    -- If all units were already done, complete immediately
+    if not self.completed then
+        self:_check_completion()
+    end
+
+    return self
+end
+
+--- State hierarchy: higher values imply all lower states were achieved.
+--- "building" implies "configured" was reached. "built" implies both.
+local STATE_RANK = {
+    unconfigured     = 0,
+    configuring      = 1,
+    configured       = 2,
+    building         = 3,
+    built            = 4,
+}
+
+--- Check if a unit has reached its target state (or failed).
+--- Uses state hierarchy: a "configured" target is satisfied by "configured",
+--- "building" (config succeeded, build in progress), or "built".
+--- @param unit loomworks.ConfigUnit
+function Operation:_check_unit(unit)
+    if self._unit_done[unit] then return end
+    local state = unit:state()
+    local target = self.target_states[unit]
+
+    local state_rank = STATE_RANK[state]
+    local target_rank = STATE_RANK[target]
+    if state_rank and target_rank and state_rank >= target_rank then
+        self._unit_done[unit] = true
+        self._unit_ok[unit] = true
+    elseif state == "configure_failed" or state == "build_failed" then
+        self._unit_done[unit] = true
+        self._unit_ok[unit] = false
+    end
+end
+
+--- Handle a ConfigUnit state change.
+--- @param unit loomworks.ConfigUnit
+function Operation:_on_unit_change(unit)
+    if self.completed then return end
+    self:_check_unit(unit)
+    self:_check_completion()
+end
+
+--- Check if all units are done and finalize the operation.
+function Operation:_check_completion()
+    if self.completed then return end
+
+    local all_done = true
+    for _, unit in ipairs(self.units) do
+        if not self._unit_done[unit] then
+            all_done = false
+            break
+        end
+    end
+
+    if not all_done then return end
+
+    -- All units done — determine overall success
+    local all_ok = true
+    for _, unit in ipairs(self.units) do
+        if not self._unit_ok[unit] then
+            all_ok = false
+            break
+        end
+    end
+
+    self.completed = true
+    self.success = all_ok
+
+    local elapsed = self._core._deps.clock() - self.started_at
+    local verb
+    if self.action == "configure" then
+        verb = all_ok and "configured" or "configure failed"
+    elseif self.action == "build" then
+        verb = all_ok and "built" or "build failed"
+    else
+        verb = all_ok and "built" or "failed"
+    end
+    self.message = verb .. " in " .. format_duration(elapsed)
+
+    -- Clean up listeners
+    for _, unsub in ipairs(self._unsubscribers) do
+        unsub()
+    end
+    self._unsubscribers = {}
+
+    -- Call completion callback (Core uses this to clean up registries)
+    if self._on_complete then
+        self._on_complete(self)
+    end
+
+    -- Emit event
+    self._core._deps.events.emit("operation_finished", {
+        profile_key = self.profile.key,
+        success = all_ok,
+        message = self.message,
+        operation = self,
+    })
+end
+
+--- Get elapsed seconds since the operation started.
+--- @return number|nil seconds
+function Operation:elapsed()
+    if not self.started_at then return nil end
+    return self._core._deps.clock() - self.started_at
+end
+
+--- Get the number of completed units.
+--- @return number done, number total
+function Operation:progress_counts()
+    local done = 0
+    for _, unit in ipairs(self.units) do
+        if self._unit_done[unit] then
+            done = done + 1
+        end
+    end
+    return done, #self.units
+end
+
+--- Check if a specific ConfigUnit is part of this operation.
+--- @param unit loomworks.ConfigUnit
+--- @return boolean
+function Operation:has_unit(unit)
+    return self.target_states[unit] ~= nil
+end
+
+--- Cancel the operation (clean up listeners without completing).
+function Operation:cancel()
+    if self.completed then return end
+    self.completed = true
+    self.success = false
+    self.message = "cancelled"
+    for _, unsub in ipairs(self._unsubscribers) do
+        unsub()
+    end
+    self._unsubscribers = {}
+end
+
+return Operation

@@ -63,7 +63,9 @@ local function render_profile_details(tree, profile, lw)
                         helpers.resolve_config_status(pp, cached)
 
                 local unit = lw.get_config_unit(pp.project_key, pp.config_key)
-                tree:node(pp.project_key .. " → " .. pp.variant .. progress_str, {
+                local type_tag = pp._project and pp._project.type
+                    and (" [" .. pp._project.type .. "]") or ""
+                tree:node(pp.project_key .. type_tag .. " → " .. pp.variant .. progress_str, {
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key,
                     spinning = is_spinning,
                     hl = status_hl,
@@ -104,6 +106,7 @@ return function(tree, ctx)
     for _, profile in ipairs(profiles) do
         local is_active = profile == ctx.active_profile
         local profile_running = profile:is_running()
+        local has_operation = profile:has_active_operation()
 
         local status_label, status_hl = profile:status()
         local marker = helpers.status_marker(status_label)
@@ -117,7 +120,8 @@ return function(tree, ctx)
         end
 
         display = display .. " (" .. status_label .. ")"
-        if profile_running then
+        if has_operation then
+            -- This profile owns the running action — show orange + timer/progress
             hl = is_active and "LoomworksActive" or "LoomworksRunning"
             local pps = profile:projects()
             local pct = helpers.aggregate_progress(pps)
