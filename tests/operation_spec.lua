@@ -212,7 +212,7 @@ describe("Operation", function()
             assert.is_false(op.success)
         end)
 
-        it("completes immediately if units already in target state", function()
+        it("does not complete immediately if units already in target state", function()
             local time = { value = 0 }
             local core = h.make_mock_core({
                 get_workspace = function()
@@ -239,8 +239,8 @@ describe("Operation", function()
             local unit = core:get_config_unit("App", "Debug")
             local op = Operation.new(core, profile, "build", { unit }, { [unit] = "built" })
 
-            assert.is_true(op.completed)
-            assert.is_true(op.success)
+            -- Operations only complete on state transitions, not initial state
+            assert.is_false(op.completed)
         end)
     end)
 

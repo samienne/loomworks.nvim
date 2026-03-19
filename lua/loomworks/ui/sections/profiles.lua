@@ -152,30 +152,10 @@ return function(tree, ctx)
             end
         end
 
-        local is_spinning = profile_running or has_operation
-        if is_spinning then
-            display = display .. " [running=" .. tostring(profile_running) .. " op=" .. tostring(has_operation) .. "]"
-            if has_operation then
-                for _, op in ipairs(profile:active_operations()) do
-                    local done_count = 0
-                    local total = #op.units
-                    for _, u in ipairs(op.units) do
-                        if op._unit_done[u] then done_count = done_count + 1 end
-                    end
-                    local unit_states = {}
-                    for _, u in ipairs(op.units) do
-                        unit_states[#unit_states + 1] = u.project_key .. ":" .. u:state()
-                    end
-                    display = display .. " {" .. op.action .. " " .. done_count .. "/" .. total
-                        .. " completed=" .. tostring(op.completed)
-                        .. " units=" .. table.concat(unit_states, ",") .. "}"
-                end
-            end
-        end
         tree:node(display, {
             fold_key = "profile:" .. profile.key,
             marker = marker,
-            spinning = is_spinning,
+            spinning = profile_running or has_operation,
             hl = hl,
             on_enter = actions.activate(profile),
             on_build = actions.build(profile),
