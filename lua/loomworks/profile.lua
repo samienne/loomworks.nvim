@@ -615,8 +615,9 @@ function Profile:delete(on_done)
     self._core:execute_deletion(plan, { deactivate_profile = self }, on_done)
 end
 
---- Clean this profile's configs: delete build dirs and reset to unconfigured.
---- Does NOT remove the profile itself. Creates a clean Operation to track progress.
+--- Clean this profile's configs: run module clean tasks and reset build state.
+--- Does NOT remove the profile itself or its build directories.
+--- Creates a clean Operation to track progress.
 --- @param on_done? function
 function Profile:clean(on_done)
     local pps = self:projects()
@@ -632,18 +633,42 @@ function Profile:clean(on_done)
         items[#items + 1] = {
             project_key = pp.project_key,
             config_key = pp.config_key,
-            build_dir = pp:build_dir(),
         }
         local unit = self._core:get_config_unit(pp.project_key, pp.config_key)
         units[#units + 1] = unit
-        target_states[unit] = "unconfigured"
+        target_states[unit] = "configured"
     end
 
+    -- Cancel conflicting build/configure operations
+    self._core:cancel_conflicting_operations(units)
+
+    -- Mark units as cleaning and create Operation synchronously so that
+    -- has_pending_deletions() returns true immediately (before async work).
+    for _, unit in ipairs(units) do
+        unit:mark_deleting(true, "cleaning")
+    end
     self._core:create_operation(self, "clean", units, target_states)
 
-    self._core:_run_deletion(items, function(effective_items)
-        self._core:reset_cached_configs(effective_items)
-    end, on_done, "cleaning")
+    -- Crash-safe: set cache to "configured" before async clean tasks.
+    -- If we crash mid-clean, the state is still valid (needs rebuild, not broken).
+    self._core:mark_cached_configs_cleaned(items)
+
+    -- Stop running tasks, then run module clean tasks
+    local running = self._core:find_running_tasks_for_items(items)
+    local task_ids = {}
+    for task_id in pairs(running) do
+        task_ids[#task_ids + 1] = task_id
+    end
+
+    self._core:stop_tasks_then(task_ids, function()
+        require("loomworks.overseer").run_profile_clean(self, function()
+            for _, unit in ipairs(units) do
+                unit:mark_deleting(false)
+            end
+
+            if on_done then on_done() end
+        end)
+    end)
 end
 
 --- Rebuild: clean then build.

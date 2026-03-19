@@ -362,7 +362,8 @@ function ConfigUnit:delete(on_done)
     self._core:execute_deletion(plan, nil, on_done)
 end
 
---- Clean this config: delete build dir and reset to unconfigured.
+--- Clean this config: run module clean tasks and reset build state.
+--- Does NOT remove the build directory.
 --- Creates a clean Operation to track progress.
 --- @param on_done? function
 function ConfigUnit:clean(on_done)
@@ -371,20 +372,35 @@ function ConfigUnit:clean(on_done)
         return
     end
 
-    -- Create Operation
-    local target_states = { [self] = "unconfigured" }
+    local core = self._core
+    local items = { { project_key = self.project_key, config_key = self.config_key } }
+
+    -- Cancel conflicting operations
+    core:cancel_conflicting_operations({ self })
+
+    -- Mark as cleaning and create Operation synchronously so that
+    -- has_pending_deletions() returns true immediately.
+    self:mark_deleting(true, "cleaning")
     local refs = self:referencing_profiles()
     local profile = refs[1] or nil
-    self._core:create_operation(profile, "clean", { self }, target_states)
+    core:create_operation(profile, "clean", { self }, { [self] = "configured" })
 
-    local items = { {
-        project_key = self.project_key,
-        config_key = self.config_key,
-        build_dir = self:build_dir(),
-    } }
-    self._core:_run_deletion(items, function(effective_items)
-        self._core:reset_cached_configs(effective_items)
-    end, on_done, "cleaning")
+    -- Crash-safe: set cache to "configured" before async clean tasks.
+    core:mark_cached_configs_cleaned(items)
+
+    -- Stop running tasks, then run module clean tasks
+    local running = core:find_running_tasks_for_items(items)
+    local task_ids = {}
+    for task_id in pairs(running) do
+        task_ids[#task_ids + 1] = task_id
+    end
+
+    core:stop_tasks_then(task_ids, function()
+        require("loomworks.overseer").run_configuration_clean(self, function()
+            self:mark_deleting(false)
+            if on_done then on_done() end
+        end)
+    end)
 end
 
 --- Get build options by delegating to the module.

@@ -460,6 +460,55 @@ function M.tasks(project, active_config)
     return tasks
 end
 
+--- Return overseer task templates for cleaning build artifacts.
+--- Uses `cmake --build <dir> --target clean` which delegates to the
+--- underlying build tool (ninja -t clean, make clean, etc.).
+--- @param project loomworks.ModuleContext
+--- @param active_config string
+--- @return table[] tasks
+function M.clean_tasks(project, active_config)
+    local abs_path = project.workspace_root .. "/" .. project.path
+    local config_info = project.configurations and project.configurations[active_config] or nil
+    local kit = project.tool_data
+    local env = project.env or {}
+
+    local generator = (config_info and config_info.generator)
+            or (kit and kit.generator)
+            or nil
+    local multi_config = is_multi_config(generator)
+
+    local build_dir = resolve_build_dir(project.name, active_config, config_info, project.workspace_root, multi_config, kit)
+    local configuration_key = project.configuration_key or active_config
+
+    local function wrap(cmd)
+        return wrap_cmd(cmd, kit, generator, build_dir)
+    end
+
+    local clean_cmd = { "cmake", "--build", build_dir, "--target", "clean" }
+    if multi_config then
+        clean_cmd[#clean_cmd + 1] = "--config"
+        clean_cmd[#clean_cmd + 1] = active_config
+    end
+
+    return {
+        {
+            name = project.name .. ": clean " .. active_config,
+            builder = function()
+                return {
+                    cmd = wrap(clean_cmd),
+                    cwd = abs_path,
+                    env = env,
+                }
+            end,
+            loomworks = {
+                project_key = project.name,
+                action = "clean",
+                configuration_key = configuration_key,
+            },
+        },
+    }
+end
+
 --- Generate an overseer task for building a specific cmake target.
 --- @param project loomworks.ModuleContext
 --- @param target_id string cmake target name

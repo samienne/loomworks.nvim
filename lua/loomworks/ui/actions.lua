@@ -352,11 +352,9 @@ function M._show_clean_confirmation(title, items, on_confirm)
         add("")
     end
 
-    add("  Will delete build directories and reset to unconfigured:", "DiagnosticWarn")
+    add("  Will clean build artifacts and reset to configured:", "DiagnosticWarn")
     for _, item in ipairs(items) do
-        local dir = item.build_dir and rel_path(item.build_dir) or nil
-        local suffix = dir and ("  " .. dir) or "  (no build dir)"
-        add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticWarn")
+        add("    " .. item.project_key .. " / " .. item.config_key, "DiagnosticWarn")
     end
     add("")
 

@@ -126,6 +126,100 @@ local function collect_profile_tasks(profile)
     return by_action
 end
 
+--- Collect clean task definitions for a single configuration.
+--- @param project_key string
+--- @param config_key string
+--- @return table[]|nil clean_tasks
+local function collect_configuration_clean_tasks(project_key, config_key)
+    local loomworks = require("loomworks")
+    local modules = require("loomworks.modules")
+
+    local ws = loomworks.get_workspace()
+    if not ws then return nil end
+
+    local project_config = ws.config.projects[project_key]
+    if not project_config then return nil end
+
+    local mod = modules.get(project_config.type)
+    if not mod or not mod.clean_tasks then return nil end
+
+    local unit = loomworks.get_config_unit(project_key, config_key)
+    local variant = unit.variant
+    local tool = unit:resolve_tool()
+    local tool_data = tool and tool.data or nil
+
+    local abs_path = ws.root .. "/" .. (project_config.path or project_key)
+    local mod_info = mod.info and mod.info(abs_path, project_config.type_config)
+            or { configurations = {} }
+
+    local project_ctx = {
+        name = project_key,
+        path = project_config.path or project_key,
+        type = project_config.type,
+        configuration = variant,
+        configuration_key = config_key,
+        configurations = mod_info.configurations or {},
+        tool_data = tool_data,
+        type_config = project_config.type_config,
+        workspace_root = ws.root,
+        env = tool_data and tool_data.env or {},
+    }
+
+    return mod.clean_tasks(project_ctx, variant)
+end
+
+--- Collect clean task definitions for all projects in a profile.
+--- @param profile loomworks.Profile
+--- @return table[]|nil clean_tasks
+local function collect_profile_clean_tasks(profile)
+    local loomworks = require("loomworks")
+    local modules = require("loomworks.modules")
+
+    local ws = loomworks.get_workspace()
+    if not ws then return nil end
+
+    local pps = profile:projects()
+    if #pps == 0 then return nil end
+
+    local tool_data = profile.tool and profile.tool.data or nil
+    local tasks = {}
+
+    for _, pp in ipairs(pps) do
+        local project = pp._project
+        if not project then goto continue end
+
+        local mod = modules.get(project.type)
+        if not mod or not mod.clean_tasks then goto continue end
+
+        local active_config = pp.variant
+        if not active_config then goto continue end
+
+        local project_ctx = {
+            name = pp.project_key,
+            path = project.path or pp.project_key,
+            type = project.type,
+            configuration = active_config,
+            configuration_key = pp.config_key,
+            configurations = project.configurations,
+            tool_data = tool_data,
+            type_config = project.type_config,
+            workspace_root = ws.root,
+            env = tool_data and tool_data.env or {},
+        }
+
+        local clean = mod.clean_tasks(project_ctx, active_config)
+        if clean then
+            for _, task_def in ipairs(clean) do
+                tasks[#tasks + 1] = task_def
+            end
+        end
+
+        ::continue::
+    end
+
+    return #tasks > 0 and tasks or nil
+end
+
 --- Build and start a single overseer task from a task definition.
 --- @param overseer table overseer module
 --- @param task_def table task definition with .builder and .loomworks
@@ -347,6 +441,81 @@ function M.run_configuration_action(unit, action, on_complete)
         loomworks.after_deletions(do_action)
     else
         do_action()
+    end
+end
+
+--- Run clean tasks for a single configuration.
+--- Launches module clean_tasks via overseer (no task_tracker — clean tasks
+--- don't update ConfigUnit state; the caller handles cache reset).
+--- @param unit loomworks.ConfigUnit
+--- @param on_complete? fun(success: boolean)
+function M.run_configuration_clean(unit, on_complete)
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        if on_complete then on_complete(false) end
+        return
+    end
+
+    local tasks = collect_configuration_clean_tasks(unit.project_key, unit.config_key)
+    if not tasks or #tasks == 0 then
+        -- No clean tasks for this module — treat as success
+        if on_complete then on_complete(true) end
+        return
+    end
+
+    local remaining = #tasks
+    local all_ok = true
+
+    for _, task_def in ipairs(tasks) do
+        local build_result = task_def.builder()
+        build_result.components = build_result.components or { "default" }
+        build_result.name = task_def.name
+        local task = overseer.new_task(build_result)
+        task:subscribe("on_complete", function(_, status)
+            if status ~= "SUCCESS" then all_ok = false end
+            remaining = remaining - 1
+            if remaining == 0 and on_complete then
+                on_complete(all_ok)
+            end
+        end)
+        task:start()
+    end
+end
+
+--- Run clean tasks for all projects in a profile.
+--- @param profile loomworks.Profile
+--- @param on_complete? fun(success: boolean)
+function M.run_profile_clean(profile, on_complete)
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        if on_complete then on_complete(false) end
+        return
+    end
+
+    local tasks = collect_profile_clean_tasks(profile)
+    if not tasks or #tasks == 0 then
+        if on_complete then on_complete(true) end
+        return
+    end
+
+    local remaining = #tasks
+    local all_ok = true
+
+    for _, task_def in ipairs(tasks) do
+        local build_result = task_def.builder()
+        build_result.components = build_result.components or { "default" }
+        build_result.name = task_def.name
+        local task = overseer.new_task(build_result)
+        task:subscribe("on_complete", function(_, status)
+            if status ~= "SUCCESS" then all_ok = false end
+            remaining = remaining - 1
+            if remaining == 0 and on_complete then
+                on_complete(all_ok)
+            end
+        end)
+        task:start()
     end
 end
 
