@@ -25,13 +25,6 @@ TypeScript outDir). Warn via confirmation dialog before building a
 conflicting configuration. Auto-detect from outDir comparison; optionally
 allow explicit conflict declaration in loomworks.json.
 
-## Module clean_tasks integration
-
-`clean_tasks()` is defined on the TypeScript module but not yet consumed
-by core. Wire it up:
-- Clean action (C key): run module clean_tasks before resetting cache state
-- Rebuild: change from delete+build to clean+build
-
 ## Implicit single-config mapping
 
 If a project has exactly one configuration (e.g., TypeScript's "default"),

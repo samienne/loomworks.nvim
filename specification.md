@@ -806,7 +806,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `p`     | pin         | Pin configuration as pinned profile |
 | `o`     | options     | Show build options float (on configured project nodes) |
 | `R`     | rebuild     | Clean + build (destructive, with confirmation) |
-| `C`     | clean       | Reset to unconfigured, delete build dir (destructive, with confirmation) |
+| `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |

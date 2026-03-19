@@ -1283,6 +1283,26 @@ function Core:reset_cached_configs(items)
     end
 end
 
+--- Mark cached configs as cleaned (reset build state but keep build_dir
+--- and configuration metadata). Used after module clean tasks complete.
+--- @param items table[] { project_key, config_key }
+function Core:mark_cached_configs_cleaned(items)
+    if not self._workspace then return end
+
+    local ws = self._workspace
+    if not ws.cache.configurations then return end
+    for _, item in ipairs(items) do
+        local cache_key = self._deps.cache.config_cache_key(item.project_key, item.config_key)
+        local cached_config = ws.cache.configurations[cache_key]
+        if cached_config then
+            cached_config.state = "configured"
+            cached_config.last_built = nil
+        end
+    end
+    self:_save_cache()
+    self:remerge()
+end
+
 --- Set cache state to "unknown" for items that have build directories.
 --- @param items loomworks.DeletionItem[]
 function Core:_mark_cache_unknown(items)
