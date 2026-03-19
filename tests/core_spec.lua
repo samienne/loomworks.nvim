@@ -1803,14 +1803,17 @@ describe("Core", function()
             assert.is_true(called)
         end)
 
-        it("defers fn when deletions are pending", function()
+        it("defers fn when deletion operation is active", function()
             local core = make_core(
                 { projects = { App = { typescript = {} } } },
                 nil, nil,
                 { cache = { save = function() return true end } }
             )
             core:setup({ root = "/root" })
-            core:get_config_unit("App", "dev"):mark_deleting(true)
+            local unit = core:get_config_unit("App", "dev")
+            unit:mark_deleting(true)
+            -- Create a deletion Operation so has_pending_deletions returns true
+            core:create_operation(nil, "clean", { unit }, { [unit] = "unconfigured" })
 
             local called = false
             core:after_deletions(function() called = true end)

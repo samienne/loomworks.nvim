@@ -153,7 +153,7 @@ return function(tree, ctx)
         tree:node(display, {
             fold_key = "profile:" .. profile.key,
             marker = marker,
-            spinning = profile_running,
+            spinning = profile_running or has_operation,
             hl = hl,
             on_enter = actions.activate(profile),
             on_build = actions.build(profile),

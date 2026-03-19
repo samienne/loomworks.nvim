@@ -502,4 +502,162 @@ describe("Operation", function()
             assert.is_true(opB.success)
         end)
     end)
+
+    describe("deletion mode", function()
+        it("clean operation completes when deleting flag clears", function()
+            local op, core, time, units = make_operation("clean", {
+                { project = "App", config = "Debug", target = "unconfigured" },
+            })
+            local unit = units[1]
+
+            -- Simulate deletion in progress
+            unit:mark_deleting(true, "cleaning")
+            assert.is_false(op.completed)
+
+            -- Deletion finishes — flag clears, state falls to unconfigured
+            time.value = 3
+            unit:mark_deleting(false)
+
+            assert.is_true(op.completed)
+            assert.is_true(op.success)
+            assert.equals("cleaned in 3s", op.message)
+        end)
+
+        it("clean operation reports failure when state is unknown after deletion", function()
+            local op, core, time, units = make_operation("clean", {
+                { project = "App", config = "Debug", target = "unconfigured" },
+            })
+            local unit = units[1]
+
+            unit:mark_deleting(true, "cleaning")
+
+            -- Deletion fails — cache set to unknown, flag clears
+            core.get_workspace = function()
+                return {
+                    cache = {
+                        configurations = {
+                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "unknown" },
+                        },
+                    },
+                }
+            end
+            time.value = 5
+            unit:mark_deleting(false)
+
+            assert.is_true(op.completed)
+            assert.is_false(op.success)
+            assert.equals("clean failed in 5s", op.message)
+        end)
+
+        it("delete operation completes with correct message", function()
+            local op, _, time, units = make_operation("delete", {
+                { project = "App", config = "Debug", target = "unconfigured" },
+            })
+            local unit = units[1]
+
+            unit:mark_deleting(true, "deleting")
+            time.value = 2
+            unit:mark_deleting(false)
+
+            assert.is_true(op.completed)
+            assert.is_true(op.success)
+            assert.equals("deleted in 2s", op.message)
+        end)
+
+        it("deletion operation stays pending while units are deleting", function()
+            local op, _, _, units = make_operation("clean", {
+                { project = "App", config = "Debug", target = "unconfigured" },
+                { project = "Lib", config = "Debug", target = "unconfigured" },
+            })
+
+            units[1]:mark_deleting(true, "cleaning")
+            units[2]:mark_deleting(true, "cleaning")
+            assert.is_false(op.completed)
+
+            -- Only one finishes
+            units[1]:mark_deleting(false)
+            assert.is_false(op.completed)
+
+            -- Both done
+            units[2]:mark_deleting(false)
+            assert.is_true(op.completed)
+        end)
+
+        it("does not complete immediately — waits for deletion lifecycle", function()
+            -- Deletion-mode Operations don't check initial state. They wait
+            -- for mark_deleting(true) → mark_deleting(false) lifecycle.
+            local op = make_operation("clean", {
+                { project = "App", config = "Debug", target = "unconfigured" },
+            })
+            assert.is_false(op.completed)
+        end)
+
+        it("is_deletion returns true for clean/delete", function()
+            local op_clean = make_operation("clean", {
+                { project = "A", config = "D", target = "unconfigured" },
+            })
+            local op_delete = make_operation("delete", {
+                { project = "B", config = "D", target = "unconfigured" },
+            })
+            local op_build = make_operation("build", {
+                { project = "C", config = "D", target = "built" },
+            })
+            assert.is_true(op_clean:is_deletion())
+            assert.is_true(op_delete:is_deletion())
+            assert.is_false(op_build:is_deletion())
+        end)
+    end)
+
+    describe("cancel calls completion callback", function()
+        it("cancel triggers on_complete for registry cleanup", function()
+            local time = { value = 0 }
+            local core = h.make_mock_core({
+                _deps = {
+                    clock = function() return time.value end,
+                    events = { emit = function() end, on = function() end, off = function() end },
+                },
+            })
+
+            local Profile = require("loomworks.profile").Profile
+            local profile = Profile.new(core, "debug", {
+                configuration_set = "debug",
+                mappings = { App = "Debug" },
+            })
+
+            local unit = core:get_config_unit("App", "Debug")
+            unit:register_task(1, "build")
+
+            local callback_called = false
+            local op = Operation.new(core, profile, "build", { unit }, { [unit] = "built" }, function()
+                callback_called = true
+            end)
+
+            op:cancel()
+            assert.is_true(callback_called)
+        end)
+    end)
+
+    describe("optional profile", function()
+        it("works without a profile", function()
+            local time = { value = 0 }
+            local core = h.make_mock_core({
+                _deps = {
+                    clock = function() return time.value end,
+                    events = { emit = function() end, on = function() end, off = function() end },
+                },
+            })
+
+            local unit = core:get_config_unit("App", "Debug")
+            unit:mark_deleting(true, "cleaning")
+
+            local op = Operation.new(core, nil, "clean", { unit }, { [unit] = "unconfigured" })
+            assert.is_nil(op.profile)
+            assert.is_false(op.completed)
+
+            time.value = 1
+            unit:mark_deleting(false)
+            assert.is_true(op.completed)
+            assert.equals("cleaned in 1s", op.message)
+        end)
+    end)
 end)

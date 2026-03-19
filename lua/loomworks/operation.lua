@@ -1,17 +1,20 @@
---- loomworks/operation.lua — Operation: a user-initiated action on a profile.
+--- loomworks/operation.lua — Operation: a user-initiated action.
 --- An Operation tracks ConfigUnit state changes to determine when all
 --- affected units have reached their target state (or failed).
+--- Supports two modes: "rank" for build/configure (state hierarchy)
+--- and "deletion" for clean/delete (waits for deleting flag to clear).
 
 --- @class loomworks.Operation
 --- @field id number unique ID
---- @field action string "build"|"configure"|"configure+build"|"clean"|"rebuild"
---- @field profile loomworks.Profile
+--- @field action string "build"|"configure"|"configure+build"|"clean"|"delete"
+--- @field profile loomworks.Profile|nil nil for config-level clean/delete
 --- @field units loomworks.ConfigUnit[] affected units
 --- @field target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState> expected end state per unit
 --- @field started_at number
 --- @field completed boolean
 --- @field success boolean|nil nil while running, true/false when completed
 --- @field message string|nil result message (set on completion)
+--- @field _mode "rank"|"deletion" completion check mode
 --- @field _unit_done table<loomworks.ConfigUnit, boolean> tracks which units are done
 --- @field _unit_ok table<loomworks.ConfigUnit, boolean> tracks which units succeeded
 --- @field _unsubscribers function[] listener cleanup functions
@@ -40,9 +43,12 @@ local function format_duration(seconds)
     return h .. "h" .. string.format("%02d", m) .. "m"
 end
 
+--- Determine completion mode from action type.
+local DELETION_ACTIONS = { clean = true, delete = true }
+
 --- Create a new Operation.
 --- @param core loomworks.Core
---- @param profile loomworks.Profile
+--- @param profile loomworks.Profile|nil nil for config-level operations
 --- @param action string
 --- @param units loomworks.ConfigUnit[]
 --- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
@@ -61,14 +67,19 @@ function Operation.new(core, profile, action, units, target_states, on_complete)
     self.completed = false
     self.success = nil
     self.message = nil
+    self._mode = DELETION_ACTIONS[action] and "deletion" or "rank"
     self._unit_done = {}
     self._unit_ok = {}
     self._unsubscribers = {}
     self._on_complete = on_complete
 
-    -- Check units already in target state
-    for _, unit in ipairs(units) do
-        self:_check_unit(unit)
+    -- For rank mode: check if units are already in target state.
+    -- For deletion mode: skip initial check — units will be marked deleting
+    -- after the Operation is created, and we complete when that flag clears.
+    if self._mode == "rank" then
+        for _, unit in ipairs(units) do
+            self:_check_unit(unit)
+        end
     end
 
     -- Subscribe to state changes on each unit
@@ -90,8 +101,8 @@ function Operation.new(core, profile, action, units, target_states, on_complete)
         end
     end
 
-    -- If all units were already done, complete immediately
-    if not self.completed then
+    -- If all units were already done (rank mode only), complete immediately
+    if self._mode == "rank" and not self.completed then
         self:_check_completion()
     end
 
@@ -109,11 +120,24 @@ local STATE_RANK = {
 }
 
 --- Check if a unit has reached its target state (or failed).
---- Uses state hierarchy: a "configured" target is satisfied by "configured",
---- "building" (config succeeded, build in progress), or "built".
+--- Rank mode: uses state hierarchy (e.g. "building" satisfies "configured").
+--- Deletion mode: completes when unit is no longer deleting.
 --- @param unit loomworks.ConfigUnit
 function Operation:_check_unit(unit)
     if self._unit_done[unit] then return end
+
+    if self._mode == "deletion" then
+        -- Deletion mode: done when the deleting flag clears
+        if not unit:is_deleting() then
+            local state = unit:state()
+            self._unit_done[unit] = true
+            -- "unknown" means deletion failed (partial delete, crash)
+            self._unit_ok[unit] = state ~= "unknown"
+        end
+        return
+    end
+
+    -- Rank mode: state hierarchy check
     local state = unit:state()
     local target = self.target_states[unit]
 
@@ -168,6 +192,10 @@ function Operation:_check_completion()
         verb = all_ok and "configured" or "configure failed"
     elseif self.action == "build" then
         verb = all_ok and "built" or "build failed"
+    elseif self.action == "clean" then
+        verb = all_ok and "cleaned" or "clean failed"
+    elseif self.action == "delete" then
+        verb = all_ok and "deleted" or "delete failed"
     else
         verb = all_ok and "built" or "failed"
     end
@@ -186,11 +214,17 @@ function Operation:_check_completion()
 
     -- Emit event
     self._core._deps.events.emit("operation_finished", {
-        profile_key = self.profile.key,
+        profile_key = self.profile and self.profile.key or nil,
         success = all_ok,
         message = self.message,
         operation = self,
     })
+end
+
+--- Check if this is a deletion-type operation (clean or delete).
+--- @return boolean
+function Operation:is_deletion()
+    return self._mode == "deletion"
 end
 
 --- Get elapsed seconds since the operation started.
@@ -229,6 +263,11 @@ function Operation:cancel()
         unsub()
     end
     self._unsubscribers = {}
+
+    -- Call completion callback so registries get cleaned up
+    if self._on_complete then
+        self._on_complete(self)
+    end
 end
 
 return Operation
