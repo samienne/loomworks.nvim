@@ -369,6 +369,57 @@ function M.build_profile()
     profile:build()
 end
 
+--- Show a picker for selecting the active profile.
+--- Lists all profiles with status, marks the active one.
+--- Includes "None" to deactivate when a profile is active.
+function M.pick_profile()
+    local all = M.get_profiles()
+    if not all or not next(all) then
+        vim.notify("loomworks: no profiles available", vim.log.levels.WARN)
+        return
+    end
+
+    local active = M.get_active_profile()
+
+    -- Sort profiles alphabetically
+    local sorted = {}
+    for _, profile in pairs(all) do
+        sorted[#sorted + 1] = profile
+    end
+    table.sort(sorted, function(a, b) return a.key < b.key end)
+
+    -- Build picker items
+    local items = {}
+    for _, profile in ipairs(sorted) do
+        local status_label = profile:status()
+        local marker = profile == active and "● " or "  "
+        items[#items + 1] = {
+            label = marker .. profile.key .. " (" .. status_label .. ")",
+            profile = profile,
+        }
+    end
+
+    -- Add "None" option if a profile is active
+    if active then
+        items[#items + 1] = {
+            label = "  None (deactivate)",
+            profile = nil,
+        }
+    end
+
+    vim.ui.select(items, {
+        prompt = "Select profile:",
+        format_item = function(item) return item.label end,
+    }, function(choice)
+        if not choice then return end
+        if choice.profile then
+            choice.profile:activate()
+        elseif active then
+            active:deactivate()
+        end
+    end)
+end
+
 --- Show a picker for selecting a default target from the active profile.
 --- Includes "None" to clear and optionally "Default: X" if loomworks.json
 --- defines a default that the user has overridden.
