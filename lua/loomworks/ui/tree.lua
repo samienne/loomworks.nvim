@@ -170,8 +170,8 @@ function Tree:_show_help()
         "  R       Rebuild (clean + build)",
         "  C       Clean (run module clean tasks)",
         "  D       Delete",
+        "  U       Delete user preferences",
         "  <C-n>   Nuke cache + build dirs",
-        "  <C-d>   Delete user preferences",
         "",
         "  q       Close",
         "  ?       Show this help",
@@ -181,7 +181,7 @@ function Tree:_show_help()
         { line = 1, hl_group = "Title" },
     }
     for i, line in ipairs(lines) do
-        if line:match("^  [RCD]%s") or line:match("^  <C%-") then
+        if line:match("^  [RCDU]%s") or line:match("^  <C%-") then
             local key_end = line:find("%s%s", 3) or #line
             highlights[#highlights + 1] = { line = i, hl_group = "DiagnosticWarn", col_start = 2, col_end = key_end }
         end

@@ -495,7 +495,7 @@ function Core:_on_files_read(root, paths, results)
 
     -- Refuse to load when user.json has incompatible version
     if ws.user_version_mismatch then
-        local msg = "user.json version mismatch. Press <C-d> to delete user preferences and reload."
+        local msg = "user.json version mismatch. Press U to delete user preferences and reload."
         self._setup_error = { root = root, message = msg, user_version_mismatch = true }
         self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
         self._state = "uninitialized"

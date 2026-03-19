@@ -100,7 +100,7 @@ local view = View.new({
         ["o"]     = "options",
         ["L"]     = "load",
         ["<C-n>"] = "nuke",
-        ["<C-d>"] = "delete_user_prefs",
+        ["U"]     = "delete_user_prefs",
         ["?"]     = "help",
     },
     events = {
