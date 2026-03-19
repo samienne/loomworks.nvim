@@ -80,11 +80,22 @@ Could be defined in loomworks.json per project:
 Variable expansion (${project_path}, ${config_set}) applies. Directories
 are deleted during the clean action alongside module clean_tasks.
 
-## Deleting orphaned configurations from UI broken
+## Unify clean/delete under Operation model
 
-The delete action on orphaned configurations in the status page doesn't
-work. Needs investigation — may be related to the object model refactoring
-or the flat cache format change.
+Clean and delete actions use separate machinery (`_deleting` flag,
+`_queued_action`, `deletion_started`/`deletion_completed` events,
+separate fidget handles) instead of the Operation class used by
+build/configure. Unifying would give:
+
+- "cleaned in 3s" / "deleted in 5s" as last-operation messages
+- Natural queuing: build waits for clean to finish via Operation
+  watching, replacing the ad-hoc `_queued_action` mechanism
+- Single fidget handle model (per-Operation, not separate `del:` keys)
+
+Semantics: clean/delete should stop running build/configure immediately.
+Build/configure issued during clean should queue (wait for clean to
+finish, then proceed). The `_deleting` flag and crash-safety flow
+(`unknown` state before async deletion) must be preserved.
 
 ## ConfigUnit listener accumulation
 
