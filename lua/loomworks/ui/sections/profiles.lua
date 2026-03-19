@@ -152,10 +152,14 @@ return function(tree, ctx)
             end
         end
 
+        local is_spinning = profile_running or has_operation
+        if is_spinning then
+            display = display .. " [running=" .. tostring(profile_running) .. " op=" .. tostring(has_operation) .. "]"
+        end
         tree:node(display, {
             fold_key = "profile:" .. profile.key,
             marker = marker,
-            spinning = profile_running or has_operation,
+            spinning = is_spinning,
             hl = hl,
             on_enter = actions.activate(profile),
             on_build = actions.build(profile),
