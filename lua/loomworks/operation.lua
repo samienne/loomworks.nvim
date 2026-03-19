@@ -244,12 +244,13 @@ function Operation:has_unit(unit)
     return self.target_states[unit] ~= nil
 end
 
---- Cancel the operation (clean up listeners without completing).
-function Operation:cancel()
+--- Cancel the operation (clean up listeners, emit finished event).
+--- @param message? string custom message (default "cancelled")
+function Operation:cancel(message)
     if self.completed then return end
     self.completed = true
     self.success = false
-    self.message = "cancelled"
+    self.message = message or "cancelled"
     for _, unsub in ipairs(self._unsubscribers) do
         unsub()
     end
@@ -259,6 +260,14 @@ function Operation:cancel()
     if self._on_complete then
         self._on_complete(self)
     end
+
+    -- Emit event so fidget finishes the handle
+    self._core._deps.events.emit("operation_finished", {
+        profile_key = self.profile and self.profile.key or nil,
+        success = false,
+        message = self.message,
+        operation = self,
+    })
 end
 
 return Operation

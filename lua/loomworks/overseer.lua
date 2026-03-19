@@ -643,13 +643,19 @@ function M.run_profile_action(profile, action)
                     end
                 end
 
+                local op
                 if #units > 0 then
-                    loomworks.create_operation(profile, "configure+build", units, target_states)
+                    op = loomworks.create_operation(profile, "configure+build", units, target_states)
                 end
 
                 launch_tasks(overseer, needs_configure, function(all_succeeded)
                     if not all_succeeded then
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
+                        -- Cancel the operation — build won't happen, so units
+                        -- targeting "built" would be stuck forever.
+                        if op and not op.completed then
+                            op:cancel("configure failed")
+                        end
                         return
                     end
                     launch_tasks(overseer, all_tasks.build)
