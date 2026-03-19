@@ -108,6 +108,11 @@ end
 -- Public factory functions
 -- ---------------------------------------------------------------------------
 
+--- Stores the resolved clangd command args per root_dir.
+--- Populated by the cmd wrapper, read by get_status().
+--- @type table<string, string[]>
+local _resolved_cmd = {}
+
 --- Create a clangd cmd function that injects --compile-commands-dir and
 --- optionally overrides the clangd binary per-project.
 --- Falls back to the base command when loomworks has no data.
@@ -129,12 +134,24 @@ function M.clangd_cmd(base_cmd)
             args[#args + 1] = "--compile-commands-dir=" .. dir
         end
 
+        -- Store resolved args for status display
+        if config.root_dir then
+            _resolved_cmd[vim.fs.normalize(config.root_dir)] = vim.list_extend({}, args)
+        end
+
         return vim.lsp.rpc.start(args, dispatchers, {
             cwd = config.cmd_cwd,
             env = config.cmd_env,
             detached = config.detached,
         })
     end
+end
+
+--- Get the resolved command args for a root_dir (if available).
+--- @param root_dir string normalized root directory
+--- @return string[]|nil
+function M.get_resolved_cmd(root_dir)
+    return _resolved_cmd[root_dir]
 end
 
 --- Create a root_dir function that uses loomworks project detection for
@@ -165,8 +182,15 @@ end
 -- Status query
 -- ---------------------------------------------------------------------------
 
---- Get the resolved LSP configuration for all cmake projects.
---- @return table<string, { root_dir: string, compile_commands_dir: string|nil, clangd_bin: string|nil, clients: number }>
+--- LSP server names by module type.
+local LSP_SERVERS = {
+    cmake = { "clangd" },
+    typescript = { "ts_ls", "vtsls", "tsserver" },
+}
+
+--- Get the resolved LSP status for all loomworks projects.
+--- Returns info per project: matched clients with their cmd args.
+--- @return table[] list of { project_key, project_type, root_dir, clients: { name, cmd }[] }
 function M.get_status()
     local ok, lw = pcall(require, "loomworks")
     if not ok then return {} end
@@ -174,29 +198,60 @@ function M.get_status()
     local ws = lw.get_workspace()
     if not ws then return {} end
 
-    local status = {}
+    local normalize = vim.fs.normalize
+    local results = {}
     local projects = lw.get_projects()
-    for key, project in pairs(projects) do
-        if project.type == "cmake" and project.path then
-            local project_abs = vim.fs.normalize(ws.root .. "/" .. project.path)
-            local clients = vim.lsp.get_clients({ name = "clangd" })
-            local n_clients = 0
-            for _, c in ipairs(clients) do
-                if c.root_dir and vim.fs.normalize(c.root_dir) == project_abs then
-                    n_clients = n_clients + 1
+
+    -- Sort projects alphabetically
+    local sorted_keys = {}
+    for key in pairs(projects) do
+        sorted_keys[#sorted_keys + 1] = key
+    end
+    table.sort(sorted_keys)
+
+    for _, key in ipairs(sorted_keys) do
+        local project = projects[key]
+        if not project.path then goto continue end
+
+        local server_names = LSP_SERVERS[project.type]
+        if not server_names then goto continue end
+
+        local project_abs = normalize(ws.root .. "/" .. project.path)
+        local matched_clients = {}
+
+        for _, server_name in ipairs(server_names) do
+            local clients = vim.lsp.get_clients({ name = server_name })
+            for _, client in ipairs(clients) do
+                if client.root_dir and normalize(client.root_dir) == project_abs then
+                    matched_clients[#matched_clients + 1] = {
+                        name = client.name,
+                        id = client.id,
+                        cmd = client.config and client.config.cmd or nil,
+                    }
                 end
             end
-
-            status[key] = {
-                root_dir = project_abs,
-                compile_commands_dir = resolve_compile_commands_dir(project_abs),
-                clangd_bin = resolve_clangd_binary(project_abs),
-                clients = n_clients,
-            }
         end
+
+        -- For cmake: also add resolved compile_commands info
+        local extra = {}
+        if project.type == "cmake" then
+            extra.compile_commands_dir = resolve_compile_commands_dir(project_abs)
+            extra.clangd_bin = resolve_clangd_binary(project_abs)
+        end
+
+        results[#results + 1] = {
+            project_key = key,
+            project_type = project.type,
+            root_dir = project_abs,
+            clients = matched_clients,
+            resolved_cmd = #matched_clients > 0 and _resolved_cmd[project_abs] or nil,
+            extra = extra,
+        }
+
+        ::continue::
     end
 
-    return status
+    return results
 end
 
 -- ---------------------------------------------------------------------------
@@ -226,9 +281,13 @@ local function find_lsp_clients(name, root_dir)
 end
 
 --- Stop clients and re-enable clangd so open buffers get re-attached.
+--- Clears resolved cmd cache for the affected root_dirs.
 --- @param clients vim.lsp.Client[]
 local function restart_clients(clients)
     for _, client in ipairs(clients) do
+        if client.root_dir then
+            _resolved_cmd[vim.fs.normalize(client.root_dir)] = nil
+        end
         client:stop()
     end
     vim.schedule(function()
