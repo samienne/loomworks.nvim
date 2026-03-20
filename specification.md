@@ -1195,7 +1195,7 @@ The float is read-only. Close with `q` or `<Esc>`.
 
 ### 6.13 Project Browser
 
-The project browser is a float opened by pressing `A` on the status page.
+The project browser is a float opened from the "Add project" sentinel line.
 It scans workspace subdirectories asynchronously and shows detected project
 types using each module's `detect()` method.
 
@@ -1218,7 +1218,7 @@ are cached in a browser-local dict. Pending scans show "scanning...".
 
 | Key     | Action  | Behavior |
 |---------|---------|----------|
-| `<CR>`  | add     | Add project (single type: direct, multiple: picker) |
+| `<CR>`  | enter   | Picker with Add/Remove by module type (see below) |
 | `d`     | remove  | Remove project from loomworks.json (with confirmation) |
 | `r`     | refresh | Clear scan cache and re-scan |
 | `q`     | close   | Close the browser |
@@ -1228,12 +1228,41 @@ are cached in a browser-local dict. Pending scans show "scanning...".
 - Nested directories: relative path (with `/` → `_`) as key, explicit `path`
   field
 
+**Enter picker**: Each browser entry has a context-dependent picker:
+- Unadded types show `Add [type]`
+- Already-added types show `Remove [type]`
+- Single add action: always shows picker (user confirms)
+- Mixed state: both add and remove options appear
+
+**Configuration mapping dialog**: When adding a project to a workspace
+that already has configuration sets, a mapping dialog opens instead of
+adding immediately. The dialog shows each config set with a pre-filled
+mapping (via `map_variant(set_name:lower(), configs)`) or "None":
+
+```
+  Add "NewLib" [cmake] — Map configurations
+
+  Debug         Debug ▸
+  Release       Release ▸
+  CrossCompile  None ▸
+
+  [Enter] change  [y] accept  [q] cancel
+```
+
+- Enter on a row opens `vim.ui.select` with available configurations + "None"
+- `y` accepts: writes project + all mappings atomically via
+  `add_project_with_mappings()`
+- `q`/Esc cancels: project is NOT added
+- Skipped when no config sets exist or project has no detectable configs
+
 **File mutation**: All changes write to `loomworks.json` via
 `config_editor.lua`. The file watcher + remerge handles propagation.
 
 Available config_editor operations:
 - `create_workspace(root, name?)` — create loomworks.json
 - `add_project(root, key, type, path?)` — add a project entry
+- `add_project_with_mappings(root, key, type, path?, set_mappings)` —
+  add project + update config set mappings atomically
 - `remove_project(root, key)` — remove project + clean up config sets
 - `add_configuration_set(root, name, mappings)` — add a config set
 - `remove_configuration_set(root, name)` — remove a config set

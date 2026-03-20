@@ -74,6 +74,48 @@ function M.add_project(root, project_key, type, path)
     return write_config(root, data)
 end
 
+--- Add a project with configuration set mappings in one atomic write.
+--- Adds the project entry AND updates existing configuration sets.
+--- Does NOT create new configuration sets — only adds mappings to existing ones.
+--- @param root string workspace root directory
+--- @param project_key string project name/key
+--- @param type string module type ("cmake", "typescript", "ets")
+--- @param path? string relative path (omit if same as project_key)
+--- @param set_mappings table<string, string|nil> set_name → variant (nil entries skipped)
+--- @return boolean ok, string|nil err
+function M.add_project_with_mappings(root, project_key, type, path, set_mappings)
+    local data, read_err = read_config(root)
+    if not data then
+        return false, "failed to read loomworks.json: " .. (read_err or "unknown")
+    end
+
+    if not data.projects then
+        data.projects = {}
+    end
+
+    if data.projects[project_key] then
+        return false, "project '" .. project_key .. "' already exists"
+    end
+
+    -- Add project entry
+    local entry = { [type] = vim.empty_dict() }
+    if path and path ~= project_key then
+        entry.path = path
+    end
+    data.projects[project_key] = entry
+
+    -- Update existing configuration sets with mappings
+    if set_mappings and data.configuration_sets then
+        for set_name, variant in pairs(set_mappings) do
+            if variant and data.configuration_sets[set_name] then
+                data.configuration_sets[set_name][project_key] = variant
+            end
+        end
+    end
+
+    return write_config(root, data)
+end
+
 --- Remove a project from an existing workspace.
 --- Also removes the project from all configuration_sets and cleans up
 --- empty configuration_sets.

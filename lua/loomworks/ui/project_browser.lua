@@ -89,16 +89,73 @@ function M.open(root)
     end
 
     --- Add a project from a browser entry.
+    --- If configuration sets exist, opens a mapping dialog first.
     --- @param entry loomworks.BrowserEntry
     --- @param type_info { type: string, marker: string }
     local function do_add(entry, type_info)
         local key, path = derive_key_and_path(root, entry)
-        local ok, err = config_editor.add_project(root, key, type_info.type, path)
-        if ok then
-            vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
-        else
-            vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+
+        -- Check if configuration sets exist
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        local raw_config_sets = ws and ws.config and ws.config.configuration_sets or nil
+        local has_config_sets = raw_config_sets and next(raw_config_sets)
+
+        if not has_config_sets then
+            -- No config sets: add directly
+            local ok, err = config_editor.add_project(root, key, type_info.type, path)
+            if ok then
+                vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
+            else
+                vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+            end
+            return
         end
+
+        -- Detect available configurations for the new project
+        local mod = modules.get(type_info.type)
+        local config_names = {}
+        if mod and mod.info and mod.map_variant then
+            local info = mod.info(entry.abs_path, {})
+            if info and info.configurations then
+                for name in pairs(info.configurations) do
+                    config_names[#config_names + 1] = name
+                end
+                table.sort(config_names)
+            end
+        end
+
+        if #config_names == 0 then
+            -- No detectable configurations: add without mappings
+            local ok, err = config_editor.add_project(root, key, type_info.type, path)
+            if ok then
+                vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
+            else
+                vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+            end
+            return
+        end
+
+        -- Open mapping dialog
+        require("loomworks.ui.mapping_dialog").open({
+            project_key = key,
+            project_type = type_info.type,
+            available_configs = config_names,
+            config_sets = raw_config_sets,
+            mod = mod,
+            on_accept = function(set_mappings)
+                local ok, err = config_editor.add_project_with_mappings(
+                    root, key, type_info.type, path, set_mappings)
+                if ok then
+                    vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
+                else
+                    vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+                end
+            end,
+            on_cancel = function()
+                vim.notify("loomworks: cancelled adding " .. key, vim.log.levels.INFO)
+            end,
+        })
     end
 
     --- Remove a project that matches a browser entry.

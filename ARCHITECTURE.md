@@ -273,7 +273,8 @@ may import from its own layer or any layer below it, never above.
 | `ui/dialog.lua` | Snacks.win-based dialog helper for floating dialogs (help, confirm, options) | Domain logic |
 | `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up with action picker on Enter), buffer rendering | Know about loomworks domain; do I/O |
 | `ui/actions.lua` | Action factories: capture context at render time, return closures for deferred execution. Deletion confirmation dialog. Profile creation multi-step picker (`create_profile`) | Render tree nodes; own state |
-| `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via config_editor | Own persistent state; bypass config_editor for writes |
+| `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via config_editor. Opens mapping_dialog when config sets exist | Own persistent state; bypass config_editor for writes |
+| `ui/mapping_dialog.lua` | Interactive Tree+View dialog for mapping a new project's configurations to existing config sets. Pre-fills via map_variant, accepts/cancels atomically | Own persistent state; bypass config_editor for writes |
 | `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution | Side effects; domain logic |
 | `ui/sections/*.lua` | Pure render functions `(tree, ctx) → void`. Each section is a single function that calls tree methods | Call core directly; do I/O; hold state |
 

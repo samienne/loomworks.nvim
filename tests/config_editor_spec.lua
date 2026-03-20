@@ -166,6 +166,124 @@ describe("config_editor", function()
     end)
 
     -- -----------------------------------------------------------------
+    -- add_project_with_mappings
+    -- -----------------------------------------------------------------
+    describe("add_project_with_mappings", function()
+        it("adds project and updates config sets atomically", function()
+            local dir = tmpdir()
+            io_mod.write_json(dir .. "/loomworks.json", {
+                name = "test",
+                projects = { App = { cmake = {} } },
+                configuration_sets = {
+                    Debug = { App = "Debug" },
+                    Release = { App = "Release" },
+                },
+            })
+
+            local ok, err = config_editor.add_project_with_mappings(
+                dir, "Lib", "cmake", nil, { Debug = "Debug", Release = "Release" })
+            assert.is_true(ok)
+            assert.is_nil(err)
+
+            local data = io_mod.read_json(dir .. "/loomworks.json")
+            assert.is_not_nil(data.projects.Lib)
+            assert.is_not_nil(data.projects.Lib.cmake)
+            assert.equals("Debug", data.configuration_sets.Debug.Lib)
+            assert.equals("Release", data.configuration_sets.Release.Lib)
+            -- Existing mappings preserved
+            assert.equals("Debug", data.configuration_sets.Debug.App)
+            assert.equals("Release", data.configuration_sets.Release.App)
+        end)
+
+        it("skips nil-valued mappings", function()
+            local dir = tmpdir()
+            io_mod.write_json(dir .. "/loomworks.json", {
+                name = "test",
+                projects = { App = { cmake = {} } },
+                configuration_sets = {
+                    Debug = { App = "Debug" },
+                    Release = { App = "Release" },
+                },
+            })
+
+            local ok = config_editor.add_project_with_mappings(
+                dir, "Lib", "cmake", nil, { Debug = "Debug", Release = nil })
+            assert.is_true(ok)
+
+            local data = io_mod.read_json(dir .. "/loomworks.json")
+            assert.equals("Debug", data.configuration_sets.Debug.Lib)
+            assert.is_nil(data.configuration_sets.Release.Lib)
+        end)
+
+        it("does not create config sets for unknown set names", function()
+            local dir = tmpdir()
+            io_mod.write_json(dir .. "/loomworks.json", {
+                name = "test",
+                projects = { App = { cmake = {} } },
+                configuration_sets = {
+                    Debug = { App = "Debug" },
+                },
+            })
+
+            local ok = config_editor.add_project_with_mappings(
+                dir, "Lib", "cmake", nil, { Debug = "Debug", NoSuchSet = "Release" })
+            assert.is_true(ok)
+
+            local data = io_mod.read_json(dir .. "/loomworks.json")
+            assert.equals("Debug", data.configuration_sets.Debug.Lib)
+            assert.is_nil(data.configuration_sets.NoSuchSet)
+        end)
+
+        it("fails on duplicate project key", function()
+            local dir = tmpdir()
+            io_mod.write_json(dir .. "/loomworks.json", {
+                name = "test",
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "Debug" } },
+            })
+
+            local ok, err = config_editor.add_project_with_mappings(
+                dir, "App", "typescript", nil, { Debug = "default" })
+            assert.is_false(ok)
+            assert.truthy(err:match("already exists"))
+        end)
+
+        it("works with empty set_mappings", function()
+            local dir = tmpdir()
+            io_mod.write_json(dir .. "/loomworks.json", {
+                name = "test",
+                projects = {},
+                configuration_sets = { Debug = { } },
+            })
+
+            local ok = config_editor.add_project_with_mappings(
+                dir, "App", "cmake", nil, {})
+            assert.is_true(ok)
+
+            local data = io_mod.read_json(dir .. "/loomworks.json")
+            assert.is_not_nil(data.projects.App)
+            assert.is_nil(data.configuration_sets.Debug.App)
+        end)
+
+        it("works without configuration_sets in file", function()
+            local dir = tmpdir()
+            io_mod.write_json(dir .. "/loomworks.json", {
+                name = "test",
+                projects = {},
+            })
+
+            local ok = config_editor.add_project_with_mappings(
+                dir, "App", "cmake", nil, { Debug = "Debug" })
+            assert.is_true(ok)
+
+            local data = io_mod.read_json(dir .. "/loomworks.json")
+            assert.is_not_nil(data.projects.App)
+            -- No configuration_sets created
+            assert.is_nil(data.configuration_sets)
+        end)
+    end)
+
+    -- -----------------------------------------------------------------
     -- remove_project
     -- -----------------------------------------------------------------
     describe("remove_project", function()
