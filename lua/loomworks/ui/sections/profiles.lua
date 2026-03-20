@@ -69,6 +69,7 @@ local function render_profile_details(tree, profile, lw)
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key,
                     spinning = is_spinning,
                     hl = status_hl,
+                    enter_label = "Open task output",
                     on_enter = actions.open_task(unit),
                     on_task = actions.open_task(unit),
                     on_build = actions.build_configuration(unit),
@@ -87,7 +88,7 @@ end
 
 --- Render the profiles section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, all_profiles, active_profile }
+--- @param ctx table { lw, all_profiles, active_profile, config_sets, tool_entries }
 return function(tree, ctx)
     local lw = ctx.lw
     local all_profiles = ctx.all_profiles
@@ -99,11 +100,19 @@ return function(tree, ctx)
     end
     table.sort(profiles, function(a, b) return a.key < b.key end)
 
-    if #profiles == 0 then return end
-
     tree:leaf("Profiles", "Title")
     tree:leaf("[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment")
     tree:blank()
+
+    -- Check if we have projects at all
+    local has_projects = false
+    local projects = lw.get_projects()
+    if projects then
+        for _ in pairs(projects) do
+            has_projects = true
+            break
+        end
+    end
 
     for _, profile in ipairs(profiles) do
         local is_active = profile == ctx.active_profile
@@ -157,6 +166,7 @@ return function(tree, ctx)
             marker = marker,
             spinning = profile_running or has_operation,
             hl = hl,
+            enter_label = "Activate",
             on_enter = actions.activate(profile),
             on_build = actions.build(profile),
             on_rebuild = actions.rebuild(profile),
@@ -166,6 +176,17 @@ return function(tree, ctx)
         }, function()
             render_profile_details(tree, profile, lw)
         end)
+    end
+
+    -- Sentinel line for profile creation
+    if not has_projects then
+        tree:leaf("No projects yet. Add projects first.", "Comment")
+    else
+        tree:item("▸ Create new profile", {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = actions.create_profile(ctx),
+        })
     end
 
     tree:blank()

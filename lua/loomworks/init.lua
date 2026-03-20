@@ -133,6 +133,12 @@ function M.rescan_tools()
     core:rescan_tools()
 end
 
+--- Force-reload loomworks.json from disk and remerge.
+--- Use after programmatic writes to avoid waiting for file watcher.
+function M.reload_config()
+    core:reload_config()
+end
+
 --- Nuke the cache: delete .nvim/build/ and loomworks.cache.json, then reload.
 --- Caller must confirm with the user before calling this.
 --- @param root string workspace root to nuke
@@ -314,6 +320,24 @@ end
 -- ---------------------------------------------------------------------------
 -- UI
 -- ---------------------------------------------------------------------------
+
+--- Create a new workspace (loomworks.json) at the given root.
+--- @param root string workspace root directory
+--- @param name? string workspace name
+--- @return boolean ok, string|nil err
+function M.create_workspace(root, name)
+    return require("loomworks.config_editor").create_workspace(root, name)
+end
+
+--- Open the project browser for adding projects.
+function M.open_project_browser()
+    local ws = core:get_workspace()
+    if not ws then
+        vim.notify("loomworks: no workspace loaded", vim.log.levels.WARN)
+        return
+    end
+    require("loomworks.ui.project_browser").open(ws.root)
+end
 
 --- Open the workspace status page.
 --- @param win_overrides? table Snacks.win config overrides

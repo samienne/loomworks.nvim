@@ -76,9 +76,38 @@ function ConfigUnit:_update()
             data = cached.tool_data,
         }
     end
-    -- Fallback: when there's no tool, config_key IS the variant
-    if not self.variant and not self.tool then
-        self.variant = self.config_key
+    -- Authoritative: resolve variant from a ProfileProject that references
+    -- this config_key. PP.variant is always correct (comes from profile
+    -- mappings), and takes priority over potentially stale cached variant.
+    for _, pp in pairs(self._core._profile_projects) do
+        if pp.project_key == self.project_key and pp.config_key == self.config_key then
+            self.variant = pp.variant
+            if pp._profile and pp._profile.tool then
+                self.tool = {
+                    key = pp._profile.tool.key,
+                    data = pp._profile.tool.data,
+                }
+            end
+            break
+        end
+    end
+    -- Fallback: derive variant from config_key only when the project's module
+    -- has no keyed tools. For keyed modules, the variant must come from cache
+    -- or ProfileProject; callers (e.g. sections/projects.lua) set it
+    -- explicitly for uncached entries.
+    if not self.variant then
+        local has_keyed = self.tool ~= nil
+        if not has_keyed and self._project then
+            local type_tools = self._core._tools_by_type[self._project.type]
+            if type_tools then
+                for _, dt in ipairs(type_tools) do
+                    if dt.tool_key then has_keyed = true; break end
+                end
+            end
+        end
+        if not has_keyed then
+            self.variant = self.config_key
+        end
     end
 end
 
@@ -242,7 +271,8 @@ function ConfigUnit:materialize(variant, tool)
     -- Write directly to flat cache
     local cache_key = cache_mod.config_cache_key(self.project_key, self.config_key)
     ws.cache.configurations = ws.cache.configurations or {}
-    if not ws.cache.configurations[cache_key] then
+    local existing = ws.cache.configurations[cache_key]
+    if not existing then
         ws.cache.configurations[cache_key] = {
             project_key = self.project_key,
             config_key = self.config_key,
@@ -254,6 +284,10 @@ function ConfigUnit:materialize(variant, tool)
 
         core:_save_cache()
         core:remerge()
+    elseif existing.variant ~= self.variant and self.variant then
+        -- Repair stale variant in cache
+        existing.variant = self.variant
+        core:_save_cache()
     end
 end
 

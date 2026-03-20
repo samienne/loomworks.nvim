@@ -107,13 +107,32 @@ local function entry_highlight(config_status, status_hl, is_spinning, is_active)
     return "LoomworksConfigured"
 end
 
+--- Open the project browser for adding a project.
+local function open_add_project()
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if ws then
+        require("loomworks.ui.project_browser").open(ws.root)
+    end
+end
+
 --- Render the projects section.
 --- @param tree loomworks.Tree
 --- @param ctx table { lw, projects, active_profile_key }
 return function(tree, ctx)
     local lw = ctx.lw
     local projects = ctx.projects
-    if not projects or not next(projects) then return end
+    if not projects or not next(projects) then
+        tree:leaf("Projects", "Title")
+        tree:blank()
+        tree:item("▸ Add project", {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = open_add_project,
+        })
+        tree:blank()
+        return
+    end
 
     tree:leaf("Projects", "Title")
     tree:blank()
@@ -203,10 +222,12 @@ return function(tree, ctx)
                                         and proj.configuration:lower() == cname:lower()
                                 for _, entry in ipairs(tool_entries) do
                                     local unit = lw.get_config_unit(key, entry.config_key)
-                                    -- Ensure variant/tool are set for uncached entries
-                                    if not unit.variant then
-                                        unit.variant = cname
-                                        unit.tool = entry.tool_key and { key = entry.tool_key } or nil
+                                    -- Always set variant/tool — the Projects section
+                                    -- knows the correct values from module info + detection.
+                                    unit.variant = cname
+                                    if entry.tool_key then
+                                        unit.tool = unit.tool or {}
+                                        unit.tool.key = entry.tool_key
                                     end
                                     local config_status, status_hl, progress_str, is_spinning =
                                             helpers.resolve_config_status_global(unit, entry.cached)
@@ -218,6 +239,7 @@ return function(tree, ctx)
                                         fold_key = "config_tool:" .. key .. ":" .. entry.config_key,
                                         spinning = is_spinning,
                                         hl = hl,
+                                        enter_label = "Open task output",
                                         on_enter = actions.open_task(unit),
                                         on_task = actions.open_task(unit),
                                         on_build = actions.build_configuration(unit),
@@ -235,6 +257,7 @@ return function(tree, ctx)
                             else
                                 -- Non-keyed modules: show single status
                                 local unit = lw.get_config_unit(key, cname)
+                                unit.variant = unit.variant or cname
                                 local cached = proj.cached_configurations
                                         and proj.cached_configurations[cname]
                                 local config_status, status_hl, progress_str, is_spinning =
@@ -247,6 +270,7 @@ return function(tree, ctx)
                                     fold_key = "config_status:" .. key .. ":" .. cname,
                                     spinning = is_spinning,
                                     hl = hl,
+                                    enter_label = "Open task output",
                                     on_enter = actions.open_task(unit),
                                     on_task = actions.open_task(unit),
                                     on_build = actions.build_configuration(unit),
@@ -268,4 +292,11 @@ return function(tree, ctx)
             tree:blank()
         end)
     end
+
+    tree:item("▸ Add project", {
+        hl = "LoomworksActionable",
+        enter_label = "Add project",
+        on_enter = open_add_project,
+    })
+    tree:blank()
 end

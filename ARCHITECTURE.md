@@ -256,9 +256,10 @@ may import from its own layer or any layer below it, never above.
 | `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking | Business logic; auto-migration |
 | `workspace.lua` | Root resolution, file path derivation, workspace assembly from raw strings | I/O (pure functions only) |
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication | Domain logic; know about merge or profiles |
-| `modules/init.lua` | Module registry, lazy loading | Implement module logic |
-| `modules/cmake.lua` | CMake module: validate, info (preset reading), tasks, inspect, detect_tools/detect_tools_async, parse_file_api (target discovery), get_options (cache variables). Static `has_keyed_tools = true` | Know about profiles, UI, or overseer |
-| `modules/ets.lua`, `modules/typescript.lua` | Shim modules (validate + info + detect_tools_async). Static `has_keyed_tools = false` | Anything beyond the shim interface |
+| `config_editor.lua` | JSON read-modify-write for loomworks.json: create_workspace, add_project, remove_project, add_configuration_set, remove_configuration_set, generate_default_config_sets | Domain logic; know about runtime model |
+| `modules/init.lua` | Module registry, lazy loading, detection orchestration (`detect_all_types`, `scan_directory_async`) | Implement module logic |
+| `modules/cmake.lua` | CMake module: detect, validate, info (preset reading), tasks, inspect, detect_tools/detect_tools_async, parse_file_api (target discovery), get_options (cache variables), map_variant. Static `has_keyed_tools = true` | Know about profiles, UI, or overseer |
+| `modules/ets.lua`, `modules/typescript.lua` | Shim modules (detect + validate + info + detect_tools_async + map_variant). Static `has_keyed_tools = false` | Anything beyond the shim interface |
 | `progress/init.lua` | Parser registry mapping tool names to parser functions | Parse output itself |
 | `progress/ninja.lua` | Ninja `[n/m]` output parser | Know about other build tools |
 | `types.lua` | LuaCATS type annotations for all data shapes | Contain runtime code (never `require`d) |
@@ -270,8 +271,9 @@ may import from its own layer or any layer below it, never above.
 | `ui/status.lua` | Wiring: creates Tree + View, assembles `ctx` from API, requires sections in order | Contain rendering logic; do I/O |
 | `ui/view.lua` | Window lifecycle via Snacks.win (open/close/toggle), keymap registration, event-driven refresh, animation timer | Know about section content; contain domain logic |
 | `ui/dialog.lua` | Snacks.win-based dialog helper for floating dialogs (help, confirm, options) | Domain logic |
-| `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up), buffer rendering | Know about loomworks domain; do I/O |
-| `ui/actions.lua` | Action factories: capture context at render time, return closures for deferred execution. Deletion confirmation dialog | Render tree nodes; own state |
+| `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up with action picker on Enter), buffer rendering | Know about loomworks domain; do I/O |
+| `ui/actions.lua` | Action factories: capture context at render time, return closures for deferred execution. Deletion confirmation dialog. Profile creation multi-step picker (`create_profile`) | Render tree nodes; own state |
+| `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via config_editor | Own persistent state; bypass config_editor for writes |
 | `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution | Side effects; domain logic |
 | `ui/sections/*.lua` | Pure render functions `(tree, ctx) → void`. Each section is a single function that calls tree methods | Call core directly; do I/O; hold state |
 
@@ -541,8 +543,9 @@ loomworks.nvim/
 │   │   ├── overseer.lua               Overseer template provider + launching
 │   │   ├── lsp.lua                    clangd factories + auto-restart
 │   │   ├── fidget.lua                 fidget.nvim progress integration
+│   │   ├── config_editor.lua           JSON read-modify-write for loomworks.json
 │   │   ├── modules/
-│   │   │   ├── init.lua               Module registry (lazy-load)
+│   │   │   ├── init.lua               Module registry, detection orchestration
 │   │   │   ├── cmake.lua              CMake module (full v1)
 │   │   │   ├── ets.lua                ETS shim
 │   │   │   └── typescript.lua         TypeScript shim
@@ -555,6 +558,7 @@ loomworks.nvim/
 │   │       ├── dialog.lua             Snacks.win dialog helper
 │   │       ├── tree.lua               Foldable tree widget
 │   │       ├── actions.lua            Action factories + delete dialog
+│   │       ├── project_browser.lua   Directory browser for adding projects
 │   │       ├── helpers.lua            Shared formatting
 │   │       └── sections/
 │   │           ├── profiles.lua       Profiles section

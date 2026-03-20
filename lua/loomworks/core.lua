@@ -424,6 +424,16 @@ function Core:_on_file_changed(path, content)
     end
 end
 
+--- Force-reload loomworks.json from disk and remerge.
+--- Used after programmatic writes to loomworks.json (config_editor)
+--- to avoid waiting for the file watcher poll interval.
+function Core:reload_config()
+    if not self._workspace then return end
+    local paths = self._deps.workspace.paths(self._workspace.root)
+    local content = self._deps.io.read_file(paths.config)
+    self:_on_file_changed(paths.config, content)
+end
+
 --- Get the workspace initialization state.
 --- @return "uninitialized"|"initializing"|"initialized"
 function Core:state()

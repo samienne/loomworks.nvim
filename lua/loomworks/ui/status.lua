@@ -32,13 +32,9 @@ local function render_fn(tree)
             tree:blank()
             tree:leaf("Press L to load from:", "Comment")
             tree:leaf("  " .. vim.fn.getcwd(), "DiagnosticInfo")
+            tree:blank()
+            tree:leaf("Press N to create a new workspace", "Comment")
         end
-        return
-    end
-
-    local active_set = lw.get_active_configuration_set()
-    if not active_set then
-        tree:leaf("No workspace loaded.", "Comment")
         return
     end
 
@@ -51,6 +47,8 @@ local function render_fn(tree)
     tree:leaf("Root:      " .. ws.root, "Comment")
     tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
     tree:blank()
+
+    local active_set = lw.get_active_configuration_set()
 
     local ctx = {
         lw = lw,
@@ -101,6 +99,7 @@ local view = View.new({
         ["t"]     = "task",
         ["p"]     = "pin",
         ["o"]     = "options",
+        ["N"]     = "create_workspace",
         ["L"]     = "load",
         ["<C-n>"] = "nuke",
         ["U"]     = "delete_user_prefs",

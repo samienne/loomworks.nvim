@@ -23,7 +23,11 @@ function M._extract_type(project_def)
     if not found_type then
         return nil, nil, "no type key found"
     end
-    return found_type, found_config or {}, nil
+    -- Normalize: JSON [] decodes as empty table, treat same as {}
+    if type(found_config) ~= "table" then
+        found_config = {}
+    end
+    return found_type, found_config, nil
 end
 
 --- Validate raw decoded JSON and normalize into a config structure.

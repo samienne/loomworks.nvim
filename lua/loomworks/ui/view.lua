@@ -32,6 +32,7 @@ function View.new(opts)
         _keymaps = opts.keymaps or {},
         _events = opts.events or {},
         _win_opts = opts.win or {},
+        _on_close = opts.on_close,
         _filetype = opts.filetype or "loomworks",
         _timer_interval = opts.timer_interval or 80,
         _bufnr = nil,
@@ -95,6 +96,7 @@ function View:open(win_overrides)
     }, win_config.wo or {})
     win_config.on_close = function()
         self:_cleanup()
+        if self._on_close then self._on_close() end
     end
 
     self._snacks_win = Snacks.win(win_config)

@@ -170,6 +170,16 @@ local function detect_configs_from_cmakelists(project_path)
     return { "Debug", "Release" }
 end
 
+--- Detect whether a directory looks like a cmake project.
+--- @param abs_path string absolute directory path
+--- @return { marker: string }|nil
+function M.detect(abs_path)
+    if uv.fs_stat(abs_path .. "/CMakeLists.txt") then
+        return { marker = "CMakeLists.txt" }
+    end
+    return nil
+end
+
 --- Check if the path+config is valid.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
@@ -291,6 +301,14 @@ end
 --- @param multi_config boolean
 --- @param kit loomworks.CmakeKit|nil
 --- @return string absolute build directory path
+--- Sanitize a string for use as a directory name.
+--- Replaces characters that are invalid in Windows paths (: * ? " < > |).
+--- @param name string
+--- @return string
+local function sanitize_path_component(name)
+    return name:gsub('[:<>"|?*]', "_")
+end
+
 local function resolve_build_dir(project_name, config_name, config_info, workspace_root, multi_config, kit)
     if config_info and config_info.binary_dir then
         local dir = config_info.binary_dir
@@ -299,17 +317,17 @@ local function resolve_build_dir(project_name, config_name, config_info, workspa
         return dir
     end
 
-    local base = workspace_root .. "/.nvim/build/" .. project_name
+    local base = workspace_root .. "/.nvim/build/" .. sanitize_path_component(project_name)
     local kit_suffix = kit and kit.id or nil
 
     if multi_config then
         -- Multi-config: one dir per kit (Debug/Release selected at build time via --config)
-        return kit_suffix and (base .. "/" .. kit_suffix) or base
+        return kit_suffix and (base .. "/" .. sanitize_path_component(kit_suffix)) or base
     end
     -- Single-config: one dir per config per kit
-    local config_part = config_name or "default"
+    local config_part = sanitize_path_component(config_name or "default")
     if kit_suffix then
-        return base .. "/" .. kit_suffix .. "/" .. config_part
+        return base .. "/" .. sanitize_path_component(kit_suffix) .. "/" .. config_part
     end
     return base .. "/" .. config_part
 end
@@ -631,6 +649,34 @@ function M.detect_tools_async(callback)
         end
         callback(tools)
     end)
+end
+
+--- Map a semantic variant type to a configuration name from available configs.
+--- @param variant_type string "debug"|"release"|"release_debug"
+--- @param available_configs string[] configuration names from info()
+--- @return string|nil matching configuration name
+function M.map_variant(variant_type, available_configs)
+    if #available_configs == 1 then
+        return available_configs[1]
+    end
+
+    local targets = {
+        debug = { "debug" },
+        release = { "release" },
+        release_debug = { "relwithdebinfo" },
+    }
+
+    local candidates = targets[variant_type]
+    if not candidates then return nil end
+
+    for _, target in ipairs(candidates) do
+        for _, config in ipairs(available_configs) do
+            if config:lower() == target then
+                return config
+            end
+        end
+    end
+    return nil
 end
 
 --- Compare two cmake tool_data objects for identity.

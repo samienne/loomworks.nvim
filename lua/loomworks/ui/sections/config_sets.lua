@@ -81,6 +81,7 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
                     marker = marker,
                     spinning = profile_running,
                     hl = hl,
+                    enter_label = "Activate",
                     on_enter = profile and actions.activate(profile)
                             or actions.activate_new(cs, entry),
                     on_build = profile and actions.build(profile)
