@@ -1360,12 +1360,12 @@ end
 
 --- Add a project to the workspace.
 --- Updates config, remerges, and saves to disk.
+--- Mappings are added separately via update_config_set_mapping().
 --- @param key string project key
 --- @param type string module type ("cmake", "typescript", "ets")
 --- @param path? string relative path (defaults to key)
---- @param set_mappings? table<string, string|nil> set_name → variant (nil entries skipped)
 --- @return boolean ok, string|nil err
-function Workspace:add_project(key, type, path, set_mappings)
+function Workspace:add_project(key, type, path)
     if self.config.projects[key] then
         return false, "project '" .. key .. "' already exists"
     end
@@ -1377,26 +1377,10 @@ function Workspace:add_project(key, type, path, set_mappings)
         type_config = {},
     }
 
-    -- Update configuration sets with mappings
-    if set_mappings and self.config.configuration_sets then
-        for set_name, variant in pairs(set_mappings) do
-            if variant and self.config.configuration_sets[set_name] then
-                self.config.configuration_sets[set_name][key] = variant
-            end
-        end
-    end
-
     local ok, err = self:_save_config()
     if not ok then
         -- Rollback in-memory change
         self.config.projects[key] = nil
-        if set_mappings and self.config.configuration_sets then
-            for set_name, variant in pairs(set_mappings) do
-                if variant and self.config.configuration_sets[set_name] then
-                    self.config.configuration_sets[set_name][key] = nil
-                end
-            end
-        end
         return false, err
     end
 
@@ -1509,6 +1493,153 @@ function Workspace:update_config_set_mapping(set_name, project_key, variant)
     self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
+end
+
+--- Extend a cached profile's configurations array with missing entries
+--- for projects in its configuration set. Creates skeleton cache entries
+--- for projects not yet represented. Used by upgrade_profiles_for_tool.
+--- @param profile_data table cached profile data from cache.profiles
+--- @param tool_key string|nil tool key for keyed modules
+--- @param tool_data table|nil tool data
+--- @param tool_mod_type string|nil module type that uses this tool
+function Workspace:_extend_cached_profile(profile_data, tool_key, tool_data, tool_mod_type)
+    local set_name = profile_data.configuration_set
+    if not set_name then return end
+
+    local set_mappings = self.config.configuration_sets
+        and self.config.configuration_sets[set_name]
+    if not set_mappings then return end
+
+    -- Build lookup of existing cache keys for fast membership check
+    local existing = {}
+    for _, ck in ipairs(profile_data.configurations or {}) do
+        existing[ck] = true
+    end
+
+    profile_data.configurations = profile_data.configurations or {}
+    self.cache.configurations = self.cache.configurations or {}
+
+    for project_key, variant in pairs(set_mappings) do
+        local proj_cfg = self.config.projects[project_key]
+        if proj_cfg then
+            -- Tool key applies only to projects whose module type matches
+            local project_tool_key = tool_key
+            if tool_mod_type and tool_mod_type ~= proj_cfg.type then
+                project_tool_key = nil
+            end
+            local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
+            local ck = self._core._deps.cache.config_cache_key(project_key, config_key)
+
+            if not existing[ck] then
+                -- Create skeleton cache entry if absent
+                if not self.cache.configurations[ck] then
+                    self.cache.configurations[ck] = {
+                        project_key = project_key,
+                        config_key = config_key,
+                        type = proj_cfg.type,
+                        variant = variant,
+                        tool_key = project_tool_key,
+                        tool_data = project_tool_key and tool_data or nil,
+                    }
+                end
+                profile_data.configurations[#profile_data.configurations + 1] = ck
+            end
+        end
+    end
+end
+
+--- Upgrade cached no-tool profiles to keyed profiles when a keyed-module
+--- project is added. Also extends existing keyed profiles with skeleton
+--- entries for the new project.
+---
+--- For no-tool profiles: renames the profile key (e.g. "Debug" →
+--- "Debug:ninja-gcc-12"), adds tool fields, creates skeleton cache entries.
+--- For keyed profiles: extends the configurations array with the new project.
+---
+--- @param tool_entry { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
+function Workspace:upgrade_profiles_for_tool(tool_entry)
+    if not self.cache.profiles then return end
+
+    local merge = self._core._deps.merge
+    local user_changed = false
+
+    -- Collect renames and extensions (don't modify cache.profiles while iterating)
+    local renames = {} -- { old_key, new_key, data }
+    local extends = {} -- { data }
+
+    for profile_key, profile_data in pairs(self.cache.profiles) do
+        if not profile_data.configuration_set then goto continue end
+
+        if not profile_data.tool_key then
+            -- Only upgrade if this profile's config set has at least one
+            -- project of the tool's module type. A set mapping only non-keyed
+            -- projects (ets/typescript) does not need a tool suffix.
+            local set_mappings = self.config.configuration_sets
+                and self.config.configuration_sets[profile_data.configuration_set]
+            local has_keyed_mapping = false
+            if set_mappings then
+                for project_key in pairs(set_mappings) do
+                    local proj_cfg = self.config.projects[project_key]
+                    if proj_cfg and proj_cfg.type == tool_entry.tool_mod_type then
+                        has_keyed_mapping = true
+                        break
+                    end
+                end
+            end
+
+            if has_keyed_mapping then
+                -- No-tool profile: upgrade to keyed
+                local new_key = merge.profile_key(
+                    profile_data.configuration_set, tool_entry.tool_key)
+                renames[#renames + 1] = {
+                    old_key = profile_key,
+                    new_key = new_key,
+                    data = profile_data,
+                }
+            end
+        else
+            -- Already keyed: just extend with new project entries
+            extends[#extends + 1] = { data = profile_data }
+        end
+
+        ::continue::
+    end
+
+    -- Apply renames
+    for _, r in ipairs(renames) do
+        -- Add tool fields
+        r.data.tool_key = tool_entry.tool_key
+        r.data.tool_data = tool_entry.tool_data
+        r.data.tool_label = tool_entry.tool_label
+        r.data.tool_mod_type = tool_entry.tool_mod_type
+
+        -- Extend with missing project entries
+        self:_extend_cached_profile(
+            r.data, tool_entry.tool_key, tool_entry.tool_data, tool_entry.tool_mod_type)
+
+        -- Rename in cache
+        self.cache.profiles[r.old_key] = nil
+        self.cache.profiles[r.new_key] = r.data
+
+        -- Update active_profile if it pointed to the old key
+        if self.user.active_profile == r.old_key then
+            self.user.active_profile = r.new_key
+            user_changed = true
+        end
+    end
+
+    -- Extend existing keyed profiles
+    for _, e in ipairs(extends) do
+        self:_extend_cached_profile(
+            e.data, e.data.tool_key, e.data.tool_data, e.data.tool_mod_type)
+    end
+
+    -- Save
+    self:_save_cache()
+    if user_changed then
+        self:_save_user()
+    end
+    self:remerge()
 end
 
 --- Create (materialize) a profile and optionally activate it.

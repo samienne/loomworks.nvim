@@ -87,8 +87,76 @@ function M.open(root)
         return added[rel] and added[rel][type_name] or false
     end
 
+    --- Open the mapping dialog with detected tools for a new project.
+    --- Chains decomposed operations on accept: add_project, then
+    --- update_config_set_mapping per set, then upgrade_profiles_for_tool.
+    --- @param entry loomworks.BrowserEntry
+    --- @param type_info { type: string, marker: string }
+    --- @param key string project key
+    --- @param path string|nil relative path
+    --- @param config_names string[] available configuration names
+    --- @param keyed_tools table[] detected keyed tools (may be empty)
+    local function open_mapping_dialog(entry, type_info, key, path, config_names, keyed_tools)
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        local raw_config_sets = ws.config.configuration_sets
+        local mod = modules.get(type_info.type)
+        local has_keyed = mod and mod.has_keyed_tools or false
+
+        -- Collect no-tool profiles for rename preview
+        local no_tool_profiles = {}
+        if has_keyed and ws.cache.profiles then
+            for k, data in pairs(ws.cache.profiles) do
+                if data.configuration_set and not data.tool_key then
+                    no_tool_profiles[#no_tool_profiles + 1] = k
+                end
+            end
+            table.sort(no_tool_profiles)
+        end
+
+        require("loomworks.ui.mapping_dialog").open({
+            project_key = key,
+            project_type = type_info.type,
+            available_configs = config_names,
+            config_sets = raw_config_sets,
+            mod = mod,
+            tools = keyed_tools,
+            has_keyed_tools = has_keyed,
+            no_tool_profiles = no_tool_profiles,
+            on_accept = function(result)
+                -- Step 1: Add project entry
+                local ok, err = ws:add_project(key, type_info.type, path)
+                if not ok then
+                    vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+                    return
+                end
+                -- Skip mappings when keyed module has no tool selected —
+                -- the project is added unmapped until a tool is chosen.
+                if has_keyed and not result.tool_entry then
+                    vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "] (unmapped, no tool selected)", vim.log.levels.INFO)
+                    return
+                end
+                -- Step 2: Apply mappings
+                for set_name, variant in pairs(result.mappings) do
+                    if variant then
+                        ws:update_config_set_mapping(set_name, key, variant)
+                    end
+                end
+                -- Step 3: Upgrade profiles with tool
+                if result.tool_entry then
+                    ws:upgrade_profiles_for_tool(result.tool_entry)
+                end
+                vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
+            end,
+            on_cancel = function()
+                vim.notify("loomworks: cancelled adding " .. key, vim.log.levels.INFO)
+            end,
+        })
+    end
+
     --- Add a project from a browser entry.
     --- If configuration sets exist, opens a mapping dialog first.
+    --- For keyed-module types, ensures tool detection completes first.
     --- @param entry loomworks.BrowserEntry
     --- @param type_info { type: string, marker: string }
     local function do_add(entry, type_info)
@@ -135,25 +203,55 @@ function M.open(root)
             return
         end
 
-        -- Open mapping dialog
-        require("loomworks.ui.mapping_dialog").open({
-            project_key = key,
-            project_type = type_info.type,
-            available_configs = config_names,
-            config_sets = raw_config_sets,
-            mod = mod,
-            on_accept = function(set_mappings)
-                local ok, err = ws:add_project(key, type_info.type, path, set_mappings)
-                if ok then
-                    vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
-                else
-                    vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+        -- Check if module has keyed tools requiring detection
+        local has_keyed = mod and mod.has_keyed_tools or false
+
+        --- Collect keyed tools from detected tools for this module type.
+        --- @param tools_for_type table[]|nil
+        --- @return table[]
+        local function collect_keyed_tools(tools_for_type)
+            local keyed = {}
+            if tools_for_type then
+                for _, tool in ipairs(tools_for_type) do
+                    if tool.tool_key then
+                        keyed[#keyed + 1] = tool
+                    end
                 end
-            end,
-            on_cancel = function()
-                vim.notify("loomworks: cancelled adding " .. key, vim.log.levels.INFO)
-            end,
-        })
+            end
+            return keyed
+        end
+
+        if has_keyed then
+            -- Check if tools are already available for this module type.
+            -- Workspace tool scanning only covers types in config.projects,
+            -- so a new module type (e.g. adding cmake to an ets-only workspace)
+            -- won't have been scanned yet.
+            local existing_tools = ws._tools_by_type[type_info.type]
+            if existing_tools then
+                local keyed_tools = collect_keyed_tools(existing_tools)
+                open_mapping_dialog(entry, type_info, key, path, config_names, keyed_tools)
+            else
+                -- Detect tools for this specific module type
+                mod.detect_tools_async(function(raw_tools)
+                    vim.schedule(function()
+                        local enriched = {}
+                        for _, raw in ipairs(raw_tools) do
+                            enriched[#enriched + 1] = {
+                                tool_data = raw.tool_data,
+                                tool_key = mod.tool_key and mod.tool_key(raw.tool_data) or nil,
+                                tool_label = mod.tool_label and mod.tool_label(raw.tool_data) or nil,
+                            }
+                        end
+                        -- Cache for later use
+                        ws._tools_by_type[type_info.type] = enriched
+                        local keyed_tools = collect_keyed_tools(enriched)
+                        open_mapping_dialog(entry, type_info, key, path, config_names, keyed_tools)
+                    end)
+                end)
+            end
+        else
+            open_mapping_dialog(entry, type_info, key, path, config_names, {})
+        end
     end
 
     --- Remove a project that matches a browser entry.

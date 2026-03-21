@@ -1237,41 +1237,81 @@ are cached in a browser-local dict. Pending scans show "scanning...".
 **Configuration mapping dialog**: When adding a project to a workspace
 that already has configuration sets, a mapping dialog opens instead of
 adding immediately. The dialog shows each config set with a pre-filled
-mapping (via `map_variant(set_name:lower(), configs)`) or "None":
+mapping (via `map_variant(set_name:lower(), configs)`) or "None".
+
+When the project's module has keyed tools (`has_keyed_tools = true`), the
+dialog also shows a tool selection row and a profile upgrade preview:
 
 ```
-  Add "NewLib" [cmake] — Map configurations
+  Add "lumets" [cmake]
 
-  Debug         Debug ▸
-  Release       Release ▸
-  CrossCompile  None ▸
+  Debug     Debug ▸
+  Release   Release ▸
+
+  Tool:  Ninja - GCC 12 ▸
+
+  Profiles to upgrade:
+    Debug → Debug:ninja-gcc-12
+    Release → Release:ninja-gcc-12
 
   [Enter] change  [y] accept  [q] cancel
 ```
 
-- Enter on a row opens `vim.ui.select` with available configurations + "None"
-- `y` accepts: writes project + all mappings atomically via
-  `add_project_with_mappings()`
+The tool row appears only for keyed-module types. It opens
+`vim.ui.select` with detected tools. The profile upgrade preview shows
+which existing no-tool profiles will be renamed. It is only shown when
+a tool is selected and no-tool profiles exist in the cache.
+
+For non-keyed modules, the dialog shows only configuration mappings:
+
+```
+  Add "Frontend" [typescript] — Map configurations
+
+  Debug     development ▸
+  Release   production ▸
+
+  [Enter] change  [y] accept  [q] cancel
+```
+
+- Enter on a mapping row opens `vim.ui.select` with configurations + "None"
+- Enter on the tool row opens `vim.ui.select` with detected tools
+- `y` accepts: chains decomposed operations (see below)
 - `q`/Esc cancels: project is NOT added
 - Skipped when no config sets exist or project has no detectable configs
 
-**File mutation**: All changes write to `loomworks.json` via
-`config_editor.lua`. The file watcher + remerge handles propagation.
+**Tool detection gating**: When the module has keyed tools, the project
+browser ensures tool detection has completed before opening the mapping
+dialog. If detection is still running, the dialog opens in the callback
+after detection completes.
 
-Available config_editor operations:
-- `create_workspace(root, name?)` — create loomworks.json
-- `add_project(root, key, type, path?)` — add a project entry
-- `add_project_with_mappings(root, key, type, path?, set_mappings)` —
-  add project + update config set mappings atomically
-- `remove_project(root, key)` — remove project + clean up config sets
-- `add_configuration_set(root, name, mappings)` — add a config set
-- `remove_configuration_set(root, name)` — remove a config set
-- `generate_default_config_sets(root)` — compute (not write) default
-  config sets from project info using module `map_variant()` calls
+**Decomposed add-project operations**: On accept, the mapping dialog
+chains three atomic operations. Each operation saves to disk and
+remerges independently. Each intermediate state is valid — if the
+process crashes between steps, no data is lost or corrupted.
 
-After programmatic writes to loomworks.json, call `lw.reload_config()`
-to force an immediate remerge instead of waiting for the file watcher
-poll interval (2s).
+1. `ws:add_project(key, type, path)` — adds the project entry to
+   `loomworks.json`. Project shows as unmapped.
+2. For each config set with a non-nil mapping:
+   `ws:update_config_set_mapping(set, key, variant)` — adds one
+   mapping to one config set.
+3. If a tool was selected:
+   `ws:upgrade_profiles_for_tool(tool_entry)` — upgrades cached
+   no-tool profiles to keyed profiles (renames, adds tool fields,
+   creates skeleton cache entries). Extends existing keyed profiles
+   with skeleton entries for the new project.
+
+**File mutation**: All changes write to `loomworks.json` via Workspace
+mutation methods. Each method saves and remerges independently.
+
+Available Workspace mutation methods:
+- `add_project(key, type, path?)` — add a project entry
+- `remove_project(key)` — remove project + clean up config sets
+- `update_config_set_mapping(set_name, project_key, variant)` — update
+  one mapping in a config set
+- `add_configuration_set(name, mappings)` — add a config set
+- `remove_configuration_set(name)` — remove a config set
+- `upgrade_profiles_for_tool(tool_entry)` — upgrade no-tool profiles
+  to keyed profiles; extend keyed profiles with new project entries
 
 ### 6.14 Auto-refresh
 
