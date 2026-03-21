@@ -139,6 +139,10 @@ function M.make_mock_workspace(overrides)
     ws._validate_build_dir = core_overrides._validate_build_dir or function() return true end
     ws._delete_build_dirs_async = core_overrides._delete_build_dirs_async or function(_, _, cb) cb({}) end
     ws._run_deletion = core_overrides._run_deletion or function(_, _, _, on_done) if on_done then on_done() end end
+    ws._save_config = core_overrides._save_config or function() return true end
+    ws._save_user = core_overrides._save_user or function(self_ws)
+        self_ws._core._deps.user.save(self_ws.root, self_ws.user)
+    end
 
     return ws
 end

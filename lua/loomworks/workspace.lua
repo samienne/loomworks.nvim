@@ -531,7 +531,7 @@ function Workspace:_migrate_set_names()
         -- Update active_profile if it was the old key
         if self.user.active_profile == old_key then
             self.user.active_profile = info.new_key
-            self._core._deps.user.save(self.root, self.user)
+            self:_save_user()
         end
     end
 
@@ -1264,6 +1264,348 @@ function Workspace:rescan_tools()
     local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
     if ok then cmake_kits.clear_cache() end
     self:_scan_tools_async()
+end
+
+-- ---------------------------------------------------------------------------
+-- Persistence
+-- ---------------------------------------------------------------------------
+
+--- Serialize the parsed config back to raw JSON-writable format.
+--- @return table raw JSON-compatible table
+function Workspace:_serialize_config()
+    local raw = { projects = {} }
+    if self.config.name then
+        raw.name = self.config.name
+    end
+    for key, project in pairs(self.config.projects) do
+        local entry = { [project.type] = project.type_config or vim.empty_dict() }
+        if project.path and project.path ~= key then
+            entry.path = project.path
+        end
+        if project.depends_on then
+            entry.depends_on = project.depends_on
+        end
+        if project.launch then
+            entry.launch = project.launch
+        end
+        raw.projects[key] = entry
+    end
+    if self.config.configuration_sets and next(self.config.configuration_sets) then
+        raw.configuration_sets = self.config.configuration_sets
+    end
+    if self.config.profiles and next(self.config.profiles) then
+        raw.profiles = self.config.profiles
+    end
+    return raw
+end
+
+--- Write the current config to loomworks.json.
+--- @return boolean ok, string|nil err
+function Workspace:_save_config()
+    local raw = self:_serialize_config()
+    local path = M.paths(self.root).config
+    return self._core._deps.io.write_json(path, raw)
+end
+
+--- Write the current user data to loomworks.user.json.
+function Workspace:_save_user()
+    self._core._deps.user.save(self.root, self.user)
+end
+
+-- ---------------------------------------------------------------------------
+-- Mutation methods
+-- ---------------------------------------------------------------------------
+
+--- Add a project to the workspace.
+--- Updates config, remerges, and saves to disk.
+--- @param key string project key
+--- @param type string module type ("cmake", "typescript", "ets")
+--- @param path? string relative path (defaults to key)
+--- @param set_mappings? table<string, string|nil> set_name → variant (nil entries skipped)
+--- @return boolean ok, string|nil err
+function Workspace:add_project(key, type, path, set_mappings)
+    if self.config.projects[key] then
+        return false, "project '" .. key .. "' already exists"
+    end
+
+    -- Add to parsed config
+    self.config.projects[key] = {
+        path = path or key,
+        type = type,
+        type_config = {},
+    }
+
+    -- Update configuration sets with mappings
+    if set_mappings and self.config.configuration_sets then
+        for set_name, variant in pairs(set_mappings) do
+            if variant and self.config.configuration_sets[set_name] then
+                self.config.configuration_sets[set_name][key] = variant
+            end
+        end
+    end
+
+    local ok, err = self:_save_config()
+    if not ok then
+        -- Rollback in-memory change
+        self.config.projects[key] = nil
+        if set_mappings and self.config.configuration_sets then
+            for set_name, variant in pairs(set_mappings) do
+                if variant and self.config.configuration_sets[set_name] then
+                    self.config.configuration_sets[set_name][key] = nil
+                end
+            end
+        end
+        return false, err
+    end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Remove a project from the workspace.
+--- Updates config, removes from configuration sets, remerges, and saves.
+--- @param key string project key to remove
+--- @return boolean ok, string|nil err
+function Workspace:remove_project(key)
+    if not self.config.projects[key] then
+        return false, "project '" .. key .. "' not found"
+    end
+
+    self.config.projects[key] = nil
+
+    -- Remove from configuration_sets
+    if self.config.configuration_sets then
+        local empty_sets = {}
+        for set_name, mappings in pairs(self.config.configuration_sets) do
+            if type(mappings) == "table" then
+                mappings[key] = nil
+                if not next(mappings) then
+                    empty_sets[#empty_sets + 1] = set_name
+                end
+            end
+        end
+        for _, set_name in ipairs(empty_sets) do
+            self.config.configuration_sets[set_name] = nil
+        end
+        if not next(self.config.configuration_sets) then
+            self.config.configuration_sets = nil
+        end
+    end
+
+    local ok, err = self:_save_config()
+    if not ok then return false, err end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Add a configuration set to the workspace.
+--- @param name string configuration set name
+--- @param mappings table<string, string> project_key → variant
+--- @return boolean ok, string|nil err
+function Workspace:add_configuration_set(name, mappings)
+    if not self.config.configuration_sets then
+        self.config.configuration_sets = {}
+    end
+
+    if self.config.configuration_sets[name] then
+        return false, "configuration set '" .. name .. "' already exists"
+    end
+
+    self.config.configuration_sets[name] = mappings
+
+    local ok, err = self:_save_config()
+    if not ok then
+        self.config.configuration_sets[name] = nil
+        return false, err
+    end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Remove a configuration set from the workspace.
+--- @param name string configuration set name
+--- @return boolean ok, string|nil err
+function Workspace:remove_configuration_set(name)
+    if not self.config.configuration_sets or not self.config.configuration_sets[name] then
+        return false, "configuration set '" .. name .. "' not found"
+    end
+
+    self.config.configuration_sets[name] = nil
+
+    if not next(self.config.configuration_sets) then
+        self.config.configuration_sets = nil
+    end
+
+    local ok, err = self:_save_config()
+    if not ok then return false, err end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Update a mapping within a configuration set.
+--- @param set_name string
+--- @param project_key string
+--- @param variant string|nil nil to remove the mapping
+--- @return boolean ok, string|nil err
+function Workspace:update_config_set_mapping(set_name, project_key, variant)
+    if not self.config.configuration_sets or not self.config.configuration_sets[set_name] then
+        return false, "configuration set '" .. set_name .. "' not found"
+    end
+
+    self.config.configuration_sets[set_name][project_key] = variant
+
+    local ok, err = self:_save_config()
+    if not ok then return false, err end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Create (materialize) a profile and optionally activate it.
+--- @param config_set loomworks.ConfigurationSet
+--- @param tool_entry? table
+--- @param activate? boolean
+--- @return loomworks.Profile|nil
+function Workspace:create_profile(config_set, tool_entry, activate)
+    local profile
+    if activate then
+        profile = config_set:activate(tool_entry)
+    else
+        profile = config_set:ensure_profile(tool_entry)
+    end
+    return profile
+end
+
+--- Activate a profile by key. Writes user.json and remerges.
+--- @param profile loomworks.Profile
+function Workspace:activate_profile(profile)
+    profile:activate()
+end
+
+-- ---------------------------------------------------------------------------
+-- Query methods
+-- ---------------------------------------------------------------------------
+
+--- Get a module by type.
+--- @param type string module type
+--- @return table|nil module
+function Workspace:get_module(type)
+    return self._core._deps.modules.get(type)
+end
+
+--- Query available configurations for a project path and module type.
+--- Returns the module info (configurations, etc.) without modifying state.
+--- @param mod_type string module type
+--- @param abs_path string absolute project path
+--- @param type_config? table module-specific config
+--- @return table|nil info module info with configurations
+function Workspace:query_available_configs(mod_type, abs_path, type_config)
+    local mod = self._core._deps.modules.get(mod_type)
+    if not mod or not mod.info then return nil end
+    return mod.info(abs_path, type_config or {})
+end
+
+--- Map a variant type to a configuration name using the module's mapper.
+--- @param mod_type string module type
+--- @param variant_type string "debug"|"release"
+--- @param config_names string[] available configuration names
+--- @return string|nil mapped configuration name
+function Workspace:map_variant(mod_type, variant_type, config_names)
+    local mod = self._core._deps.modules.get(mod_type)
+    if not mod or not mod.map_variant then return nil end
+    return mod.map_variant(variant_type, config_names)
+end
+
+--- Generate default configuration sets from project info.
+--- Returns plain data (does not modify state).
+--- @return table<string, table<string, string>>|nil sets, string|nil err
+function Workspace:generate_default_config_sets()
+    if not self.config.projects or not next(self.config.projects) then
+        return nil, "no projects defined"
+    end
+
+    local modules = self._core._deps.modules
+
+    -- Gather project info
+    local project_infos = {} -- { key, type, config_names[], mod }
+    for project_key, project_cfg in pairs(self.config.projects) do
+        local mod = modules.get(project_cfg.type)
+        if mod and mod.info and mod.map_variant then
+            local abs_path = self.root .. "/" .. (project_cfg.path or project_key)
+            local info = mod.info(abs_path, project_cfg.type_config or {})
+            if info and info.configurations then
+                local config_names = {}
+                for name in pairs(info.configurations) do
+                    config_names[#config_names + 1] = name
+                end
+                table.sort(config_names)
+                project_infos[#project_infos + 1] = {
+                    key = project_key,
+                    type = project_cfg.type,
+                    config_names = config_names,
+                    mod = mod,
+                }
+            end
+        end
+    end
+
+    if #project_infos == 0 then
+        return nil, "no projects with detectable configurations"
+    end
+
+    -- Standard set candidates
+    local candidates = {
+        { set_name = "Debug", variant_type = "debug" },
+        { set_name = "Release", variant_type = "release" },
+    }
+
+    local sets = {}
+    for _, candidate in ipairs(candidates) do
+        local mappings = {}
+        local all_mapped = true
+        for _, pinfo in ipairs(project_infos) do
+            local mapped = pinfo.mod.map_variant(candidate.variant_type, pinfo.config_names)
+            if mapped then
+                mappings[pinfo.key] = mapped
+            else
+                all_mapped = false
+                break
+            end
+        end
+        if all_mapped then
+            sets[candidate.set_name] = mappings
+        end
+    end
+
+    -- Fallback: if no candidates succeeded but every project has exactly one config
+    if not next(sets) then
+        local all_single = true
+        local mappings = {}
+        for _, pinfo in ipairs(project_infos) do
+            if #pinfo.config_names ~= 1 then
+                all_single = false
+                break
+            end
+            mappings[pinfo.key] = pinfo.config_names[1]
+        end
+        if all_single then
+            sets["Default"] = mappings
+        end
+    end
+
+    if not next(sets) then
+        return nil, "could not auto-detect configuration sets"
+    end
+
+    return sets
 end
 
 M.Workspace = Workspace

@@ -286,7 +286,7 @@ end
 --- Writes to user.json and remerges directly.
 function Profile:activate()
     self._workspace.user.active_profile = self.key
-    self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
+    self._workspace:_save_user()
     self._workspace:remerge()
 end
 
@@ -294,7 +294,7 @@ end
 function Profile:deactivate()
     if self._workspace.user.active_profile == self.key then
         self._workspace.user.active_profile = nil
-        self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
+        self._workspace:_save_user()
         self._workspace:remerge()
     end
 end
@@ -349,14 +349,14 @@ function Profile:set_default_target(project, target_id, launch_name)
     if target_id then descriptor.target = target_id end
     if launch_name then descriptor.launch = launch_name end
     self._workspace.user.default_target[self.key] = descriptor
-    self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
+    self._workspace:_save_user()
 end
 
 --- Clear the default target for this profile.
 function Profile:clear_default_target()
     if self._workspace.user.default_target then
         self._workspace.user.default_target[self.key] = nil
-        self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
+        self._workspace:_save_user()
     end
 end
 
