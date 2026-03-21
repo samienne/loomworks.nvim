@@ -15,22 +15,28 @@ system does (data model, state machines, UI behavior, invariants), see
                              |
                        init.lua  ◄── public API facade (singleton Core)
                              |
-                         core.lua  ◄── stateful orchestrator (owns all state)
+                         core.lua  ◄── infrastructure: I/O, deps, setup,
+                             |         validation, nuke_cache, project_for_buf
+                             |         Thin delegation wrappers → Workspace
+                             |
+                       workspace.lua
+                      Workspace class
+                      Domain container
                              |
           +------------------+------------------+------------------+
           |                  |                  |                  |
-    file_tracker.lua    workspace.lua      merge.lua         events.lua
-    uv.fs_poll-based    pure assembly      three-file        on/off/emit
-    watches 3 files     from raw strings   merge into        listener system
-    delivers content                       ActiveSet
-          |                  |
-          |            +-----+-----+
-          |            |     |     |
-          v         config  user  cache
-      io.lua        .lua   .lua   .lua
-      read_file     parse  parse  parse
-      write_atomic  valid  save   save
-      rm_rf         load   load   load
+    file_tracker.lua      merge.lua         events.lua       io.lua
+    uv.fs_poll-based      three-file        on/off/emit      read_file
+    watches 3 files       merge into        listener         write_atomic
+    delivers content      ActiveSet         system           rm_rf
+                             |
+                     +-------+------+
+                     |       |      |
+                  config   user   cache
+                  .lua     .lua   .lua
+                  parse    parse  parse
+                  valid    save   save
+                           load   load
           |
     ======|================================================
           |           Disk (workspace root)
@@ -40,7 +46,7 @@ system does (data model, state machines, UI behavior, invariants), see
       .nvim/loomworks.cache.json
       .nvim/build/...
 
-                         core.lua
+                       workspace.lua (Workspace)
                              |
      +------------+----------+----------+-----------+
      |            |                     |           |
@@ -52,7 +58,7 @@ ConfigSet      per (proj,cfg)    ProfileProject  wrapper
           +-- progress/init.lua + ninja.lua
               Parser registry for build output
 
-                         core.lua
+                    init.lua / core.lua
                              |
           +------------------+------------------+
           |                  |                  |
@@ -115,7 +121,8 @@ simpler option.
    with a default dependency table that tests can selectively override.
    All external dependencies (I/O, vim APIs, time, scheduling) go through
    the deps table — never call `vim.fn`, `vim.uv`, or `os.date` directly
-   from core.lua. This makes every behavior testable without mocking
+   from core.lua or workspace.lua. Workspace accesses deps via
+   `self._core._deps`. This makes every behavior testable without mocking
    globals.
 
    ```lua
@@ -168,16 +175,17 @@ simpler option.
    related behavior co-located and discoverable.
 
 8. **Pure where possible.** Functions that don't need state should not have
-   state. merge.lua is pure (data in, data out). workspace.lua is pure.
-   Modules are stateless — they receive paths and config, return results.
-   Only core.lua is stateful, and it is the single owner of all mutable
-   state.
+   state. merge.lua is pure (data in, data out). The static helpers in
+   workspace.lua (`resolve_root`, `paths`, `assemble`) are pure. Modules
+   are stateless — they receive paths and config, return results. Core is
+   infrastructure-only (I/O, deps, setup). Workspace is the single owner
+   of all mutable domain state.
 
 ---
 
 ## Layers and Dependency Rules
 
-The codebase has five layers. Dependencies flow **downward only** — a layer
+The codebase has six layers. Dependencies flow **downward only** — a layer
 may import from its own layer or any layer below it, never above.
 
 ```
@@ -189,12 +197,15 @@ may import from its own layer or any layer below it, never above.
 │  UI                 status, view, tree, sections,   │
 │                     actions, helpers                 │
 ├─────────────────────────────────────────────────────┤
-│  Core               core, merge, profile, project,  │
-│                     config_unit, events, cmake_kits  │
+│  Domain             workspace, profile, project,    │
+│                     config_unit, configuration_set,  │
+│                     operation, merge, cmake_kits     │
 ├─────────────────────────────────────────────────────┤
-│  Data / IO          config, user, cache, workspace, │
-│                     io, file_tracker, modules/*,     │
-│                     progress/*, types                │
+│  Infrastructure     core, events                     │
+├─────────────────────────────────────────────────────┤
+│  Data / IO          config, user, cache, io,         │
+│                     file_tracker, modules/*,          │
+│                     progress/*, types                 │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -202,22 +213,30 @@ may import from its own layer or any layer below it, never above.
 
 1. **init.lua** is a thin facade — it creates one `Core` instance and
    delegates every public function. No logic lives here.
-2. **core.lua** is the only component that mutates shared state. Everything
-   else either reads state (UI, integrations) or is pure (merge, workspace,
-   parse layers).
-3. **merge.lua** is a pure function — takes workspace data in, returns
+2. **core.lua** is infrastructure only — it owns the dependency table,
+   async setup, file validation, nuke_cache, and project_for_buf. It
+   creates a `Workspace` instance during setup and provides thin delegation
+   wrappers so that init.lua callers continue to work via `core:method()`.
+3. **workspace.lua** is the domain container — the `Workspace` class owns
+   all object registries and mutable domain state. All business logic
+   (remerge, sync, persistence, operations, deletion, task tracking, tool
+   scanning, mutation methods) lives here. Domain objects reference
+   Workspace (`_workspace`), not Core.
+4. **merge.lua** is a pure function — takes workspace data in, returns
    ActiveSet out. No side effects, no I/O, no state.
-4. **UI sections** receive a `(tree, ctx)` pair and call tree methods to
+5. **UI sections** receive a `(tree, ctx)` pair and call tree methods to
    render. They never call io.lua, cache.lua, or core.lua directly — all
    data comes through `ctx` (assembled in status.lua) or `require("loomworks")`
-   for API calls.
-5. **Modules** (cmake, ets, typescript) know nothing about profiles, UI, or
+   for API calls. UI callers that mutate state (project_browser, actions)
+   obtain the Workspace via `lw.get_workspace()` and call workspace methods
+   directly (e.g., `ws:add_project()`, `ws:add_configuration_set()`).
+6. **Modules** (cmake, ets, typescript) know nothing about profiles, UI, or
    overseer. They implement the module interface (validate, info, tasks,
    inspect, detect_tools) and operate on project paths and config data.
-6. **Integrations** (overseer, lsp, fidget, lualine) consume the public API
+7. **Integrations** (overseer, lsp, fidget, lualine) consume the public API
    via `require("loomworks")` and listen for events. They never import
    core.lua directly.
-7. **config_unit.lua** is shared across layers — core creates and owns
+8. **config_unit.lua** is shared across layers — Workspace creates and owns
    units, but UI and integrations read their state. Units are the single
    source of truth for runtime state (see specification.md §1.7, §3.1).
 
@@ -232,18 +251,24 @@ may import from its own layer or any layer below it, never above.
 | `plugin/loomworks.lua` | Command registration (`:LoomworksInit`, `:LoomworksInfo`), double-load guard | Contain logic; import core.lua |
 | `init.lua` | Singleton Core instance, public API surface, version string | Hold state beyond the Core ref; contain business logic |
 
-### Core Layer
+### Infrastructure Layer
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `core.lua` | All mutable state (`_workspace`, `_active_set`, `_config_units`, `_config_sets`, `_profiles`, `_projects`, `_profile_projects`, `_tools_by_type`, `_setup_error`, `_state`, `_tool_state`, `_tool_waiters`). Async setup, remerge, object sync, profile management, task lifecycle, deletion orchestration, buffer queries | Do I/O directly (delegates to io.lua); know about UI; render anything |
-| `merge.lua` | Three-file merge algorithm, profile collection, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua |
-| `configuration_set.lua` | ConfigurationSet class: identity-preserving with `_update()`, owns activation (`activate()`/`ensure_profile()`), property-based profile lookup (`find_profile()`), resolves Project references internally | Own state beyond config data; do I/O |
-| `profile.lua` | Profile and ProfileProject classes (tool fields bundled into `.tool` ToolRef), status aggregation, plan_deletion, activate/deactivate. Profile resolves mappings + ConfigurationSet reference in `_update()`. ProfileProject registered in Core, holds direct refs to Profile + Project | Own state beyond what core provides; do I/O |
-| `project.lua` | Project class, config_cache_key computation | Own state beyond what core provides |
-| `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag (with reason: "deleting"/"cleaning"), queued action. Synced during remerge (`_update()` refreshes variant/tool from cache, preserves runtime state) + lazy creation via `get_config_unit()`. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `resolve_tool()`, `referencing_profiles()` | Persist anything (runtime only) |
-| `operation.lua` | Operation class: tracks a user-initiated profile action. Watches ConfigUnit state changes to determine completion. Multiple Operations can coexist. Created by `Core:create_operation()`, cleaned up on completion via callback | Own state beyond what core provides; persist anything |
+| `core.lua` | Dependency table (`_deps`), workspace lifecycle (`_state`, `_setup_error`), async setup (`setup`, `_on_files_read`), project validation (`_validate_projects`), nuke_cache, delete_user_prefs, `_safe_nvim_path`, `project_for_buf`, shutdown. Thin delegation wrappers forward to Workspace for init.lua callers | Hold domain registries; contain business logic; do I/O directly; know about UI |
 | `events.lua` | Pub/sub system: `on()`, `off()`, `emit()` | Hold domain state; know about specific event semantics |
+
+### Domain Layer
+
+| File | Owns | Must NOT do |
+|------|------|-------------|
+| `workspace.lua` | **Workspace class**: all object registries (`_projects`, `_profiles`, `_config_sets`, `_profile_projects`, `_config_units`, `_operations`, `_tools_by_type`, `_active_set`), tool state (`_tool_state`, `_tool_waiters`), delete waiters. Business logic: remerge, `_sync_*`, `_save_cache`, `_save_config`, `_save_user`, `_serialize_config`, `create_operation`, `execute_deletion`, `record_task_result`, `_scan_tools_async`. Mutation methods: `add_project`, `remove_project`, `add_configuration_set`, `remove_configuration_set`, `update_config_set_mapping`, `create_profile`, `activate_profile`. Query methods: `query_available_configs`, `map_variant`, `generate_default_config_sets`, `get_module`. File tracking: `_start_tracking`, `_stop_tracking`, `_on_file_changed`, `reload_config`. **Static helpers** (on the module table, not the class): `resolve_root`, `paths`, `assemble` (pure), `create_workspace_config` (bootstrap) | Do I/O directly (delegates via `_core._deps`); know about UI; render anything |
+| `merge.lua` | Three-file merge algorithm, profile collection, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua or workspace.lua |
+| `configuration_set.lua` | ConfigurationSet class: identity-preserving with `_update()`, owns activation (`activate()`/`ensure_profile()`), property-based profile lookup (`find_profile()`), resolves Project references internally. References Workspace via `_workspace` | Own state beyond config data; do I/O |
+| `profile.lua` | Profile and ProfileProject classes (tool fields bundled into `.tool` ToolRef), status aggregation, plan_deletion, activate/deactivate. Profile resolves mappings + ConfigurationSet reference in `_update()`. ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
+| `project.lua` | Project class, config_cache_key computation. References Workspace via `_workspace` | Own state beyond what workspace provides |
+| `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag (with reason: "deleting"/"cleaning"), queued action. Synced during remerge (`_update()` refreshes variant/tool from cache, preserves runtime state) + lazy creation via `get_config_unit()`. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `resolve_tool()`, `referencing_profiles()`. References Workspace via `_workspace` | Persist anything (runtime only) |
+| `operation.lua` | Operation class: tracks a user-initiated profile action. Watches ConfigUnit state changes to determine completion. Multiple Operations can coexist. Created by `Workspace:create_operation()`, cleaned up on completion via callback | Own state beyond what workspace provides; persist anything |
 | `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
 
 ### Data / IO Layer
@@ -254,9 +279,8 @@ may import from its own layer or any layer below it, never above.
 | `config.lua` | `loomworks.json` parsing, validation, project type extraction | Write files (config is read-only) |
 | `user.lua` | `loomworks.user.json` parse/save/defaults | Validate beyond structural correctness |
 | `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking | Business logic; auto-migration |
-| `workspace.lua` | Root resolution, file path derivation, workspace assembly from raw strings | I/O (pure functions only) |
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication | Domain logic; know about merge or profiles |
-| `config_editor.lua` | JSON read-modify-write for loomworks.json: create_workspace, add_project, remove_project, add_configuration_set, remove_configuration_set, generate_default_config_sets | Domain logic; know about runtime model |
+| `config_editor.lua` | **Legacy** — retained for backward compatibility but not used at runtime. Mutation methods (`add_project`, `remove_project`, `add_configuration_set`, etc.) have moved to Workspace. Only `create_workspace` remains as a standalone entry point (paralleled by `workspace.create_workspace_config`) | Domain logic; know about runtime model |
 | `modules/init.lua` | Module registry, lazy loading, detection orchestration (`detect_all_types`, `scan_directory_async`) | Implement module logic |
 | `modules/cmake.lua` | CMake module: detect, validate, info (preset reading), tasks, inspect, detect_tools/detect_tools_async, parse_file_api (target discovery), get_options (cache variables), map_variant. Static `has_keyed_tools = true` | Know about profiles, UI, or overseer |
 | `modules/ets.lua`, `modules/typescript.lua` | Shim modules (detect + validate + info + detect_tools_async + map_variant). Static `has_keyed_tools = false` | Anything beyond the shim interface |
@@ -273,8 +297,8 @@ may import from its own layer or any layer below it, never above.
 | `ui/dialog.lua` | Snacks.win-based dialog helper for floating dialogs (help, confirm, options) | Domain logic |
 | `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up with action picker on Enter), buffer rendering | Know about loomworks domain; do I/O |
 | `ui/actions.lua` | Action factories: capture context at render time, return closures for deferred execution. Deletion confirmation dialog. Profile creation multi-step picker (`create_profile`) | Render tree nodes; own state |
-| `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via config_editor. Opens mapping_dialog when config sets exist | Own persistent state; bypass config_editor for writes |
-| `ui/mapping_dialog.lua` | Interactive Tree+View dialog for mapping a new project's configurations to existing config sets. Pre-fills via map_variant, accepts/cancels atomically | Own persistent state; bypass config_editor for writes |
+| `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via `ws:add_project()`/`ws:remove_project()`. Opens mapping_dialog when config sets exist | Own persistent state |
+| `ui/mapping_dialog.lua` | Interactive Tree+View dialog for mapping a new project's configurations to existing config sets. Pre-fills via `ws:map_variant()`, accepts/cancels atomically | Own persistent state |
 | `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution | Side effects; domain logic |
 | `ui/sections/*.lua` | Pure render functions `(tree, ctx) → void`. Each section is a single function that calls tree methods | Call core directly; do I/O; hold state |
 
@@ -304,19 +328,20 @@ plugin/loomworks.lua
     → core.lua: setup()
       → state = "initializing", emit "workspace_initializing"
       → read_files_async([config, user, cache])        ← libuv async I/O
-        → vim.schedule → _on_files_read()
-          → workspace.assemble(root, config, user, cache)
+        → vim.schedule → core._on_files_read()
+          → workspace.assemble(root, config, user, cache)  ← pure, returns data
           → cache version check (refuse if incompatible)
-          → config.validate()
-          → _migrate_set_names()
-          → _cleanup_orphaned_skeletons()
-          → merge.merge(tools_by_type={}) → ActiveSet (no tools yet)
+          → core._validate_projects()
+          → Workspace.new(core, data)                  ← creates domain container
+          → ws:_migrate_set_names()
+          → ws:_cleanup_orphaned_skeletons()
+          → ws:remerge()                               ← merge + sync all registries
           → state = "initialized", emit "workspace_changed"
-          → file_tracker.start()
-          → _scan_tools_async()
+          → ws:_start_tracking(paths)                  ← file watcher owned by Workspace
+          → ws:_scan_tools_async()
             → tool_state = "scanning", emit "tools_scanning"
             → detect_tools_async(config, cache)        ← vim.system for vswhere/compilers
-              → vim.schedule → store results → remerge
+              → vim.schedule → store results → ws:remerge()
               → tool_state = "scanned", emit "tools_detected"
               → flush _tool_waiters
 ```
@@ -335,13 +360,13 @@ Materialization calls (`_materialize_from_data`, `materialize_configuration`,
 ### File Change (hot-reload)
 
 ```
-file_tracker (uv.fs_poll, 2s interval)
+file_tracker (uv.fs_poll, 2s interval, owned by Workspace)
   → stat change detected → read content → compare to last known
-  → core._on_file_changed(which_file, new_content)
-    → config changed → reassemble workspace + validate + remerge
+  → ws:_on_file_changed(which_file, new_content)
+    → config changed → reassemble + validate + update ws fields + remerge
     → user changed   → re-parse user data + remerge
     → cache changed  → re-parse cache data + remerge
-  → remerge() → events.emit("active_set_changed")
+  → ws:remerge() → events.emit("active_set_changed")
   → UI/integrations react to event
 ```
 
@@ -355,7 +380,7 @@ User action (b/c key or API call)
   → launch overseer task with task_tracker component injected
     → task_tracker.on_start → ConfigUnit:set_running()
     → task_tracker.on_output → progress parser → ConfigUnit:set_progress()
-    → task_tracker.on_complete → core.record_task_result() → cache.save()
+    → task_tracker.on_complete → ws:record_task_result() → cache.save()
                                → ConfigUnit:clear_running()
                                → events.emit("task_result")
 ```
@@ -419,18 +444,22 @@ it to a tree node via `on_<action>` in the section's render function.
 
 ## Object Model
 
-Core wraps raw merged data into objects that hold a reference back to Core
-for live queries. See specification.md §1.6, §1.7 for behavioral rules.
+Workspace wraps raw merged data into domain objects that hold a `_workspace`
+reference back to the Workspace instance for live queries and registry access.
+Domain objects access infrastructure deps via `_workspace._core._deps`.
+See specification.md §1.6, §1.7 for behavioral rules.
 
 ```
 Core (singleton via init.lua)
-  ├── ConfigurationSet[]  ← from config, identity-preserving
-  ├── Profile[]           ← from merge, identity-preserving
-  │     └── LaunchTarget? ← per-profile default target (from user/config)
-  ├── ProfileProject[]    ← registered, one per (profile, project) pair
-  ├── Project[]           ← from active set, identity-preserving
-  └── ConfigUnit{}        ← synced during remerge + lazy fallback
-        └── Target{}      ← runtime, from module detection (set_targets)
+  └── Workspace             ← domain container, owns all registries
+        ├── ConfigurationSet[]  ← from config, identity-preserving
+        ├── Profile[]           ← from merge, identity-preserving
+        │     └── LaunchTarget? ← per-profile default target (from user/config)
+        ├── ProfileProject[]    ← registered, one per (profile, project) pair
+        ├── Project[]           ← from active set, identity-preserving
+        ├── ConfigUnit{}        ← synced during remerge + lazy fallback
+        │     └── Target{}      ← runtime, from module detection (set_targets)
+        └── Operation[]         ← active profile actions, cleaned up on completion
 ```
 
 All objects are **identity-preserving** across remerges: the same table is
@@ -438,8 +467,8 @@ updated in-place via `_update()`, never replaced. Construction uses the same
 path (`new` calls `_update`). Removed objects are marked `_removed = true`.
 
 **Objects own their updates**: given merge output, each object resolves its own
-references by reaching into Core's registries. Cross-object navigation uses
-direct references stored during `_update()`, not runtime key lookups.
+references by reaching into Workspace's registries. Cross-object navigation
+uses direct references stored during `_update()`, not runtime key lookups.
 
 **Remerge dependency order** (each step depends on the previous):
 1. `_sync_projects` — no deps
@@ -525,8 +554,8 @@ loomworks.nvim/
 ├── lua/
 │   ├── loomworks/
 │   │   ├── init.lua                   Public API facade
-│   │   ├── core.lua                   Stateful orchestrator
-│   │   ├── workspace.lua              Pure workspace assembly
+│   │   ├── core.lua                   Infrastructure layer (I/O, deps, setup)
+│   │   ├── workspace.lua              Domain container (Workspace class + static helpers)
 │   │   ├── file_tracker.lua           uv.fs_poll file watcher
 │   │   ├── io.lua                     Atomic file read/write
 │   │   ├── config.lua                 loomworks.json parse/validate
@@ -544,7 +573,7 @@ loomworks.nvim/
 │   │   ├── overseer.lua               Overseer template provider + launching
 │   │   ├── lsp.lua                    clangd factories + auto-restart
 │   │   ├── fidget.lua                 fidget.nvim progress integration
-│   │   ├── config_editor.lua           JSON read-modify-write for loomworks.json
+│   │   ├── config_editor.lua           Legacy JSON read-modify-write (not used at runtime)
 │   │   ├── modules/
 │   │   │   ├── init.lua               Module registry, detection orchestration
 │   │   │   ├── cmake.lua              CMake module (full v1)
