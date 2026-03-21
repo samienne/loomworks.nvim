@@ -316,14 +316,24 @@ function M.get_tool_entries(config, cache, tools_by_type)
     local result = {}
     if not config.configuration_sets then return result end
 
-    -- Collect keyed tools
+    -- Build set of module types present in config.projects
+    local active_types = {}
+    if config.projects then
+        for _, proj in pairs(config.projects) do
+            active_types[proj.type] = true
+        end
+    end
+
+    -- Collect keyed tools only for module types with active projects
     local keyed_tools = {}
     local keyed_mod_type = nil
     for mod_type, tools in pairs(tools_by_type) do
-        for _, tool in ipairs(tools) do
-            if tool.tool_key then
-                keyed_tools[#keyed_tools + 1] = tool
-                keyed_mod_type = mod_type
+        if active_types[mod_type] then
+            for _, tool in ipairs(tools) do
+                if tool.tool_key then
+                    keyed_tools[#keyed_tools + 1] = tool
+                    keyed_mod_type = mod_type
+                end
             end
         end
     end

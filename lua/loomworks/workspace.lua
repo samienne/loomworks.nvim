@@ -578,6 +578,22 @@ function Workspace:_build_referenced_set()
     return referenced
 end
 
+--- Build referenced set from runtime Profile objects (post-remerge).
+--- Unlike _build_referenced_set which uses raw cache data, this reflects
+--- the authoritative mappings from live ConfigurationSets. Stale cache
+--- references to removed projects are excluded.
+--- @return table<string, boolean>
+function Workspace:_build_live_referenced_set()
+    local referenced = {}
+    for _, profile in pairs(self._profiles) do
+        for _, pp in ipairs(profile:projects()) do
+            local ck = cache_mod.config_cache_key(pp.project_key, pp.config_key)
+            referenced[ck] = true
+        end
+    end
+    return referenced
+end
+
 --- Clean up unreferenced unconfigured skeletons on init.
 --- Configs with no state and no profile reference are silently dropped.
 --- Configs with state are left as orphaned (shown in UI).
@@ -613,7 +629,9 @@ end
 function Workspace:get_orphaned_configs()
     if not self.cache.configurations then return {} end
 
-    local referenced = self:_build_referenced_set()
+    -- Use live referenced set: stale cache refs to removed projects are
+    -- excluded, so their configs correctly appear as orphaned.
+    local referenced = self:_build_live_referenced_set()
 
     local result = {}
     for cache_key, cached_config in pairs(self.cache.configurations) do
