@@ -287,12 +287,12 @@ function ConfigUnit:materialize(variant, tool)
             tool_data = tool_data,
         }
 
-        ws._core:_save_cache()
-        ws._core:remerge()
+        ws:_save_cache()
+        ws:remerge()
     elseif existing.variant ~= self.variant and self.variant then
         -- Repair stale variant in cache
         existing.variant = self.variant
-        ws._core:_save_cache()
+        ws:_save_cache()
     end
 end
 
@@ -341,8 +341,8 @@ function ConfigUnit:materialize_pinned(variant, tool)
         configurations = { cache_key },
     }
 
-    ws._core:_save_cache()
-    ws._core:remerge()
+    ws:_save_cache()
+    ws:remerge()
     return ws._profiles[ak]
 end
 
@@ -394,10 +394,10 @@ function ConfigUnit:delete(on_done)
     if #units > 0 then
         local refs = self:referencing_profiles()
         local profile = refs[1] or nil
-        self._workspace._core:create_operation(profile, "delete", units, target_states)
+        self._workspace:create_operation(profile, "delete", units, target_states)
     end
 
-    self._workspace._core:execute_deletion(plan, nil, on_done)
+    self._workspace:execute_deletion(plan, nil, on_done)
 end
 
 --- Clean this config: run module clean tasks and reset build state.
@@ -405,31 +405,31 @@ end
 --- Creates a clean Operation to track progress.
 --- @param on_done? function
 function ConfigUnit:clean(on_done)
-    local core = self._workspace._core
+    local ws = self._workspace
 
     local items = { { project_key = self.project_key, config_key = self.config_key } }
 
     -- Cancel conflicting operations
-    core:cancel_conflicting_operations({ self })
+    ws:cancel_conflicting_operations({ self })
 
     -- Mark as cleaning and create Operation synchronously so that
     -- has_pending_deletions() returns true immediately.
     self:mark_deleting(true, "cleaning")
     local refs = self:referencing_profiles()
     local profile = refs[1] or nil
-    core:create_operation(profile, "clean", { self }, { [self] = "configured" })
+    ws:create_operation(profile, "clean", { self }, { [self] = "configured" })
 
     -- Crash-safe: set cache to "configured" before async clean tasks.
-    core:mark_cached_configs_cleaned(items)
+    ws:mark_cached_configs_cleaned(items)
 
     -- Stop running tasks, then run module clean tasks
-    local running = core:find_running_tasks_for_items(items)
+    local running = ws:find_running_tasks_for_items(items)
     local task_ids = {}
     for task_id in pairs(running) do
         task_ids[#task_ids + 1] = task_id
     end
 
-    core:stop_tasks_then(task_ids, function()
+    ws:stop_tasks_then(task_ids, function()
         require("loomworks.overseer").run_configuration_clean(self, function()
             self:mark_deleting(false)
             if on_done then on_done() end

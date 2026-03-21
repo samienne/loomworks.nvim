@@ -53,6 +53,7 @@ end
 --- Create a mock Workspace for testing domain objects (Profile, Project, etc.).
 --- Domain objects now take a workspace instead of core. The workspace has
 --- registries directly on it and a _core sub-table for infrastructure.
+--- Business logic methods live on the workspace; _core only holds deps.
 --- @param overrides? table
 --- @return table mock_workspace
 function M.make_mock_workspace(overrides)
@@ -66,22 +67,19 @@ function M.make_mock_workspace(overrides)
             events = { emit = function() end },
             merge = { resolve_detected_tool = function() return nil end },
             user = { save = function() return true end },
+            cache = { config_cache_key = function(pk, ck) return pk .. "/" .. ck end },
             modules = { get = function() return nil end },
             get_overseer_task = function() return nil end,
+            normalize = function(p) return p end,
+            notify = function() end,
+            io = { rm_rf_async = function(_, cb) cb(true, nil) end },
+            schedule = function(fn) fn() end,
+            now = function() return "2000-01-01T00:00:00Z" end,
         }, core_overrides._deps or {}),
-        remerge = core_overrides.remerge or function() end,
-        _save_cache = core_overrides._save_cache or function() return true end,
-        create_operation = core_overrides.create_operation or function() end,
-        execute_deletion = core_overrides.execute_deletion or function() end,
-        cancel_conflicting_operations = core_overrides.cancel_conflicting_operations or function() end,
-        find_running_tasks_for_items = core_overrides.find_running_tasks_for_items or function() return {} end,
-        stop_tasks_then = core_overrides.stop_tasks_then or function(_, _, fn) fn() end,
-        mark_cached_configs_cleaned = core_overrides.mark_cached_configs_cleaned or function() end,
-        _materialize_from_data = core_overrides._materialize_from_data or function() end,
     }
     -- Copy any extra core fields from overrides
     for k, v in pairs(core_overrides) do
-        if k ~= "_deps" and core[k] == nil then
+        if k ~= "_deps" then
             core[k] = v
         end
     end
@@ -120,6 +118,27 @@ function M.make_mock_workspace(overrides)
         end
         return unit
     end
+
+    -- Business logic methods now live on workspace.
+    -- Allow overrides via core_overrides for backward compatibility,
+    -- with sensible defaults.
+    ws.remerge = core_overrides.remerge or function() end
+    ws._save_cache = core_overrides._save_cache or function() return true end
+    ws.create_operation = core_overrides.create_operation or function() end
+    ws.execute_deletion = core_overrides.execute_deletion or function() end
+    ws.cancel_conflicting_operations = core_overrides.cancel_conflicting_operations or function() end
+    ws.find_running_tasks_for_items = core_overrides.find_running_tasks_for_items or function() return {} end
+    ws.stop_tasks_then = core_overrides.stop_tasks_then or function(_, _, fn) fn() end
+    ws.mark_cached_configs_cleaned = core_overrides.mark_cached_configs_cleaned or function() end
+    ws._materialize_from_data = core_overrides._materialize_from_data or function() end
+    ws.has_pending_deletions = core_overrides.has_pending_deletions or function() return false end
+    ws.record_task_result = core_overrides.record_task_result or function() end
+    ws.delete_cached_configs = core_overrides.delete_cached_configs or function() end
+    ws.reset_cached_configs = core_overrides.reset_cached_configs or function() end
+    ws._mark_cache_unknown = core_overrides._mark_cache_unknown or function() end
+    ws._validate_build_dir = core_overrides._validate_build_dir or function() return true end
+    ws._delete_build_dirs_async = core_overrides._delete_build_dirs_async or function(_, _, cb) cb({}) end
+    ws._run_deletion = core_overrides._run_deletion or function(_, _, _, on_done) if on_done then on_done() end end
 
     return ws
 end

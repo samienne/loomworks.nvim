@@ -90,7 +90,7 @@ function ConfigurationSet:ensure_profile(tool_entry)
     if profile then return profile end
 
     -- Materialize from structured data
-    self._workspace._core:_materialize_from_data(self, tool_entry)
+    self._workspace:_materialize_from_data(self, tool_entry)
 
     return self:find_profile(tool_entry)
 end

@@ -1,8 +1,10 @@
---- loomworks/core.lua — Infrastructure and stateful business logic.
+--- loomworks/core.lua — Infrastructure layer.
 --- Uses a constructor pattern for testability: Core.new(deps) returns an
 --- isolated instance with injectable dependencies and clean state.
---- Registries live on the Workspace instance; Core owns I/O, modules,
---- events, and tool detection infrastructure.
+--- Registries and business logic live on the Workspace instance;
+--- Core owns I/O, modules, events, file tracking, and setup.
+--- Thin delegation wrappers forward to Workspace so that init.lua callers
+--- continue to work via core:method().
 
 --- @class loomworks.Core
 --- @field _deps table injected dependencies
@@ -13,10 +15,7 @@
 local Core = {}
 Core.__index = Core
 
-local Profile = require("loomworks.profile").Profile
-local Project = require("loomworks.project")
 local ConfigUnit = require("loomworks.config_unit")
-local ConfigurationSet = require("loomworks.configuration_set")
 local Workspace = require("loomworks.workspace").Workspace
 
 --- Default dependency table. Tests override individual entries.
@@ -84,284 +83,9 @@ function Core:get_config_unit(project_key, config_key)
     return self._workspace:get_config_unit(project_key, config_key)
 end
 
--- ---------------------------------------------------------------------------
--- Operations
--- ---------------------------------------------------------------------------
-
---- Create an Operation for a profile action.
---- @param profile loomworks.Profile|nil nil for config-level operations
---- @param action string "build"|"configure"|"configure+build"|"clean"|"delete"
---- @param units loomworks.ConfigUnit[]
---- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
---- @return loomworks.Operation
-function Core:create_operation(profile, action, units, target_states)
-    local OperationClass = require("loomworks.operation")
-    local ws = self._workspace
-    local core = self
-    local op = OperationClass.new(ws, profile, action, units, target_states, function(completed_op)
-        -- On completion: clean up from workspace and profile registries
-        if profile then
-            profile:complete_operation(completed_op)
-        end
-        for i, o in ipairs(ws._operations) do
-            if o == completed_op then
-                table.remove(ws._operations, i)
-                break
-            end
-        end
-        -- Flush deletion waiters if no more deletion operations are active
-        if completed_op:is_deletion() and not core:has_pending_deletions() then
-            local waiters = ws._delete_waiters
-            ws._delete_waiters = {}
-            for _, fn in ipairs(waiters) do fn() end
-        end
-    end)
-
-    ws._operations[#ws._operations + 1] = op
-    if profile then
-        profile:add_operation(op)
-    end
-
-    self._deps.events.emit("operation_started", {
-        profile_key = profile and profile.key or nil,
-        action = action,
-        operation = op,
-    })
-
-    return op
-end
-
---- Get all active operations.
---- @return loomworks.Operation[]
-function Core:get_operations()
-    if not self._workspace then return {} end
-    return self._workspace._operations
-end
-
---- Cancel all active build/configure Operations that overlap with the given units.
---- Called before clean/delete to stop conflicting work.
---- @param units loomworks.ConfigUnit[]
-function Core:cancel_conflicting_operations(units)
-    if not self._workspace then return end
-    local unit_set = {}
-    for _, u in ipairs(units) do
-        unit_set[u] = true
-    end
-    -- Iterate a copy since cancel modifies _operations via callback
-    local ops = {}
-    for _, op in ipairs(self._workspace._operations) do
-        ops[#ops + 1] = op
-    end
-    for _, op in ipairs(ops) do
-        if not op.completed and not op:is_deletion() then
-            for _, u in ipairs(op.units) do
-                if unit_set[u] then
-                    op:cancel()
-                    break
-                end
-            end
-        end
-    end
-end
-
--- ---------------------------------------------------------------------------
--- Cache helpers
--- ---------------------------------------------------------------------------
-
---- Save the cache file with standard error handling.
---- @return boolean ok
-function Core:_save_cache()
-    if not self._workspace then return false end
-    -- Strip runtime-only data (targets) before persisting
-    local cache = self._workspace.cache
-    if cache.configurations then
-        for _, cfg in pairs(cache.configurations) do
-            if cfg.cmake then cfg.cmake.targets = nil end
-        end
-    end
-    local ok, err = self._deps.cache.save(self._workspace.root, cache)
-    if not ok then
-        self._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
-    end
-    return ok
-end
-
--- ---------------------------------------------------------------------------
--- Workspace & merge
--- ---------------------------------------------------------------------------
-
---- Validate all projects against their modules.
---- @param config loomworks.Config
---- @param root string
---- @return boolean ok, string|nil err
-function Core:_validate_projects(config, root)
-    local modules_mod = self._deps.modules
-    for key, project in pairs(config.projects) do
-        local mod = modules_mod.get(project.type)
-        if mod and mod.validate then
-            local abs_path = root .. "/" .. project.path
-            local result = mod.validate(abs_path, project.type_config)
-            if not result.valid then
-                return false, "project '" .. key .. "': " .. table.concat(result.warnings, "; ")
-            end
-            for _, warning in ipairs(result.warnings) do
-                self._deps.notify("loomworks: project '" .. key .. "': " .. warning, vim.log.levels.WARN)
-            end
-        end
-    end
-    return true, nil
-end
-
---- Scan tools from all modules present in the workspace.
---- Results are stored on the Workspace instance for use by merge and UI.
-function Core:_scan_tools()
-    if not self._workspace then return end
-    self._workspace._tools_by_type = self._deps.merge.detect_tools(
-        self._workspace.config, self._workspace.cache)
-end
-
---- Scan tools asynchronously and remerge when complete.
-function Core:_scan_tools_async()
-    if not self._workspace then return end
-    self._workspace._tool_state = "scanning"
-    self._deps.events.emit("tools_scanning")
-
-    self._deps.detect_tools_async(
-        self._workspace.config, self._workspace.cache,
-        function(tools_by_type)
-            self._deps.schedule(function()
-                if not self._workspace then return end
-                self._workspace._tools_by_type = tools_by_type
-                self:remerge()
-                self._workspace._tool_state = "scanned"
-                self._deps.events.emit("tools_detected")
-
-                -- Flush tool waiters
-                local waiters = self._workspace._tool_waiters
-                self._workspace._tool_waiters = {}
-                for _, fn in ipairs(waiters) do
-                    fn()
-                end
-
-                -- Scan targets for existing build dirs (async, runtime only)
-                self:_scan_targets_async()
-            end)
-        end
-    )
-end
-
---- Scan targets for all ConfigUnits that have a build directory.
---- Runs asynchronously, processing units sequentially to avoid blocking.
---- Results stored on ConfigUnit.targets (runtime only, not cached).
-function Core:_scan_targets_async()
-    if not self._workspace then return end
-    local ws = self._workspace
-
-    -- Collect scannable units: modules with parse_file_api_async (need build_dir)
-    -- or parse_targets_async (need project path)
-    local units = {}
-    local seen_projects = {} -- avoid duplicate project-level scans
-    for _, unit in pairs(ws._config_units) do
-        local proj_cfg = ws.config.projects and ws.config.projects[unit.project_key]
-        if not proj_cfg then goto continue end
-
-        local mod = self._deps.modules.get(proj_cfg.type)
-        if not mod then goto continue end
-
-        local build_dir = unit:build_dir()
-        if build_dir and mod.parse_file_api_async then
-            units[#units + 1] = {
-                unit = unit, mod = mod,
-                scan_type = "file_api",
-                build_dir = build_dir,
-            }
-        elseif mod.parse_targets_async and not seen_projects[unit.project_key] then
-            -- Project-level target scan (e.g., npm scripts) — once per project
-            seen_projects[unit.project_key] = true
-            local abs_path = ws.root .. "/" .. (proj_cfg.path or unit.project_key)
-            units[#units + 1] = {
-                unit = unit, mod = mod,
-                scan_type = "project",
-                project_path = abs_path,
-            }
-        end
-
-        ::continue::
-    end
-
-    if #units == 0 then return end
-
-    local idx = 0
-    local any_found = false
-    local function next_unit()
-        idx = idx + 1
-        if idx > #units then
-            -- Add launch configs from loomworks.json as targets
-            self:_add_launch_config_targets()
-            if any_found then
-                self._deps.events.emit("active_set_changed", ws._active_set)
-            end
-            return
-        end
-
-        local entry = units[idx]
-        local function on_targets(targets)
-            self._deps.schedule(function()
-                if targets then
-                    entry.unit:set_targets(targets)
-                    any_found = true
-                end
-                next_unit()
-            end)
-        end
-
-        if entry.scan_type == "file_api" then
-            entry.mod.parse_file_api_async(entry.build_dir, entry.unit.variant, on_targets)
-        else
-            entry.mod.parse_targets_async(entry.project_path, entry.unit.variant, on_targets)
-        end
-    end
-
-    next_unit()
-end
-
---- Add launch configs from loomworks.json as targets on ConfigUnits.
---- Called after module target scanning completes.
-function Core:_add_launch_config_targets()
-    local ws = self._workspace
-    if not ws then return end
-    local Target = require("loomworks.target")
-
-    for _, unit in pairs(ws._config_units) do
-        local proj_cfg = ws.config.projects and ws.config.projects[unit.project_key]
-        if proj_cfg and proj_cfg.launch then
-            unit.targets = unit.targets or {}
-            for name, cfg in pairs(proj_cfg.launch) do
-                local launch_key = "launch:" .. name
-                if not unit.targets[launch_key] then
-                    unit.targets[launch_key] = Target.new(unit, launch_key, {
-                        type = "launch_config",
-                        artifact = cfg.command,
-                    })
-                end
-            end
-        end
-    end
-end
-
---- Re-scan tools and remerge. Used for manual rescan from UI.
-function Core:rescan_tools()
-    local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
-    if ok then cmake_kits.clear_cache() end
-    self:_scan_tools_async()
-end
-
---- Get detected tools organized by module type.
---- @return table<string, loomworks.DetectedTool[]>
-function Core:get_tools_by_type()
-    if not self._workspace then return {} end
-    return self._workspace._tools_by_type
-end
+-- ===========================================================================
+-- Setup & lifecycle (stays on Core)
+-- ===========================================================================
 
 --- Handle a tracked file change.
 --- @param path string absolute file path that changed
@@ -388,9 +112,9 @@ function Core:_on_file_changed(path, content)
                 self._workspace.config = data.config
                 self._workspace.user = data.user
                 self._workspace.cache = data.cache
-                self:_scan_tools_async()
-                self:_migrate_set_names()
-                self:remerge()
+                self._workspace:_scan_tools_async()
+                self._workspace:_migrate_set_names()
+                self._workspace:remerge()
                 self._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
             else
                 self._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
@@ -403,13 +127,13 @@ function Core:_on_file_changed(path, content)
         -- user.json changed: update user data and remerge
         local user_data = content and self._deps.user.parse(content) or self._deps.user.default()
         self._workspace.user = user_data
-        self:remerge()
+        self._workspace:remerge()
 
     elseif path == paths.cache then
         -- cache.json changed: update cache data and remerge
         local cache_data = content and self._deps.cache.parse(content) or self._deps.cache.default()
         self._workspace.cache = cache_data
-        self:remerge()
+        self._workspace:remerge()
     end
 end
 
@@ -513,9 +237,9 @@ function Core:_on_files_read(root, paths, results)
     -- Create Workspace instance with registries
     self._workspace = Workspace.new(self, data)
 
-    self:_migrate_set_names()
-    self:_cleanup_orphaned_skeletons()
-    self:remerge()
+    self._workspace:_migrate_set_names()
+    self._workspace:_cleanup_orphaned_skeletons()
+    self._workspace:remerge()
     self._state = "initialized"
     self._deps.events.emit("workspace_changed", self._workspace)
 
@@ -537,8 +261,38 @@ function Core:_on_files_read(root, paths, results)
     self._deps.notify("loomworks: workspace '" .. self._workspace.name .. "' loaded (" .. self._workspace.root .. ")", vim.log.levels.INFO)
 
     -- Start async tool detection
-    self:_scan_tools_async()
+    self._workspace:_scan_tools_async()
 end
+
+-- ===========================================================================
+-- Validation (stays on Core)
+-- ===========================================================================
+
+--- Validate all projects against their modules.
+--- @param config loomworks.Config
+--- @param root string
+--- @return boolean ok, string|nil err
+function Core:_validate_projects(config, root)
+    local modules_mod = self._deps.modules
+    for key, project in pairs(config.projects) do
+        local mod = modules_mod.get(project.type)
+        if mod and mod.validate then
+            local abs_path = root .. "/" .. project.path
+            local result = mod.validate(abs_path, project.type_config)
+            if not result.valid then
+                return false, "project '" .. key .. "': " .. table.concat(result.warnings, "; ")
+            end
+            for _, warning in ipairs(result.warnings) do
+                self._deps.notify("loomworks: project '" .. key .. "': " .. warning, vim.log.levels.WARN)
+            end
+        end
+    end
+    return true, nil
+end
+
+-- ===========================================================================
+-- Safety & nuke (stays on Core)
+-- ===========================================================================
 
 --- Validate that a path is a child of root/.nvim/ before deletion.
 --- Uses absolute normalized paths to prevent directory traversal.
@@ -622,27 +376,9 @@ function Core:delete_user_prefs(root)
     self:setup({ root = norm_root })
 end
 
---- Re-merge workspace state, sync object registries, and emit events.
---- Order matters: each step may depend on objects synced in previous steps.
-function Core:remerge()
-    if not self._workspace then return end
-    local active_set, all_profile_defs = self._deps.merge.merge(
-        self._workspace, self._workspace._tools_by_type)
-    self._workspace._active_set = active_set
-    self:_sync_projects()                    -- 1. no deps
-    self:_sync_config_sets()                 -- 2. needs Projects
-    self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets
-    self:_sync_profile_projects()            -- 4. needs Profiles
-    self:_sync_config_units()                -- 5. needs Profiles (for config_keys)
-    self._deps.events.emit("active_set_changed", self._workspace._active_set)
-end
-
---- Get the merged active configuration set.
---- @return loomworks.ActiveSet|nil
-function Core:get_active_configuration_set()
-    if not self._workspace then return nil end
-    return self._workspace._active_set
-end
+-- ===========================================================================
+-- Queries (stays on Core)
+-- ===========================================================================
 
 --- Get the active workspace.
 --- @return loomworks.Workspace|nil
@@ -655,885 +391,6 @@ end
 function Core:get_setup_error()
     return self._setup_error
 end
-
--- ---------------------------------------------------------------------------
--- Object registries
--- ---------------------------------------------------------------------------
-
---- Sync the profiles registry with current merge data.
---- Creates new Profile objects, updates existing ones in place, removes stale ones.
---- Profile._update resolves its own mappings from Workspace's config sets registry.
---- @param all_defs table<string, loomworks.ProfileDef> profile definitions from merge
-function Core:_sync_profiles(all_defs)
-    local ws = self._workspace
-    if not ws then return end
-
-    -- Mark removed profiles
-    for key, profile in pairs(ws._profiles) do
-        if not all_defs[key] then
-            profile._removed = true
-            ws._profiles[key] = nil
-        end
-    end
-
-    -- Create or update — Profile._update handles mapping resolution internally
-    for key, data in pairs(all_defs) do
-        data._ws_cache = ws.cache
-        local existing = ws._profiles[key]
-        if existing then
-            existing:_update(data)
-        else
-            ws._profiles[key] = Profile.new(ws, key, data)
-        end
-    end
-end
-
---- Sync the projects registry with current active set data.
---- Creates new Project objects, updates existing ones in place, removes stale ones.
-function Core:_sync_projects()
-    local ws = self._workspace
-    if not ws or not ws._active_set then return end
-
-    local new_data = ws._active_set.projects
-
-    -- Mark removed projects
-    for key, project in pairs(ws._projects) do
-        if not new_data[key] then
-            project._removed = true
-            ws._projects[key] = nil
-        end
-    end
-
-    -- Create or update
-    for key, data in pairs(new_data) do
-        local existing = ws._projects[key]
-        if existing then
-            existing:_update(data)
-        else
-            ws._projects[key] = Project.new(ws, key, data)
-        end
-    end
-end
-
---- Sync the config sets registry with current config data.
---- Runs after _sync_projects so Project objects are available.
---- ConfigurationSet._update resolves project_key → Project internally.
-function Core:_sync_config_sets()
-    local ws = self._workspace
-    local defs = ws and ws.config.configuration_sets or {}
-
-    -- Mark removed
-    for name, cs in pairs(ws._config_sets) do
-        if not defs[name] then
-            cs._removed = true
-            ws._config_sets[name] = nil
-        end
-    end
-
-    -- Create or update
-    for name, raw_mappings in pairs(defs) do
-        local existing = ws._config_sets[name]
-        if existing then
-            existing:_update(raw_mappings)
-        else
-            ws._config_sets[name] = ConfigurationSet.new(ws, name, raw_mappings)
-        end
-    end
-end
-
---- Sync the profile projects registry.
---- Derives data from synced profiles' mappings.
---- Runs after _sync_profiles so Profile objects and their mappings are available.
-function Core:_sync_profile_projects()
-    local ProfileProject = require("loomworks.profile").ProfileProject
-    local ws = self._workspace
-
-    -- Build the set of expected (profile_key, project_key) pairs
-    local expected = {}
-    for profile_key, profile in pairs(ws._profiles) do
-        if profile.mappings then
-            for project_key, variant in pairs(profile.mappings) do
-                local reg_key = profile_key .. "\0" .. project_key
-                expected[reg_key] = { profile = profile, variant = variant }
-            end
-        end
-    end
-
-    -- Mark removed
-    for reg_key, pp in pairs(ws._profile_projects) do
-        if not expected[reg_key] then
-            pp._removed = true
-            ws._profile_projects[reg_key] = nil
-        end
-    end
-
-    -- Create or update
-    for reg_key, info in pairs(expected) do
-        local existing = ws._profile_projects[reg_key]
-        if existing then
-            existing:_update(info.profile, info.variant)
-        else
-            -- Extract project_key from reg_key (after the \0 separator)
-            local project_key = reg_key:match("%z(.+)$")
-            ws._profile_projects[reg_key] = ProfileProject.new(
-                ws, info.profile, project_key, info.variant)
-        end
-    end
-end
-
---- Sync the config units registry.
---- Collects all valid (project_key, config_key) pairs from profiles and cache,
---- creates/updates/removes ConfigUnit objects. Preserves runtime state.
-function Core:_sync_config_units()
-    local ws = self._workspace
-    if not ws then return end
-
-    -- Collect all valid (project_key, config_key) pairs
-    local expected = {} -- reg_key -> true
-
-    -- From all profiles' mappings (via profile_projects)
-    for _, pp in pairs(ws._profile_projects) do
-        local reg_key = pp.project_key .. "\0" .. pp.config_key
-        expected[reg_key] = true
-    end
-
-    -- From cache entries
-    if ws.cache.configurations then
-        for _, cached_config in pairs(ws.cache.configurations) do
-            local reg_key = cached_config.project_key .. "\0" .. cached_config.config_key
-            expected[reg_key] = true
-        end
-    end
-
-    -- Mark removed (only if not running/deleting — don't remove active units)
-    for reg_key, unit in pairs(ws._config_units) do
-        if not expected[reg_key] and not unit:is_running() and not unit:is_deleting() then
-            unit._removed = true
-            ws._config_units[reg_key] = nil
-        end
-    end
-
-    -- Create or update
-    for reg_key in pairs(expected) do
-        local existing = ws._config_units[reg_key]
-        if existing then
-            existing:_update()
-        else
-            local project_key = reg_key:match("^(.-)%z")
-            local config_key = reg_key:match("%z(.+)$")
-            ws._config_units[reg_key] = ConfigUnit.new(ws, project_key, config_key)
-        end
-    end
-end
-
---- Get all ConfigurationSet objects.
---- @return table<string, loomworks.ConfigurationSet>
-function Core:get_config_sets()
-    if not self._workspace then return {} end
-    return self._workspace._config_sets
-end
-
---- Get the active Profile object.
---- @return loomworks.Profile|nil
-function Core:get_active_profile()
-    if not self._workspace then return nil end
-    local active_set = self._workspace._active_set
-    if not active_set or not active_set.name then return nil end
-    return self._workspace._profiles[active_set.name]
-end
-
---- Get all Profile objects as a dict.
---- @return table<string, loomworks.Profile>
-function Core:get_profiles()
-    if not self._workspace then return {} end
-    return self._workspace._profiles
-end
-
---- Get tool entries for the configuration sets UI.
---- @return table<string, loomworks.ToolEntry[]> set_name -> entries
-function Core:get_tool_entries()
-    if not self._workspace then return {} end
-    return self._deps.merge.get_tool_entries(
-        self._workspace.config, self._workspace.cache, self._workspace._tools_by_type)
-end
-
---- Get all Project objects from the active set as a dict.
---- @return table<string, loomworks.Project>
-function Core:get_projects()
-    if not self._workspace then return {} end
-    return self._workspace._projects
-end
-
--- ---------------------------------------------------------------------------
--- Profile materialization
--- ---------------------------------------------------------------------------
-
---- Materialize a profile from structured data: write it to cache with full
---- tool and project references. Creates skeleton configuration entries.
---- No-op if the profile is already materialized (by property match).
---- @param config_set loomworks.ConfigurationSet
---- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
-function Core:_materialize_from_data(config_set, tool_entry)
-    if not self._workspace then return end
-
-    -- Wait for tool detection to complete before materializing
-    if self._workspace._tool_state == "scanning" then
-        self._workspace._tool_waiters[#self._workspace._tool_waiters + 1] = function()
-            self:_materialize_from_data(config_set, tool_entry)
-        end
-        return
-    end
-
-    local ws = self._workspace
-    local set_name = config_set.name
-
-    -- Compute profile key (pure cache identifier)
-    local tool_key = tool_entry and tool_entry.tool_key or nil
-    local profile_key = self._deps.merge.profile_key(set_name, tool_key)
-
-    -- Already cached?
-    if ws.cache.profiles and ws.cache.profiles[profile_key] then return end
-
-    local tool_data = tool_entry and tool_entry.tool_data or nil
-    local tool_label = tool_entry and tool_entry.tool_label or nil
-    local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
-
-    local profile_configurations = {}
-    ws.cache.configurations = ws.cache.configurations or {}
-
-    for project, variant in pairs(config_set.mappings) do
-        local project_config = ws.config.projects[project.key]
-        if not project_config then goto continue end
-
-        -- tool_key applies only to projects whose module type matches the tool.
-        -- When tool_mod_type is nil (e.g. older cache), fall back to including tool_key.
-        local project_tool_key = tool_key
-        if tool_mod_type and tool_mod_type ~= project_config.type then
-            project_tool_key = nil
-        end
-        local config_key = self._deps.merge.build_config_key(variant, project_tool_key)
-
-        local cache_key = self._deps.cache.config_cache_key(project.key, config_key)
-        profile_configurations[#profile_configurations + 1] = cache_key
-
-        -- Ensure skeleton config entry exists in flat cache
-        if not ws.cache.configurations[cache_key] then
-            ws.cache.configurations[cache_key] = {
-                project_key = project.key,
-                config_key = config_key,
-                type = project_config.type,
-                variant = variant,
-                tool_key = project_tool_key,
-                tool_data = project_tool_key and tool_data or nil,
-            }
-        end
-
-        ::continue::
-    end
-
-    -- Write profile to cache
-    ws.cache.profiles = ws.cache.profiles or {}
-    ws.cache.profiles[profile_key] = {
-        configuration_set = set_name,
-        tool_key = tool_key,
-        tool_data = tool_data,
-        tool_label = tool_label,
-        tool_mod_type = tool_mod_type,
-        configurations = profile_configurations,
-    }
-
-    self:_save_cache()
-    self:remerge()
-end
-
---- Migrate cached profile names when configuration_sets are renamed (case change).
---- Matches cached profiles to config sets case-insensitively and updates the cache.
-function Core:_migrate_set_names()
-    local ws = self._workspace
-    if not ws or not ws.cache.profiles or not ws.config.configuration_sets then return end
-
-    -- Build case-insensitive lookup: lowercase -> actual name in config
-    local config_sets_lower = {}
-    for name in pairs(ws.config.configuration_sets) do
-        config_sets_lower[name:lower()] = name
-    end
-
-    local renames = {} -- old_key -> { new_key, new_set }
-    for profile_key, cached_profile in pairs(ws.cache.profiles) do
-        local old_set = cached_profile.configuration_set
-        if not old_set then goto continue end -- pinned profiles have no set
-
-        -- Already matches exactly?
-        if ws.config.configuration_sets[old_set] then goto continue end
-
-        -- Try case-insensitive match
-        local new_set = config_sets_lower[old_set:lower()]
-        if new_set then
-            local new_key = self._deps.merge.profile_key(new_set, cached_profile.tool_key)
-            renames[profile_key] = { new_key = new_key, new_set = new_set }
-        end
-
-        ::continue::
-    end
-
-    if not next(renames) then return end
-
-    for old_key, info in pairs(renames) do
-        local profile_data = ws.cache.profiles[old_key]
-        profile_data.configuration_set = info.new_set
-        ws.cache.profiles[info.new_key] = profile_data
-        ws.cache.profiles[old_key] = nil
-
-        -- Update active_profile if it was the old key
-        if ws.user.active_profile == old_key then
-            ws.user.active_profile = info.new_key
-            self._deps.user.save(ws.root, ws.user)
-        end
-    end
-
-    self:_save_cache()
-end
-
---- Build a set of all cache keys referenced by profiles.
---- @return table<string, boolean> referenced set keyed by cache key ("project_key/config_key")
-function Core:_build_referenced_set()
-    local ws = self._workspace
-    local referenced = {}
-    if ws and ws.cache.profiles then
-        for _, profile in pairs(ws.cache.profiles) do
-            if profile.configurations then
-                for _, ck in ipairs(profile.configurations) do
-                    referenced[ck] = true
-                end
-            end
-        end
-    end
-    return referenced
-end
-
---- Clean up unreferenced unconfigured skeletons on init.
---- Configs with no state and no profile reference are silently dropped.
---- Configs with state are left as orphaned (shown in UI).
-function Core:_cleanup_orphaned_skeletons()
-    local ws = self._workspace
-    if not ws or not ws.cache.configurations then return end
-
-    local referenced = self:_build_referenced_set()
-
-    local changed = false
-    local to_drop = {}
-
-    for cache_key, cached_config in pairs(ws.cache.configurations) do
-        if not referenced[cache_key] then
-            local state = cached_config.state
-            if not state or state == "unconfigured" then
-                to_drop[#to_drop + 1] = cache_key
-                changed = true
-            end
-        end
-    end
-
-    for _, cache_key in ipairs(to_drop) do
-        ws.cache.configurations[cache_key] = nil
-    end
-
-    if changed then
-        self:_save_cache()
-    end
-end
-
---- Get orphaned cached configs: configs with state not referenced by any profile.
---- @return loomworks.OrphanedConfig[]
-function Core:get_orphaned_configs()
-    local ws = self._workspace
-    if not ws or not ws.cache.configurations then return {} end
-
-    local referenced = self:_build_referenced_set()
-
-    local result = {}
-    for cache_key, cached_config in pairs(ws.cache.configurations) do
-        local state = cached_config.state
-        if state and state ~= "unconfigured"
-                and not referenced[cache_key] then
-            result[#result + 1] = {
-                project_key = cached_config.project_key,
-                config_key = cached_config.config_key,
-                cached = cached_config,
-            }
-        end
-    end
-
-    -- Sort for deterministic UI order
-    table.sort(result, function(a, b)
-        if a.project_key ~= b.project_key then return a.project_key < b.project_key end
-        return a.config_key < b.config_key
-    end)
-
-    return result
-end
-
-
-
--- ---------------------------------------------------------------------------
--- Running task tracking
--- ---------------------------------------------------------------------------
-
---- Check if any tasks are currently running.
---- @return boolean
-function Core:has_running_tasks()
-    if not self._workspace then return false end
-    for _, unit in pairs(self._workspace._config_units) do
-        if unit:is_running() then return true end
-    end
-    return false
-end
-
---- Find running task IDs that match a list of project+config items.
---- @param items loomworks.DeletionItem[]
---- @return table<number, loomworks.RunningTaskInfo>
-function Core:find_running_tasks_for_items(items)
-    local matches = {}
-    for _, item in ipairs(items) do
-        local unit = self:get_config_unit(item.project_key, item.config_key)
-        if unit._task_id then
-            matches[unit._task_id] = {
-                project_key = unit.project_key,
-                action = unit:running_action(),
-                configuration_key = unit.config_key,
-            }
-        end
-    end
-    return matches
-end
-
---- Stop running overseer tasks and call on_done when all have stopped.
---- @param task_ids number[] overseer task IDs to stop
---- @param on_done function called when all tasks have stopped
-function Core:stop_tasks_then(task_ids, on_done)
-    if #task_ids == 0 then
-        on_done()
-        return
-    end
-
-    local remaining = #task_ids
-    local schedule = self._deps.schedule
-    local function check_done()
-        remaining = remaining - 1
-        if remaining == 0 then
-            schedule(on_done)
-        end
-    end
-
-    for _, task_id in ipairs(task_ids) do
-        local task = self._deps.get_overseer_task(task_id)
-        if task and not task:is_complete() then
-            task:subscribe("on_complete", function()
-                check_done()
-            end)
-            task:stop()
-        else
-            check_done()
-        end
-    end
-end
-
--- ---------------------------------------------------------------------------
--- Task result recording
--- ---------------------------------------------------------------------------
-
---- Record a task result and update the cache.
---- @param result loomworks.TaskResult
-function Core:record_task_result(result)
-    if not self._workspace then return end
-
-    local ws = self._workspace
-    local project_key = result.project_key
-    local config_key = result.configuration_key
-    local action = result.action
-    local success = result.success
-    local now = self._deps.now()
-
-    -- Ensure cache structure exists
-    local cache_key = self._deps.cache.config_cache_key(project_key, config_key)
-    ws.cache.configurations = ws.cache.configurations or {}
-
-    local proj_type = ws.config.projects[project_key]
-            and ws.config.projects[project_key].type or "unknown"
-
-    if not ws.cache.configurations[cache_key] then
-        ws.cache.configurations[cache_key] = {
-            project_key = project_key,
-            config_key = config_key,
-            type = proj_type,
-            variant = result.variant,
-            tool_key = result.tool and result.tool.key or nil,
-        }
-    end
-
-    local cached_config = ws.cache.configurations[cache_key]
-
-    if action == "configure" then
-        if success then
-            -- Don't downgrade from built to configured
-            if cached_config.state ~= "built" then
-                cached_config.state = "configured"
-            end
-            cached_config.last_configured = now
-        else
-            cached_config.state = "failed_configure"
-        end
-    elseif action == "build" then
-        if success then
-            cached_config.state = "built"
-            cached_config.last_built = now
-        else
-            cached_config.state = "failed_build"
-        end
-    end
-
-    if result.build_dir then
-        cached_config.build_dir = result.build_dir
-    end
-    if result.tool and result.tool.data then
-        cached_config.tool_data = result.tool.data
-    end
-    if result.cmake then
-        cached_config.cmake = cached_config.cmake or {}
-        for k, v in pairs(result.cmake) do
-            cached_config.cmake[k] = v
-        end
-    end
-
-    self:_save_cache()
-    self:remerge()
-
-    -- Parse file-api targets after successful configure (runtime only, not cached)
-    if action == "configure" and success and result.build_dir then
-        if proj_type ~= "unknown" then
-            local mod = self._deps.modules.get(proj_type)
-            if mod and mod.parse_file_api then
-                local unit = self:get_config_unit(project_key, config_key)
-                unit:set_targets(mod.parse_file_api(result.build_dir, result.variant))
-            end
-        end
-    end
-    self._deps.events.emit("task_result", result)
-end
-
--- ---------------------------------------------------------------------------
--- Deletion: query & status
--- ---------------------------------------------------------------------------
-
---- Check if any items are currently being deleted.
---- @return boolean
-function Core:has_pending_deletions()
-    if not self._workspace then return false end
-    for _, op in ipairs(self._workspace._operations) do
-        if not op.completed and op:is_deletion() then return true end
-    end
-    return false
-end
-
---- Wait for all pending deletions to finish, then call fn.
---- If nothing is pending, calls fn immediately.
---- @param fn function
-function Core:after_deletions(fn)
-    if not self:has_pending_deletions() then
-        fn()
-        return
-    end
-    self._workspace._delete_waiters[#self._workspace._delete_waiters + 1] = fn
-end
-
--- ---------------------------------------------------------------------------
--- Deletion: execute
--- ---------------------------------------------------------------------------
-
---- Validate a build directory path is safe to delete (under workspace root).
---- Checks that the path is strictly under the workspace root using a
---- directory boundary check (trailing "/") to prevent prefix collisions
---- (e.g., "/root" must not match "/roots/...").
---- @param build_dir string normalized path
---- @param safe_prefix string normalized workspace root
---- @return boolean safe
-function Core:_validate_build_dir(build_dir, safe_prefix)
-    local is_under = build_dir == safe_prefix
-        or build_dir:sub(1, #safe_prefix + 1) == safe_prefix .. "/"
-    if not is_under then
-        self._deps.notify("loomworks: refusing to delete build dir outside workspace: " .. build_dir, vim.log.levels.ERROR)
-        return false
-    end
-    return true
-end
-
---- Delete multiple build directories asynchronously via subprocesses (parallel).
---- @param dirs string[] list of normalized directory paths
---- @param callback fun(results: {dir: string, ok: boolean, err: string|nil}[])
-function Core:_delete_build_dirs_async(dirs, callback)
-    if #dirs == 0 then
-        callback({})
-        return
-    end
-
-    local results = {}
-    local remaining = #dirs
-    for _, dir in ipairs(dirs) do
-        self._deps.io.rm_rf_async(dir, function(ok, err)
-            results[#results + 1] = { dir = dir, ok = ok, err = err }
-            remaining = remaining - 1
-            if remaining == 0 then
-                callback(results)
-            end
-        end)
-    end
-end
-
---- Remove cache entries entirely (cache-only, no filesystem operations).
---- @param items loomworks.DeletionItem[]
-function Core:delete_cached_configs(items)
-    if not self._workspace then return end
-
-    local ws = self._workspace
-    if not ws.cache.configurations then return end
-    for _, item in ipairs(items) do
-        local cache_key = self._deps.cache.config_cache_key(item.project_key, item.config_key)
-        ws.cache.configurations[cache_key] = nil
-    end
-end
-
---- Reset cached configurations: clear state to unconfigured (cache-only, no filesystem).
---- Keeps the cache entry skeleton (variant, tool_key, tool_data) intact.
---- @param items loomworks.DeletionItem[]
-function Core:reset_cached_configs(items)
-    if not self._workspace then return end
-
-    local ws = self._workspace
-    if not ws.cache.configurations then return end
-    for _, item in ipairs(items) do
-        local cache_key = self._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = ws.cache.configurations[cache_key]
-        if cached_config then
-            cached_config.state = nil
-            cached_config.build_dir = nil
-            cached_config.last_configured = nil
-            cached_config.last_built = nil
-            cached_config.cmake = nil
-        end
-    end
-end
-
---- Mark cached configs as cleaned (reset build state but keep build_dir
---- and configuration metadata). Used after module clean tasks complete.
---- @param items table[] { project_key, config_key }
-function Core:mark_cached_configs_cleaned(items)
-    if not self._workspace then return end
-
-    local ws = self._workspace
-    if not ws.cache.configurations then return end
-    for _, item in ipairs(items) do
-        local cache_key = self._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = ws.cache.configurations[cache_key]
-        if cached_config then
-            cached_config.state = "configured"
-            cached_config.last_built = nil
-        end
-    end
-    self:_save_cache()
-    self:remerge()
-end
-
---- Set cache state to "unknown" for items that have build directories.
---- @param items loomworks.DeletionItem[]
-function Core:_mark_cache_unknown(items)
-    if not self._workspace then return end
-
-    local ws = self._workspace
-    if not ws.cache.configurations then return end
-    for _, item in ipairs(items) do
-        local cache_key = self._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = ws.cache.configurations[cache_key]
-        if cached_config and cached_config.build_dir then
-            cached_config.state = "unknown"
-        end
-    end
-end
-
---- Common async deletion workflow: cancel conflicting operations, mark items
---- as deleting, stop running tasks, delete build dirs via async subprocess,
---- then apply cache mutations.
---- Crash-safe: cache is set to "unknown" before async deletion starts.
---- @param items table[] list of { project_key, config_key, ... }
---- @param work_fn function called after build dirs are successfully deleted (cache mutations)
---- @param on_done? function called when complete
---- @param reason? "deleting"|"cleaning" reason for the deletion flag (default "deleting")
-function Core:_run_deletion(items, work_fn, on_done, reason)
-    if #items == 0 then
-        if on_done then on_done() end
-        return
-    end
-
-    -- Cancel any active build/configure Operations on the affected units
-    local units = {}
-    for _, item in ipairs(items) do
-        units[#units + 1] = self:get_config_unit(item.project_key, item.config_key)
-    end
-    self:cancel_conflicting_operations(units)
-
-    for _, unit in ipairs(units) do
-        unit:mark_deleting(true, reason)
-    end
-    self._deps.events.emit("deletion_started", items)
-
-    local running = self:find_running_tasks_for_items(items)
-    local task_ids = {}
-    for task_id in pairs(running) do
-        task_ids[#task_ids + 1] = task_id
-    end
-
-    self:stop_tasks_then(task_ids, function()
-        -- Crash-safe: mark cache as "unknown" before starting async deletion
-        self:_mark_cache_unknown(items)
-        self:_save_cache()
-
-        -- Collect build directories to delete
-        local ws = self._workspace
-        if not ws then
-            if on_done then on_done() end
-            return
-        end
-
-        local safe_prefix = self._deps.normalize(ws.root)
-        local dirs = {}
-        for _, item in ipairs(items) do
-            if item.build_dir then
-                local normalized = self._deps.normalize(item.build_dir)
-                if self:_validate_build_dir(normalized, safe_prefix) then
-                    dirs[#dirs + 1] = normalized
-                end
-            end
-        end
-
-        -- Delete build directories asynchronously
-        self:_delete_build_dirs_async(dirs, function(results)
-            -- Check for failures
-            local errors = {}
-            for _, r in ipairs(results) do
-                if not r.ok then
-                    errors[#errors + 1] = r
-                end
-            end
-
-            if #errors > 0 then
-                -- Failure: cache already has "unknown" state, notify user
-                for _, e in ipairs(errors) do
-                    self._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
-                end
-
-                for _, unit in ipairs(units) do
-                    unit:mark_deleting(false)
-                end
-
-                self:_save_cache()
-                self:remerge()
-
-                self._deps.events.emit("deletion_failed", { items = items, errors = errors })
-                if on_done then on_done() end
-                return
-            end
-
-            -- Success: apply cache mutations
-            work_fn(items)
-
-            self:_save_cache()
-            self:remerge()
-
-            for _, unit in ipairs(units) do
-                unit:mark_deleting(false)
-            end
-
-            self._deps.events.emit("deletion_completed", items)
-
-            if on_done then on_done() end
-        end)
-    end)
-end
-
---- Execute a deletion plan asynchronously.
---- Items with disposition "clean" have their cache entries removed.
---- Items with disposition "reset" have their state cleared to unconfigured.
---- Items with disposition "keep" are left untouched (referenced by another profile).
---- Also removes the profile entry from cache if plan.profile_key is set.
---- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile }
---- @param on_done? function called when deletion is complete
-function Core:execute_deletion(plan, opts, on_done)
-    opts = opts or {}
-
-    -- Deactivate profile if requested
-    if opts.deactivate_profile then
-        opts.deactivate_profile:deactivate()
-    end
-
-    -- Remove profile entry from cache (before async work)
-    if plan.profile_key and self._workspace then
-        local ws = self._workspace
-        if ws.cache.profiles and ws.cache.profiles[plan.profile_key] then
-            ws.cache.profiles[plan.profile_key] = nil
-            if not next(ws.cache.profiles) then
-                ws.cache.profiles = nil
-            end
-            self:_save_cache()
-        end
-    end
-
-    -- Split items by disposition
-    local actionable = {}
-    local clean_items = {}
-    local reset_items = {}
-    for _, item in ipairs(plan.items) do
-        if item.disposition == "clean" then
-            actionable[#actionable + 1] = item
-            clean_items[#clean_items + 1] = item
-        elseif item.disposition == "reset" then
-            actionable[#actionable + 1] = item
-            reset_items[#reset_items + 1] = item
-        end
-    end
-
-    if #actionable == 0 then
-        self:remerge()
-        if on_done then on_done() end
-        return
-    end
-
-    self:_run_deletion(actionable, function(effective_items)
-        -- Split effective items by their original disposition
-        local eff_clean = {}
-        local eff_reset = {}
-        local clean_set = {}
-        for _, item in ipairs(clean_items) do
-            clean_set[item.project_key .. "\0" .. item.config_key] = true
-        end
-        for _, item in ipairs(effective_items) do
-            local key = item.project_key .. "\0" .. item.config_key
-            if clean_set[key] then
-                eff_clean[#eff_clean + 1] = item
-            else
-                eff_reset[#eff_reset + 1] = item
-            end
-        end
-        if #eff_clean > 0 then
-            self:delete_cached_configs(eff_clean)
-        end
-        if #eff_reset > 0 then
-            self:reset_cached_configs(eff_reset)
-        end
-    end, on_done)
-end
-
--- ---------------------------------------------------------------------------
--- Queries
--- ---------------------------------------------------------------------------
 
 --- Find the project containing a buffer's file.
 --- @param bufnr number
@@ -1566,6 +423,228 @@ function Core:shutdown()
         self._tracker:stop()
         self._tracker = nil
     end
+end
+
+-- ===========================================================================
+-- Thin delegation wrappers (forward to Workspace)
+-- ===========================================================================
+-- These keep the init.lua -> core:method() calling convention working
+-- without requiring changes to init.lua or any external callers.
+
+--- @see loomworks.Workspace.remerge
+function Core:remerge()
+    if not self._workspace then return end
+    self._workspace:remerge()
+end
+
+--- @see loomworks.Workspace._save_cache
+function Core:_save_cache()
+    if not self._workspace then return false end
+    return self._workspace:_save_cache()
+end
+
+--- @see loomworks.Workspace.get_active_configuration_set
+function Core:get_active_configuration_set()
+    if not self._workspace then return nil end
+    return self._workspace:get_active_configuration_set()
+end
+
+--- @see loomworks.Workspace.get_active_profile
+function Core:get_active_profile()
+    if not self._workspace then return nil end
+    return self._workspace:get_active_profile()
+end
+
+--- @see loomworks.Workspace.get_profiles
+function Core:get_profiles()
+    if not self._workspace then return {} end
+    return self._workspace:get_profiles()
+end
+
+--- @see loomworks.Workspace.get_projects
+function Core:get_projects()
+    if not self._workspace then return {} end
+    return self._workspace:get_projects()
+end
+
+--- @see loomworks.Workspace.get_config_sets
+function Core:get_config_sets()
+    if not self._workspace then return {} end
+    return self._workspace:get_config_sets()
+end
+
+--- @see loomworks.Workspace.get_tool_entries
+function Core:get_tool_entries()
+    if not self._workspace then return {} end
+    return self._workspace:get_tool_entries()
+end
+
+--- @see loomworks.Workspace.get_tools_by_type
+function Core:get_tools_by_type()
+    if not self._workspace then return {} end
+    return self._workspace:get_tools_by_type()
+end
+
+--- @see loomworks.Workspace.get_orphaned_configs
+function Core:get_orphaned_configs()
+    if not self._workspace then return {} end
+    return self._workspace:get_orphaned_configs()
+end
+
+--- @see loomworks.Workspace.create_operation
+function Core:create_operation(profile, action, units, target_states)
+    if not self._workspace then return nil end
+    return self._workspace:create_operation(profile, action, units, target_states)
+end
+
+--- @see loomworks.Workspace.get_operations
+function Core:get_operations()
+    if not self._workspace then return {} end
+    return self._workspace:get_operations()
+end
+
+--- @see loomworks.Workspace.cancel_conflicting_operations
+function Core:cancel_conflicting_operations(units)
+    if not self._workspace then return end
+    self._workspace:cancel_conflicting_operations(units)
+end
+
+--- @see loomworks.Workspace.has_pending_deletions
+function Core:has_pending_deletions()
+    if not self._workspace then return false end
+    return self._workspace:has_pending_deletions()
+end
+
+--- @see loomworks.Workspace.after_deletions
+function Core:after_deletions(fn)
+    if not self._workspace then fn(); return end
+    self._workspace:after_deletions(fn)
+end
+
+--- @see loomworks.Workspace.has_running_tasks
+function Core:has_running_tasks()
+    if not self._workspace then return false end
+    return self._workspace:has_running_tasks()
+end
+
+--- @see loomworks.Workspace.find_running_tasks_for_items
+function Core:find_running_tasks_for_items(items)
+    if not self._workspace then return {} end
+    return self._workspace:find_running_tasks_for_items(items)
+end
+
+--- @see loomworks.Workspace.stop_tasks_then
+function Core:stop_tasks_then(task_ids, on_done)
+    if not self._workspace then on_done(); return end
+    self._workspace:stop_tasks_then(task_ids, on_done)
+end
+
+--- @see loomworks.Workspace.record_task_result
+function Core:record_task_result(result)
+    if not self._workspace then return end
+    self._workspace:record_task_result(result)
+end
+
+--- @see loomworks.Workspace._validate_build_dir
+function Core:_validate_build_dir(build_dir, safe_prefix)
+    if not self._workspace then return false end
+    return self._workspace:_validate_build_dir(build_dir, safe_prefix)
+end
+
+--- @see loomworks.Workspace._delete_build_dirs_async
+function Core:_delete_build_dirs_async(dirs, callback)
+    if not self._workspace then callback({}); return end
+    self._workspace:_delete_build_dirs_async(dirs, callback)
+end
+
+--- @see loomworks.Workspace.delete_cached_configs
+function Core:delete_cached_configs(items)
+    if not self._workspace then return end
+    self._workspace:delete_cached_configs(items)
+end
+
+--- @see loomworks.Workspace.reset_cached_configs
+function Core:reset_cached_configs(items)
+    if not self._workspace then return end
+    self._workspace:reset_cached_configs(items)
+end
+
+--- @see loomworks.Workspace.mark_cached_configs_cleaned
+function Core:mark_cached_configs_cleaned(items)
+    if not self._workspace then return end
+    self._workspace:mark_cached_configs_cleaned(items)
+end
+
+--- @see loomworks.Workspace._mark_cache_unknown
+function Core:_mark_cache_unknown(items)
+    if not self._workspace then return end
+    self._workspace:_mark_cache_unknown(items)
+end
+
+--- @see loomworks.Workspace._run_deletion
+function Core:_run_deletion(items, work_fn, on_done, reason)
+    if not self._workspace then if on_done then on_done() end; return end
+    self._workspace:_run_deletion(items, work_fn, on_done, reason)
+end
+
+--- @see loomworks.Workspace.execute_deletion
+function Core:execute_deletion(plan, opts, on_done)
+    if not self._workspace then if on_done then on_done() end; return end
+    self._workspace:execute_deletion(plan, opts, on_done)
+end
+
+--- @see loomworks.Workspace._materialize_from_data
+function Core:_materialize_from_data(config_set, tool_entry)
+    if not self._workspace then return end
+    self._workspace:_materialize_from_data(config_set, tool_entry)
+end
+
+--- @see loomworks.Workspace._scan_tools
+function Core:_scan_tools()
+    if not self._workspace then return end
+    self._workspace:_scan_tools()
+end
+
+--- @see loomworks.Workspace._scan_tools_async
+function Core:_scan_tools_async()
+    if not self._workspace then return end
+    self._workspace:_scan_tools_async()
+end
+
+--- @see loomworks.Workspace._scan_targets_async
+function Core:_scan_targets_async()
+    if not self._workspace then return end
+    self._workspace:_scan_targets_async()
+end
+
+--- @see loomworks.Workspace._add_launch_config_targets
+function Core:_add_launch_config_targets()
+    if not self._workspace then return end
+    self._workspace:_add_launch_config_targets()
+end
+
+--- @see loomworks.Workspace.rescan_tools
+function Core:rescan_tools()
+    if not self._workspace then return end
+    self._workspace:rescan_tools()
+end
+
+--- @see loomworks.Workspace._migrate_set_names
+function Core:_migrate_set_names()
+    if not self._workspace then return end
+    self._workspace:_migrate_set_names()
+end
+
+--- @see loomworks.Workspace._build_referenced_set
+function Core:_build_referenced_set()
+    if not self._workspace then return {} end
+    return self._workspace:_build_referenced_set()
+end
+
+--- @see loomworks.Workspace._cleanup_orphaned_skeletons
+function Core:_cleanup_orphaned_skeletons()
+    if not self._workspace then return end
+    self._workspace:_cleanup_orphaned_skeletons()
 end
 
 return Core

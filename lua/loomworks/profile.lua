@@ -287,7 +287,7 @@ end
 function Profile:activate()
     self._workspace.user.active_profile = self.key
     self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
-    self._workspace._core:remerge()
+    self._workspace:remerge()
 end
 
 --- Deactivate this profile if it is currently active.
@@ -295,7 +295,7 @@ function Profile:deactivate()
     if self._workspace.user.active_profile == self.key then
         self._workspace.user.active_profile = nil
         self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
-        self._workspace._core:remerge()
+        self._workspace:remerge()
     end
 end
 
@@ -593,10 +593,10 @@ function Profile:delete(on_done)
         end
     end
     if #units > 0 then
-        self._workspace._core:create_operation(self, "delete", units, target_states)
+        self._workspace:create_operation(self, "delete", units, target_states)
     end
 
-    self._workspace._core:execute_deletion(plan, { deactivate_profile = self }, on_done)
+    self._workspace:execute_deletion(plan, { deactivate_profile = self }, on_done)
 end
 
 --- Clean this profile's configs: run module clean tasks and reset build state.
@@ -624,27 +624,27 @@ function Profile:clean(on_done)
     end
 
     -- Cancel conflicting build/configure operations
-    self._workspace._core:cancel_conflicting_operations(units)
+    self._workspace:cancel_conflicting_operations(units)
 
     -- Mark units as cleaning and create Operation synchronously so that
     -- has_pending_deletions() returns true immediately (before async work).
     for _, unit in ipairs(units) do
         unit:mark_deleting(true, "cleaning")
     end
-    self._workspace._core:create_operation(self, "clean", units, target_states)
+    self._workspace:create_operation(self, "clean", units, target_states)
 
     -- Crash-safe: set cache to "configured" before async clean tasks.
     -- If we crash mid-clean, the state is still valid (needs rebuild, not broken).
-    self._workspace._core:mark_cached_configs_cleaned(items)
+    self._workspace:mark_cached_configs_cleaned(items)
 
     -- Stop running tasks, then run module clean tasks
-    local running = self._workspace._core:find_running_tasks_for_items(items)
+    local running = self._workspace:find_running_tasks_for_items(items)
     local task_ids = {}
     for task_id in pairs(running) do
         task_ids[#task_ids + 1] = task_id
     end
 
-    self._workspace._core:stop_tasks_then(task_ids, function()
+    self._workspace:stop_tasks_then(task_ids, function()
         require("loomworks.overseer").run_profile_clean(self, function()
             for _, unit in ipairs(units) do
                 unit:mark_deleting(false)
