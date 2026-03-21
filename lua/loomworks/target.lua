@@ -65,8 +65,7 @@ function Target:build(on_complete)
     if not mod then return end
 
     if mod.build_target_task then
-        local ws = unit._core:get_workspace()
-        if not ws then return end
+        local ws = unit._workspace
         local project_ctx = unit._project:to_module_context(ws.root)
         project_ctx.configuration = unit.variant
         project_ctx.configuration_key = unit.config_key

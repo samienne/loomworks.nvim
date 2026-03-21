@@ -6,7 +6,7 @@ local h = require("tests.helpers")
 --- @param name string
 --- @return loomworks.ConfigurationSet|nil
 local function get_cs(core, name)
-    return core._config_sets[name]
+    return core:get_config_sets()[name]
 end
 
 --- Create a Core with mocked deps and standard test files.

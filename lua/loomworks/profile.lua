@@ -11,7 +11,7 @@ local cache_mod = require("loomworks.cache")
 --- @field project_key string
 --- @field variant string configuration variant name
 --- @field config_key string precomputed cache key (variant or variant:kit_id)
---- @field _core loomworks.Core
+--- @field _workspace loomworks.Workspace
 --- @field _profile loomworks.Profile direct reference to parent profile
 --- @field _project loomworks.Project|nil direct reference to project object
 --- @field _removed boolean
@@ -19,14 +19,14 @@ local ProfileProject = {}
 ProfileProject.__index = ProfileProject
 
 --- Create a ProfileProject.
---- @param core loomworks.Core
+--- @param workspace loomworks.Workspace
 --- @param profile loomworks.Profile parent Profile
 --- @param project_key string
 --- @param variant string configuration variant name
 --- @return loomworks.ProfileProject
-function ProfileProject.new(core, profile, project_key, variant)
+function ProfileProject.new(workspace, profile, project_key, variant)
     local self = setmetatable({}, ProfileProject)
-    self._core = core
+    self._workspace = workspace
     self.project_key = project_key
     self._removed = false
     self:_update(profile, variant)
@@ -34,12 +34,12 @@ function ProfileProject.new(core, profile, project_key, variant)
 end
 
 --- Update in place (preserves table identity).
---- Resolves direct references to Profile and Project from Core registries.
+--- Resolves direct references to Profile and Project from Workspace registries.
 --- @param profile loomworks.Profile
 --- @param variant string
 function ProfileProject:_update(profile, variant)
     self._profile = profile
-    self._project = self._core._projects[self.project_key]
+    self._project = self._workspace._projects[self.project_key]
     self.variant = variant
     -- Tool key suffix when the profile has a keyed tool relevant to this project.
     -- If the tool's mod_type is known, only suffix matching module types.
@@ -65,7 +65,7 @@ end
 --- Delegates to ConfigUnit for the single source of truth.
 --- @return loomworks.ConfigUnitState status
 function ProfileProject:status()
-    local unit = self._core:get_config_unit(self.project_key, self.config_key)
+    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
     return unit:state()
 end
 
@@ -74,24 +74,23 @@ end
 --- that reference the same (project_key, config_key) pair.
 --- @return string|nil action
 function ProfileProject:running_action()
-    local unit = self._core:get_config_unit(self.project_key, self.config_key)
+    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
     return unit:running_action()
 end
 
 --- Check if this project-in-profile is being deleted.
 --- @return boolean
 function ProfileProject:is_deleting()
-    local unit = self._core:get_config_unit(self.project_key, self.config_key)
+    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
     return unit:is_deleting()
 end
 
 --- Get cached state from the workspace cache.
 --- @return loomworks.CachedConfig|nil
 function ProfileProject:cached_state()
-    local ws = self._core:get_workspace()
-    if not ws or not ws.cache.configurations then return nil end
+    if not self._workspace.cache.configurations then return nil end
     local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-    return ws.cache.configurations[ck]
+    return self._workspace.cache.configurations[ck]
 end
 
 --- Get the build directory from cache.
@@ -110,7 +109,7 @@ end
 --- @field explicit boolean
 --- @field mappings? table<string, string> project_key -> variant name
 --- @field orphaned_set boolean true if configuration_set no longer exists in config
---- @field _core loomworks.Core
+--- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 --- @field _config_set_ref? loomworks.ConfigurationSet direct reference, resolved during _update
 --- @field _valid_variants table<string, boolean> precomputed variant set
@@ -132,13 +131,13 @@ local STATUS_HL = {
 }
 
 --- Create a new Profile object.
---- @param core loomworks.Core
+--- @param workspace loomworks.Workspace
 --- @param key string profile key
 --- @param data? { configuration_set?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
 --- @return loomworks.Profile
-function Profile.new(core, key, data)
+function Profile.new(workspace, key, data)
     local self = setmetatable({}, Profile)
-    self._core = core
+    self._workspace = workspace
     self.key = key
     self._removed = false
     if data then self:_update(data) end
@@ -146,7 +145,7 @@ function Profile.new(core, key, data)
 end
 
 --- Update all data fields in place (preserves table identity).
---- Resolves mappings and ConfigurationSet reference from Core's registries.
+--- Resolves mappings and ConfigurationSet reference from Workspace's registries.
 --- @param data loomworks.ProfileDef
 function Profile:_update(data)
     self.configuration_set = data.configuration_set
@@ -171,7 +170,7 @@ function Profile:_update(data)
     end
 end
 
---- Resolve mappings for this profile from Core's registries.
+--- Resolve mappings for this profile from Workspace's registries.
 --- Three tiers: (1) reactive from ConfigurationSet, (2) stored mappings,
 --- (3) fallback from cached profile project data.
 --- @param data loomworks.ProfileDef
@@ -180,7 +179,7 @@ end
 function Profile:_resolve_mappings(data)
     -- Tier 1: Set-based profiles — derive from live ConfigurationSet (reactive)
     if data.configuration_set then
-        local cs = self._core._config_sets[data.configuration_set]
+        local cs = self._workspace._config_sets[data.configuration_set]
         if cs then
             self._config_set_ref = cs
             local mappings = {}
@@ -248,13 +247,13 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Get a ProfileProject for a specific project in this profile.
---- Looks up from Core's registry.
+--- Looks up from Workspace's registry.
 --- @param project_key string
 --- @return loomworks.ProfileProject|nil
 function Profile:project(project_key)
     if not self.mappings or not self.mappings[project_key] then return nil end
     local reg_key = self.key .. "\0" .. project_key
-    return self._core._profile_projects[reg_key]
+    return self._workspace._profile_projects[reg_key]
 end
 
 --- Get all ProfileProjects in this profile, sorted by dependency order.
@@ -265,7 +264,7 @@ function Profile:projects()
     if not self.mappings then return {} end
     local prefix = self.key .. "\0"
     local result = {}
-    for reg_key, pp in pairs(self._core._profile_projects) do
+    for reg_key, pp in pairs(self._workspace._profile_projects) do
         if reg_key:sub(1, #prefix) == prefix then
             result[#result + 1] = pp
         end
@@ -286,21 +285,17 @@ end
 --- Activate this profile.
 --- Writes to user.json and remerges directly.
 function Profile:activate()
-    local ws = self._core:get_workspace()
-    if not ws then return end
-    ws.user.active_profile = self.key
-    self._core._deps.user.save(ws.root, ws.user)
-    self._core:remerge()
+    self._workspace.user.active_profile = self.key
+    self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
+    self._workspace._core:remerge()
 end
 
 --- Deactivate this profile if it is currently active.
 function Profile:deactivate()
-    local ws = self._core:get_workspace()
-    if not ws then return end
-    if ws.user.active_profile == self.key then
-        ws.user.active_profile = nil
-        self._core._deps.user.save(ws.root, ws.user)
-        self._core:remerge()
+    if self._workspace.user.active_profile == self.key then
+        self._workspace.user.active_profile = nil
+        self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
+        self._workspace._core:remerge()
     end
 end
 
@@ -322,15 +317,12 @@ end
 --- Resolves from user.json, falls back to loomworks.json profile definition.
 --- @return loomworks.LaunchTarget|nil
 function Profile:default_target()
-    local ws = self._core:get_workspace()
-    if not ws then return nil end
-
     -- Check user.json first
-    local descriptor = ws.user.default_target
-        and ws.user.default_target[self.key]
+    local descriptor = self._workspace.user.default_target
+        and self._workspace.user.default_target[self.key]
     -- Fall back to loomworks.json profile definition
-    if not descriptor and ws.config.profiles then
-        local profile_def = ws.config.profiles[self.key]
+    if not descriptor and self._workspace.config.profiles then
+        local profile_def = self._workspace.config.profiles[self.key]
         if profile_def then
             descriptor = profile_def.default_target
         end
@@ -344,7 +336,7 @@ function Profile:default_target()
     end
 
     local LaunchTarget = require("loomworks.launch_target")
-    return LaunchTarget.new(self._core, self, descriptor)
+    return LaunchTarget.new(self._workspace, self, descriptor)
 end
 
 --- Set the default target for this profile.
@@ -352,23 +344,19 @@ end
 --- @param target_id? string opaque target identifier (module targets)
 --- @param launch_name? string launch config name (command launches)
 function Profile:set_default_target(project, target_id, launch_name)
-    local ws = self._core:get_workspace()
-    if not ws then return end
-    ws.user.default_target = ws.user.default_target or {}
+    self._workspace.user.default_target = self._workspace.user.default_target or {}
     local descriptor = { project = project.key }
     if target_id then descriptor.target = target_id end
     if launch_name then descriptor.launch = launch_name end
-    ws.user.default_target[self.key] = descriptor
-    self._core._deps.user.save(ws.root, ws.user)
+    self._workspace.user.default_target[self.key] = descriptor
+    self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
 end
 
 --- Clear the default target for this profile.
 function Profile:clear_default_target()
-    local ws = self._core:get_workspace()
-    if not ws then return end
-    if ws.user.default_target then
-        ws.user.default_target[self.key] = nil
-        self._core._deps.user.save(ws.root, ws.user)
+    if self._workspace.user.default_target then
+        self._workspace.user.default_target[self.key] = nil
+        self._workspace._core._deps.user.save(self._workspace.root, self._workspace.user)
     end
 end
 
@@ -434,23 +422,22 @@ end
 --- Check if this profile has any configured entries in cache.
 --- @return boolean
 function Profile:is_configured()
-    local ws = self._core:get_workspace()
-    if not ws or not ws.cache then return false end
+    if not self._workspace.cache then return false end
 
     -- Look up profile in cache by key
-    local cached_profile = ws.cache.profiles and ws.cache.profiles[self.key]
+    local cached_profile = self._workspace.cache.profiles and self._workspace.cache.profiles[self.key]
     if not cached_profile or not cached_profile.configurations then
         -- Fallback: value matching for set-based profiles
         if self.configuration_set then
             cached_profile = merge.find_cached_profile(
-                ws.cache, self.configuration_set, self.tool and self.tool.data)
+                self._workspace.cache, self.configuration_set, self.tool and self.tool.data)
         end
         if not cached_profile or not cached_profile.configurations then return false end
     end
 
     -- Check if any referenced configuration has actual build state
     for _, ck in ipairs(cached_profile.configurations) do
-        local cached_config = ws.cache.configurations and ws.cache.configurations[ck]
+        local cached_config = self._workspace.cache.configurations and self._workspace.cache.configurations[ck]
         if cached_config and cached_config.state
                 and cached_config.state ~= "unconfigured" then
             return true
@@ -497,7 +484,7 @@ function Profile:status()
         local all_cleaning = true
         for _, pp in ipairs(pps) do
             if pp:status() == "deleting" then
-                local unit = self._core:get_config_unit(pp.project_key, pp.config_key)
+                local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
                 if unit:deleting_reason() ~= "cleaning" then
                     all_cleaning = false
                     break
@@ -553,15 +540,12 @@ end
 --- Returns a plan object with items, shared analysis, and metadata.
 --- @return loomworks.DeletionPlan
 function Profile:plan_deletion()
-    local ws = self._core:get_workspace()
     local empty = { items = {}, profile_key = self.key, defined_in_config = false }
-    if not ws then return empty end
     if not self.mappings then return empty end
 
     -- Build lookup: which configs are referenced by OTHER profiles.
     local other_refs = {}
-    local all_profiles = self._core:get_profiles()
-    for _, other in pairs(all_profiles) do
+    for _, other in pairs(self._workspace._profiles) do
         if other.key ~= self.key then
             for _, other_pp in ipairs(other:projects()) do
                 other_refs[other_pp.project_key .. "\0" .. other_pp.config_key] = true
@@ -583,7 +567,7 @@ function Profile:plan_deletion()
 
     table.sort(items, function(a, b) return a.project_key < b.project_key end)
 
-    local defined_in_config = ws.config.profiles and ws.config.profiles[self.key] or false
+    local defined_in_config = self._workspace.config.profiles and self._workspace.config.profiles[self.key] or false
 
     return {
         items = items,
@@ -603,16 +587,16 @@ function Profile:delete(on_done)
     local target_states = {}
     for _, item in ipairs(plan.items) do
         if item.disposition ~= "keep" then
-            local unit = self._core:get_config_unit(item.project_key, item.config_key)
+            local unit = self._workspace:get_config_unit(item.project_key, item.config_key)
             units[#units + 1] = unit
             target_states[unit] = "unconfigured"
         end
     end
     if #units > 0 then
-        self._core:create_operation(self, "delete", units, target_states)
+        self._workspace._core:create_operation(self, "delete", units, target_states)
     end
 
-    self._core:execute_deletion(plan, { deactivate_profile = self }, on_done)
+    self._workspace._core:execute_deletion(plan, { deactivate_profile = self }, on_done)
 end
 
 --- Clean this profile's configs: run module clean tasks and reset build state.
@@ -634,33 +618,33 @@ function Profile:clean(on_done)
             project_key = pp.project_key,
             config_key = pp.config_key,
         }
-        local unit = self._core:get_config_unit(pp.project_key, pp.config_key)
+        local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
         units[#units + 1] = unit
         target_states[unit] = "configured"
     end
 
     -- Cancel conflicting build/configure operations
-    self._core:cancel_conflicting_operations(units)
+    self._workspace._core:cancel_conflicting_operations(units)
 
     -- Mark units as cleaning and create Operation synchronously so that
     -- has_pending_deletions() returns true immediately (before async work).
     for _, unit in ipairs(units) do
         unit:mark_deleting(true, "cleaning")
     end
-    self._core:create_operation(self, "clean", units, target_states)
+    self._workspace._core:create_operation(self, "clean", units, target_states)
 
     -- Crash-safe: set cache to "configured" before async clean tasks.
     -- If we crash mid-clean, the state is still valid (needs rebuild, not broken).
-    self._core:mark_cached_configs_cleaned(items)
+    self._workspace._core:mark_cached_configs_cleaned(items)
 
     -- Stop running tasks, then run module clean tasks
-    local running = self._core:find_running_tasks_for_items(items)
+    local running = self._workspace._core:find_running_tasks_for_items(items)
     local task_ids = {}
     for task_id in pairs(running) do
         task_ids[#task_ids + 1] = task_id
     end
 
-    self._core:stop_tasks_then(task_ids, function()
+    self._workspace._core:stop_tasks_then(task_ids, function()
         require("loomworks.overseer").run_profile_clean(self, function()
             for _, unit in ipairs(units) do
                 unit:mark_deleting(false)

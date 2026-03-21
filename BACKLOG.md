@@ -55,6 +55,13 @@ Low priority — most TypeScript projects use a single tsconfig.json.
 Only needed when profiles map to different tsconfig files (e.g.,
 tsconfig.debug.json vs tsconfig.release.json).
 
+## Orphaned ConfigUnits after project deletion
+
+After the Workspace-as-container refactor (Phase 1), deleting a project
+can leave orphaned ConfigUnit entries in the registry. The _sync_config_units
+pass skips removal of running/deleting units, but non-active units for a
+removed project should be cleaned up. Verify and fix the cleanup path.
+
 ## Clear active profile on deletion
 
 When a profile is deleted, the active_profile in loomworks.user.json

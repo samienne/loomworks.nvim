@@ -11,7 +11,7 @@ local cache_mod = require("loomworks.cache")
 --- @field config_key string
 --- @field variant? string configuration variant name (from cache data)
 --- @field tool? loomworks.ToolRef bundled tool reference (from cache data)
---- @field _core loomworks.Core
+--- @field _workspace loomworks.Workspace
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID (persists after completion)
 --- @field _action string|nil "configure" or "build" while a task is running
@@ -38,13 +38,13 @@ ConfigUnit.__index = ConfigUnit
 --- | "unknown"
 
 --- Create a new ConfigUnit.
---- @param core loomworks.Core
+--- @param workspace loomworks.Workspace
 --- @param project_key string
 --- @param config_key string
 --- @return loomworks.ConfigUnit
-function ConfigUnit.new(core, project_key, config_key)
+function ConfigUnit.new(workspace, project_key, config_key)
     local self = setmetatable({}, ConfigUnit)
-    self._core = core
+    self._workspace = workspace
     self.project_key = project_key
     self.config_key = config_key
     self._task_id = nil
@@ -64,8 +64,14 @@ end
 --- Refresh variant, tool, and project reference from cache/registries.
 --- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners, targets).
 function ConfigUnit:_update()
+    if not self._workspace then
+        self._project = nil
+        self.variant = nil
+        self.tool = nil
+        return
+    end
     -- Resolve direct project reference
-    self._project = self._core._projects[self.project_key]
+    self._project = self._workspace._projects[self.project_key]
 
     local cached = self:cached_state()
     self.variant = cached and cached.variant or nil
@@ -79,7 +85,7 @@ function ConfigUnit:_update()
     -- Authoritative: resolve variant from a ProfileProject that references
     -- this config_key. PP.variant is always correct (comes from profile
     -- mappings), and takes priority over potentially stale cached variant.
-    for _, pp in pairs(self._core._profile_projects) do
+    for _, pp in pairs(self._workspace._profile_projects) do
         if pp.project_key == self.project_key and pp.config_key == self.config_key then
             self.variant = pp.variant
             if pp._profile and pp._profile.tool then
@@ -98,7 +104,7 @@ function ConfigUnit:_update()
     if not self.variant then
         local has_keyed = self.tool ~= nil
         if not has_keyed and self._project then
-            local type_tools = self._core._tools_by_type[self._project.type]
+            local type_tools = self._workspace._tools_by_type[self._project.type]
             if type_tools then
                 for _, dt in ipairs(type_tools) do
                     if dt.tool_key then has_keyed = true; break end
@@ -158,10 +164,10 @@ end
 --- Get cached state from the workspace cache.
 --- @return loomworks.CachedConfig|nil
 function ConfigUnit:cached_state()
-    local ws = self._core:get_workspace()
-    if not ws or not ws.cache.configurations then return nil end
+    if not self._workspace then return nil end
+    if not self._workspace.cache or not self._workspace.cache.configurations then return nil end
     local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-    return ws.cache.configurations[ck]
+    return self._workspace.cache.configurations[ck]
 end
 
 --- Get the build directory from cache.
@@ -176,8 +182,8 @@ end
 function ConfigUnit:resolve_tool()
     if not self.tool or not self.tool.key then return self.tool end
     if self.tool.label then return self.tool end  -- already resolved
-    local dt, mod_type = self._core._deps.merge.resolve_detected_tool(
-        self._core._tools_by_type, self.tool.key)
+    local dt, mod_type = self._workspace._core._deps.merge.resolve_detected_tool(
+        self._workspace._tools_by_type, self.tool.key)
     if dt then
         self.tool.label = dt.tool_label
         self.tool.mod_type = mod_type
@@ -196,7 +202,7 @@ end
 --- @return number|nil seconds
 function ConfigUnit:elapsed()
     if not self._start_time then return nil end
-    return self._core._deps.clock() - self._start_time
+    return self._workspace._core._deps.clock() - self._start_time
 end
 
 -- ---------------------------------------------------------------------------
@@ -206,8 +212,9 @@ end
 --- Find all profiles that reference this (project_key, config_key) pair.
 --- @return loomworks.Profile[]
 function ConfigUnit:referencing_profiles()
+    if not self._workspace then return {} end
     local result = {}
-    for _, profile in pairs(self._core._profiles) do
+    for _, profile in pairs(self._workspace._profiles) do
         for _, pp in ipairs(profile:projects()) do
             if pp.project_key == self.project_key and pp.config_key == self.config_key then
                 result[#result + 1] = profile
@@ -238,18 +245,16 @@ end
 --- @param variant? string configuration variant name (uses self.variant if nil)
 --- @param tool? loomworks.ToolRef tool reference (uses self.tool if nil)
 function ConfigUnit:materialize(variant, tool)
-    local core = self._core
-    if not core._workspace then return end
+    local ws = self._workspace
 
     -- Wait for tool detection to complete before materializing
-    if core._tool_state == "scanning" then
-        core._tool_waiters[#core._tool_waiters + 1] = function()
+    if ws._tool_state == "scanning" then
+        ws._tool_waiters[#ws._tool_waiters + 1] = function()
             self:materialize(variant, tool)
         end
         return
     end
 
-    local ws = core._workspace
     local project_config = ws.config.projects[self.project_key]
     if not project_config then return end
 
@@ -261,7 +266,7 @@ function ConfigUnit:materialize(variant, tool)
     local tool_key = self.tool and self.tool.key or nil
     local tool_data = self.tool and self.tool.data or nil
     if tool_key and not tool_data then
-        local dt = core._deps.merge.resolve_detected_tool(core._tools_by_type, tool_key)
+        local dt = ws._core._deps.merge.resolve_detected_tool(ws._tools_by_type, tool_key)
         if dt then
             tool_data = dt.tool_data
             self.tool.data = tool_data
@@ -282,12 +287,12 @@ function ConfigUnit:materialize(variant, tool)
             tool_data = tool_data,
         }
 
-        core:_save_cache()
-        core:remerge()
+        ws._core:_save_cache()
+        ws._core:remerge()
     elseif existing.variant ~= self.variant and self.variant then
         -- Repair stale variant in cache
         existing.variant = self.variant
-        core:_save_cache()
+        ws._core:_save_cache()
     end
 end
 
@@ -297,29 +302,27 @@ end
 --- @param tool? loomworks.ToolRef tool reference (uses self.tool if nil)
 --- @return loomworks.Profile|nil
 function ConfigUnit:materialize_pinned(variant, tool)
-    local core = self._core
-    if not core._workspace then return nil end
+    local ws = self._workspace
 
     -- Wait for tool detection to complete before materializing
-    if core._tool_state == "scanning" then
-        core._tool_waiters[#core._tool_waiters + 1] = function()
+    if ws._tool_state == "scanning" then
+        ws._tool_waiters[#ws._tool_waiters + 1] = function()
             self:materialize_pinned(variant, tool)
         end
         return nil
     end
 
-    local ws = core._workspace
     local project_config = ws.config.projects[self.project_key]
     if not project_config then return nil end
 
-    local ak = core._deps.merge.pinned_key(self.project_key, self.config_key)
+    local ak = ws._core._deps.merge.pinned_key(self.project_key, self.config_key)
 
     -- Ensure config skeleton exists
     self:materialize(variant, tool)
 
     -- Check if pinned profile already exists
     ws.cache.profiles = ws.cache.profiles or {}
-    if ws.cache.profiles[ak] then return core._profiles[ak] end
+    if ws.cache.profiles[ak] then return ws._profiles[ak] end
 
     -- Use self.variant and self.tool (set by materialize or caller)
     self:resolve_tool()
@@ -338,9 +341,9 @@ function ConfigUnit:materialize_pinned(variant, tool)
         configurations = { cache_key },
     }
 
-    core:_save_cache()
-    core:remerge()
-    return core._profiles[ak]
+    ws._core:_save_cache()
+    ws._core:remerge()
+    return ws._profiles[ak]
 end
 
 --- Plan a deletion for this config.
@@ -348,12 +351,11 @@ end
 --- skeleton). Otherwise "clean" (remove entirely).
 --- @return loomworks.DeletionPlan
 function ConfigUnit:plan_deletion()
-    local core = self._core
-    if not core:get_workspace() then
-        return { items = {}, project_key = self.project_key, config_key = self.config_key, defined_in_config = false }
+    local ws = self._workspace
+    if not ws then
+        return { items = {}, defined_in_config = false }
     end
 
-    local ws = core:get_workspace()
     local has_ref = #self:referencing_profiles() > 0
 
     local items = { {
@@ -384,7 +386,7 @@ function ConfigUnit:delete(on_done)
     local target_states = {}
     for _, item in ipairs(plan.items) do
         if item.disposition ~= "keep" then
-            local unit = self._core:get_config_unit(item.project_key, item.config_key)
+            local unit = self._workspace:get_config_unit(item.project_key, item.config_key)
             units[#units + 1] = unit
             target_states[unit] = "unconfigured"
         end
@@ -392,10 +394,10 @@ function ConfigUnit:delete(on_done)
     if #units > 0 then
         local refs = self:referencing_profiles()
         local profile = refs[1] or nil
-        self._core:create_operation(profile, "delete", units, target_states)
+        self._workspace._core:create_operation(profile, "delete", units, target_states)
     end
 
-    self._core:execute_deletion(plan, nil, on_done)
+    self._workspace._core:execute_deletion(plan, nil, on_done)
 end
 
 --- Clean this config: run module clean tasks and reset build state.
@@ -403,12 +405,8 @@ end
 --- Creates a clean Operation to track progress.
 --- @param on_done? function
 function ConfigUnit:clean(on_done)
-    if not self._core:get_workspace() then
-        if on_done then on_done() end
-        return
-    end
+    local core = self._workspace._core
 
-    local core = self._core
     local items = { { project_key = self.project_key, config_key = self.config_key } }
 
     -- Cancel conflicting operations
@@ -445,12 +443,10 @@ function ConfigUnit:options()
     local bd = self:build_dir()
     if not bd then return nil end
 
-    local ws = self._core:get_workspace()
-    if not ws then return nil end
-    local proj_cfg = ws.config.projects[self.project_key]
+    local proj_cfg = self._workspace.config.projects[self.project_key]
     if not proj_cfg then return nil end
 
-    local mod = self._core._deps.modules.get(proj_cfg.type)
+    local mod = self._workspace._core._deps.modules.get(proj_cfg.type)
     if not mod or not mod.get_options then return nil end
 
     return mod.get_options(bd, proj_cfg.type_config)
@@ -468,7 +464,7 @@ function ConfigUnit:register_task(task_id, action)
     self._last_task_id = task_id
     self._action = action
     self._progress = nil
-    self._start_time = self._core._deps.clock()
+    self._start_time = self._workspace._core._deps.clock()
     self:_notify()
 end
 
@@ -504,7 +500,7 @@ end
 --- @return boolean opened true if a task was found and opened
 function ConfigUnit:open_task_output(win_opts, on_close)
     if not self._last_task_id then return false end
-    local task = self._core._deps.get_overseer_task(self._last_task_id)
+    local task = self._workspace._core._deps.get_overseer_task(self._last_task_id)
     if not task then return false end
     local bufnr = task:get_bufnr()
     if not bufnr then return false end

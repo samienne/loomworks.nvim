@@ -283,9 +283,8 @@ describe("ConfigUnit", function()
 
         it("returns elapsed time from clock", function()
             local time = 100
-            local core = h.make_mock_core()
-            core._deps = { clock = function() return time end }
-            local unit = core:get_config_unit("App", "Debug")
+            local ws = h.make_mock_core({ _core = { _deps = { clock = function() return time end } } })
+            local unit = ws:get_config_unit("App", "Debug")
 
             unit:register_task(1, "build")
             time = 105
