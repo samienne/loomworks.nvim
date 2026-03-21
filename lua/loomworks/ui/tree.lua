@@ -214,8 +214,7 @@ function Tree:_create_workspace()
     end
 
     local root = vim.fn.getcwd()
-    local config_editor = require("loomworks.config_editor")
-    local ok, err = config_editor.create_workspace(root)
+    local ok, err = require("loomworks.workspace").create_workspace_config(root)
     if ok then
         lw.setup({ root = root })
     else

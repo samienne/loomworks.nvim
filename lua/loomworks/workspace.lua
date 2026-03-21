@@ -29,6 +29,30 @@ function M.resolve_root(path, normalize)
     return root:gsub("/$", "")
 end
 
+--- Create a barebones workspace (loomworks.json) on disk.
+--- Bootstrap operation — no Workspace instance needed.
+--- Fails if loomworks.json already exists.
+--- @param root string workspace root directory
+--- @param name? string workspace name (defaults to directory basename)
+--- @param write_json? fun(path: string, data: table): boolean, string|nil writer (injectable for testing)
+--- @return boolean ok, string|nil err
+function M.create_workspace_config(root, name, write_json)
+    local path = root .. "/loomworks.json"
+    local uv = vim.uv or vim.loop
+    if uv.fs_stat(path) then
+        return false, "loomworks.json already exists in " .. root
+    end
+
+    local dir_name = root:match("([^/]+)$") or root
+    local data = {
+        name = name or dir_name,
+        projects = {},
+    }
+
+    write_json = write_json or require("loomworks.io").write_json
+    return write_json(path, data)
+end
+
 --- Return the file paths that a workspace root implies.
 --- @param root string absolute workspace root
 --- @return { config: string, user: string, cache: string }

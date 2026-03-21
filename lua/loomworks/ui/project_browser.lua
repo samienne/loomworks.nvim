@@ -7,7 +7,6 @@
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
 local modules = require("loomworks.modules")
-local config_editor = require("loomworks.config_editor")
 
 local M = {}
 
@@ -103,7 +102,7 @@ function M.open(root)
 
         if not has_config_sets then
             -- No config sets: add directly
-            local ok, err = config_editor.add_project(root, key, type_info.type, path)
+            local ok, err = ws:add_project(key, type_info.type, path)
             if ok then
                 vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
             else
@@ -127,7 +126,7 @@ function M.open(root)
 
         if #config_names == 0 then
             -- No detectable configurations: add without mappings
-            local ok, err = config_editor.add_project(root, key, type_info.type, path)
+            local ok, err = ws:add_project(key, type_info.type, path)
             if ok then
                 vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
             else
@@ -144,8 +143,7 @@ function M.open(root)
             config_sets = raw_config_sets,
             mod = mod,
             on_accept = function(set_mappings)
-                local ok, err = config_editor.add_project_with_mappings(
-                    root, key, type_info.type, path, set_mappings)
+                local ok, err = ws:add_project(key, type_info.type, path, set_mappings)
                 if ok then
                     vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
                 else
@@ -202,7 +200,7 @@ function M.open(root)
                 n = "close",
                 y = function(self)
                     self:close()
-                    local ok, err = config_editor.remove_project(root, found_key)
+                    local ok, err = ws:remove_project(found_key)
                     if ok then
                         vim.notify("loomworks: removed " .. found_key, vim.log.levels.INFO)
                     else

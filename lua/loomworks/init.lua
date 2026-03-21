@@ -326,7 +326,7 @@ end
 --- @param name? string workspace name
 --- @return boolean ok, string|nil err
 function M.create_workspace(root, name)
-    return require("loomworks.config_editor").create_workspace(root, name)
+    return require("loomworks.workspace").create_workspace_config(root, name)
 end
 
 --- Open the project browser for adding projects.

@@ -221,8 +221,7 @@ function M.create_profile(ctx)
         table.sort(existing, function(a, b) return a.name < b.name end)
 
         -- Auto-detect candidates
-        local config_editor = require("loomworks.config_editor")
-        local auto_sets = config_editor.generate_default_config_sets(ws.root)
+        local auto_sets = ws:generate_default_config_sets()
         local auto_items = {}
         if auto_sets then
             for name, mappings in pairs(auto_sets) do
@@ -272,18 +271,15 @@ function M.create_profile(ctx)
             local cs = choice.cs
             if choice.auto then
                 -- Write the auto-detected set to loomworks.json
-                local ok, err = config_editor.add_configuration_set(
-                    ws.root, choice.real_name, choice.mappings)
+                local ok, err = ws:add_configuration_set(choice.real_name, choice.mappings)
                 if not ok then
                     vim.notify("loomworks: " .. (err or "failed to add config set"), vim.log.levels.ERROR)
                     return
                 end
-                -- Force-reload so the runtime model has the new set immediately
-                lw.reload_config()
-                local updated_sets = lw.get_config_sets()
-                cs = updated_sets and updated_sets[choice.real_name]
+                -- add_configuration_set remerges, so config sets are up to date
+                cs = ws:get_config_sets()[choice.real_name]
                 if not cs then
-                    vim.notify("loomworks: config set '" .. choice.real_name .. "' not found after reload", vim.log.levels.ERROR)
+                    vim.notify("loomworks: config set '" .. choice.real_name .. "' not found after add", vim.log.levels.ERROR)
                     return
                 end
             end
