@@ -1608,6 +1608,93 @@ function Workspace:generate_default_config_sets()
     return sets
 end
 
+-- ---------------------------------------------------------------------------
+-- File tracking
+-- ---------------------------------------------------------------------------
+
+--- Start watching workspace files for external changes.
+--- @param paths { config: string, user: string, cache: string }
+function Workspace:_start_tracking(paths)
+    if self._tracker then
+        self._tracker:stop()
+    end
+    self._tracker = self._core._deps.FileTracker.new({
+        callback = function(path, content)
+            self:_on_file_changed(path, content)
+        end,
+        schedule = self._core._deps.schedule,
+        read_file = self._core._deps.io.read_file,
+    })
+    self._tracker:watch(paths.config)
+    self._tracker:watch(paths.user)
+    self._tracker:watch(paths.cache)
+end
+
+--- Stop file tracking.
+function Workspace:_stop_tracking()
+    if self._tracker then
+        self._tracker:stop()
+        self._tracker = nil
+    end
+end
+
+--- Handle a tracked file change.
+--- @param path string absolute file path that changed
+--- @param content string|nil new raw content
+function Workspace:_on_file_changed(path, content)
+    local paths = M.paths(self.root)
+
+    if path == paths.config then
+        -- loomworks.json changed: full reassemble
+        local data, err = M.assemble(
+            self.root,
+            content,
+            self._tracker:content(paths.user),
+            self._tracker:content(paths.cache)
+        )
+        if data then
+            local ok, val_err = self._core:_validate_projects(data.config, data.root)
+            if ok then
+                -- Update workspace data fields in place
+                self.root = data.root
+                self.name = data.name
+                self.config = data.config
+                self.user = data.user
+                self.cache = data.cache
+                self:_scan_tools_async()
+                self:_migrate_set_names()
+                self:remerge()
+                self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
+            else
+                self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
+            end
+        else
+            self._core._deps.notify("loomworks: config reload failed: " .. (err or "unknown"), vim.log.levels.WARN)
+        end
+
+    elseif path == paths.user then
+        -- user.json changed: update user data and remerge
+        local user_data = content and user_mod.parse(content) or user_mod.default()
+        self.user = user_data
+        self:remerge()
+
+    elseif path == paths.cache then
+        -- cache.json changed: update cache data and remerge
+        local cache_data = content and cache_mod.parse(content) or cache_mod.default()
+        self.cache = cache_data
+        self:remerge()
+    end
+end
+
+--- Force-reload loomworks.json from disk and remerge.
+--- Used after programmatic writes to loomworks.json to avoid waiting
+--- for the file watcher poll interval.
+function Workspace:reload_config()
+    local paths = M.paths(self.root)
+    local content = self._core._deps.io.read_file(paths.config)
+    self:_on_file_changed(paths.config, content)
+end
+
 M.Workspace = Workspace
 
 return M

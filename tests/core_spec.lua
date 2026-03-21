@@ -591,9 +591,9 @@ describe("Core", function()
         it("stops file tracker", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            assert.is_not_nil(core._tracker)
+            assert.is_not_nil(core._workspace._tracker)
             core:shutdown()
-            assert.is_nil(core._tracker)
+            assert.is_nil(core._workspace._tracker)
         end)
 
         it("is safe without tracker", function()
@@ -615,7 +615,7 @@ describe("Core", function()
                 projects = { App = { typescript = {} }, Lib = { typescript = {} } },
                 configuration_sets = { debug = { App = "development", Lib = "development" } },
             })
-            core:_on_file_changed("/root/loomworks.json", new_config)
+            core._workspace:_on_file_changed("/root/loomworks.json", new_config)
             -- New project should be in workspace
             assert.is_not_nil(core._workspace.config.projects.Lib)
         end)
@@ -628,7 +628,7 @@ describe("Core", function()
             core:setup({ root = "/root" })
 
             local new_user = h.make_user_json({ active_profile = "debug" })
-            core:_on_file_changed("/root/.nvim/loomworks.user.json", new_user)
+            core._workspace:_on_file_changed("/root/.nvim/loomworks.user.json", new_user)
             assert.equals("debug", core._workspace.user.active_profile)
         end)
 
@@ -648,7 +648,7 @@ describe("Core", function()
                     },
                 },
             })
-            core:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
+            core._workspace:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
             assert.is_not_nil(core._workspace.cache.configurations["App/development"])
         end)
 
@@ -656,15 +656,9 @@ describe("Core", function()
             local core = make_core()
             core:setup({ root = "/root" })
             local ws_before = core._workspace
-            core:_on_file_changed("/root/some_other_file.txt", "content")
+            core._workspace:_on_file_changed("/root/some_other_file.txt", "content")
             -- Workspace unchanged (same reference)
             assert.equals(ws_before, core._workspace)
-        end)
-
-        it("is safe without workspace", function()
-            local core = make_core()
-            -- don't setup
-            core:_on_file_changed("/root/loomworks.json", "{}") -- should not error
         end)
 
         it("notifies INFO on successful config reload", function()
@@ -688,7 +682,7 @@ describe("Core", function()
                 projects = { App = { typescript = {} }, Lib = { typescript = {} } },
                 configuration_sets = { debug = { App = "development", Lib = "development" } },
             })
-            core:_on_file_changed("/root/loomworks.json", new_config)
+            core._workspace:_on_file_changed("/root/loomworks.json", new_config)
 
             local found_info = false
             for _, n in ipairs(notifications) do
@@ -715,7 +709,7 @@ describe("Core", function()
             core:setup({ root = "/root" })
             notifications = {} -- clear setup notifications
 
-            core:_on_file_changed("/root/loomworks.json", "not valid json {{{")
+            core._workspace:_on_file_changed("/root/loomworks.json", "not valid json {{{")
 
             local found_warn = false
             for _, n in ipairs(notifications) do
@@ -758,7 +752,7 @@ describe("Core", function()
             local new_config = h.make_config_json({
                 projects = { BadProject = { cmake = {} } },
             })
-            core:_on_file_changed("/root/loomworks.json", new_config)
+            core._workspace:_on_file_changed("/root/loomworks.json", new_config)
 
             local found_warn = false
             for _, n in ipairs(notifications) do
@@ -775,7 +769,7 @@ describe("Core", function()
             })
             core:setup({ root = "/root" })
 
-            core:_on_file_changed("/root/loomworks.json", "not valid json {{{")
+            core._workspace:_on_file_changed("/root/loomworks.json", "not valid json {{{")
 
             -- Original project should still be there (no remerge on invalid JSON)
             assert.is_not_nil(core._workspace.config.projects.App)
@@ -793,7 +787,7 @@ describe("Core", function()
             end
 
             local new_user = h.make_user_json({ active_profile = "debug" })
-            core:_on_file_changed("/root/.nvim/loomworks.user.json", new_user)
+            core._workspace:_on_file_changed("/root/.nvim/loomworks.user.json", new_user)
 
             local found = false
             for _, e in ipairs(deps._events_log) do
@@ -821,7 +815,7 @@ describe("Core", function()
                     },
                 },
             })
-            core:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
+            core._workspace:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
 
             local found = false
             for _, e in ipairs(deps._events_log) do
@@ -839,7 +833,7 @@ describe("Core", function()
             assert.equals("debug", core._workspace.user.active_profile)
 
             -- Simulate user file being deleted (nil content)
-            core:_on_file_changed("/root/.nvim/loomworks.user.json", nil)
+            core._workspace:_on_file_changed("/root/.nvim/loomworks.user.json", nil)
 
             assert.is_nil(core._workspace.user.active_profile)
         end)
@@ -865,7 +859,7 @@ describe("Core", function()
             assert.is_not_nil(core._workspace.cache.configurations["App/development"])
 
             -- Simulate cache file being deleted (nil content)
-            core:_on_file_changed("/root/.nvim/loomworks.cache.json", nil)
+            core._workspace:_on_file_changed("/root/.nvim/loomworks.cache.json", nil)
 
             -- Cache should be reset to default (empty configurations)
             assert.same({}, core._workspace.cache.configurations)
@@ -888,7 +882,7 @@ describe("Core", function()
                     release = { App = "production" },
                 },
             })
-            core:_on_file_changed("/root/loomworks.json", new_config)
+            core._workspace:_on_file_changed("/root/loomworks.json", new_config)
 
             local found = false
             for _, e in ipairs(deps._events_log) do
@@ -912,7 +906,7 @@ describe("Core", function()
                     release = { App = "production" },
                 },
             })
-            core:_on_file_changed("/root/loomworks.json", new_config)
+            core._workspace:_on_file_changed("/root/loomworks.json", new_config)
 
             assert.is_not_nil(core._workspace.config.configuration_sets.release)
             assert.equals("production", core._workspace.config.configuration_sets.release.App)

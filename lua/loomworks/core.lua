@@ -9,7 +9,6 @@
 --- @class loomworks.Core
 --- @field _deps table injected dependencies
 --- @field _workspace loomworks.Workspace|nil
---- @field _tracker loomworks.FileTracker|nil
 --- @field _setup_error { root: string, message: string }|nil set when setup fails
 --- @field _state "uninitialized"|"initializing"|"initialized"
 local Core = {}
@@ -64,7 +63,6 @@ function Core.new(deps)
         self._deps = DEFAULT_DEPS
     end
     self._workspace = nil
-    self._tracker = nil
     self._setup_error = nil
     self._state = "uninitialized"
     return self
@@ -87,64 +85,11 @@ end
 -- Setup & lifecycle (stays on Core)
 -- ===========================================================================
 
---- Handle a tracked file change.
---- @param path string absolute file path that changed
---- @param content string|nil new raw content
-function Core:_on_file_changed(path, content)
-    if not self._workspace then return end
-
-    local paths = self._deps.workspace.paths(self._workspace.root)
-
-    if path == paths.config then
-        -- loomworks.json changed: full reassemble
-        local data, err = self._deps.workspace.assemble(
-            self._workspace.root,
-            content,
-            self._tracker:content(paths.user),
-            self._tracker:content(paths.cache)
-        )
-        if data then
-            local ok, val_err = self:_validate_projects(data.config, data.root)
-            if ok then
-                -- Update workspace data fields in place
-                self._workspace.root = data.root
-                self._workspace.name = data.name
-                self._workspace.config = data.config
-                self._workspace.user = data.user
-                self._workspace.cache = data.cache
-                self._workspace:_scan_tools_async()
-                self._workspace:_migrate_set_names()
-                self._workspace:remerge()
-                self._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
-            else
-                self._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
-            end
-        else
-            self._deps.notify("loomworks: config reload failed: " .. (err or "unknown"), vim.log.levels.WARN)
-        end
-
-    elseif path == paths.user then
-        -- user.json changed: update user data and remerge
-        local user_data = content and self._deps.user.parse(content) or self._deps.user.default()
-        self._workspace.user = user_data
-        self._workspace:remerge()
-
-    elseif path == paths.cache then
-        -- cache.json changed: update cache data and remerge
-        local cache_data = content and self._deps.cache.parse(content) or self._deps.cache.default()
-        self._workspace.cache = cache_data
-        self._workspace:remerge()
-    end
-end
-
 --- Force-reload loomworks.json from disk and remerge.
---- Used after programmatic writes to loomworks.json (config_editor)
---- to avoid waiting for the file watcher poll interval.
+--- Delegates to Workspace.
 function Core:reload_config()
     if not self._workspace then return end
-    local paths = self._deps.workspace.paths(self._workspace.root)
-    local content = self._deps.io.read_file(paths.config)
-    self:_on_file_changed(paths.config, content)
+    self._workspace:reload_config()
 end
 
 --- Get the workspace initialization state.
@@ -243,20 +188,8 @@ function Core:_on_files_read(root, paths, results)
     self._state = "initialized"
     self._deps.events.emit("workspace_changed", self._workspace)
 
-    -- Start file tracking
-    if self._tracker then
-        self._tracker:stop()
-    end
-    self._tracker = self._deps.FileTracker.new({
-        callback = function(path, content)
-            self:_on_file_changed(path, content)
-        end,
-        schedule = self._deps.schedule,
-        read_file = self._deps.io.read_file,
-    })
-    self._tracker:watch(paths.config)
-    self._tracker:watch(paths.user)
-    self._tracker:watch(paths.cache)
+    -- Start file tracking (owned by Workspace)
+    self._workspace:_start_tracking(paths)
 
     self._deps.notify("loomworks: workspace '" .. self._workspace.name .. "' loaded (" .. self._workspace.root .. ")", vim.log.levels.INFO)
 
@@ -419,9 +352,8 @@ end
 
 --- Stop file tracking and clean up.
 function Core:shutdown()
-    if self._tracker then
-        self._tracker:stop()
-        self._tracker = nil
+    if self._workspace then
+        self._workspace:_stop_tracking()
     end
 end
 
