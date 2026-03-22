@@ -186,8 +186,8 @@ automatically from your system.
 
 1. **Header** — plugin version, workspace name, root path
 2. **Profiles** — all materialized profiles with build status
-3. **Orphaned Configurations** — cached configs no longer referenced by any
-   profile (hidden when empty; common after switching git branches)
+3. **Orphaned Items** — cached configs no longer referenced by any profile,
+   plus stray build directories not tracked in cache (hidden when empty)
 4. **Configuration Sets** — declared sets with available tool entries
 5. **Projects** — all projects with their configurations and build state.
    CMake projects also show discovered build targets (grouped by type)

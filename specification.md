@@ -951,49 +951,53 @@ When no projects exist, the sentinel is replaced with:
 No projects yet. Add projects first.
 ```
 
-### 6.6 Orphaned Configurations Section
+### 6.6 Orphaned Items Section
 
-Shows cached configurations with build state that are not referenced by any
-profile. Hidden when there are no orphaned configs (the common case).
+Shows orphaned cached configurations and stray build directories. Visible
+when either type exists (hidden otherwise — the common case).
 
-**Title**: `Orphaned Configurations` with `Title` highlight.
+**Title**: `Orphaned Items` with `Title` highlight.
 
-**Layout**: Configs are grouped by project key (sorted alphabetically).
-Each project is a foldable node; each config within is a foldable node
-showing the config key and its status.
+**Orphaned configurations**: cached configs with build state not referenced
+by any profile. Grouped by project key (sorted alphabetically). Each
+project is a foldable node; each config within is a foldable node showing
+the config key and its status.
+
+**Stray build directories**: directories under `{root}/.nvim/build/` not
+referenced by any cache entry. Detected via top-down pruning: the scan
+reports the highest-level directory whose entire subtree contains no cache
+entries. Directories that ARE cache entries (or parents of cache entries)
+are skipped. Shown as flat items with `(stray)` suffix.
 
 ```
-Orphaned Configurations
+Orphaned Items  [D] delete
 
   ▶ App
     ▶ Debug:ninja-gcc-12 (built)
       Status: built
       Build dir: .nvim/build/App/Debug
-
-  ▶ SubLib
-    ▶ Release:msvc-2022 (configured)
-      Status: configured
-      Build dir: .nvim/build/SubLib/Release
+  .nvim/build/OldProject (stray)
+  ▸ Clean all
 ```
 
 **Highlight**: Project nodes use `LoomworksUnconfigured`. Config nodes use
-`resolve_config_status()` highlights (same as Projects section).
+`resolve_config_status()` highlights. Stray dir items use
+`LoomworksUnconfigured`.
 
-**Actions**: Only `D` (delete) is mapped on config nodes. All other action
-keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned configs cannot be
-built, configured, or pinned. Deletion shows the standard confirmation
-dialog.
+**Actions**: `D` (delete) is mapped on config nodes and stray dir items.
+All other action keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned
+items cannot be built, configured, or pinned. Deletion shows the standard
+confirmation dialog.
 
-**Sentinel: Clean all orphaned items**
+**Sentinel: Clean all**
 
-After the last orphaned project group:
+After the last orphaned item:
 ```
-▸ Clean all orphaned items
+▸ Clean all
 ```
 Enter shows a confirmation dialog listing:
 - All orphaned cached configurations (with state and build dirs)
-- Stray build directories under `{root}/.nvim/build/` not referenced
-  by any cache entry (leftover from deleted profiles or manual operations)
+- All stray build directories
 
 On confirm: deletes orphaned cache entries + build dirs via `_run_deletion`,
 then deletes stray build dirs. If nothing to clean, shows a notification.
@@ -1015,7 +1019,7 @@ otherwise `LoomworksActionable`.
 
 | Action | Behavior |
 |--------|----------|
-| `<CR>` | Opens config set editor dialog (edit mappings) |
+| `<CR>` | Action picker: Edit mappings, Create profile from set, Delete |
 | `D`    | Delete config set with confirmation dialog |
 
 **Config set editing** (`<CR>` on a set node):
