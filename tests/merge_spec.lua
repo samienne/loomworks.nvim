@@ -37,8 +37,15 @@ describe("merge", function()
             assert.equals("debug", merge.profile_key("debug", nil))
         end)
 
-        it("combines set_name and tool_key", function()
-            assert.equals("debug:ninja-gcc", merge.profile_key("debug", "ninja-gcc"))
+        it("combines set_name and tool key from tools dict", function()
+            assert.equals("debug:ninja-gcc", merge.profile_key("debug", { cmake = { key = "ninja-gcc" } }))
+        end)
+
+        it("sorts multi-tool keys by module type", function()
+            assert.equals("debug:ninja-gcc+meson-ninja", merge.profile_key("debug", {
+                meson = { key = "meson-ninja" },
+                cmake = { key = "ninja-gcc" },
+            }))
         end)
     end)
 
@@ -104,7 +111,7 @@ describe("merge", function()
             })
             local profiles = merge.get_all_profiles(ws.config)
             assert.is_true(profiles.debug.explicit)
-            assert.equals("custom", profiles.debug.tool_key)
+            assert.equals("debug", profiles.debug.configuration_set)
         end)
     end)
 

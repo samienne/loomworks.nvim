@@ -1006,18 +1006,24 @@ describe("cache coherence", function()
                     profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc",
-                            tool_data = { generator = "Ninja", compiler_id = "gcc" },
-                            tool_label = "Ninja GCC",
-                            tool_mod_type = "cmake",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc",
+                                    data = { generator = "Ninja", compiler_id = "gcc" },
+                                    label = "Ninja GCC",
+                                },
+                            },
                             configurations = { "Lib/Debug:ninja-gcc" },
                         },
                         ["debug:ninja-clang"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-clang",
-                            tool_data = { generator = "Ninja", compiler_id = "clang" },
-                            tool_label = "Ninja Clang",
-                            tool_mod_type = "cmake",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-clang",
+                                    data = { generator = "Ninja", compiler_id = "clang" },
+                                    label = "Ninja Clang",
+                                },
+                            },
                             configurations = { "Lib/Debug:ninja-clang" },
                         },
                     },
@@ -1179,10 +1185,13 @@ describe("cache coherence", function()
                     profiles = {
                         ["debug:ninja-old-compiler"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-old-compiler",
-                            tool_data = { generator = "Ninja", compiler_id = "old-compiler" },
-                            tool_label = "Ninja Old",
-                            tool_mod_type = "cmake",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-old-compiler",
+                                    data = { generator = "Ninja", compiler_id = "old-compiler" },
+                                    label = "Ninja Old",
+                                },
+                            },
                             configurations = { "Lib/Debug:ninja-old-compiler" },
                         },
                     },
@@ -1677,18 +1686,24 @@ describe("cache coherence", function()
                     profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc",
-                            tool_data = { generator = "Ninja", compiler_id = "gcc" },
-                            tool_label = "Ninja GCC",
-                            tool_mod_type = "cmake",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc",
+                                    data = { generator = "Ninja", compiler_id = "gcc" },
+                                    label = "Ninja GCC",
+                                },
+                            },
                             configurations = { "Lib/Debug:ninja-gcc" },
                         },
                         ["staging:ninja-gcc"] = {
                             configuration_set = "staging",
-                            tool_key = "ninja-gcc",
-                            tool_data = { generator = "Ninja", compiler_id = "gcc" },
-                            tool_label = "Ninja GCC",
-                            tool_mod_type = "cmake",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc",
+                                    data = { generator = "Ninja", compiler_id = "gcc" },
+                                    label = "Ninja GCC",
+                                },
+                            },
                             configurations = { "Lib/Debug:ninja-gcc" },
                         },
                     },

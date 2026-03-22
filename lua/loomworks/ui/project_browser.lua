@@ -7,6 +7,7 @@
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
 local modules = require("loomworks.modules")
+local workspace_view = require("loomworks.workspace_view")
 
 local M = {}
 
@@ -88,77 +89,36 @@ function M.open(root)
     end
 
     --- Open the mapping dialog with detected tools for a new project.
-    --- Chains decomposed operations on accept: add_project, then
-    --- update_config_set_mapping per set, then upgrade_profiles_for_tool.
-    --- @param entry loomworks.BrowserEntry
+    --- Chains decomposed operations on accept via workspace_view.
     --- @param type_info { type: string, marker: string }
     --- @param key string project key
     --- @param path string|nil relative path
     --- @param config_names string[] available configuration names
     --- @param keyed_tools table[] detected keyed tools (may be empty)
-    local function open_mapping_dialog(entry, type_info, key, path, config_names, keyed_tools)
+    local function open_mapping_dialog(type_info, key, path, config_names, keyed_tools)
         local lw = require("loomworks")
         local ws = lw.get_workspace()
         local raw_config_sets = ws.config.configuration_sets
         local mod = modules.get(type_info.type)
         local has_keyed = mod and mod.has_keyed_tools or false
 
-        -- Check if existing profiles already have a tool for this module type.
-        -- If so, inherit it — no tool picker needed.
-        local inherited_tool = nil
-        local no_tool_profiles = {}
-        if has_keyed and ws.cache.profiles then
-            for k, data in pairs(ws.cache.profiles) do
-                if data.configuration_set then
-                    if data.tool_key and data.tool_mod_type == type_info.type then
-                        -- Found a profile with this tool type — inherit it
-                        if not inherited_tool then
-                            inherited_tool = {
-                                tool_key = data.tool_key,
-                                tool_data = data.tool_data,
-                                tool_label = data.tool_label,
-                                tool_mod_type = data.tool_mod_type,
-                            }
-                        end
-                    elseif not data.tool_key then
-                        no_tool_profiles[#no_tool_profiles + 1] = k
-                    end
-                end
-            end
-            table.sort(no_tool_profiles)
-        end
+        local ctx = workspace_view.compute_add_project_context(ws, type_info.type)
 
         require("loomworks.ui.mapping_dialog").open({
+            ws = ws,
             project_key = key,
             project_type = type_info.type,
             available_configs = config_names,
             config_sets = raw_config_sets,
             mod = mod,
-            tools = inherited_tool and {} or keyed_tools,
+            tools = ctx.inherited_tool and {} or keyed_tools,
             has_keyed_tools = has_keyed,
-            inherited_tool = inherited_tool,
-            no_tool_profiles = no_tool_profiles,
+            inherited_tool = ctx.inherited_tool,
+            no_tool_profiles = ctx.no_tool_profiles,
             on_accept = function(result)
-                -- Step 1: Add project entry
-                local ok, err = ws:add_project(key, type_info.type, path)
+                local ok, err = workspace_view.execute_add_project(ws, key, type_info.type, path, result, has_keyed)
                 if not ok then
                     vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
-                    return
-                end
-                -- Skip mappings when keyed module has no tool selected —
-                -- the project is added unmapped until a tool is chosen.
-                if has_keyed and not result.tool_entry then
-                    return
-                end
-                -- Step 2: Apply mappings
-                for set_name, variant in pairs(result.mappings) do
-                    if variant then
-                        ws:update_config_set_mapping(set_name, key, variant)
-                    end
-                end
-                -- Step 3: Upgrade profiles with tool
-                if result.tool_entry then
-                    ws:upgrade_profiles_for_tool(result.tool_entry)
                 end
             end,
             on_cancel = function() end,
@@ -213,51 +173,12 @@ function M.open(root)
         -- Check if module has keyed tools requiring detection
         local has_keyed = mod and mod.has_keyed_tools or false
 
-        --- Collect keyed tools from detected tools for this module type.
-        --- @param tools_for_type table[]|nil
-        --- @return table[]
-        local function collect_keyed_tools(tools_for_type)
-            local keyed = {}
-            if tools_for_type then
-                for _, tool in ipairs(tools_for_type) do
-                    if tool.tool_key then
-                        keyed[#keyed + 1] = tool
-                    end
-                end
-            end
-            return keyed
-        end
-
         if has_keyed then
-            -- Check if tools are already available for this module type.
-            -- Workspace tool scanning only covers types in config.projects,
-            -- so a new module type (e.g. adding cmake to an ets-only workspace)
-            -- won't have been scanned yet.
-            local existing_tools = ws._tools_by_type[type_info.type]
-            if existing_tools then
-                local keyed_tools = collect_keyed_tools(existing_tools)
-                open_mapping_dialog(entry, type_info, key, path, config_names, keyed_tools)
-            else
-                -- Detect tools for this specific module type
-                mod.detect_tools_async(function(raw_tools)
-                    vim.schedule(function()
-                        local enriched = {}
-                        for _, raw in ipairs(raw_tools) do
-                            enriched[#enriched + 1] = {
-                                tool_data = raw.tool_data,
-                                tool_key = mod.tool_key and mod.tool_key(raw.tool_data) or nil,
-                                tool_label = mod.tool_label and mod.tool_label(raw.tool_data) or nil,
-                            }
-                        end
-                        -- Cache for later use
-                        ws._tools_by_type[type_info.type] = enriched
-                        local keyed_tools = collect_keyed_tools(enriched)
-                        open_mapping_dialog(entry, type_info, key, path, config_names, keyed_tools)
-                    end)
-                end)
-            end
+            workspace_view.ensure_tools_detected(ws, mod, type_info.type, function(keyed_tools)
+                open_mapping_dialog(type_info, key, path, config_names, keyed_tools)
+            end)
         else
-            open_mapping_dialog(entry, type_info, key, path, config_names, {})
+            open_mapping_dialog(type_info, key, path, config_names, {})
         end
     end
 
@@ -285,57 +206,22 @@ function M.open(root)
             return
         end
 
-        -- Capture project type before removal (needed for downgrade)
-        local proj_type = ws.config.projects[found_key].type
-
-        -- Compute downgrade preview (will profiles be renamed?)
-        local downgrade_preview = ws:compute_downgrade_preview(found_key)
-
-        -- Build confirmation dialog content
-        local lines = {
-            "  Remove project: " .. found_key,
-            "",
-            "  This removes the project from loomworks.json.",
-            "  Build artifacts are NOT deleted.",
-        }
-        local highlights = {
-            { line = 1, hl_group = "DiagnosticWarn" },
-            { line = 3, hl_group = "Comment" },
-            { line = 4, hl_group = "Comment" },
-        }
-
-        -- Add profile rename preview if applicable
-        if #downgrade_preview > 0 then
-            lines[#lines + 1] = ""
-            local preview_start = #lines + 1
-            lines[#lines + 1] = "  Profiles to rename:"
-            highlights[#highlights + 1] = { line = preview_start, hl_group = "Comment" }
-            for _, rename in ipairs(downgrade_preview) do
-                lines[#lines + 1] = "    " .. rename.old_key .. " → " .. rename.new_key
-                highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
-            end
-        end
-
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "  Press y to confirm, q to cancel"
+        local ctx = workspace_view.compute_remove_context(ws, found_key)
+        if not ctx then return end
 
         local dialog = require("loomworks.ui.dialog")
         dialog.show({
             title = "Confirm Remove",
-            lines = lines,
-            highlights = highlights,
+            lines = ctx.lines,
+            highlights = ctx.highlights,
             keys = {
                 n = "close",
                 y = function(self)
                     self:close()
-                    local ok, err = ws:remove_project(found_key)
+                    local ok, err = workspace_view.execute_remove_project(
+                        ws, found_key, ctx.project_type, #ctx.downgrade_preview > 0)
                     if not ok then
                         vim.notify("loomworks: " .. (err or "failed to remove"), vim.log.levels.ERROR)
-                        return
-                    end
-                    -- Downgrade profiles if this was the last keyed-module project
-                    if #downgrade_preview > 0 then
-                        ws:downgrade_profiles_from_tool(proj_type)
                     end
                 end,
             },

@@ -452,16 +452,26 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
 
     local set_name = config_set.name
 
-    -- Compute profile key (pure cache identifier)
+    -- Build tools dict from tool_entry
+    local tools = nil
     local tool_key = tool_entry and tool_entry.tool_key or nil
-    local profile_key = self._core._deps.merge.profile_key(set_name, tool_key)
+    local tool_data = tool_entry and tool_entry.tool_data or nil
+    local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
+    if tool_entry and tool_key then
+        tools = {
+            [tool_mod_type] = {
+                key = tool_key,
+                data = tool_data,
+                label = tool_entry.tool_label,
+            },
+        }
+    end
+
+    -- Compute profile key (pure cache identifier)
+    local profile_key = self._core._deps.merge.profile_key(set_name, tools)
 
     -- Already cached?
     if self.cache.profiles and self.cache.profiles[profile_key] then return end
-
-    local tool_data = tool_entry and tool_entry.tool_data or nil
-    local tool_label = tool_entry and tool_entry.tool_label or nil
-    local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
 
     local profile_configurations = {}
     self.cache.configurations = self.cache.configurations or {}
@@ -470,12 +480,10 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
         local project_config = self.config.projects[project.key]
         if not project_config then goto continue end
 
-        -- tool_key applies only to projects whose module type matches the tool.
-        -- When tool_mod_type is nil (e.g. older cache), fall back to including tool_key.
-        local project_tool_key = tool_key
-        if tool_mod_type and tool_mod_type ~= project_config.type then
-            project_tool_key = nil
-        end
+        -- tool_key applies only to projects whose module type matches the tool
+        local project_tool_key = tools and tools[project_config.type]
+            and tools[project_config.type].key or nil
+        local project_tool_data = project_tool_key and tools[project_config.type].data or nil
         local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
 
         local cache_key = self._core._deps.cache.config_cache_key(project.key, config_key)
@@ -489,7 +497,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
                 type = project_config.type,
                 variant = variant,
                 tool_key = project_tool_key,
-                tool_data = project_tool_key and tool_data or nil,
+                tool_data = project_tool_data,
             }
         end
 
@@ -500,10 +508,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
     self.cache.profiles = self.cache.profiles or {}
     self.cache.profiles[profile_key] = {
         configuration_set = set_name,
-        tool_key = tool_key,
-        tool_data = tool_data,
-        tool_label = tool_label,
-        tool_mod_type = tool_mod_type,
+        tools = tools,
         configurations = profile_configurations,
     }
 
@@ -537,7 +542,7 @@ function Workspace:_migrate_set_names()
         -- Try case-insensitive match
         local new_set = config_sets_lower[old_set:lower()]
         if new_set then
-            local new_key = self._core._deps.merge.profile_key(new_set, cached_profile.tool_key)
+            local new_key = self._core._deps.merge.profile_key(new_set, cached_profile.tools)
             renames[profile_key] = { new_key = new_key, new_set = new_set }
         end
 
@@ -1499,10 +1504,8 @@ end
 --- for projects in its configuration set. Creates skeleton cache entries
 --- for projects not yet represented. Used by upgrade_profiles_for_tool.
 --- @param profile_data table cached profile data from cache.profiles
---- @param tool_key string|nil tool key for keyed modules
---- @param tool_data table|nil tool data
---- @param tool_mod_type string|nil module type that uses this tool
-function Workspace:_extend_cached_profile(profile_data, tool_key, tool_data, tool_mod_type)
+--- @param tools table<string, { key: string, data: table }>|nil tools dict
+function Workspace:_extend_cached_profile(profile_data, tools)
     local set_name = profile_data.configuration_set
     if not set_name then return end
 
@@ -1523,10 +1526,8 @@ function Workspace:_extend_cached_profile(profile_data, tool_key, tool_data, too
         local proj_cfg = self.config.projects[project_key]
         if proj_cfg then
             -- Tool key applies only to projects whose module type matches
-            local project_tool_key = tool_key
-            if tool_mod_type and tool_mod_type ~= proj_cfg.type then
-                project_tool_key = nil
-            end
+            local project_tool = tools and tools[proj_cfg.type] or nil
+            local project_tool_key = project_tool and project_tool.key or nil
             local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
             local ck = self._core._deps.cache.config_cache_key(project_key, config_key)
 
@@ -1539,7 +1540,7 @@ function Workspace:_extend_cached_profile(profile_data, tool_key, tool_data, too
                         type = proj_cfg.type,
                         variant = variant,
                         tool_key = project_tool_key,
-                        tool_data = project_tool_key and tool_data or nil,
+                        tool_data = project_tool and project_tool.data or nil,
                     }
                 end
                 profile_data.configurations[#profile_data.configurations + 1] = ck
@@ -1548,93 +1549,118 @@ function Workspace:_extend_cached_profile(profile_data, tool_key, tool_data, too
     end
 end
 
---- Upgrade cached no-tool profiles to keyed profiles when a keyed-module
---- project is added. Also extends existing keyed profiles with skeleton
---- entries for the new project.
----
---- For no-tool profiles: renames the profile key (e.g. "Debug" →
---- "Debug:ninja-gcc-12"), adds tool fields, creates skeleton cache entries.
---- For keyed profiles: extends the configurations array with the new project.
+--- Compute profile renames that would result from a tools-dict transformation.
+--- Pure query — does not mutate state.
+--- @param transform fun(tools: table|nil): table|nil  tools dict transformation
+--- @return { old_key: string, new_key: string }[]
+function Workspace:compute_profile_renames(transform)
+    if not self.cache.profiles then return {} end
+    local merge = self._core._deps.merge
+    local renames = {}
+    for profile_key, profile_data in pairs(self.cache.profiles) do
+        if profile_data.configuration_set then
+            local new_tools = transform(profile_data.tools)
+            local new_key = merge.profile_key(profile_data.configuration_set, new_tools)
+            if profile_key ~= new_key then
+                renames[#renames + 1] = {
+                    old_key = profile_key,
+                    new_key = new_key,
+                }
+            end
+        end
+    end
+    table.sort(renames, function(a, b) return a.old_key < b.old_key end)
+    return renames
+end
+
+--- Apply profile renames to cache and user state.
+--- Updates the tools dict on each renamed profile via the transform function.
+--- @param renames { old_key: string, new_key: string }[]
+--- @param transform fun(tools: table|nil): table|nil
+--- @return boolean user_changed whether active_profile was updated
+function Workspace:apply_profile_renames(renames, transform)
+    local user_changed = false
+    for _, r in ipairs(renames) do
+        local profile_data = self.cache.profiles[r.old_key]
+        if profile_data then
+            profile_data.tools = transform(profile_data.tools)
+            self.cache.profiles[r.old_key] = nil
+            self.cache.profiles[r.new_key] = profile_data
+            if self.user.active_profile == r.old_key then
+                self.user.active_profile = r.new_key
+                user_changed = true
+            end
+        end
+    end
+    return user_changed
+end
+
+--- Upgrade cached profiles when a keyed-module project is added.
+--- Profiles without this tool type get it added; profiles already with
+--- tools get extended with skeleton entries for the new project.
 ---
 --- @param tool_entry { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
 function Workspace:upgrade_profiles_for_tool(tool_entry)
     if not self.cache.profiles then return end
 
-    local merge = self._core._deps.merge
-    local user_changed = false
+    local function add_tool(tools)
+        local t = tools and vim.deepcopy(tools) or {}
+        t[tool_entry.tool_mod_type] = {
+            key = tool_entry.tool_key,
+            data = tool_entry.tool_data,
+            label = tool_entry.tool_label,
+        }
+        return t
+    end
 
-    -- Collect renames and extensions (don't modify cache.profiles while iterating)
-    local renames = {} -- { old_key, new_key, data }
-    local extends = {} -- { data }
+    -- Only rename profiles whose config set has a project of the tool's module type
+    local function should_rename(profile_data)
+        local set_mappings = self.config.configuration_sets
+            and self.config.configuration_sets[profile_data.configuration_set]
+        if not set_mappings then return false end
+        for project_key in pairs(set_mappings) do
+            local proj_cfg = self.config.projects[project_key]
+            if proj_cfg and proj_cfg.type == tool_entry.tool_mod_type then
+                return true
+            end
+        end
+        return false
+    end
 
+    -- Collect renames (profiles that need the tool added)
+    local renames = {}
+    local extends = {} -- profiles that already have tools
     for profile_key, profile_data in pairs(self.cache.profiles) do
-        if not profile_data.configuration_set then goto continue end
-
-        if not profile_data.tool_key then
-            -- Only upgrade if this profile's config set has at least one
-            -- project of the tool's module type. A set mapping only non-keyed
-            -- projects (ets/typescript) does not need a tool suffix.
-            local set_mappings = self.config.configuration_sets
-                and self.config.configuration_sets[profile_data.configuration_set]
-            local has_keyed_mapping = false
-            if set_mappings then
-                for project_key in pairs(set_mappings) do
-                    local proj_cfg = self.config.projects[project_key]
-                    if proj_cfg and proj_cfg.type == tool_entry.tool_mod_type then
-                        has_keyed_mapping = true
-                        break
-                    end
-                end
+        if profile_data.configuration_set then
+            local has_this_tool = profile_data.tools
+                and profile_data.tools[tool_entry.tool_mod_type]
+            if not has_this_tool and should_rename(profile_data) then
+                local new_tools = add_tool(profile_data.tools)
+                local new_key = self._core._deps.merge.profile_key(
+                    profile_data.configuration_set, new_tools)
+                renames[#renames + 1] = { old_key = profile_key, new_key = new_key }
+            elseif has_this_tool then
+                extends[#extends + 1] = profile_data
             end
-
-            if has_keyed_mapping then
-                -- No-tool profile: upgrade to keyed
-                local new_key = merge.profile_key(
-                    profile_data.configuration_set, tool_entry.tool_key)
-                renames[#renames + 1] = {
-                    old_key = profile_key,
-                    new_key = new_key,
-                    data = profile_data,
-                }
-            end
-        else
-            -- Already keyed: just extend with new project entries
-            extends[#extends + 1] = { data = profile_data }
         end
-
-        ::continue::
     end
 
-    -- Apply renames
+    -- Apply renames and update tools dicts
+    local user_changed = self:apply_profile_renames(renames, add_tool)
+
+    -- Extend renamed profiles with skeleton entries
     for _, r in ipairs(renames) do
-        -- Add tool fields
-        r.data.tool_key = tool_entry.tool_key
-        r.data.tool_data = tool_entry.tool_data
-        r.data.tool_label = tool_entry.tool_label
-        r.data.tool_mod_type = tool_entry.tool_mod_type
-
-        -- Extend with missing project entries
-        self:_extend_cached_profile(
-            r.data, tool_entry.tool_key, tool_entry.tool_data, tool_entry.tool_mod_type)
-
-        -- Rename in cache
-        self.cache.profiles[r.old_key] = nil
-        self.cache.profiles[r.new_key] = r.data
-
-        -- Update active_profile if it pointed to the old key
-        if self.user.active_profile == r.old_key then
-            self.user.active_profile = r.new_key
-            user_changed = true
+        local profile_data = self.cache.profiles[r.new_key]
+        if profile_data then
+            self:_extend_cached_profile(profile_data, profile_data.tools)
         end
     end
 
-    -- Extend existing keyed profiles
-    for _, e in ipairs(extends) do
-        self:_extend_cached_profile(
-            e.data, e.data.tool_key, e.data.tool_data, e.data.tool_mod_type)
+    -- Extend existing keyed profiles with new project entries
+    for _, profile_data in ipairs(extends) do
+        self:_extend_cached_profile(profile_data, profile_data.tools)
     end
 
-    -- Save
     self:_save_cache()
     if user_changed then
         self:_save_user()
@@ -1643,7 +1669,8 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
 end
 
 --- Compute profile renames that would occur if a project were removed.
---- Pure query — does not mutate state.
+--- Pure query — does not mutate state. Uses compute_profile_renames
+--- with a remove-tool transform.
 --- @param project_key string project key about to be removed
 --- @return { old_key: string, new_key: string }[]
 function Workspace:compute_downgrade_preview(project_key)
@@ -1660,26 +1687,18 @@ function Workspace:compute_downgrade_preview(project_key)
         end
     end
 
-    -- Collect profiles that would be downgraded
-    local renames = {}
-    if self.cache.profiles then
-        for profile_key, profile_data in pairs(self.cache.profiles) do
-            if profile_data.configuration_set
-                and profile_data.tool_mod_type == proj_cfg.type then
-                renames[#renames + 1] = {
-                    old_key = profile_key,
-                    new_key = profile_data.configuration_set,
-                }
-            end
-        end
-        table.sort(renames, function(a, b) return a.old_key < b.old_key end)
-    end
-    return renames
+    local proj_type = proj_cfg.type
+    return self:compute_profile_renames(function(tools)
+        if not tools then return nil end
+        local t = vim.deepcopy(tools)
+        t[proj_type] = nil
+        return next(t) and t or nil
+    end)
 end
 
 --- Downgrade keyed profiles when the last project of a keyed-module type
---- is removed. Strips tool suffixes, removes keyed-module configuration
---- entries from profiles, and clears tool fields.
+--- is removed. Strips tool from tools dict, removes keyed-module
+--- configuration entries from profiles.
 --- No-op if other projects of the same type still exist.
 --- @param mod_type string module type (e.g. "cmake")
 function Workspace:downgrade_profiles_from_tool(mod_type)
@@ -1690,61 +1709,40 @@ function Workspace:downgrade_profiles_from_tool(mod_type)
         if cfg.type == mod_type then return end
     end
 
-    local user_changed = false
-
-    -- Collect profiles to downgrade (don't modify while iterating)
-    local downgrades = {}
-    for profile_key, profile_data in pairs(self.cache.profiles) do
-        if profile_data.configuration_set
-            and profile_data.tool_mod_type == mod_type then
-            downgrades[#downgrades + 1] = {
-                old_key = profile_key,
-                new_key = profile_data.configuration_set,
-                data = profile_data,
-            }
-        end
+    local function remove_tool(tools)
+        if not tools then return nil end
+        local t = vim.deepcopy(tools)
+        t[mod_type] = nil
+        return next(t) and t or nil
     end
 
-    if #downgrades == 0 then return end
-
-    for _, d in ipairs(downgrades) do
-        -- Filter configurations array: remove entries for the keyed module type.
-        -- Also clean up skeleton cache entries (no build state) to prevent
-        -- the removed project from showing as orphaned.
-        if d.data.configurations then
-            local kept = {}
-            for _, ck in ipairs(d.data.configurations) do
-                local cached_cfg = self.cache.configurations and self.cache.configurations[ck]
-                if not cached_cfg or cached_cfg.type ~= mod_type then
-                    kept[#kept + 1] = ck
-                else
-                    -- Remove skeleton entries from cache; keep entries with
-                    -- build state (they become proper orphaned configs)
-                    local state = cached_cfg.state
-                    if not state or state == "unconfigured" then
-                        self.cache.configurations[ck] = nil
+    -- Clean skeleton entries for the removed module type from each affected profile
+    for _, profile_data in pairs(self.cache.profiles) do
+        if profile_data.configuration_set
+            and profile_data.tools and profile_data.tools[mod_type] then
+            if profile_data.configurations then
+                local kept = {}
+                for _, ck in ipairs(profile_data.configurations) do
+                    local cached_cfg = self.cache.configurations and self.cache.configurations[ck]
+                    if not cached_cfg or cached_cfg.type ~= mod_type then
+                        kept[#kept + 1] = ck
+                    else
+                        -- Remove skeleton entries from cache; keep entries with
+                        -- build state (they become proper orphaned configs)
+                        local state = cached_cfg.state
+                        if not state or state == "unconfigured" then
+                            self.cache.configurations[ck] = nil
+                        end
                     end
                 end
+                profile_data.configurations = kept
             end
-            d.data.configurations = kept
-        end
-
-        -- Clear tool fields
-        d.data.tool_key = nil
-        d.data.tool_data = nil
-        d.data.tool_label = nil
-        d.data.tool_mod_type = nil
-
-        -- Rename in cache
-        self.cache.profiles[d.old_key] = nil
-        self.cache.profiles[d.new_key] = d.data
-
-        -- Update active_profile
-        if self.user.active_profile == d.old_key then
-            self.user.active_profile = d.new_key
-            user_changed = true
         end
     end
+
+    -- Compute and apply renames
+    local renames = self:compute_profile_renames(remove_tool)
+    local user_changed = self:apply_profile_renames(renames, remove_tool)
 
     self:_save_cache()
     if user_changed then

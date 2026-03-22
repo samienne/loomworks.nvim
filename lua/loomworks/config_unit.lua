@@ -88,10 +88,13 @@ function ConfigUnit:_update()
     for _, pp in pairs(self._workspace._profile_projects) do
         if pp.project_key == self.project_key and pp.config_key == self.config_key then
             self.variant = pp.variant
-            if pp._profile and pp._profile.tool then
+            local project = self._workspace._projects[self.project_key]
+            local profile_tool = pp._profile and pp._profile.tools
+                and project and pp._profile.tools[project.type] or nil
+            if profile_tool then
                 self.tool = {
-                    key = pp._profile.tool.key,
-                    data = pp._profile.tool.data,
+                    key = profile_tool.key,
+                    data = profile_tool.data,
                 }
             end
             break
@@ -332,12 +335,19 @@ function ConfigUnit:materialize_pinned(variant, tool)
     local tool_mod_type = self.tool and self.tool.mod_type or nil
 
     local cache_key = cache_mod.config_cache_key(self.project_key, self.config_key)
+    local tools = nil
+    if tool_key and tool_mod_type then
+        tools = {
+            [tool_mod_type] = {
+                key = tool_key,
+                data = tool_data,
+                label = tool_label,
+            },
+        }
+    end
     ws.cache.profiles[ak] = {
         mappings = { [self.project_key] = self.variant },
-        tool_key = tool_key,
-        tool_data = tool_data,
-        tool_label = tool_label,
-        tool_mod_type = tool_mod_type,
+        tools = tools,
         configurations = { cache_key },
     }
 

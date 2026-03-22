@@ -3,15 +3,20 @@ local M = {}
 local modules = require("loomworks.modules")
 local cache_mod = require("loomworks.cache")
 
---- Build a profile key from configuration set name and tool key.
+--- Build a profile key from configuration set name and tools dict.
+--- Single keyed module: "set_name:tool_key" (same as before).
+--- Multi keyed modules: "set_name:tool_key1+tool_key2" (sorted by module type).
 --- @param set_name string
---- @param tool_key string|nil
+--- @param tools table<string, { key: string }>|nil tools dict keyed by module type
 --- @return string
-function M.profile_key(set_name, tool_key)
-    if tool_key then
-        return set_name .. ":" .. tool_key
-    end
-    return set_name
+function M.profile_key(set_name, tools)
+    if not tools or not next(tools) then return set_name end
+    local mod_types = {}
+    for mt in pairs(tools) do mod_types[#mod_types + 1] = mt end
+    table.sort(mod_types)
+    local parts = {}
+    for _, mt in ipairs(mod_types) do parts[#parts + 1] = tools[mt].key end
+    return set_name .. ":" .. table.concat(parts, "+")
 end
 
 
@@ -172,32 +177,39 @@ end
 -- Profile matching (property-based, via module comparator)
 -- ---------------------------------------------------------------------------
 
---- Check if a cached profile matches a configuration_set and tool_data.
+--- Check if a cached profile matches a configuration_set and tools dict.
 --- @param cached_profile loomworks.CachedProfile
 --- @param configuration_set string
---- @param tool_data table|nil
+--- @param tools table<string, { data: table }>|nil
 --- @return boolean
-function M.cached_profile_matches(cached_profile, configuration_set, tool_data)
+function M.cached_profile_matches(cached_profile, configuration_set, tools)
     if cached_profile.configuration_set ~= configuration_set then
         return false
     end
-    local mod_type = cached_profile.tool_mod_type
-    if mod_type then
-        return module_tools_match(mod_type, cached_profile.tool_data, tool_data)
+    -- Both nil = match
+    if not cached_profile.tools and not tools then return true end
+    if not cached_profile.tools or not tools then return false end
+    -- Check all tool entries match (both directions)
+    for mod_type, tool in pairs(tools) do
+        local cached_tool = cached_profile.tools[mod_type]
+        if not cached_tool then return false end
+        if not module_tools_match(mod_type, cached_tool.data, tool.data) then return false end
     end
-    -- No mod_type stored: both nil = match
-    return cached_profile.tool_data == nil and tool_data == nil
+    for mod_type in pairs(cached_profile.tools) do
+        if not tools[mod_type] then return false end
+    end
+    return true
 end
 
---- Find a cached profile that matches a configuration_set and tool_data.
+--- Find a cached profile that matches a configuration_set and tools dict.
 --- @param cache loomworks.CacheData|nil
 --- @param configuration_set string
---- @param tool_data table|nil
+--- @param tools table<string, { data: table }>|nil
 --- @return loomworks.CachedProfile|nil, string|nil cache_key
-function M.find_cached_profile(cache, configuration_set, tool_data)
+function M.find_cached_profile(cache, configuration_set, tools)
     if not cache or not cache.profiles then return nil, nil end
     for key, cp in pairs(cache.profiles) do
-        if M.cached_profile_matches(cp, configuration_set, tool_data) then
+        if M.cached_profile_matches(cp, configuration_set, tools) then
             return cp, key
         end
     end
@@ -241,8 +253,12 @@ local function resolve_tool(tools_by_type, cache, tool_key)
     -- Check cached profiles (tool may no longer be detected)
     if cache and cache.profiles then
         for _, profile in pairs(cache.profiles) do
-            if profile.tool_key == tool_key then
-                return profile.tool_data, profile.tool_label, profile.tool_mod_type
+            if profile.tools then
+                for mod_type, tool in pairs(profile.tools) do
+                    if tool.key == tool_key then
+                        return tool.data, tool.label, mod_type
+                    end
+                end
             end
         end
     end
@@ -267,20 +283,29 @@ function M.get_all_profiles(config, cache, tools_by_type)
     -- Cached profiles (all materialized by definition)
     if cache and cache.profiles then
         for cache_key, cp in pairs(cache.profiles) do
-            local mod = cp.tool_mod_type and modules.get(cp.tool_mod_type) or nil
+            -- Enrich tools dict: fill in missing key/label from module functions
+            local tools = nil
+            if cp.tools then
+                tools = {}
+                for mod_type, tool in pairs(cp.tools) do
+                    local mod = modules.get(mod_type)
+                    tools[mod_type] = {
+                        key = tool.key
+                            or (mod and mod.tool_key and tool.data
+                                and mod.tool_key(tool.data))
+                            or nil,
+                        data = tool.data,
+                        label = tool.label
+                            or (mod and mod.tool_label and tool.data
+                                and mod.tool_label(tool.data))
+                            or nil,
+                    }
+                end
+            end
             profiles[cache_key] = {
                 configuration_set = cp.configuration_set,
                 mappings = cp.mappings,
-                tool_key = cp.tool_key
-                        or (mod and mod.tool_key and cp.tool_data
-                            and mod.tool_key(cp.tool_data))
-                        or nil,
-                tool_data = cp.tool_data,
-                tool_label = cp.tool_label
-                        or (mod and mod.tool_label and cp.tool_data
-                            and mod.tool_label(cp.tool_data))
-                        or nil,
-                tool_mod_type = cp.tool_mod_type,
+                tools = tools,
                 _cached_configurations = cp.configurations,
             }
         end
@@ -291,12 +316,13 @@ function M.get_all_profiles(config, cache, tools_by_type)
         for name, profile in pairs(config.profiles) do
             local tk = profile.kit_id or (profile.cmake and profile.cmake.kit_id) or nil
             local td, tl, tmt = resolve_tool(tools_by_type, cache, tk)
+            local tools = nil
+            if tk and tmt then
+                tools = { [tmt] = { key = tk, data = td, label = tl } }
+            end
             profiles[name] = {
                 configuration_set = profile.configuration_set,
-                tool_key = tk,
-                tool_data = td,
-                tool_label = tl,
-                tool_mod_type = tmt,
+                tools = tools,
                 explicit = true,
             }
         end
@@ -342,7 +368,9 @@ function M.get_tool_entries(config, cache, tools_by_type)
         local entries = {}
         if #keyed_tools > 0 then
             for _, tool in ipairs(keyed_tools) do
-                local pkey = M.profile_key(set_name, tool.tool_key)
+                -- Build tools dict for profile_key computation
+                local tools_dict = { [keyed_mod_type] = { key = tool.tool_key } }
+                local pkey = M.profile_key(set_name, tools_dict)
                 -- Check if a cached profile exists for this combination
                 local cached = cache and cache.profiles and cache.profiles[pkey] or nil
                 entries[#entries + 1] = {
@@ -413,11 +441,8 @@ function M.merge(workspace, tools_by_type)
         set_mappings = config.configuration_sets[set_name]
     end
 
-    -- Resolve tool for active profile
-    local tool_key = active_profile and active_profile.tool_key or nil
-    local tool_data = active_profile and active_profile.tool_data or nil
-    local tool_label = active_profile and active_profile.tool_label or nil
-    local tool_mod_type = active_profile and active_profile.tool_mod_type or nil
+    -- Resolve tools dict for active profile
+    local active_tools = active_profile and active_profile.tools or nil
 
     local projects = {}
 
@@ -430,12 +455,9 @@ function M.merge(workspace, tools_by_type)
 
         local active_configuration = set_mappings and set_mappings[key] or nil
 
-        -- tool_key applies only to projects whose module type matches the tool.
-        -- When tool_mod_type is nil (e.g. older cache), fall back to including tool_key.
-        local project_tool_key = tool_key
-        if tool_mod_type and tool_mod_type ~= project.type then
-            project_tool_key = nil
-        end
+        -- Look up tool for this project's module type from the profile's tools dict
+        local project_tool = active_tools and active_tools[project.type] or nil
+        local project_tool_key = project_tool and project_tool.key or nil
 
         local cache_config_key = nil
         if active_configuration then
@@ -476,9 +498,9 @@ function M.merge(workspace, tools_by_type)
             configuration = active_configuration,
             configuration_key = cache_config_key,
             tool_key = project_tool_key,
-            tool_data = project_tool_key and tool_data or nil,
-            tool_label = project_tool_key and tool_label or nil,
-            tool_mod_type = project_tool_key and tool_mod_type or nil,
+            tool_data = project_tool and project_tool.data or nil,
+            tool_label = project_tool and project_tool.label or nil,
+            tool_mod_type = project_tool_key and project.type or nil,
             status = status,
             orphaned = false,
             needs_refresh = needs_refresh,
@@ -530,7 +552,7 @@ function M.merge(workspace, tools_by_type)
 
     return {
         name = active_profile_key,
-        tool_key = tool_key,
+        tools = active_tools,
         projects = projects,
     }, all_profiles
 end

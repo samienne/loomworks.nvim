@@ -9,6 +9,7 @@
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
+local workspace_view = require("loomworks.workspace_view")
 
 local M = {}
 
@@ -53,12 +54,7 @@ function M.open(opts)
     end
 
     -- Initialize mappings via auto-detection
-    local mappings = {}
-    for _, set_name in ipairs(set_names) do
-        local variant_type = set_name:lower()
-        local mapped = mod.map_variant and mod.map_variant(variant_type, available_configs) or nil
-        mappings[set_name] = mapped
-    end
+    local mappings = workspace_view.compute_initial_mappings(mod, set_names, available_configs)
 
     -- Tool selection state
     local selected_tool = nil -- index into tools array
@@ -148,27 +144,21 @@ function M.open(opts)
             end
 
             -- Profile upgrade preview (tool picker mode only)
-            if selected_tool and #no_tool_profiles > 0 then
-                local tool_key = tools[selected_tool].tool_key
-                -- Only show profiles whose config set has a non-None mapping
-                local sets_with_mapping = {}
-                for set_name, variant in pairs(mappings) do
-                    if variant then
-                        sets_with_mapping[set_name] = true
-                    end
-                end
-                local upgraded = {}
-                for _, pkey in ipairs(no_tool_profiles) do
-                    if sets_with_mapping[pkey] then
-                        upgraded[#upgraded + 1] = pkey
-                    end
-                end
+            if selected_tool and #no_tool_profiles > 0 and opts.ws then
+                local tool = tools[selected_tool]
+                local tool_entry = {
+                    tool_key = tool.tool_key,
+                    tool_data = tool.tool_data,
+                    tool_label = tool.tool_label,
+                    tool_mod_type = opts.project_type,
+                }
+                local upgraded = workspace_view.compute_upgrade_preview(
+                    opts.ws, tool_entry, mappings)
                 if #upgraded > 0 then
                     t:blank()
                     t:leaf("Profiles to upgrade:", "Comment")
-                    for _, pkey in ipairs(upgraded) do
-                        local new_key = pkey .. ":" .. tool_key
-                        t:leaf("  " .. pkey .. " → " .. new_key, "Comment")
+                    for _, rename in ipairs(upgraded) do
+                        t:leaf("  " .. rename.old_key .. " → " .. rename.new_key, "Comment")
                     end
                 end
             end

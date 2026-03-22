@@ -77,8 +77,6 @@ local function collect_profile_tasks(profile)
     local pps = profile:projects()
     if #pps == 0 then return nil end
 
-    local tool_data = profile.tool and profile.tool.data or nil
-
     local by_action = { configure = {}, build = {} }
 
     for _, pp in ipairs(pps) do
@@ -91,6 +89,8 @@ local function collect_profile_tasks(profile)
         local active_config = pp.variant
         if not active_config then goto continue end
 
+        local project_tool = profile:tool_for(project.type)
+        local tool_data = project_tool and project_tool.data or nil
         local project_ctx = {
             name = pp.project_key,
             path = project.path or pp.project_key,
@@ -113,7 +113,7 @@ local function collect_profile_tasks(profile)
             if lw_meta then
                 lw_meta.progress_tool = pt
                 lw_meta.variant = active_config
-                lw_meta.tool = profile.tool
+                lw_meta.tool = project_tool
                 if by_action[lw_meta.action] then
                     by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
                 end
@@ -181,7 +181,6 @@ local function collect_profile_clean_tasks(profile)
     local pps = profile:projects()
     if #pps == 0 then return nil end
 
-    local tool_data = profile.tool and profile.tool.data or nil
     local tasks = {}
 
     for _, pp in ipairs(pps) do
@@ -194,6 +193,8 @@ local function collect_profile_clean_tasks(profile)
         local active_config = pp.variant
         if not active_config then goto continue end
 
+        local project_tool = profile:tool_for(project.type)
+        local tool_data = project_tool and project_tool.data or nil
         local project_ctx = {
             name = pp.project_key,
             path = project.path or pp.project_key,

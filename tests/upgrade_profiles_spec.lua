@@ -109,10 +109,11 @@ describe("upgrade_profiles_for_tool", function()
 
         -- Tool fields set
         local p = ws.cache.profiles["Debug:ninja-gcc-12"]
-        assert.equals("ninja-gcc-12", p.tool_key)
-        assert.equals("Ninja - GCC 12", p.tool_label)
-        assert.equals("cmake", p.tool_mod_type)
-        assert.is_not_nil(p.tool_data)
+        assert.is_not_nil(p.tools)
+        assert.is_not_nil(p.tools.cmake)
+        assert.equals("ninja-gcc-12", p.tools.cmake.key)
+        assert.equals("Ninja - GCC 12", p.tools.cmake.label)
+        assert.is_not_nil(p.tools.cmake.data)
 
         -- active_profile migrated
         assert.equals("Debug:ninja-gcc-12", ws.user.active_profile)
@@ -266,10 +267,13 @@ describe("upgrade_profiles_for_tool", function()
                 profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
-                        tool_key = "ninja-gcc-12",
-                        tool_data = { id = "ninja-gcc-12" },
-                        tool_label = "Ninja - GCC 12",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                                data = { id = "ninja-gcc-12" },
+                                label = "Ninja - GCC 12",
+                            },
+                        },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -329,7 +333,7 @@ describe("upgrade_profiles_for_tool", function()
 
         -- Pinned profile should be unchanged
         assert.is_not_nil(ws.cache.profiles["App/Debug"])
-        assert.is_nil(ws.cache.profiles["App/Debug"].tool_key)
+        assert.is_nil(ws.cache.profiles["App/Debug"].tools)
     end)
 
     it("skips profiles whose config set has no keyed-module mapping", function()
@@ -383,7 +387,7 @@ describe("upgrade_profiles_for_tool", function()
         -- Release should NOT be upgraded (no cmake mapping)
         assert.is_not_nil(ws.cache.profiles["Release"])
         assert.is_nil(ws.cache.profiles["Release:ninja-gcc-12"])
-        assert.is_nil(ws.cache.profiles["Release"].tool_key)
+        assert.is_nil(ws.cache.profiles["Release"].tools)
 
         -- active_profile should NOT change (Release was not upgraded)
         assert.equals("Release", ws.user.active_profile)
@@ -473,10 +477,13 @@ describe("upgrade_profiles_for_tool", function()
                     -- A keyed profile that just needs extending
                     ["Debug:ninja-msvc-17"] = {
                         configuration_set = "Debug",
-                        tool_key = "ninja-msvc-17",
-                        tool_data = { id = "ninja-msvc-17" },
-                        tool_label = "Ninja - MSVC 17",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-msvc-17",
+                                data = { id = "ninja-msvc-17" },
+                                label = "Ninja - MSVC 17",
+                            },
+                        },
                         configurations = { "Frontend/debug", "App/Debug:ninja-msvc-17" },
                     },
                 },
@@ -575,18 +582,24 @@ describe("downgrade_profiles_from_tool", function()
                 profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
-                        tool_key = "ninja-gcc-12",
-                        tool_data = { id = "ninja-gcc-12" },
-                        tool_label = "Ninja - GCC 12",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                                data = { id = "ninja-gcc-12" },
+                                label = "Ninja - GCC 12",
+                            },
+                        },
                         configurations = { "Frontend/debug", "App/Debug:ninja-gcc-12" },
                     },
                     ["Release:ninja-gcc-12"] = {
                         configuration_set = "Release",
-                        tool_key = "ninja-gcc-12",
-                        tool_data = { id = "ninja-gcc-12" },
-                        tool_label = "Ninja - GCC 12",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                                data = { id = "ninja-gcc-12" },
+                                label = "Ninja - GCC 12",
+                            },
+                        },
                         configurations = { "Frontend/release", "App/Release:ninja-gcc-12" },
                     },
                 },
@@ -609,10 +622,7 @@ describe("downgrade_profiles_from_tool", function()
 
         -- Tool fields cleared
         local p = ws.cache.profiles["Debug"]
-        assert.is_nil(p.tool_key)
-        assert.is_nil(p.tool_data)
-        assert.is_nil(p.tool_label)
-        assert.is_nil(p.tool_mod_type)
+        assert.is_nil(p.tools)
 
         -- cmake entries removed from configurations array
         local cks = {}
@@ -642,10 +652,13 @@ describe("downgrade_profiles_from_tool", function()
                 profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
-                        tool_key = "ninja-gcc-12",
-                        tool_data = { id = "ninja-gcc-12" },
-                        tool_label = "Ninja - GCC 12",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                                data = { id = "ninja-gcc-12" },
+                                label = "Ninja - GCC 12",
+                            },
+                        },
                         configurations = { "Frontend/debug", "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -682,13 +695,16 @@ describe("downgrade_profiles_from_tool", function()
                 profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
-                        tool_key = "ninja-gcc-12",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                            },
+                        },
                         configurations = { "App/Debug:ninja-gcc-12", "Lib/Debug:ninja-gcc-12" },
                     },
                 },
                 configurations = {
-                    ["App/Debug:ninja-gcc-12"] = { project_key = "App", type = "cmake" },
+                    ["App/Debug:ninja-gcc-12"] = { project_key = "App", config_key = "Debug:ninja-gcc-12", type = "cmake" },
                     ["Lib/Debug:ninja-gcc-12"] = { project_key = "Lib", type = "cmake" },
                 },
             }
@@ -711,13 +727,16 @@ describe("downgrade_profiles_from_tool", function()
                 profiles = {
                     ["App/Debug:ninja-gcc-12"] = {
                         configuration_set = nil, -- pinned
-                        tool_key = "ninja-gcc-12",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                            },
+                        },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
                 configurations = {
-                    ["App/Debug:ninja-gcc-12"] = { project_key = "App", type = "cmake" },
+                    ["App/Debug:ninja-gcc-12"] = { project_key = "App", config_key = "Debug:ninja-gcc-12", type = "cmake" },
                 },
             }
         )
@@ -757,8 +776,11 @@ describe("compute_downgrade_preview", function()
                 profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
-                        tool_key = "ninja-gcc-12",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                            },
+                        },
                         configurations = {},
                     },
                 },
@@ -785,7 +807,11 @@ describe("compute_downgrade_preview", function()
                 profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                            },
+                        },
                         configurations = {},
                     },
                 },
@@ -817,8 +843,11 @@ describe("compute_downgrade_preview", function()
                 profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
-                        tool_key = "ninja-gcc-12",
-                        tool_mod_type = "cmake",
+                        tools = {
+                            cmake = {
+                                key = "ninja-gcc-12",
+                            },
+                        },
                         configurations = {},
                     },
                 },

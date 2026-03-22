@@ -213,44 +213,8 @@ function M.create_profile(ctx)
         local ws = lw.get_workspace()
         if not ws then return end
 
-        -- Step 1: Pick configuration set
-        local existing = {}
-        for name, cs in pairs(config_sets) do
-            existing[#existing + 1] = { name = name, cs = cs, auto = false }
-        end
-        table.sort(existing, function(a, b) return a.name < b.name end)
-
-        -- Auto-detect candidates
-        local auto_sets = ws:generate_default_config_sets()
-        local auto_items = {}
-        if auto_sets then
-            for name, mappings in pairs(auto_sets) do
-                -- Only show if not already existing
-                if not config_sets[name] then
-                    -- Build description of mappings
-                    local parts = {}
-                    local keys = {}
-                    for k in pairs(mappings) do keys[#keys + 1] = k end
-                    table.sort(keys)
-                    for _, k in ipairs(keys) do
-                        parts[#parts + 1] = k .. "→" .. mappings[k]
-                    end
-                    auto_items[#auto_items + 1] = {
-                        name = name .. " (auto-detected)",
-                        real_name = name,
-                        mappings = mappings,
-                        cs = nil,
-                        auto = true,
-                        desc = table.concat(parts, ", "),
-                    }
-                end
-            end
-            table.sort(auto_items, function(a, b) return a.real_name < b.real_name end)
-        end
-
-        local items = {}
-        for _, e in ipairs(existing) do items[#items + 1] = e end
-        for _, a in ipairs(auto_items) do items[#items + 1] = a end
+        local workspace_view = require("loomworks.workspace_view")
+        local items = workspace_view.compute_config_set_candidates(ws, config_sets)
 
         if #items == 0 then
             vim.notify("loomworks: no configuration sets available (add projects first)", vim.log.levels.INFO)
