@@ -103,12 +103,26 @@ function M.open(root)
         local mod = modules.get(type_info.type)
         local has_keyed = mod and mod.has_keyed_tools or false
 
-        -- Collect no-tool profiles for rename preview
+        -- Check if existing profiles already have a tool for this module type.
+        -- If so, inherit it — no tool picker needed.
+        local inherited_tool = nil
         local no_tool_profiles = {}
         if has_keyed and ws.cache.profiles then
             for k, data in pairs(ws.cache.profiles) do
-                if data.configuration_set and not data.tool_key then
-                    no_tool_profiles[#no_tool_profiles + 1] = k
+                if data.configuration_set then
+                    if data.tool_key and data.tool_mod_type == type_info.type then
+                        -- Found a profile with this tool type — inherit it
+                        if not inherited_tool then
+                            inherited_tool = {
+                                tool_key = data.tool_key,
+                                tool_data = data.tool_data,
+                                tool_label = data.tool_label,
+                                tool_mod_type = data.tool_mod_type,
+                            }
+                        end
+                    elseif not data.tool_key then
+                        no_tool_profiles[#no_tool_profiles + 1] = k
+                    end
                 end
             end
             table.sort(no_tool_profiles)
@@ -120,8 +134,9 @@ function M.open(root)
             available_configs = config_names,
             config_sets = raw_config_sets,
             mod = mod,
-            tools = keyed_tools,
+            tools = inherited_tool and {} or keyed_tools,
             has_keyed_tools = has_keyed,
+            inherited_tool = inherited_tool,
             no_tool_profiles = no_tool_profiles,
             on_accept = function(result)
                 -- Step 1: Add project entry
@@ -133,7 +148,6 @@ function M.open(root)
                 -- Skip mappings when keyed module has no tool selected —
                 -- the project is added unmapped until a tool is chosen.
                 if has_keyed and not result.tool_entry then
-                    vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "] (unmapped, no tool selected)", vim.log.levels.INFO)
                     return
                 end
                 -- Step 2: Apply mappings
@@ -146,11 +160,8 @@ function M.open(root)
                 if result.tool_entry then
                     ws:upgrade_profiles_for_tool(result.tool_entry)
                 end
-                vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
             end,
-            on_cancel = function()
-                vim.notify("loomworks: cancelled adding " .. key, vim.log.levels.INFO)
-            end,
+            on_cancel = function() end,
         })
     end
 
@@ -171,9 +182,7 @@ function M.open(root)
         if not has_config_sets then
             -- No config sets: add directly
             local ok, err = ws:add_project(key, type_info.type, path)
-            if ok then
-                vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
-            else
+            if not ok then
                 vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
             end
             return
@@ -195,9 +204,7 @@ function M.open(root)
         if #config_names == 0 then
             -- No detectable configurations: add without mappings
             local ok, err = ws:add_project(key, type_info.type, path)
-            if ok then
-                vim.notify("loomworks: added " .. key .. " [" .. type_info.type .. "]", vim.log.levels.INFO)
-            else
+            if not ok then
                 vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
             end
             return
@@ -278,31 +285,57 @@ function M.open(root)
             return
         end
 
+        -- Capture project type before removal (needed for downgrade)
+        local proj_type = ws.config.projects[found_key].type
+
+        -- Compute downgrade preview (will profiles be renamed?)
+        local downgrade_preview = ws:compute_downgrade_preview(found_key)
+
+        -- Build confirmation dialog content
+        local lines = {
+            "  Remove project: " .. found_key,
+            "",
+            "  This removes the project from loomworks.json.",
+            "  Build artifacts are NOT deleted.",
+        }
+        local highlights = {
+            { line = 1, hl_group = "DiagnosticWarn" },
+            { line = 3, hl_group = "Comment" },
+            { line = 4, hl_group = "Comment" },
+        }
+
+        -- Add profile rename preview if applicable
+        if #downgrade_preview > 0 then
+            lines[#lines + 1] = ""
+            local preview_start = #lines + 1
+            lines[#lines + 1] = "  Profiles to rename:"
+            highlights[#highlights + 1] = { line = preview_start, hl_group = "Comment" }
+            for _, rename in ipairs(downgrade_preview) do
+                lines[#lines + 1] = "    " .. rename.old_key .. " → " .. rename.new_key
+                highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+            end
+        end
+
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Press y to confirm, q to cancel"
+
         local dialog = require("loomworks.ui.dialog")
         dialog.show({
             title = "Confirm Remove",
-            lines = {
-                "  Remove project: " .. found_key,
-                "",
-                "  This removes the project from loomworks.json.",
-                "  Build artifacts are NOT deleted.",
-                "",
-                "  Press y to confirm, q to cancel",
-            },
-            highlights = {
-                { line = 1, hl_group = "DiagnosticWarn" },
-                { line = 3, hl_group = "Comment" },
-                { line = 4, hl_group = "Comment" },
-            },
+            lines = lines,
+            highlights = highlights,
             keys = {
                 n = "close",
                 y = function(self)
                     self:close()
                     local ok, err = ws:remove_project(found_key)
-                    if ok then
-                        vim.notify("loomworks: removed " .. found_key, vim.log.levels.INFO)
-                    else
+                    if not ok then
                         vim.notify("loomworks: " .. (err or "failed to remove"), vim.log.levels.ERROR)
+                        return
+                    end
+                    -- Downgrade profiles if this was the last keyed-module project
+                    if #downgrade_preview > 0 then
+                        ws:downgrade_profiles_from_tool(proj_type)
                     end
                 end,
             },

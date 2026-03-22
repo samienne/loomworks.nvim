@@ -1236,33 +1236,52 @@ are cached in a browser-local dict. Pending scans show "scanning...".
 
 **Configuration mapping dialog**: When adding a project to a workspace
 that already has configuration sets, a mapping dialog opens instead of
-adding immediately. The dialog shows each config set with a pre-filled
-mapping (via `map_variant(set_name:lower(), configs)`) or "None".
+adding immediately.
 
-When the project's module has keyed tools (`has_keyed_tools = true`), the
-dialog also shows a tool selection row and a profile upgrade preview:
+The dialog layout depends on the module type and workspace state:
+
+**Keyed module, no tool selected** — tool row first, no mappings:
 
 ```
   Add "lumets" [cmake]
 
-  Debug     Debug ▸
-  Release   Release ▸
+  Tool:  None ▸
 
-  Tool:  Ninja - GCC 12 ▸
-
-  Profiles to upgrade:
-    Debug → Debug:ninja-gcc-12
-    Release → Release:ninja-gcc-12
+  Project will be added without configuration mappings.
 
   [Enter] change  [y] accept  [q] cancel
 ```
 
-The tool row appears only for keyed-module types. It opens
-`vim.ui.select` with detected tools. The profile upgrade preview shows
-which existing no-tool profiles will be renamed. It is only shown when
-a tool is selected and no-tool profiles exist in the cache.
+**Keyed module, tool selected** — tool row first, then mappings:
 
-For non-keyed modules, the dialog shows only configuration mappings:
+```
+  Add "lumets" [cmake]
+
+  Tool:  Ninja - GCC 12 ▸
+
+  Debug     Debug ▸
+  Release   Release ▸
+
+  Profiles to upgrade:
+    Debug → Debug:ninja-gcc-12
+
+  [Enter] change  [y] accept  [q] cancel
+```
+
+**Keyed module, tool inherited** — when existing profiles already have
+a tool (e.g. adding a second cmake project), the tool is inherited
+automatically. No tool row; mappings only:
+
+```
+  Add "NewLib" [cmake] — Map configurations
+
+  Debug     Debug ▸
+  Release   Release ▸
+
+  [Enter] change  [y] accept  [q] cancel
+```
+
+**Non-keyed module** — mappings only:
 
 ```
   Add "Frontend" [typescript] — Map configurations
@@ -1273,11 +1292,16 @@ For non-keyed modules, the dialog shows only configuration mappings:
   [Enter] change  [y] accept  [q] cancel
 ```
 
+The profile upgrade preview shows only profiles whose config set has
+a non-None mapping for the new project.
+
 - Enter on a mapping row opens `vim.ui.select` with configurations + "None"
 - Enter on the tool row opens `vim.ui.select` with detected tools
 - `y` accepts: chains decomposed operations (see below)
 - `q`/Esc cancels: project is NOT added
 - Skipped when no config sets exist or project has no detectable configs
+- No success notifications — UI state changes are sufficient. Only
+  errors are shown via `vim.notify`.
 
 **Tool detection gating**: When the module has keyed tools, the project
 browser ensures tool detection has completed before opening the mapping
@@ -1294,11 +1318,33 @@ process crashes between steps, no data is lost or corrupted.
 2. For each config set with a non-nil mapping:
    `ws:update_config_set_mapping(set, key, variant)` — adds one
    mapping to one config set.
-3. If a tool was selected:
+3. If a tool was selected or inherited:
    `ws:upgrade_profiles_for_tool(tool_entry)` — upgrades cached
    no-tool profiles to keyed profiles (renames, adds tool fields,
    creates skeleton cache entries). Extends existing keyed profiles
    with skeleton entries for the new project.
+
+**Profile downgrade on removal**: When removing a project whose module
+has keyed tools, the project browser checks whether it is the last
+project of that module type. If so, the removal confirmation dialog
+shows a profile rename preview:
+
+```
+  Remove project: lumets
+
+  This removes the project from loomworks.json.
+  Build artifacts are NOT deleted.
+
+  Profiles to rename:
+    Debug:ninja-gcc-12 → Debug
+    Release:ninja-gcc-12 → Release
+
+  Press y to confirm, q to cancel
+```
+
+After removal, `ws:downgrade_profiles_from_tool(mod_type)` strips tool
+suffixes from affected profiles, removes keyed-module configuration
+entries from profiles, and clears tool fields.
 
 **File mutation**: All changes write to `loomworks.json` via Workspace
 mutation methods. Each method saves and remerges independently.
@@ -1312,6 +1358,10 @@ Available Workspace mutation methods:
 - `remove_configuration_set(name)` — remove a config set
 - `upgrade_profiles_for_tool(tool_entry)` — upgrade no-tool profiles
   to keyed profiles; extend keyed profiles with new project entries
+- `downgrade_profiles_from_tool(mod_type)` — strip tool from profiles
+  when last project of a keyed-module type is removed
+- `compute_downgrade_preview(project_key)` — compute profile renames
+  that would occur if a project were removed (pure query, no mutation)
 
 ### 6.14 Auto-refresh
 

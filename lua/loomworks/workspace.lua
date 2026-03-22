@@ -1642,6 +1642,108 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
     self:remerge()
 end
 
+--- Compute profile renames that would occur if a project were removed.
+--- Pure query — does not mutate state.
+--- @param project_key string project key about to be removed
+--- @return { old_key: string, new_key: string }[]
+function Workspace:compute_downgrade_preview(project_key)
+    local proj_cfg = self.config.projects[project_key]
+    if not proj_cfg then return {} end
+
+    local mod = self._core._deps.modules.get(proj_cfg.type)
+    if not mod or not mod.has_keyed_tools then return {} end
+
+    -- Check if any OTHER project of the same type exists
+    for key, cfg in pairs(self.config.projects) do
+        if key ~= project_key and cfg.type == proj_cfg.type then
+            return {} -- not the last one
+        end
+    end
+
+    -- Collect profiles that would be downgraded
+    local renames = {}
+    if self.cache.profiles then
+        for profile_key, profile_data in pairs(self.cache.profiles) do
+            if profile_data.configuration_set
+                and profile_data.tool_mod_type == proj_cfg.type then
+                renames[#renames + 1] = {
+                    old_key = profile_key,
+                    new_key = profile_data.configuration_set,
+                }
+            end
+        end
+        table.sort(renames, function(a, b) return a.old_key < b.old_key end)
+    end
+    return renames
+end
+
+--- Downgrade keyed profiles when the last project of a keyed-module type
+--- is removed. Strips tool suffixes, removes keyed-module configuration
+--- entries from profiles, and clears tool fields.
+--- No-op if other projects of the same type still exist.
+--- @param mod_type string module type (e.g. "cmake")
+function Workspace:downgrade_profiles_from_tool(mod_type)
+    if not self.cache.profiles then return end
+
+    -- Guard: if any remaining project has this keyed type, do nothing
+    for _, cfg in pairs(self.config.projects) do
+        if cfg.type == mod_type then return end
+    end
+
+    local user_changed = false
+
+    -- Collect profiles to downgrade (don't modify while iterating)
+    local downgrades = {}
+    for profile_key, profile_data in pairs(self.cache.profiles) do
+        if profile_data.configuration_set
+            and profile_data.tool_mod_type == mod_type then
+            downgrades[#downgrades + 1] = {
+                old_key = profile_key,
+                new_key = profile_data.configuration_set,
+                data = profile_data,
+            }
+        end
+    end
+
+    if #downgrades == 0 then return end
+
+    for _, d in ipairs(downgrades) do
+        -- Filter configurations array: remove entries for the keyed module type
+        if d.data.configurations then
+            local kept = {}
+            for _, ck in ipairs(d.data.configurations) do
+                local cached_cfg = self.cache.configurations and self.cache.configurations[ck]
+                if not cached_cfg or cached_cfg.type ~= mod_type then
+                    kept[#kept + 1] = ck
+                end
+            end
+            d.data.configurations = kept
+        end
+
+        -- Clear tool fields
+        d.data.tool_key = nil
+        d.data.tool_data = nil
+        d.data.tool_label = nil
+        d.data.tool_mod_type = nil
+
+        -- Rename in cache
+        self.cache.profiles[d.old_key] = nil
+        self.cache.profiles[d.new_key] = d.data
+
+        -- Update active_profile
+        if self.user.active_profile == d.old_key then
+            self.user.active_profile = d.new_key
+            user_changed = true
+        end
+    end
+
+    self:_save_cache()
+    if user_changed then
+        self:_save_user()
+    end
+    self:remerge()
+end
+
 --- Create (materialize) a profile and optionally activate it.
 --- @param config_set loomworks.ConfigurationSet
 --- @param tool_entry? table

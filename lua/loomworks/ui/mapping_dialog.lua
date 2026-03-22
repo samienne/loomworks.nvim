@@ -4,8 +4,8 @@
 --- to existing configuration sets. Opens when adding a project to a
 --- workspace that already has config sets.
 ---
---- For keyed-module types (cmake), also shows a tool selection row and
---- a profile upgrade preview.
+--- For keyed-module types (cmake), the tool selection comes first.
+--- Mappings are shown only when a tool is selected or inherited.
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
@@ -19,8 +19,9 @@ local M = {}
 ---   available_configs: string[] — new project's configuration names
 ---   config_sets: table<string, table> — raw config_sets from ws.config
 ---   mod: table — module with map_variant
----   tools: table[]|nil — detected keyed tools for this module type
+---   tools: table[]|nil — detected keyed tools (only when no inherited tool)
 ---   has_keyed_tools: boolean|nil — whether this module has keyed tools
+---   inherited_tool: table|nil — tool already in use by existing profiles
 ---   no_tool_profiles: string[]|nil — cached profile keys without tool
 ---   on_accept: fun(result: { mappings: table, tool_entry: table|nil })
 ---   on_cancel: fun()
@@ -30,7 +31,13 @@ function M.open(opts)
     local mod = opts.mod
     local tools = opts.tools or {}
     local has_keyed_tools = opts.has_keyed_tools or false
+    local inherited_tool = opts.inherited_tool
     local no_tool_profiles = opts.no_tool_profiles or {}
+
+    -- Tool is inherited from existing profiles — no picker needed
+    local tool_inherited = inherited_tool ~= nil
+    -- Whether the tool picker should be shown (keyed module, no inherited tool)
+    local show_tool_picker = has_keyed_tools and not tool_inherited and #tools > 0
 
     -- Sorted config set names for stable ordering
     local set_names = {}
@@ -59,48 +66,26 @@ function M.open(opts)
     -- Track accept vs cancel
     local accepted = false
 
+    -- Whether mappings should be shown
+    local function show_mappings()
+        if not has_keyed_tools then return true end
+        if tool_inherited then return true end
+        return selected_tool ~= nil
+    end
+
     local tree, view
 
     local function render_fn(t)
         t._level = 1
 
         -- Title
-        local title_suffix = has_keyed_tools and "" or " — Map configurations"
+        local title_suffix = show_mappings() and not show_tool_picker
+            and " — Map configurations" or ""
         t:leaf('Add "' .. opts.project_key .. '" [' .. opts.project_type .. ']' .. title_suffix, "Title")
         t:blank()
 
-        -- Configuration set mapping rows
-        for _, set_name in ipairs(set_names) do
-            local variant = mappings[set_name]
-            local display_variant = variant or "None"
-            local padded_name = set_name .. string.rep(" ", max_name_len - #set_name)
-            local display = padded_name .. "  " .. display_variant .. " ▸"
-            local hl = variant and "LoomworksActionable" or "Comment"
-
-            t:item(display, {
-                hl = hl,
-                direct = true,
-                on_enter = function()
-                    local items = {}
-                    for _, config_name in ipairs(available_configs) do
-                        items[#items + 1] = config_name
-                    end
-                    items[#items + 1] = "None"
-                    vim.ui.select(items, {
-                        prompt = set_name .. ":",
-                    }, function(choice)
-                        if choice then
-                            mappings[set_name] = choice ~= "None" and choice or nil
-                            if view then view:refresh() end
-                        end
-                    end)
-                end,
-            })
-        end
-
-        -- Tool selection section (keyed modules only)
-        if has_keyed_tools and #tools > 0 then
-            t:blank()
+        -- Tool selection (keyed modules without inherited tool)
+        if show_tool_picker then
             local tool_label = selected_tool
                 and (tools[selected_tool].tool_label or tools[selected_tool].tool_key)
                 or "None"
@@ -129,19 +114,49 @@ function M.open(opts)
                     end)
                 end,
             })
+            t:blank()
+        end
 
-            -- Profile upgrade preview: only profiles whose config set has a
-            -- non-None mapping for the new project (keyed module).
+        -- Configuration set mapping rows (conditional for keyed modules)
+        if show_mappings() then
+            for _, set_name in ipairs(set_names) do
+                local variant = mappings[set_name]
+                local display_variant = variant or "None"
+                local padded_name = set_name .. string.rep(" ", max_name_len - #set_name)
+                local display = padded_name .. "  " .. display_variant .. " ▸"
+                local hl = variant and "LoomworksActionable" or "Comment"
+
+                t:item(display, {
+                    hl = hl,
+                    direct = true,
+                    on_enter = function()
+                        local items = {}
+                        for _, config_name in ipairs(available_configs) do
+                            items[#items + 1] = config_name
+                        end
+                        items[#items + 1] = "None"
+                        vim.ui.select(items, {
+                            prompt = set_name .. ":",
+                        }, function(choice)
+                            if choice then
+                                mappings[set_name] = choice ~= "None" and choice or nil
+                                if view then view:refresh() end
+                            end
+                        end)
+                    end,
+                })
+            end
+
+            -- Profile upgrade preview (tool picker mode only)
             if selected_tool and #no_tool_profiles > 0 then
                 local tool_key = tools[selected_tool].tool_key
-                -- Build set of config sets that will have a keyed mapping
+                -- Only show profiles whose config set has a non-None mapping
                 local sets_with_mapping = {}
                 for set_name, variant in pairs(mappings) do
                     if variant then
                         sets_with_mapping[set_name] = true
                     end
                 end
-                -- No-tool profile keys equal their config set name
                 local upgraded = {}
                 for _, pkey in ipairs(no_tool_profiles) do
                     if sets_with_mapping[pkey] then
@@ -157,6 +172,9 @@ function M.open(opts)
                     end
                 end
             end
+        else
+            -- No tool selected — show descriptive text
+            t:leaf("Project will be added without configuration mappings.", "Comment")
         end
 
         t:blank()
@@ -172,9 +190,11 @@ function M.open(opts)
             accepted = true
             view:close()
 
-            -- Build tool_entry from selection
+            -- Build tool_entry from selection or inheritance
             local tool_entry = nil
-            if selected_tool then
+            if inherited_tool then
+                tool_entry = inherited_tool
+            elseif selected_tool then
                 local tool = tools[selected_tool]
                 tool_entry = {
                     tool_key = tool.tool_key,
@@ -196,13 +216,11 @@ function M.open(opts)
     -- Capture parent window for focus restore
     local parent_win = vim.api.nvim_get_current_win()
 
-    -- Compute window dimensions
-    local content_rows = #set_names + 4 -- title + blank + rows + blank + footer
-    if has_keyed_tools and #tools > 0 then
-        content_rows = content_rows + 2 -- blank + tool row
-        if #no_tool_profiles > 0 then
-            content_rows = content_rows + 2 + #no_tool_profiles -- blank + header + previews
-        end
+    -- Compute window dimensions (generous — content may vary with tool selection)
+    local content_rows = #set_names + 6 -- title + blanks + rows + footer + margin
+    if show_tool_picker then
+        content_rows = content_rows + 3 -- tool row + blanks
+        content_rows = content_rows + #no_tool_profiles + 2 -- preview
     end
     local height = math.min(content_rows, math.floor(vim.o.lines * 0.8))
     local width = max_name_len + 30
