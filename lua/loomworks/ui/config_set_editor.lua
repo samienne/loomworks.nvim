@@ -149,6 +149,7 @@ function M.open(opts)
 
     view = View.new({
         widget = tree,
+        lock_to_items = true,
         win = {
             width = width,
             height = height,
@@ -158,8 +159,6 @@ function M.open(opts)
             title_pos = "center",
         },
         keymaps = {
-            ["<Tab>"]   = "next_item",
-            ["<S-Tab>"] = "prev_item",
             ["<CR>"]    = "enter",
             ["y"]       = "accept",
         },

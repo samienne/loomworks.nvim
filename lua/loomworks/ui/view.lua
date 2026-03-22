@@ -33,13 +33,16 @@ function View.new(opts)
         _events = opts.events or {},
         _win_opts = opts.win or {},
         _on_close = opts.on_close,
+        _lock_to_items = opts.lock_to_items or false,
         _filetype = opts.filetype or "loomworks",
         _timer_interval = opts.timer_interval or 80,
         _bufnr = nil,
         _snacks_win = nil,
         _timer = nil,
         _refresh_scheduled = false,
+        _snapping = false,
         _event_handlers = {},
+        _cursor_autocmd = nil,
         _ns = vim.api.nvim_create_namespace("loomworks_view"),
     }, View)
 end
@@ -63,6 +66,12 @@ function View:open(win_overrides)
     for key, action in pairs(self._keymaps) do
         local a = action
         keys[key] = function() self:_dispatch(a) end
+    end
+
+    -- lock_to_items: j/k navigate between actionable items only
+    if self._lock_to_items then
+        keys["j"] = function() self:_dispatch("next_item") end
+        keys["k"] = function() self:_dispatch("prev_item") end
     end
 
     -- Merge: defaults < constructor opts < open() overrides < non-overridable
@@ -101,6 +110,9 @@ function View:open(win_overrides)
 
     self._snacks_win = Snacks.win(win_config)
     self:_setup_events()
+    if self._lock_to_items then
+        self:_setup_cursor_lock()
+    end
     self:refresh()
 end
 
@@ -148,6 +160,11 @@ function View:refresh()
     if cursor[1] > line_count then cursor[1] = line_count end
     pcall(vim.api.nvim_win_set_cursor, win, cursor)
 
+    -- Snap to nearest actionable line when locked
+    if self._lock_to_items then
+        self:_snap_cursor()
+    end
+
     -- Manage animation timer based on needs_frame
     if needs_frame and not self._timer then
         self._timer = vim.fn.timer_start(self._timer_interval, function()
@@ -192,6 +209,53 @@ function View:_dispatch(action)
     end
 end
 
+--- Find the nearest actionable line to the given line.
+--- @param line number current cursor line (1-based)
+--- @return number|nil nearest actionable line
+function View:_nearest_item(line)
+    local meta = self._widget.line_meta
+    if meta[line] then return line end
+
+    -- Search outward from current line
+    local total = #self._widget.lines
+    for offset = 1, total do
+        local down = line + offset
+        local up = line - offset
+        if down <= total and meta[down] then return down end
+        if up >= 1 and meta[up] then return up end
+    end
+    return nil
+end
+
+--- Snap cursor to the nearest actionable line if not already on one.
+function View:_snap_cursor()
+    if not self._snacks_win or not self._snacks_win:valid() then return end
+    local win = self._snacks_win.win
+    local cursor = vim.api.nvim_win_get_cursor(win)
+    local target = self:_nearest_item(cursor[1])
+    if target and target ~= cursor[1] then
+        self._snapping = true
+        pcall(vim.api.nvim_win_set_cursor, win, { target, 0 })
+        self._snapping = false
+    elseif cursor[2] ~= 0 then
+        self._snapping = true
+        pcall(vim.api.nvim_win_set_cursor, win, { cursor[1], 0 })
+        self._snapping = false
+    end
+end
+
+--- Set up CursorMoved autocmd to lock cursor to actionable lines.
+function View:_setup_cursor_lock()
+    if not self._bufnr then return end
+    self._cursor_autocmd = vim.api.nvim_create_autocmd("CursorMoved", {
+        buffer = self._bufnr,
+        callback = function()
+            if self._snapping then return end
+            self:_snap_cursor()
+        end,
+    })
+end
+
 function View:_setup_events()
     local events = require("loomworks.events")
     self._event_handlers = {}
@@ -208,6 +272,10 @@ function View:_cleanup()
     if self._timer then
         vim.fn.timer_stop(self._timer)
         self._timer = nil
+    end
+    if self._cursor_autocmd then
+        pcall(vim.api.nvim_del_autocmd, self._cursor_autocmd)
+        self._cursor_autocmd = nil
     end
     local events = require("loomworks.events")
     for _, entry in ipairs(self._event_handlers) do
