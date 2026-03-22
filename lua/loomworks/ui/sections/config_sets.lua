@@ -157,6 +157,7 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
         local profile = cs:find_profile(nil)
         render_no_tool_entry(tree, cs, profile, all_profiles, active_profile)
     end
+
 end
 
 --- Open the config set editor for an existing set.
@@ -307,6 +308,11 @@ return function(tree, ctx)
             hl = set_hl,
             enter_label = "Edit mappings",
             on_enter = function() edit_config_set(sname) end,
+            on_create = function()
+                local all_tool_entries = lw.get_tool_entries()
+                local is_first = not next(all_profiles)
+                actions._create_profile_step2(cs, sname, all_tool_entries, is_first)
+            end,
             on_delete = function() delete_config_set(sname) end,
         }, function()
             render_set_details(tree, cs,

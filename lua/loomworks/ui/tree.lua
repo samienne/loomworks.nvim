@@ -14,6 +14,7 @@ local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
 --- The `enter` action label is overridden per-widget via enter_label.
 local ACTION_ORDER = {
     { action = "enter",     label = "Activate" },
+    { action = "create",    label = "Create profile from set" },
     { action = "build",     label = "Build" },
     { action = "configure", label = "Configure" },
     { action = "task",      label = "Open task output" },
