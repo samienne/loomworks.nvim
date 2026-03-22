@@ -14,6 +14,7 @@ local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
 --- The `enter` action label is overridden per-widget via enter_label.
 local ACTION_ORDER = {
     { action = "enter",     label = "Activate" },
+    { action = "create",    label = "Create profile from set" },
     { action = "build",     label = "Build" },
     { action = "configure", label = "Configure" },
     { action = "task",      label = "Open task output" },
@@ -25,7 +26,7 @@ local ACTION_ORDER = {
 }
 
 --- Fields consumed by the tree builder for rendering only.
-local RENDER_KEYS = { hl = true, spinning = true, marker = true, enter_label = true }
+local RENDER_KEYS = { hl = true, spinning = true, marker = true }
 
 --- @class loomworks.Tree
 --- @field _render_fn fun(tree: loomworks.Tree)

@@ -951,38 +951,56 @@ When no projects exist, the sentinel is replaced with:
 No projects yet. Add projects first.
 ```
 
-### 6.6 Orphaned Configurations Section
+### 6.6 Orphaned Items Section
 
-Shows cached configurations with build state that are not referenced by any
-profile. Hidden when there are no orphaned configs (the common case).
+Shows orphaned cached configurations and stray build directories. Visible
+when either type exists (hidden otherwise — the common case).
 
-**Title**: `Orphaned Configurations` with `Title` highlight.
+**Title**: `Orphaned Items` with `Title` highlight.
 
-**Layout**: Configs are grouped by project key (sorted alphabetically).
-Each project is a foldable node; each config within is a foldable node
-showing the config key and its status.
+**Orphaned configurations**: cached configs with build state not referenced
+by any profile. Grouped by project key (sorted alphabetically). Each
+project is a foldable node; each config within is a foldable node showing
+the config key and its status.
+
+**Stray build directories**: directories under `{root}/.nvim/build/` not
+referenced by any cache entry. Detected via top-down pruning: the scan
+reports the highest-level directory whose entire subtree contains no cache
+entries. Directories that ARE cache entries (or parents of cache entries)
+are skipped. Shown as flat items with `(stray)` suffix.
 
 ```
-Orphaned Configurations
+Orphaned Items  [D] delete
 
   ▶ App
     ▶ Debug:ninja-gcc-12 (built)
       Status: built
       Build dir: .nvim/build/App/Debug
-
-  ▶ SubLib
-    ▶ Release:msvc-2022 (configured)
-      Status: configured
-      Build dir: .nvim/build/SubLib/Release
+  .nvim/build/OldProject (stray)
+  ▸ Clean all
 ```
 
 **Highlight**: Project nodes use `LoomworksUnconfigured`. Config nodes use
-`resolve_config_status()` highlights (same as Projects section).
+`resolve_config_status()` highlights. Stray dir items use
+`LoomworksUnconfigured`.
 
-**Actions**: Only `D` (delete) is mapped on config nodes. All other action
-keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned configs cannot be
-built, configured, or pinned. Deletion shows the standard confirmation
-dialog.
+**Actions**: `D` (delete) is mapped on config nodes and stray dir items.
+All other action keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned
+items cannot be built, configured, or pinned. Deletion shows the standard
+confirmation dialog.
+
+**Sentinel: Clean all**
+
+After the last orphaned item:
+```
+▸ Clean all
+```
+Enter shows a confirmation dialog listing:
+- All orphaned cached configurations (with state and build dirs)
+- All stray build directories
+
+On confirm: deletes orphaned cache entries + build dirs via `_run_deletion`,
+then deletes stray build dirs. If nothing to clean, shows a notification.
 
 ### 6.7 Configuration Sets Section
 
@@ -996,6 +1014,37 @@ sets are declared.
 
 Highlighted with `LoomworksActive` if the active profile belongs to this set,
 otherwise `LoomworksActionable`.
+
+**Set node actions**:
+
+| Action | Behavior |
+|--------|----------|
+| `<CR>` | Action picker: Edit mappings, Create profile from set, Delete |
+| `D`    | Delete config set with confirmation dialog |
+
+**Config set editing** (`<CR>` on a set node):
+
+Opens a dedicated config set editor dialog. Shows each project in the
+workspace with its current variant mapping and available configurations
+(from module.info). The user can change each mapping via `vim.ui.select`
+or set it to "None" to remove the mapping. Accept (`y`) applies changes
+via `update_config_set_mapping()` for each changed mapping. Cancel (`q`)
+discards changes.
+
+Changed mappings may orphan existing cached configs (old variant no longer
+referenced). This is intentional — orphans are cleaned explicitly via the
+"Clean all orphaned items" action in the Orphaned Configurations section.
+
+**Config set deletion** (`D` on a set node):
+
+Shows a confirmation dialog listing:
+- Profiles that reference this set (will become orphaned-set)
+- Warning that cached configs will become orphaned
+
+On confirm: `remove_configuration_set()`. Profiles that referenced the set
+become orphaned_set. Cached configs for those profiles become orphaned. No
+immediate deletion of cache entries — the user cleans via "Clean all orphaned
+configs" in the Projects section.
 
 **Set children** (when unfolded):
 - Projects sub-group: `project_key → variant`
@@ -1021,6 +1070,17 @@ Where:
 | `R`    | rebuild via profile | nil (no-op) |
 | `C`    | clean via profile | nil (no-op) |
 | `D`    | delete profile with dialog | nil (no-op) |
+
+**Sentinel: Create configuration set**
+
+After the last config set, an interactive item:
+```
+▸ Create configuration set
+```
+Enter prompts for a name via `vim.ui.input`, then opens the config set
+editor dialog pre-populated with auto-detected mappings (same
+`compute_initial_mappings` logic used for add-project). On accept:
+`add_configuration_set(name, mappings)`.
 
 ### 6.8 Projects Section
 
@@ -1123,6 +1183,7 @@ interactive item:
 ```
 Enter opens the project browser float (Phase 1). Replaces the former `A`
 keybinding.
+
 
 ### 6.9 Deletion Confirmation Dialog
 

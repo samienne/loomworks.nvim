@@ -161,6 +161,58 @@ function M.delete_orphaned_config(unit)
     end
 end
 
+--- Delete a stray build directory (not in cache).
+--- @param dir string absolute normalized path
+--- @return fun() closure
+function M.delete_stray_dir(dir)
+    return function()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        if not ws then return end
+
+        -- Make relative for display
+        local display = dir
+        local ws_root = vim.fs.normalize(ws.root)
+        local norm = vim.fs.normalize(dir)
+        if norm:sub(1, #ws_root) == ws_root then
+            display = norm:sub(#ws_root + 2)
+        end
+
+        local dialog = require("loomworks.ui.dialog")
+        dialog.show({
+            title = "Confirm Delete",
+            lines = {
+                "  Delete stray build directory:",
+                "",
+                "    " .. display,
+                "",
+                "  Press y to confirm, q to cancel",
+            },
+            highlights = {
+                { line = 1, hl_group = "DiagnosticWarn" },
+                { line = 3, hl_group = "DiagnosticWarn" },
+            },
+            keys = {
+                n = "close",
+                y = function(self)
+                    self:close()
+                    local safe_prefix = ws._core._deps.normalize(ws.root)
+                    if not ws:_validate_build_dir(dir, safe_prefix) then return end
+                    ws:_delete_build_dirs_async({ dir }, function(results)
+                        if results[1] and results[1].ok then
+                            vim.notify("loomworks: stray directory removed", vim.log.levels.INFO)
+                            ws._core._deps.events.emit("deletion_completed", {})
+                        else
+                            local err = results[1] and results[1].err or "unknown"
+                            vim.notify("loomworks: failed to delete: " .. err, vim.log.levels.ERROR)
+                        end
+                    end)
+                end,
+            },
+        })
+    end
+end
+
 --- Open the overseer task output for a ConfigUnit.
 --- Closes the status page first (terminal buffers can't layer in floats),
 --- reopens it with cursor restored when the task output is dismissed.

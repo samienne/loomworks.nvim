@@ -70,6 +70,8 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
     }
 
     local ws = Workspace.new(mock_core, data)
+    ws:_cleanup_orphaned_skeletons()
+    ws:remerge()
     return ws
 end
 
@@ -439,12 +441,24 @@ describe("compute_remove_context", function()
 
     it("shows skeleton count when only unconfigured entries exist", function()
         local ws = make_ws(
-            { projects = { App = { cmake = {} } } },
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "Debug" } },
+            },
             nil,
             {
+                profiles = {
+                    ["Debug:ninja-gcc-12"] = {
+                        configuration_set = "Debug",
+                        tools = {
+                            cmake = { key = "ninja-gcc-12", data = {}, label = "Ninja - GCC 12" },
+                        },
+                        configurations = { "App/Debug:ninja-gcc-12" },
+                    },
+                },
                 configurations = {
-                    ["App/Debug"] = {
-                        project_key = "App", config_key = "Debug",
+                    ["App/Debug:ninja-gcc-12"] = {
+                        project_key = "App", config_key = "Debug:ninja-gcc-12",
                         type = "cmake", variant = "Debug",
                     },
                 },
@@ -871,5 +885,467 @@ describe("compute_config_set_candidates", function()
         -- but with no configuration sets and basic config, likely 0 or
         -- the auto-detect results
         assert.is_not_nil(items)
+    end)
+end)
+
+-- =========================================================================
+-- compute_create_config_set_context
+-- =========================================================================
+
+describe("compute_create_config_set_context", function()
+    it("returns sorted project keys and empty available configs for unknown modules", function()
+        local ws = make_ws({
+            projects = {
+                Bravo = { cmake = {} },
+                Alpha = { ets = {} },
+            },
+        })
+
+        local ctx = workspace_view.compute_create_config_set_context(ws)
+
+        assert.equals(2, #ctx.projects)
+        assert.equals("Alpha", ctx.projects[1])
+        assert.equals("Bravo", ctx.projects[2])
+        -- available_configs entries exist for each project
+        assert.is_not_nil(ctx.available_configs["Alpha"])
+        assert.is_not_nil(ctx.available_configs["Bravo"])
+    end)
+
+    it("returns empty projects for empty workspace", function()
+        local ws = make_ws({ projects = {} })
+        local ctx = workspace_view.compute_create_config_set_context(ws)
+        assert.equals(0, #ctx.projects)
+    end)
+end)
+
+-- =========================================================================
+-- execute_create_config_set
+-- =========================================================================
+
+describe("execute_create_config_set", function()
+    it("creates a config set with non-nil mappings", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+        })
+
+        local ok, err = workspace_view.execute_create_config_set(ws, "Debug", {
+            App = "Debug",
+            Frontend = nil,
+        })
+
+        assert.is_true(ok)
+        assert.is_nil(err)
+        assert.is_not_nil(ws.config.configuration_sets["Debug"])
+        assert.equals("Debug", ws.config.configuration_sets["Debug"]["App"])
+        -- nil mapping should be filtered out
+        assert.is_nil(ws.config.configuration_sets["Debug"]["Frontend"])
+    end)
+
+    it("returns error for duplicate name", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        })
+
+        local ok, err = workspace_view.execute_create_config_set(ws, "Debug", { App = "Debug" })
+        assert.is_false(ok)
+        assert.is_not_nil(err)
+    end)
+end)
+
+-- =========================================================================
+-- compute_edit_config_set_context
+-- =========================================================================
+
+describe("compute_edit_config_set_context", function()
+    it("returns context with current mappings and project keys", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", Frontend = "debug" },
+            },
+        })
+
+        local ctx = workspace_view.compute_edit_config_set_context(ws, "Debug")
+
+        assert.is_not_nil(ctx)
+        assert.equals("Debug", ctx.set_name)
+        assert.equals("Debug", ctx.mappings["App"])
+        assert.equals("debug", ctx.mappings["Frontend"])
+        assert.equals(2, #ctx.project_keys)
+    end)
+
+    it("shows nil for unmapped projects", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug" },
+            },
+        })
+
+        local ctx = workspace_view.compute_edit_config_set_context(ws, "Debug")
+
+        assert.is_not_nil(ctx)
+        assert.equals("Debug", ctx.mappings["App"])
+        assert.is_nil(ctx.mappings["Frontend"])
+    end)
+
+    it("returns nil for nonexistent set", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+
+        local ctx = workspace_view.compute_edit_config_set_context(ws, "NonExistent")
+        assert.is_nil(ctx)
+    end)
+end)
+
+-- =========================================================================
+-- execute_edit_config_set
+-- =========================================================================
+
+describe("execute_edit_config_set", function()
+    it("applies changed mappings", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", Frontend = "debug" },
+            },
+        })
+
+        local old = { App = "Debug", Frontend = "debug" }
+        local new = { App = "Release", Frontend = "debug" }
+
+        local ok = workspace_view.execute_edit_config_set(ws, "Debug", "Debug", new, old)
+        assert.is_true(ok)
+        assert.equals("Release", ws.config.configuration_sets["Debug"]["App"])
+        assert.equals("debug", ws.config.configuration_sets["Debug"]["Frontend"])
+    end)
+
+    it("removes mappings set to nil", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", Frontend = "debug" },
+            },
+        })
+
+        local old = { App = "Debug", Frontend = "debug" }
+        local new = { App = "Debug" } -- Frontend removed
+
+        local ok = workspace_view.execute_edit_config_set(ws, "Debug", "Debug", new, old)
+        assert.is_true(ok)
+        assert.equals("Debug", ws.config.configuration_sets["Debug"]["App"])
+        assert.is_nil(ws.config.configuration_sets["Debug"]["Frontend"])
+    end)
+
+    it("skips unchanged mappings", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        })
+
+        local old = { App = "Debug" }
+        local new = { App = "Debug" }
+
+        local ok = workspace_view.execute_edit_config_set(ws, "Debug", "Debug", new, old)
+        assert.is_true(ok)
+        assert.equals("Debug", ws.config.configuration_sets["Debug"]["App"])
+    end)
+
+    it("returns error for nonexistent set", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+
+        local ok, err = workspace_view.execute_edit_config_set(ws, "NonExistent", "NonExistent",
+            { App = "Debug" }, { App = "Release" })
+        assert.is_false(ok)
+        assert.is_not_nil(err)
+    end)
+
+    it("renames config set and migrates cached profiles", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App = { cmake = {} },
+                    Frontend = { ets = {} },
+                },
+                configuration_sets = {
+                    debug = { App = "Debug", Frontend = "debug" },
+                },
+            },
+            nil,
+            {
+                profiles = {
+                    ["debug:ninja-gcc-12"] = {
+                        configuration_set = "debug",
+                        tools = {
+                            cmake = { key = "ninja-gcc-12", data = {}, label = "Ninja - GCC 12" },
+                        },
+                        configurations = { "App/Debug:ninja-gcc-12", "Frontend/debug" },
+                    },
+                },
+                configurations = {
+                    ["App/Debug:ninja-gcc-12"] = {
+                        project_key = "App", config_key = "Debug:ninja-gcc-12",
+                        type = "cmake", variant = "Debug",
+                    },
+                    ["Frontend/debug"] = {
+                        project_key = "Frontend", config_key = "debug",
+                        type = "ets", variant = "debug",
+                    },
+                },
+            }
+        )
+
+        local old_mappings = { App = "Debug", Frontend = "debug" }
+        local new_mappings = { App = "Debug", Frontend = "debug" }
+
+        local ok = workspace_view.execute_edit_config_set(
+            ws, "debug", "Debug", new_mappings, old_mappings)
+        assert.is_true(ok)
+
+        -- Old set removed, new set exists
+        assert.is_nil(ws.config.configuration_sets["debug"])
+        assert.is_not_nil(ws.config.configuration_sets["Debug"])
+        assert.equals("Debug", ws.config.configuration_sets["Debug"]["App"])
+
+        -- Cached profile migrated to new set name
+        assert.equals("Debug",
+            ws.cache.profiles["debug:ninja-gcc-12"].configuration_set)
+    end)
+end)
+
+-- =========================================================================
+-- compute_delete_config_set_context
+-- =========================================================================
+
+describe("compute_delete_config_set_context", function()
+    it("returns context with affected profiles", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "Debug" } },
+            },
+            nil,
+            {
+                profiles = {
+                    ["Debug:ninja-gcc-12"] = {
+                        configuration_set = "Debug",
+                        tools = {
+                            cmake = { key = "ninja-gcc-12", data = {}, label = "Ninja - GCC 12" },
+                        },
+                        configurations = { "App/Debug:ninja-gcc-12" },
+                    },
+                },
+                configurations = {
+                    ["App/Debug:ninja-gcc-12"] = {
+                        project_key = "App", config_key = "Debug:ninja-gcc-12",
+                        type = "cmake", variant = "Debug",
+                    },
+                },
+            }
+        )
+
+        local ctx = workspace_view.compute_delete_config_set_context(ws, "Debug")
+        assert.is_not_nil(ctx)
+        assert.equals(1, #ctx.profiles)
+        assert.equals("Debug:ninja-gcc-12", ctx.profiles[1])
+        -- Lines mention the profile
+        local found = false
+        for _, line in ipairs(ctx.lines) do
+            if line:find("Debug:ninja%-gcc%-12") then found = true; break end
+        end
+        assert.is_true(found)
+    end)
+
+    it("returns context with no affected profiles", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        })
+
+        local ctx = workspace_view.compute_delete_config_set_context(ws, "Debug")
+        assert.is_not_nil(ctx)
+        assert.equals(0, #ctx.profiles)
+    end)
+
+    it("returns nil for nonexistent set", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+
+        local ctx = workspace_view.compute_delete_config_set_context(ws, "NonExistent")
+        assert.is_nil(ctx)
+    end)
+end)
+
+-- =========================================================================
+-- execute_delete_config_set
+-- =========================================================================
+
+describe("execute_delete_config_set", function()
+    it("removes the config set", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = {
+                Debug = { App = "Debug" },
+                Release = { App = "Release" },
+            },
+        })
+
+        local ok = workspace_view.execute_delete_config_set(ws, "Debug")
+        assert.is_true(ok)
+        assert.is_nil(ws.config.configuration_sets["Debug"])
+        assert.is_not_nil(ws.config.configuration_sets["Release"])
+    end)
+
+    it("returns error for nonexistent set", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+
+        local ok, err = workspace_view.execute_delete_config_set(ws, "NonExistent")
+        assert.is_false(ok)
+        assert.is_not_nil(err)
+    end)
+end)
+
+-- =========================================================================
+-- compute_orphan_cleanup_context
+-- =========================================================================
+
+describe("compute_orphan_cleanup_context", function()
+    it("returns empty when no orphans exist", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        })
+
+        local ctx = workspace_view.compute_orphan_cleanup_context(ws)
+        assert.equals(0, #ctx.orphaned_configs)
+        assert.equals(0, #ctx.stray_dirs)
+    end)
+
+    it("collects orphaned configs with state", function()
+        local ws = make_ws(
+            {
+                projects = { Frontend = { ets = {} } },
+                configuration_sets = { Debug = { Frontend = "debug" } },
+            },
+            nil,
+            {
+                profiles = {
+                    Debug = {
+                        configuration_set = "Debug",
+                        configurations = { "Frontend/debug" },
+                    },
+                },
+                configurations = {
+                    ["Frontend/debug"] = {
+                        project_key = "Frontend", config_key = "debug",
+                        type = "ets", variant = "debug", state = "built",
+                    },
+                    ["Frontend/release"] = {
+                        project_key = "Frontend", config_key = "release",
+                        type = "ets", variant = "release", state = "configured",
+                        build_dir = "/root/.nvim/build/Frontend/release",
+                    },
+                },
+            }
+        )
+
+        local ctx = workspace_view.compute_orphan_cleanup_context(ws)
+        -- Frontend/release is not referenced by any profile → orphaned
+        assert.equals(1, #ctx.orphaned_configs)
+        assert.equals("Frontend", ctx.orphaned_configs[1].project_key)
+        assert.equals("release", ctx.orphaned_configs[1].config_key)
+        assert.equals("configured", ctx.orphaned_configs[1].state)
+        assert.equals("/root/.nvim/build/Frontend/release", ctx.orphaned_configs[1].build_dir)
+    end)
+
+    it("dialog lines mention orphan count", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+            },
+            nil,
+            {
+                configurations = {
+                    ["App/Debug"] = {
+                        project_key = "App", config_key = "Debug",
+                        type = "cmake", variant = "Debug", state = "built",
+                    },
+                },
+            }
+        )
+
+        local ctx = workspace_view.compute_orphan_cleanup_context(ws)
+        assert.equals(1, #ctx.orphaned_configs)
+        local found = false
+        for _, line in ipairs(ctx.lines) do
+            if line:find("1") then found = true; break end
+        end
+        assert.is_true(found)
+    end)
+end)
+
+-- =========================================================================
+-- execute_orphan_cleanup
+-- =========================================================================
+
+describe("execute_orphan_cleanup", function()
+    it("calls on_done immediately when no items", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local done = false
+        workspace_view.execute_orphan_cleanup(ws, {}, {}, function() done = true end)
+        assert.is_true(done)
+    end)
+
+    it("deletes orphaned configs via _run_deletion", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+            },
+            nil,
+            {
+                configurations = {
+                    ["App/Orphan"] = {
+                        project_key = "App", config_key = "Orphan",
+                        type = "cmake", variant = "Orphan", state = "built",
+                        build_dir = "/root/.nvim/build/App/Orphan",
+                    },
+                },
+            }
+        )
+
+        local items = {
+            { project_key = "App", config_key = "Orphan", build_dir = "/root/.nvim/build/App/Orphan" },
+        }
+
+        local done = false
+        workspace_view.execute_orphan_cleanup(ws, items, {}, function()
+            done = true
+        end)
+
+        assert.is_true(done)
+        -- Verify the cache entry was deleted
+        assert.is_nil(ws.cache.configurations["App/Orphan"])
     end)
 end)

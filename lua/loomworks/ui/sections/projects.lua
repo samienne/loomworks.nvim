@@ -116,6 +116,7 @@ local function open_add_project()
     end
 end
 
+
 --- Render the projects section.
 --- @param tree loomworks.Tree
 --- @param ctx table { lw, projects, active_profile_key }

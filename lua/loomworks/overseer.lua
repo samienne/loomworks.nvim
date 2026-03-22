@@ -358,6 +358,23 @@ local function launch_tasks(overseer, task_defs, on_all_done)
     return total
 end
 
+--- Filter task definitions to only those that will actually launch or defer.
+--- Excludes "skip" (already done) and "block" (unknown state) tasks.
+--- @param task_defs table[]
+--- @return table[]
+local function filter_launchable_tasks(task_defs)
+    local result = {}
+    for _, task_def in ipairs(task_defs) do
+        if task_def.loomworks then
+            local readiness = check_task_readiness(task_def)
+            if readiness == "launch" or readiness == "defer" then
+                result[#result + 1] = task_def
+            end
+        end
+    end
+    return result
+end
+
 --- Filter configure tasks to only those whose ConfigUnit needs configuring.
 --- @param all_tasks table { configure: table[], build: table[] }
 --- @return table[] configure tasks that actually need running
@@ -617,22 +634,22 @@ function M.run_profile_action(profile, action)
         if not all_tasks then return end
 
         if action == "configure" then
-            local units, target_states = collect_units_from_tasks(all_tasks.configure, "configured")
+            -- Filter to tasks that will actually launch (skip already-configured)
+            local launchable = filter_launchable_tasks(all_tasks.configure)
+            local units, target_states = collect_units_from_tasks(launchable, "configured")
             if #units > 0 then
                 loomworks.create_operation(profile, "configure", units, target_states)
             end
-            local launched = launch_tasks(overseer, all_tasks.configure)
-            if launched == 0 and #units == 0 then
-                -- Nothing to do — no operation was created
-            end
+            launch_tasks(overseer, all_tasks.configure)
             return
         end
 
         if action == "build" then
             local needs_configure = filter_unconfigured_tasks(all_tasks)
 
-            -- Collect all build units as the target
-            local units, target_states = collect_units_from_tasks(all_tasks.build, "built")
+            -- Filter build tasks to those that will actually launch
+            local launchable_builds = filter_launchable_tasks(all_tasks.build)
+            local units, target_states = collect_units_from_tasks(launchable_builds, "built")
 
             if #needs_configure > 0 then
                 -- Also include configure units that aren't already in the build set

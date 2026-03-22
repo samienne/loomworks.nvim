@@ -390,4 +390,432 @@ function M.compute_config_set_candidates(ws, config_sets)
     return items
 end
 
+-- =========================================================================
+-- Config Set Editing
+-- =========================================================================
+
+--- Context for creating a new config set: project keys, auto-detected
+--- mappings, and available configs per project (from module.info).
+--- @param ws loomworks.Workspace
+--- @return { projects: string[], auto_mappings: table<string, string|nil>, available_configs: table<string, string[]> }
+function M.compute_create_config_set_context(ws)
+    local project_keys = {}
+    local auto_mappings = {}
+    local available_configs = {}
+
+    for key, proj_config in pairs(ws.config.projects) do
+        project_keys[#project_keys + 1] = key
+        local mod = modules.get(proj_config.type)
+        if mod and mod.info then
+            local abs_path = ws.root .. "/" .. (proj_config.path or key)
+            local info = mod.info(abs_path, proj_config.type_config)
+            if info and info.configurations then
+                local names = {}
+                for name in pairs(info.configurations) do
+                    names[#names + 1] = name
+                end
+                table.sort(names)
+                available_configs[key] = names
+            end
+        end
+        if not available_configs[key] then
+            available_configs[key] = {}
+        end
+    end
+    table.sort(project_keys)
+
+    return {
+        projects = project_keys,
+        auto_mappings = auto_mappings,
+        available_configs = available_configs,
+    }
+end
+
+--- Execute config set creation.
+--- @param ws loomworks.Workspace
+--- @param name string config set name
+--- @param mappings table<string, string|nil> project_key → variant
+--- @return boolean ok, string|nil err
+function M.execute_create_config_set(ws, name, mappings)
+    -- Filter out nil mappings
+    local clean = {}
+    for k, v in pairs(mappings) do
+        if v then clean[k] = v end
+    end
+    return ws:add_configuration_set(name, clean)
+end
+
+--- Context for editing a config set: current mappings, available configs
+--- per project (from module.info).
+--- @param ws loomworks.Workspace
+--- @param set_name string
+--- @return { set_name: string, mappings: table<string, string|nil>, available_configs: table<string, string[]>, project_keys: string[] }|nil
+function M.compute_edit_config_set_context(ws, set_name)
+    if not ws.config.configuration_sets
+            or not ws.config.configuration_sets[set_name] then
+        return nil
+    end
+
+    local raw_mappings = ws.config.configuration_sets[set_name]
+    local mappings = {}
+    local available_configs = {}
+    local project_keys = {}
+
+    for key, proj_config in pairs(ws.config.projects) do
+        project_keys[#project_keys + 1] = key
+        mappings[key] = raw_mappings[key] or nil
+
+        local mod = modules.get(proj_config.type)
+        if mod and mod.info then
+            local abs_path = ws.root .. "/" .. (proj_config.path or key)
+            local info = mod.info(abs_path, proj_config.type_config)
+            if info and info.configurations then
+                local names = {}
+                for name in pairs(info.configurations) do
+                    names[#names + 1] = name
+                end
+                table.sort(names)
+                available_configs[key] = names
+            end
+        end
+        if not available_configs[key] then
+            available_configs[key] = {}
+        end
+    end
+    table.sort(project_keys)
+
+    return {
+        set_name = set_name,
+        mappings = mappings,
+        available_configs = available_configs,
+        project_keys = project_keys,
+    }
+end
+
+--- Execute config set edit: apply changed mappings, optionally rename.
+--- @param ws loomworks.Workspace
+--- @param old_name string original config set name
+--- @param new_name string new name (same as old_name if not renamed)
+--- @param new_mappings table<string, string|nil>
+--- @param old_mappings table<string, string|nil>
+--- @return boolean ok, string|nil err
+function M.execute_edit_config_set(ws, old_name, new_name, new_mappings, old_mappings)
+    local renamed = new_name ~= old_name
+
+    if renamed then
+        -- Rename: create new set, migrate profiles, remove old
+        local ok, err = M.execute_rename_config_set(ws, old_name, new_name, new_mappings)
+        if not ok then return false, err end
+        return true
+    end
+
+    -- Apply mapping changes to existing set
+    for key, new_variant in pairs(new_mappings) do
+        local old_variant = old_mappings[key]
+        if new_variant ~= old_variant then
+            local ok, err = ws:update_config_set_mapping(old_name, key, new_variant)
+            if not ok then return false, err end
+        end
+    end
+    -- Handle keys that were in old but not in new (removed)
+    for key, old_variant in pairs(old_mappings) do
+        if old_variant and new_mappings[key] == nil then
+            local ok, err = ws:update_config_set_mapping(old_name, key, nil)
+            if not ok then return false, err end
+        end
+    end
+    return true
+end
+
+--- Rename a configuration set: create new, migrate cached profiles, remove old.
+--- The new set gets the provided mappings (which may also have changed).
+--- @param ws loomworks.Workspace
+--- @param old_name string
+--- @param new_name string
+--- @param mappings table<string, string|nil> final mappings for the new set
+--- @return boolean ok, string|nil err
+function M.execute_rename_config_set(ws, old_name, new_name, mappings)
+    -- Filter nil mappings
+    local clean = {}
+    for k, v in pairs(mappings) do
+        if v then clean[k] = v end
+    end
+
+    -- Create new set
+    local ok, err = ws:add_configuration_set(new_name, clean)
+    if not ok then return false, err end
+
+    -- Migrate cached profiles that reference old_name
+    if ws.cache.profiles then
+        for _, profile_data in pairs(ws.cache.profiles) do
+            if profile_data.configuration_set == old_name then
+                profile_data.configuration_set = new_name
+            end
+        end
+    end
+
+    -- Update active_profile user.json reference if it points to a profile
+    -- that was just migrated (profile keys don't change, only the set name)
+
+    -- Remove old set
+    ok, err = ws:remove_configuration_set(old_name)
+    if not ok then return false, err end
+
+    return true
+end
+
+--- Context for deleting a config set: affected profiles, warning lines.
+--- @param ws loomworks.Workspace
+--- @param set_name string
+--- @return { profiles: string[], lines: string[], highlights: table[] }|nil
+function M.compute_delete_config_set_context(ws, set_name)
+    if not ws.config.configuration_sets
+            or not ws.config.configuration_sets[set_name] then
+        return nil
+    end
+
+    -- Find profiles referencing this set
+    local affected_profiles = {}
+    if ws.cache.profiles then
+        for profile_key, profile_data in pairs(ws.cache.profiles) do
+            if profile_data.configuration_set == set_name then
+                affected_profiles[#affected_profiles + 1] = profile_key
+            end
+        end
+        table.sort(affected_profiles)
+    end
+
+    local lines = {
+        "  Delete configuration set: " .. set_name,
+        "",
+    }
+    local highlights = {
+        { line = 1, hl_group = "DiagnosticWarn" },
+    }
+
+    if #affected_profiles > 0 then
+        lines[#lines + 1] = "  Profiles that will become orphaned:"
+        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        for _, pk in ipairs(affected_profiles) do
+            lines[#lines + 1] = "    " .. pk
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "  Cached configs will become orphaned."
+    highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    lines[#lines + 1] = "  Use 'Clean orphaned configs' to remove them later."
+    highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "  Press y to confirm, q to cancel"
+
+    return {
+        profiles = affected_profiles,
+        lines = lines,
+        highlights = highlights,
+    }
+end
+
+--- Execute config set deletion (orphans profiles, does not delete caches).
+--- @param ws loomworks.Workspace
+--- @param set_name string
+--- @return boolean ok, string|nil err
+function M.execute_delete_config_set(ws, set_name)
+    return ws:remove_configuration_set(set_name)
+end
+
+-- =========================================================================
+-- Orphan Cleanup
+-- =========================================================================
+
+--- Find build directories on disk under {root}/.nvim/build/ that are not
+--- referenced by any cache entry. Uses top-down pruning: reports the
+--- highest-level directory whose entire subtree contains no cache entries.
+--- @param ws loomworks.Workspace
+--- @return string[] absolute paths of stray directories
+function M.find_stray_build_dirs(ws)
+    local uv = vim.uv or vim.loop
+    local build_root = ws.root .. "/.nvim/build"
+    local normalize = ws._core._deps.normalize
+
+    -- Collect all normalized build_dirs referenced by cache entries
+    local known_dirs = {}
+    if ws.cache.configurations then
+        for _, cached in pairs(ws.cache.configurations) do
+            if cached.build_dir then
+                known_dirs[#known_dirs + 1] = normalize(cached.build_dir)
+            end
+        end
+    end
+
+    -- Build a set for exact match and a list for prefix checks
+    local known_set = {}
+    for _, d in ipairs(known_dirs) do known_set[d] = true end
+
+    --- Check if any known cache dir is a proper child of the candidate.
+    --- @param candidate string normalized dir path
+    --- @return boolean
+    local function has_cache_entry_below(candidate)
+        local prefix = candidate .. "/"
+        for _, known in ipairs(known_dirs) do
+            if known:sub(1, #prefix) == prefix then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Top-down walk:
+    -- - If this dir IS a cache entry → stop (it's a valid build dir).
+    -- - If no cache entry lives below it → report as stray, stop.
+    -- - Otherwise → recurse into children.
+    local stray = {}
+    local function scan(dir)
+        local normalized = normalize(dir)
+        if known_set[normalized] then
+            return -- this dir is a known build dir, don't touch it
+        end
+        if not has_cache_entry_below(normalized) then
+            stray[#stray + 1] = normalized
+            return
+        end
+        -- Some cache entry lives deeper — recurse into children
+        local handle = uv.fs_scandir(dir)
+        if not handle then return end
+        while true do
+            local name, ftype = uv.fs_scandir_next(handle)
+            if not name then break end
+            if ftype == "directory" then
+                scan(dir .. "/" .. name)
+            end
+        end
+    end
+
+    local norm_root = normalize(build_root)
+    local stat = uv.fs_stat(build_root)
+    if stat and stat.type == "directory" then
+        -- Scan each top-level child (not the build root itself)
+        local handle = uv.fs_scandir(build_root)
+        if handle then
+            while true do
+                local name, ftype = uv.fs_scandir_next(handle)
+                if not name then break end
+                if ftype == "directory" then
+                    scan(norm_root .. "/" .. name)
+                end
+            end
+        end
+    end
+
+    table.sort(stray)
+    return stray
+end
+
+--- Collect all orphaned items for the cleanup dialog: orphaned cached
+--- configs + stray build dirs not in cache.
+--- @param ws loomworks.Workspace
+--- @return { orphaned_configs: table[], stray_dirs: string[], lines: string[], highlights: table[] }
+function M.compute_orphan_cleanup_context(ws)
+    local orphans = ws:get_orphaned_configs()
+    local orphaned_configs = {}
+
+    for _, o in ipairs(orphans) do
+        orphaned_configs[#orphaned_configs + 1] = {
+            project_key = o.project_key,
+            config_key = o.config_key,
+            state = o.cached and o.cached.state or nil,
+            build_dir = o.cached and o.cached.build_dir or nil,
+        }
+    end
+
+    local stray_dirs = M.find_stray_build_dirs(ws)
+
+    local lines = {
+        "  Clean orphaned items",
+        "",
+    }
+    local highlights = {
+        { line = 1, hl_group = "DiagnosticWarn" },
+    }
+
+    local has_anything = #orphaned_configs > 0 or #stray_dirs > 0
+
+    if #orphaned_configs > 0 then
+        lines[#lines + 1] = "  Orphaned configurations (" .. #orphaned_configs .. "):"
+        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        for _, item in ipairs(orphaned_configs) do
+            local state_label = item.state and (" (" .. item.state .. ")") or ""
+            local dir = item.build_dir and ("  " .. rel_path(ws, item.build_dir)) or ""
+            lines[#lines + 1] = "    " .. item.project_key .. " / " .. item.config_key
+                    .. state_label .. dir
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        lines[#lines + 1] = ""
+    end
+
+    if #stray_dirs > 0 then
+        lines[#lines + 1] = "  Stray build directories (" .. #stray_dirs .. "):"
+        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        for _, dir in ipairs(stray_dirs) do
+            lines[#lines + 1] = "    " .. rel_path(ws, dir)
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        lines[#lines + 1] = ""
+    end
+
+    if not has_anything then
+        lines[#lines + 1] = "  Nothing to clean."
+        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    else
+        lines[#lines + 1] = "  Press y to confirm, q to cancel"
+    end
+
+    return {
+        orphaned_configs = orphaned_configs,
+        stray_dirs = stray_dirs,
+        lines = lines,
+        highlights = highlights,
+    }
+end
+
+--- Execute orphan cleanup: delete orphaned cache entries + build dirs,
+--- then delete stray build dirs.
+--- @param ws loomworks.Workspace
+--- @param orphaned_configs table[] { project_key, config_key, build_dir? }
+--- @param stray_dirs string[] absolute paths
+--- @param on_done? fun()
+function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
+    on_done = on_done or function() end
+
+    local function delete_stray()
+        if #stray_dirs == 0 then
+            on_done()
+            return
+        end
+        local safe_prefix = ws._core._deps.normalize(ws.root)
+        local valid_dirs = {}
+        for _, dir in ipairs(stray_dirs) do
+            if ws:_validate_build_dir(dir, safe_prefix) then
+                valid_dirs[#valid_dirs + 1] = dir
+            end
+        end
+        if #valid_dirs == 0 then
+            on_done()
+            return
+        end
+        ws:_delete_build_dirs_async(valid_dirs, function()
+            on_done()
+        end)
+    end
+
+    if #orphaned_configs > 0 then
+        ws:_run_deletion(orphaned_configs, function()
+            ws:delete_cached_configs(orphaned_configs)
+        end, delete_stray)
+    else
+        delete_stray()
+    end
+end
+
 return M
