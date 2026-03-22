@@ -984,6 +984,20 @@ keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned configs cannot be
 built, configured, or pinned. Deletion shows the standard confirmation
 dialog.
 
+**Sentinel: Clean all orphaned items**
+
+After the last orphaned project group:
+```
+▸ Clean all orphaned items
+```
+Enter shows a confirmation dialog listing:
+- All orphaned cached configurations (with state and build dirs)
+- Stray build directories under `{root}/.nvim/build/` not referenced
+  by any cache entry (leftover from deleted profiles or manual operations)
+
+On confirm: deletes orphaned cache entries + build dirs via `_run_deletion`,
+then deletes stray build dirs. If nothing to clean, shows a notification.
+
 ### 6.7 Configuration Sets Section
 
 Shows declared configuration sets from `loomworks.json`. Only appears when
@@ -1015,7 +1029,7 @@ discards changes.
 
 Changed mappings may orphan existing cached configs (old variant no longer
 referenced). This is intentional — orphans are cleaned explicitly via the
-"Clean orphaned configs" action in the Projects section.
+"Clean all orphaned items" action in the Orphaned Configurations section.
 
 **Config set deletion** (`D` on a set node):
 
@@ -1025,7 +1039,7 @@ Shows a confirmation dialog listing:
 
 On confirm: `remove_configuration_set()`. Profiles that referenced the set
 become orphaned_set. Cached configs for those profiles become orphaned. No
-immediate deletion of cache entries — the user cleans via "Clean orphaned
+immediate deletion of cache entries — the user cleans via "Clean all orphaned
 configs" in the Projects section.
 
 **Set children** (when unfolded):
@@ -1166,17 +1180,6 @@ interactive item:
 Enter opens the project browser float (Phase 1). Replaces the former `A`
 keybinding.
 
-**Sentinel: Clean orphaned configs**
-
-Below the "Add project" item:
-```
-▸ Clean orphaned configs
-```
-Enter shows a confirmation dialog listing all orphaned configurations
-(configs with build state not referenced by any profile), their state,
-and build directories. On confirm: deletes cache entries and build
-directories via the standard `_run_deletion` pattern. If no orphans
-exist, shows a notification instead.
 
 ### 6.9 Deletion Confirmation Dialog
 

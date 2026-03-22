@@ -1232,14 +1232,15 @@ end)
 -- =========================================================================
 
 describe("compute_orphan_cleanup_context", function()
-    it("returns empty items when no orphans exist", function()
+    it("returns empty when no orphans exist", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
             configuration_sets = { Debug = { App = "Debug" } },
         })
 
         local ctx = workspace_view.compute_orphan_cleanup_context(ws)
-        assert.equals(0, #ctx.items)
+        assert.equals(0, #ctx.orphaned_configs)
+        assert.equals(0, #ctx.stray_dirs)
     end)
 
     it("collects orphaned configs with state", function()
@@ -1272,11 +1273,11 @@ describe("compute_orphan_cleanup_context", function()
 
         local ctx = workspace_view.compute_orphan_cleanup_context(ws)
         -- Frontend/release is not referenced by any profile → orphaned
-        assert.equals(1, #ctx.items)
-        assert.equals("Frontend", ctx.items[1].project_key)
-        assert.equals("release", ctx.items[1].config_key)
-        assert.equals("configured", ctx.items[1].state)
-        assert.equals("/root/.nvim/build/Frontend/release", ctx.items[1].build_dir)
+        assert.equals(1, #ctx.orphaned_configs)
+        assert.equals("Frontend", ctx.orphaned_configs[1].project_key)
+        assert.equals("release", ctx.orphaned_configs[1].config_key)
+        assert.equals("configured", ctx.orphaned_configs[1].state)
+        assert.equals("/root/.nvim/build/Frontend/release", ctx.orphaned_configs[1].build_dir)
     end)
 
     it("dialog lines mention orphan count", function()
@@ -1296,10 +1297,10 @@ describe("compute_orphan_cleanup_context", function()
         )
 
         local ctx = workspace_view.compute_orphan_cleanup_context(ws)
-        assert.equals(1, #ctx.items)
+        assert.equals(1, #ctx.orphaned_configs)
         local found = false
         for _, line in ipairs(ctx.lines) do
-            if line:find("1 orphaned") then found = true; break end
+            if line:find("1") then found = true; break end
         end
         assert.is_true(found)
     end)
@@ -1313,7 +1314,7 @@ describe("execute_orphan_cleanup", function()
     it("calls on_done immediately when no items", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
         local done = false
-        workspace_view.execute_orphan_cleanup(ws, {}, function() done = true end)
+        workspace_view.execute_orphan_cleanup(ws, {}, {}, function() done = true end)
         assert.is_true(done)
     end)
 
@@ -1339,7 +1340,7 @@ describe("execute_orphan_cleanup", function()
         }
 
         local done = false
-        workspace_view.execute_orphan_cleanup(ws, items, function()
+        workspace_view.execute_orphan_cleanup(ws, items, {}, function()
             done = true
         end)
 

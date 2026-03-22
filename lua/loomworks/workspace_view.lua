@@ -629,38 +629,122 @@ end
 -- Orphan Cleanup
 -- =========================================================================
 
---- Collect all orphaned configs for the cleanup dialog.
+--- Find build directories on disk under {root}/.nvim/build/ that are not
+--- referenced by any cache entry. Uses top-down pruning: reports the
+--- highest-level directory whose entire subtree contains no cache entries.
 --- @param ws loomworks.Workspace
---- @return { items: table[], lines: string[], highlights: table[] }
+--- @return string[] absolute paths of stray directories
+function M.find_stray_build_dirs(ws)
+    local uv = vim.uv or vim.loop
+    local build_root = ws.root .. "/.nvim/build"
+    local normalize = ws._core._deps.normalize
+
+    -- Collect all normalized build_dirs referenced by cache entries
+    local known_dirs = {}
+    if ws.cache.configurations then
+        for _, cached in pairs(ws.cache.configurations) do
+            if cached.build_dir then
+                known_dirs[#known_dirs + 1] = normalize(cached.build_dir)
+            end
+        end
+    end
+
+    -- Build a set for exact match and a list for prefix checks
+    local known_set = {}
+    for _, d in ipairs(known_dirs) do known_set[d] = true end
+
+    --- Check if any known cache dir is a proper child of the candidate.
+    --- @param candidate string normalized dir path
+    --- @return boolean
+    local function has_cache_entry_below(candidate)
+        local prefix = candidate .. "/"
+        for _, known in ipairs(known_dirs) do
+            if known:sub(1, #prefix) == prefix then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Top-down walk:
+    -- - If this dir IS a cache entry → stop (it's a valid build dir).
+    -- - If no cache entry lives below it → report as stray, stop.
+    -- - Otherwise → recurse into children.
+    local stray = {}
+    local function scan(dir)
+        local normalized = normalize(dir)
+        if known_set[normalized] then
+            return -- this dir is a known build dir, don't touch it
+        end
+        if not has_cache_entry_below(normalized) then
+            stray[#stray + 1] = normalized
+            return
+        end
+        -- Some cache entry lives deeper — recurse into children
+        local handle = uv.fs_scandir(dir)
+        if not handle then return end
+        while true do
+            local name, ftype = uv.fs_scandir_next(handle)
+            if not name then break end
+            if ftype == "directory" then
+                scan(dir .. "/" .. name)
+            end
+        end
+    end
+
+    local norm_root = normalize(build_root)
+    local stat = uv.fs_stat(build_root)
+    if stat and stat.type == "directory" then
+        -- Scan each top-level child (not the build root itself)
+        local handle = uv.fs_scandir(build_root)
+        if handle then
+            while true do
+                local name, ftype = uv.fs_scandir_next(handle)
+                if not name then break end
+                if ftype == "directory" then
+                    scan(norm_root .. "/" .. name)
+                end
+            end
+        end
+    end
+
+    table.sort(stray)
+    return stray
+end
+
+--- Collect all orphaned items for the cleanup dialog: orphaned cached
+--- configs + stray build dirs not in cache.
+--- @param ws loomworks.Workspace
+--- @return { orphaned_configs: table[], stray_dirs: string[], lines: string[], highlights: table[] }
 function M.compute_orphan_cleanup_context(ws)
     local orphans = ws:get_orphaned_configs()
-    local items = {}
+    local orphaned_configs = {}
 
     for _, o in ipairs(orphans) do
-        local build_dir = o.cached and o.cached.build_dir or nil
-        items[#items + 1] = {
+        orphaned_configs[#orphaned_configs + 1] = {
             project_key = o.project_key,
             config_key = o.config_key,
             state = o.cached and o.cached.state or nil,
-            build_dir = build_dir,
+            build_dir = o.cached and o.cached.build_dir or nil,
         }
     end
 
+    local stray_dirs = M.find_stray_build_dirs(ws)
+
     local lines = {
-        "  Clean orphaned configurations",
+        "  Clean orphaned items",
         "",
     }
     local highlights = {
         { line = 1, hl_group = "DiagnosticWarn" },
     }
 
-    if #items == 0 then
-        lines[#lines + 1] = "  No orphaned configurations found."
-        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
-    else
-        lines[#lines + 1] = "  Will remove " .. #items .. " orphaned configuration(s):"
+    local has_anything = #orphaned_configs > 0 or #stray_dirs > 0
+
+    if #orphaned_configs > 0 then
+        lines[#lines + 1] = "  Orphaned configurations (" .. #orphaned_configs .. "):"
         highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
-        for _, item in ipairs(items) do
+        for _, item in ipairs(orphaned_configs) do
             local state_label = item.state and (" (" .. item.state .. ")") or ""
             local dir = item.build_dir and ("  " .. rel_path(ws, item.build_dir)) or ""
             lines[#lines + 1] = "    " .. item.project_key .. " / " .. item.config_key
@@ -668,30 +752,70 @@ function M.compute_orphan_cleanup_context(ws)
             highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
         end
         lines[#lines + 1] = ""
+    end
+
+    if #stray_dirs > 0 then
+        lines[#lines + 1] = "  Stray build directories (" .. #stray_dirs .. "):"
+        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        for _, dir in ipairs(stray_dirs) do
+            lines[#lines + 1] = "    " .. rel_path(ws, dir)
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        lines[#lines + 1] = ""
+    end
+
+    if not has_anything then
+        lines[#lines + 1] = "  Nothing to clean."
+        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    else
         lines[#lines + 1] = "  Press y to confirm, q to cancel"
     end
 
     return {
-        items = items,
+        orphaned_configs = orphaned_configs,
+        stray_dirs = stray_dirs,
         lines = lines,
         highlights = highlights,
     }
 end
 
---- Execute orphan cleanup: delete cache entries + build dirs.
+--- Execute orphan cleanup: delete orphaned cache entries + build dirs,
+--- then delete stray build dirs.
 --- @param ws loomworks.Workspace
---- @param items table[] { project_key, config_key, build_dir? }
+--- @param orphaned_configs table[] { project_key, config_key, build_dir? }
+--- @param stray_dirs string[] absolute paths
 --- @param on_done? fun()
-function M.execute_orphan_cleanup(ws, items, on_done)
+function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
     on_done = on_done or function() end
-    if #items == 0 then
-        on_done()
-        return
+
+    local function delete_stray()
+        if #stray_dirs == 0 then
+            on_done()
+            return
+        end
+        local safe_prefix = ws._core._deps.normalize(ws.root)
+        local valid_dirs = {}
+        for _, dir in ipairs(stray_dirs) do
+            if ws:_validate_build_dir(dir, safe_prefix) then
+                valid_dirs[#valid_dirs + 1] = dir
+            end
+        end
+        if #valid_dirs == 0 then
+            on_done()
+            return
+        end
+        ws:_delete_build_dirs_async(valid_dirs, function()
+            on_done()
+        end)
     end
 
-    ws:_run_deletion(items, function()
-        ws:delete_cached_configs(items)
-    end, on_done)
+    if #orphaned_configs > 0 then
+        ws:_run_deletion(orphaned_configs, function()
+            ws:delete_cached_configs(orphaned_configs)
+        end, delete_stray)
+    else
+        delete_stray()
+    end
 end
 
 return M
