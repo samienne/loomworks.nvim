@@ -137,35 +137,97 @@ end
 -- Remove Project
 -- =========================================================================
 
---- Context for removal confirmation: type, downgrade preview, dialog
---- lines and highlights. Pure query.
+--- Collect all cached configurations for a project.
+--- Returns items sorted by config_key, with build_dir and state.
 --- @param ws loomworks.Workspace
 --- @param project_key string
---- @return { project_type: string, downgrade_preview: table[], lines: string[], highlights: table[] }|nil
+--- @return { project_key: string, config_key: string, state: string|nil, build_dir: string|nil }[]
+function M.collect_project_configs(ws, project_key)
+    local items = {}
+    if not ws.cache.configurations then return items end
+    for _, cached in pairs(ws.cache.configurations) do
+        if cached.project_key == project_key then
+            items[#items + 1] = {
+                project_key = cached.project_key,
+                config_key = cached.config_key,
+                state = cached.state,
+                build_dir = cached.build_dir,
+            }
+        end
+    end
+    table.sort(items, function(a, b) return a.config_key < b.config_key end)
+    return items
+end
+
+--- Make a path relative to workspace root for display.
+--- @param ws loomworks.Workspace
+--- @param abs string|nil
+--- @return string|nil
+local function rel_path(ws, abs)
+    if not abs then return nil end
+    local ws_root = vim.fs.normalize(ws.root)
+    local normalized = vim.fs.normalize(abs)
+    if normalized:sub(1, #ws_root) == ws_root then
+        local rel = normalized:sub(#ws_root + 1)
+        if rel:sub(1, 1) == "/" then rel = rel:sub(2) end
+        return rel ~= "" and rel or "."
+    end
+    return abs
+end
+
+--- Context for removal confirmation: type, downgrade preview, cached
+--- configs, dialog lines and highlights. Pure query.
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @return { project_type: string, downgrade_preview: table[], cached_configs: table[], lines: string[], highlights: table[] }|nil
 function M.compute_remove_context(ws, project_key)
     local proj = ws.config.projects[project_key]
     if not proj then return nil end
 
     local proj_type = proj.type
     local downgrade_preview = ws:compute_downgrade_preview(project_key)
+    local cached_configs = M.collect_project_configs(ws, project_key)
 
     local lines = {
         "  Remove project: " .. project_key,
         "",
         "  This removes the project from loomworks.json.",
-        "  Build artifacts are NOT deleted.",
     }
     local highlights = {
         { line = 1, hl_group = "DiagnosticWarn" },
         { line = 3, hl_group = "Comment" },
-        { line = 4, hl_group = "Comment" },
     }
+
+    -- Show cached configurations with build state
+    local stateful = {}
+    for _, item in ipairs(cached_configs) do
+        if item.state and item.state ~= "unconfigured" then
+            stateful[#stateful + 1] = item
+        end
+    end
+
+    if #stateful > 0 then
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Will delete cached configurations:"
+        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        for _, item in ipairs(stateful) do
+            local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
+            local suffix = dir and ("  " .. dir) or ""
+            local state_label = item.state and (" (" .. item.state .. ")") or ""
+            lines[#lines + 1] = "    " .. project_key .. " / " .. item.config_key
+                .. state_label .. suffix
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+    elseif #cached_configs > 0 then
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Will delete " .. #cached_configs .. " cached configuration(s)."
+        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    end
 
     if #downgrade_preview > 0 then
         lines[#lines + 1] = ""
-        local preview_start = #lines + 1
         lines[#lines + 1] = "  Profiles to rename:"
-        highlights[#highlights + 1] = { line = preview_start, hl_group = "Comment" }
+        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
         for _, rename in ipairs(downgrade_preview) do
             lines[#lines + 1] = "    " .. rename.old_key .. " → " .. rename.new_key
             highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
@@ -178,28 +240,54 @@ function M.compute_remove_context(ws, project_key)
     return {
         project_type = proj_type,
         downgrade_preview = downgrade_preview,
+        cached_configs = cached_configs,
         lines = lines,
         highlights = highlights,
     }
 end
 
---- Execute remove + downgrade.
+--- Execute remove: delete cached configs + build dirs, remove project,
+--- downgrade profiles. The deletion is async (build dirs deleted via
+--- subprocess), so on_done is called when complete.
 --- @param ws loomworks.Workspace
 --- @param key string project key
---- @param project_type string module type
---- @param has_downgrade boolean whether to downgrade profiles
---- @return boolean ok, string|nil err
-function M.execute_remove_project(ws, key, project_type, has_downgrade)
-    local ok, err = ws:remove_project(key)
-    if not ok then
-        return false, err
-    end
+--- @param ctx { project_type: string, cached_configs: table[], downgrade_preview: table[] }
+--- @param on_done? fun(ok: boolean, err: string|nil)
+function M.execute_remove_project(ws, key, ctx, on_done)
+    on_done = on_done or function() end
 
-    if has_downgrade then
-        ws:downgrade_profiles_from_tool(project_type)
+    -- Step 1: Delete cached configs and build dirs (async)
+    local configs = ctx.cached_configs or {}
+    if #configs > 0 then
+        ws:_run_deletion(configs, function()
+            ws:delete_cached_configs(configs)
+            ws:_save_cache()
+            ws:remerge()
+        end, function()
+            -- Step 2: Remove project from config (after deletion completes)
+            local ok, err = ws:remove_project(key)
+            if not ok then
+                on_done(false, err)
+                return
+            end
+            -- Step 3: Downgrade profiles if needed
+            if #ctx.downgrade_preview > 0 then
+                ws:downgrade_profiles_from_tool(ctx.project_type)
+            end
+            on_done(true)
+        end)
+    else
+        -- No cached configs to delete — remove directly
+        local ok, err = ws:remove_project(key)
+        if not ok then
+            on_done(false, err)
+            return
+        end
+        if #ctx.downgrade_preview > 0 then
+            ws:downgrade_profiles_from_tool(ctx.project_type)
+        end
+        on_done(true)
     end
-
-    return true
 end
 
 -- =========================================================================

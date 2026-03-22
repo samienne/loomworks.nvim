@@ -218,11 +218,11 @@ function M.open(root)
                 n = "close",
                 y = function(self)
                     self:close()
-                    local ok, err = workspace_view.execute_remove_project(
-                        ws, found_key, ctx.project_type, #ctx.downgrade_preview > 0)
-                    if not ok then
-                        vim.notify("loomworks: " .. (err or "failed to remove"), vim.log.levels.ERROR)
-                    end
+                    workspace_view.execute_remove_project(ws, found_key, ctx, function(ok, err)
+                        if not ok then
+                            vim.notify("loomworks: " .. (err or "failed to remove"), vim.log.levels.ERROR)
+                        end
+                    end)
                 end,
             },
         })

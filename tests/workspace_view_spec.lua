@@ -56,7 +56,12 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
                 end,
             },
             user = { save = function() return true end },
-            io = { write_json = function() return true end, ensure_dir = function() return true end },
+            io = {
+                write_json = function() return true end,
+                ensure_dir = function() return true end,
+                rm_rf_async = function(_, cb) cb(true, nil) end,
+            },
+            normalize = function(p) return p end,
             modules = { get = function(id) return mock_modules[id] end },
             notify = function() end,
             schedule = function(fn) fn() end,
@@ -392,12 +397,68 @@ describe("compute_remove_context", function()
         assert.is_not_nil(ctx)
         assert.equals("cmake", ctx.project_type)
         assert.equals(0, #ctx.downgrade_preview)
+        assert.equals(0, #ctx.cached_configs)
         -- Lines contain project name
         local found = false
         for _, line in ipairs(ctx.lines) do
             if line:find("App") then found = true; break end
         end
         assert.is_true(found)
+    end)
+
+    it("includes cached configs with build state in dialog", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            nil,
+            {
+                configurations = {
+                    ["App/Debug:ninja-gcc-12"] = {
+                        project_key = "App", config_key = "Debug:ninja-gcc-12",
+                        type = "cmake", variant = "Debug", state = "built",
+                        build_dir = "/root/.nvim/build/App/Debug",
+                    },
+                    ["App/Release:ninja-gcc-12"] = {
+                        project_key = "App", config_key = "Release:ninja-gcc-12",
+                        type = "cmake", variant = "Release", state = "configured",
+                    },
+                },
+            }
+        )
+
+        local ctx = workspace_view.compute_remove_context(ws, "App")
+        assert.is_not_nil(ctx)
+        assert.equals(2, #ctx.cached_configs)
+
+        -- Lines should mention deletion
+        local found_delete = false
+        for _, line in ipairs(ctx.lines) do
+            if line:find("Will delete") then found_delete = true; break end
+        end
+        assert.is_true(found_delete)
+    end)
+
+    it("shows skeleton count when only unconfigured entries exist", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            nil,
+            {
+                configurations = {
+                    ["App/Debug"] = {
+                        project_key = "App", config_key = "Debug",
+                        type = "cmake", variant = "Debug",
+                    },
+                },
+            }
+        )
+
+        local ctx = workspace_view.compute_remove_context(ws, "App")
+        assert.equals(1, #ctx.cached_configs)
+        -- Should mention cached configurations count, not individual entries
+        local found_count = false
+        for _, line in ipairs(ctx.lines) do
+            if line:find("1 cached") then found_count = true; break end
+        end
+        assert.is_true(found_count)
     end)
 
     it("includes downgrade preview when last keyed project", function()
@@ -454,7 +515,7 @@ end)
 -- =========================================================================
 
 describe("execute_remove_project", function()
-    it("removes project without downgrade", function()
+    it("removes project without cached configs", function()
         local ws = make_ws({
             projects = {
                 Frontend = { ets = {} },
@@ -462,9 +523,18 @@ describe("execute_remove_project", function()
             },
         })
 
-        local ok, err = workspace_view.execute_remove_project(ws, "App", "cmake", false)
-        assert.is_true(ok)
-        assert.is_nil(err)
+        local ctx = {
+            project_type = "cmake",
+            cached_configs = {},
+            downgrade_preview = {},
+        }
+        local result_ok, result_err
+        workspace_view.execute_remove_project(ws, "App", ctx, function(ok, err)
+            result_ok = ok
+            result_err = err
+        end)
+        assert.is_true(result_ok)
+        assert.is_nil(result_err)
         assert.is_nil(ws.config.projects["App"])
         assert.is_not_nil(ws.config.projects["Frontend"])
     end)
@@ -502,10 +572,16 @@ describe("execute_remove_project", function()
             }
         )
 
-        local ok = workspace_view.execute_remove_project(ws, "App", "cmake", true)
-        assert.is_true(ok)
+        local ctx = workspace_view.compute_remove_context(ws, "App")
+        local result_ok
+        workspace_view.execute_remove_project(ws, "App", ctx, function(ok)
+            result_ok = ok
+        end)
+        assert.is_true(result_ok)
 
         assert.is_nil(ws.config.projects["App"])
+        -- Cached config was deleted
+        assert.is_nil(ws.cache.configurations["App/Debug:ninja-gcc-12"])
         -- Profile was downgraded
         assert.is_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
         assert.is_not_nil(ws.cache.profiles["Debug"])
@@ -513,11 +589,51 @@ describe("execute_remove_project", function()
         assert.equals("Debug", ws.user.active_profile)
     end)
 
+    it("deletes cached configs and build dirs on removal", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+            },
+            nil,
+            {
+                configurations = {
+                    ["App/Debug"] = {
+                        project_key = "App", config_key = "Debug",
+                        type = "cmake", variant = "Debug", state = "built",
+                        build_dir = "/root/.nvim/build/App/Debug",
+                    },
+                },
+            }
+        )
+
+        local ctx = workspace_view.compute_remove_context(ws, "App")
+        assert.equals(1, #ctx.cached_configs)
+
+        local result_ok
+        workspace_view.execute_remove_project(ws, "App", ctx, function(ok)
+            result_ok = ok
+        end)
+        assert.is_true(result_ok)
+
+        assert.is_nil(ws.config.projects["App"])
+        -- Cached config was deleted
+        assert.is_nil(ws.cache.configurations["App/Debug"])
+    end)
+
     it("returns error for nonexistent project", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
-        local ok, err = workspace_view.execute_remove_project(ws, "NonExistent", "cmake", false)
-        assert.is_false(ok)
-        assert.is_not_nil(err)
+        local ctx = {
+            project_type = "cmake",
+            cached_configs = {},
+            downgrade_preview = {},
+        }
+        local result_ok, result_err
+        workspace_view.execute_remove_project(ws, "NonExistent", ctx, function(ok, err)
+            result_ok = ok
+            result_err = err
+        end)
+        assert.is_false(result_ok)
+        assert.is_not_nil(result_err)
     end)
 end)
 
