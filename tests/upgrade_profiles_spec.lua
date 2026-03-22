@@ -620,8 +620,52 @@ describe("downgrade_profiles_from_tool", function()
         assert.is_true(cks["Frontend/debug"])
         assert.is_nil(cks["App/Debug:ninja-gcc-12"])
 
+        -- Skeleton cache entries cleaned up (no orphaned project)
+        assert.is_nil(ws.cache.configurations["App/Debug:ninja-gcc-12"])
+        assert.is_nil(ws.cache.configurations["App/Release:ninja-gcc-12"])
+
+        -- Non-cmake entries preserved
+        assert.is_not_nil(ws.cache.configurations["Frontend/debug"])
+
         -- active_profile migrated
         assert.equals("Debug", ws.user.active_profile)
+    end)
+
+    it("preserves cache entries with build state as orphans", function()
+        local ws = make_ws(
+            {
+                projects = { Frontend = { ets = {} } },
+                configuration_sets = { Debug = { Frontend = "debug" } },
+            },
+            nil,
+            {
+                profiles = {
+                    ["Debug:ninja-gcc-12"] = {
+                        configuration_set = "Debug",
+                        tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
+                        tool_label = "Ninja - GCC 12",
+                        tool_mod_type = "cmake",
+                        configurations = { "Frontend/debug", "App/Debug:ninja-gcc-12" },
+                    },
+                },
+                configurations = {
+                    ["Frontend/debug"] = { project_key = "Frontend", config_key = "debug", type = "ets" },
+                    ["App/Debug:ninja-gcc-12"] = {
+                        project_key = "App",
+                        config_key = "Debug:ninja-gcc-12",
+                        type = "cmake",
+                        state = "configured", -- has build state
+                    },
+                },
+            }
+        )
+
+        ws:downgrade_profiles_from_tool("cmake")
+
+        -- Entry with build state preserved as orphaned config
+        assert.is_not_nil(ws.cache.configurations["App/Debug:ninja-gcc-12"])
+        assert.equals("configured", ws.cache.configurations["App/Debug:ninja-gcc-12"].state)
     end)
 
     it("no-op when other keyed-module projects still exist", function()

@@ -1708,13 +1708,22 @@ function Workspace:downgrade_profiles_from_tool(mod_type)
     if #downgrades == 0 then return end
 
     for _, d in ipairs(downgrades) do
-        -- Filter configurations array: remove entries for the keyed module type
+        -- Filter configurations array: remove entries for the keyed module type.
+        -- Also clean up skeleton cache entries (no build state) to prevent
+        -- the removed project from showing as orphaned.
         if d.data.configurations then
             local kept = {}
             for _, ck in ipairs(d.data.configurations) do
                 local cached_cfg = self.cache.configurations and self.cache.configurations[ck]
                 if not cached_cfg or cached_cfg.type ~= mod_type then
                     kept[#kept + 1] = ck
+                else
+                    -- Remove skeleton entries from cache; keep entries with
+                    -- build state (they become proper orphaned configs)
+                    local state = cached_cfg.state
+                    if not state or state == "unconfigured" then
+                        self.cache.configurations[ck] = nil
+                    end
                 end
             end
             d.data.configurations = kept
