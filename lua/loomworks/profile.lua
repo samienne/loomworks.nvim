@@ -41,17 +41,11 @@ function ProfileProject:_update(profile, variant)
     self._profile = profile
     self._project = self._workspace._projects[self.project_key]
     self.variant = variant
-    -- Tool key suffix when the profile has a keyed tool relevant to this project.
-    -- If the tool's mod_type is known, only suffix matching module types.
-    -- If mod_type is nil (e.g. older cache data), fall back to suffixing.
+    -- Look up tool for this project's module type from profile's tools dict
     local project = self._project
-    if profile.tool and profile.tool.key then
-        local mod_type = profile.tool.mod_type
-        if not mod_type or not project or mod_type == project.type then
-            self.config_key = variant .. ":" .. profile.tool.key
-        else
-            self.config_key = variant
-        end
+    local tool = profile.tools and project and profile.tools[project.type] or nil
+    if tool and tool.key then
+        self.config_key = variant .. ":" .. tool.key
     else
         self.config_key = variant
     end
@@ -105,7 +99,7 @@ end
 --- @class loomworks.Profile
 --- @field key string profile key
 --- @field configuration_set? string nil for pinned profiles
---- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
+--- @field tools? table<string, loomworks.ToolRef> tools dict keyed by module type
 --- @field explicit boolean
 --- @field mappings? table<string, string> project_key -> variant name
 --- @field orphaned_set boolean true if configuration_set no longer exists in config
@@ -133,7 +127,7 @@ local STATUS_HL = {
 --- Create a new Profile object.
 --- @param workspace loomworks.Workspace
 --- @param key string profile key
---- @param data? { configuration_set?: string, tool_key?: string, tool_data?: table, tool_label?: string, tool_mod_type?: string, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
+--- @param data? { configuration_set?: string, tools?: table<string, { key: string, data: table, label: string }>, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
 --- @return loomworks.Profile
 function Profile.new(workspace, key, data)
     local self = setmetatable({}, Profile)
@@ -149,12 +143,7 @@ end
 --- @param data loomworks.ProfileDef
 function Profile:_update(data)
     self.configuration_set = data.configuration_set
-    self.tool = data.tool_key and {
-        key = data.tool_key,
-        data = data.tool_data,
-        label = data.tool_label,
-        mod_type = data.tool_mod_type,
-    } or nil
+    self.tools = data.tools or nil
     self.explicit = data.explicit or false
 
     -- Resolve mappings and ConfigurationSet reference
@@ -226,17 +215,23 @@ function Profile:config_set()
     return self._config_set_ref
 end
 
---- Compute the cache key for a variant, accounting for kit_id.
---- When project_type is provided and the tool's mod_type is known,
---- the suffix is only added if the module types match.
+--- Get the ToolRef for a specific module type from this profile's tools.
+--- @param mod_type string module type (e.g. "cmake")
+--- @return loomworks.ToolRef|nil
+function Profile:tool_for(mod_type)
+    return self.tools and self.tools[mod_type] or nil
+end
+
+--- Compute the cache key for a variant, accounting for tool.
+--- When project_type is provided, looks up the tool for that module type.
 --- @param variant string
 --- @param project_type? string module type of the project
 --- @return string
 function Profile:config_key(variant, project_type)
-    if self.tool and self.tool.key then
-        local mod_type = self.tool.mod_type
-        if not project_type or not mod_type or project_type == mod_type then
-            return variant .. ":" .. self.tool.key
+    if self.tools and project_type then
+        local tool = self.tools[project_type]
+        if tool and tool.key then
+            return variant .. ":" .. tool.key
         end
     end
     return variant
@@ -430,7 +425,7 @@ function Profile:is_configured()
         -- Fallback: value matching for set-based profiles
         if self.configuration_set then
             cached_profile = merge.find_cached_profile(
-                self._workspace.cache, self.configuration_set, self.tool and self.tool.data)
+                self._workspace.cache, self.configuration_set, self.tools)
         end
         if not cached_profile or not cached_profile.configurations then return false end
     end

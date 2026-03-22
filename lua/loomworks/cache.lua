@@ -2,7 +2,7 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local CURRENT_VERSION = 4
+local CURRENT_VERSION = 5
 
 --- Return the file path for a workspace root.
 --- @param root string

@@ -55,19 +55,14 @@ Low priority — most TypeScript projects use a single tsconfig.json.
 Only needed when profiles map to different tsconfig files (e.g.,
 tsconfig.debug.json vs tsconfig.release.json).
 
-## Tool selection when adding keyed-module project to existing profiles
+## Tool selection when adding second keyed-module type
 
-When a new cmake project is added to a workspace that already has profiles,
-the user should select which tool (kit) applies for each existing profile
-that will include the new project. Currently profiles just get the project
-added with no tool suffix, which is incorrect for cmake.
-
-## Orphaned ConfigUnits after project deletion
-
-After the Workspace-as-container refactor (Phase 1), deleting a project
-can leave orphaned ConfigUnit entries in the registry. The _sync_config_units
-pass skips removal of running/deleting units, but non-active units for a
-removed project should be cleaned up. Verify and fix the cleanup path.
+When adding a project of a *new* keyed-module type (e.g., meson to a
+cmake workspace), existing profiles need a tool selection for the new
+module type. The multi-tool data model (profile.tools dict) supports
+this, but the UI flow for selecting tools per module type during
+add-project is not yet implemented. Currently only single-keyed-module
+workspaces are fully handled (tool inherited from existing profiles).
 
 ## Clear active profile on deletion
 

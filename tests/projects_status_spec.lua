@@ -145,7 +145,7 @@ describe("Projects section cmake status", function()
                 profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tool_key = "ninja-gcc-12",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -222,7 +222,7 @@ describe("Projects section cmake status", function()
                 profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tool_key = "ninja-gcc-12",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -352,7 +352,7 @@ describe("Projects section cmake status", function()
                 profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tool_key = "ninja-gcc-12",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -416,8 +416,9 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
     local tools_by_type = core:get_tools_by_type()
     -- Derive active_tool_key from the active profile object, matching production code
     local active_profile = active_profile_key and core:get_profiles()[active_profile_key] or nil
-    local active_tool_key = active_profile and active_profile.tool
-            and active_profile.tool.key or nil
+    local active_project_tool = active_profile and active_profile.tools
+            and active_profile.tools[proj.type] or nil
+    local active_tool_key = active_project_tool and active_project_tool.key or nil
     local is_active_project = proj.configuration ~= nil and not proj.orphaned
     local is_active_variant = is_active_project
             and proj.configuration:lower() == variant:lower()
@@ -498,7 +499,7 @@ describe("Projects section tool entry highlights", function()
                 profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tool_key = "ninja-gcc-12",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -537,7 +538,7 @@ describe("Projects section tool entry highlights", function()
                 profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tool_key = "ninja-gcc-12",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -589,7 +590,7 @@ describe("Projects section tool entry highlights", function()
                 profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tool_key = "ninja-gcc-12",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -650,7 +651,7 @@ describe("Projects section tool entry highlights", function()
                 profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tool_key = "ninja-gcc-12",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },
@@ -731,7 +732,7 @@ describe("Projects section tool entry highlights", function()
                 profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tool_key = "ninja-gcc-12",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
                         configurations = { "App/Debug:ninja-gcc-12" },
                     },
                 },

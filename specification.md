@@ -1324,16 +1324,26 @@ process crashes between steps, no data is lost or corrupted.
    creates skeleton cache entries). Extends existing keyed profiles
    with skeleton entries for the new project.
 
+**Cache cleanup on removal**: The removal confirmation dialog shows all
+cached configurations for the project that will be deleted. Entries with
+build state (configured/built/failed) are listed with their build
+directories. Skeleton entries (unconfigured) are silently included.
+
 **Profile downgrade on removal**: When removing a project whose module
 has keyed tools, the project browser checks whether it is the last
-project of that module type. If so, the removal confirmation dialog
-shows a profile rename preview:
+project of that module type. If so, the removal confirmation dialog also
+shows a profile rename preview.
+
+Example dialog (keyed project with cached configs):
 
 ```
   Remove project: lumets
 
   This removes the project from loomworks.json.
-  Build artifacts are NOT deleted.
+
+  Will delete cached configurations:
+    lumets / Debug:ninja-gcc-12  (built)  .nvim/build/lumets/Debug
+    lumets / Release:ninja-gcc-12  (configured)  .nvim/build/lumets/Release
 
   Profiles to rename:
     Debug:ninja-gcc-12 → Debug
@@ -1342,9 +1352,15 @@ shows a profile rename preview:
   Press y to confirm, q to cancel
 ```
 
-After removal, `ws:downgrade_profiles_from_tool(mod_type)` strips tool
-suffixes from affected profiles, removes keyed-module configuration
-entries from profiles, and clears tool fields.
+After confirmation:
+1. `ws:remove_project(key)` removes the project from config and config sets.
+2. Cached configurations for the project are deleted (entries removed from
+   cache, build directories deleted asynchronously via safe deletion).
+3. `ws:downgrade_profiles_from_tool(mod_type)` strips tool suffixes from
+   affected profiles when the last keyed-module project is removed.
+
+This is not "auto-clean" — it is an explicit user action with a
+confirmation dialog showing exactly what will be deleted.
 
 **File mutation**: All changes write to `loomworks.json` via Workspace
 mutation methods. Each method saves and remerges independently.

@@ -7,7 +7,7 @@ describe("Profile", function()
         local core = h.make_mock_core(core_overrides)
         local data = vim.tbl_deep_extend("force", {
             configuration_set = "debug",
-            tool_key = nil,
+            tools = nil,
             explicit = false,
             mappings = { App = "Debug", Lib = "Debug" },
         }, overrides or {})
@@ -387,9 +387,10 @@ describe("ProfileProject", function()
             type = "cmake", path = "App", status = "unconfigured",
             configurations = {}, cached_configurations = {},
         })
+        local tools = tool_key and { cmake = { key = tool_key } } or nil
         local data = {
             configuration_set = "debug",
-            tool_key = tool_key,
+            tools = tools,
             mappings = { App = "Debug" },
         }
         local profile = Profile.new(core, "debug", data)

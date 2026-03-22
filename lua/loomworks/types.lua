@@ -48,10 +48,7 @@
 --- @class loomworks.CachedProfile
 --- @field configuration_set? string nil for pinned profiles
 --- @field mappings? table<string, string> project_key -> variant (stored for pinned, re-derived for set-based)
---- @field tool_key? string cache key suffix from the keyed module
---- @field tool_data? table opaque module-specific tool data
---- @field tool_label? string display label for the tool
---- @field tool_mod_type? string which module type owns this tool
+--- @field tools? table<string, { key: string, data?: table, label?: string }> tools dict keyed by module type
 --- @field configurations? string[] array of cache keys ("project_key/config_key")
 
 --- @class loomworks.CacheMeta

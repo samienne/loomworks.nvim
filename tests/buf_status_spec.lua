@@ -104,9 +104,13 @@ describe("buf_status", function()
             profiles = {
                 ["debug:ninja-gcc-12"] = {
                     configuration_set = "debug",
-                    tool_key = "ninja-gcc-12",
-                    tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
-                    tool_mod_type = "cmake",
+                    tools = {
+                        cmake = {
+                            key = "ninja-gcc-12",
+                            data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
+                            label = "Ninja + GCC 12",
+                        },
+                    },
                     configurations = { "App/Debug:ninja-gcc-12" },
                 },
             },

@@ -580,9 +580,8 @@ describe("Core", function()
             local profile = saved_cache.profiles["debug:ninja-gcc"]
             assert.is_not_nil(profile)
             assert.equals("debug", profile.configuration_set)
-            assert.equals("ninja-gcc", profile.tool_key)
-            assert.equals("Ninja GCC", profile.tool_label)
-            assert.equals("cmake", profile.tool_mod_type)
+            assert.equals("ninja-gcc", profile.tools.cmake.key)
+            assert.equals("Ninja GCC", profile.tools.cmake.label)
         end)
 
     end)
@@ -993,8 +992,13 @@ describe("Core", function()
                     profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc",
-                            tool_data = { generator = "Ninja", compiler_id = "gcc" },
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc",
+                                    data = { generator = "Ninja", compiler_id = "gcc" },
+                                    label = "Ninja GCC",
+                                },
+                            },
                             configurations = { "App/Debug:ninja-gcc" },
                         },
                     },
@@ -2695,7 +2699,13 @@ describe("Core", function()
                     profiles = {
                         ["debug:ninja-gcc-12"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc-12",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc-12",
+                                    data = { id = "ninja-gcc-12" },
+                                    label = "Ninja - GCC 12",
+                                },
+                            },
                             configurations = { "App/Debug" },
                         },
                     },
@@ -2719,7 +2729,13 @@ describe("Core", function()
                     profiles = {
                         ["debug:ninja-gcc-12"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc-12",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc-12",
+                                    data = { id = "ninja-gcc-12" },
+                                    label = "Ninja - GCC 12",
+                                },
+                            },
                             configurations = { "App/Debug" },
                         },
                     },
@@ -2741,7 +2757,13 @@ describe("Core", function()
                     profiles = {
                         ["debug:ninja-gcc-12"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc-12",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc-12",
+                                    data = { id = "ninja-gcc-12" },
+                                    label = "Ninja - GCC 12",
+                                },
+                            },
                             configurations = { "App/Debug" },
                         },
                     },
@@ -2764,7 +2786,13 @@ describe("Core", function()
                     profiles = {
                         ["App/Debug:ninja-gcc-12"] = {
                             mappings = { App = "Debug" },
-                            tool_key = "ninja-gcc-12",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc-12",
+                                    data = { id = "ninja-gcc-12" },
+                                    label = "Ninja - GCC 12",
+                                },
+                            },
                             configurations = { "App/Debug" },
                         },
                     },
@@ -2789,12 +2817,24 @@ describe("Core", function()
                     profiles = {
                         ["debug:ninja-gcc-12"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc-12",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc-12",
+                                    data = { id = "ninja-gcc-12" },
+                                    label = "Ninja - GCC 12",
+                                },
+                            },
                             configurations = { "App/Debug" },
                         },
                         ["release:ninja-gcc-12"] = {
                             configuration_set = "release",
-                            tool_key = "ninja-gcc-12",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc-12",
+                                    data = { id = "ninja-gcc-12" },
+                                    label = "Ninja - GCC 12",
+                                },
+                            },
                             configurations = { "App/Release" },
                         },
                     },
@@ -2822,7 +2862,13 @@ describe("Core", function()
                     profiles = {
                         ["debug:ninja-gcc-12"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc-12",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc-12",
+                                    data = { id = "ninja-gcc-12" },
+                                    label = "Ninja - GCC 12",
+                                },
+                            },
                             configurations = { "App/Debug" },
                         },
                     },
@@ -2850,7 +2896,13 @@ describe("Core", function()
                     profiles = {
                         ["debug:ninja-gcc-12"] = {
                             configuration_set = "debug",
-                            tool_key = "ninja-gcc-12",
+                            tools = {
+                                cmake = {
+                                    key = "ninja-gcc-12",
+                                    data = { id = "ninja-gcc-12" },
+                                    label = "Ninja - GCC 12",
+                                },
+                            },
                             configurations = { "App/Debug" },
                         },
                     },
