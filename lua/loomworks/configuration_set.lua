@@ -9,13 +9,13 @@ local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 
 --- Create a new ConfigurationSet.
---- @param core loomworks.Core
+--- @param workspace loomworks.Workspace
 --- @param name string
 --- @param raw_mappings table<string, string> project_key -> variant (from config)
 --- @return loomworks.ConfigurationSet
-function ConfigurationSet.new(core, name, raw_mappings)
+function ConfigurationSet.new(workspace, name, raw_mappings)
     local self = setmetatable({}, ConfigurationSet)
-    self._core = core
+    self._workspace = workspace
     self.name = name
     self._removed = false
     self:_update(raw_mappings)
@@ -24,12 +24,12 @@ end
 
 --- Update mappings in place (preserves table identity).
 --- Receives raw { project_key: variant } from config.configuration_sets and
---- resolves project_key → Project objects from Core's registry.
+--- resolves project_key → Project objects from Workspace's registry.
 --- @param raw_mappings table<string, string> project_key -> variant
 function ConfigurationSet:_update(raw_mappings)
     self.mappings = {}
     for project_key, variant in pairs(raw_mappings) do
-        local project = self._core._projects[project_key]
+        local project = self._workspace._projects[project_key]
         if project then
             self.mappings[project] = variant
         end
@@ -54,7 +54,7 @@ end
 function ConfigurationSet:find_profile(tool_entry)
     local tool_data = tool_entry and tool_entry.tool_data or nil
     local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
-    for _, profile in pairs(self._core._profiles) do
+    for _, profile in pairs(self._workspace._profiles) do
         if profile.configuration_set == self.name then
             local profile_tool_data = profile.tool and profile.tool.data or nil
             local profile_mod_type = profile.tool and profile.tool.mod_type or nil
@@ -82,8 +82,7 @@ end
 --- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
 --- @return loomworks.Profile|nil
 function ConfigurationSet:ensure_profile(tool_entry)
-    if not self._core:get_workspace() then
-        self._core._deps.notify("loomworks: no workspace loaded", vim.log.levels.ERROR)
+    if not self._workspace then
         return nil
     end
 
@@ -91,7 +90,7 @@ function ConfigurationSet:ensure_profile(tool_entry)
     if profile then return profile end
 
     -- Materialize from structured data
-    self._core:_materialize_from_data(self, tool_entry)
+    self._workspace:_materialize_from_data(self, tool_entry)
 
     return self:find_profile(tool_entry)
 end

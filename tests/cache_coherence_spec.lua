@@ -17,7 +17,7 @@ local h = require("tests.helpers")
 --- @param name string
 --- @return loomworks.ConfigurationSet
 local function get_cs(core, name)
-    return core._config_sets[name]
+    return core._workspace._config_sets[name]
 end
 
 -- ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ end
 --- @param tool_key string
 --- @return table|nil tool_entry
 local function tool_entry_for(core, tool_key)
-    for mod_type, tools in pairs(core._tools_by_type) do
+    for mod_type, tools in pairs(core._workspace._tools_by_type) do
         for _, tool in ipairs(tools) do
             if tool.tool_key == tool_key then
                 return {
@@ -192,7 +192,7 @@ local function make_tracked_core(config_overrides, user_overrides, cache_overrid
     local function setup(setup_opts)
         core:setup(setup_opts)
         if injected_tools then
-            core._tools_by_type = injected_tools
+            core._workspace._tools_by_type = injected_tools
             core:remerge()
         end
     end

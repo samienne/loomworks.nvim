@@ -50,39 +50,66 @@ function M.make_cache_json(overrides)
     return vim.json.encode(base)
 end
 
---- Create a mock Core for testing Profile/Project objects.
+--- Create a mock Workspace for testing domain objects (Profile, Project, etc.).
+--- Domain objects now take a workspace instead of core. The workspace has
+--- registries directly on it and a _core sub-table for infrastructure.
+--- Business logic methods live on the workspace; _core only holds deps.
 --- @param overrides? table
---- @return table mock_core
-function M.make_mock_core(overrides)
-    local core = {
-        get_workspace = function()
-            return nil
-        end,
+--- @return table mock_workspace
+function M.make_mock_workspace(overrides)
+    overrides = overrides or {}
 
-        _tools_by_type = {},
-        _config_units = {},
-        _config_sets = {},
-        _profiles = {},
-        _projects = {},
-        _profile_projects = {},
-        _operations = {},
-        _deps = {
+    -- Build _core with defaults, allowing overrides
+    local core_overrides = overrides._core or {}
+    local core = {
+        _deps = vim.tbl_deep_extend("force", {
             clock = function() return 0 end,
             events = { emit = function() end },
-        },
+            merge = { resolve_detected_tool = function() return nil end },
+            user = { save = function() return true end },
+            cache = { config_cache_key = function(pk, ck) return pk .. "/" .. ck end },
+            modules = { get = function() return nil end },
+            get_overseer_task = function() return nil end,
+            normalize = function(p) return p end,
+            notify = function() end,
+            io = { rm_rf_async = function(_, cb) cb(true, nil) end },
+            schedule = function(fn) fn() end,
+            now = function() return "2000-01-01T00:00:00Z" end,
+        }, core_overrides._deps or {}),
+    }
+    -- Copy any extra core fields from overrides
+    for k, v in pairs(core_overrides) do
+        if k ~= "_deps" then
+            core[k] = v
+        end
+    end
+
+    local ws = {
+        _core = core,
+
+        -- Workspace data fields
+        root = overrides.root or "/test",
+        name = overrides.name or "test",
+        config = overrides.config or { projects = {} },
+        user = overrides.user or { _meta = { version = 1 } },
+        cache = overrides.cache or { configurations = {} },
+
+        -- Registries
+        _tools_by_type = overrides._tools_by_type or {},
+        _config_units = overrides._config_units or {},
+        _config_sets = overrides._config_sets or {},
+        _profiles = overrides._profiles or {},
+        _projects = overrides._projects or {},
+        _profile_projects = overrides._profile_projects or {},
+        _operations = overrides._operations or {},
+        _tool_state = overrides._tool_state or "not_scanned",
+        _tool_waiters = overrides._tool_waiters or {},
+        _delete_waiters = overrides._delete_waiters or {},
     }
 
-    -- Registry accessors
-    core.get_profiles = function(self)
-        return self._profiles
-    end
-    core.get_projects = function(self)
-        return self._projects
-    end
-
-    -- Add ConfigUnit registry (same logic as Core:get_config_unit)
+    -- Add get_config_unit method (same logic as Workspace:get_config_unit)
     local ConfigUnit = require("loomworks.config_unit")
-    core.get_config_unit = function(self, project_key, config_key)
+    ws.get_config_unit = function(self, project_key, config_key)
         local key = project_key .. "\0" .. config_key
         local unit = self._config_units[key]
         if not unit then
@@ -92,12 +119,81 @@ function M.make_mock_core(overrides)
         return unit
     end
 
-    if overrides then
-        for k, v in pairs(overrides) do
-            core[k] = v
+    -- Business logic methods now live on workspace.
+    -- Allow overrides via core_overrides for backward compatibility,
+    -- with sensible defaults.
+    ws.remerge = core_overrides.remerge or function() end
+    ws._save_cache = core_overrides._save_cache or function() return true end
+    ws.create_operation = core_overrides.create_operation or function() end
+    ws.execute_deletion = core_overrides.execute_deletion or function() end
+    ws.cancel_conflicting_operations = core_overrides.cancel_conflicting_operations or function() end
+    ws.find_running_tasks_for_items = core_overrides.find_running_tasks_for_items or function() return {} end
+    ws.stop_tasks_then = core_overrides.stop_tasks_then or function(_, _, fn) fn() end
+    ws.mark_cached_configs_cleaned = core_overrides.mark_cached_configs_cleaned or function() end
+    ws._materialize_from_data = core_overrides._materialize_from_data or function() end
+    ws.has_pending_deletions = core_overrides.has_pending_deletions or function() return false end
+    ws.record_task_result = core_overrides.record_task_result or function() end
+    ws.delete_cached_configs = core_overrides.delete_cached_configs or function() end
+    ws.reset_cached_configs = core_overrides.reset_cached_configs or function() end
+    ws._mark_cache_unknown = core_overrides._mark_cache_unknown or function() end
+    ws._validate_build_dir = core_overrides._validate_build_dir or function() return true end
+    ws._delete_build_dirs_async = core_overrides._delete_build_dirs_async or function(_, _, cb) cb({}) end
+    ws._run_deletion = core_overrides._run_deletion or function(_, _, _, on_done) if on_done then on_done() end end
+    ws._save_config = core_overrides._save_config or function() return true end
+    ws._save_user = core_overrides._save_user or function(self_ws)
+        self_ws._core._deps.user.save(self_ws.root, self_ws.user)
+    end
+
+    return ws
+end
+
+--- Backward-compatible alias for make_mock_workspace.
+--- Tests that used make_mock_core with core_overrides need updating to
+--- use the new workspace-centric pattern. This alias helps with the transition.
+--- @param overrides? table
+--- @return table mock_workspace
+function M.make_mock_core(overrides)
+    -- Translate old core-style overrides to workspace-style
+    if not overrides then
+        return M.make_mock_workspace()
+    end
+
+    local ws_overrides = {}
+    local core_overrides = {}
+
+    for k, v in pairs(overrides) do
+        if k == "_deps" then
+            core_overrides._deps = v
+        elseif k == "remerge" or k == "_save_cache" or k == "create_operation"
+            or k == "execute_deletion" or k == "cancel_conflicting_operations"
+            or k == "find_running_tasks_for_items" or k == "stop_tasks_then"
+            or k == "mark_cached_configs_cleaned" or k == "_materialize_from_data" then
+            core_overrides[k] = v
+        elseif k == "get_workspace" then
+            -- Flatten get_workspace() return value onto the workspace
+            local ws_data = v()
+            if ws_data then
+                for wk, wv in pairs(ws_data) do
+                    ws_overrides[wk] = wv
+                end
+            end
+        elseif k == "get_profiles" then
+            -- get_profiles was a function returning profiles dict;
+            -- now profiles are on ws directly
+            -- Only used as function in some tests; store the result
+            local result = v()
+            if result then ws_overrides._profiles = result end
+        else
+            -- Pass through to workspace
+            ws_overrides[k] = v
         end
     end
-    return core
+
+    if next(core_overrides) then
+        ws_overrides._core = core_overrides
+    end
+
+    return M.make_mock_workspace(ws_overrides)
 end
 
 --- Build mocked deps for Core.new() that use in-memory file content.

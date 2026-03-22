@@ -6,7 +6,7 @@
 local expand = require("loomworks.expand")
 
 --- @class loomworks.LaunchTarget
---- @field _core loomworks.Core
+--- @field _workspace loomworks.Workspace
 --- @field _profile loomworks.Profile direct reference
 --- @field _project loomworks.Project|nil direct reference
 --- @field _config_unit loomworks.ConfigUnit|nil direct reference
@@ -20,13 +20,13 @@ local LaunchTarget = {}
 LaunchTarget.__index = LaunchTarget
 
 --- Create a new LaunchTarget from a descriptor.
---- @param core loomworks.Core
+--- @param workspace loomworks.Workspace
 --- @param profile loomworks.Profile
 --- @param descriptor { project: string, target?: string, launch?: string }
 --- @return loomworks.LaunchTarget
-function LaunchTarget.new(core, profile, descriptor)
+function LaunchTarget.new(workspace, profile, descriptor)
     local self = setmetatable({}, LaunchTarget)
-    self._core = core
+    self._workspace = workspace
     self._profile = profile
     self._removed = false
     self._launch_task_id = nil
@@ -41,7 +41,7 @@ function LaunchTarget:_update(descriptor)
     self._launch_name = descriptor.launch
 
     -- Resolve project string to Project object
-    self._project = self._core._projects[descriptor.project]
+    self._project = self._workspace._projects[descriptor.project]
 
     -- Resolve ConfigUnit and Target
     self._config_unit = nil
@@ -50,7 +50,7 @@ function LaunchTarget:_update(descriptor)
         local variant = self._profile.mappings[descriptor.project]
         if variant then
             local config_key = self._profile:config_key(variant, self._project.type)
-            self._config_unit = self._core:get_config_unit(descriptor.project, config_key)
+            self._config_unit = self._workspace:get_config_unit(descriptor.project, config_key)
             if self._config_unit and self._config_unit.targets and self._target_id then
                 self._target = self._config_unit.targets[self._target_id]
             end
@@ -60,12 +60,9 @@ function LaunchTarget:_update(descriptor)
     -- Resolve launch config from loomworks.json project definition
     self._launch_config = nil
     if self._launch_name and self._project then
-        local ws = self._core:get_workspace()
-        if ws then
-            local proj_cfg = ws.config.projects[self._project.key]
-            if proj_cfg and proj_cfg.launch and proj_cfg.launch[self._launch_name] then
-                self._launch_config = proj_cfg.launch[self._launch_name]
-            end
+        local proj_cfg = self._workspace.config.projects[self._project.key]
+        if proj_cfg and proj_cfg.launch and proj_cfg.launch[self._launch_name] then
+            self._launch_config = proj_cfg.launch[self._launch_name]
         end
     end
 end
@@ -126,7 +123,7 @@ function LaunchTarget:_build_deps(deps, idx, on_complete)
         return
     end
 
-    local unit = self._core:get_config_unit(pp.project_key, pp.config_key)
+    local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
     local state = unit:state()
 
     -- Already built or configured — skip
@@ -166,8 +163,7 @@ function LaunchTarget:_launch_command()
     local cfg = self._launch_config
     if not cfg or not cfg.command then return end
 
-    local ws = self._core:get_workspace()
-    if not ws then return end
+    local ws = self._workspace
 
     -- Build expansion context
     local ctx = expand.launch_context(ws, self._profile, self._project.key)

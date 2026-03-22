@@ -800,7 +800,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | Key     | Action      | Behavior |
 |---------|-------------|----------|
 | `<Tab>` | toggle_fold | Toggle fold on the current node |
-| `<CR>`  | enter       | Activate profile (on profile/tool nodes) |
+| `<CR>`  | enter       | Open action picker on nearest actionable node |
 | `b`     | build       | Build (walks up to nearest node with `on_build`) |
 | `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
 | `p`     | pin         | Pin configuration as pinned profile |
@@ -809,6 +809,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `R`     | rebuild     | Clean + build (destructive, with confirmation) |
 | `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
+| `N`     | create_workspace | Create a new workspace (loomworks.json) from cwd |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `U`     | delete_user | Delete user.json and reload (with confirmation) |
@@ -819,6 +820,26 @@ shown when `spinning = true`. Replaces the status marker for running items.
 `pin`, and `options`, the tree walks upward from the cursor line to find the
 nearest node that has the corresponding `on_<action>` callback. This means pressing
 `b` on a child detail line triggers the build action of the parent node.
+
+**Action picker (`<CR>`)**: The Enter key walks up to the nearest widget with
+`on_*` callbacks, collects all available actions, and opens `vim.ui.select`
+with the action list. The `enter` action label is context-dependent, set by
+the section renderer via the `enter_label` field on the widget:
+- Profile nodes: "Activate"
+- Config set tool entries: "Activate"
+- Project config/tool nodes: "Open task output"
+
+The picker is skipped (direct invoke) when:
+- The widget has `direct = true` (sentinel lines), OR
+- Only one action exists on the widget (no other actions to discover)
+
+**Sentinel lines**: Interactive `item` nodes that appear at the end of
+sections to provide discoverable create/add flows. Sentinels have
+`direct = true` on the widget, so Enter invokes `on_enter` immediately.
+- **Profiles section**: `▸ Create new profile` — opens the profile creation
+  multi-step picker (config set → tool → materialize). Shows "No projects
+  yet." when no projects exist.
+- **Projects section**: `▸ Add project` — opens the project browser float.
 
 **Destructive action highlighting**: `R`, `C`, `D`, `U`, `<C-n>` keys are
 highlighted with `DiagnosticWarn` in the help dialog.
@@ -831,6 +852,8 @@ brackets, separated by double spaces.
 
 **Header hint**: After the Root line, a `Comment` leaf shows global actions:
 `[?] help  [L] load  [<C-n>] reset`
+
+**Group header hints with `[t]`**: Profile project groups also include `[t] task output`.
 
 **Section title hints**: Some sections show a `Comment` hint line after the
 title listing available actions for top-level nodes.
@@ -900,6 +923,33 @@ Profiles that share ConfigUnits with the initiating profile show spinners
 |-----------|--------|-----|-----|-----|-----|-----|-----|
 | Profile | activate | build all | configure all | — | clean+build all | clean all | delete with dialog |
 | Project under profile | open task output | build config | configure config | open task output | clean+build config | clean config | delete config with dialog |
+
+**Sentinel: Create new profile**
+
+After the profile list (or as sole content when empty), an interactive item:
+```
+▸ Create new profile
+```
+Enter opens the profile creation multi-step picker:
+
+1. **Pick configuration set**: Shows existing config sets from
+   loomworks.json, plus auto-detected options from
+   `generate_default_config_sets()`. Auto-detected options are labeled
+   `"Name (auto-detected)"` with a mapping summary. Selecting an
+   auto-detected option writes it to loomworks.json via
+   `add_configuration_set()` before continuing.
+
+2. **Pick tool** (skipped if module has no keyed tools, or only one tool
+   detected): Shows available tools from `detect_tools()`.
+
+3. **Materialize**: Calls `config_set:ensure_profile(tool_entry)` to
+   create the profile in cache. Auto-activates only when this is the
+   first profile in the workspace; otherwise just creates it.
+
+When no projects exist, the sentinel is replaced with:
+```
+No projects yet. Add projects first.
+```
 
 ### 6.6 Orphaned Configurations Section
 
@@ -1064,6 +1114,16 @@ configuration.
 tool_key matching — the entry is active when its variant matches the
 project's active configuration.
 
+**Sentinel: Add project**
+
+After the last project (or as sole content when no projects exist), an
+interactive item:
+```
+▸ Add project
+```
+Enter opens the project browser float (Phase 1). Replaces the former `A`
+keybinding.
+
 ### 6.9 Deletion Confirmation Dialog
 
 Shown for all delete operations (`D` key). Floating window centered in editor.
@@ -1133,7 +1193,177 @@ after the value. Fold/unfold with `<Tab>`.
 
 The float is read-only. Close with `q` or `<Esc>`.
 
-### 6.13 Auto-refresh
+### 6.13 Project Browser
+
+The project browser is a float opened from the "Add project" sentinel line.
+It scans workspace subdirectories asynchronously and shows detected project
+types using each module's `detect()` method.
+
+**Layout**: Tree widget in a `Snacks.win` float. Title: "Add Project".
+
+**Entry display**: Each directory entry shows its name followed by detected
+type tags: `NativeDemo  [cmake: CMakeLists.txt]`. Directories matching
+multiple modules show all tags. Already-added projects show `✓` with
+`DiagnosticOk`. Directories with no detection show `Comment` highlight.
+
+**Async scanning**: On open, `modules.scan_directory_async()` scans the
+workspace root. On fold open, subdirectories are scanned lazily. Results
+are cached in a browser-local dict. Pending scans show "scanning...".
+
+**Filtered directories**: `.git`, `.nvim`, `.cache`, `.vs`, `.vscode`,
+`node_modules`, `build`, `out`, `__pycache__`, and all hidden directories
+(starting with `.`) are excluded from scanning.
+
+**Keybindings**:
+
+| Key     | Action  | Behavior |
+|---------|---------|----------|
+| `<CR>`  | enter   | Picker with Add/Remove by module type (see below) |
+| `d`     | remove  | Remove project from loomworks.json (with confirmation) |
+| `r`     | refresh | Clear scan cache and re-scan |
+| `q`     | close   | Close the browser |
+
+**Project key derivation**:
+- Root-level directories: basename as key, `path` field omitted
+- Nested directories: relative path (with `/` → `_`) as key, explicit `path`
+  field
+
+**Enter picker**: Each browser entry has a context-dependent picker:
+- Unadded types show `Add [type]`
+- Already-added types show `Remove [type]`
+- Single add action: always shows picker (user confirms)
+- Mixed state: both add and remove options appear
+
+**Configuration mapping dialog**: When adding a project to a workspace
+that already has configuration sets, a mapping dialog opens instead of
+adding immediately.
+
+The dialog layout depends on the module type and workspace state:
+
+**Keyed module, no tool selected** — tool row first, no mappings:
+
+```
+  Add "lumets" [cmake]
+
+  Tool:  None ▸
+
+  Project will be added without configuration mappings.
+
+  [Enter] change  [y] accept  [q] cancel
+```
+
+**Keyed module, tool selected** — tool row first, then mappings:
+
+```
+  Add "lumets" [cmake]
+
+  Tool:  Ninja - GCC 12 ▸
+
+  Debug     Debug ▸
+  Release   Release ▸
+
+  Profiles to upgrade:
+    Debug → Debug:ninja-gcc-12
+
+  [Enter] change  [y] accept  [q] cancel
+```
+
+**Keyed module, tool inherited** — when existing profiles already have
+a tool (e.g. adding a second cmake project), the tool is inherited
+automatically. No tool row; mappings only:
+
+```
+  Add "NewLib" [cmake] — Map configurations
+
+  Debug     Debug ▸
+  Release   Release ▸
+
+  [Enter] change  [y] accept  [q] cancel
+```
+
+**Non-keyed module** — mappings only:
+
+```
+  Add "Frontend" [typescript] — Map configurations
+
+  Debug     development ▸
+  Release   production ▸
+
+  [Enter] change  [y] accept  [q] cancel
+```
+
+The profile upgrade preview shows only profiles whose config set has
+a non-None mapping for the new project.
+
+- Enter on a mapping row opens `vim.ui.select` with configurations + "None"
+- Enter on the tool row opens `vim.ui.select` with detected tools
+- `y` accepts: chains decomposed operations (see below)
+- `q`/Esc cancels: project is NOT added
+- Skipped when no config sets exist or project has no detectable configs
+- No success notifications — UI state changes are sufficient. Only
+  errors are shown via `vim.notify`.
+
+**Tool detection gating**: When the module has keyed tools, the project
+browser ensures tool detection has completed before opening the mapping
+dialog. If detection is still running, the dialog opens in the callback
+after detection completes.
+
+**Decomposed add-project operations**: On accept, the mapping dialog
+chains three atomic operations. Each operation saves to disk and
+remerges independently. Each intermediate state is valid — if the
+process crashes between steps, no data is lost or corrupted.
+
+1. `ws:add_project(key, type, path)` — adds the project entry to
+   `loomworks.json`. Project shows as unmapped.
+2. For each config set with a non-nil mapping:
+   `ws:update_config_set_mapping(set, key, variant)` — adds one
+   mapping to one config set.
+3. If a tool was selected or inherited:
+   `ws:upgrade_profiles_for_tool(tool_entry)` — upgrades cached
+   no-tool profiles to keyed profiles (renames, adds tool fields,
+   creates skeleton cache entries). Extends existing keyed profiles
+   with skeleton entries for the new project.
+
+**Profile downgrade on removal**: When removing a project whose module
+has keyed tools, the project browser checks whether it is the last
+project of that module type. If so, the removal confirmation dialog
+shows a profile rename preview:
+
+```
+  Remove project: lumets
+
+  This removes the project from loomworks.json.
+  Build artifacts are NOT deleted.
+
+  Profiles to rename:
+    Debug:ninja-gcc-12 → Debug
+    Release:ninja-gcc-12 → Release
+
+  Press y to confirm, q to cancel
+```
+
+After removal, `ws:downgrade_profiles_from_tool(mod_type)` strips tool
+suffixes from affected profiles, removes keyed-module configuration
+entries from profiles, and clears tool fields.
+
+**File mutation**: All changes write to `loomworks.json` via Workspace
+mutation methods. Each method saves and remerges independently.
+
+Available Workspace mutation methods:
+- `add_project(key, type, path?)` — add a project entry
+- `remove_project(key)` — remove project + clean up config sets
+- `update_config_set_mapping(set_name, project_key, variant)` — update
+  one mapping in a config set
+- `add_configuration_set(name, mappings)` — add a config set
+- `remove_configuration_set(name)` — remove a config set
+- `upgrade_profiles_for_tool(tool_entry)` — upgrade no-tool profiles
+  to keyed profiles; extend keyed profiles with new project entries
+- `downgrade_profiles_from_tool(mod_type)` — strip tool from profiles
+  when last project of a keyed-module type is removed
+- `compute_downgrade_preview(project_key)` — compute profile renames
+  that would occur if a project were removed (pure query, no mutation)
+
+### 6.14 Auto-refresh
 
 The status page refreshes automatically on these events:
 - `task_started`, `task_stopped`, `task_result`, `task_progress`
@@ -1198,6 +1428,20 @@ interface that the core system calls for project discovery, task generation,
 and staleness detection.
 
 ### 9.1 Required methods
+
+**`detect(abs_path) → { marker }|nil`**
+
+Detect whether a directory looks like a project of this module type. `abs_path`
+is the absolute directory path. Returns `{ marker = "filename" }` identifying
+the marker file that triggered detection, or `nil` if not detected.
+
+- **cmake**: checks for `CMakeLists.txt`
+- **typescript**: checks for `tsconfig.json` first, then `package.json` with
+  a `typescript` dependency
+- **ets**: checks for `build-profile.json5`
+
+Used by the project browser for auto-detection. Lightweight check — no
+subprocess spawning, no deep file parsing.
 
 **`validate(path, config) → { valid, warnings[] }`**
 
@@ -1278,7 +1522,34 @@ requiring separate cache entries. `true` for cmake, `false`/nil for
 ets and typescript. Used by merge to construct config keys without
 requiring tool detection to complete first.
 
-### 9.3 Optional methods
+### 9.3 Variant mapping
+
+**`map_variant(variant_type, available_configs) → string|nil`**
+
+Map a semantic variant type to a configuration name from the project's
+available configurations. Used by `generate_default_config_sets()` to
+compute cross-project configuration sets automatically.
+
+Variant types (defined by core, queried in order):
+- `"debug"` — development/debug build
+- `"release"` — optimized production build
+- `"release_debug"` — optimized with debug info (optional)
+
+Each module knows its own naming conventions:
+
+| Module | debug | release | release_debug |
+|--------|-------|---------|---------------|
+| cmake | `"Debug"` (case-insensitive) | `"Release"` | `"RelWithDebInfo"` |
+| typescript | `"development"`, then `"default"` | `"production"`, then `"default"` | — |
+| ets | `"debug"` | `"release"` | — |
+
+**Single-config fallback**: If only one configuration exists, return it for
+any variant type (the project builds the same way regardless).
+
+Returns `nil` when no matching configuration exists and the project has
+multiple configurations.
+
+### 9.4 Optional methods
 
 **`progress_parser(project?, active_config?) → string|nil`**
 

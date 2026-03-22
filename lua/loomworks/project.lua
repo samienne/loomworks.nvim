@@ -18,19 +18,19 @@
 --- @field cmake? loomworks.ProjectCmakeInfo
 --- @field depends_on? loomworks.Project[] direct references to dependency projects
 --- @field _depends_on_keys? string[] raw keys from merge (resolved to objects in _update)
---- @field _core loomworks.Core
+--- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 local Project = {}
 Project.__index = Project
 
 --- Create a new Project object.
---- @param core loomworks.Core
+--- @param workspace loomworks.Workspace
 --- @param key string project key
 --- @param data? loomworks.MergedProjectData
 --- @return loomworks.Project
-function Project.new(core, key, data)
+function Project.new(workspace, key, data)
     local self = setmetatable({}, Project)
-    self._core = core
+    self._workspace = workspace
     self.key = key
     self._removed = false
     if data then self:_update(data) end
@@ -65,7 +65,7 @@ function Project:_update(data)
     if data.depends_on then
         local deps = {}
         for _, dep_key in ipairs(data.depends_on) do
-            local dep = self._core._projects[dep_key]
+            local dep = self._workspace._projects[dep_key]
             if dep then
                 deps[#deps + 1] = dep
             end
@@ -83,7 +83,7 @@ end
 --- Get the running action for this project (any config).
 --- @return string|nil action ("configure" or "build")
 function Project:running_action()
-    for _, unit in pairs(self._core._config_units) do
+    for _, unit in pairs(self._workspace._config_units) do
         if unit.project_key == self.key and unit:is_running() then
             return unit:running_action()
         end
@@ -105,7 +105,7 @@ end
 --- @param config_name string
 --- @return boolean
 function Project:is_deleting_config(config_name)
-    local unit = self._core:get_config_unit(self.key, self:config_cache_key(config_name))
+    local unit = self._workspace:get_config_unit(self.key, self:config_cache_key(config_name))
     return unit:is_deleting()
 end
 
@@ -113,7 +113,7 @@ end
 --- @param config_name string
 --- @return string|nil action
 function Project:config_running_action(config_name)
-    local unit = self._core:get_config_unit(self.key, self:config_cache_key(config_name))
+    local unit = self._workspace:get_config_unit(self.key, self:config_cache_key(config_name))
     return unit:running_action()
 end
 
@@ -133,9 +133,7 @@ end
 --- Get absolute path to this project.
 --- @return string
 function Project:abs_path()
-    local ws = self._core:get_workspace()
-    if not ws then return self.path or self.key end
-    return ws.root .. "/" .. (self.path or self.key)
+    return self._workspace.root .. "/" .. (self.path or self.key)
 end
 
 --- Build the module context table used by module.tasks().

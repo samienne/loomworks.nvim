@@ -19,7 +19,7 @@
 --- @field _unit_ok table<loomworks.ConfigUnit, boolean> tracks which units succeeded
 --- @field _unsubscribers function[] listener cleanup functions
 --- @field _on_complete? fun(op: loomworks.Operation) completion callback
---- @field _core loomworks.Core
+--- @field _workspace loomworks.Workspace
 local Operation = {}
 Operation.__index = Operation
 
@@ -47,23 +47,23 @@ end
 local DELETION_ACTIONS = { clean = true, delete = true }
 
 --- Create a new Operation.
---- @param core loomworks.Core
+--- @param workspace loomworks.Workspace
 --- @param profile loomworks.Profile|nil nil for config-level operations
 --- @param action string
 --- @param units loomworks.ConfigUnit[]
 --- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
 --- @param on_complete? fun(op: loomworks.Operation) called when operation completes
 --- @return loomworks.Operation
-function Operation.new(core, profile, action, units, target_states, on_complete)
+function Operation.new(workspace, profile, action, units, target_states, on_complete)
     local self = setmetatable({}, Operation)
     self.id = next_id
     next_id = next_id + 1
-    self._core = core
+    self._workspace = workspace
     self.profile = profile
     self.action = action
     self.units = units
     self.target_states = target_states
-    self.started_at = core._deps.clock()
+    self.started_at = workspace._core._deps.clock()
     self.completed = false
     self.success = nil
     self.message = nil
@@ -164,7 +164,7 @@ function Operation:_check_completion()
     self.completed = true
     self.success = all_ok
 
-    local elapsed = self._core._deps.clock() - self.started_at
+    local elapsed = self._workspace._core._deps.clock() - self.started_at
     local verb
     if self.action == "configure" then
         verb = all_ok and "configured" or "configure failed"
@@ -191,7 +191,7 @@ function Operation:_check_completion()
     end
 
     -- Emit event
-    self._core._deps.events.emit("operation_finished", {
+    self._workspace._core._deps.events.emit("operation_finished", {
         profile_key = self.profile and self.profile.key or nil,
         success = all_ok,
         message = self.message,
@@ -209,7 +209,7 @@ end
 --- @return number|nil seconds
 function Operation:elapsed()
     if not self.started_at then return nil end
-    return self._core._deps.clock() - self.started_at
+    return self._workspace._core._deps.clock() - self.started_at
 end
 
 --- Get the number of completed units.
@@ -249,7 +249,7 @@ function Operation:cancel(message)
     end
 
     -- Emit event so fidget finishes the handle
-    self._core._deps.events.emit("operation_finished", {
+    self._workspace._core._deps.events.emit("operation_finished", {
         profile_key = self.profile and self.profile.key or nil,
         success = false,
         message = self.message,

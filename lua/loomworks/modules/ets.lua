@@ -1,8 +1,19 @@
 local M = {}
 
 M.id = "ets"
+M.has_keyed_tools = false
 
 local uv = vim.uv or vim.loop
+
+--- Detect whether a directory looks like an eTS project.
+--- @param abs_path string absolute directory path
+--- @return { marker: string }|nil
+function M.detect(abs_path)
+    if uv.fs_stat(abs_path .. "/build-profile.json5") then
+        return { marker = "build-profile.json5" }
+    end
+    return nil
+end
 
 --- Check if the path+config is valid.
 --- @param path string absolute project path
@@ -72,6 +83,33 @@ end
 --- @param tool_data table
 --- @return nil
 function M.tool_label(tool_data)
+    return nil
+end
+
+--- Map a semantic variant type to a configuration name from available configs.
+--- @param variant_type string "debug"|"release"|"release_debug"
+--- @param available_configs string[] configuration names from info()
+--- @return string|nil matching configuration name
+function M.map_variant(variant_type, available_configs)
+    if #available_configs == 1 then
+        return available_configs[1]
+    end
+
+    local targets = {
+        debug = { "debug" },
+        release = { "release" },
+    }
+
+    local candidates = targets[variant_type]
+    if not candidates then return nil end
+
+    for _, target in ipairs(candidates) do
+        for _, config in ipairs(available_configs) do
+            if config:lower() == target then
+                return config
+            end
+        end
+    end
     return nil
 end
 

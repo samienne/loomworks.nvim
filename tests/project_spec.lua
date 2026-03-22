@@ -153,10 +153,10 @@ describe("Project", function()
             assert.equals("/workspace/App", p:abs_path())
         end)
 
-        it("falls back to path when no workspace", function()
+        it("uses default workspace root", function()
             local p = make_project()
-            -- default mock returns nil for get_workspace
-            assert.equals("App", p:abs_path())
+            -- default mock workspace has root = "/test"
+            assert.equals("/test/App", p:abs_path())
         end)
 
         it("uses key when no path", function()

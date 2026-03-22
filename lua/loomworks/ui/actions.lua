@@ -199,6 +199,133 @@ function M.pin_config(unit)
 end
 
 -- ---------------------------------------------------------------------------
+-- Profile creation flow
+-- ---------------------------------------------------------------------------
+
+--- Build the multi-step profile creation picker.
+--- @param ctx table { config_sets, tool_entries, lw }
+--- @return fun() closure
+function M.create_profile(ctx)
+    return function()
+        local lw = ctx.lw
+        local config_sets = ctx.config_sets or {}
+        local tool_entries = ctx.tool_entries or {}
+        local ws = lw.get_workspace()
+        if not ws then return end
+
+        -- Step 1: Pick configuration set
+        local existing = {}
+        for name, cs in pairs(config_sets) do
+            existing[#existing + 1] = { name = name, cs = cs, auto = false }
+        end
+        table.sort(existing, function(a, b) return a.name < b.name end)
+
+        -- Auto-detect candidates
+        local auto_sets = ws:generate_default_config_sets()
+        local auto_items = {}
+        if auto_sets then
+            for name, mappings in pairs(auto_sets) do
+                -- Only show if not already existing
+                if not config_sets[name] then
+                    -- Build description of mappings
+                    local parts = {}
+                    local keys = {}
+                    for k in pairs(mappings) do keys[#keys + 1] = k end
+                    table.sort(keys)
+                    for _, k in ipairs(keys) do
+                        parts[#parts + 1] = k .. "→" .. mappings[k]
+                    end
+                    auto_items[#auto_items + 1] = {
+                        name = name .. " (auto-detected)",
+                        real_name = name,
+                        mappings = mappings,
+                        cs = nil,
+                        auto = true,
+                        desc = table.concat(parts, ", "),
+                    }
+                end
+            end
+            table.sort(auto_items, function(a, b) return a.real_name < b.real_name end)
+        end
+
+        local items = {}
+        for _, e in ipairs(existing) do items[#items + 1] = e end
+        for _, a in ipairs(auto_items) do items[#items + 1] = a end
+
+        if #items == 0 then
+            vim.notify("loomworks: no configuration sets available (add projects first)", vim.log.levels.INFO)
+            return
+        end
+
+        vim.ui.select(items, {
+            prompt = "Select configuration set:",
+            format_item = function(item)
+                if item.auto then
+                    return item.name .. "  (" .. item.desc .. ")"
+                end
+                return item.name
+            end,
+        }, function(choice)
+            if not choice then return end
+
+            local cs = choice.cs
+            if choice.auto then
+                -- Write the auto-detected set to loomworks.json
+                local ok, err = ws:add_configuration_set(choice.real_name, choice.mappings)
+                if not ok then
+                    vim.notify("loomworks: " .. (err or "failed to add config set"), vim.log.levels.ERROR)
+                    return
+                end
+                -- add_configuration_set remerges, so config sets are up to date
+                cs = ws:get_config_sets()[choice.real_name]
+                if not cs then
+                    vim.notify("loomworks: config set '" .. choice.real_name .. "' not found after add", vim.log.levels.ERROR)
+                    return
+                end
+            end
+            -- Auto-activate only when this is the first profile
+            local is_first = not next(lw.get_profiles())
+            M._create_profile_step2(cs, choice.name or choice.real_name, tool_entries, is_first)
+        end)
+    end
+end
+
+--- Step 2: Pick tool, then materialize (+ activate if first profile).
+--- @param cs loomworks.ConfigurationSet
+--- @param set_name string
+--- @param tool_entries table<string, loomworks.ToolEntry[]>
+--- @param activate boolean
+function M._create_profile_step2(cs, set_name, tool_entries, activate)
+    local function finish(entry)
+        if activate then
+            cs:activate(entry)
+        else
+            local profile = cs:ensure_profile(entry)
+            if profile then
+                vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
+            end
+        end
+    end
+
+    local entries = tool_entries[set_name] or {}
+
+    if #entries <= 1 then
+        finish(entries[1] or nil)
+        return
+    end
+
+    vim.ui.select(entries, {
+        prompt = "Select tool:",
+        format_item = function(entry)
+            return entry.tool_label or entry.tool_key or "(default)"
+        end,
+    }, function(choice)
+        if not choice then return end
+        finish(choice)
+    end)
+end
+
+-- ---------------------------------------------------------------------------
 -- Options float
 -- ---------------------------------------------------------------------------
 

@@ -3,6 +3,129 @@
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
 
+--- Resolve display state for a profile (status label, highlight, marker, suffix).
+--- Shared by tool and no-tool entry renderers.
+--- @param profile loomworks.Profile|nil
+--- @param is_active boolean
+--- @return string suffix, string hl, string|nil marker, boolean spinning
+local function resolve_profile_display(profile, is_active)
+    if not profile then
+        return "", "LoomworksUnconfigured", helpers.status_marker("unconfigured"), false
+    end
+
+    local profile_running = profile:is_running()
+    local already_configured = profile:is_configured()
+
+    if profile_running then
+        local status_label = select(1, profile:status())
+        local marker = helpers.status_marker(status_label)
+        local suffix = " (" .. status_label .. ")"
+        local pps = profile:projects()
+        local pct = helpers.aggregate_progress(pps)
+        if pct then suffix = suffix .. " " .. pct .. "%" end
+        suffix = suffix .. helpers.format_elapsed(profile:operation_elapsed())
+        local hl = is_active and "LoomworksActive" or "LoomworksRunning"
+        return suffix, hl, marker, true
+    elseif is_active then
+        local op = profile:operation()
+        local p_label = already_configured and select(1, profile:status()) or "unconfigured"
+        local marker = helpers.status_marker(p_label)
+        local suffix
+        if op and op.message then
+            suffix = " — " .. op.message
+        else
+            suffix = " (" .. p_label .. ")"
+        end
+        return suffix, "LoomworksActive", marker, false
+    elseif already_configured then
+        local p_label = select(1, profile:status())
+        local marker = helpers.status_marker(p_label)
+        local op = profile:operation()
+        local suffix
+        if op and op.message then
+            suffix = " — " .. op.message
+        else
+            suffix = " (" .. p_label .. ")"
+        end
+        local hl
+        if p_label == "failed_configure" or p_label == "failed_build"
+                or p_label:match("failed") then
+            hl = "LoomworksFailed"
+        else
+            hl = "LoomworksConfigured"
+        end
+        return suffix, hl, marker, false
+    else
+        return "", "LoomworksUnconfigured", helpers.status_marker("unconfigured"), false
+    end
+end
+
+--- Render a single keyed-tool entry line within a config set.
+--- @param tree loomworks.Tree
+--- @param cs loomworks.ConfigurationSet
+--- @param entry loomworks.ToolEntry
+--- @param all_profiles table<string, loomworks.Profile>
+--- @param active_profile loomworks.Profile|nil
+local function render_tool_entry(tree, cs, entry, all_profiles, active_profile)
+    local profile = entry.cached and all_profiles[entry.profile_key] or nil
+    local is_active = profile ~= nil and profile == active_profile
+    local suffix, hl, marker, spinning = resolve_profile_display(profile, is_active)
+    local display = entry.tool_label or entry.tool_key
+
+    tree:item(display .. suffix, {
+        marker = marker,
+        spinning = spinning,
+        hl = hl,
+        enter_label = "Activate",
+        on_enter = profile and actions.activate(profile)
+                or actions.activate_new(cs, entry),
+        on_build = profile and actions.build(profile)
+                or actions.build_new(cs, entry),
+        on_configure = profile and actions.configure(profile)
+                or actions.configure_new(cs, entry),
+        on_rebuild = profile and actions.rebuild(profile) or nil,
+        on_clean = profile and actions.clean(profile) or nil,
+        on_delete = profile and actions.delete_profile(profile) or nil,
+    })
+end
+
+--- Render an actionable entry for a config set with no keyed tools.
+--- Shows the set as directly activatable (no tool selection needed).
+--- @param tree loomworks.Tree
+--- @param cs loomworks.ConfigurationSet
+--- @param profile loomworks.Profile|nil existing no-tool profile
+--- @param all_profiles table<string, loomworks.Profile>
+--- @param active_profile loomworks.Profile|nil
+local function render_no_tool_entry(tree, cs, profile, all_profiles, active_profile)
+    local is_active = profile ~= nil and profile == active_profile
+    local suffix, hl, marker, spinning = resolve_profile_display(profile, is_active)
+
+    -- For no-tool entries, show status as the display text (no tool label prefix)
+    local display
+    if not profile then
+        display = "[Enter] activate  [b] build  [c] configure"
+    else
+        -- Strip leading space from suffix: " (built)" → "(built)"
+        display = suffix ~= "" and suffix:match("^%s*(.+)$") or "unconfigured"
+    end
+
+    tree:item(display, {
+        marker = marker,
+        spinning = spinning,
+        hl = hl,
+        enter_label = "Activate",
+        on_enter = profile and actions.activate(profile)
+                or actions.activate_new(cs, nil),
+        on_build = profile and actions.build(profile)
+                or actions.build_new(cs, nil),
+        on_configure = profile and actions.configure(profile)
+                or actions.configure_new(cs, nil),
+        on_rebuild = profile and actions.rebuild(profile) or nil,
+        on_clean = profile and actions.clean(profile) or nil,
+        on_delete = profile and actions.delete_profile(profile) or nil,
+    })
+end
+
 --- Render configuration set details when expanded.
 --- @param tree loomworks.Tree
 --- @param cs loomworks.ConfigurationSet
@@ -26,73 +149,13 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
     if #tool_entries > 0 then
         tree:group({{"Tools:  ", "LoomworksActionable"}, {"[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
             for _, entry in ipairs(tool_entries) do
-                -- Only show running/configured state if a cached profile exists
-                local profile = entry.cached and all_profiles[entry.profile_key] or nil
-                local is_active = profile ~= nil and profile == active_profile
-                local profile_running = profile and profile:is_running() or false
-                local already_configured = profile and profile:is_configured() or false
-
-                local suffix, hl, marker
-                if profile_running then
-                    local status_label = select(1, profile:status())
-                    marker = helpers.status_marker(status_label)
-                    suffix = " (" .. status_label .. ")"
-                    local pps = profile:projects()
-                    local pct = helpers.aggregate_progress(pps)
-                    if pct then suffix = suffix .. " " .. pct .. "%" end
-                    suffix = suffix .. helpers.format_elapsed(profile:operation_elapsed())
-                    hl = is_active and "LoomworksActive" or "LoomworksRunning"
-                elseif is_active then
-                    hl = "LoomworksActive"
-                    local op = profile and profile:operation()
-                    if op and op.message then
-                        local p_label = already_configured and select(1, profile:status()) or "unconfigured"
-                        marker = helpers.status_marker(p_label)
-                        suffix = " — " .. op.message
-                    else
-                        local p_label = already_configured and select(1, profile:status()) or "unconfigured"
-                        marker = helpers.status_marker(p_label)
-                        suffix = " (" .. p_label .. ")"
-                    end
-                elseif already_configured then
-                    local p_label = select(1, profile:status())
-                    marker = helpers.status_marker(p_label)
-                    local op = profile:operation()
-                    if op and op.message then
-                        suffix = " — " .. op.message
-                    else
-                        suffix = " (" .. p_label .. ")"
-                    end
-                    if p_label == "failed_configure" or p_label == "failed_build"
-                            or p_label:match("failed") then
-                        hl = "LoomworksFailed"
-                    else
-                        hl = "LoomworksConfigured"
-                    end
-                else
-                    marker = helpers.status_marker("unconfigured")
-                    suffix = ""
-                    hl = "LoomworksUnconfigured"
-                end
-
-                local display = entry.tool_label or entry.tool_key
-
-                tree:item(display .. suffix, {
-                    marker = marker,
-                    spinning = profile_running,
-                    hl = hl,
-                    on_enter = profile and actions.activate(profile)
-                            or actions.activate_new(cs, entry),
-                    on_build = profile and actions.build(profile)
-                            or actions.build_new(cs, entry),
-                    on_configure = profile and actions.configure(profile)
-                            or actions.configure_new(cs, entry),
-                    on_rebuild = profile and actions.rebuild(profile) or nil,
-                    on_clean = profile and actions.clean(profile) or nil,
-                    on_delete = profile and actions.delete_profile(profile) or nil,
-                })
+                render_tool_entry(tree, cs, entry, all_profiles, active_profile)
             end
         end)
+    else
+        -- No keyed tools — render a single activatable entry for the set itself
+        local profile = cs:find_profile(nil)
+        render_no_tool_entry(tree, cs, profile, all_profiles, active_profile)
     end
 end
 

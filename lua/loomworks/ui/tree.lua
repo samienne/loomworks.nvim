@@ -10,8 +10,22 @@
 
 local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
+--- Ordered list of actions for the Enter picker.
+--- The `enter` action label is overridden per-widget via enter_label.
+local ACTION_ORDER = {
+    { action = "enter",     label = "Activate" },
+    { action = "build",     label = "Build" },
+    { action = "configure", label = "Configure" },
+    { action = "task",      label = "Open task output" },
+    { action = "pin",       label = "Pin as profile" },
+    { action = "options",   label = "Show build options" },
+    { action = "rebuild",   label = "Rebuild (clean + build)" },
+    { action = "clean",     label = "Clean" },
+    { action = "delete",    label = "Delete" },
+}
+
 --- Fields consumed by the tree builder for rendering only.
-local RENDER_KEYS = { hl = true, spinning = true, marker = true }
+local RENDER_KEYS = { hl = true, spinning = true, marker = true, enter_label = true }
 
 --- @class loomworks.Tree
 --- @field _render_fn fun(tree: loomworks.Tree)
@@ -106,8 +120,51 @@ function Tree:on_key(action, line)
         return { refresh = true, restore_fold = fk }
 
     elseif action == "enter" then
-        local w = self.line_meta[line]
-        if w and w.on_enter then w.on_enter() end
+        -- Walk up from cursor to find nearest widget with on_* callbacks
+        local w
+        for l = line, 1, -1 do
+            if self.line_meta[l] then
+                w = self.line_meta[l]
+                break
+            end
+        end
+        if not w then return {} end
+
+        -- Collect available actions
+        local items = {}
+        for _, entry in ipairs(ACTION_ORDER) do
+            local cb = w["on_" .. entry.action]
+            if cb then
+                local label = entry.label
+                if entry.action == "enter" and w.enter_label then
+                    label = w.enter_label
+                end
+                items[#items + 1] = { label = label, callback = cb }
+            end
+        end
+        if #items == 0 then return {} end
+
+        -- Direct-invoke when: widget is marked direct, or only one
+        -- non-destructive action exists.
+        if w.direct then
+            items[1].callback()
+            return {}
+        end
+        if #items == 1 and items[1].label ~= "Delete" then
+            items[1].callback()
+            return {}
+        end
+
+        vim.ui.select(items, {
+            prompt = "Action:",
+            format_item = function(item) return item.label end,
+        }, function(choice)
+            if choice then choice.callback() end
+        end)
+        return {}
+
+    elseif action == "create_workspace" then
+        self:_create_workspace()
         return {}
 
     elseif action == "load" then
@@ -146,6 +203,26 @@ function Tree:on_key(action, line)
 end
 
 -- -----------------------------------------------------------------------
+-- Create workspace
+-- -----------------------------------------------------------------------
+
+function Tree:_create_workspace()
+    local lw = require("loomworks")
+    if lw.get_workspace() then
+        vim.notify("loomworks: workspace already exists", vim.log.levels.INFO)
+        return
+    end
+
+    local root = vim.fn.getcwd()
+    local ok, err = require("loomworks.workspace").create_workspace_config(root)
+    if ok then
+        lw.setup({ root = root })
+    else
+        vim.notify("loomworks: " .. (err or "failed to create workspace"), vim.log.levels.ERROR)
+    end
+end
+
+-- -----------------------------------------------------------------------
 -- Help dialog
 -- -----------------------------------------------------------------------
 
@@ -159,7 +236,7 @@ function Tree:_show_help()
         "  <S-Tab> Previous item",
         "  l       Open fold",
         "  h       Close fold",
-        "  <CR>    Activate profile",
+        "  <CR>    Actions menu",
         "",
         "  b       Build",
         "  c       Configure",
@@ -167,6 +244,8 @@ function Tree:_show_help()
         "  p       Pin configuration",
         "  o       Show build options",
         "  L       Load / rescan workspace",
+        "",
+        "  N       Create new workspace",
         "",
         "  R       Rebuild (clean + build)",
         "  C       Clean (run module clean tasks)",

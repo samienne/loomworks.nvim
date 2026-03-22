@@ -79,20 +79,12 @@ describe("Operation", function()
             assert.is_false(op.completed)
 
             -- Set cached state to "built" and unregister task
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = {
-                                project_key = "App",
-                                config_key = "Debug",
-                                type = "cmake",
-                                state = "built",
-                            },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = {
+                project_key = "App",
+                config_key = "Debug",
+                type = "cmake",
+                state = "built",
+            }
             time.value = 42
             unit:unregister_task(1)
 
@@ -109,20 +101,12 @@ describe("Operation", function()
             local unit = units[1]
             unit:register_task(1, "configure")
 
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = {
-                                project_key = "App",
-                                config_key = "Debug",
-                                type = "cmake",
-                                state = "failed_configure",
-                            },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = {
+                project_key = "App",
+                config_key = "Debug",
+                type = "cmake",
+                state = "failed_configure",
+            }
             time.value = 15
             unit:unregister_task(1)
 
@@ -143,29 +127,12 @@ describe("Operation", function()
             lib_unit:register_task(2, "build")
 
             -- App finishes
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
             app_unit:unregister_task(1)
             assert.is_false(op.completed)
 
             -- Lib finishes
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                            ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "built" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "built" }
             time.value = 60
             lib_unit:unregister_task(2)
             assert.is_true(op.completed)
@@ -184,28 +151,11 @@ describe("Operation", function()
             lib_unit:register_task(2, "build")
 
             -- App succeeds
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
             app_unit:unregister_task(1)
 
             -- Lib fails
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                            ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "failed_build" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "failed_build" }
             lib_unit:unregister_task(2)
 
             assert.is_true(op.completed)
@@ -275,15 +225,7 @@ describe("Operation", function()
 
             -- Complete one unit
             units[1]:register_task(1, "build")
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
             units[1]:unregister_task(1)
 
             done, total = op:progress_counts()
@@ -320,15 +262,7 @@ describe("Operation", function()
                 { project = "App", config = "Debug", target = "built" },
             })
             units[1]:register_task(1, "build")
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
             time.value = 42
             units[1]:unregister_task(1)
             assert.equals("built in 42s", op.message)
@@ -339,15 +273,7 @@ describe("Operation", function()
                 { project = "App", config = "Debug", target = "built" },
             })
             units[1]:register_task(1, "build")
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
             time.value = 150
             units[1]:unregister_task(1)
             assert.equals("built in 2m30s", op.message)
@@ -363,15 +289,7 @@ describe("Operation", function()
 
             -- Configure completes, but immediately a build starts (deferred task)
             -- so the unit goes configuring → building (never visible as "configured")
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
             time.value = 10
             units[1]:unregister_task(1)
 
@@ -486,15 +404,7 @@ describe("Operation", function()
             assert.is_false(opB.completed, "Operation B should wait for built")
 
             -- Build completes
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["TS/default"] = { project_key = "TS", config_key = "default", type = "typescript", state = "built" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["TS/default"] = { project_key = "TS", config_key = "default", type = "typescript", state = "built" }
             time.value = 15
             unit:unregister_task(2)
 
@@ -532,15 +442,7 @@ describe("Operation", function()
             unit:mark_deleting(true, "cleaning")
 
             -- Deletion fails — cache set to unknown, flag clears
-            core.get_workspace = function()
-                return {
-                    cache = {
-                        configurations = {
-                            ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "unknown" },
-                        },
-                    },
-                }
-            end
+            core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "unknown" }
             time.value = 5
             unit:mark_deleting(false)
 

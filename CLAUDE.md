@@ -93,7 +93,8 @@ which auto-loads every subdirectory of `C:/src/nvim-plugins` as a lazy.nvim dev 
 
 ## Key Concepts (quick reference)
 
-- **workspace** — top-level unit, defined by `loomworks.json`
+- **Workspace** — domain container class, defined by `loomworks.json`. Owns all
+  registries, business logic, and domain objects
 - **project** — sub-component with a type (cmake, ets, typescript)
 - **configuration** — build variant within a project (Debug, Release)
 - **configuration_set** — cross-project mapping of configurations
@@ -128,10 +129,23 @@ directory safety before merging:
 
 These are implementation-specific details not covered by the spec or architecture:
 
-- Constructor pattern: `Core.new(deps)` with injectable dependencies for testing
+- **Workspace as domain container**: `Workspace` class owns all registries
+  (projects, profiles, config sets, config units, profile projects) and all
+  business logic (sync, merge, cache, operations, deletion, task tracking,
+  tool scanning). Domain objects store a `_workspace` back-reference.
+- **Core is infrastructure-only**: `Core.new(deps)` with injectable
+  dependencies for testing. Owns I/O, modules, events, file tracking, setup.
+  Thin delegation wrappers forward to Workspace so init.lua callers continue
+  to work via `core:method()`.
+- **Workspace mutation methods**: `config_editor.lua` is no longer used at
+  runtime — Workspace has its own mutation methods for adding/removing
+  projects, configuration sets, etc.
+- **Bootstrap**: `create_workspace_config()` is a static function on the
+  workspace module for creating a new `loomworks.json` on disk (no Workspace
+  instance needed).
 - All objects identity-preserving across remerges via `_update()`; `_removed` flag for dead references
 - `types.lua` defines LuaCATS type annotations (data shapes, not runtime code)
-- init.lua is thin facade; core.lua holds business logic; status.lua is pure rendering
+- init.lua is thin facade; core.lua is infrastructure; status.lua is pure rendering
 - Progress tracking: ninja parser, operation timing, weighted aggregate
 - Atomic writes on Windows: rename can fail if file is open; implement retry with short sleep
 - clangd auto-reloads when compile_commands.json changes on disk — no explicit restart needed

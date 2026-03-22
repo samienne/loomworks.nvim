@@ -1,6 +1,7 @@
 local M = {}
 
 M.id = "typescript"
+M.has_keyed_tools = false
 
 local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
@@ -112,6 +113,31 @@ end
 -- Module interface
 -- ---------------------------------------------------------------------------
 
+--- Detect whether a directory looks like a typescript project.
+--- Checks tsconfig.json first, then package.json with a typescript dependency.
+--- @param abs_path string absolute directory path
+--- @return { marker: string }|nil
+function M.detect(abs_path)
+    if uv.fs_stat(abs_path .. "/tsconfig.json") then
+        return { marker = "tsconfig.json" }
+    end
+    local pkg_path = abs_path .. "/package.json"
+    if uv.fs_stat(pkg_path) then
+        local content = io_mod.read_file(pkg_path)
+        if content then
+            local ok, data = pcall(vim.json.decode, content)
+            if ok and type(data) == "table" then
+                local deps = data.dependencies or {}
+                local dev_deps = data.devDependencies or {}
+                if deps.typescript or dev_deps.typescript then
+                    return { marker = "package.json" }
+                end
+            end
+        end
+    end
+    return nil
+end
+
 --- Check if the path+config is valid.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
@@ -204,6 +230,33 @@ end
 --- @param tool_data table
 --- @return nil
 function M.tool_label(tool_data)
+    return nil
+end
+
+--- Map a semantic variant type to a configuration name from available configs.
+--- @param variant_type string "debug"|"release"|"release_debug"
+--- @param available_configs string[] configuration names from info()
+--- @return string|nil matching configuration name
+function M.map_variant(variant_type, available_configs)
+    if #available_configs == 1 then
+        return available_configs[1]
+    end
+
+    local targets = {
+        debug = { "development", "default" },
+        release = { "production", "default" },
+    }
+
+    local candidates = targets[variant_type]
+    if not candidates then return nil end
+
+    for _, target in ipairs(candidates) do
+        for _, config in ipairs(available_configs) do
+            if config:lower() == target then
+                return config
+            end
+        end
+    end
     return nil
 end
 
