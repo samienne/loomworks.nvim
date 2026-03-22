@@ -390,4 +390,308 @@ function M.compute_config_set_candidates(ws, config_sets)
     return items
 end
 
+-- =========================================================================
+-- Config Set Editing
+-- =========================================================================
+
+--- Context for creating a new config set: project keys, auto-detected
+--- mappings, and available configs per project (from module.info).
+--- @param ws loomworks.Workspace
+--- @return { projects: string[], auto_mappings: table<string, string|nil>, available_configs: table<string, string[]> }
+function M.compute_create_config_set_context(ws)
+    local project_keys = {}
+    local auto_mappings = {}
+    local available_configs = {}
+
+    for key, proj_config in pairs(ws.config.projects) do
+        project_keys[#project_keys + 1] = key
+        local mod = modules.get(proj_config.type)
+        if mod and mod.info then
+            local abs_path = ws.root .. "/" .. (proj_config.path or key)
+            local info = mod.info(abs_path, proj_config.type_config)
+            if info and info.configurations then
+                local names = {}
+                for name in pairs(info.configurations) do
+                    names[#names + 1] = name
+                end
+                table.sort(names)
+                available_configs[key] = names
+            end
+        end
+        if not available_configs[key] then
+            available_configs[key] = {}
+        end
+    end
+    table.sort(project_keys)
+
+    return {
+        projects = project_keys,
+        auto_mappings = auto_mappings,
+        available_configs = available_configs,
+    }
+end
+
+--- Execute config set creation.
+--- @param ws loomworks.Workspace
+--- @param name string config set name
+--- @param mappings table<string, string|nil> project_key → variant
+--- @return boolean ok, string|nil err
+function M.execute_create_config_set(ws, name, mappings)
+    -- Filter out nil mappings
+    local clean = {}
+    for k, v in pairs(mappings) do
+        if v then clean[k] = v end
+    end
+    return ws:add_configuration_set(name, clean)
+end
+
+--- Context for editing a config set: current mappings, available configs
+--- per project (from module.info).
+--- @param ws loomworks.Workspace
+--- @param set_name string
+--- @return { set_name: string, mappings: table<string, string|nil>, available_configs: table<string, string[]>, project_keys: string[] }|nil
+function M.compute_edit_config_set_context(ws, set_name)
+    if not ws.config.configuration_sets
+            or not ws.config.configuration_sets[set_name] then
+        return nil
+    end
+
+    local raw_mappings = ws.config.configuration_sets[set_name]
+    local mappings = {}
+    local available_configs = {}
+    local project_keys = {}
+
+    for key, proj_config in pairs(ws.config.projects) do
+        project_keys[#project_keys + 1] = key
+        mappings[key] = raw_mappings[key] or nil
+
+        local mod = modules.get(proj_config.type)
+        if mod and mod.info then
+            local abs_path = ws.root .. "/" .. (proj_config.path or key)
+            local info = mod.info(abs_path, proj_config.type_config)
+            if info and info.configurations then
+                local names = {}
+                for name in pairs(info.configurations) do
+                    names[#names + 1] = name
+                end
+                table.sort(names)
+                available_configs[key] = names
+            end
+        end
+        if not available_configs[key] then
+            available_configs[key] = {}
+        end
+    end
+    table.sort(project_keys)
+
+    return {
+        set_name = set_name,
+        mappings = mappings,
+        available_configs = available_configs,
+        project_keys = project_keys,
+    }
+end
+
+--- Execute config set edit: apply changed mappings, optionally rename.
+--- @param ws loomworks.Workspace
+--- @param old_name string original config set name
+--- @param new_name string new name (same as old_name if not renamed)
+--- @param new_mappings table<string, string|nil>
+--- @param old_mappings table<string, string|nil>
+--- @return boolean ok, string|nil err
+function M.execute_edit_config_set(ws, old_name, new_name, new_mappings, old_mappings)
+    local renamed = new_name ~= old_name
+
+    if renamed then
+        -- Rename: create new set, migrate profiles, remove old
+        local ok, err = M.execute_rename_config_set(ws, old_name, new_name, new_mappings)
+        if not ok then return false, err end
+        return true
+    end
+
+    -- Apply mapping changes to existing set
+    for key, new_variant in pairs(new_mappings) do
+        local old_variant = old_mappings[key]
+        if new_variant ~= old_variant then
+            local ok, err = ws:update_config_set_mapping(old_name, key, new_variant)
+            if not ok then return false, err end
+        end
+    end
+    -- Handle keys that were in old but not in new (removed)
+    for key, old_variant in pairs(old_mappings) do
+        if old_variant and new_mappings[key] == nil then
+            local ok, err = ws:update_config_set_mapping(old_name, key, nil)
+            if not ok then return false, err end
+        end
+    end
+    return true
+end
+
+--- Rename a configuration set: create new, migrate cached profiles, remove old.
+--- The new set gets the provided mappings (which may also have changed).
+--- @param ws loomworks.Workspace
+--- @param old_name string
+--- @param new_name string
+--- @param mappings table<string, string|nil> final mappings for the new set
+--- @return boolean ok, string|nil err
+function M.execute_rename_config_set(ws, old_name, new_name, mappings)
+    -- Filter nil mappings
+    local clean = {}
+    for k, v in pairs(mappings) do
+        if v then clean[k] = v end
+    end
+
+    -- Create new set
+    local ok, err = ws:add_configuration_set(new_name, clean)
+    if not ok then return false, err end
+
+    -- Migrate cached profiles that reference old_name
+    if ws.cache.profiles then
+        for _, profile_data in pairs(ws.cache.profiles) do
+            if profile_data.configuration_set == old_name then
+                profile_data.configuration_set = new_name
+            end
+        end
+    end
+
+    -- Update active_profile user.json reference if it points to a profile
+    -- that was just migrated (profile keys don't change, only the set name)
+
+    -- Remove old set
+    ok, err = ws:remove_configuration_set(old_name)
+    if not ok then return false, err end
+
+    return true
+end
+
+--- Context for deleting a config set: affected profiles, warning lines.
+--- @param ws loomworks.Workspace
+--- @param set_name string
+--- @return { profiles: string[], lines: string[], highlights: table[] }|nil
+function M.compute_delete_config_set_context(ws, set_name)
+    if not ws.config.configuration_sets
+            or not ws.config.configuration_sets[set_name] then
+        return nil
+    end
+
+    -- Find profiles referencing this set
+    local affected_profiles = {}
+    if ws.cache.profiles then
+        for profile_key, profile_data in pairs(ws.cache.profiles) do
+            if profile_data.configuration_set == set_name then
+                affected_profiles[#affected_profiles + 1] = profile_key
+            end
+        end
+        table.sort(affected_profiles)
+    end
+
+    local lines = {
+        "  Delete configuration set: " .. set_name,
+        "",
+    }
+    local highlights = {
+        { line = 1, hl_group = "DiagnosticWarn" },
+    }
+
+    if #affected_profiles > 0 then
+        lines[#lines + 1] = "  Profiles that will become orphaned:"
+        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        for _, pk in ipairs(affected_profiles) do
+            lines[#lines + 1] = "    " .. pk
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "  Cached configs will become orphaned."
+    highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    lines[#lines + 1] = "  Use 'Clean orphaned configs' to remove them later."
+    highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "  Press y to confirm, q to cancel"
+
+    return {
+        profiles = affected_profiles,
+        lines = lines,
+        highlights = highlights,
+    }
+end
+
+--- Execute config set deletion (orphans profiles, does not delete caches).
+--- @param ws loomworks.Workspace
+--- @param set_name string
+--- @return boolean ok, string|nil err
+function M.execute_delete_config_set(ws, set_name)
+    return ws:remove_configuration_set(set_name)
+end
+
+-- =========================================================================
+-- Orphan Cleanup
+-- =========================================================================
+
+--- Collect all orphaned configs for the cleanup dialog.
+--- @param ws loomworks.Workspace
+--- @return { items: table[], lines: string[], highlights: table[] }
+function M.compute_orphan_cleanup_context(ws)
+    local orphans = ws:get_orphaned_configs()
+    local items = {}
+
+    for _, o in ipairs(orphans) do
+        local build_dir = o.cached and o.cached.build_dir or nil
+        items[#items + 1] = {
+            project_key = o.project_key,
+            config_key = o.config_key,
+            state = o.cached and o.cached.state or nil,
+            build_dir = build_dir,
+        }
+    end
+
+    local lines = {
+        "  Clean orphaned configurations",
+        "",
+    }
+    local highlights = {
+        { line = 1, hl_group = "DiagnosticWarn" },
+    }
+
+    if #items == 0 then
+        lines[#lines + 1] = "  No orphaned configurations found."
+        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    else
+        lines[#lines + 1] = "  Will remove " .. #items .. " orphaned configuration(s):"
+        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        for _, item in ipairs(items) do
+            local state_label = item.state and (" (" .. item.state .. ")") or ""
+            local dir = item.build_dir and ("  " .. rel_path(ws, item.build_dir)) or ""
+            lines[#lines + 1] = "    " .. item.project_key .. " / " .. item.config_key
+                    .. state_label .. dir
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Press y to confirm, q to cancel"
+    end
+
+    return {
+        items = items,
+        lines = lines,
+        highlights = highlights,
+    }
+end
+
+--- Execute orphan cleanup: delete cache entries + build dirs.
+--- @param ws loomworks.Workspace
+--- @param items table[] { project_key, config_key, build_dir? }
+--- @param on_done? fun()
+function M.execute_orphan_cleanup(ws, items, on_done)
+    on_done = on_done or function() end
+    if #items == 0 then
+        on_done()
+        return
+    end
+
+    ws:_run_deletion(items, function()
+        ws:delete_cached_configs(items)
+    end, on_done)
+end
+
 return M

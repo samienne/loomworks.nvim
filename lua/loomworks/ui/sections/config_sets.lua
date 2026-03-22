@@ -159,12 +159,127 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
     end
 end
 
+--- Open the config set editor for an existing set.
+--- @param set_name string
+local function edit_config_set(set_name)
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local workspace_view = require("loomworks.workspace_view")
+    local ctx = workspace_view.compute_edit_config_set_context(ws, set_name)
+    if not ctx then return end
+
+    local old_mappings = vim.deepcopy(ctx.mappings)
+
+    require("loomworks.ui.config_set_editor").open({
+        title = "Edit configuration set",
+        name = set_name,
+        project_keys = ctx.project_keys,
+        mappings = ctx.mappings,
+        available_configs = ctx.available_configs,
+        validate = function(result)
+            if result.name ~= set_name
+                    and ws.config.configuration_sets
+                    and ws.config.configuration_sets[result.name] then
+                return false, "configuration set '" .. result.name .. "' already exists"
+            end
+            return true
+        end,
+        on_accept = function(result)
+            local new_name = result.name
+            local ok, err = workspace_view.execute_edit_config_set(
+                ws, set_name, new_name, result.mappings, old_mappings)
+            if not ok then
+                vim.notify("loomworks: " .. (err or "failed to edit config set"),
+                    vim.log.levels.ERROR)
+            elseif new_name ~= set_name then
+                vim.notify("loomworks: configuration set renamed to '" .. new_name .. "'",
+                    vim.log.levels.INFO)
+            end
+        end,
+        on_cancel = function() end,
+    })
+end
+
+--- Show confirmation and delete a config set.
+--- @param set_name string
+local function delete_config_set(set_name)
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local workspace_view = require("loomworks.workspace_view")
+    local ctx = workspace_view.compute_delete_config_set_context(ws, set_name)
+    if not ctx then return end
+
+    local dialog = require("loomworks.ui.dialog")
+    dialog.show({
+        title = "Confirm Delete",
+        lines = ctx.lines,
+        highlights = ctx.highlights,
+        keys = {
+            n = "close",
+            y = function(self)
+                self:close()
+                local ok, err = workspace_view.execute_delete_config_set(ws, set_name)
+                if ok then
+                    vim.notify("loomworks: configuration set '" .. set_name .. "' removed",
+                        vim.log.levels.INFO)
+                else
+                    vim.notify("loomworks: " .. (err or "failed to delete config set"),
+                        vim.log.levels.ERROR)
+                end
+            end,
+        },
+    })
+end
+
+--- Create a new config set via the editor dialog.
+local function create_config_set()
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local workspace_view = require("loomworks.workspace_view")
+    local ctx = workspace_view.compute_create_config_set_context(ws)
+
+    require("loomworks.ui.config_set_editor").open({
+        title = "New configuration set",
+        name = "",
+        project_keys = ctx.projects,
+        mappings = ctx.auto_mappings,
+        available_configs = ctx.available_configs,
+        validate = function(result)
+            if ws.config.configuration_sets and ws.config.configuration_sets[result.name] then
+                return false, "configuration set '" .. result.name .. "' already exists"
+            end
+            return true
+        end,
+        on_accept = function(result)
+            local name = result.name
+            local ok, err = workspace_view.execute_create_config_set(ws, name, result.mappings)
+            if ok then
+                vim.notify("loomworks: configuration set '" .. name .. "' created",
+                    vim.log.levels.INFO)
+            else
+                vim.notify("loomworks: " .. (err or "failed to create config set"),
+                    vim.log.levels.ERROR)
+            end
+        end,
+        on_cancel = function() end,
+    })
+end
+
 --- Render the configuration sets section.
 --- @param tree loomworks.Tree
 --- @param ctx table { lw, all_profiles, active_profile, config_sets, tool_entries }
 return function(tree, ctx)
     local config_sets = ctx.config_sets
-    if not config_sets or not next(config_sets) then return end
+    local has_sets = config_sets and next(config_sets)
+
+    -- Show section only when there are sets or projects (to offer create)
+    if not has_sets then return end
 
     local all_profiles = ctx.all_profiles
     local active_profile = ctx.active_profile
@@ -185,15 +300,25 @@ return function(tree, ctx)
         local is_active_set = active_profile
                 and active_profile.configuration_set == cs.name
         local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
+        local sname = cs.name
 
         tree:node(cs.name, {
             fold_key = "set:" .. cs.name,
             hl = set_hl,
+            enter_label = "Edit mappings",
+            on_enter = function() edit_config_set(sname) end,
+            on_delete = function() delete_config_set(sname) end,
         }, function()
             render_set_details(tree, cs,
                 tool_entries[cs.name] or {}, all_profiles, active_profile, lw)
         end)
     end
+
+    tree:item("▸ Create configuration set", {
+        hl = "LoomworksActionable",
+        direct = true,
+        on_enter = create_config_set,
+    })
 
     tree:blank()
 end

@@ -116,6 +116,39 @@ local function open_add_project()
     end
 end
 
+--- Show the orphan cleanup dialog and execute cleanup on confirm.
+local function clean_orphaned_configs()
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local workspace_view = require("loomworks.workspace_view")
+    local ctx = workspace_view.compute_orphan_cleanup_context(ws)
+
+    if #ctx.items == 0 then
+        vim.notify("loomworks: no orphaned configurations found", vim.log.levels.INFO)
+        return
+    end
+
+    local dialog = require("loomworks.ui.dialog")
+    dialog.show({
+        title = "Clean Orphaned Configs",
+        lines = ctx.lines,
+        highlights = ctx.highlights,
+        max_height = 25,
+        keys = {
+            n = "close",
+            y = function(self)
+                self:close()
+                workspace_view.execute_orphan_cleanup(ws, ctx.items, function()
+                    vim.notify("loomworks: orphaned configurations cleaned",
+                        vim.log.levels.INFO)
+                end)
+            end,
+        },
+    })
+end
+
 --- Render the projects section.
 --- @param tree loomworks.Tree
 --- @param ctx table { lw, projects, active_profile_key }
@@ -297,6 +330,11 @@ return function(tree, ctx)
         hl = "LoomworksActionable",
         enter_label = "Add project",
         on_enter = open_add_project,
+    })
+    tree:item("▸ Clean orphaned configs", {
+        hl = "LoomworksActionable",
+        direct = true,
+        on_enter = clean_orphaned_configs,
     })
     tree:blank()
 end

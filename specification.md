@@ -997,6 +997,37 @@ sets are declared.
 Highlighted with `LoomworksActive` if the active profile belongs to this set,
 otherwise `LoomworksActionable`.
 
+**Set node actions**:
+
+| Action | Behavior |
+|--------|----------|
+| `<CR>` | Opens config set editor dialog (edit mappings) |
+| `D`    | Delete config set with confirmation dialog |
+
+**Config set editing** (`<CR>` on a set node):
+
+Opens a dedicated config set editor dialog. Shows each project in the
+workspace with its current variant mapping and available configurations
+(from module.info). The user can change each mapping via `vim.ui.select`
+or set it to "None" to remove the mapping. Accept (`y`) applies changes
+via `update_config_set_mapping()` for each changed mapping. Cancel (`q`)
+discards changes.
+
+Changed mappings may orphan existing cached configs (old variant no longer
+referenced). This is intentional — orphans are cleaned explicitly via the
+"Clean orphaned configs" action in the Projects section.
+
+**Config set deletion** (`D` on a set node):
+
+Shows a confirmation dialog listing:
+- Profiles that reference this set (will become orphaned-set)
+- Warning that cached configs will become orphaned
+
+On confirm: `remove_configuration_set()`. Profiles that referenced the set
+become orphaned_set. Cached configs for those profiles become orphaned. No
+immediate deletion of cache entries — the user cleans via "Clean orphaned
+configs" in the Projects section.
+
 **Set children** (when unfolded):
 - Projects sub-group: `project_key → variant`
 - Tools sub-group (if keyed tools detected): one item per detected tool
@@ -1021,6 +1052,17 @@ Where:
 | `R`    | rebuild via profile | nil (no-op) |
 | `C`    | clean via profile | nil (no-op) |
 | `D`    | delete profile with dialog | nil (no-op) |
+
+**Sentinel: Create configuration set**
+
+After the last config set, an interactive item:
+```
+▸ Create configuration set
+```
+Enter prompts for a name via `vim.ui.input`, then opens the config set
+editor dialog pre-populated with auto-detected mappings (same
+`compute_initial_mappings` logic used for add-project). On accept:
+`add_configuration_set(name, mappings)`.
 
 ### 6.8 Projects Section
 
@@ -1123,6 +1165,18 @@ interactive item:
 ```
 Enter opens the project browser float (Phase 1). Replaces the former `A`
 keybinding.
+
+**Sentinel: Clean orphaned configs**
+
+Below the "Add project" item:
+```
+▸ Clean orphaned configs
+```
+Enter shows a confirmation dialog listing all orphaned configurations
+(configs with build state not referenced by any profile), their state,
+and build directories. On confirm: deletes cache entries and build
+directories via the standard `_run_deletion` pattern. If no orphans
+exist, shows a notification instead.
 
 ### 6.9 Deletion Confirmation Dialog
 
