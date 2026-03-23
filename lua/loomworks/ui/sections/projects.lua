@@ -5,6 +5,7 @@
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
+local workspace_view = require("loomworks.workspace_view")
 
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
 --- @param projects table<string, loomworks.Project>
@@ -105,6 +106,94 @@ local function entry_highlight(config_status, status_hl, is_spinning, is_active)
     end
     if config_status == "unconfigured" then return "LoomworksUnconfigured" end
     return "LoomworksConfigured"
+end
+
+--- Open the launch editor for an existing or new launch config.
+--- @param project_key string
+--- @param launch_name? string nil for new config
+local function edit_launch_config(project_key, launch_name)
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local ctx = workspace_view.compute_edit_launch_context(ws, project_key, launch_name)
+
+    require("loomworks.ui.launch_editor").open({
+        title = launch_name
+            and ('Edit "' .. launch_name .. '" — ' .. project_key)
+            or ("New launch — " .. project_key),
+        name = ctx.name,
+        command = ctx.command,
+        args = ctx.args,
+        working_dir = ctx.working_dir,
+        env = ctx.env,
+        validate = function(result)
+            if result.name ~= (launch_name or "")
+                    and ws.config.projects[project_key]
+                    and ws.config.projects[project_key].launch
+                    and ws.config.projects[project_key].launch[result.name] then
+                return false, "launch config '" .. result.name .. "' already exists"
+            end
+            return true
+        end,
+        on_accept = function(result)
+            local ok, err = workspace_view.execute_save_launch_config(
+                ws, project_key, launch_name, result.name, {
+                    command = result.command,
+                    args = result.args,
+                    working_dir = result.working_dir,
+                    env = result.env,
+                })
+            if ok then
+                local verb = launch_name and "updated" or "created"
+                vim.notify("loomworks: launch config '" .. result.name .. "' " .. verb,
+                    vim.log.levels.INFO)
+            else
+                vim.notify("loomworks: " .. (err or "failed to save launch config"),
+                    vim.log.levels.ERROR)
+            end
+        end,
+        on_cancel = function() end,
+    })
+end
+
+--- Delete a launch config with confirmation.
+--- @param project_key string
+--- @param launch_name string
+local function delete_launch_config(project_key, launch_name)
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local dialog = require("loomworks.ui.dialog")
+    dialog.show({
+        title = "Confirm Delete",
+        lines = {
+            "  Delete launch config: " .. launch_name,
+            "",
+            "  Project: " .. project_key,
+            "",
+            "  Press y to confirm, q to cancel",
+        },
+        highlights = {
+            { line = 1, hl_group = "DiagnosticWarn" },
+            { line = 3, hl_group = "Comment" },
+        },
+        keys = {
+            n = "close",
+            y = function(self)
+                self:close()
+                local ok, err = workspace_view.execute_delete_launch_config(ws, project_key, launch_name)
+                if ok then
+                    vim.notify("loomworks: launch config '" .. launch_name .. "' deleted",
+                        vim.log.levels.INFO)
+                else
+                    vim.notify("loomworks: " .. (err or "failed to delete"),
+                        vim.log.levels.ERROR)
+                end
+            end,
+        },
+    })
 end
 
 --- Open the project browser for adding a project.
@@ -287,6 +376,32 @@ return function(tree, ctx)
                             end
                         end)
                     end
+                end)
+            end
+
+            -- Launch configurations
+            local ws = lw.get_workspace()
+            local launches = ws and workspace_view.get_launch_configs(ws, key) or {}
+            if #launches > 0 or not proj.orphaned then
+                tree:group("Launch:", "Comment", function()
+                    for _, lc in ipairs(launches) do
+                        local lname = lc.name
+                        local desc = lc.config.command or ""
+                        if lc.config.args and #lc.config.args > 0 then
+                            desc = desc .. " " .. table.concat(lc.config.args, " ")
+                        end
+                        tree:item(lname .. "  " .. desc, {
+                            hl = "LoomworksActionable",
+                            enter_label = "Edit launch config",
+                            on_enter = function() edit_launch_config(key, lname) end,
+                            on_delete = function() delete_launch_config(key, lname) end,
+                        })
+                    end
+                    tree:item("▸ Add launch config", {
+                        hl = "LoomworksActionable",
+                        direct = true,
+                        on_enter = function() edit_launch_config(key, nil) end,
+                    })
                 end)
             end
 
