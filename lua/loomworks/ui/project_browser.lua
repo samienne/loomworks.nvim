@@ -36,23 +36,12 @@ local function build_added_set(root)
 end
 
 --- Derive the project key and optional path for a browser entry.
---- Root-level: basename as key, path omitted.
---- Nested: relative path as key, explicit path field.
+--- Delegates to workspace_view for testability.
 --- @param root string workspace root
 --- @param entry loomworks.BrowserEntry
 --- @return string key, string|nil path
 local function derive_key_and_path(root, entry)
-    local rel = entry.abs_path:sub(#root + 2) -- strip root + "/"
-    if rel == "" then
-        -- Root directory itself — use basename as key, path = "."
-        return entry.name, "."
-    elseif rel == entry.name then
-        -- Root-level child directory
-        return entry.name, nil
-    else
-        -- Nested directory — use relative path as key
-        return rel:gsub("/", "_"), rel
-    end
+    return workspace_view.derive_key_and_path(root, entry.abs_path, entry.name)
 end
 
 --- Open the project browser for a workspace root.
@@ -131,54 +120,30 @@ function M.open(root)
     --- @param entry loomworks.BrowserEntry
     --- @param type_info { type: string, marker: string }
     local function do_add(entry, type_info)
-        local key, path = derive_key_and_path(root, entry)
-
-        -- Check if configuration sets exist
         local lw = require("loomworks")
         local ws = lw.get_workspace()
-        local raw_config_sets = ws and ws.config and ws.config.configuration_sets or nil
-        local has_config_sets = raw_config_sets and next(raw_config_sets)
+        if not ws then return end
 
-        if not has_config_sets then
-            -- No config sets: add directly
-            local ok, err = ws:add_project(key, type_info.type, path)
+        local prep = workspace_view.prepare_add_project_from_browser(
+            ws, root, entry.abs_path, entry.name, type_info.type)
+
+        if prep.action == "add_direct" then
+            local ok, err = workspace_view.execute_add_project(
+                ws, prep.key, prep.mod_type, prep.path, { mappings = {} }, false)
             if not ok then
                 vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
             end
             return
         end
 
-        -- Detect available configurations for the new project
-        local mod = modules.get(type_info.type)
-        local config_names = {}
-        if mod and mod.info and mod.map_variant then
-            local info = mod.info(entry.abs_path, {})
-            if info and info.configurations then
-                for name in pairs(info.configurations) do
-                    config_names[#config_names + 1] = name
-                end
-                table.sort(config_names)
-            end
-        end
-
-        if #config_names == 0 then
-            -- No detectable configurations: add without mappings
-            local ok, err = ws:add_project(key, type_info.type, path)
-            if not ok then
-                vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
-            end
-            return
-        end
-
-        -- Check if module has keyed tools requiring detection
-        local has_keyed = mod and mod.has_keyed_tools or false
-
-        if has_keyed then
-            workspace_view.ensure_tools_detected(ws, mod, type_info.type, function(keyed_tools)
-                open_mapping_dialog(type_info, key, path, config_names, keyed_tools)
+        -- show_dialog: may need tool detection first
+        if prep.has_keyed then
+            local mod = modules.get(prep.mod_type)
+            workspace_view.ensure_tools_detected(ws, mod, prep.mod_type, function(keyed_tools)
+                open_mapping_dialog(type_info, prep.key, prep.path, prep.config_names, keyed_tools)
             end)
         else
-            open_mapping_dialog(type_info, key, path, config_names, {})
+            open_mapping_dialog(type_info, prep.key, prep.path, prep.config_names, {})
         end
     end
 
@@ -189,18 +154,9 @@ function M.open(root)
         if rel == "" then rel = "." end
         local lw = require("loomworks")
         local ws = lw.get_workspace()
-        if not ws or not ws.config or not ws.config.projects then return end
+        if not ws then return end
 
-        -- Find the project key that matches this path
-        local found_key
-        for key, proj in pairs(ws.config.projects) do
-            local proj_rel = proj.path or key
-            if proj_rel == rel or proj_rel == entry.name then
-                found_key = key
-                break
-            end
-        end
-
+        local found_key = workspace_view.find_project_key_by_path(ws, rel, entry.name)
         if not found_key then
             vim.notify("loomworks: project not found in workspace", vim.log.levels.WARN)
             return

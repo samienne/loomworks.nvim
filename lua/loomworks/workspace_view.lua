@@ -818,4 +818,332 @@ function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
     end
 end
 
+-- =========================================================================
+-- Project Browser Helpers
+-- =========================================================================
+
+--- Derive project key and optional path from a browser entry's absolute path.
+--- Root-level: basename as key, path omitted.
+--- Nested: relative path as key, explicit path field.
+--- @param root string workspace root
+--- @param abs_path string absolute path of the entry
+--- @param name string directory basename
+--- @return string key, string|nil path
+function M.derive_key_and_path(root, abs_path, name)
+    local rel = abs_path:sub(#root + 2) -- strip root + "/"
+    if rel == "" then
+        return name, "."
+    elseif rel == name then
+        return name, nil
+    else
+        return rel:gsub("/", "_"), rel
+    end
+end
+
+--- Find the project key in workspace config that matches a browser entry path.
+--- @param ws loomworks.Workspace
+--- @param rel_path string relative path from root
+--- @param basename string directory basename
+--- @return string|nil project_key
+function M.find_project_key_by_path(ws, rel_path, basename)
+    if not ws.config or not ws.config.projects then return nil end
+    for key, proj in pairs(ws.config.projects) do
+        local proj_rel = proj.path or key
+        if proj_rel == rel_path or proj_rel == basename then
+            return key
+        end
+    end
+    return nil
+end
+
+--- Prepare context for adding a project from the browser. Determines
+--- whether a mapping dialog is needed or the project can be added directly.
+--- @param ws loomworks.Workspace
+--- @param root string workspace root
+--- @param abs_path string entry's absolute path
+--- @param name string entry's directory basename
+--- @param mod_type string module type
+--- @return { action: "add_direct"|"show_dialog", key: string, path: string|nil, mod_type: string, config_names?: string[], has_keyed?: boolean }
+function M.prepare_add_project_from_browser(ws, root, abs_path, name, mod_type)
+    local key, path = M.derive_key_and_path(root, abs_path, name)
+
+    local raw_config_sets = ws.config and ws.config.configuration_sets or nil
+    local has_config_sets = raw_config_sets and next(raw_config_sets)
+
+    if not has_config_sets then
+        return { action = "add_direct", key = key, path = path, mod_type = mod_type }
+    end
+
+    -- Detect available configurations for the new project
+    local mod = modules.get(mod_type)
+    local config_names = {}
+    if mod and mod.info and mod.map_variant then
+        local info = mod.info(abs_path, {})
+        if info and info.configurations then
+            for cfg_name in pairs(info.configurations) do
+                config_names[#config_names + 1] = cfg_name
+            end
+            table.sort(config_names)
+        end
+    end
+
+    if #config_names == 0 then
+        return { action = "add_direct", key = key, path = path, mod_type = mod_type }
+    end
+
+    local has_keyed = mod and mod.has_keyed_tools or false
+
+    return {
+        action = "show_dialog",
+        key = key,
+        path = path,
+        mod_type = mod_type,
+        config_names = config_names,
+        has_keyed = has_keyed,
+    }
+end
+
+-- =========================================================================
+-- Confirmation Dialog Content
+-- =========================================================================
+
+--- Collect clean items for a profile (project_key, config_key, build_dir).
+--- @param profile loomworks.Profile
+--- @return table[]
+function M.collect_clean_items(profile)
+    local items = {}
+    for _, pp in ipairs(profile:projects()) do
+        items[#items + 1] = {
+            project_key = pp.project_key,
+            config_key = pp.config_key,
+            build_dir = pp:build_dir(),
+        }
+    end
+    return items
+end
+
+--- Collect clean items for a single ConfigUnit.
+--- @param unit loomworks.ConfigUnit
+--- @return table[]
+function M.collect_clean_items_for_unit(unit)
+    return { {
+        project_key = unit.project_key,
+        config_key = unit.config_key,
+        build_dir = unit:build_dir(),
+    } }
+end
+
+--- Build confirmation dialog content for clean/rebuild actions.
+--- @param ws loomworks.Workspace
+--- @param title string
+--- @param items table[] { project_key, config_key, build_dir? }
+--- @param opts? { rebuild?: boolean }
+--- @return { lines: string[], highlights: table[] }
+function M.compute_clean_confirmation_context(ws, title, items, opts)
+    local lines = {}
+    local highlights = {}
+
+    local function add(text, hl)
+        lines[#lines + 1] = text
+        if hl then
+            highlights[#highlights + 1] = { line = #lines, hl_group = hl }
+        end
+    end
+
+    add("  " .. title, "DiagnosticWarn")
+    add("")
+
+    local running_tasks = ws:find_running_tasks_for_items(items)
+    local has_running = false
+    for _ in pairs(running_tasks) do has_running = true; break end
+
+    if has_running then
+        add("  Will stop running tasks:", "DiagnosticWarn")
+        for _, info in pairs(running_tasks) do
+            add("    " .. info.project_key .. ": " .. info.action .. " " .. info.configuration_key,
+                "DiagnosticWarn")
+        end
+        add("")
+    end
+
+    opts = opts or {}
+    local desc = opts.rebuild
+        and "  Will clean build artifacts then rebuild:"
+        or "  Will clean build artifacts and reset to configured:"
+    add(desc, "DiagnosticWarn")
+    for _, item in ipairs(items) do
+        add("    " .. item.project_key .. " / " .. item.config_key, "DiagnosticWarn")
+    end
+    add("")
+
+    add("  Press y to confirm, q to cancel", "Comment")
+
+    return { lines = lines, highlights = highlights }
+end
+
+--- Build confirmation dialog content for deletion actions.
+--- @param ws loomworks.Workspace
+--- @param title string
+--- @param plan loomworks.DeletionPlan
+--- @return { lines: string[], highlights: table[] }
+function M.compute_delete_confirmation_context(ws, title, plan)
+    local items = plan.items
+    local lines = {}
+    local highlights = {}
+
+    local function add(text, hl)
+        lines[#lines + 1] = text
+        if hl then
+            highlights[#highlights + 1] = { line = #lines, hl_group = hl }
+        end
+    end
+
+    add("  " .. title, "DiagnosticWarn")
+    add("")
+
+    local running_tasks = ws:find_running_tasks_for_items(items)
+    local running_task_ids = {}
+    for task_id in pairs(running_tasks) do
+        running_task_ids[#running_task_ids + 1] = task_id
+    end
+
+    if #running_task_ids > 0 then
+        add("  Will stop running tasks:", "DiagnosticWarn")
+        for _, info in pairs(running_tasks) do
+            add("    " .. info.project_key .. ": " .. info.action .. " " .. info.configuration_key,
+                "DiagnosticWarn")
+        end
+        add("")
+    end
+
+    -- Split items by disposition
+    local clean_items, reset_items, keep_items = {}, {}, {}
+    for _, item in ipairs(items) do
+        if item.disposition == "keep" then
+            keep_items[#keep_items + 1] = item
+        elseif item.disposition == "reset" then
+            reset_items[#reset_items + 1] = item
+        else
+            clean_items[#clean_items + 1] = item
+        end
+    end
+
+    if #clean_items > 0 then
+        add("  Will remove:", "DiagnosticError")
+        for _, item in ipairs(clean_items) do
+            local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
+            local suffix = dir and ("  " .. dir) or ""
+            add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticError")
+        end
+        add("")
+    end
+
+    if #reset_items > 0 then
+        add("  Will reset to unconfigured:", "DiagnosticWarn")
+        for _, item in ipairs(reset_items) do
+            local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
+            local suffix = dir and ("  " .. dir) or ""
+            add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticWarn")
+        end
+        add("")
+    end
+
+    if #keep_items > 0 then
+        add("  Will keep (referenced by another profile):", "Comment")
+        for _, item in ipairs(keep_items) do
+            add("    " .. item.project_key .. " / " .. item.config_key, "Comment")
+        end
+        add("")
+    end
+
+    if #items == 0 and plan.profile_key then
+        add("  No configurations to clean.", "Comment")
+        add("")
+    end
+
+    add("  Press y to confirm, q to cancel", "Comment")
+
+    return { lines = lines, highlights = highlights }
+end
+
+--- Build confirmation dialog content for stray dir deletion.
+--- @param ws loomworks.Workspace
+--- @param dir string absolute normalized path
+--- @return { lines: string[], highlights: table[] }
+function M.compute_delete_stray_dir_context(ws, dir)
+    local display = rel_path(ws, dir) or dir
+    return {
+        lines = {
+            "  Delete stray build directory:",
+            "",
+            "    " .. display,
+            "",
+            "  Press y to confirm, q to cancel",
+        },
+        highlights = {
+            { line = 1, hl_group = "DiagnosticWarn" },
+            { line = 3, hl_group = "DiagnosticWarn" },
+        },
+    }
+end
+
+--- Execute stray build dir deletion.
+--- @param ws loomworks.Workspace
+--- @param dir string absolute normalized path
+--- @param on_done? fun(ok: boolean, err: string|nil)
+function M.execute_delete_stray_dir(ws, dir, on_done)
+    on_done = on_done or function() end
+    local safe_prefix = ws._core._deps.normalize(ws.root)
+    if not ws:_validate_build_dir(dir, safe_prefix) then
+        on_done(false, "path outside workspace")
+        return
+    end
+    ws:_delete_build_dirs_async({ dir }, function(results)
+        if results[1] and results[1].ok then
+            ws._core._deps.events.emit("deletion_completed", {})
+            on_done(true)
+        else
+            local err = results[1] and results[1].err or "unknown"
+            on_done(false, err)
+        end
+    end)
+end
+
+-- =========================================================================
+-- Create Profile
+-- =========================================================================
+
+--- Handle a config set choice for profile creation: materialize auto-detected
+--- sets, resolve the ConfigurationSet object.
+--- @param ws loomworks.Workspace
+--- @param choice { cs?: loomworks.ConfigurationSet, auto: boolean, real_name?: string, mappings?: table }
+--- @return loomworks.ConfigurationSet|nil cs, string|nil err
+function M.resolve_config_set_choice(ws, choice)
+    local cs = choice.cs
+    if choice.auto then
+        local ok, err = ws:add_configuration_set(choice.real_name, choice.mappings)
+        if not ok then
+            return nil, err or "failed to add config set"
+        end
+        cs = ws:get_config_sets()[choice.real_name]
+        if not cs then
+            return nil, "config set '" .. choice.real_name .. "' not found after add"
+        end
+    end
+    return cs
+end
+
+--- Execute profile creation: materialize or activate.
+--- @param cs loomworks.ConfigurationSet
+--- @param tool_entry? table { tool_key, tool_data, tool_label, tool_mod_type }
+--- @param activate boolean
+--- @return loomworks.Profile|nil
+function M.execute_create_profile(cs, tool_entry, activate)
+    if activate then
+        return cs:activate(tool_entry)
+    else
+        return cs:ensure_profile(tool_entry)
+    end
+end
+
 return M

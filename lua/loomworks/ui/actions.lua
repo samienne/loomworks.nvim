@@ -60,28 +60,33 @@ end
 --- @param profile loomworks.Profile
 function M.rebuild(profile)
     return function()
-        local items = M._collect_clean_items(profile)
-        M._show_clean_confirmation("Rebuild profile: " .. profile.key, items, function()
-            profile:rebuild()
-        end, { rebuild = true })
+        local wv = require("loomworks.workspace_view")
+        local ws = require("loomworks").get_workspace()
+        local items = wv.collect_clean_items(profile)
+        local ctx = wv.compute_clean_confirmation_context(ws, "Rebuild profile: " .. profile.key, items, { rebuild = true })
+        M._show_confirmation(ctx, function() profile:rebuild() end)
     end
 end
 
 --- @param profile loomworks.Profile
 function M.clean(profile)
     return function()
-        local items = M._collect_clean_items(profile)
-        M._show_clean_confirmation("Clean profile: " .. profile.key, items, function()
-            profile:clean()
-        end)
+        local wv = require("loomworks.workspace_view")
+        local ws = require("loomworks").get_workspace()
+        local items = wv.collect_clean_items(profile)
+        local ctx = wv.compute_clean_confirmation_context(ws, "Clean profile: " .. profile.key, items)
+        M._show_confirmation(ctx, function() profile:clean() end)
     end
 end
 
 --- @param profile loomworks.Profile
 function M.delete_profile(profile)
     return function()
+        local wv = require("loomworks.workspace_view")
+        local ws = require("loomworks").get_workspace()
         local plan = profile:plan_deletion()
-        M._show_delete_confirmation("Delete profile: " .. profile.key, plan, function()
+        local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: " .. profile.key, plan)
+        M._show_confirmation(ctx, function()
             require("loomworks").execute_deletion(plan, { deactivate_profile = profile }, function()
                 vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
             end)
@@ -110,31 +115,40 @@ end
 --- @param unit loomworks.ConfigUnit
 function M.rebuild_configuration(unit)
     return function()
-        local items = M._collect_clean_items_for_unit(unit)
-        M._show_clean_confirmation("Rebuild: " .. unit.project_key .. " / " .. unit.config_key, items, function()
+        local wv = require("loomworks.workspace_view")
+        local ws = require("loomworks").get_workspace()
+        local items = wv.collect_clean_items_for_unit(unit)
+        local ctx = wv.compute_clean_confirmation_context(ws,
+            "Rebuild: " .. unit.project_key .. " / " .. unit.config_key, items, { rebuild = true })
+        M._show_confirmation(ctx, function()
             unit:clean(function()
                 require("loomworks.overseer").run_configuration_action(unit, "build")
             end)
-        end, { rebuild = true })
+        end)
     end
 end
 
 --- @param unit loomworks.ConfigUnit
 function M.clean_configuration(unit)
     return function()
-        local items = M._collect_clean_items_for_unit(unit)
-        M._show_clean_confirmation("Clean: " .. unit.project_key .. " / " .. unit.config_key, items, function()
-            unit:clean()
-        end)
+        local wv = require("loomworks.workspace_view")
+        local ws = require("loomworks").get_workspace()
+        local items = wv.collect_clean_items_for_unit(unit)
+        local ctx = wv.compute_clean_confirmation_context(ws,
+            "Clean: " .. unit.project_key .. " / " .. unit.config_key, items)
+        M._show_confirmation(ctx, function() unit:clean() end)
     end
 end
 
 --- @param unit loomworks.ConfigUnit
 function M.delete_config(unit)
     return function()
+        local wv = require("loomworks.workspace_view")
+        local ws = require("loomworks").get_workspace()
         local plan = unit:plan_deletion()
-        M._show_delete_confirmation(
-            "Delete: " .. unit.project_key .. " / " .. unit.config_key, plan, function()
+        local ctx = wv.compute_delete_confirmation_context(ws,
+            "Delete: " .. unit.project_key .. " / " .. unit.config_key, plan)
+        M._show_confirmation(ctx, function()
             unit:delete(function()
                 vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
             end)
@@ -145,19 +159,23 @@ end
 --- @param unit loomworks.ConfigUnit
 function M.delete_orphaned_config(unit)
     return function()
-        local orphan_items = { {
-            project_key = unit.project_key,
-            config_key = unit.config_key,
-            disposition = "clean",
-        } }
-        M._show_delete_confirmation(
-            "Delete orphaned: " .. unit.project_key .. " / " .. unit.config_key,
-            { items = orphan_items, defined_in_config = false },
-            function()
-                unit:delete(function()
-                    vim.notify("loomworks: orphaned configuration removed", vim.log.levels.INFO)
-                end)
+        local wv = require("loomworks.workspace_view")
+        local ws = require("loomworks").get_workspace()
+        local orphan_plan = {
+            items = { {
+                project_key = unit.project_key,
+                config_key = unit.config_key,
+                disposition = "clean",
+            } },
+            defined_in_config = false,
+        }
+        local ctx = wv.compute_delete_confirmation_context(ws,
+            "Delete orphaned: " .. unit.project_key .. " / " .. unit.config_key, orphan_plan)
+        M._show_confirmation(ctx, function()
+            unit:delete(function()
+                vim.notify("loomworks: orphaned configuration removed", vim.log.levels.INFO)
             end)
+        end)
     end
 end
 
@@ -166,50 +184,20 @@ end
 --- @return fun() closure
 function M.delete_stray_dir(dir)
     return function()
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
+        local wv = require("loomworks.workspace_view")
+        local ws = require("loomworks").get_workspace()
         if not ws then return end
 
-        -- Make relative for display
-        local display = dir
-        local ws_root = vim.fs.normalize(ws.root)
-        local norm = vim.fs.normalize(dir)
-        if norm:sub(1, #ws_root) == ws_root then
-            display = norm:sub(#ws_root + 2)
-        end
-
-        local dialog = require("loomworks.ui.dialog")
-        dialog.show({
-            title = "Confirm Delete",
-            lines = {
-                "  Delete stray build directory:",
-                "",
-                "    " .. display,
-                "",
-                "  Press y to confirm, q to cancel",
-            },
-            highlights = {
-                { line = 1, hl_group = "DiagnosticWarn" },
-                { line = 3, hl_group = "DiagnosticWarn" },
-            },
-            keys = {
-                n = "close",
-                y = function(self)
-                    self:close()
-                    local safe_prefix = ws._core._deps.normalize(ws.root)
-                    if not ws:_validate_build_dir(dir, safe_prefix) then return end
-                    ws:_delete_build_dirs_async({ dir }, function(results)
-                        if results[1] and results[1].ok then
-                            vim.notify("loomworks: stray directory removed", vim.log.levels.INFO)
-                            ws._core._deps.events.emit("deletion_completed", {})
-                        else
-                            local err = results[1] and results[1].err or "unknown"
-                            vim.notify("loomworks: failed to delete: " .. err, vim.log.levels.ERROR)
-                        end
-                    end)
-                end,
-            },
-        })
+        local ctx = wv.compute_delete_stray_dir_context(ws, dir)
+        M._show_confirmation(ctx, function()
+            wv.execute_delete_stray_dir(ws, dir, function(ok, err)
+                if ok then
+                    vim.notify("loomworks: stray directory removed", vim.log.levels.INFO)
+                else
+                    vim.notify("loomworks: failed to delete: " .. (err or "unknown"), vim.log.levels.ERROR)
+                end
+            end)
+        end)
     end
 end
 
@@ -265,8 +253,8 @@ function M.create_profile(ctx)
         local ws = lw.get_workspace()
         if not ws then return end
 
-        local workspace_view = require("loomworks.workspace_view")
-        local items = workspace_view.compute_config_set_candidates(ws, config_sets)
+        local wv = require("loomworks.workspace_view")
+        local items = wv.compute_config_set_candidates(ws, config_sets)
 
         if #items == 0 then
             vim.notify("loomworks: no configuration sets available (add projects first)", vim.log.levels.INFO)
@@ -284,22 +272,11 @@ function M.create_profile(ctx)
         }, function(choice)
             if not choice then return end
 
-            local cs = choice.cs
-            if choice.auto then
-                -- Write the auto-detected set to loomworks.json
-                local ok, err = ws:add_configuration_set(choice.real_name, choice.mappings)
-                if not ok then
-                    vim.notify("loomworks: " .. (err or "failed to add config set"), vim.log.levels.ERROR)
-                    return
-                end
-                -- add_configuration_set remerges, so config sets are up to date
-                cs = ws:get_config_sets()[choice.real_name]
-                if not cs then
-                    vim.notify("loomworks: config set '" .. choice.real_name .. "' not found after add", vim.log.levels.ERROR)
-                    return
-                end
+            local cs, err = wv.resolve_config_set_choice(ws, choice)
+            if not cs then
+                vim.notify("loomworks: " .. (err or "failed"), vim.log.levels.ERROR)
+                return
             end
-            -- Auto-activate only when this is the first profile
             local is_first = not next(lw.get_profiles())
             M._create_profile_step2(cs, choice.name or choice.real_name, tool_entries, is_first)
         end)
@@ -312,21 +289,15 @@ end
 --- @param tool_entries table<string, loomworks.ToolEntry[]>
 --- @param activate boolean
 function M._create_profile_step2(cs, set_name, tool_entries, activate)
-    local function finish(entry)
-        if activate then
-            cs:activate(entry)
-        else
-            local profile = cs:ensure_profile(entry)
-            if profile then
-                vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
-            end
-        end
-    end
+    local wv = require("loomworks.workspace_view")
 
     local entries = tool_entries[set_name] or {}
 
     if #entries <= 1 then
-        finish(entries[1] or nil)
+        local profile = wv.execute_create_profile(cs, entries[1] or nil, activate)
+        if profile and not activate then
+            vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
+        end
         return
     end
 
@@ -337,7 +308,10 @@ function M._create_profile_step2(cs, set_name, tool_entries, activate)
         end,
     }, function(choice)
         if not choice then return end
-        finish(choice)
+        local profile = wv.execute_create_profile(cs, choice, activate)
+        if profile and not activate then
+            vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
+        end
     end)
 end
 
@@ -441,205 +415,18 @@ function M.show_options(unit)
 end
 
 -- ---------------------------------------------------------------------------
--- Clean/rebuild confirmation dialog
+-- Confirmation dialog (thin UI wrapper)
 -- ---------------------------------------------------------------------------
 
---- Collect clean items for a profile (project_key, config_key, build_dir).
---- @param profile loomworks.Profile
---- @return table[]
-function M._collect_clean_items(profile)
-    local items = {}
-    for _, pp in ipairs(profile:projects()) do
-        items[#items + 1] = {
-            project_key = pp.project_key,
-            config_key = pp.config_key,
-            build_dir = pp:build_dir(),
-        }
-    end
-    return items
-end
-
---- Collect clean items for a single ConfigUnit.
---- @param unit loomworks.ConfigUnit
---- @return table[]
-function M._collect_clean_items_for_unit(unit)
-    return { {
-        project_key = unit.project_key,
-        config_key = unit.config_key,
-        build_dir = unit:build_dir(),
-    } }
-end
-
---- Make a path relative to workspace root for display.
---- @param abs string|nil
---- @return string|nil
-local function rel_path(abs)
-    if not abs then return abs end
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return abs end
-    local ws_root = vim.fs.normalize(ws.root)
-    local normalized = vim.fs.normalize(abs)
-    if normalized:sub(1, #ws_root) == ws_root then
-        local rel = normalized:sub(#ws_root + 1)
-        if rel:sub(1, 1) == "/" then rel = rel:sub(2) end
-        return rel ~= "" and rel or "."
-    end
-    return abs
-end
-
---- Show a confirmation dialog for clean/rebuild actions.
---- @param title string
---- @param items table[] { project_key, config_key, build_dir? }
+--- Show a confirmation dialog from pre-computed context.
+--- @param ctx { lines: string[], highlights: table[] }
 --- @param on_confirm fun()
---- @param opts? { rebuild?: boolean }
-function M._show_clean_confirmation(title, items, on_confirm, opts)
-    local lw = require("loomworks")
-    local lines = {}
-    local highlights = {}
-
-    local function add(text, hl)
-        lines[#lines + 1] = text
-        if hl then
-            highlights[#highlights + 1] = { line = #lines, hl_group = hl }
-        end
-    end
-
-    add("  " .. title, "DiagnosticWarn")
-    add("")
-
-    local running_tasks = lw.find_running_tasks_for_items(items)
-    local has_running = false
-    for _ in pairs(running_tasks) do has_running = true; break end
-
-    if has_running then
-        add("  Will stop running tasks:", "DiagnosticWarn")
-        for _, info in pairs(running_tasks) do
-            add("    " .. info.project_key .. ": " .. info.action .. " " .. info.configuration_key,
-                "DiagnosticWarn")
-        end
-        add("")
-    end
-
-    opts = opts or {}
-    local desc = opts.rebuild
-        and "  Will clean build artifacts then rebuild:"
-        or "  Will clean build artifacts and reset to configured:"
-    add(desc, "DiagnosticWarn")
-    for _, item in ipairs(items) do
-        add("    " .. item.project_key .. " / " .. item.config_key, "DiagnosticWarn")
-    end
-    add("")
-
-    add("  Press y to confirm, q to cancel", "Comment")
-
+function M._show_confirmation(ctx, on_confirm)
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
         title = "Confirm",
-        lines = lines,
-        highlights = highlights,
-        max_height = 20,
-        keys = {
-            n = "close",
-            y = function(self)
-                self:close()
-                on_confirm()
-            end,
-        },
-    })
-end
-
--- ---------------------------------------------------------------------------
--- Deletion confirmation dialog
--- ---------------------------------------------------------------------------
-
---- Show a confirmation dialog for deleting configurations.
---- @param title string
---- @param plan loomworks.DeletionPlan
---- @param on_confirm fun()
-function M._show_delete_confirmation(title, plan, on_confirm)
-    local lw = require("loomworks")
-    local items = plan.items
-    local lines = {}
-    local highlights = {}
-
-    local function add(text, hl)
-        lines[#lines + 1] = text
-        if hl then
-            highlights[#highlights + 1] = { line = #lines, hl_group = hl }
-        end
-    end
-
-    add("  " .. title, "DiagnosticWarn")
-    add("")
-
-    local running_tasks = lw.find_running_tasks_for_items(items)
-    local running_task_ids = {}
-    for task_id in pairs(running_tasks) do
-        running_task_ids[#running_task_ids + 1] = task_id
-    end
-
-    if #running_task_ids > 0 then
-        add("  Will stop running tasks:", "DiagnosticWarn")
-        for _, info in pairs(running_tasks) do
-            add("    " .. info.project_key .. ": " .. info.action .. " " .. info.configuration_key,
-                "DiagnosticWarn")
-        end
-        add("")
-    end
-
-    -- Split items by disposition
-    local clean_items, reset_items, keep_items = {}, {}, {}
-    for _, item in ipairs(items) do
-        if item.disposition == "keep" then
-            keep_items[#keep_items + 1] = item
-        elseif item.disposition == "reset" then
-            reset_items[#reset_items + 1] = item
-        else
-            clean_items[#clean_items + 1] = item
-        end
-    end
-
-    if #clean_items > 0 then
-        add("  Will remove:", "DiagnosticError")
-        for _, item in ipairs(clean_items) do
-            local dir = item.build_dir and rel_path(item.build_dir) or nil
-            local suffix = dir and ("  " .. dir) or ""
-            add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticError")
-        end
-        add("")
-    end
-
-    if #reset_items > 0 then
-        add("  Will reset to unconfigured:", "DiagnosticWarn")
-        for _, item in ipairs(reset_items) do
-            local dir = item.build_dir and rel_path(item.build_dir) or nil
-            local suffix = dir and ("  " .. dir) or ""
-            add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticWarn")
-        end
-        add("")
-    end
-
-    if #keep_items > 0 then
-        add("  Will keep (referenced by another profile):", "Comment")
-        for _, item in ipairs(keep_items) do
-            add("    " .. item.project_key .. " / " .. item.config_key, "Comment")
-        end
-        add("")
-    end
-
-    if #items == 0 and plan.profile_key then
-        add("  No configurations to clean.", "Comment")
-        add("")
-    end
-
-    add("  Press y to confirm, q to cancel", "Comment")
-
-    local dialog = require("loomworks.ui.dialog")
-    dialog.show({
-        title = "Confirm Delete",
-        lines = lines,
-        highlights = highlights,
+        lines = ctx.lines,
+        highlights = ctx.highlights,
         max_height = 20,
         keys = {
             n = "close",
