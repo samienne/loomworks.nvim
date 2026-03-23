@@ -401,6 +401,196 @@ describe("project lifecycle", function()
 end)
 
 -- =========================================================================
+-- Profile upgrade/downgrade when adding/removing keyed-tool projects
+-- =========================================================================
+
+describe("profile upgrade and downgrade", function()
+    local tool_entry = {
+        tool_key = "ninja-gcc-12",
+        tool_data = { id = "ninja-gcc-12", generator = "Ninja", compiler_id = "GNU" },
+        tool_label = "Ninja - GCC 12",
+        tool_mod_type = "cmake",
+    }
+
+    it("adding keyed-tool project upgrades profiles and creates skeletons", function()
+        local ws = make_ws(
+            {
+                projects = { Frontend = { ets = {} } },
+                configuration_sets = {
+                    Debug = { Frontend = "debug" },
+                },
+            },
+            { active_profile = "Debug" },
+            {
+                profiles = {
+                    Debug = {
+                        configuration_set = "Debug",
+                        configurations = { "Frontend/debug" },
+                    },
+                },
+                configurations = {
+                    ["Frontend/debug"] = {
+                        project_key = "Frontend", config_key = "debug",
+                        type = "ets", variant = "debug", state = "configured",
+                    },
+                },
+            }
+        )
+
+        -- Add cmake project with tool
+        local result = {
+            mappings = { Debug = "Debug" },
+            tool_entry = tool_entry,
+        }
+        local ok = wv.execute_add_project(ws, "App", "cmake", nil, result, true)
+        assert.is_true(ok)
+
+        -- Profile upgraded: Debug → Debug:ninja-gcc-12
+        assert.is_nil(ws.cache.profiles["Debug"])
+        assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
+        assert.equals("Debug:ninja-gcc-12", ws.user.active_profile)
+
+        -- Skeleton cache entry created for cmake project
+        assert.is_not_nil(ws.cache.configurations["App/Debug:ninja-gcc-12"])
+        assert.equals("cmake", ws.cache.configurations["App/Debug:ninja-gcc-12"].type)
+
+        -- Non-keyed entry preserved without tool suffix
+        assert.is_not_nil(ws.cache.configurations["Frontend/debug"])
+        assert.is_nil(ws.cache.configurations["Frontend/debug:ninja-gcc-12"])
+    end)
+
+    it("removing last keyed-tool project downgrades profiles", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    Frontend = { ets = {} },
+                    App = { cmake = {} },
+                },
+                configuration_sets = {
+                    Debug = { Frontend = "debug", App = "Debug" },
+                },
+            },
+            { active_profile = "Debug:ninja-gcc-12" },
+            {
+                profiles = {
+                    ["Debug:ninja-gcc-12"] = {
+                        configuration_set = "Debug",
+                        tools = {
+                            cmake = { key = "ninja-gcc-12", data = {}, label = "Ninja - GCC 12" },
+                        },
+                        configurations = { "Frontend/debug", "App/Debug:ninja-gcc-12" },
+                    },
+                },
+                configurations = {
+                    ["Frontend/debug"] = {
+                        project_key = "Frontend", config_key = "debug",
+                        type = "ets", variant = "debug",
+                    },
+                    ["App/Debug:ninja-gcc-12"] = {
+                        project_key = "App", config_key = "Debug:ninja-gcc-12",
+                        type = "cmake", variant = "Debug",
+                    },
+                },
+            }
+        )
+
+        local ctx = wv.compute_remove_context(ws, "App")
+        assert.equals(1, #ctx.downgrade_preview)
+
+        local done = false
+        wv.execute_remove_project(ws, "App", ctx, function(ok)
+            done = true
+            assert.is_true(ok)
+        end)
+        assert.is_true(done)
+
+        -- Profile downgraded: Debug:ninja-gcc-12 → Debug
+        assert.is_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
+        assert.is_not_nil(ws.cache.profiles["Debug"])
+        assert.is_nil(ws.cache.profiles["Debug"].tools)
+        assert.equals("Debug", ws.user.active_profile)
+    end)
+
+    it("pinned profiles are not affected by upgrade", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    Frontend = { ets = {} },
+                    App = { cmake = {} },
+                },
+                configuration_sets = { Debug = { Frontend = "debug", App = "Debug" } },
+            },
+            nil,
+            {
+                profiles = {
+                    -- Pinned profile (no configuration_set)
+                    ["App/Debug"] = {
+                        configurations = { "App/Debug" },
+                    },
+                    -- Set-based profile
+                    Debug = {
+                        configuration_set = "Debug",
+                        configurations = { "Frontend/debug" },
+                    },
+                },
+                configurations = {
+                    ["App/Debug"] = {
+                        project_key = "App", config_key = "Debug",
+                        type = "cmake", variant = "Debug",
+                    },
+                    ["Frontend/debug"] = {
+                        project_key = "Frontend", config_key = "debug",
+                        type = "ets", variant = "debug",
+                    },
+                },
+            }
+        )
+
+        ws:upgrade_profiles_for_tool(tool_entry)
+
+        -- Set-based profile upgraded
+        assert.is_nil(ws.cache.profiles["Debug"])
+        assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
+
+        -- Pinned profile unchanged
+        assert.is_not_nil(ws.cache.profiles["App/Debug"])
+        assert.is_nil(ws.cache.profiles["App/Debug"].tools)
+    end)
+
+    it("downgrade is no-op when other keyed-module projects remain", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App = { cmake = {} },
+                    Lib = { cmake = {} },
+                },
+                configuration_sets = { Debug = { App = "Debug", Lib = "Debug" } },
+            },
+            nil,
+            {
+                profiles = {
+                    ["Debug:ninja-gcc-12"] = {
+                        configuration_set = "Debug",
+                        tools = { cmake = { key = "ninja-gcc-12" } },
+                        configurations = { "App/Debug:ninja-gcc-12", "Lib/Debug:ninja-gcc-12" },
+                    },
+                },
+                configurations = {
+                    ["App/Debug:ninja-gcc-12"] = { project_key = "App", config_key = "Debug:ninja-gcc-12", type = "cmake" },
+                    ["Lib/Debug:ninja-gcc-12"] = { project_key = "Lib", config_key = "Debug:ninja-gcc-12", type = "cmake" },
+                },
+            }
+        )
+
+        ws:downgrade_profiles_from_tool("cmake")
+
+        -- Profile unchanged — Lib still uses cmake
+        assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
+        assert.is_nil(ws.cache.profiles["Debug"])
+    end)
+end)
+
+-- =========================================================================
 -- Orphan lifecycle: delete config set → orphans appear → clean up
 -- =========================================================================
 
