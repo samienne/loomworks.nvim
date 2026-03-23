@@ -1146,4 +1146,80 @@ function M.execute_create_profile(cs, tool_entry, activate)
     end
 end
 
+-- =========================================================================
+-- Launch Config Editing
+-- =========================================================================
+
+--- Get all launch configs for a project.
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @return { name: string, config: table }[]
+function M.get_launch_configs(ws, project_key)
+    local proj = ws.config.projects[project_key]
+    if not proj or not proj.launch then return {} end
+
+    local result = {}
+    for name, config in pairs(proj.launch) do
+        result[#result + 1] = { name = name, config = config }
+    end
+    table.sort(result, function(a, b) return a.name < b.name end)
+    return result
+end
+
+--- Context for editing a launch config.
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @param launch_name string|nil nil for new config
+--- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string> }
+function M.compute_edit_launch_context(ws, project_key, launch_name)
+    local config = {}
+    if launch_name then
+        local proj = ws.config.projects[project_key]
+        if proj and proj.launch and proj.launch[launch_name] then
+            config = proj.launch[launch_name]
+        end
+    end
+
+    return {
+        project_key = project_key,
+        name = launch_name or "",
+        command = config.command or "",
+        args = config.args or {},
+        working_dir = config.working_dir or "",
+        env = config.env and vim.deepcopy(config.env) or {},
+    }
+end
+
+--- Save a launch config (create or update, with optional rename).
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @param old_name string|nil nil for new config
+--- @param new_name string
+--- @param data { command: string, args: string[], working_dir: string, env: table<string, string> }
+--- @return boolean ok, string|nil err
+function M.execute_save_launch_config(ws, project_key, old_name, new_name, data)
+    -- Build config table (omit empty fields)
+    local config = { command = data.command }
+    if data.args and #data.args > 0 then config.args = data.args end
+    if data.working_dir and data.working_dir ~= "" then config.working_dir = data.working_dir end
+    if data.env and next(data.env) then config.env = data.env end
+
+    -- If renamed, delete old first
+    if old_name and old_name ~= new_name then
+        local ok, err = ws:delete_launch_config(project_key, old_name)
+        if not ok then return false, err end
+    end
+
+    return ws:save_launch_config(project_key, new_name, config)
+end
+
+--- Delete a launch config.
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @param launch_name string
+--- @return boolean ok, string|nil err
+function M.execute_delete_launch_config(ws, project_key, launch_name)
+    return ws:delete_launch_config(project_key, launch_name)
+end
+
 return M

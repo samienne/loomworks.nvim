@@ -1174,6 +1174,25 @@ configuration.
 tool_key matching — the entry is active when its variant matches the
 project's active configuration.
 
+**Launch configurations sub-group**
+
+After the configurations group, each non-orphaned project shows a
+"Launch:" group listing its launch configurations from `loomworks.json`.
+
+Each launch config item shows `{name}  {command} {args}`. Actions:
+
+| Action | Behavior |
+|--------|----------|
+| `<CR>` | Edit launch config (opens launch editor dialog) |
+| `D`    | Delete launch config with confirmation |
+
+A "Add launch config" sentinel opens the launch editor for a new config.
+
+The **launch editor dialog** edits: name, command, args (space-separated),
+working directory, and environment variables (key=value pairs). Env vars
+can be added (`▸ Add variable`) and removed (`D`). Inline name validation
+prevents duplicates. Accepts with `y`, cancels with `q`.
+
 **Sentinel: Add project**
 
 After the last project (or as sole content when no projects exist), an

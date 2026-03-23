@@ -919,3 +919,153 @@ describe("end-to-end workspace setup", function()
         assert.equals(2, #pps)
     end)
 end)
+
+-- =========================================================================
+-- Launch config lifecycle: create → edit → rename → delete
+-- =========================================================================
+
+describe("launch config lifecycle", function()
+    it("create → edit → rename → delete", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+        })
+
+        -- 1. Create launch config
+        local ok, err = wv.execute_save_launch_config(ws, "App", nil, "debug", {
+            command = "node",
+            args = { "app.js" },
+            working_dir = "${workspace_root}/App",
+            env = { NODE_ENV = "development" },
+        })
+        assert.is_true(ok)
+        assert.is_not_nil(ws.config.projects["App"].launch)
+        assert.is_not_nil(ws.config.projects["App"].launch["debug"])
+        assert.equals("node", ws.config.projects["App"].launch["debug"].command)
+
+        -- 2. Get launch configs
+        local configs = wv.get_launch_configs(ws, "App")
+        assert.equals(1, #configs)
+        assert.equals("debug", configs[1].name)
+
+        -- 3. Edit: change command and add env var
+        ok = wv.execute_save_launch_config(ws, "App", "debug", "debug", {
+            command = "npx",
+            args = { "ts-node", "app.ts" },
+            working_dir = "${workspace_root}/App",
+            env = { NODE_ENV = "development", DEBUG = "true" },
+        })
+        assert.is_true(ok)
+        assert.equals("npx", ws.config.projects["App"].launch["debug"].command)
+        assert.equals("true", ws.config.projects["App"].launch["debug"].env.DEBUG)
+
+        -- 4. Rename: debug → dev
+        ok = wv.execute_save_launch_config(ws, "App", "debug", "dev", {
+            command = "npx",
+            args = { "ts-node", "app.ts" },
+            working_dir = "",
+            env = { NODE_ENV = "development" },
+        })
+        assert.is_true(ok)
+        assert.is_nil(ws.config.projects["App"].launch["debug"])
+        assert.is_not_nil(ws.config.projects["App"].launch["dev"])
+
+        -- 5. Delete
+        ok = wv.execute_delete_launch_config(ws, "App", "dev")
+        assert.is_true(ok)
+        -- launch key cleaned up when empty
+        assert.is_nil(ws.config.projects["App"].launch)
+    end)
+
+    it("compute_edit_launch_context returns defaults for new config", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+
+        local ctx = wv.compute_edit_launch_context(ws, "App", nil)
+        assert.equals("App", ctx.project_key)
+        assert.equals("", ctx.name)
+        assert.equals("", ctx.command)
+        assert.equals(0, #ctx.args)
+        assert.equals("", ctx.working_dir)
+        assert.is_true(not next(ctx.env))
+    end)
+
+    it("compute_edit_launch_context returns existing config data", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            args = { "app.js", "--verbose" },
+                            working_dir = "${workspace_root}/App",
+                            env = { NODE_ENV = "dev" },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ctx = wv.compute_edit_launch_context(ws, "App", "debug")
+        assert.equals("debug", ctx.name)
+        assert.equals("node", ctx.command)
+        assert.equals(2, #ctx.args)
+        assert.equals("app.js", ctx.args[1])
+        assert.equals("${workspace_root}/App", ctx.working_dir)
+        assert.equals("dev", ctx.env.NODE_ENV)
+    end)
+
+    it("omits empty optional fields when saving", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+
+        wv.execute_save_launch_config(ws, "App", nil, "minimal", {
+            command = "echo",
+            args = {},
+            working_dir = "",
+            env = {},
+        })
+
+        local saved = ws.config.projects["App"].launch["minimal"]
+        assert.equals("echo", saved.command)
+        assert.is_nil(saved.args)
+        assert.is_nil(saved.working_dir)
+        assert.is_nil(saved.env)
+    end)
+
+    it("returns error for nonexistent project", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+
+        local ok, err = wv.execute_save_launch_config(ws, "NonExistent", nil, "test", {
+            command = "echo",
+        })
+        assert.is_false(ok)
+        assert.is_not_nil(err)
+    end)
+
+    it("get_launch_configs returns empty for project without launches", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local configs = wv.get_launch_configs(ws, "App")
+        assert.equals(0, #configs)
+    end)
+
+    it("get_launch_configs returns sorted entries", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {},
+                    launch = {
+                        release = { command = "app" },
+                        debug = { command = "app" },
+                    },
+                },
+            },
+        })
+
+        local configs = wv.get_launch_configs(ws, "App")
+        assert.equals(2, #configs)
+        assert.equals("debug", configs[1].name)
+        assert.equals("release", configs[2].name)
+    end)
+end)

@@ -1500,6 +1500,64 @@ function Workspace:update_config_set_mapping(set_name, project_key, variant)
     return true
 end
 
+--- Save a launch configuration for a project.
+--- @param project_key string
+--- @param launch_name string
+--- @param config table { command, args?, working_dir?, env? }
+--- @return boolean ok, string|nil err
+function Workspace:save_launch_config(project_key, launch_name, config)
+    local proj = self.config.projects[project_key]
+    if not proj then
+        return false, "project '" .. project_key .. "' not found"
+    end
+
+    if not proj.launch then
+        proj.launch = {}
+    end
+    proj.launch[launch_name] = config
+
+    local ok, err = self:_save_config()
+    if not ok then
+        proj.launch[launch_name] = nil
+        if not next(proj.launch) then proj.launch = nil end
+        return false, err
+    end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Delete a launch configuration from a project.
+--- @param project_key string
+--- @param launch_name string
+--- @return boolean ok, string|nil err
+function Workspace:delete_launch_config(project_key, launch_name)
+    local proj = self.config.projects[project_key]
+    if not proj then
+        return false, "project '" .. project_key .. "' not found"
+    end
+    if not proj.launch or not proj.launch[launch_name] then
+        return false, "launch config '" .. launch_name .. "' not found"
+    end
+
+    local old = proj.launch[launch_name]
+    proj.launch[launch_name] = nil
+    if not next(proj.launch) then proj.launch = nil end
+
+    local ok, err = self:_save_config()
+    if not ok then
+        -- Rollback
+        if not proj.launch then proj.launch = {} end
+        proj.launch[launch_name] = old
+        return false, err
+    end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
 --- Extend a cached profile's configurations array with missing entries
 --- for projects in its configuration set. Creates skeleton cache entries
 --- for projects not yet represented. Used by upgrade_profiles_for_tool.
