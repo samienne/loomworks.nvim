@@ -2,6 +2,7 @@ local M = {}
 
 M.id = "ets"
 M.has_keyed_tools = false
+M.has_options = false
 
 local uv = vim.uv or vim.loop
 
@@ -31,6 +32,14 @@ function M.validate(path, config)
     end
 
     return { valid = true, warnings = warnings }
+end
+
+--- Return the default configurations for this module.
+--- @param path string absolute project path
+--- @param config table type_config from loomworks.json
+--- @return table<string, table>
+function M.default_configurations(path, config)
+    return { debug = {}, release = {} }
 end
 
 --- Return what the module knows about the project.

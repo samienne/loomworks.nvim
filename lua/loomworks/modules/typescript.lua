@@ -2,6 +2,7 @@ local M = {}
 
 M.id = "typescript"
 M.has_keyed_tools = false
+M.has_options = false
 
 local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
@@ -162,6 +163,14 @@ end
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
 --- @return table info
+--- Return the default configurations for this module.
+--- @param path string absolute project path
+--- @param config table type_config from loomworks.json
+--- @return table<string, table>
+function M.default_configurations(path, config)
+    return { default = {} }
+end
+
 function M.info(path, config)
     local configurations = {}
 
