@@ -1259,14 +1259,12 @@ end
 --- @param data table { variant?, inherits?, options?, toolchain?, generator? }
 --- @return boolean ok, string|nil err
 function M.execute_save_configuration(ws, project_key, old_name, new_name, data)
-    -- If renamed, delete old first
+    -- Rename: atomic propagation to config sets, cache entries, and profiles
     if old_name and old_name ~= new_name then
-        -- Only delete if it was a user-defined config (has an entry in type_config)
         local proj = ws.config.projects[project_key]
         if proj and proj.type_config and proj.type_config.configurations
                 and proj.type_config.configurations[old_name] then
-            local ok, err = ws:delete_project_configuration(project_key, old_name)
-            if not ok then return false, err end
+            return ws:rename_project_configuration(project_key, old_name, new_name, data)
         end
     end
 

@@ -929,6 +929,317 @@ describe("name validation and collision prevention", function()
 end)
 
 -- =========================================================================
+-- Configuration rename propagation
+-- =========================================================================
+
+describe("configuration rename propagation", function()
+    it("renames config and updates config set mappings", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug", options = { ASAN = "ON" } },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "Debug-asan" },
+            },
+        })
+
+        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {
+            inherits = "Debug", options = { ASAN = "ON" },
+        })
+        assert.is_true(ok)
+
+        -- Config renamed in type_config
+        assert.is_nil(ws.config.projects.App.type_config.configurations["Debug-asan"])
+        assert.is_not_nil(ws.config.projects.App.type_config.configurations["DebugASAN"])
+
+        -- Config set mapping updated
+        assert.equals("DebugASAN", ws.config.configuration_sets.debug.App)
+    end)
+
+    it("migrates cache entries and preserves build_dir", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "Debug-asan" },
+            },
+        }, nil, {
+            configurations = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-gcc",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
+                },
+            },
+            profiles = {
+                ["debug:ninja-gcc"] = {
+                    configuration_set = "debug",
+                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "Ninja GCC" } },
+                    configurations = { "App/Debug-asan:ninja-gcc" },
+                },
+            },
+        })
+
+        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {})
+        assert.is_true(ok)
+
+        -- Old cache key gone, new one exists
+        assert.is_nil(ws.cache.configurations["App/Debug-asan:ninja-gcc"])
+        local new_entry = ws.cache.configurations["App/DebugASAN:ninja-gcc"]
+        assert.is_not_nil(new_entry)
+
+        -- Fields updated
+        assert.equals("DebugASAN", new_entry.variant)
+        assert.equals("DebugASAN:ninja-gcc", new_entry.config_key)
+
+        -- Build dir preserved (old path stays)
+        assert.equals("/root/.nvim/build/App/ninja-gcc/Debug-asan", new_entry.build_dir)
+
+        -- Profile configurations array updated
+        local profile = ws.cache.profiles["debug:ninja-gcc"]
+        assert.is_not_nil(profile)
+        assert.equals("App/DebugASAN:ninja-gcc", profile.configurations[1])
+    end)
+
+    it("updates inherits in sibling configs", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            base = { options = { X = "1" } },
+                            child = { inherits = "base", options = { Y = "2" } },
+                            multi = { inherits = { "Debug", "base" } },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ok = ws:rename_project_configuration("App", "base", "BaseConfig", {
+            options = { X = "1" },
+        })
+        assert.is_true(ok)
+
+        -- String inherits updated
+        assert.equals("BaseConfig",
+            ws.config.projects.App.type_config.configurations.child.inherits)
+
+        -- Array inherits updated
+        local multi_inh = ws.config.projects.App.type_config.configurations.multi.inherits
+        assert.equals("Debug", multi_inh[1])
+        assert.equals("BaseConfig", multi_inh[2])
+    end)
+
+    it("succeeds with no cache entries", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            old = { options = { A = "1" } },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ok = ws:rename_project_configuration("App", "old", "new", {
+            options = { A = "1" },
+        })
+        assert.is_true(ok)
+        assert.is_nil(ws.config.projects.App.type_config.configurations.old)
+        assert.is_not_nil(ws.config.projects.App.type_config.configurations.new)
+    end)
+
+    it("updates multiple profiles referencing same variant", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "Debug-asan" },
+            },
+        }, nil, {
+            configurations = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-gcc",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    state = "built",
+                },
+                ["App/Debug-asan:ninja-clang"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-clang",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-clang",
+                    state = "configured",
+                },
+            },
+            profiles = {
+                ["debug:ninja-gcc"] = {
+                    configuration_set = "debug",
+                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "GCC" } },
+                    configurations = { "App/Debug-asan:ninja-gcc" },
+                },
+                ["debug:ninja-clang"] = {
+                    configuration_set = "debug",
+                    tools = { cmake = { key = "ninja-clang", data = {}, label = "Clang" } },
+                    configurations = { "App/Debug-asan:ninja-clang" },
+                },
+            },
+        })
+
+        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {})
+        assert.is_true(ok)
+
+        -- Both cache entries migrated
+        assert.is_not_nil(ws.cache.configurations["App/DebugASAN:ninja-gcc"])
+        assert.is_not_nil(ws.cache.configurations["App/DebugASAN:ninja-clang"])
+
+        -- Both profiles updated
+        assert.equals("App/DebugASAN:ninja-gcc",
+            ws.cache.profiles["debug:ninja-gcc"].configurations[1])
+        assert.equals("App/DebugASAN:ninja-clang",
+            ws.cache.profiles["debug:ninja-clang"].configurations[1])
+    end)
+
+    it("updates pinned profile mappings", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+        }, nil, {
+            configurations = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-gcc",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
+                },
+            },
+            profiles = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    mappings = { App = "Debug-asan" },
+                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "GCC" } },
+                    configurations = { "App/Debug-asan:ninja-gcc" },
+                },
+            },
+        })
+
+        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {
+            inherits = "Debug",
+        })
+        assert.is_true(ok)
+
+        -- Old pinned profile key gone
+        assert.is_nil(ws.cache.profiles["App/Debug-asan:ninja-gcc"])
+
+        -- New pinned profile key exists with updated mapping
+        local profile = ws.cache.profiles["App/DebugASAN:ninja-gcc"]
+        assert.is_not_nil(profile)
+        assert.equals("DebugASAN", profile.mappings.App)
+
+        -- Cache entry rekeyed
+        assert.is_not_nil(ws.cache.configurations["App/DebugASAN:ninja-gcc"])
+
+        -- Profile configurations array updated
+        assert.equals("App/DebugASAN:ninja-gcc", profile.configurations[1])
+    end)
+
+    it("updates active_profile when pinned profile key changes", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+        }, {
+            active_profile = "App/Debug-asan:ninja-gcc",
+        }, {
+            configurations = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-gcc",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    state = "configured",
+                },
+            },
+            profiles = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    mappings = { App = "Debug-asan" },
+                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "GCC" } },
+                    configurations = { "App/Debug-asan:ninja-gcc" },
+                },
+            },
+        })
+
+        assert.equals("App/Debug-asan:ninja-gcc", ws.user.active_profile)
+
+        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {
+            inherits = "Debug",
+        })
+        assert.is_true(ok)
+
+        -- Active profile updated to new key
+        assert.equals("App/DebugASAN:ninja-gcc", ws.user.active_profile)
+    end)
+
+    it("execute_save_configuration uses rename for name change", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            old_cfg = { options = { A = "1" } },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "old_cfg" },
+            },
+        })
+
+        local ok = wv.execute_save_configuration(ws, "App", "old_cfg", "new_cfg", {
+            options = { A = "1" },
+        })
+        assert.is_true(ok)
+
+        -- Config renamed (not delete+create)
+        assert.is_nil(ws.config.projects.App.type_config.configurations.old_cfg)
+        assert.is_not_nil(ws.config.projects.App.type_config.configurations.new_cfg)
+
+        -- Config set mapping updated atomically
+        assert.equals("new_cfg", ws.config.configuration_sets.debug.App)
+    end)
+end)
+
+-- =========================================================================
 -- End-to-end: full workspace setup from scratch
 -- =========================================================================
 

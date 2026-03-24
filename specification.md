@@ -693,6 +693,29 @@ remaining cache entries reference it after the current deletion batch.
 **Config clean** (`C` key on a configuration):
 - Same as profile clean but for a single configuration
 
+### 4.8 Configuration Rename Propagation
+
+When a project configuration is renamed (old_name → new_name) via the
+config editor, all references are updated atomically:
+
+1. **loomworks.json**: rename in `type_config.configurations`, update
+   `inherits` references in sibling configs, update `configuration_sets`
+   mappings for this project
+2. **Cache entries**: rekey `cache.configurations` entries matching
+   `project_key + old variant` → new config_key, update `variant` and
+   `config_key` fields. **Build directory is preserved as-is** (the old
+   path stays in the cache — the system accepts any build_dir path)
+3. **Profile configurations arrays**: replace old cache keys with new ones
+
+On next configure after rename, the module resolves a fresh build directory
+using the new name. If the computed path collides with an existing directory
+on disk, a numeric suffix is appended (`-2`, `-3`, ...) to ensure uniqueness.
+
+**Cached build dir preference**: When a cache entry already has a
+`build_dir`, task generation uses the cached path instead of recomputing.
+This preserves the existing build directory after rename until the user
+explicitly deletes and reconfigures.
+
 ---
 
 ## 5. Task Execution

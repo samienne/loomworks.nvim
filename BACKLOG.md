@@ -90,3 +90,17 @@ Could be defined in loomworks.json per project:
 Variable expansion (${project_path}, ${config_set}) applies. Directories
 are deleted during the clean action alongside module clean_tasks.
 
+## Decouple config_key from variant name
+
+Currently `config_key` is derived from `variant + tool_key` (e.g.,
+`"Debug:ninja-gcc-12"`). This makes the variant name load-bearing for
+identity — renaming a configuration requires rekeying cache entries,
+registry slots, and profile configuration arrays.
+
+Ideally, `config_key` would be a stable opaque ID assigned at creation
+(e.g., sequential or UUID). The variant name would be purely a display
+label. Rename would then be a simple field update with no rekeying.
+
+This would also align with the architectural principle that keys should
+not be used for runtime lookups — only direct object references.
+
