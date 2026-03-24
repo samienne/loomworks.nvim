@@ -309,6 +309,7 @@ function M.make_test_deps(files, opts)
                     unwatch = function() end,
                     stop = function() end,
                     content = function(_, path) return file_lookup(path) end,
+                    mark_written = function() end,
                 }
             end,
         },

@@ -250,6 +250,9 @@ function Workspace:_save_cache()
     if not ok then
         self._core._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
     end
+    if ok and self._tracker then
+        self._tracker:mark_written(self._core._deps.cache.filepath(self.root))
+    end
     return ok
 end
 
@@ -1573,16 +1576,25 @@ function Workspace:_serialize_config()
 end
 
 --- Write the current config to loomworks.json.
+--- Updates the file tracker's cached content to suppress self-write detection.
 --- @return boolean ok, string|nil err
 function Workspace:_save_config()
     local raw = self:_serialize_config()
     local path = M.paths(self.root).config
-    return self._core._deps.io.write_json(path, raw)
+    local ok, err = self._core._deps.io.write_json(path, raw)
+    if ok and self._tracker then
+        self._tracker:mark_written(path)
+    end
+    return ok, err
 end
 
 --- Write the current user data to loomworks.user.json.
+--- Updates the file tracker's cached content to suppress self-write detection.
 function Workspace:_save_user()
     self._core._deps.user.save(self.root, self.user)
+    if self._tracker then
+        self._tracker:mark_written(self._core._deps.user.filepath(self.root))
+    end
 end
 
 -- ---------------------------------------------------------------------------
