@@ -5,6 +5,8 @@
 --- @field key string project key
 --- @field type string module type ("cmake", "ets", "typescript")
 --- @field path? string relative path from workspace root
+--- @field type_config? table module-specific configuration (options, configurations, etc.)
+--- @field launch? table<string, table> launch configurations
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
 --- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
@@ -42,6 +44,8 @@ end
 function Project:_update(data)
     self.type = data.type
     self.path = data.path
+    self.type_config = data.type_config
+    self.launch = data.launch
     self.configuration = data.configuration
     self.configuration_key = data.configuration_key
     self.tool = data.tool_key and {

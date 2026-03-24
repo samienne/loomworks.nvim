@@ -47,6 +47,16 @@ function ConfigurationSet:variant(project)
     return self.mappings[project]
 end
 
+--- Return raw mappings (project_key → variant) for serialization.
+--- @return table<string, string>
+function ConfigurationSet:raw_mappings()
+    local raw = {}
+    for project, variant in pairs(self.mappings) do
+        raw[project.key] = variant
+    end
+    return raw
+end
+
 --- Find a profile in the registry matching this set + tool properties.
 --- Uses property-based matching, never key computation.
 --- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }

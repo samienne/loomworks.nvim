@@ -1528,32 +1528,47 @@ end
 -- Persistence
 -- ---------------------------------------------------------------------------
 
---- Serialize the parsed config back to raw JSON-writable format.
+--- Serialize workspace state to raw JSON-writable format.
+--- Reads from domain objects (Project, ConfigurationSet, Profile), not from
+--- workspace.config. This is the object → disk serialization boundary.
 --- @return table raw JSON-compatible table
 function Workspace:_serialize_config()
     local raw = { projects = {} }
-    if self.config.name then
-        raw.name = self.config.name
+    if self.name then
+        raw.name = self.name
     end
-    for key, project in pairs(self.config.projects) do
+
+    -- Projects from domain objects
+    for key, project in pairs(self._projects) do
         local entry = { [project.type] = project.type_config or vim.empty_dict() }
         if project.path and project.path ~= key then
             entry.path = project.path
         end
-        if project.depends_on then
-            entry.depends_on = project.depends_on
+        if project._depends_on_keys then
+            entry.depends_on = project._depends_on_keys
         end
         if project.launch then
             entry.launch = project.launch
         end
         raw.projects[key] = entry
     end
-    if self.config.configuration_sets and next(self.config.configuration_sets) then
-        raw.configuration_sets = self.config.configuration_sets
+
+    -- Configuration sets from domain objects
+    local sets = {}
+    for name, cs in pairs(self._config_sets) do
+        sets[name] = cs:raw_mappings()
     end
-    if self.config.profiles and next(self.config.profiles) then
-        raw.profiles = self.config.profiles
+    if next(sets) then raw.configuration_sets = sets end
+
+    -- Explicit profiles from domain objects
+    local profiles = {}
+    for key, profile in pairs(self._profiles) do
+        if profile.explicit_def then
+            profiles[key] = profile.explicit_def
+        end
     end
+    if next(profiles) then raw.profiles = profiles end
+
     return raw
 end
 

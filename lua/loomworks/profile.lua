@@ -145,6 +145,7 @@ function Profile:_update(data)
     self.configuration_set = data.configuration_set
     self.tools = data.tools or nil
     self.explicit = data.explicit or false
+    self.explicit_def = data.explicit_def or nil
 
     -- Resolve mappings and ConfigurationSet reference
     self._config_set_ref = nil
