@@ -91,50 +91,6 @@ local function collect_tool_entries(proj, variant, tools_by_type)
     return entries
 end
 
---- Check if a cached config's build dir is shared with other configs.
---- @param cached table|nil cached configuration data
---- @param ws table|nil workspace
---- @return boolean
-local function is_shared_build_dir(cached, ws)
-    if not cached or not cached.build_dir or not ws then return false end
-    local dir = ws._core._deps.normalize(cached.build_dir)
-    local refs = ws._build_dir_refs[dir]
-    if not refs then return false end
-    local count = 0
-    for _ in pairs(refs) do
-        count = count + 1
-        if count > 1 then return true end
-    end
-    return false
-end
-
---- Check if a build dir has queued operations waiting.
---- @param cached table|nil cached configuration data
---- @param ws table|nil workspace
---- @return boolean
-local function is_queued(cached, ws)
-    if not cached or not cached.build_dir or not ws then return false end
-    local dir = ws._core._deps.normalize(cached.build_dir)
-    return ws:has_queued_operations(dir)
-end
-
---- Determine the display highlight for a config entry.
---- Running/deleting entries keep their status_hl; others are colored by active state.
---- @param config_status string
---- @param status_hl string
---- @param is_spinning boolean
---- @param is_active boolean
---- @return string hl_group
-local function entry_highlight(config_status, status_hl, is_spinning, is_active)
-    if is_spinning then return status_hl end
-    if is_active then return "LoomworksActive" end
-    if config_status == "failed_configure" or config_status == "failed_build" then
-        return "LoomworksFailed"
-    end
-    if config_status == "unconfigured" then return "LoomworksUnconfigured" end
-    return "LoomworksConfigured"
-end
-
 --- Open the launch editor for an existing or new launch config.
 --- @param project_key string
 --- @param launch_name? string nil for new config
@@ -421,7 +377,7 @@ return function(tree, ctx)
             end
 
             if proj.configurations and next(proj.configurations) then
-                tree:group({{"Configurations:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [p] pin  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
+                tree:group({{"Configurations:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [p] pin  [o] options  [D] delete", "Comment"}}, function()
                     local config_names = {}
                     for name in pairs(proj.configurations) do
                         config_names[#config_names + 1] = name
@@ -476,6 +432,61 @@ return function(tree, ctx)
                         local has_user_entry = ws_proj and ws_proj.type_config
                                 and ws_proj.type_config.configurations
                                 and ws_proj.type_config.configurations[cname] ~= nil
+
+                        -- Build picker-based action closures for keyed-tool modules.
+                        -- If only one tool entry, skip picker and act directly.
+                        --- Pick a tool entry then invoke action_fn(unit).
+                        --- @param action_name string for picker prompt
+                        --- @param action_fn fun(unit: loomworks.ConfigUnit)
+                        --- @param filter? fun(entry: table): boolean filter tool entries
+                        local function with_tool_picker(action_name, action_fn, filter)
+                            return function()
+                                if not has_tool_entries then
+                                    -- Non-keyed module: act on the variant directly
+                                    local unit = lw.get_config_unit(pkey, cfg_name)
+                                    unit.variant = unit.variant or cfg_name
+                                    action_fn(unit)
+                                    return
+                                end
+                                local entries = tool_entries
+                                if filter then
+                                    entries = {}
+                                    for _, e in ipairs(tool_entries) do
+                                        if filter(e) then entries[#entries + 1] = e end
+                                    end
+                                    if #entries == 0 then
+                                        vim.notify("loomworks: no tools available for " .. action_name:lower(),
+                                            vim.log.levels.INFO)
+                                        return
+                                    end
+                                end
+                                if #entries == 1 then
+                                    local unit = lw.get_config_unit(pkey, entries[1].config_key)
+                                    unit.variant = cfg_name
+                                    if entries[1].tool_key then
+                                        unit.tool = unit.tool or {}
+                                        unit.tool.key = entries[1].tool_key
+                                    end
+                                    action_fn(unit)
+                                    return
+                                end
+                                -- Multiple tools — show picker
+                                vim.ui.select(entries, {
+                                    prompt = action_name .. " " .. cfg_name .. " with:",
+                                    format_item = function(item) return item.display_label end,
+                                }, function(choice)
+                                    if not choice then return end
+                                    local unit = lw.get_config_unit(pkey, choice.config_key)
+                                    unit.variant = cfg_name
+                                    if choice.tool_key then
+                                        unit.tool = unit.tool or {}
+                                        unit.tool.key = choice.tool_key
+                                    end
+                                    action_fn(unit)
+                                end)
+                            end
+                        end
+
                         tree:node(cname .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
@@ -484,119 +495,56 @@ return function(tree, ctx)
                             on_enter = function() edit_project_configuration(pkey, cfg_name) end,
                             on_delete = has_user_entry
                                     and function() delete_project_configuration(pkey, cfg_name) end
-                                    or (not is_abstract and not has_tool_entries
-                                        and actions.delete_config(lw.get_config_unit(key, cname))
-                                        or nil),
+                                    or nil,
+                            on_build = not is_abstract and with_tool_picker("Build", function(unit)
+                                require("loomworks.overseer").run_configuration_action(unit, "build")
+                            end) or nil,
+                            on_configure = not is_abstract and with_tool_picker("Configure", function(unit)
+                                require("loomworks.overseer").run_configuration_action(unit, "configure")
+                            end) or nil,
+                            on_pin = not is_abstract and with_tool_picker("Pin", function(unit)
+                                if #unit:referencing_profiles() > 0 then
+                                    vim.notify("loomworks: already pinned " .. unit.project_key .. " / " .. unit.config_key, vim.log.levels.INFO)
+                                    return
+                                end
+                                unit:materialize_pinned()
+                                vim.notify("loomworks: pinned " .. unit.project_key .. " / " .. unit.config_key, vim.log.levels.INFO)
+                            end) or nil,
+                            on_options = not is_abstract and with_tool_picker("Options", function(unit)
+                                actions.show_options(unit)()
+                            end, function(entry) return entry.cached ~= nil end) or nil,
                         }, function()
                             if is_abstract then
                                 tree:leaf("Abstract mixin — not directly buildable", "Comment")
-                                if cdata.options and next(cdata.options) then
-                                    local opt_keys = {}
-                                    for k in pairs(cdata.options) do opt_keys[#opt_keys + 1] = k end
-                                    table.sort(opt_keys)
-                                    for _, k in ipairs(opt_keys) do
-                                        tree:leaf(k .. "=" .. cdata.options[k], "Comment")
-                                    end
-                                end
-                                return
                             end
 
+                            -- Configuration details
+                            if cdata.variant then
+                                tree:leaf("Variant: " .. cdata.variant, "Comment")
+                            end
                             if cdata.toolchain then
                                 tree:leaf("Toolchain: " .. tostring(cdata.toolchain), "Comment")
                             end
                             if cdata.generator then
                                 tree:leaf("Generator: " .. cdata.generator, "Comment")
                             end
-
+                            if cdata.options and next(cdata.options) then
+                                local opt_keys = {}
+                                for k in pairs(cdata.options) do opt_keys[#opt_keys + 1] = k end
+                                table.sort(opt_keys)
+                                for _, k in ipairs(opt_keys) do
+                                    tree:leaf(k .. "=" .. cdata.options[k], "Comment")
+                                end
+                            end
+                            -- Show cached tool count for keyed-tool modules
                             if has_tool_entries then
-                                -- Keyed-tool modules: show each tool (cached + unconfigured)
-                                local is_active_variant = is_active_project
-                                        and proj.configuration:lower() == cname:lower()
-                                local ws_ref = lw.get_workspace()
+                                local cached_count = 0
                                 for _, entry in ipairs(tool_entries) do
-                                    local unit = lw.get_config_unit(key, entry.config_key)
-                                    -- Always set variant/tool — the Projects section
-                                    -- knows the correct values from module info + detection.
-                                    unit.variant = cname
-                                    if entry.tool_key then
-                                        unit.tool = unit.tool or {}
-                                        unit.tool.key = entry.tool_key
-                                    end
-                                    local config_status, status_hl, progress_str, is_spinning =
-                                            helpers.resolve_config_status_global(unit, entry.cached)
-                                    local is_active = is_active_variant
-                                            and active_tool_key == entry.tool_key
-                                    local hl = entry_highlight(config_status, status_hl, is_spinning, is_active)
-
-                                    local hints = {}
-                                    if is_shared_build_dir(entry.cached, ws_ref) then
-                                        hints[#hints + 1] = "shared"
-                                    end
-                                    if is_queued(entry.cached, ws_ref) then
-                                        hints[#hints + 1] = "queued"
-                                    end
-                                    local hint_str = #hints > 0
-                                            and " (" .. table.concat(hints, ", ") .. ")" or ""
-
-                                    tree:node(entry.display_label .. progress_str .. hint_str, {
-                                        fold_key = "config_tool:" .. key .. ":" .. entry.config_key,
-                                        spinning = is_spinning,
-                                        hl = hl,
-                                        enter_label = "Open task output",
-                                        on_enter = actions.open_task(unit),
-                                        on_task = actions.open_task(unit),
-                                        on_build = actions.build_configuration(unit),
-                                        on_rebuild = actions.rebuild_configuration(unit),
-                                        on_clean = actions.clean_configuration(unit),
-                                        on_configure = actions.configure_configuration(unit),
-                                        on_delete = entry.cached and actions.delete_config(unit) or nil,
-                                        on_pin = actions.pin_config(unit),
-                                        on_options = entry.cached and actions.show_options(unit) or nil,
-                                    }, function()
-                                        helpers.render_cached_details(tree, config_status, status_hl, entry.cached,
-                                            key .. ":" .. entry.config_key, unit)
-                                    end)
+                                    if entry.cached then cached_count = cached_count + 1 end
                                 end
-                            else
-                                -- Non-keyed modules: show single status
-                                local unit = lw.get_config_unit(key, cname)
-                                unit.variant = unit.variant or cname
-                                local cached = proj.cached_configurations
-                                        and proj.cached_configurations[cname]
-                                local config_status, status_hl, progress_str, is_spinning =
-                                        helpers.resolve_config_status_global(unit, cached)
-                                local is_active_variant = is_active_project
-                                        and proj.configuration:lower() == cname:lower()
-                                local hl = entry_highlight(config_status, status_hl, is_spinning, is_active_variant)
-
-                                local ws_ref = lw.get_workspace()
-                                local hints = {}
-                                if is_shared_build_dir(cached, ws_ref) then
-                                    hints[#hints + 1] = "shared"
+                                if cached_count > 0 then
+                                    tree:leaf(cached_count .. " tool(s) configured", "Comment")
                                 end
-                                if is_queued(cached, ws_ref) then
-                                    hints[#hints + 1] = "queued"
-                                end
-                                local hint_str = #hints > 0
-                                        and " (" .. table.concat(hints, ", ") .. ")" or ""
-
-                                tree:node("Status: " .. config_status .. progress_str .. hint_str, {
-                                    fold_key = "config_status:" .. key .. ":" .. cname,
-                                    spinning = is_spinning,
-                                    hl = hl,
-                                    enter_label = "Open task output",
-                                    on_enter = actions.open_task(unit),
-                                    on_task = actions.open_task(unit),
-                                    on_build = actions.build_configuration(unit),
-                                    on_rebuild = actions.rebuild_configuration(unit),
-                                    on_clean = actions.clean_configuration(unit),
-                                    on_configure = actions.configure_configuration(unit),
-                                    on_delete = cached and actions.delete_config(unit) or nil,
-                                    on_pin = actions.pin_config(unit),
-                                    on_options = cached and actions.show_options(unit) or nil,
-                                }, function()
-                                    helpers.render_cached_details(tree, config_status, status_hl, cached, nil, unit)
-                                end)
                             end
                         end)
                     end
