@@ -124,6 +124,9 @@ directory safety before merging:
 5. **Two safety scopes**: `_validate_build_dir` checks against workspace
    root (build dirs can be anywhere under it). `_safe_nvim_path` checks
    against `root/.nvim/` (used by nuke_cache only).
+6. **Shared dir protection**: `_build_dir_refs` tracks which cache keys
+   reference each build dir. `_run_deletion` skips rm-rf when remaining
+   refs > 0 after subtracting the batch being deleted.
 
 ## Implementation Notes
 
@@ -158,6 +161,14 @@ These are implementation-specific details not covered by the spec or architectur
 - Progress tracking: ninja parser, operation timing, weighted aggregate
 - Atomic writes on Windows: rename can fail if file is open; implement retry with short sleep
 - clangd auto-reloads when compile_commands.json changes on disk — no explicit restart needed
+- **Build dir reverse index**: `_build_dir_refs` maps normalized build dir → set
+  of cache keys. Rebuilt in `_sync_build_dir_refs()` during remerge. Used by
+  deletion safety (skip rm-rf of shared dirs) and UI hints ("shared" indicator).
+- **Build dir operation queue**: `_build_dir_locks` provides per-build-dir
+  exclusive/shared locks with FIFO queue. Exclusive for configure/delete/clean,
+  shared for build. `acquire_build_dir_lock()` in overseer.lua before task start,
+  `release_build_dir_lock()` in task_tracker on complete/dispose (idempotent).
+  Prevents concurrent operations from corrupting shared build directories.
 
 ## v1 Scope
 

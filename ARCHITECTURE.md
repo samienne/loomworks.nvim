@@ -262,7 +262,7 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `workspace.lua` | **Workspace class**: all object registries (`_projects`, `_profiles`, `_config_sets`, `_profile_projects`, `_config_units`, `_operations`, `_tools_by_type`, `_active_set`), tool state (`_tool_state`, `_tool_waiters`), delete waiters. Business logic: remerge, `_sync_*`, `_save_cache`, `_save_config`, `_save_user`, `_serialize_config`, `create_operation`, `execute_deletion`, `record_task_result`, `_scan_tools_async`. Mutation methods: `add_project`, `remove_project`, `add_configuration_set`, `remove_configuration_set`, `update_config_set_mapping`, `create_profile`, `activate_profile`, `upgrade_profiles_for_tool`, `downgrade_profiles_from_tool`. Preview: `compute_downgrade_preview`. Query methods: `query_available_configs`, `map_variant`, `generate_default_config_sets`, `get_module`. File tracking: `_start_tracking`, `_stop_tracking`, `_on_file_changed`, `reload_config`. **Static helpers** (on the module table, not the class): `resolve_root`, `paths`, `assemble` (pure), `create_workspace_config` (bootstrap) | Do I/O directly (delegates via `_core._deps`); know about UI; render anything |
+| `workspace.lua` | **Workspace class**: all object registries (`_projects`, `_profiles`, `_config_sets`, `_profile_projects`, `_config_units`, `_operations`, `_tools_by_type`, `_active_set`), tool state (`_tool_state`, `_tool_waiters`), delete waiters, build dir reverse index (`_build_dir_refs`: normalized dir → set of cache keys, rebuilt in `_sync_build_dir_refs()` during remerge), build dir operation locks (`_build_dir_locks`: per-dir exclusive/shared locks with FIFO queue, `acquire_build_dir_lock`/`release_build_dir_lock`). Business logic: remerge, `_sync_*`, `_save_cache`, `_save_config`, `_save_user`, `_serialize_config`, `create_operation`, `execute_deletion`, `record_task_result`, `_scan_tools_async`. Mutation methods: `add_project`, `remove_project`, `add_configuration_set`, `remove_configuration_set`, `update_config_set_mapping`, `create_profile`, `activate_profile`, `upgrade_profiles_for_tool`, `downgrade_profiles_from_tool`. Preview: `compute_downgrade_preview`. Query methods: `query_available_configs`, `map_variant`, `generate_default_config_sets`, `get_module`. File tracking: `_start_tracking`, `_stop_tracking`, `_on_file_changed`, `reload_config`. **Static helpers** (on the module table, not the class): `resolve_root`, `paths`, `assemble` (pure), `create_workspace_config` (bootstrap) | Do I/O directly (delegates via `_core._deps`); know about UI; render anything |
 | `merge.lua` | Three-file merge algorithm, profile collection, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua or workspace.lua |
 | `configuration_set.lua` | ConfigurationSet class: identity-preserving with `_update()`, owns activation (`activate()`/`ensure_profile()`), property-based profile lookup (`find_profile()`), resolves Project references internally. References Workspace via `_workspace` | Own state beyond config data; do I/O |
 | `profile.lua` | Profile and ProfileProject classes (tools dict keyed by module type, `tool_for(mod_type)` accessor), status aggregation, plan_deletion, activate/deactivate. Profile resolves mappings + ConfigurationSet reference in `_update()`. ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
@@ -309,10 +309,10 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `overseer.lua` | Template provider registration, task collection from modules, task launching with readiness checks, auto-configure-before-build, profile-level operations | Import core.lua directly; own state beyond task generation |
+| `overseer.lua` | Template provider registration, task collection from modules, task launching with readiness checks and build dir lock acquisition, auto-configure-before-build, profile-level operations | Import core.lua directly; own state beyond task generation |
 | `lsp.lua` | clangd cmd factory, root_dir factory, auto-restart on active set change | Manage LSP clients directly (delegates to lspconfig) |
 | `fidget.lua` | fidget.nvim progress handles for operations and tasks | Require fidget.nvim unconditionally (graceful no-op) |
-| `task_tracker.lua` | Overseer component bridging task lifecycle to ConfigUnit and cache recording | Be imported by anything except overseer |
+| `task_tracker.lua` | Overseer component bridging task lifecycle to ConfigUnit, cache recording, and build dir lock release on completion/dispose (idempotent) | Be imported by anything except overseer |
 | `lualine/components/loomworks.lua` | Winbar component showing active profile context for current buffer | Import core.lua; do anything beyond formatting |
 
 ---
@@ -380,12 +380,15 @@ User action (b/c key or API call)
   → overseer.lua: collect tasks from module
   → check ConfigUnit readiness (skip/defer/launch)
   → wait for pending deletions if any
+  → acquire build dir lock (exclusive for configure/clean, shared for build)
+    → if locked: queue task, start when lock available
   → launch overseer task with task_tracker component injected
     → task_tracker.on_start → ConfigUnit:set_running()
     → task_tracker.on_output → progress parser → ConfigUnit:set_progress()
     → task_tracker.on_complete → ws:record_task_result() → cache.save()
                                → ConfigUnit:clear_running()
                                → events.emit("task_result")
+                               → release build dir lock → dequeue next
 ```
 
 ### Deletion

@@ -224,37 +224,63 @@ local function collect_profile_clean_tasks(profile)
     return #tasks > 0 and tasks or nil
 end
 
+--- Determine the lock type for a task action.
+--- @param action string "configure", "build", "clean", etc.
+--- @return "exclusive"|"shared"
+local function lock_type_for_action(action)
+    return action == "build" and "shared" or "exclusive"
+end
+
 --- Build and start a single overseer task from a task definition.
+--- Acquires a build dir lock before starting. If the lock can't be acquired
+--- immediately, the task is queued and started when the lock becomes available.
 --- @param overseer table overseer module
 --- @param task_def table task definition with .builder and .loomworks
 --- @param on_complete? function called with boolean success when task completes
 local function start_one_task(overseer, task_def, on_complete)
     local lw_meta = task_def.loomworks
 
-    local build_result = task_def.builder()
-    build_result.components = build_result.components or { "default" }
-    build_result.components[#build_result.components + 1] = {
-        "loomworks.task_tracker",
-        project_key = lw_meta.project_key,
-        action = lw_meta.action,
-        configuration_key = lw_meta.configuration_key,
-        build_dir = lw_meta.build_dir,
-        variant = lw_meta.variant,
-        tool = lw_meta.tool,
-        cmake = lw_meta.cmake,
-        progress_tool = lw_meta.progress_tool,
-    }
+    local function do_start()
+        local build_result = task_def.builder()
+        build_result.components = build_result.components or { "default" }
+        build_result.components[#build_result.components + 1] = {
+            "loomworks.task_tracker",
+            project_key = lw_meta.project_key,
+            action = lw_meta.action,
+            configuration_key = lw_meta.configuration_key,
+            build_dir = lw_meta.build_dir,
+            variant = lw_meta.variant,
+            tool = lw_meta.tool,
+            cmake = lw_meta.cmake,
+            progress_tool = lw_meta.progress_tool,
+        }
 
-    build_result.name = task_def.name
-    local task = overseer.new_task(build_result)
+        build_result.name = task_def.name
+        local task = overseer.new_task(build_result)
 
-    if on_complete then
-        task:subscribe("on_complete", function(_, status)
-            on_complete(status == "SUCCESS")
-        end)
+        if on_complete then
+            task:subscribe("on_complete", function(_, status)
+                on_complete(status == "SUCCESS")
+            end)
+        end
+
+        task:start()
     end
 
-    task:start()
+    -- Acquire build dir lock if task has a build directory
+    if lw_meta.build_dir then
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        if ws then
+            local dir = ws._core._deps.normalize(lw_meta.build_dir)
+            local lt = lock_type_for_action(lw_meta.action)
+            ws:acquire_build_dir_lock(dir, lt, do_start)
+            return
+        end
+    end
+
+    -- No build dir or no workspace — start immediately
+    do_start()
 end
 
 --- Check whether a task should be launched, skipped, or deferred based on ConfigUnit state.

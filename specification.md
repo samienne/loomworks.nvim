@@ -648,6 +648,24 @@ notification and left untouched. This check lives in core (at the
 `execute_deletion` / clean level), not in the io layer — the io layer is a
 general-purpose utility that deletes what it is told to.
 
+**Shared build directory protection**: Multi-config generators (e.g., Ninja
+Multi-Config, Visual Studio) share a single build directory across multiple
+configurations (Debug and Release produce output in the same directory,
+selected at build time via `--config`). When deleting a configuration that
+shares a build directory with other configurations:
+
+1. A reverse index (`_build_dir_refs`) maps each normalized build directory
+   to the set of cache keys that reference it. Rebuilt during every remerge.
+2. Before adding a directory to the deletion queue, subtract the cache keys
+   being deleted in the current batch from the ref set.
+3. If remaining refs > 0 → skip the directory (don't rm -rf). The cache
+   entry is still removed/reset, but the filesystem directory is preserved.
+4. The user is notified: "Skipped deleting {dir} — still referenced by
+   {N} config(s)".
+
+**Invariant**: a build directory is only deleted from the filesystem when no
+remaining cache entries reference it after the current deletion batch.
+
 ### 4.7 Cleaning
 
 **Profile clean** (`C` key):
@@ -701,7 +719,40 @@ When building a profile and some projects are unconfigured or in
 3. On completion: if all succeeded → launch build tasks; if any failed →
    abort build
 
-### 5.3 Profile-level operations
+### 5.3 Build Directory Operation Queue
+
+Multiple configurations may share a single build directory (multi-config
+generators). Concurrent operations on the same build directory can corrupt
+the build. The build dir operation queue prevents this:
+
+**Lock types**:
+- **Exclusive** (configure, delete, clean): only one at a time, blocks all
+  other operations on that build directory
+- **Shared** (build): concurrent with other builds, queues behind exclusive
+  operations
+
+**Behavior**:
+1. Before starting a task, the system acquires a lock on the task's build
+   directory (if it has one).
+2. If the lock can be acquired immediately, the task starts.
+3. If the lock cannot be acquired, the task is queued and starts
+   automatically when the lock becomes available.
+4. When a task completes or is disposed, the lock is released.
+5. On release, the system dequeues and runs the next compatible
+   operation(s). Multiple consecutive shared operations are batched.
+
+**Queue ordering**: FIFO. Shared operations are batched (multiple shared ops
+run concurrently when dequeued), but shared batching stops at an exclusive
+boundary.
+
+**Scope**: The build dir lock is a separate layer from task readiness
+(section 5.1). Readiness checks ConfigUnit state; the build dir lock gates
+actual task launching to prevent filesystem corruption.
+
+**UI hint**: When an operation is queued (waiting for a build dir lock),
+the configuration shows "(queued)" in the status display.
+
+### 5.4 Profile-level operations
 
 All user-initiated actions (build, configure, clean, delete) are tracked
 as Operation objects for progress reporting and UI scoping. An Operation
@@ -747,7 +798,7 @@ and `deletion_failed` events are still emitted from `_run_deletion` for
 external consumers, but fidget and the status page use Operation events
 exclusively.
 
-### 5.4 Progress tracking
+### 5.5 Progress tracking
 
 - Each ConfigUnit tracks progress from a module-specific progress parser
   (e.g., ninja's `[n/m]` output)
@@ -757,7 +808,7 @@ exclusively.
   - Percentage is averaged across all running projects
 - Progress is displayed as `[n/m]` per-config and `N%` per-profile
 
-### 5.5 Deletion waiter pattern
+### 5.6 Deletion waiter pattern
 
 If a build/configure action is requested while a deletion Operation is
 active:

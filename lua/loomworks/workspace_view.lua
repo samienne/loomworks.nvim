@@ -1215,6 +1215,26 @@ function M.compute_edit_configuration_context(ws, project_key, config_name)
             mod_info.configurations or {}, config_name)
     end
 
+    -- Resolve build dir from cache (first matching entry for this config)
+    local build_dir = nil
+    if config_name and ws.cache.configurations then
+        local cache_mod = require("loomworks.cache")
+        -- Try direct cache key first (non-keyed modules)
+        local ck = cache_mod.config_cache_key(project_key, config_name)
+        local cc = ws.cache.configurations[ck]
+        if cc and cc.build_dir then
+            build_dir = cc.build_dir
+        else
+            -- For keyed modules, find first cache entry matching this variant
+            for _, cfg in pairs(ws.cache.configurations) do
+                if cfg.project_key == project_key and cfg.variant == config_name and cfg.build_dir then
+                    build_dir = cfg.build_dir
+                    break
+                end
+            end
+        end
+    end
+
     return {
         project_key = project_key,
         project_type = proj.type,
@@ -1230,6 +1250,7 @@ function M.compute_edit_configuration_context(ws, project_key, config_name)
         available_configs = available_configs,
         project_options = project_options,
         inherited_options = inherited_options,
+        build_dir = build_dir,
     }
 end
 
