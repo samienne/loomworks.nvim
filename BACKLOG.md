@@ -104,3 +104,18 @@ label. Rename would then be a simple field update with no rekeying.
 This would also align with the architectural principle that keys should
 not be used for runtime lookups — only direct object references.
 
+## Built-in sanitizer/tool configuration templates
+
+Provide pre-built abstract mixin configurations for common development
+tools: address sanitizer (asan), thread sanitizer (tsan), undefined
+behavior sanitizer (ubsan), memory sanitizer (msan). Users inherit from
+these mixins to create concrete configs (e.g., `Debug-asan` inherits
+`[Debug, asan]`).
+
+Best starting point is the Meson module — Meson has first-class sanitizer
+support via `-Db_sanitize=address` etc., so the mapping is clean. For
+cmake, sanitizer flags are compiler-specific (`-fsanitize=` for gcc/clang,
+`/fsanitize=` for MSVC) and would need compiler detection to generate
+correct options. Defer cmake sanitizer templates until compiler-aware
+option generation is available.
+
