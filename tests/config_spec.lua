@@ -167,4 +167,59 @@ describe("config", function()
             assert.are.same({}, cfg)
         end)
     end)
+
+    describe("case collision warnings", function()
+        it("warns about case-colliding project keys", function()
+            local warnings = {}
+            local orig_notify = vim.notify
+            vim.notify = function(msg, level)
+                if level == vim.log.levels.WARN then
+                    warnings[#warnings + 1] = msg
+                end
+            end
+
+            local json = vim.json.encode({
+                projects = {
+                    App = { cmake = {} },
+                    app = { cmake = {} },
+                },
+            })
+            config.parse(json, "/fake/root")
+
+            vim.notify = orig_notify
+
+            local found = false
+            for _, w in ipairs(warnings) do
+                if w:find("differ only by case") then found = true end
+            end
+            assert.is_true(found)
+        end)
+
+        it("warns about case-colliding configuration set names", function()
+            local warnings = {}
+            local orig_notify = vim.notify
+            vim.notify = function(msg, level)
+                if level == vim.log.levels.WARN then
+                    warnings[#warnings + 1] = msg
+                end
+            end
+
+            local json = vim.json.encode({
+                projects = { App = { cmake = {} } },
+                configuration_sets = {
+                    Debug = { App = "Debug" },
+                    debug = { App = "debug" },
+                },
+            })
+            config.parse(json, "/fake/root")
+
+            vim.notify = orig_notify
+
+            local found = false
+            for _, w in ipairs(warnings) do
+                if w:find("differ only by case") then found = true end
+            end
+            assert.is_true(found)
+        end)
+    end)
 end)

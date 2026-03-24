@@ -160,6 +160,9 @@ These are implementation-specific details not covered by the spec or architectur
 - init.lua is thin facade; core.lua is infrastructure; status.lua is pure rendering
 - Progress tracking: ninja parser, operation timing, weighted aggregate
 - Atomic writes on Windows: rename can fail if file is open; implement retry with short sleep
+- **Windows path normalization**: `deps.normalize` lowercases on Windows (`vim.fn.has("win32")`).
+  All path comparisons (build dir refs, locks, stray detection, prefix checks) use normalized
+  (lowercased) paths. Cached `build_dir` values retain original casing for display.
 - clangd auto-reloads when compile_commands.json changes on disk — no explicit restart needed
 - **Build dir reverse index**: `_build_dir_refs` maps normalized build dir → set
   of cache keys. Rebuilt in `_sync_build_dir_refs()` during remerge. Used by

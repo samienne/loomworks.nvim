@@ -34,7 +34,17 @@ local DEFAULT_DEPS = {
     notify    = vim.notify,
     now       = function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end,
     clock     = function() return vim.uv.hrtime() / 1e9 end,
-    normalize = vim.fs.normalize,
+    --- Normalize a file path for comparison. On Windows, also lowercases
+    --- because the filesystem is case-insensitive.
+    normalize = (function()
+        local is_win = vim.fn.has("win32") == 1
+        if is_win then
+            return function(p)
+                return vim.fs.normalize(p):lower()
+            end
+        end
+        return vim.fs.normalize
+    end)(),
     schedule  = vim.schedule,
     --- Resolve an overseer task by id. Returns nil if overseer not available.
     --- @param task_id number

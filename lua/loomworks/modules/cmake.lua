@@ -479,6 +479,9 @@ end
 --- @return string absolute build directory path
 --- Sanitize a string for use as a directory name.
 --- Replaces characters that are invalid in Windows paths (: * ? " < > |).
+--- Note: this function is NOT injective — "a:b" and "a_b" produce the same
+--- output. Input validation (project keys, config names) prevents collisions
+--- by rejecting names that would sanitize identically.
 --- @param name string
 --- @return string
 local function sanitize_path_component(name)

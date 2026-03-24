@@ -18,12 +18,50 @@ local ConfigurationSet = require("loomworks.configuration_set")
 
 -- ========================== Static helpers ==========================
 
+--- Validate a name used as a build directory path component.
+--- Rejects names that would cause path traversal, nested paths, or
+--- sanitization collisions with existing names.
+--- @param name string the name to validate
+--- @param existing_names? string[] existing names to check for sanitization collisions
+--- @return boolean ok, string|nil err
+function M.validate_path_name(name, existing_names)
+    if not name or name == "" then
+        return false, "name cannot be empty"
+    end
+    if name:find("[/\\]") then
+        return false, "name cannot contain slashes"
+    end
+    if name == "." or name == ".." then
+        return false, "name cannot be '.' or '..'"
+    end
+    -- Check for sanitization collision: names that differ only in chars
+    -- replaced by sanitize_path_component (: < > " | ? *) would produce
+    -- the same build directory.
+    if existing_names then
+        local sanitized = name:gsub('[:<>"|?*]', "_"):lower()
+        for _, existing in ipairs(existing_names) do
+            if existing ~= name then
+                local existing_sanitized = existing:gsub('[:<>"|?*]', "_"):lower()
+                if existing_sanitized == sanitized then
+                    return false, "'" .. name .. "' would produce the same build directory as '" .. existing .. "'"
+                end
+            end
+        end
+    end
+    return true
+end
+
 --- Resolve and normalize a workspace root path.
 --- @param path? string directory path (defaults to cwd)
 --- @param normalize? fun(path: string): string path normalizer (injectable)
 --- @return string root
 function M.resolve_root(path, normalize)
-    normalize = normalize or function(p) return vim.fs.normalize(vim.fn.fnamemodify(p, ":p")) end
+    normalize = normalize or function(p)
+        local n = vim.fs.normalize(vim.fn.fnamemodify(p, ":p"))
+        -- Windows FS is case-insensitive; lowercase for reliable comparisons
+        if vim.fn.has("win32") == 1 then n = n:lower() end
+        return n
+    end
     local root = normalize(path or vim.fn.getcwd())
     -- Strip trailing slash (normalize may leave one for root dirs)
     return root:gsub("/$", "")
@@ -1548,6 +1586,14 @@ function Workspace:add_project(key, type, path)
         return false, "project '" .. key .. "' already exists"
     end
 
+    -- Validate name for build dir safety (slashes, traversal, sanitization collisions)
+    local existing_keys = {}
+    for k in pairs(self.config.projects) do existing_keys[#existing_keys + 1] = k end
+    local valid, verr = M.validate_path_name(key, existing_keys)
+    if not valid then
+        return false, "invalid project key: " .. verr
+    end
+
     -- Add to parsed config
     self.config.projects[key] = {
         path = path or key,
@@ -1618,6 +1664,22 @@ function Workspace:add_configuration_set(name, mappings)
         return false, "configuration set '" .. name .. "' already exists"
     end
 
+    -- Basic name validation (slashes, dots)
+    local valid, verr = M.validate_path_name(name)
+    if not valid then
+        return false, "invalid configuration set name: " .. verr
+    end
+
+    -- Reject case-colliding names (same profile key on case-insensitive FS).
+    -- Skip the name being added (already caught by exact match above) and
+    -- skip names that will be removed as part of a rename (caller passes except).
+    local name_lower = name:lower()
+    for existing in pairs(self.config.configuration_sets) do
+        if existing ~= name and existing:lower() == name_lower then
+            return false, "configuration set '" .. name .. "' collides with '" .. existing .. "' (case-insensitive)"
+        end
+    end
+
     self.config.configuration_sets[name] = mappings
 
     local ok, err = self:_save_config()
@@ -1682,6 +1744,18 @@ function Workspace:save_project_configuration(project_key, config_name, config_d
     local proj = self.config.projects[project_key]
     if not proj then
         return false, "project '" .. project_key .. "' not found"
+    end
+
+    -- Validate config name for build dir safety
+    local existing_names = {}
+    if proj.type_config and proj.type_config.configurations then
+        for k in pairs(proj.type_config.configurations) do
+            existing_names[#existing_names + 1] = k
+        end
+    end
+    local valid, verr = M.validate_path_name(config_name, existing_names)
+    if not valid then
+        return false, "invalid configuration name: " .. verr
     end
 
     -- Ensure type_config.configurations exists

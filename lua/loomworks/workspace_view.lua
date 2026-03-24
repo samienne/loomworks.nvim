@@ -541,11 +541,7 @@ function M.execute_rename_config_set(ws, old_name, new_name, mappings)
         if v then clean[k] = v end
     end
 
-    -- Create new set
-    local ok, err = ws:add_configuration_set(new_name, clean)
-    if not ok then return false, err end
-
-    -- Migrate cached profiles that reference old_name
+    -- Migrate cached profiles that reference old_name (before removing old set)
     if ws.cache.profiles then
         for _, profile_data in pairs(ws.cache.profiles) do
             if profile_data.configuration_set == old_name then
@@ -554,11 +550,12 @@ function M.execute_rename_config_set(ws, old_name, new_name, mappings)
         end
     end
 
-    -- Update active_profile user.json reference if it points to a profile
-    -- that was just migrated (profile keys don't change, only the set name)
+    -- Remove old set first (avoids case-collision check blocking case-only renames)
+    local ok, err = ws:remove_configuration_set(old_name)
+    if not ok then return false, err end
 
-    -- Remove old set
-    ok, err = ws:remove_configuration_set(old_name)
+    -- Create new set
+    ok, err = ws:add_configuration_set(new_name, clean)
     if not ok then return false, err end
 
     return true
