@@ -280,14 +280,6 @@ end
 --- Re-syncs profiles, profile_projects, config units, and build dir refs
 --- without running the full merge pipeline (no merge.merge() call, no
 --- re-reading config). Uses get_all_profiles to pick up new cached profiles.
---- Refresh a Project's configurations from module info after type_config changes.
---- Called after mutations that modify type_config (save/delete/rename config, save options).
---- @param project_key string
-function Workspace:_refresh_project_configurations(project_key)
-    local project = self._projects[project_key]
-    if not project then return end
-    project:_refresh_configurations()
-end
 
 function Workspace:_refresh_after_cache_change()
     local all_profile_defs = self._core._deps.merge.get_all_profiles(
@@ -1614,7 +1606,7 @@ end
 
 --- Add a project to the workspace.
 --- Updates config, remerges, and saves to disk.
---- Mappings are added separately via update_config_set_mapping().
+--- Mappings are added separately via ConfigurationSet:update_mapping().
 --- @param key string project key
 --- @param type string module type ("cmake", "typescript", "ets")
 --- @param path? string relative path (defaults to key)
@@ -1787,92 +1779,6 @@ function Workspace:remove_configuration_set(name)
     return true
 end
 
---- Update a mapping within a configuration set.
---- @param set_name string
---- @param project_key string
---- @param variant string|nil nil to remove the mapping
---- @return boolean ok, string|nil err
-function Workspace:update_config_set_mapping(set_name, project_key, variant)
-    local cs = self._config_sets[set_name]
-    if not cs then
-        return false, "configuration set '" .. set_name .. "' not found"
-    end
-    local project = self._projects[project_key]
-    if not project then
-        return false, "project '" .. project_key .. "' not found"
-    end
-    return cs:update_mapping(project, variant)
-end
-
---- Save a project configuration (create or update).
---- Delegates to Project:save_configuration().
---- @param project_key string
---- @param config_name string configuration name
---- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
---- @return boolean ok, string|nil err
-function Workspace:save_project_configuration(project_key, config_name, config_data)
-    local project = self._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
-    return project:save_configuration(config_name, config_data)
-end
-
---- Delete a project configuration.
---- Delegates to Project:delete_configuration().
---- @param project_key string
---- @param config_name string
---- @return boolean ok, string|nil err
-function Workspace:delete_project_configuration(project_key, config_name)
-    local project = self._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
-    return project:delete_configuration(config_name)
-end
-
---- Rename a project configuration atomically.
---- Delegates to Project:rename_configuration().
---- @param project_key string
---- @param old_name string current configuration name
---- @param new_name string desired new name
---- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
---- @return boolean ok, string|nil err
-function Workspace:rename_project_configuration(project_key, old_name, new_name, config_data)
-    local project = self._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
-    return project:rename_configuration(old_name, new_name, config_data)
-end
-
---- Save project-wide options.
---- Delegates to Project:save_options().
---- @param project_key string
---- @param options table<string, string>
---- @return boolean ok, string|nil err
-function Workspace:save_project_options(project_key, options)
-    local project = self._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
-    return project:save_options(options)
-end
-
---- Save a launch configuration for a project.
---- Delegates to Project:save_launch_config().
---- @param project_key string
---- @param launch_name string
---- @param config table { command, args?, working_dir?, env? }
---- @return boolean ok, string|nil err
-function Workspace:save_launch_config(project_key, launch_name, config)
-    local project = self._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
-    return project:save_launch_config(launch_name, config)
-end
-
---- Delete a launch configuration from a project.
---- Delegates to Project:delete_launch_config().
---- @param project_key string
---- @param launch_name string
---- @return boolean ok, string|nil err
-function Workspace:delete_launch_config(project_key, launch_name)
-    local project = self._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
-    return project:delete_launch_config(launch_name)
-end
 
 --- Extend a cached profile's configurations array with missing entries
 --- for projects in its configuration set. Creates skeleton cache entries

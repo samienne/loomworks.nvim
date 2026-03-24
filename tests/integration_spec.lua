@@ -920,9 +920,10 @@ describe("name validation and collision prevention", function()
         assert.matches("same build directory", err)
     end)
 
-    it("save_project_configuration rejects slashes", function()
+    it("save_configuration rejects slashes", function()
         local ws = make_ws()
-        local ok, err = ws:save_project_configuration("App", "foo/bar", {})
+        local project = ws._projects["App"]
+        local ok, err = project:save_configuration("foo/bar", {})
         assert.is_false(ok)
         assert.matches("slashes", err)
     end)
@@ -949,7 +950,8 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {
+        local project = ws._projects["App"]
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug", options = { ASAN = "ON" },
         })
         assert.is_true(ok)
@@ -993,7 +995,8 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {})
+        local project = ws._projects["App"]
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {})
         assert.is_true(ok)
 
         -- Old cache key gone, new one exists
@@ -1029,7 +1032,8 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local ok = ws:rename_project_configuration("App", "base", "BaseConfig", {
+        local project = ws._projects["App"]
+        local ok = project:rename_configuration("base", "BaseConfig", {
             options = { X = "1" },
         })
         assert.is_true(ok)
@@ -1057,7 +1061,8 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local ok = ws:rename_project_configuration("App", "old", "new", {
+        local project = ws._projects["App"]
+        local ok = project:rename_configuration("old", "new", {
             options = { A = "1" },
         })
         assert.is_true(ok)
@@ -1106,7 +1111,8 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {})
+        local project = ws._projects["App"]
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {})
         assert.is_true(ok)
 
         -- Both cache entries migrated
@@ -1148,7 +1154,8 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {
+        local project = ws._projects["App"]
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
         assert.is_true(ok)
@@ -1200,7 +1207,8 @@ describe("configuration rename propagation", function()
 
         assert.equals("App/Debug-asan:ninja-gcc", ws.user.active_profile)
 
-        local ok = ws:rename_project_configuration("App", "Debug-asan", "DebugASAN", {
+        local project = ws._projects["App"]
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
         assert.is_true(ok)

@@ -120,9 +120,13 @@ function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
         return true
     end
 
+    local project = ws._projects[key]
     for set_name, variant in pairs(result.mappings) do
         if variant then
-            ws:update_config_set_mapping(set_name, key, variant)
+            local cs = ws._config_sets[set_name]
+            if cs and project then
+                cs:update_mapping(project, variant)
+            end
         end
     end
 
@@ -510,17 +514,23 @@ function M.execute_edit_config_set(ws, old_name, new_name, new_mappings, old_map
     end
 
     -- Apply mapping changes to existing set
+    local cs = ws._config_sets[old_name]
+    if not cs then return false, "configuration set '" .. old_name .. "' not found" end
     for key, new_variant in pairs(new_mappings) do
         local old_variant = old_mappings[key]
         if new_variant ~= old_variant then
-            local ok, err = ws:update_config_set_mapping(old_name, key, new_variant)
+            local project = ws._projects[key]
+            if not project then return false, "project '" .. key .. "' not found" end
+            local ok, err = cs:update_mapping(project, new_variant)
             if not ok then return false, err end
         end
     end
     -- Handle keys that were in old but not in new (removed)
     for key, old_variant in pairs(old_mappings) do
         if old_variant and new_mappings[key] == nil then
-            local ok, err = ws:update_config_set_mapping(old_name, key, nil)
+            local project = ws._projects[key]
+            if not project then return false, "project '" .. key .. "' not found" end
+            local ok, err = cs:update_mapping(project, nil)
             if not ok then return false, err end
         end
     end
@@ -1259,16 +1269,19 @@ end
 --- @param data table { variant?, inherits?, options?, toolchain?, generator? }
 --- @return boolean ok, string|nil err
 function M.execute_save_configuration(ws, project_key, old_name, new_name, data)
+    local project = ws._projects[project_key]
+    if not project then return false, "project '" .. project_key .. "' not found" end
+
     -- Rename: atomic propagation to config sets, cache entries, and profiles
     if old_name and old_name ~= new_name then
         local proj = ws.config.projects[project_key]
         if proj and proj.type_config and proj.type_config.configurations
                 and proj.type_config.configurations[old_name] then
-            return ws:rename_project_configuration(project_key, old_name, new_name, data)
+            return project:rename_configuration(old_name, new_name, data)
         end
     end
 
-    return ws:save_project_configuration(project_key, new_name, data)
+    return project:save_configuration(new_name, data)
 end
 
 --- Delete a project configuration.
@@ -1277,7 +1290,9 @@ end
 --- @param config_name string
 --- @return boolean ok, string|nil err
 function M.execute_delete_configuration(ws, project_key, config_name)
-    return ws:delete_project_configuration(project_key, config_name)
+    local project = ws._projects[project_key]
+    if not project then return false, "project '" .. project_key .. "' not found" end
+    return project:delete_configuration(config_name)
 end
 
 --- Save project-wide options.
@@ -1286,7 +1301,9 @@ end
 --- @param options table<string, string>
 --- @return boolean ok, string|nil err
 function M.execute_save_project_options(ws, project_key, options)
-    return ws:save_project_options(project_key, options)
+    local project = ws._projects[project_key]
+    if not project then return false, "project '" .. project_key .. "' not found" end
+    return project:save_options(options)
 end
 
 -- =========================================================================
@@ -1341,6 +1358,9 @@ end
 --- @param data { command: string, args: string[], working_dir: string, env: table<string, string> }
 --- @return boolean ok, string|nil err
 function M.execute_save_launch_config(ws, project_key, old_name, new_name, data)
+    local project = ws._projects[project_key]
+    if not project then return false, "project '" .. project_key .. "' not found" end
+
     -- Build config table (omit empty fields)
     local config = { command = data.command }
     if data.args and #data.args > 0 then config.args = data.args end
@@ -1349,11 +1369,11 @@ function M.execute_save_launch_config(ws, project_key, old_name, new_name, data)
 
     -- If renamed, delete old first
     if old_name and old_name ~= new_name then
-        local ok, err = ws:delete_launch_config(project_key, old_name)
+        local ok, err = project:delete_launch_config(old_name)
         if not ok then return false, err end
     end
 
-    return ws:save_launch_config(project_key, new_name, config)
+    return project:save_launch_config(new_name, config)
 end
 
 --- Delete a launch config.
@@ -1362,7 +1382,9 @@ end
 --- @param launch_name string
 --- @return boolean ok, string|nil err
 function M.execute_delete_launch_config(ws, project_key, launch_name)
-    return ws:delete_launch_config(project_key, launch_name)
+    local project = ws._projects[project_key]
+    if not project then return false, "project '" .. project_key .. "' not found" end
+    return project:delete_launch_config(launch_name)
 end
 
 return M
