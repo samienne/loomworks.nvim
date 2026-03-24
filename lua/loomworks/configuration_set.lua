@@ -57,6 +57,35 @@ function ConfigurationSet:raw_mappings()
     return raw
 end
 
+--- Update a single project mapping in this configuration set.
+--- @param project loomworks.Project
+--- @param variant string|nil variant name (nil to remove mapping)
+--- @return boolean ok, string|nil err
+function ConfigurationSet:update_mapping(project, variant)
+    local ws = self._workspace
+    if not ws.config.configuration_sets or not ws.config.configuration_sets[self.name] then
+        return false, "configuration set '" .. self.name .. "' not found"
+    end
+
+    local project_key = project.key
+    local old = ws.config.configuration_sets[self.name][project_key]
+    ws.config.configuration_sets[self.name][project_key] = variant
+
+    -- Update domain object
+    self.mappings[project] = variant
+
+    local ok, err = ws:_save_config()
+    if not ok then
+        ws.config.configuration_sets[self.name][project_key] = old
+        self.mappings[project] = old
+        return false, err
+    end
+
+    -- Refresh profiles (mapping change affects profile_projects)
+    ws:_refresh_after_cache_change()
+    return true
+end
+
 --- Find a profile in the registry matching this set + tool properties.
 --- Uses property-based matching, never key computation.
 --- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
