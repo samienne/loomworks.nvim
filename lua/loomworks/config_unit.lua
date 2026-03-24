@@ -66,6 +66,7 @@ end
 function ConfigUnit:_update()
     if not self._workspace then
         self._project = nil
+        self._cached = nil
         self.variant = nil
         self.tool = nil
         return
@@ -73,7 +74,16 @@ function ConfigUnit:_update()
     -- Resolve direct project reference
     self._project = self._workspace._projects[self.project_key]
 
-    local cached = self:cached_state()
+    -- Resolve direct cache reference (key construction at sync boundary only)
+    local cache = self._workspace.cache
+    if cache and cache.configurations then
+        local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
+        self._cached = cache.configurations[ck]
+    else
+        self._cached = nil
+    end
+
+    local cached = self._cached
     self.variant = cached and cached.variant or nil
     self.tool = nil
     if cached and cached.tool_key then
@@ -85,19 +95,20 @@ function ConfigUnit:_update()
     -- Authoritative: resolve variant from a ProfileProject that references
     -- this config_key. PP.variant is always correct (comes from profile
     -- mappings), and takes priority over potentially stale cached variant.
-    for _, pp in pairs(self._workspace._profile_projects) do
-        if pp.project_key == self.project_key and pp.config_key == self.config_key then
-            self.variant = pp.variant
-            local project = self._workspace._projects[self.project_key]
-            local profile_tool = pp._profile and pp._profile.tools
-                and project and pp._profile.tools[project.type] or nil
-            if profile_tool then
-                self.tool = {
-                    key = profile_tool.key,
-                    data = profile_tool.data,
-                }
-            end
-            break
+    -- Uses _pp_by_config index (O(1) lookup, built during _sync_profile_projects).
+    local pp_index = self._workspace._pp_by_config
+    local pp = pp_index and pp_index[self.project_key]
+        and pp_index[self.project_key][self.config_key] or nil
+    if pp then
+        self.variant = pp.variant
+        local project = self._workspace._projects[self.project_key]
+        local profile_tool = pp._profile and pp._profile.tools
+            and project and pp._profile.tools[project.type] or nil
+        if profile_tool then
+            self.tool = {
+                key = profile_tool.key,
+                data = profile_tool.data,
+            }
         end
     end
     -- Fallback: derive variant from config_key only when the project's module
@@ -164,13 +175,10 @@ function ConfigUnit:is_deleting()
     return self._deleting
 end
 
---- Get cached state from the workspace cache.
+--- Get cached state (direct reference resolved during _update).
 --- @return loomworks.CachedConfig|nil
 function ConfigUnit:cached_state()
-    if not self._workspace then return nil end
-    if not self._workspace.cache or not self._workspace.cache.configurations then return nil end
-    local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-    return self._workspace.cache.configurations[ck]
+    return self._cached
 end
 
 --- Get the build directory from cache.

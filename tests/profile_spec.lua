@@ -1,5 +1,4 @@
 local Profile = require("loomworks.profile").Profile
-local ProfileProject = require("loomworks.profile").ProfileProject
 local h = require("tests.helpers")
 
 describe("Profile", function()
@@ -12,13 +11,12 @@ describe("Profile", function()
             mappings = { App = "Debug", Lib = "Debug" },
         }, overrides or {})
         local profile = Profile.new(core, "debug", data)
-        -- Populate profile_projects registry (mirrors Core._sync_profile_projects)
+        -- Populate profile_projects registry and Profile's direct lists
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. project_key
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, project_key, variant)
+                h.register_profile_project(core, profile, project_key, variant)
             end
+            h.finalize_profile(profile)
         end
         return profile, core
     end
@@ -394,13 +392,12 @@ describe("ProfileProject", function()
             mappings = { App = "Debug" },
         }
         local profile = Profile.new(core, "debug", data)
-        -- Populate profile_projects registry
+        -- Populate profile_projects registry and Profile's direct lists
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. project_key
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, project_key, variant)
+                h.register_profile_project(core, profile, project_key, variant)
             end
+            h.finalize_profile(profile)
         end
         return profile:project("App"), core
     end
@@ -467,7 +464,6 @@ describe("ProfileProject", function()
                 configurations = {}, cached_configurations = {},
             })
             local Profile = require("loomworks.profile").Profile
-            local PP = require("loomworks.profile").ProfileProject
             local p1 = Profile.new(core, "debug:ninja-gcc", {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
@@ -476,11 +472,12 @@ describe("ProfileProject", function()
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })
-            -- Populate profile_projects registry
+            -- Populate profile_projects registry and Profile's direct lists
             for _, p in ipairs({ p1, p2 }) do
                 for pk, v in pairs(p.mappings) do
-                    core._profile_projects[p.key .. "\0" .. pk] = PP.new(core, p, pk, v)
+                    h.register_profile_project(core, p, pk, v)
                 end
+                h.finalize_profile(p)
             end
             -- Start a task on the shared unit
             local unit = core:get_config_unit("App", "Debug")

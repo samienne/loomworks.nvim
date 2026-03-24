@@ -212,6 +212,7 @@ function Workspace.new(core, data)
     self._delete_waiters = {}
     self._build_dir_refs = {}
     self._build_dir_locks = {}
+    self._pp_by_config = {}
 
     return self
 end
@@ -350,14 +351,16 @@ end
 --- Sync the profile projects registry.
 --- Derives data from synced profiles' mappings.
 --- Runs after _sync_profiles so Profile objects and their mappings are available.
+--- Also builds per-Profile direct lists and _pp_by_config index.
 function Workspace:_sync_profile_projects()
     -- Build the set of expected (profile_key, project_key) pairs
+    -- Carry project_key explicitly to avoid parsing from registry key.
     local expected = {}
     for profile_key, profile in pairs(self._profiles) do
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
                 local reg_key = profile_key .. "\0" .. project_key
-                expected[reg_key] = { profile = profile, variant = variant }
+                expected[reg_key] = { profile = profile, variant = variant, project_key = project_key }
             end
         end
     end
@@ -376,32 +379,63 @@ function Workspace:_sync_profile_projects()
         if existing then
             existing:_update(info.profile, info.variant)
         else
-            -- Extract project_key from reg_key (after the \0 separator)
-            local project_key = reg_key:match("%z(.+)$")
             self._profile_projects[reg_key] = ProfileProject.new(
-                self, info.profile, project_key, info.variant)
+                self, info.profile, info.project_key, info.variant)
         end
     end
+
+    -- Build per-Profile direct lists (D3) and _pp_by_config index (D4)
+    local dependency = require("loomworks.dependency")
+    local pp_by_config = {}
+    for _, profile in pairs(self._profiles) do
+        local list = {}
+        local by_key = {}
+        if profile.mappings then
+            for project_key in pairs(profile.mappings) do
+                local reg_key = profile.key .. "\0" .. project_key
+                local pp = self._profile_projects[reg_key]
+                if pp then
+                    list[#list + 1] = pp
+                    by_key[project_key] = pp
+                    -- Build nested index: [project_key][config_key] -> PP
+                    if not pp_by_config[pp.project_key] then
+                        pp_by_config[pp.project_key] = {}
+                    end
+                    if not pp_by_config[pp.project_key][pp.config_key] then
+                        pp_by_config[pp.project_key][pp.config_key] = pp
+                    end
+                end
+            end
+        end
+        profile._projects_list = dependency.toposort(list)
+        profile._projects_by_key = by_key
+    end
+    self._pp_by_config = pp_by_config
 end
 
 --- Sync the config units registry.
 --- Collects all valid (project_key, config_key) pairs from profiles and cache,
 --- creates/updates/removes ConfigUnit objects. Preserves runtime state.
+--- Carries project_key and config_key explicitly (no key parsing).
 function Workspace:_sync_config_units()
     -- Collect all valid (project_key, config_key) pairs
-    local expected = {} -- reg_key -> true
+    local expected = {} -- reg_key -> { project_key, config_key }
 
     -- From all profiles' mappings (via profile_projects)
     for _, pp in pairs(self._profile_projects) do
         local reg_key = pp.project_key .. "\0" .. pp.config_key
-        expected[reg_key] = true
+        if not expected[reg_key] then
+            expected[reg_key] = { project_key = pp.project_key, config_key = pp.config_key }
+        end
     end
 
     -- From cache entries
     if self.cache.configurations then
         for _, cached_config in pairs(self.cache.configurations) do
             local reg_key = cached_config.project_key .. "\0" .. cached_config.config_key
-            expected[reg_key] = true
+            if not expected[reg_key] then
+                expected[reg_key] = { project_key = cached_config.project_key, config_key = cached_config.config_key }
+            end
         end
     end
 
@@ -414,14 +448,12 @@ function Workspace:_sync_config_units()
     end
 
     -- Create or update
-    for reg_key in pairs(expected) do
+    for reg_key, info in pairs(expected) do
         local existing = self._config_units[reg_key]
         if existing then
             existing:_update()
         else
-            local project_key = reg_key:match("^(.-)%z")
-            local config_key = reg_key:match("%z(.+)$")
-            self._config_units[reg_key] = ConfigUnit.new(self, project_key, config_key)
+            self._config_units[reg_key] = ConfigUnit.new(self, info.project_key, info.config_key)
         end
     end
 end

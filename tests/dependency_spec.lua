@@ -3,7 +3,6 @@
 local dependency = require("loomworks.dependency")
 local h = require("tests.helpers")
 local Profile = require("loomworks.profile").Profile
-local ProfileProject = require("loomworks.profile").ProfileProject
 local Project = require("loomworks.project")
 
 --- Create a mock project with depends_on references.
@@ -30,10 +29,9 @@ describe("dependency", function()
                 mappings = { App = "Debug", Backend = "Debug", Core = "Debug" },
             })
             for pk, v in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. pk
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, pk, v)
+                h.register_profile_project(core, profile, pk, v)
             end
+            h.finalize_profile(profile)
 
             local pps = profile:projects()
             assert.equals(3, #pps)
@@ -55,10 +53,9 @@ describe("dependency", function()
                 mappings = { App = "Debug", Core = "Debug" },
             })
             for pk, v in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. pk
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, pk, v)
+                h.register_profile_project(core, profile, pk, v)
             end
+            h.finalize_profile(profile)
 
             local pps = profile:projects()
             assert.equals(2, #pps)
@@ -82,10 +79,9 @@ describe("dependency", function()
                 mappings = { Base = "Debug", Left = "Debug", Right = "Debug", Top = "Debug" },
             })
             for pk, v in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. pk
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, pk, v)
+                h.register_profile_project(core, profile, pk, v)
             end
+            h.finalize_profile(profile)
 
             local pps = profile:projects()
             assert.equals(4, #pps)
@@ -111,10 +107,9 @@ describe("dependency", function()
                 mappings = { A = "Debug", B = "Debug" },
             })
             for pk, v in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. pk
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, pk, v)
+                h.register_profile_project(core, profile, pk, v)
             end
+            h.finalize_profile(profile)
 
             -- Should still return all projects (falls back to alphabetical)
             local pps = profile:projects()
@@ -134,10 +129,9 @@ describe("dependency", function()
                 mappings = { App = "Debug" },
             })
             for pk, v in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. pk
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, pk, v)
+                h.register_profile_project(core, profile, pk, v)
             end
+            h.finalize_profile(profile)
 
             local pps = profile:projects()
             assert.equals(1, #pps)

@@ -155,6 +155,42 @@ function M.make_mock_workspace(overrides)
     return ws
 end
 
+--- Register a ProfileProject in the workspace registry AND update the
+--- Profile's direct lists (_projects_list, _projects_by_key).
+--- Use this instead of manually inserting into _profile_projects in tests.
+--- @param ws table mock workspace
+--- @param profile table Profile object
+--- @param project_key string
+--- @param variant string
+--- @return table ProfileProject
+function M.register_profile_project(ws, profile, project_key, variant)
+    local ProfileProject = require("loomworks.profile").ProfileProject
+    local pp = ProfileProject.new(ws, profile, project_key, variant)
+    local reg_key = profile.key .. "\0" .. project_key
+    ws._profile_projects[reg_key] = pp
+    -- Update Profile's unsorted list and by_key dict
+    profile._projects_list = profile._projects_list or {}
+    profile._projects_list[#profile._projects_list + 1] = pp
+    profile._projects_by_key = profile._projects_by_key or {}
+    profile._projects_by_key[project_key] = pp
+    -- Update _pp_by_config index
+    ws._pp_by_config = ws._pp_by_config or {}
+    if not ws._pp_by_config[pp.project_key] then
+        ws._pp_by_config[pp.project_key] = {}
+    end
+    ws._pp_by_config[pp.project_key][pp.config_key] = pp
+    return pp
+end
+
+--- Finalize a Profile's project list after all PPs are registered.
+--- Sorts _projects_list by dependency order (same as _sync_profile_projects).
+--- Call this after all register_profile_project calls for a profile.
+--- @param profile table Profile object
+function M.finalize_profile(profile)
+    local dependency = require("loomworks.dependency")
+    profile._projects_list = dependency.toposort(profile._projects_list or {})
+end
+
 --- Backward-compatible alias for make_mock_workspace.
 --- Tests that used make_mock_core with core_overrides need updating to
 --- use the new workspace-centric pattern. This alias helps with the transition.

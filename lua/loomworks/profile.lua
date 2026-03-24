@@ -49,6 +49,16 @@ function ProfileProject:_update(profile, variant)
     else
         self.config_key = variant
     end
+
+    -- Resolve direct references (no key construction at runtime)
+    self._config_unit = self._workspace:get_config_unit(self.project_key, self.config_key)
+    local cache = self._workspace.cache
+    if cache and cache.configurations then
+        local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
+        self._cached = cache.configurations[ck]
+    else
+        self._cached = nil
+    end
 end
 
 function ProfileProject:__tostring()
@@ -56,11 +66,10 @@ function ProfileProject:__tostring()
 end
 
 --- Get the resolved status for this project-in-profile.
---- Delegates to ConfigUnit for the single source of truth.
+--- Delegates to ConfigUnit (direct reference resolved during _update).
 --- @return loomworks.ConfigUnitState status
 function ProfileProject:status()
-    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
-    return unit:state()
+    return self._config_unit:state()
 end
 
 --- Get the running action for this project-in-profile.
@@ -68,23 +77,19 @@ end
 --- that reference the same (project_key, config_key) pair.
 --- @return string|nil action
 function ProfileProject:running_action()
-    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
-    return unit:running_action()
+    return self._config_unit:running_action()
 end
 
 --- Check if this project-in-profile is being deleted.
 --- @return boolean
 function ProfileProject:is_deleting()
-    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
-    return unit:is_deleting()
+    return self._config_unit:is_deleting()
 end
 
---- Get cached state from the workspace cache.
+--- Get cached state (direct reference resolved during _update).
 --- @return loomworks.CachedConfig|nil
 function ProfileProject:cached_state()
-    if not self._workspace.cache.configurations then return nil end
-    local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-    return self._workspace.cache.configurations[ck]
+    return self._cached
 end
 
 --- Get the build directory from cache.
@@ -101,10 +106,13 @@ end
 --- @field configuration_set? string nil for pinned profiles
 --- @field tools? table<string, loomworks.ToolRef> tools dict keyed by module type
 --- @field explicit boolean
+--- @field explicit_def? table raw definition from loomworks.json (for serialization)
 --- @field mappings? table<string, string> project_key -> variant name
 --- @field orphaned_set boolean true if configuration_set no longer exists in config
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
+--- @field _projects_list loomworks.ProfileProject[] sorted by dependency order
+--- @field _projects_by_key table<string, loomworks.ProfileProject> project_key -> PP
 --- @field _config_set_ref? loomworks.ConfigurationSet direct reference, resolved during _update
 --- @field _valid_variants table<string, boolean> precomputed variant set
 --- @field _operations loomworks.Operation[] active operations on this profile
@@ -243,35 +251,18 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Get a ProfileProject for a specific project in this profile.
---- Looks up from Workspace's registry.
+--- Uses direct reference populated during sync.
 --- @param project_key string
 --- @return loomworks.ProfileProject|nil
 function Profile:project(project_key)
-    if not self.mappings or not self.mappings[project_key] then return nil end
-    local reg_key = self.key .. "\0" .. project_key
-    return self._workspace._profile_projects[reg_key]
+    return self._projects_by_key and self._projects_by_key[project_key] or nil
 end
 
 --- Get all ProfileProjects in this profile, sorted by dependency order.
---- Projects with no dependencies come first. Falls back to alphabetical
---- if no dependencies exist.
+--- Uses direct list populated during sync.
 --- @return loomworks.ProfileProject[]
 function Profile:projects()
-    if not self.mappings then return {} end
-    local prefix = self.key .. "\0"
-    local result = {}
-    for reg_key, pp in pairs(self._workspace._profile_projects) do
-        if reg_key:sub(1, #prefix) == prefix then
-            result[#result + 1] = pp
-        end
-    end
-    -- Sort by dependency order (falls back to alphabetical for no deps)
-    local dependency = require("loomworks.dependency")
-    local sorted, err = dependency.toposort(result)
-    if err then
-        vim.notify("loomworks: " .. err, vim.log.levels.WARN)
-    end
-    return sorted
+    return self._projects_list or {}
 end
 
 -- ---------------------------------------------------------------------------

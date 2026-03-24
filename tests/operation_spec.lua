@@ -85,6 +85,7 @@ describe("Operation", function()
                 type = "cmake",
                 state = "built",
             }
+            unit:_update()  -- refresh _cached reference
             time.value = 42
             unit:unregister_task(1)
 
@@ -107,6 +108,7 @@ describe("Operation", function()
                 type = "cmake",
                 state = "failed_configure",
             }
+            unit:_update()
             time.value = 15
             unit:unregister_task(1)
 
@@ -128,11 +130,13 @@ describe("Operation", function()
 
             -- App finishes
             core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
+            app_unit:_update()
             app_unit:unregister_task(1)
             assert.is_false(op.completed)
 
             -- Lib finishes
             core.cache.configurations["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "built" }
+            lib_unit:_update()
             time.value = 60
             lib_unit:unregister_task(2)
             assert.is_true(op.completed)
@@ -152,10 +156,12 @@ describe("Operation", function()
 
             -- App succeeds
             core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
+            app_unit:_update()
             app_unit:unregister_task(1)
 
             -- Lib fails
             core.cache.configurations["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "failed_build" }
+            lib_unit:_update()
             lib_unit:unregister_task(2)
 
             assert.is_true(op.completed)
@@ -226,6 +232,7 @@ describe("Operation", function()
             -- Complete one unit
             units[1]:register_task(1, "build")
             core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
+            units[1]:_update()
             units[1]:unregister_task(1)
 
             done, total = op:progress_counts()
@@ -263,6 +270,7 @@ describe("Operation", function()
             })
             units[1]:register_task(1, "build")
             core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
+            units[1]:_update()
             time.value = 42
             units[1]:unregister_task(1)
             assert.equals("built in 42s", op.message)
@@ -274,6 +282,7 @@ describe("Operation", function()
             })
             units[1]:register_task(1, "build")
             core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
+            units[1]:_update()
             time.value = 150
             units[1]:unregister_task(1)
             assert.equals("built in 2m30s", op.message)
@@ -290,6 +299,7 @@ describe("Operation", function()
             -- Configure completes, but immediately a build starts (deferred task)
             -- so the unit goes configuring → building (never visible as "configured")
             core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" }
+            units[1]:_update()
             time.value = 10
             units[1]:unregister_task(1)
 
@@ -405,6 +415,7 @@ describe("Operation", function()
 
             -- Build completes
             core.cache.configurations["TS/default"] = { project_key = "TS", config_key = "default", type = "typescript", state = "built" }
+            unit:_update()
             time.value = 15
             unit:unregister_task(2)
 
@@ -443,6 +454,7 @@ describe("Operation", function()
 
             -- Deletion fails — cache set to unknown, flag clears
             core.cache.configurations["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "unknown" }
+            unit:_update()
             time.value = 5
             unit:mark_deleting(false)
 

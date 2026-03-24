@@ -434,12 +434,14 @@ describe("ConfigUnit", function()
         it("resolves variant from ProfileProject when no cache entry exists", function()
             local core = h.make_mock_core()
             -- Simulate a ProfileProject with a tool-qualified config_key
-            core._profile_projects["pp1"] = {
+            -- Populate _pp_by_config index (used by ConfigUnit variant resolution)
+            local mock_pp = {
                 project_key = "App",
                 config_key = "Debug:ninja-gcc",
                 variant = "Debug",
                 _profile = { tool = { key = "ninja-gcc", data = { id = "ninja-gcc" } } },
             }
+            core._pp_by_config = { App = { ["Debug:ninja-gcc"] = mock_pp } }
             local unit = core:get_config_unit("App", "Debug:ninja-gcc")
             assert.equals("Debug", unit.variant)
         end)
@@ -509,12 +511,14 @@ describe("ConfigUnit", function()
                     }
                 end,
             })
-            core._profile_projects["pp1"] = {
+            -- Populate _pp_by_config index (used by ConfigUnit variant resolution)
+            local mock_pp = {
                 project_key = "App",
                 config_key = "Debug:ninja-gcc",
                 variant = "Debug",
                 _profile = { tool = { key = "ninja-gcc", data = { id = "ninja-gcc" } } },
             }
+            core._pp_by_config = { App = { ["Debug:ninja-gcc"] = mock_pp } }
             local unit = core:get_config_unit("App", "Debug:ninja-gcc")
             -- ProfileProject is authoritative, overrides the stale cached variant
             assert.equals("Debug", unit.variant)
