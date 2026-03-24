@@ -89,6 +89,16 @@ function M.open(opts)
             if name_error then
                 t:leaf(name_error, "DiagnosticError")
             end
+            -- Show rename side-effects when name has changed
+            if not name_error and opts.rename_effects then
+                local effects = opts.rename_effects(name)
+                if effects then
+                    t:leaf("Rename will also update:", "DiagnosticWarn")
+                    for _, effect in ipairs(effects) do
+                        t:leaf("  " .. effect, "DiagnosticWarn")
+                    end
+                end
+            end
         end
 
         -- Inherits (for custom configs with options support, not for defaults)

@@ -39,6 +39,7 @@ local function collect_configuration_tasks(project_key, config_key)
         tool_data = tool_data,
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
+        cached_build_dir = unit:build_dir(),
     }
 
     local pt = mod.progress_parser
@@ -104,6 +105,7 @@ local function collect_profile_tasks(profile)
             tool_data = tool_data,
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},
+            cached_build_dir = pp:build_dir(),
         }
 
         local pt = mod.progress_parser
@@ -166,6 +168,7 @@ local function collect_configuration_clean_tasks(project_key, config_key)
         type_config = project_config.type_config,
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
+        cached_build_dir = unit:build_dir(),
     }
 
     return mod.clean_tasks(project_ctx, variant)
@@ -209,6 +212,7 @@ local function collect_profile_clean_tasks(profile)
             type_config = project.type_config,
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},
+            cached_build_dir = pp:build_dir(),
         }
 
         local clean = mod.clean_tasks(project_ctx, active_config)

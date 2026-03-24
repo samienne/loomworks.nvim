@@ -250,6 +250,43 @@ local function edit_project_configuration(project_key, config_name)
         available_configs = ctx.available_configs,
         project_options = ctx.project_options,
         inherited_options = ctx.inherited_options,
+        rename_effects = config_name and function(new_name)
+            if new_name == config_name or new_name == "" then return nil end
+            local effects = {}
+            -- Config sets that reference this variant
+            if ws.config.configuration_sets then
+                for set_name, mappings in pairs(ws.config.configuration_sets) do
+                    if mappings[project_key] == config_name then
+                        effects[#effects + 1] = "Config set '" .. set_name .. "' mapping → " .. new_name
+                    end
+                end
+            end
+            -- Pinned profiles that reference this variant
+            if ws.cache.profiles then
+                for pk, pd in pairs(ws.cache.profiles) do
+                    if pd.mappings and pd.mappings[project_key] == config_name then
+                        effects[#effects + 1] = "Profile '" .. pk .. "' → rename"
+                    end
+                end
+            end
+            -- Sibling configs that inherit from this name
+            local proj = ws.config.projects[project_key]
+            if proj and proj.type_config and proj.type_config.configurations then
+                for cname, cdata in pairs(proj.type_config.configurations) do
+                    if cname ~= config_name and cdata.inherits then
+                        local inh = cdata.inherits
+                        if type(inh) == "string" then inh = { inh } end
+                        for _, base in ipairs(inh) do
+                            if base == config_name then
+                                effects[#effects + 1] = "Config '" .. cname .. "' inherits → " .. new_name
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            return #effects > 0 and effects or nil
+        end or nil,
         validate = function(result)
             if result.name ~= (config_name or "")
                     and ws.config.projects[project_key]

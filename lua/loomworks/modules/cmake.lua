@@ -528,7 +528,25 @@ function M.tasks(project, active_config)
             or nil
     local multi_config = is_multi_config(generator)
 
-    local build_dir = resolve_build_dir(project.name, active_config, config_info, project.workspace_root, multi_config, kit)
+    local build_dir
+    if project.cached_build_dir then
+        -- Prefer cached path (preserves old build dir after config rename)
+        build_dir = project.cached_build_dir
+    else
+        build_dir = resolve_build_dir(project.name, active_config, config_info, project.workspace_root, multi_config, kit)
+        -- Avoid colliding with existing dirs from other configs
+        if not config_info or not config_info.binary_dir then
+            local uv = vim.uv or vim.loop
+            if uv.fs_stat(build_dir) then
+                local base = build_dir
+                local n = 2
+                while uv.fs_stat(base .. "-" .. n) do
+                    n = n + 1
+                end
+                build_dir = base .. "-" .. n
+            end
+        end
+    end
 
     -- Configure task
     local configure_cmd = { "cmake" }
@@ -693,7 +711,8 @@ function M.clean_tasks(project, active_config)
             or nil
     local multi_config = is_multi_config(generator)
 
-    local build_dir = resolve_build_dir(project.name, active_config, config_info, project.workspace_root, multi_config, kit)
+    local build_dir = project.cached_build_dir
+            or resolve_build_dir(project.name, active_config, config_info, project.workspace_root, multi_config, kit)
     local configuration_key = project.configuration_key or active_config
 
     local function wrap(cmd)
@@ -741,8 +760,9 @@ function M.build_target_task(project, target_id)
             or nil
     local multi_config = is_multi_config(generator)
 
-    local build_dir = resolve_build_dir(
-        project.name, active_config, config_info, project.workspace_root, multi_config, kit)
+    local build_dir = project.cached_build_dir
+            or resolve_build_dir(
+                project.name, active_config, config_info, project.workspace_root, multi_config, kit)
 
     local cmd = { "cmake", "--build", build_dir, "--target", target_id }
     if multi_config then

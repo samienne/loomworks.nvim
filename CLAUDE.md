@@ -142,7 +142,8 @@ These are implementation-specific details not covered by the spec or architectur
   to work via `core:method()`.
 - **Workspace mutation methods**: `config_editor.lua` is no longer used at
   runtime — Workspace has its own mutation methods for adding/removing
-  projects, configuration sets, etc.
+  projects, configuration sets, etc. `rename_project_configuration` does
+  atomic rename with config set, cache, and profile propagation.
 - **workspace_view.lua**: View-model layer between UI and Workspace. Owns
   orchestration logic (add/remove project pipelines, tool detection caching,
   upgrade/downgrade previews, config set candidates). UI files call
