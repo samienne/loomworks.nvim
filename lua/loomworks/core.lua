@@ -192,7 +192,6 @@ function Core:_on_files_read(root, paths, results)
     -- Create Workspace instance with registries
     self._workspace = Workspace.new(self, data)
 
-    self._workspace:_migrate_set_names()
     self._workspace:_cleanup_orphaned_skeletons()
     self._workspace:remerge()
     self._state = "initialized"
@@ -569,12 +568,6 @@ end
 function Core:rescan_tools()
     if not self._workspace then return end
     self._workspace:rescan_tools()
-end
-
---- @see loomworks.Workspace._migrate_set_names
-function Core:_migrate_set_names()
-    if not self._workspace then return end
-    self._workspace:_migrate_set_names()
 end
 
 --- @see loomworks.Workspace._build_referenced_set

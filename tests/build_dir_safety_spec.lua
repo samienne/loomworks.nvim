@@ -94,11 +94,12 @@ describe("build dir refs", function()
         })
 
         local refs1 = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
-        assert.is_not_nil(refs1["App/Debug:ninja-gcc"])
-        assert.is_nil(refs1["App/Release:ninja-gcc"])
+        assert.equals(1, #refs1)
+        assert.equals("Debug:ninja-gcc", refs1[1].config_key)
 
         local refs2 = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc/Release")
-        assert.is_not_nil(refs2["App/Release:ninja-gcc"])
+        assert.equals(1, #refs2)
+        assert.equals("Release:ninja-gcc", refs2[1].config_key)
     end)
 
     it("returns empty table for unknown build dirs", function()
@@ -127,8 +128,7 @@ describe("build dir refs", function()
         })
 
         local refs = ws:get_build_dir_refs(shared_dir)
-        assert.is_not_nil(refs["App/Debug:ninja-gcc"])
-        assert.is_not_nil(refs["App/Release:ninja-gcc"])
+        assert.equals(2, #refs)
     end)
 
     it("rebuilds on remerge", function()
@@ -153,8 +153,7 @@ describe("build dir refs", function()
         ws:remerge()
 
         local refs = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
-        assert.is_not_nil(refs["App/Debug:ninja-gcc"])
-        assert.is_not_nil(refs["App/Release:ninja-gcc"])
+        assert.equals(2, #refs)
     end)
 end)
 

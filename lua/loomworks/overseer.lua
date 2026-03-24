@@ -630,13 +630,15 @@ local function collect_units_from_tasks(task_defs, target_state)
     local lw = require("loomworks")
     local units = {}
     local target_states = {}
-    local seen = {}
+    local seen = {} -- [project_key][config_key] = true
     for _, task_def in ipairs(task_defs) do
         local meta = task_def.loomworks
         if meta then
-            local key = meta.project_key .. "\0" .. meta.configuration_key
-            if not seen[key] then
-                seen[key] = true
+            if not seen[meta.project_key] then
+                seen[meta.project_key] = {}
+            end
+            if not seen[meta.project_key][meta.configuration_key] then
+                seen[meta.project_key][meta.configuration_key] = true
                 local unit = lw.get_config_unit(meta.project_key, meta.configuration_key)
                 units[#units + 1] = unit
                 target_states[unit] = target_state

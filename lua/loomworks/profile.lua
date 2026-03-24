@@ -531,11 +531,15 @@ function Profile:plan_deletion()
     if not self.mappings then return empty end
 
     -- Build lookup: which configs are referenced by OTHER profiles.
+    -- Nested set: [project_key][config_key] = true
     local other_refs = {}
     for _, other in pairs(self._workspace._profiles) do
         if other.key ~= self.key then
             for _, other_pp in ipairs(other:projects()) do
-                other_refs[other_pp.project_key .. "\0" .. other_pp.config_key] = true
+                if not other_refs[other_pp.project_key] then
+                    other_refs[other_pp.project_key] = {}
+                end
+                other_refs[other_pp.project_key][other_pp.config_key] = true
             end
         end
     end
@@ -543,12 +547,13 @@ function Profile:plan_deletion()
     -- Include ALL project/config combos with disposition
     local items = {}
     for _, pp in ipairs(self:projects()) do
-        local lookup = pp.project_key .. "\0" .. pp.config_key
+        local has_other_ref = other_refs[pp.project_key]
+            and other_refs[pp.project_key][pp.config_key] or false
         items[#items + 1] = {
             project_key = pp.project_key,
             config_key = pp.config_key,
             build_dir = pp:build_dir(),
-            disposition = other_refs[lookup] and "keep" or "clean",
+            disposition = has_other_ref and "keep" or "clean",
         }
     end
 

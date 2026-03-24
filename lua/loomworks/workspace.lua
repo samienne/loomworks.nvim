@@ -458,25 +458,24 @@ function Workspace:_sync_config_units()
     end
 end
 
---- Rebuild the build dir reverse index from cache.
---- Maps normalized_build_dir -> set of cache_keys that reference it.
+--- Rebuild the build dir reverse index from ConfigUnit objects.
+--- Maps normalized_build_dir -> array of ConfigUnits that reference it.
 function Workspace:_sync_build_dir_refs()
     local refs = {}
-    if self.cache.configurations then
-        for cache_key, cfg in pairs(self.cache.configurations) do
-            if cfg.build_dir then
-                local dir = self._core._deps.normalize(cfg.build_dir)
-                if not refs[dir] then refs[dir] = {} end
-                refs[dir][cache_key] = true
-            end
+    for _, unit in pairs(self._config_units) do
+        local bd = unit:build_dir()
+        if bd then
+            local dir = self._core._deps.normalize(bd)
+            if not refs[dir] then refs[dir] = {} end
+            refs[dir][#refs[dir] + 1] = unit
         end
     end
     self._build_dir_refs = refs
 end
 
---- Get the set of cache keys that share a build directory.
+--- Get the ConfigUnits that share a build directory.
 --- @param build_dir string normalized build directory path
---- @return table<string, true> cache_keys
+--- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
     return self._build_dir_refs[build_dir] or {}
 end
@@ -735,53 +734,6 @@ end
 -- ===========================================================================
 -- Cache migration and cleanup
 -- ===========================================================================
-
---- Migrate cached profile names when configuration_sets are renamed (case change).
---- Matches cached profiles to config sets case-insensitively and updates the cache.
-function Workspace:_migrate_set_names()
-    if not self.cache.profiles or not self.config.configuration_sets then return end
-
-    -- Build case-insensitive lookup: lowercase -> actual name in config
-    local config_sets_lower = {}
-    for name in pairs(self.config.configuration_sets) do
-        config_sets_lower[name:lower()] = name
-    end
-
-    local renames = {} -- old_key -> { new_key, new_set }
-    for profile_key, cached_profile in pairs(self.cache.profiles) do
-        local old_set = cached_profile.configuration_set
-        if not old_set then goto continue end -- pinned profiles have no set
-
-        -- Already matches exactly?
-        if self.config.configuration_sets[old_set] then goto continue end
-
-        -- Try case-insensitive match
-        local new_set = config_sets_lower[old_set:lower()]
-        if new_set then
-            local new_key = self._core._deps.merge.profile_key(new_set, cached_profile.tools)
-            renames[profile_key] = { new_key = new_key, new_set = new_set }
-        end
-
-        ::continue::
-    end
-
-    if not next(renames) then return end
-
-    for old_key, info in pairs(renames) do
-        local profile_data = self.cache.profiles[old_key]
-        profile_data.configuration_set = info.new_set
-        self.cache.profiles[info.new_key] = profile_data
-        self.cache.profiles[old_key] = nil
-
-        -- Update active_profile if it was the old key
-        if self.user.active_profile == old_key then
-            self.user.active_profile = info.new_key
-            self:_save_user()
-        end
-    end
-
-    self:_save_cache()
-end
 
 --- Build a set of all cache keys referenced by profiles.
 --- @return table<string, boolean> referenced set keyed by cache key ("project_key/config_key")
@@ -1258,11 +1210,10 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         self:_mark_cache_unknown(items)
         self:_save_cache()
 
-        -- Build set of cache keys being deleted in this batch
-        local deleting_keys = {}
-        for _, item in ipairs(items) do
-            local ck = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-            deleting_keys[ck] = true
+        -- Build set of ConfigUnits being deleted in this batch
+        local deleting_units = {}
+        for _, unit in ipairs(units) do
+            deleting_units[unit] = true
         end
 
         -- Collect build directories to delete (skip shared dirs still referenced)
@@ -1275,11 +1226,11 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                 if not seen_dirs[normalized] and self:_validate_build_dir(normalized, safe_prefix) then
                     seen_dirs[normalized] = true
                     -- Check if other configs still reference this dir
-                    local refs = self._build_dir_refs[normalized]
-                    if refs then
+                    local ref_units = self._build_dir_refs[normalized]
+                    if ref_units then
                         local remaining = 0
-                        for ref_ck in pairs(refs) do
-                            if not deleting_keys[ref_ck] then
+                        for _, ref_unit in ipairs(ref_units) do
+                            if not deleting_units[ref_unit] then
                                 remaining = remaining + 1
                             end
                         end
@@ -1393,13 +1344,15 @@ function Workspace:execute_deletion(plan, opts, on_done)
         -- Split effective items by their original disposition
         local eff_clean = {}
         local eff_reset = {}
-        local clean_set = {}
+        local clean_set = {} -- [project_key][config_key] = true
         for _, item in ipairs(clean_items) do
-            clean_set[item.project_key .. "\0" .. item.config_key] = true
+            if not clean_set[item.project_key] then
+                clean_set[item.project_key] = {}
+            end
+            clean_set[item.project_key][item.config_key] = true
         end
         for _, item in ipairs(effective_items) do
-            local key = item.project_key .. "\0" .. item.config_key
-            if clean_set[key] then
+            if clean_set[item.project_key] and clean_set[item.project_key][item.config_key] then
                 eff_clean[#eff_clean + 1] = item
             else
                 eff_reset[#eff_reset + 1] = item
@@ -2566,7 +2519,6 @@ function Workspace:_on_file_changed(path, content)
                 self.user = data.user
                 self.cache = data.cache
                 self:_scan_tools_async()
-                self:_migrate_set_names()
                 self:remerge()
                 self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
             else
