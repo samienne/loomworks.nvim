@@ -42,6 +42,20 @@ return {
     },
     constructor = function(params)
         local progress_parser = nil
+        local lock_released = false
+
+        --- Release the build dir lock (idempotent — only releases once).
+        local function release_lock()
+            if lock_released or not params.build_dir then return end
+            lock_released = true
+            local lw = require("loomworks")
+            local ws = lw.get_workspace()
+            if ws then
+                local dir = ws._core._deps.normalize(params.build_dir)
+                local lt = params.action == "build" and "shared" or "exclusive"
+                ws:release_build_dir_lock(dir, lt)
+            end
+        end
 
         return {
             on_start = function(_, task)
@@ -109,6 +123,7 @@ return {
                     project_key = params.project_key,
                     configuration_key = params.configuration_key,
                 })
+                release_lock()
             end,
             on_dispose = function(_, task)
                 local lw = require("loomworks")
@@ -119,6 +134,7 @@ return {
                     project_key = params.project_key,
                     configuration_key = params.configuration_key,
                 })
+                release_lock()
             end,
         }
     end,

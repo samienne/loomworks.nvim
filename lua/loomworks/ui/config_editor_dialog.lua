@@ -205,6 +205,11 @@ function M.open(opts)
             t:leaf("Variant    " .. var_display .. var_hint, "Comment")
         end
 
+        -- Build dir (read-only, computed from cache)
+        if opts.build_dir then
+            t:leaf("Build dir  " .. opts.build_dir .. "  (computed)", "Comment")
+        end
+
         -- Unified options section
         if opts.has_options then
             t:blank()

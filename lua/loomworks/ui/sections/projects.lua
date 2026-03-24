@@ -91,6 +91,33 @@ local function collect_tool_entries(proj, variant, tools_by_type)
     return entries
 end
 
+--- Check if a cached config's build dir is shared with other configs.
+--- @param cached table|nil cached configuration data
+--- @param ws table|nil workspace
+--- @return boolean
+local function is_shared_build_dir(cached, ws)
+    if not cached or not cached.build_dir or not ws then return false end
+    local dir = ws._core._deps.normalize(cached.build_dir)
+    local refs = ws._build_dir_refs[dir]
+    if not refs then return false end
+    local count = 0
+    for _ in pairs(refs) do
+        count = count + 1
+        if count > 1 then return true end
+    end
+    return false
+end
+
+--- Check if a build dir has queued operations waiting.
+--- @param cached table|nil cached configuration data
+--- @param ws table|nil workspace
+--- @return boolean
+local function is_queued(cached, ws)
+    if not cached or not cached.build_dir or not ws then return false end
+    local dir = ws._core._deps.normalize(cached.build_dir)
+    return ws:has_queued_operations(dir)
+end
+
 --- Determine the display highlight for a config entry.
 --- Running/deleting entries keep their status_hl; others are colored by active state.
 --- @param config_status string
@@ -217,6 +244,7 @@ local function edit_project_configuration(project_key, config_name)
         options = ctx.options,
         toolchain = ctx.toolchain,
         generator = ctx.generator,
+        build_dir = ctx.build_dir,
         is_default = ctx.is_default and config_name ~= nil,
         has_options = ctx.has_options,
         available_configs = ctx.available_configs,
@@ -447,6 +475,7 @@ return function(tree, ctx)
                                 -- Keyed-tool modules: show each tool (cached + unconfigured)
                                 local is_active_variant = is_active_project
                                         and proj.configuration:lower() == cname:lower()
+                                local ws_ref = lw.get_workspace()
                                 for _, entry in ipairs(tool_entries) do
                                     local unit = lw.get_config_unit(key, entry.config_key)
                                     -- Always set variant/tool — the Projects section
@@ -462,7 +491,17 @@ return function(tree, ctx)
                                             and active_tool_key == entry.tool_key
                                     local hl = entry_highlight(config_status, status_hl, is_spinning, is_active)
 
-                                    tree:node(entry.display_label .. progress_str, {
+                                    local hints = {}
+                                    if is_shared_build_dir(entry.cached, ws_ref) then
+                                        hints[#hints + 1] = "shared"
+                                    end
+                                    if is_queued(entry.cached, ws_ref) then
+                                        hints[#hints + 1] = "queued"
+                                    end
+                                    local hint_str = #hints > 0
+                                            and " (" .. table.concat(hints, ", ") .. ")" or ""
+
+                                    tree:node(entry.display_label .. progress_str .. hint_str, {
                                         fold_key = "config_tool:" .. key .. ":" .. entry.config_key,
                                         spinning = is_spinning,
                                         hl = hl,
@@ -493,7 +532,18 @@ return function(tree, ctx)
                                         and proj.configuration:lower() == cname:lower()
                                 local hl = entry_highlight(config_status, status_hl, is_spinning, is_active_variant)
 
-                                tree:node("Status: " .. config_status .. progress_str, {
+                                local ws_ref = lw.get_workspace()
+                                local hints = {}
+                                if is_shared_build_dir(cached, ws_ref) then
+                                    hints[#hints + 1] = "shared"
+                                end
+                                if is_queued(cached, ws_ref) then
+                                    hints[#hints + 1] = "queued"
+                                end
+                                local hint_str = #hints > 0
+                                        and " (" .. table.concat(hints, ", ") .. ")" or ""
+
+                                tree:node("Status: " .. config_status .. progress_str .. hint_str, {
                                     fold_key = "config_status:" .. key .. ":" .. cname,
                                     spinning = is_spinning,
                                     hl = hl,

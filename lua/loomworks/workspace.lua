@@ -138,6 +138,8 @@ end
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"
 --- @field _tool_waiters function[]
 --- @field _delete_waiters function[]
+--- @field _build_dir_refs table<string, table<string, true>> normalized_build_dir -> set of cache_keys
+--- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
 local Workspace = {}
 Workspace.__index = Workspace
 
@@ -170,6 +172,8 @@ function Workspace.new(core, data)
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
+    self._build_dir_refs = {}
+    self._build_dir_locks = {}
 
     return self
 end
@@ -225,6 +229,7 @@ function Workspace:remerge()
     self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets
     self:_sync_profile_projects()            -- 4. needs Profiles
     self:_sync_config_units()                -- 5. needs Profiles (for config_keys)
+    self:_sync_build_dir_refs()              -- 6. needs cache (build_dir data)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -381,6 +386,147 @@ function Workspace:_sync_config_units()
             self._config_units[reg_key] = ConfigUnit.new(self, project_key, config_key)
         end
     end
+end
+
+--- Rebuild the build dir reverse index from cache.
+--- Maps normalized_build_dir -> set of cache_keys that reference it.
+function Workspace:_sync_build_dir_refs()
+    local refs = {}
+    if self.cache.configurations then
+        for cache_key, cfg in pairs(self.cache.configurations) do
+            if cfg.build_dir then
+                local dir = self._core._deps.normalize(cfg.build_dir)
+                if not refs[dir] then refs[dir] = {} end
+                refs[dir][cache_key] = true
+            end
+        end
+    end
+    self._build_dir_refs = refs
+end
+
+--- Get the set of cache keys that share a build directory.
+--- @param build_dir string normalized build directory path
+--- @return table<string, true> cache_keys
+function Workspace:get_build_dir_refs(build_dir)
+    return self._build_dir_refs[build_dir] or {}
+end
+
+-- ===========================================================================
+-- Build dir operation queue
+-- ===========================================================================
+
+--- @class loomworks.BuildDirLock
+--- @field exclusive boolean true if an exclusive op is running
+--- @field shared_count number number of concurrent shared ops
+--- @field queue { fn: function, lock_type: "exclusive"|"shared" }[]
+
+--- Get or create a lock entry for a build directory.
+--- @param dir string normalized build directory path
+--- @return loomworks.BuildDirLock
+function Workspace:_get_lock(dir)
+    local lock = self._build_dir_locks[dir]
+    if not lock then
+        lock = { exclusive = false, shared_count = 0, queue = {} }
+        self._build_dir_locks[dir] = lock
+    end
+    return lock
+end
+
+--- Try to acquire a build dir lock. If the lock can be acquired immediately,
+--- calls fn() and returns true. Otherwise queues fn for later and returns false.
+--- @param dir string normalized build directory path
+--- @param lock_type "exclusive"|"shared" exclusive for configure/delete/clean, shared for build
+--- @param fn function called when lock is acquired (immediately or dequeued)
+--- @return boolean acquired true if lock was acquired immediately
+function Workspace:acquire_build_dir_lock(dir, lock_type, fn)
+    local lock = self:_get_lock(dir)
+
+    if lock_type == "shared" then
+        if not lock.exclusive then
+            lock.shared_count = lock.shared_count + 1
+            fn()
+            return true
+        end
+    else -- exclusive
+        if not lock.exclusive and lock.shared_count == 0 then
+            lock.exclusive = true
+            fn()
+            return true
+        end
+    end
+
+    -- Can't acquire now — queue
+    lock.queue[#lock.queue + 1] = { fn = fn, lock_type = lock_type }
+    return false
+end
+
+--- Release a build dir lock and dequeue the next compatible operation(s).
+--- @param dir string normalized build directory path
+--- @param lock_type "exclusive"|"shared"
+function Workspace:release_build_dir_lock(dir, lock_type)
+    local lock = self._build_dir_locks[dir]
+    if not lock then return end
+
+    if lock_type == "shared" then
+        lock.shared_count = math.max(0, lock.shared_count - 1)
+    else
+        lock.exclusive = false
+    end
+
+    -- Dequeue: run as many compatible queued items as possible
+    self:_dequeue_build_dir_lock(dir)
+end
+
+--- Dequeue and run compatible operations from the build dir lock queue.
+--- @param dir string
+function Workspace:_dequeue_build_dir_lock(dir)
+    local lock = self._build_dir_locks[dir]
+    if not lock or #lock.queue == 0 then
+        -- Clean up empty lock entries
+        if lock and not lock.exclusive and lock.shared_count == 0 and #lock.queue == 0 then
+            self._build_dir_locks[dir] = nil
+        end
+        return
+    end
+
+    local next_entry = lock.queue[1]
+
+    if next_entry.lock_type == "exclusive" then
+        if lock.exclusive or lock.shared_count > 0 then return end
+        -- Run the exclusive op
+        table.remove(lock.queue, 1)
+        lock.exclusive = true
+        next_entry.fn()
+    else
+        -- Shared: run all consecutive shared entries if no exclusive is held
+        if lock.exclusive then return end
+        local ran = 0
+        while #lock.queue > 0 and lock.queue[1].lock_type == "shared" do
+            local entry = table.remove(lock.queue, 1)
+            lock.shared_count = lock.shared_count + 1
+            ran = ran + 1
+            entry.fn()
+        end
+    end
+end
+
+--- Check whether a build dir has any queued operations waiting.
+--- @param dir string normalized build directory path
+--- @return boolean
+function Workspace:has_queued_operations(dir)
+    local lock = self._build_dir_locks[dir]
+    return lock ~= nil and #lock.queue > 0
+end
+
+--- Check whether a build dir currently has an active lock (exclusive or shared).
+--- @param dir string normalized build directory path
+--- @return boolean locked, string|nil lock_type
+function Workspace:is_build_dir_locked(dir)
+    local lock = self._build_dir_locks[dir]
+    if not lock then return false, nil end
+    if lock.exclusive then return true, "exclusive" end
+    if lock.shared_count > 0 then return true, "shared" end
+    return false, nil
 end
 
 -- ===========================================================================
@@ -1042,14 +1188,41 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         self:_mark_cache_unknown(items)
         self:_save_cache()
 
-        -- Collect build directories to delete
+        -- Build set of cache keys being deleted in this batch
+        local deleting_keys = {}
+        for _, item in ipairs(items) do
+            local ck = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
+            deleting_keys[ck] = true
+        end
+
+        -- Collect build directories to delete (skip shared dirs still referenced)
         local safe_prefix = self._core._deps.normalize(self.root)
         local dirs = {}
+        local seen_dirs = {}
         for _, item in ipairs(items) do
             if item.build_dir then
                 local normalized = self._core._deps.normalize(item.build_dir)
-                if self:_validate_build_dir(normalized, safe_prefix) then
+                if not seen_dirs[normalized] and self:_validate_build_dir(normalized, safe_prefix) then
+                    seen_dirs[normalized] = true
+                    -- Check if other configs still reference this dir
+                    local refs = self._build_dir_refs[normalized]
+                    if refs then
+                        local remaining = 0
+                        for ref_ck in pairs(refs) do
+                            if not deleting_keys[ref_ck] then
+                                remaining = remaining + 1
+                            end
+                        end
+                        if remaining > 0 then
+                            self._core._deps.notify(
+                                "loomworks: skipped deleting " .. normalized
+                                    .. " — still referenced by " .. remaining .. " config(s)",
+                                vim.log.levels.INFO)
+                            goto skip_dir
+                        end
+                    end
                     dirs[#dirs + 1] = normalized
+                    ::skip_dir::
                 end
             end
         end

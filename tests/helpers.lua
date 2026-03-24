@@ -105,6 +105,8 @@ function M.make_mock_workspace(overrides)
         _tool_state = overrides._tool_state or "not_scanned",
         _tool_waiters = overrides._tool_waiters or {},
         _delete_waiters = overrides._delete_waiters or {},
+        _build_dir_refs = overrides._build_dir_refs or {},
+        _build_dir_locks = overrides._build_dir_locks or {},
     }
 
     -- Add get_config_unit method (same logic as Workspace:get_config_unit)
@@ -139,6 +141,12 @@ function M.make_mock_workspace(overrides)
     ws._validate_build_dir = core_overrides._validate_build_dir or function() return true end
     ws._delete_build_dirs_async = core_overrides._delete_build_dirs_async or function(_, _, cb) cb({}) end
     ws._run_deletion = core_overrides._run_deletion or function(_, _, _, on_done) if on_done then on_done() end end
+    ws._sync_build_dir_refs = core_overrides._sync_build_dir_refs or function() end
+    ws.get_build_dir_refs = core_overrides.get_build_dir_refs or function() return {} end
+    ws.acquire_build_dir_lock = core_overrides.acquire_build_dir_lock or function(_, _, _, fn) fn(); return true end
+    ws.release_build_dir_lock = core_overrides.release_build_dir_lock or function() end
+    ws.has_queued_operations = core_overrides.has_queued_operations or function() return false end
+    ws.is_build_dir_locked = core_overrides.is_build_dir_locked or function() return false, nil end
     ws._save_config = core_overrides._save_config or function() return true end
     ws._save_user = core_overrides._save_user or function(self_ws)
         self_ws._core._deps.user.save(self_ws.root, self_ws.user)
