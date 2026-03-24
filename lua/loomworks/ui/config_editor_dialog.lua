@@ -102,11 +102,37 @@ function M.open(opts)
             t:leaf("Inherits:  " .. inh_display,
                 #inherits > 0 and "LoomworksActionable" or "Comment")
 
-            -- Show each base with a remove action
+            -- Show each base with move/remove actions
+            local n_bases = #inherits
             for i, base in ipairs(inherits) do
                 local idx = i
-                t:item("  " .. base, {
+                local prio_hint = i == n_bases and "  (highest priority)" or ""
+                t:item("  " .. i .. ". " .. base .. prio_hint, {
                     hl = "LoomworksActionable",
+                    on_move_up = idx > 1 and function()
+                        inherits[idx], inherits[idx - 1] = inherits[idx - 1], inherits[idx]
+                        if view then
+                            view:refresh()
+                            -- Move cursor with the item (one line up)
+                            local win = view._snacks_win and view._snacks_win.win
+                            if win then
+                                local cursor = vim.api.nvim_win_get_cursor(win)
+                                pcall(vim.api.nvim_win_set_cursor, win, { cursor[1] - 1, 0 })
+                            end
+                        end
+                    end or nil,
+                    on_move_down = idx < n_bases and function()
+                        inherits[idx], inherits[idx + 1] = inherits[idx + 1], inherits[idx]
+                        if view then
+                            view:refresh()
+                            -- Move cursor with the item (one line down)
+                            local win = view._snacks_win and view._snacks_win.win
+                            if win then
+                                local cursor = vim.api.nvim_win_get_cursor(win)
+                                pcall(vim.api.nvim_win_set_cursor, win, { cursor[1] + 1, 0 })
+                            end
+                        end
+                    end or nil,
                     on_delete = function()
                         table.remove(inherits, idx)
                         if view then view:refresh() end
@@ -298,9 +324,11 @@ function M.open(opts)
             title_pos = "center",
         },
         keymaps = {
-            ["<CR>"] = "enter",
-            ["D"]    = "delete",
-            ["y"]    = "accept",
+            ["<CR>"]  = "enter",
+            ["D"]     = "delete",
+            ["<C-k>"] = "move_up",
+            ["<C-j>"] = "move_down",
+            ["y"]     = "accept",
         },
         events = {},
         on_close = function()
