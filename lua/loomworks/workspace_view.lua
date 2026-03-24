@@ -1147,6 +1147,133 @@ function M.execute_create_profile(cs, tool_entry, activate)
 end
 
 -- =========================================================================
+-- Project Configuration Editing
+-- =========================================================================
+
+--- Context for editing a project configuration.
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @param config_name string|nil nil for new configuration
+--- @return table context
+function M.compute_edit_configuration_context(ws, project_key, config_name)
+    local proj = ws.config.projects[project_key]
+    if not proj then return nil end
+
+    local mod = modules.get(proj.type)
+    local abs_path = ws.root .. "/" .. (proj.path or project_key)
+    local defaults = mod and mod.default_configurations
+        and mod.default_configurations(abs_path, proj.type_config or {}) or {}
+
+    -- Build list of available configs for the "inherits" picker
+    local mod_info = mod and mod.info and mod.info(abs_path, proj.type_config or {})
+        or { configurations = {} }
+    local available_configs = {}
+    for name in pairs(mod_info.configurations or {}) do
+        available_configs[#available_configs + 1] = name
+    end
+    table.sort(available_configs)
+
+    -- Get existing config data (from user override or default)
+    local config_data = {}
+    local is_default = false
+    if config_name then
+        -- Check user overrides first
+        local type_config = proj.type_config or {}
+        if type_config.configurations and type_config.configurations[config_name] then
+            config_data = type_config.configurations[config_name]
+        end
+        -- Check if it's a default
+        if defaults[config_name] then
+            is_default = true
+        end
+    end
+
+    -- Resolve variant from the merged config (already resolved by module)
+    local resolved_config = config_name and (mod_info.configurations or {})[config_name]
+    local variant = resolved_config and resolved_config.variant or (config_name or "")
+
+    -- Get project-wide options for display
+    local project_options = (proj.type_config or {}).options or {}
+
+    -- Resolve inherited options with accurate sources
+    local inherited_options = {}
+    if mod and mod.resolve_options_with_sources and config_name then
+        local all_with_sources = mod.resolve_options_with_sources(
+            proj.type_config or {}, mod_info.configurations or {}, config_name)
+        local own = config_data.options or {}
+        for k, info in pairs(all_with_sources) do
+            if not own[k] then
+                inherited_options[k] = info
+            end
+        end
+    end
+
+    -- Resolve variant source
+    local variant_source = nil
+    if mod and mod.resolve_variant_source and config_name then
+        variant_source = mod.resolve_variant_source(
+            mod_info.configurations or {}, config_name)
+    end
+
+    return {
+        project_key = project_key,
+        project_type = proj.type,
+        name = config_name or "",
+        variant = variant or (config_name or ""),
+        variant_source = variant_source,
+        inherits = config_data.inherits or "",
+        options = config_data.options and vim.deepcopy(config_data.options) or {},
+        toolchain = config_data.toolchain or "",
+        generator = config_data.generator or "",
+        is_default = is_default,
+        has_options = mod and mod.has_options or false,
+        available_configs = available_configs,
+        project_options = project_options,
+        inherited_options = inherited_options,
+    }
+end
+
+--- Save a project configuration (create, edit, or rename).
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @param old_name string|nil nil for new
+--- @param new_name string
+--- @param data table { variant?, inherits?, options?, toolchain?, generator? }
+--- @return boolean ok, string|nil err
+function M.execute_save_configuration(ws, project_key, old_name, new_name, data)
+    -- If renamed, delete old first
+    if old_name and old_name ~= new_name then
+        -- Only delete if it was a user-defined config (has an entry in type_config)
+        local proj = ws.config.projects[project_key]
+        if proj and proj.type_config and proj.type_config.configurations
+                and proj.type_config.configurations[old_name] then
+            local ok, err = ws:delete_project_configuration(project_key, old_name)
+            if not ok then return false, err end
+        end
+    end
+
+    return ws:save_project_configuration(project_key, new_name, data)
+end
+
+--- Delete a project configuration.
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @param config_name string
+--- @return boolean ok, string|nil err
+function M.execute_delete_configuration(ws, project_key, config_name)
+    return ws:delete_project_configuration(project_key, config_name)
+end
+
+--- Save project-wide options.
+--- @param ws loomworks.Workspace
+--- @param project_key string
+--- @param options table<string, string>
+--- @return boolean ok, string|nil err
+function M.execute_save_project_options(ws, project_key, options)
+    return ws:save_project_options(project_key, options)
+end
+
+-- =========================================================================
 -- Launch Config Editing
 -- =========================================================================
 

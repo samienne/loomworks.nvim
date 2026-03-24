@@ -283,8 +283,8 @@ may import from its own layer or any layer below it, never above.
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication | Domain logic; know about merge or profiles |
 | `config_editor.lua` | **Legacy** — retained for backward compatibility but not used at runtime. Mutation methods (`add_project`, `remove_project`, `add_configuration_set`, etc.) have moved to Workspace. Only `create_workspace` remains as a standalone entry point (paralleled by `workspace.create_workspace_config`) | Domain logic; know about runtime model |
 | `modules/init.lua` | Module registry, lazy loading, detection orchestration (`detect_all_types`, `scan_directory_async`) | Implement module logic |
-| `modules/cmake.lua` | CMake module: detect, validate, info (preset reading), tasks, inspect, detect_tools/detect_tools_async, parse_file_api (target discovery), get_options (cache variables), map_variant. Static `has_keyed_tools = true` | Know about profiles, UI, or overseer |
-| `modules/ets.lua`, `modules/typescript.lua` | Shim modules (detect + validate + info + detect_tools_async + map_variant). Static `has_keyed_tools = false` | Anything beyond the shim interface |
+| `modules/cmake.lua` | CMake module: detect, validate, info (preset + loomworks config separation), default_configurations, resolve_configurations (inheritance model), resolve_options/resolve_options_with_sources (option merge with source tracking), resolve_variant_source, tasks (CMAKE_BUILD_TYPE auto-set, user -D options), inspect, detect_tools/detect_tools_async, parse_file_api (target discovery), get_options (cache variables), map_variant. Static `has_keyed_tools = true`, `has_options = true` | Know about profiles, UI, or overseer |
+| `modules/ets.lua`, `modules/typescript.lua` | Shim modules (detect + validate + info + default_configurations + detect_tools_async + map_variant). Defaults always present, user configs merged on top. Static `has_keyed_tools = false`, `has_options = false` | Anything beyond the shim interface |
 | `progress/init.lua` | Parser registry mapping tool names to parser functions | Parse output itself |
 | `progress/ninja.lua` | Ninja `[n/m]` output parser | Know about other build tools |
 | `types.lua` | LuaCATS type annotations for all data shapes | Contain runtime code (never `require`d) |
@@ -301,6 +301,7 @@ may import from its own layer or any layer below it, never above.
 | `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via `ws:add_project()`/`ws:remove_project()`. Opens mapping_dialog when config sets exist | Own persistent state |
 | `ui/mapping_dialog.lua` | Interactive Tree+View dialog for mapping a new project's configurations to existing config sets. Pre-fills via `ws:map_variant()`, accepts/cancels atomically | Own persistent state |
 | `ui/config_set_editor.lua` | Edit dialog for config set mappings (create and edit). Editable name row with inline validation, project→variant picker rows. Used for both new and existing sets | Own persistent state |
+| `ui/config_editor_dialog.lua` | Edit dialog for project configuration properties. Supports name, inherits (multi-base with reordering), options (unified view with inheritance sources), toolchain, generator. Abstract mixin detection. | Own persistent state |
 | `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution | Side effects; domain logic |
 | `ui/sections/*.lua` | Pure render functions `(tree, ctx) → void`. Each section is a single function that calls tree methods | Call core directly; do I/O; hold state |
 

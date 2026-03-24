@@ -35,6 +35,7 @@ local function collect_configuration_tasks(project_key, config_key)
         configuration = variant,
         configuration_key = config_key,
         configurations = mod_info.configurations or {},
+        type_config = project_config.type_config,
         tool_data = tool_data,
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
@@ -91,6 +92,7 @@ local function collect_profile_tasks(profile)
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
+        local proj_config = ws.config.projects[pp.project_key]
         local project_ctx = {
             name = pp.project_key,
             path = project.path or pp.project_key,
@@ -98,6 +100,7 @@ local function collect_profile_tasks(profile)
             configuration = active_config,
             configuration_key = pp.config_key,
             configurations = project.configurations,
+            type_config = proj_config and proj_config.type_config or {},
             tool_data = tool_data,
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},

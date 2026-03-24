@@ -20,9 +20,11 @@ local ACTION_ORDER = {
     { action = "task",      label = "Open task output" },
     { action = "pin",       label = "Pin as profile" },
     { action = "options",   label = "Show build options" },
+    { action = "move_up",   label = "Move up  <C-k>" },
+    { action = "move_down", label = "Move down  <C-j>" },
     { action = "rebuild",   label = "Rebuild (clean + build)" },
     { action = "clean",     label = "Clean" },
-    { action = "delete",    label = "Delete" },
+    { action = "delete",    label = "Delete  D" },
 }
 
 --- Fields consumed by the tree builder for rendering only.

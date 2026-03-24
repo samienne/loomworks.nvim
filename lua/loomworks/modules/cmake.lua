@@ -4,6 +4,7 @@ local io_mod = require("loomworks.io")
 
 M.id = "cmake"
 M.has_keyed_tools = true
+M.has_options = true
 
 local uv = vim.uv or vim.loop
 
@@ -207,50 +208,74 @@ function M.validate(path, config)
     return { valid = true, warnings = warnings }
 end
 
---- Return what the module knows about the project from its own files.
+--- Return the default configurations for this module.
+--- These are always available even if no presets or CMakeLists.txt detection.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
---- @return loomworks.ModuleInfo
-function M.info(path, config)
-    local configurations = {}
+--- @return table<string, { variant: string }> name → { variant }
+function M.default_configurations(path, config)
+    local detected = detect_configs_from_cmakelists(path)
+    local defaults = {}
+    for _, name in ipairs(detected) do
+        defaults[name] = { variant = name }
+    end
+    return defaults
+end
 
-    -- Try presets first
-    local presets = load_presets(path)
-    if presets then
-        for _, preset in ipairs(presets) do
-            local has_toolchain = preset.toolchainFile ~= nil
-                    or (preset.cacheVariables and preset.cacheVariables.CMAKE_TOOLCHAIN_FILE ~= nil)
+--- Normalize inherits to an array. Accepts string, array, or nil.
+--- @param inherits string|string[]|nil
+--- @return string[]
+local function normalize_inherits(inherits)
+    if not inherits then return {} end
+    if type(inherits) == "string" then return { inherits } end
+    return inherits
+end
 
-            configurations[preset.name] = {
-                generator = preset.generator,
-                binary_dir = preset.binaryDir,
-                toolchain_locked = has_toolchain,
-                toolchain = has_toolchain
-                        and (preset.toolchainFile
-                            or (preset.cacheVariables and preset.cacheVariables.CMAKE_TOOLCHAIN_FILE))
-                        or nil,
-                from_preset = true,
-            }
-        end
-    else
-        -- Auto-generate from CMakeLists.txt
-        local detected = detect_configs_from_cmakelists(path)
-        for _, name in ipairs(detected) do
-            configurations[name] = {
-                generator = nil, -- resolved at task time from user preference or system default
-                toolchain_locked = false,
-            }
-        end
+--- Resolve user-defined configurations from loomworks.json, merging with
+--- defaults. User configs can extend defaults (add options) or define new
+--- ones with inheritance. Supports multi-inheritance (array of base names).
+--- @param defaults table<string, table> default configurations
+--- @param config table type_config from loomworks.json
+--- @return table<string, table> merged configurations
+function M.resolve_configurations(defaults, config)
+    local result = {}
+
+    -- Start with defaults
+    for name, def in pairs(defaults) do
+        result[name] = {
+            variant = def.variant,
+            is_default = true,
+        }
     end
 
-    -- Apply overrides from loomworks.json
+    -- Apply user overrides/additions from loomworks.json
     if config.configurations then
         for name, override in pairs(config.configurations) do
-            if not configurations[name] then
-                configurations[name] = {}
+            if not result[name] then
+                result[name] = {}
             end
-            local cfg = configurations[name]
+            local cfg = result[name]
 
+            -- Inheritance: variant from first base that has one
+            local bases = normalize_inherits(override.inherits)
+            if #bases > 0 then
+                cfg.inherits = bases
+                for _, base_name in ipairs(bases) do
+                    local base = result[base_name]
+                    if base and base.variant then
+                        cfg.variant = base.variant
+                        break
+                    end
+                end
+            end
+
+            -- Defaults get variant from their name; custom configs without
+            -- a variant-providing base remain abstract (no variant)
+            if not cfg.variant and cfg.is_default then
+                cfg.variant = name
+            end
+
+            -- Toolchain/generator overrides (existing behavior)
             if override.toolchain then
                 cfg.toolchain_locked = true
                 cfg.toolchain = override.toolchain
@@ -261,16 +286,166 @@ function M.info(path, config)
             if override.role then
                 cfg.role = override.role
             end
+
+            -- Options
+            if override.options then
+                cfg.options = override.options
+            end
+
+            -- Mark as user-defined if it's not a default being extended
+            if not cfg.is_default then
+                cfg.is_user = true
+            end
         end
     end
 
-    local result = {
+    -- Ensure default configs have a variant (user configs without a
+    -- variant-providing base are abstract mixins — no variant)
+    for name, cfg in pairs(result) do
+        if not cfg.variant and cfg.is_default then
+            cfg.variant = name
+        end
+    end
+
+    return result
+end
+
+--- Resolve all options for a configuration, applying merge order:
+--- project-wide → inherited chain → config-specific.
+--- @param config table type_config from loomworks.json
+--- @param configurations table<string, table> resolved configurations
+--- @param config_name string
+--- @return table<string, string> merged options
+function M.resolve_options(config, configurations, config_name)
+    local options = {}
+
+    -- 1. Project-wide options
+    if config.options then
+        for k, v in pairs(config.options) do
+            options[k] = v
+        end
+    end
+
+    -- 2. Walk inheritance chain (bases first, left-to-right, depth-first)
+    local function apply_inherited(name, visited)
+        if visited[name] then return end -- circular guard
+        visited[name] = true
+        local cfg = configurations[name]
+        if not cfg then return end
+        local bases = normalize_inherits(cfg.inherits)
+        for _, base_name in ipairs(bases) do
+            apply_inherited(base_name, visited)
+        end
+        if cfg.options then
+            for k, v in pairs(cfg.options) do
+                options[k] = v
+            end
+        end
+    end
+
+    apply_inherited(config_name, {})
+
+    return options
+end
+
+--- Like resolve_options but tracks the source of each value.
+--- @param config table type_config from loomworks.json
+--- @param configurations table<string, table> resolved configurations
+--- @param config_name string
+--- @return table<string, { value: string, source: string }> key → { value, source }
+function M.resolve_options_with_sources(config, configurations, config_name)
+    local result = {}
+
+    -- 1. Project-wide options
+    if config.options then
+        for k, v in pairs(config.options) do
+            result[k] = { value = v, source = "project" }
+        end
+    end
+
+    -- 2. Walk inheritance chain (bases first, left-to-right, depth-first)
+    local function apply_inherited(name, visited)
+        if visited[name] then return end
+        visited[name] = true
+        local cfg = configurations[name]
+        if not cfg then return end
+        local bases = normalize_inherits(cfg.inherits)
+        for _, base_name in ipairs(bases) do
+            apply_inherited(base_name, visited)
+        end
+        if cfg.options then
+            for k, v in pairs(cfg.options) do
+                result[k] = { value = v, source = name }
+            end
+        end
+    end
+
+    apply_inherited(config_name, {})
+
+    return result
+end
+
+--- Find the source config that provides the variant for a configuration.
+--- Walks the inheritance chain depth-first to find the first config with
+--- a variant defined as a default (is_default) or explicitly set.
+--- @param configurations table<string, table> resolved configurations
+--- @param config_name string
+--- @return string|nil source config name that provides the variant
+function M.resolve_variant_source(configurations, config_name)
+    local function find_source(name, visited)
+        if visited[name] then return nil end
+        visited[name] = true
+        local cfg = configurations[name]
+        if not cfg then return nil end
+        -- Defaults define their own variant
+        if cfg.is_default and cfg.variant then return name end
+        -- Walk bases to find who provides the variant
+        local bases = normalize_inherits(cfg.inherits)
+        for _, base_name in ipairs(bases) do
+            local source = find_source(base_name, visited)
+            if source then return source end
+        end
+        return nil
+    end
+    return find_source(config_name, {})
+end
+
+--- Return what the module knows about the project from its own files.
+--- @param path string absolute project path
+--- @param config table type_config from loomworks.json
+--- @return loomworks.ModuleInfo
+function M.info(path, config)
+    -- Detect preset configurations (separate from loomworks-managed)
+    local preset_configurations = {}
+    local presets = load_presets(path)
+    if presets then
+        for _, preset in ipairs(presets) do
+            local has_toolchain = preset.toolchainFile ~= nil
+                    or (preset.cacheVariables and preset.cacheVariables.CMAKE_TOOLCHAIN_FILE ~= nil)
+
+            preset_configurations[preset.name] = {
+                generator = preset.generator,
+                binary_dir = preset.binaryDir,
+                toolchain_locked = has_toolchain,
+                toolchain = has_toolchain
+                        and (preset.toolchainFile
+                            or (preset.cacheVariables and preset.cacheVariables.CMAKE_TOOLCHAIN_FILE))
+                        or nil,
+                from_preset = true,
+            }
+        end
+    end
+
+    -- Build loomworks-managed configurations: defaults + user overrides
+    local defaults = M.default_configurations(path, config)
+    local configurations = M.resolve_configurations(defaults, config)
+
+    return {
         configurations = configurations,
+        preset_configurations = preset_configurations,
         compile_commands_from = config.compile_commands_from,
         clangd = config.clangd,
     }
-
-    return result
 end
 
 --- Known multi-config generators (one configure, multiple build --config).
@@ -381,6 +556,12 @@ function M.tasks(project, active_config)
         if not multi_config then
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
         end
+
+        -- Set CMAKE_BUILD_TYPE for single-config generators from variant
+        if not multi_config then
+            local variant = config_info and config_info.variant or active_config
+            configure_cmd[#configure_cmd + 1] = "-DCMAKE_BUILD_TYPE=" .. variant
+        end
     end
 
     -- Toolchain file
@@ -390,6 +571,19 @@ function M.tasks(project, active_config)
             return os.getenv(var) or "${" .. var .. "}"
         end)
         configure_cmd[#configure_cmd + 1] = "-DCMAKE_TOOLCHAIN_FILE=" .. tc
+    end
+
+    -- User-defined options (project-wide + inherited + config-specific)
+    -- Appended after managed flags so user values can override.
+    local type_config = project.type_config or {}
+    if type_config.options or (type_config.configurations and
+            type_config.configurations[active_config] and
+            type_config.configurations[active_config].options) then
+        local resolved_opts = M.resolve_options(
+            type_config, project.configurations or {}, active_config)
+        for k, v in pairs(resolved_opts) do
+            configure_cmd[#configure_cmd + 1] = "-D" .. k .. "=" .. v
+        end
     end
 
     -- Closure to wrap commands with vcvarsall for this project's kit+generator

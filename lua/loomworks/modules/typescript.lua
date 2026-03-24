@@ -2,6 +2,7 @@ local M = {}
 
 M.id = "typescript"
 M.has_keyed_tools = false
+M.has_options = false
 
 local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
@@ -162,37 +163,49 @@ end
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
 --- @return table info
+--- Return the default configurations for this module.
+--- @param path string absolute project path
+--- @param config table type_config from loomworks.json
+--- @return table<string, table>
+function M.default_configurations(path, config)
+    return { default = {} }
+end
+
 function M.info(path, config)
     local configurations = {}
 
-    if config.configurations then
-        -- Explicit configurations from loomworks.json
-        -- Dict form: { "MyConfig": { "tsconfig": "tsconfig.prod.json" }, "dev": {} }
-        for name, cfg in pairs(config.configurations) do
-            local entry = type(cfg) == "table" and cfg or {}
-            local tsconfig = resolve_tsconfig(path, name, entry)
+    -- Auto-detect defaults from tsconfig.*.json files
+    local variants = scan_tsconfig_variants(path)
+    if #variants > 0 then
+        for _, name in ipairs(variants) do
+            local tsconfig = "tsconfig." .. name .. ".json"
             configurations[name] = {
                 tsconfig = tsconfig,
-                outDir = tsconfig and read_outdir(path, tsconfig) or nil,
+                outDir = read_outdir(path, tsconfig),
             }
         end
     else
-        -- Auto-detect from tsconfig.*.json files
-        local variants = scan_tsconfig_variants(path)
-        if #variants > 0 then
-            for _, name in ipairs(variants) do
-                local tsconfig = "tsconfig." .. name .. ".json"
-                configurations[name] = {
-                    tsconfig = tsconfig,
-                    outDir = read_outdir(path, tsconfig),
-                }
+        -- Fallback: single default configuration using tsconfig.json
+        configurations["default"] = {
+            tsconfig = "tsconfig.json",
+            outDir = read_outdir(path, "tsconfig.json"),
+        }
+    end
+
+    -- Merge user overrides/additions on top
+    if config.configurations then
+        for name, cfg in pairs(config.configurations) do
+            local entry = type(cfg) == "table" and cfg or {}
+            local tsconfig = resolve_tsconfig(path, name, entry)
+            configurations[name] = configurations[name] or {}
+            configurations[name].tsconfig = tsconfig
+            configurations[name].outDir = tsconfig and read_outdir(path, tsconfig) or nil
+            -- Copy any extra fields from user config
+            for k, v in pairs(entry) do
+                if k ~= "tsconfig" then
+                    configurations[name][k] = v
+                end
             end
-        else
-            -- Fallback: single default configuration using tsconfig.json
-            configurations["default"] = {
-                tsconfig = "tsconfig.json",
-                outDir = read_outdir(path, "tsconfig.json"),
-            }
         end
     end
 

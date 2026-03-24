@@ -55,6 +55,7 @@ function Project:_update(data)
     self.needs_refresh = data.needs_refresh or false
     self.refresh_reasons = data.refresh_reasons or {}
     self.configurations = data.configurations or {}
+    self.preset_configurations = data.preset_configurations or nil
     self.cached = data.cached
     self.cached_configurations = data.cached_configurations or {}
     self.cmake = data.cmake

@@ -1500,6 +1500,108 @@ function Workspace:update_config_set_mapping(set_name, project_key, variant)
     return true
 end
 
+--- Save a project configuration (create or update).
+--- @param project_key string
+--- @param config_name string configuration name
+--- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
+--- @return boolean ok, string|nil err
+function Workspace:save_project_configuration(project_key, config_name, config_data)
+    local proj = self.config.projects[project_key]
+    if not proj then
+        return false, "project '" .. project_key .. "' not found"
+    end
+
+    -- Ensure type_config.configurations exists
+    if not proj.type_config then proj.type_config = {} end
+    if not proj.type_config.configurations then
+        proj.type_config.configurations = {}
+    end
+
+    -- Omit empty fields
+    local clean = {}
+    if config_data.variant then clean.variant = config_data.variant end
+    if config_data.inherits then clean.inherits = config_data.inherits end
+    if config_data.options and next(config_data.options) then
+        clean.options = config_data.options
+    end
+    if config_data.toolchain then clean.toolchain = config_data.toolchain end
+    if config_data.generator then clean.generator = config_data.generator end
+
+    proj.type_config.configurations[config_name] = clean
+
+    local ok, err = self:_save_config()
+    if not ok then
+        proj.type_config.configurations[config_name] = nil
+        if not next(proj.type_config.configurations) then
+            proj.type_config.configurations = nil
+        end
+        return false, err
+    end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Delete a project configuration.
+--- @param project_key string
+--- @param config_name string
+--- @return boolean ok, string|nil err
+function Workspace:delete_project_configuration(project_key, config_name)
+    local proj = self.config.projects[project_key]
+    if not proj then
+        return false, "project '" .. project_key .. "' not found"
+    end
+    if not proj.type_config or not proj.type_config.configurations
+            or not proj.type_config.configurations[config_name] then
+        return false, "configuration '" .. config_name .. "' not found"
+    end
+
+    local old = proj.type_config.configurations[config_name]
+    proj.type_config.configurations[config_name] = nil
+    if not next(proj.type_config.configurations) then
+        proj.type_config.configurations = nil
+    end
+
+    local ok, err = self:_save_config()
+    if not ok then
+        if not proj.type_config.configurations then
+            proj.type_config.configurations = {}
+        end
+        proj.type_config.configurations[config_name] = old
+        return false, err
+    end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Save project-wide options.
+--- @param project_key string
+--- @param options table<string, string>
+--- @return boolean ok, string|nil err
+function Workspace:save_project_options(project_key, options)
+    local proj = self.config.projects[project_key]
+    if not proj then
+        return false, "project '" .. project_key .. "' not found"
+    end
+
+    if not proj.type_config then proj.type_config = {} end
+    local old = proj.type_config.options
+    proj.type_config.options = next(options) and options or nil
+
+    local ok, err = self:_save_config()
+    if not ok then
+        proj.type_config.options = old
+        return false, err
+    end
+
+    self:remerge()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
 --- Save a launch configuration for a project.
 --- @param project_key string
 --- @param launch_name string

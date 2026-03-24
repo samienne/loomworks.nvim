@@ -2,6 +2,7 @@ local M = {}
 
 M.id = "ets"
 M.has_keyed_tools = false
+M.has_options = false
 
 local uv = vim.uv or vim.loop
 
@@ -33,20 +34,30 @@ function M.validate(path, config)
     return { valid = true, warnings = warnings }
 end
 
+--- Return the default configurations for this module.
+--- @param path string absolute project path
+--- @param config table type_config from loomworks.json
+--- @return table<string, table>
+function M.default_configurations(path, config)
+    return { debug = {}, release = {} }
+end
+
 --- Return what the module knows about the project.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
 --- @return table info
 function M.info(path, config)
-    local configurations = {}
+    -- Always start with defaults
+    local configurations = M.default_configurations(path, config)
 
+    -- Merge user overrides/additions on top
     if config.configurations then
         for name, cfg in pairs(config.configurations) do
-            configurations[name] = cfg
+            configurations[name] = configurations[name] or {}
+            for k, v in pairs(cfg) do
+                configurations[name][k] = v
+            end
         end
-    else
-        configurations["debug"] = {}
-        configurations["release"] = {}
     end
 
     return { configurations = configurations }

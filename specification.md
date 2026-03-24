@@ -34,12 +34,37 @@ typescript, etc.). Projects are declared in `loomworks.json` under `"projects"`.
 
 ### 1.3 Configuration
 
-A configuration is a named build variant within a project (e.g., Debug,
-Release, ohos-debug). Configurations are discovered from:
+Two kinds of configurations exist:
 
-1. CMakePresets.json (each configure preset becomes a configuration)
-2. Module's `info()` function
-3. Overrides in `loomworks.json` under `projects.<name>.<type>.configurations`
+**Loomworks configurations** — managed by loomworks. Defaults auto-generated
+by the module (cmake: Debug, Release, RelWithDebInfo, MinSizeRel). Users
+can add custom configs with inheritance and options. Invoked via
+`cmake -S ... -B ... -D...`. Editable from the status page.
+
+**Preset configurations** — detected from CMakePresets.json at runtime.
+Invoked via `cmake --preset <name>`. Read-only from loomworks' perspective.
+Shown separately in the UI. Referenced in config set mappings with
+`preset:` prefix (e.g., `"App": "preset:Debug"`).
+
+Loomworks configuration fields in `loomworks.json`:
+```
+<type>.options                              — project-wide -D flags
+<type>.configurations.<name>.inherits       — base config(s), string or array
+<type>.configurations.<name>.options        — per-config -D flags
+<type>.configurations.<name>.toolchain      — path to .cmake toolchain file
+<type>.configurations.<name>.generator      — override generator
+```
+
+**Inheritance model** (cmake): custom configs inherit from one or more bases.
+Variant (CMAKE_BUILD_TYPE) is derived from the first base with a variant.
+Options merge depth-first left-to-right: project-wide → bases → own
+(later values override). Configs without a variant-providing base are
+abstract mixins — not directly buildable, only usable as bases.
+
+**Default configurations**: always present, auto-generated from
+`CMAKE_CONFIGURATION_TYPES` in CMakeLists.txt or standard cmake defaults
+(Debug, Release, RelWithDebInfo, MinSizeRel). User entries in
+`loomworks.json` extend defaults (add options) rather than replace them.
 
 ### 1.4 Configuration Set
 
