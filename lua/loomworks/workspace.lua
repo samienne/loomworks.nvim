@@ -257,8 +257,9 @@ end
 -- Workspace & merge (sync methods)
 -- ===========================================================================
 
---- Re-merge workspace state, sync object registries, and emit events.
---- Order matters: each step may depend on objects synced in previous steps.
+--- Full re-merge: reads config + cache from scratch, rebuilds all domain objects.
+--- Called only on deserialization (startup, external file change, tool detection).
+--- NOT called after mutations — mutations update objects directly.
 function Workspace:remerge()
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         self, self._tools_by_type)
@@ -268,7 +269,21 @@ function Workspace:remerge()
     self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets
     self:_sync_profile_projects()            -- 4. needs Profiles
     self:_sync_config_units()                -- 5. needs Profiles (for config_keys)
-    self:_sync_build_dir_refs()              -- 6. needs cache (build_dir data)
+    self:_sync_build_dir_refs()              -- 6. needs ConfigUnits (build_dir data)
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+end
+
+--- Lightweight refresh after cache changes (task results, deletions, materialization).
+--- Re-syncs profiles, profile_projects, config units, and build dir refs
+--- without running the full merge pipeline (no merge.merge() call, no
+--- re-reading config). Uses get_all_profiles to pick up new cached profiles.
+function Workspace:_refresh_after_cache_change()
+    local all_profile_defs = self._core._deps.merge.get_all_profiles(
+        self.config, self.cache, self._tools_by_type)
+    self:_sync_profiles(all_profile_defs)
+    self:_sync_profile_projects()
+    self:_sync_config_units()
+    self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -728,7 +743,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
     }
 
     self:_save_cache()
-    self:remerge()
+    self:_refresh_after_cache_change()
 end
 
 -- ===========================================================================
@@ -1053,7 +1068,7 @@ function Workspace:record_task_result(result)
     end
 
     self:_save_cache()
-    self:remerge()
+    self:_refresh_after_cache_change()
 
     -- Parse file-api targets after successful configure (runtime only, not cached)
     if action == "configure" and success and result.build_dir then
@@ -1114,7 +1129,7 @@ function Workspace:mark_cached_configs_cleaned(items)
         end
     end
     self:_save_cache()
-    self:remerge()
+    self:_refresh_after_cache_change()
 end
 
 --- Set cache state to "unknown" for items that have build directories.
@@ -1269,7 +1284,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                 end
 
                 self:_save_cache()
-                self:remerge()
+                self:_refresh_after_cache_change()
 
                 self._core._deps.events.emit("deletion_failed", { items = items, errors = errors })
                 if on_done then on_done() end
@@ -1280,7 +1295,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             work_fn(items)
 
             self:_save_cache()
-            self:remerge()
+            self:_refresh_after_cache_change()
 
             for _, unit in ipairs(units) do
                 unit:mark_deleting(false)
@@ -1335,7 +1350,7 @@ function Workspace:execute_deletion(plan, opts, on_done)
     end
 
     if #actionable == 0 then
-        self:remerge()
+        self:_refresh_after_cache_change()
         if on_done then on_done() end
         return
     end
@@ -1594,21 +1609,32 @@ function Workspace:add_project(key, type, path)
         return false, "invalid project key: " .. verr
     end
 
-    -- Add to parsed config
-    self.config.projects[key] = {
+    -- Add to parsed config + domain object
+    local proj_data = {
         path = path or key,
         type = type,
         type_config = {},
     }
+    self.config.projects[key] = proj_data
+
+    local project = Project.new(self, key, {
+        type = type,
+        path = path or key,
+        type_config = {},
+        status = "unconfigured",
+        configurations = {},
+        cached_configurations = {},
+    })
+    self._projects[key] = project
 
     local ok, err = self:_save_config()
     if not ok then
-        -- Rollback in-memory change
+        -- Rollback
         self.config.projects[key] = nil
+        self._projects[key] = nil
         return false, err
     end
 
-    self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -1624,7 +1650,14 @@ function Workspace:remove_project(key)
 
     self.config.projects[key] = nil
 
-    -- Remove from configuration_sets
+    -- Remove from domain objects
+    local removed_project = self._projects[key]
+    if removed_project then
+        removed_project._removed = true
+        self._projects[key] = nil
+    end
+
+    -- Remove from configuration_sets (config + domain objects)
     if self.config.configuration_sets then
         local empty_sets = {}
         for set_name, mappings in pairs(self.config.configuration_sets) do
@@ -1642,11 +1675,16 @@ function Workspace:remove_project(key)
             self.config.configuration_sets = nil
         end
     end
+    -- Update ConfigurationSet domain objects
+    if removed_project then
+        for _, cs in pairs(self._config_sets) do
+            cs.mappings[removed_project] = nil
+        end
+    end
 
     local ok, err = self:_save_config()
     if not ok then return false, err end
 
-    self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -1682,13 +1720,17 @@ function Workspace:add_configuration_set(name, mappings)
 
     self.config.configuration_sets[name] = mappings
 
+    -- Create domain object
+    local cs = ConfigurationSet.new(self, name, mappings)
+    self._config_sets[name] = cs
+
     local ok, err = self:_save_config()
     if not ok then
         self.config.configuration_sets[name] = nil
+        self._config_sets[name] = nil
         return false, err
     end
 
-    self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -1707,11 +1749,18 @@ function Workspace:remove_configuration_set(name)
         self.config.configuration_sets = nil
     end
 
+    -- Remove domain object
+    local cs = self._config_sets[name]
+    if cs then
+        cs._removed = true
+        self._config_sets[name] = nil
+    end
+
     local ok, err = self:_save_config()
     if not ok then return false, err end
 
-    self:remerge()
-    self._core._deps.events.emit("active_set_changed", self._active_set)
+    -- Refresh profiles (detect orphaned_set for profiles referencing this set)
+    self:_refresh_after_cache_change()
     return true
 end
 
@@ -1725,13 +1774,30 @@ function Workspace:update_config_set_mapping(set_name, project_key, variant)
         return false, "configuration set '" .. set_name .. "' not found"
     end
 
+    local old = self.config.configuration_sets[set_name][project_key]
     self.config.configuration_sets[set_name][project_key] = variant
 
-    local ok, err = self:_save_config()
-    if not ok then return false, err end
+    -- Update domain object
+    local cs = self._config_sets[set_name]
+    if cs then
+        local project = self._projects[project_key]
+        if project then
+            cs.mappings[project] = variant
+        end
+    end
 
-    self:remerge()
-    self._core._deps.events.emit("active_set_changed", self._active_set)
+    local ok, err = self:_save_config()
+    if not ok then
+        self.config.configuration_sets[set_name][project_key] = old
+        if cs then
+            local project = self._projects[project_key]
+            if project then cs.mappings[project] = old end
+        end
+        return false, err
+    end
+
+    -- Refresh profiles (mapping change affects profile_projects)
+    self:_refresh_after_cache_change()
     return true
 end
 
@@ -1776,16 +1842,20 @@ function Workspace:save_project_configuration(project_key, config_name, config_d
 
     proj.type_config.configurations[config_name] = clean
 
+    -- Update domain object
+    local project = self._projects[project_key]
+    if project then project.type_config = proj.type_config end
+
     local ok, err = self:_save_config()
     if not ok then
         proj.type_config.configurations[config_name] = nil
         if not next(proj.type_config.configurations) then
             proj.type_config.configurations = nil
         end
+        if project then project.type_config = proj.type_config end
         return false, err
     end
 
-    self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -1810,16 +1880,20 @@ function Workspace:delete_project_configuration(project_key, config_name)
         proj.type_config.configurations = nil
     end
 
+    -- Update domain object
+    local project = self._projects[project_key]
+    if project then project.type_config = proj.type_config end
+
     local ok, err = self:_save_config()
     if not ok then
         if not proj.type_config.configurations then
             proj.type_config.configurations = {}
         end
         proj.type_config.configurations[config_name] = old
+        if project then project.type_config = proj.type_config end
         return false, err
     end
 
-    self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -1987,7 +2061,7 @@ function Workspace:rename_project_configuration(project_key, old_name, new_name,
     end
 
     self:_save_cache()
-    self:remerge()
+    self:_refresh_after_cache_change()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -2006,13 +2080,19 @@ function Workspace:save_project_options(project_key, options)
     local old = proj.type_config.options
     proj.type_config.options = next(options) and options or nil
 
+    -- Update domain object
+    local project = self._projects[project_key]
+    if project then
+        project.type_config = proj.type_config
+    end
+
     local ok, err = self:_save_config()
     if not ok then
         proj.type_config.options = old
+        if project then project.type_config = proj.type_config end
         return false, err
     end
 
-    self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -2033,14 +2113,18 @@ function Workspace:save_launch_config(project_key, launch_name, config)
     end
     proj.launch[launch_name] = config
 
+    -- Update domain object
+    local project = self._projects[project_key]
+    if project then project.launch = proj.launch end
+
     local ok, err = self:_save_config()
     if not ok then
         proj.launch[launch_name] = nil
         if not next(proj.launch) then proj.launch = nil end
+        if project then project.launch = proj.launch end
         return false, err
     end
 
-    self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -2062,15 +2146,19 @@ function Workspace:delete_launch_config(project_key, launch_name)
     proj.launch[launch_name] = nil
     if not next(proj.launch) then proj.launch = nil end
 
+    -- Update domain object
+    local project = self._projects[project_key]
+    if project then project.launch = proj.launch end
+
     local ok, err = self:_save_config()
     if not ok then
         -- Rollback
         if not proj.launch then proj.launch = {} end
         proj.launch[launch_name] = old
+        if project then project.launch = proj.launch end
         return false, err
     end
 
-    self:remerge()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -2240,7 +2328,7 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
     if user_changed then
         self:_save_user()
     end
-    self:remerge()
+    self:_refresh_after_cache_change()
 end
 
 --- Compute profile renames that would occur if a project were removed.
@@ -2323,7 +2411,7 @@ function Workspace:downgrade_profiles_from_tool(mod_type)
     if user_changed then
         self:_save_user()
     end
-    self:remerge()
+    self:_refresh_after_cache_change()
 end
 
 --- Create (materialize) a profile and optionally activate it.
