@@ -221,10 +221,9 @@ function Core:_validate_projects(config, root)
         if mod and mod.validate then
             local abs_path = root .. "/" .. project.path
             local result = mod.validate(abs_path, project.type_config)
-            if not result.valid then
-                return false, "project '" .. key .. "': " .. table.concat(result.warnings, "; ")
-            end
-            for _, warning in ipairs(result.warnings) do
+            -- Log warnings but don't block loading — missing directories are
+            -- normal when projects come from another branch or were removed
+            for _, warning in ipairs(result.warnings or {}) do
                 self._deps.notify("loomworks: project '" .. key .. "': " .. warning, vim.log.levels.WARN)
             end
         end

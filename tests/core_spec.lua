@@ -719,7 +719,7 @@ describe("Core", function()
             assert.is_true(found_warn, "should notify WARN on config reload failure")
         end)
 
-        it("notifies WARN when config validation fails", function()
+        it("logs validation warnings but still loads", function()
             local notifications = {}
             local core = make_core(
                 {
@@ -747,19 +747,26 @@ describe("Core", function()
             core:setup({ root = "/root" })
             notifications = {} -- clear setup notifications
 
-            -- Change config to add a cmake project that will fail validation
+            -- Change config to add a cmake project with validation warnings
             local new_config = h.make_config_json({
                 projects = { BadProject = { cmake = {} } },
             })
             core._workspace:_on_file_changed("/root/loomworks.json", new_config)
 
+            -- Should still reload (not block), but produce a warning
             local found_warn = false
             for _, n in ipairs(notifications) do
-                if n.msg:match("config reload failed") and n.level == vim.log.levels.WARN then
+                if n.msg:match("missing CMakeLists") and n.level == vim.log.levels.WARN then
                     found_warn = true
                 end
             end
-            assert.is_true(found_warn, "should notify WARN when validation fails")
+            assert.is_true(found_warn, "should log validation warning")
+            -- Should have reloaded successfully
+            local found_reload = false
+            for _, n in ipairs(notifications) do
+                if n.msg:match("config reloaded") then found_reload = true end
+            end
+            assert.is_true(found_reload, "should still reload config")
         end)
 
         it("does not update workspace on config reload failure", function()

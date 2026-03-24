@@ -280,6 +280,22 @@ end
 --- Re-syncs profiles, profile_projects, config units, and build dir refs
 --- without running the full merge pipeline (no merge.merge() call, no
 --- re-reading config). Uses get_all_profiles to pick up new cached profiles.
+--- Refresh a Project's configurations from module info after type_config changes.
+--- Called after mutations that modify type_config (save/delete/rename config, save options).
+--- @param project_key string
+function Workspace:_refresh_project_configurations(project_key)
+    local project = self._projects[project_key]
+    if not project then return end
+    local mod = self._core._deps.modules.get(project.type)
+    if not mod or not mod.info then return end
+    local abs_path = self.root .. "/" .. (project.path or project_key)
+    local mod_info = mod.info(abs_path, project.type_config or {})
+    if mod_info then
+        project.configurations = mod_info.configurations or {}
+        project.preset_configurations = mod_info.preset_configurations or nil
+    end
+end
+
 function Workspace:_refresh_after_cache_change()
     local all_profile_defs = self._core._deps.merge.get_all_profiles(
         self.config, self.cache, self._tools_by_type)
@@ -1541,19 +1557,21 @@ function Workspace:_serialize_config()
         raw.name = self.name
     end
 
-    -- Projects from domain objects
+    -- Projects from domain objects (skip cache-only orphans)
     for key, project in pairs(self._projects) do
-        local entry = { [project.type] = project.type_config or vim.empty_dict() }
-        if project.path and project.path ~= key then
-            entry.path = project.path
+        if not project.orphaned then
+            local entry = { [project.type] = project.type_config or vim.empty_dict() }
+            if project.path and project.path ~= key then
+                entry.path = project.path
+            end
+            if project._depends_on_keys then
+                entry.depends_on = project._depends_on_keys
+            end
+            if project.launch then
+                entry.launch = project.launch
+            end
+            raw.projects[key] = entry
         end
-        if project._depends_on_keys then
-            entry.depends_on = project._depends_on_keys
-        end
-        if project.launch then
-            entry.launch = project.launch
-        end
-        raw.projects[key] = entry
     end
 
     -- Configuration sets from domain objects
@@ -1868,6 +1886,7 @@ function Workspace:save_project_configuration(project_key, config_name, config_d
         return false, err
     end
 
+    self:_refresh_project_configurations(project_key)
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -1906,6 +1925,7 @@ function Workspace:delete_project_configuration(project_key, config_name)
         return false, err
     end
 
+    self:_refresh_project_configurations(project_key)
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
@@ -1985,11 +2005,19 @@ function Workspace:rename_project_configuration(project_key, old_name, new_name,
     proj.type_config.configurations[old_name] = nil
     proj.type_config.configurations[new_name] = clean
 
-    -- Step 3: Update configuration_set mappings
+    -- Step 3: Update configuration_set mappings (raw config + domain objects)
     if self.config.configuration_sets then
         for _, mappings in pairs(self.config.configuration_sets) do
             if mappings[project_key] == old_name then
                 mappings[project_key] = new_name
+            end
+        end
+    end
+    local project_obj = self._projects[project_key]
+    if project_obj then
+        for _, cs in pairs(self._config_sets) do
+            if cs.mappings[project_obj] == old_name then
+                cs.mappings[project_obj] = new_name
             end
         end
     end
@@ -2073,6 +2101,7 @@ function Workspace:rename_project_configuration(project_key, old_name, new_name,
     end
 
     self:_save_cache()
+    self:_refresh_project_configurations(project_key)
     self:_refresh_after_cache_change()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
@@ -2105,6 +2134,7 @@ function Workspace:save_project_options(project_key, options)
         return false, err
     end
 
+    self:_refresh_project_configurations(project_key)
     self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
