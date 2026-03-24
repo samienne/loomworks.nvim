@@ -648,6 +648,18 @@ notification and left untouched. This check lives in core (at the
 `execute_deletion` / clean level), not in the io layer — the io layer is a
 general-purpose utility that deletes what it is told to.
 
+**Case sensitivity**: On Windows (case-insensitive filesystem), all path
+normalization lowercases the path to ensure reliable comparisons. This
+affects build dir matching, prefix checks, stray detection, and the build
+dir reverse index / operation locks. Cached build_dir values retain their
+original casing for display, but all comparisons use the lowercased form.
+
+**Case collision prevention**: Project keys and configuration set names that
+differ only by case would produce the same build directory path on
+case-insensitive filesystems. The system warns on parse (loomworks.json
+load) and rejects at runtime (`add_project`, `add_configuration_set`) to
+prevent silent directory collisions.
+
 **Shared build directory protection**: Multi-config generators (e.g., Ninja
 Multi-Config, Visual Studio) share a single build directory across multiple
 configurations (Debug and Release produce output in the same directory,

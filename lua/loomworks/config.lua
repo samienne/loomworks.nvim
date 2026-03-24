@@ -70,10 +70,37 @@ function M.validate(raw, root)
         }
     end
 
+    -- Warn about case-colliding project keys (same build dir on Windows)
+    local proj_lower = {}
+    for key in pairs(projects) do
+        local lk = key:lower()
+        if proj_lower[lk] then
+            vim.notify(
+                "loomworks: project keys '" .. proj_lower[lk] .. "' and '" .. key
+                    .. "' differ only by case — may collide on case-insensitive filesystems",
+                vim.log.levels.WARN)
+        else
+            proj_lower[lk] = key
+        end
+    end
+
     -- Validate configuration_sets references
     if raw.configuration_sets then
         if type(raw.configuration_sets) ~= "table" then
             return nil, "'configuration_sets' must be a table"
+        end
+        -- Warn about case-colliding config set names
+        local cs_lower = {}
+        for set_name in pairs(raw.configuration_sets) do
+            local lk = set_name:lower()
+            if cs_lower[lk] then
+                vim.notify(
+                    "loomworks: configuration sets '" .. cs_lower[lk] .. "' and '" .. set_name
+                        .. "' differ only by case — may cause profile key collisions",
+                    vim.log.levels.WARN)
+            else
+                cs_lower[lk] = set_name
+            end
         end
         for set_name, mappings in pairs(raw.configuration_sets) do
             if type(mappings) == "table" then

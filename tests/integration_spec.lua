@@ -878,6 +878,57 @@ describe("config set rename", function()
 end)
 
 -- =========================================================================
+-- Case collision prevention
+-- =========================================================================
+
+describe("name validation and collision prevention", function()
+    it("add_configuration_set rejects case-colliding name", function()
+        local ws = make_ws({
+            configuration_sets = { Debug = { App = "Debug" } },
+        })
+        local ok, err = ws:add_configuration_set("debug", { App = "debug" })
+        assert.is_false(ok)
+        assert.matches("case%-insensitive", err)
+    end)
+
+    it("add_project rejects case-colliding key", function()
+        local ws = make_ws()
+        -- "App" already exists from default config
+        local ok, err = ws:add_project("app", "cmake")
+        assert.is_false(ok)
+        assert.matches("same build directory", err)
+    end)
+
+    it("add_project rejects slashes in key", function()
+        local ws = make_ws()
+        local ok, err = ws:add_project("foo/bar", "cmake")
+        assert.is_false(ok)
+        assert.matches("slashes", err)
+    end)
+
+    it("add_project rejects dot-dot key", function()
+        local ws = make_ws()
+        local ok, err = ws:add_project("..", "cmake")
+        assert.is_false(ok)
+    end)
+
+    it("add_project rejects sanitization collision", function()
+        local ws = make_ws({ projects = { ["My_App"] = { cmake = {} } } })
+        -- "My:App" sanitizes to "My_App" — collision
+        local ok, err = ws:add_project("My:App", "cmake")
+        assert.is_false(ok)
+        assert.matches("same build directory", err)
+    end)
+
+    it("save_project_configuration rejects slashes", function()
+        local ws = make_ws()
+        local ok, err = ws:save_project_configuration("App", "foo/bar", {})
+        assert.is_false(ok)
+        assert.matches("slashes", err)
+    end)
+end)
+
+-- =========================================================================
 -- End-to-end: full workspace setup from scratch
 -- =========================================================================
 
