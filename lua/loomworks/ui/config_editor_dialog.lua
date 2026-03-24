@@ -197,36 +197,87 @@ function M.open(opts)
             })
         end
 
-        -- Options section
+        -- Variant (read-only, derived from inheritance)
+        if opts.has_options then
+            local var_display = variant ~= "" and variant or "(none)"
+            local var_hint = opts.variant_source
+                and ("  (from " .. opts.variant_source .. ")") or ""
+            t:leaf("Variant    " .. var_display .. var_hint, "Comment")
+        end
+
+        -- Unified options section
         if opts.has_options then
             t:blank()
 
-            local opt_keys = {}
-            for k in pairs(options) do opt_keys[#opt_keys + 1] = k end
-            table.sort(opt_keys)
+            -- Build merged view: all option keys with source info
+            local inherited = opts.inherited_options or {}
+            local proj_opts = opts.project_options or {}
+            local all_keys = {}
+            local seen = {}
 
-            if #opt_keys > 0 then
+            -- Collect all unique keys
+            for k in pairs(options) do
+                if not seen[k] then seen[k] = true; all_keys[#all_keys + 1] = k end
+            end
+            for k in pairs(inherited) do
+                if not seen[k] then seen[k] = true; all_keys[#all_keys + 1] = k end
+            end
+            for k in pairs(proj_opts) do
+                if not seen[k] then seen[k] = true; all_keys[#all_keys + 1] = k end
+            end
+            table.sort(all_keys)
+
+            if #all_keys > 0 then
                 t:leaf("Options:", "Comment")
-                for _, k in ipairs(opt_keys) do
+                for _, k in ipairs(all_keys) do
                     local ek = k
-                    t:item("  " .. k .. "=" .. options[k] .. " ▸", {
-                        hl = "LoomworksActionable",
-                        direct = true,
-                        on_enter = function()
-                            edit_string(ek .. "=", options[ek], function(v)
-                                if v == "" then
-                                    options[ek] = nil
-                                else
-                                    options[ek] = v
-                                end
+                    local is_own = options[k] ~= nil
+                    local inh_info = inherited[k]
+                    local proj_val = proj_opts[k]
+
+                    if is_own then
+                        -- Own option (editable)
+                        local override_hint = ""
+                        if inh_info then
+                            override_hint = "  (overrides " .. inh_info.value .. " from " .. inh_info.source .. ")"
+                        elseif proj_val then
+                            override_hint = "  (overrides " .. proj_val .. " from project)"
+                        end
+                        t:item("  " .. k .. "=" .. options[k] .. override_hint .. " ▸", {
+                            hl = "LoomworksActionable",
+                            direct = true,
+                            on_enter = function()
+                                edit_string(ek .. "=", options[ek], function(v)
+                                    if v == "" then
+                                        options[ek] = nil
+                                    else
+                                        options[ek] = v
+                                    end
+                                    if view then view:refresh() end
+                                end)
+                            end,
+                            on_delete = function()
+                                options[ek] = nil
                                 if view then view:refresh() end
-                            end)
-                        end,
-                        on_delete = function()
-                            options[ek] = nil
-                            if view then view:refresh() end
-                        end,
-                    })
+                            end,
+                        })
+                    else
+                        -- Inherited or project option (dimmed, Enter to override)
+                        local value = inh_info and inh_info.value or proj_val
+                        local source = inh_info and inh_info.source or "project"
+                        t:item("  " .. k .. "=" .. value .. "  (" .. source .. ")", {
+                            hl = "Comment",
+                            direct = true,
+                            on_enter = function()
+                                edit_string(ek .. "=", value, function(v)
+                                    if v and v ~= "" then
+                                        options[ek] = v
+                                        if view then view:refresh() end
+                                    end
+                                end)
+                            end,
+                        })
+                    end
                 end
             else
                 t:leaf("Options: (none)", "Comment")
@@ -238,7 +289,11 @@ function M.open(opts)
                 on_enter = function()
                     vim.ui.input({ prompt = "Option name: " }, function(key)
                         if not key or key == "" then return end
-                        vim.ui.input({ prompt = key .. "=" }, function(val)
+                        -- Pre-fill with inherited value if exists
+                        local default_val = ""
+                        if inherited[key] then default_val = inherited[key].value
+                        elseif proj_opts[key] then default_val = proj_opts[key] end
+                        vim.ui.input({ prompt = key .. "=", default = default_val }, function(val)
                             if val then
                                 options[key] = val
                                 if view then view:refresh() end
@@ -247,39 +302,6 @@ function M.open(opts)
                     end)
                 end,
             })
-
-            -- Show inherited options (read-only)
-            local inherited = opts.inherited_options or {}
-            local inh_keys = {}
-            for k in pairs(inherited) do inh_keys[#inh_keys + 1] = k end
-            table.sort(inh_keys)
-
-            if #inh_keys > 0 then
-                t:blank()
-                t:leaf("Inherited options:", "Comment")
-                for _, k in ipairs(inh_keys) do
-                    local info = inherited[k]
-                    t:leaf("  " .. k .. "=" .. info.value .. "  (" .. info.source .. ")", "Comment")
-                end
-            end
-
-            -- Show project-wide options (read-only)
-            local proj_opts = opts.project_options or {}
-            local proj_keys = {}
-            for k in pairs(proj_opts) do
-                if not inherited[k] and not options[k] then
-                    proj_keys[#proj_keys + 1] = k
-                end
-            end
-            table.sort(proj_keys)
-
-            if #proj_keys > 0 then
-                t:blank()
-                t:leaf("Project-wide options:", "Comment")
-                for _, k in ipairs(proj_keys) do
-                    t:leaf("  " .. k .. "=" .. proj_opts[k] .. "  (project)", "Comment")
-                end
-            end
         end
 
         t:blank()

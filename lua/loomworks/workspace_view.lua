@@ -1195,18 +1195,24 @@ function M.compute_edit_configuration_context(ws, project_key, config_name)
     -- Get project-wide options for display
     local project_options = (proj.type_config or {}).options or {}
 
-    -- Resolve inherited options for display
+    -- Resolve inherited options with accurate sources
     local inherited_options = {}
-    if mod and mod.resolve_options and config_name then
-        local all_opts = mod.resolve_options(proj.type_config or {},
-            mod_info.configurations or {}, config_name)
-        -- Inherited = all resolved minus this config's own options
+    if mod and mod.resolve_options_with_sources and config_name then
+        local all_with_sources = mod.resolve_options_with_sources(
+            proj.type_config or {}, mod_info.configurations or {}, config_name)
         local own = config_data.options or {}
-        for k, v in pairs(all_opts) do
+        for k, info in pairs(all_with_sources) do
             if not own[k] then
-                inherited_options[k] = { value = v, source = project_options[k] and "project" or "inherited" }
+                inherited_options[k] = info
             end
         end
+    end
+
+    -- Resolve variant source
+    local variant_source = nil
+    if mod and mod.resolve_variant_source and config_name then
+        variant_source = mod.resolve_variant_source(
+            mod_info.configurations or {}, config_name)
     end
 
     return {
@@ -1214,6 +1220,7 @@ function M.compute_edit_configuration_context(ws, project_key, config_name)
         project_type = proj.type,
         name = config_name or "",
         variant = variant or (config_name or ""),
+        variant_source = variant_source,
         inherits = config_data.inherits or "",
         options = config_data.options and vim.deepcopy(config_data.options) or {},
         toolchain = config_data.toolchain or "",

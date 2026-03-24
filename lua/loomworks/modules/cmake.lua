@@ -348,6 +348,68 @@ function M.resolve_options(config, configurations, config_name)
     return options
 end
 
+--- Like resolve_options but tracks the source of each value.
+--- @param config table type_config from loomworks.json
+--- @param configurations table<string, table> resolved configurations
+--- @param config_name string
+--- @return table<string, { value: string, source: string }> key → { value, source }
+function M.resolve_options_with_sources(config, configurations, config_name)
+    local result = {}
+
+    -- 1. Project-wide options
+    if config.options then
+        for k, v in pairs(config.options) do
+            result[k] = { value = v, source = "project" }
+        end
+    end
+
+    -- 2. Walk inheritance chain (bases first, left-to-right, depth-first)
+    local function apply_inherited(name, visited)
+        if visited[name] then return end
+        visited[name] = true
+        local cfg = configurations[name]
+        if not cfg then return end
+        local bases = normalize_inherits(cfg.inherits)
+        for _, base_name in ipairs(bases) do
+            apply_inherited(base_name, visited)
+        end
+        if cfg.options then
+            for k, v in pairs(cfg.options) do
+                result[k] = { value = v, source = name }
+            end
+        end
+    end
+
+    apply_inherited(config_name, {})
+
+    return result
+end
+
+--- Find the source config that provides the variant for a configuration.
+--- Walks the inheritance chain depth-first to find the first config with
+--- a variant defined as a default (is_default) or explicitly set.
+--- @param configurations table<string, table> resolved configurations
+--- @param config_name string
+--- @return string|nil source config name that provides the variant
+function M.resolve_variant_source(configurations, config_name)
+    local function find_source(name, visited)
+        if visited[name] then return nil end
+        visited[name] = true
+        local cfg = configurations[name]
+        if not cfg then return nil end
+        -- Defaults define their own variant
+        if cfg.is_default and cfg.variant then return name end
+        -- Walk bases to find who provides the variant
+        local bases = normalize_inherits(cfg.inherits)
+        for _, base_name in ipairs(bases) do
+            local source = find_source(base_name, visited)
+            if source then return source end
+        end
+        return nil
+    end
+    return find_source(config_name, {})
+end
+
 --- Return what the module knows about the project from its own files.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
