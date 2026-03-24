@@ -247,22 +247,16 @@ function M.resolve_configurations(defaults, config)
             end
             local cfg = result[name]
 
-            -- Inheritance
+            -- Inheritance: variant always derived from the chain
             if override.inherits then
                 cfg.inherits = override.inherits
-                -- Inherit variant from base if not explicitly set
                 local base = result[override.inherits]
-                if base and not override.variant then
-                    cfg.variant = cfg.variant or base.variant
+                if base then
+                    cfg.variant = base.variant
                 end
             end
 
-            -- Explicit variant overrides inherited or default
-            if override.variant then
-                cfg.variant = override.variant
-            end
-
-            -- Default variant to name if still unset
+            -- Defaults get variant from their name; custom configs must inherit
             if not cfg.variant then
                 cfg.variant = name
             end

@@ -1069,3 +1069,234 @@ describe("launch config lifecycle", function()
         assert.equals("release", configs[2].name)
     end)
 end)
+
+-- =========================================================================
+-- Project configuration lifecycle
+-- =========================================================================
+
+describe("project configuration lifecycle", function()
+    it("creates custom config with inheritance and options", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+
+        -- Create a custom configuration inheriting from Debug
+        local ok, err = wv.execute_save_configuration(ws, "App", nil, "Debug-ASAN", {
+            inherits = "Debug",
+            options = { SANITIZE_ADDRESS = "ON" },
+        })
+        assert.is_true(ok)
+        assert.is_not_nil(ws.config.projects["App"].type_config)
+        assert.is_not_nil(ws.config.projects["App"].type_config.configurations["Debug-ASAN"])
+        assert.equals("Debug",
+            ws.config.projects["App"].type_config.configurations["Debug-ASAN"].inherits)
+    end)
+
+    it("edits existing configuration options", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            Debug = { options = { ENABLE_TESTS = "ON" } },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ok = wv.execute_save_configuration(ws, "App", "Debug", "Debug", {
+            options = { ENABLE_TESTS = "OFF", VERBOSE = "ON" },
+        })
+        assert.is_true(ok)
+        assert.equals("OFF",
+            ws.config.projects["App"].type_config.configurations["Debug"].options.ENABLE_TESTS)
+        assert.equals("ON",
+            ws.config.projects["App"].type_config.configurations["Debug"].options.VERBOSE)
+    end)
+
+    it("renames custom configuration", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-ASAN"] = { inherits = "Debug", options = { ASAN = "ON" } },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ok = wv.execute_save_configuration(ws, "App", "Debug-ASAN", "Debug-Sanitized", {
+            inherits = "Debug",
+            options = { ASAN = "ON" },
+        })
+        assert.is_true(ok)
+        assert.is_nil(ws.config.projects["App"].type_config.configurations["Debug-ASAN"])
+        assert.is_not_nil(ws.config.projects["App"].type_config.configurations["Debug-Sanitized"])
+    end)
+
+    it("deletes custom configuration", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-ASAN"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ok = wv.execute_delete_configuration(ws, "App", "Debug-ASAN")
+        assert.is_true(ok)
+        -- configurations key cleaned up when empty
+        assert.is_true(
+            ws.config.projects["App"].type_config.configurations == nil
+            or ws.config.projects["App"].type_config.configurations["Debug-ASAN"] == nil)
+    end)
+
+    it("saves project-wide options", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+
+        local ok = wv.execute_save_project_options(ws, "App", {
+            CMAKE_EXPORT_COMPILE_COMMANDS = "ON",
+            MY_FLAG = "hello",
+        })
+        assert.is_true(ok)
+        assert.equals("ON", ws.config.projects["App"].type_config.options.CMAKE_EXPORT_COMPILE_COMMANDS)
+        assert.equals("hello", ws.config.projects["App"].type_config.options.MY_FLAG)
+    end)
+
+    it("clears project-wide options when empty", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = { options = { FOO = "bar" } } },
+            },
+        })
+
+        local ok = wv.execute_save_project_options(ws, "App", {})
+        assert.is_true(ok)
+        assert.is_nil(ws.config.projects["App"].type_config.options)
+    end)
+
+    it("compute_edit_configuration_context returns defaults for new config", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+
+        local ctx = wv.compute_edit_configuration_context(ws, "App", nil)
+        assert.is_not_nil(ctx)
+        assert.equals("", ctx.name)
+        assert.equals("", ctx.variant)
+        assert.is_true(ctx.has_options)
+        assert.is_true(#ctx.available_configs > 0) -- defaults exist
+    end)
+
+    it("compute_edit_configuration_context returns data for existing config", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-ASAN"] = {
+                                inherits = "Debug",
+                                options = { ASAN = "ON" },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ctx = wv.compute_edit_configuration_context(ws, "App", "Debug-ASAN")
+        assert.is_not_nil(ctx)
+        assert.equals("Debug-ASAN", ctx.name)
+        assert.equals("Debug", ctx.inherits)
+        assert.equals("ON", ctx.options.ASAN)
+        assert.is_true(ctx.has_options)
+    end)
+
+    it("compute_edit_configuration_context marks defaults correctly", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+
+        local ctx = wv.compute_edit_configuration_context(ws, "App", "Debug")
+        assert.is_not_nil(ctx)
+        assert.equals("Debug", ctx.name)
+        assert.equals("Debug", ctx.variant)
+        assert.is_true(ctx.is_default)
+    end)
+end)
+
+-- =========================================================================
+-- cmake options resolution
+-- =========================================================================
+
+describe("cmake options resolution", function()
+    local cmake = require("loomworks.modules.cmake")
+
+    it("resolves project-wide options", function()
+        local type_config = { options = { FOO = "bar", BAZ = "qux" } }
+        local configs = { Debug = { variant = "Debug" } }
+        local opts = cmake.resolve_options(type_config, configs, "Debug")
+        assert.equals("bar", opts.FOO)
+        assert.equals("qux", opts.BAZ)
+    end)
+
+    it("config options override project options", function()
+        local type_config = {
+            options = { FOO = "project" },
+            configurations = {
+                Debug = { options = { FOO = "config" } },
+            },
+        }
+        local configs = {
+            Debug = { variant = "Debug", options = { FOO = "config" } },
+        }
+        local opts = cmake.resolve_options(type_config, configs, "Debug")
+        assert.equals("config", opts.FOO)
+    end)
+
+    it("walks inheritance chain", function()
+        local configs = {
+            Debug = { variant = "Debug", options = { BASE = "from-debug" } },
+            ["Debug-ASAN"] = {
+                variant = "Debug",
+                inherits = "Debug",
+                options = { ASAN = "ON" },
+            },
+        }
+        local type_config = {}
+        local opts = cmake.resolve_options(type_config, configs, "Debug-ASAN")
+        assert.equals("from-debug", opts.BASE)
+        assert.equals("ON", opts.ASAN)
+    end)
+
+    it("child options override parent options", function()
+        local configs = {
+            Debug = { variant = "Debug", options = { SHARED = "parent" } },
+            ["Debug-ASAN"] = {
+                inherits = "Debug",
+                options = { SHARED = "child" },
+            },
+        }
+        local opts = cmake.resolve_options({}, configs, "Debug-ASAN")
+        assert.equals("child", opts.SHARED)
+    end)
+
+    it("handles circular inheritance gracefully", function()
+        local configs = {
+            A = { inherits = "B", options = { X = "1" } },
+            B = { inherits = "A", options = { Y = "2" } },
+        }
+        -- Should not infinite loop
+        local opts = cmake.resolve_options({}, configs, "A")
+        assert.equals("1", opts.X)
+    end)
+end)

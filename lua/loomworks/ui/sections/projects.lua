@@ -196,6 +196,105 @@ local function delete_launch_config(project_key, launch_name)
     })
 end
 
+--- Open the configuration editor for a project configuration.
+--- @param project_key string
+--- @param config_name? string nil for new configuration
+local function edit_project_configuration(project_key, config_name)
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local ctx = workspace_view.compute_edit_configuration_context(ws, project_key, config_name)
+    if not ctx then return end
+
+    require("loomworks.ui.config_editor_dialog").open({
+        title = config_name
+            and ('Edit "' .. config_name .. '" — ' .. project_key)
+            or ("New configuration — " .. project_key),
+        name = ctx.name,
+        variant = ctx.variant,
+        inherits = ctx.inherits,
+        options = ctx.options,
+        toolchain = ctx.toolchain,
+        generator = ctx.generator,
+        is_default = ctx.is_default and config_name ~= nil,
+        has_options = ctx.has_options,
+        available_configs = ctx.available_configs,
+        project_options = ctx.project_options,
+        inherited_options = ctx.inherited_options,
+        validate = function(result)
+            if result.name ~= (config_name or "")
+                    and ws.config.projects[project_key]
+                    and ws.config.projects[project_key].type_config
+                    and ws.config.projects[project_key].type_config.configurations
+                    and ws.config.projects[project_key].type_config.configurations[result.name] then
+                return false, "configuration '" .. result.name .. "' already exists"
+            end
+            return true
+        end,
+        on_accept = function(result)
+            local ok, err = workspace_view.execute_save_configuration(
+                ws, project_key, config_name, result.name, {
+                    variant = result.variant,
+                    inherits = result.inherits,
+                    options = result.options,
+                    toolchain = result.toolchain,
+                    generator = result.generator,
+                })
+            if ok then
+                local verb = config_name and "updated" or "created"
+                vim.notify("loomworks: configuration '" .. result.name .. "' " .. verb,
+                    vim.log.levels.INFO)
+            else
+                vim.notify("loomworks: " .. (err or "failed to save configuration"),
+                    vim.log.levels.ERROR)
+            end
+        end,
+        on_cancel = function() end,
+    })
+end
+
+--- Delete a user-defined project configuration with confirmation.
+--- @param project_key string
+--- @param config_name string
+local function delete_project_configuration(project_key, config_name)
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local dialog = require("loomworks.ui.dialog")
+    dialog.show({
+        title = "Confirm Delete",
+        lines = {
+            "  Delete configuration: " .. config_name,
+            "",
+            "  Project: " .. project_key,
+            "  Cached configs for this configuration will become orphaned.",
+            "",
+            "  Press y to confirm, q to cancel",
+        },
+        highlights = {
+            { line = 1, hl_group = "DiagnosticWarn" },
+            { line = 3, hl_group = "Comment" },
+            { line = 4, hl_group = "Comment" },
+        },
+        keys = {
+            n = "close",
+            y = function(self)
+                self:close()
+                local ok, err = workspace_view.execute_delete_configuration(ws, project_key, config_name)
+                if ok then
+                    vim.notify("loomworks: configuration '" .. config_name .. "' deleted",
+                        vim.log.levels.INFO)
+                else
+                    vim.notify("loomworks: " .. (err or "failed to delete"),
+                        vim.log.levels.ERROR)
+                end
+            end,
+        },
+    })
+end
+
 --- Open the project browser for adding a project.
 local function open_add_project()
     local lw = require("loomworks")
@@ -287,17 +386,33 @@ return function(tree, ctx)
                         local config_hl = config_has_running and "LoomworksRunning" or "LoomworksActionable"
 
                         local brief = {}
+                        if cdata.variant and cdata.variant ~= cname then
+                            brief[#brief + 1] = cdata.variant
+                        end
+                        if cdata.inherits then brief[#brief + 1] = "inherits: " .. cdata.inherits end
                         if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
                         if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
                         local brief_str = #brief > 0
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
 
+                        local pkey = key  -- capture for closure
+                        local cfg_name = cname
+                        -- Check if config is user-defined (has entry in type_config.configurations)
+                        local ws_proj = lw.get_workspace() and lw.get_workspace().config.projects[key]
+                        local has_user_entry = ws_proj and ws_proj.type_config
+                                and ws_proj.type_config.configurations
+                                and ws_proj.type_config.configurations[cname] ~= nil
                         tree:node(cname .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = config_has_running,
                             hl = config_hl,
-                            on_delete = not has_tool_entries
-                                    and actions.delete_config(lw.get_config_unit(key, cname)) or nil,
+                            enter_label = "Edit configuration",
+                            on_enter = function() edit_project_configuration(pkey, cfg_name) end,
+                            on_delete = has_user_entry
+                                    and function() delete_project_configuration(pkey, cfg_name) end
+                                    or (not has_tool_entries
+                                        and actions.delete_config(lw.get_config_unit(key, cname))
+                                        or nil),
                         }, function()
                             if cdata.toolchain then
                                 tree:leaf("Toolchain: " .. tostring(cdata.toolchain), "Comment")
@@ -375,6 +490,35 @@ return function(tree, ctx)
                                 end)
                             end
                         end)
+                    end
+                    -- "Add configuration" sentinel
+                    if not proj.orphaned then
+                        local pkey = key
+                        tree:item("▸ Add configuration", {
+                            hl = "LoomworksActionable",
+                            direct = true,
+                            on_enter = function() edit_project_configuration(pkey, nil) end,
+                        })
+                    end
+                end)
+            end
+
+            -- Preset configurations (separate, read-only group)
+            if proj.preset_configurations and next(proj.preset_configurations) then
+                tree:group("Presets:", "Comment", function()
+                    local preset_names = {}
+                    for name in pairs(proj.preset_configurations) do
+                        preset_names[#preset_names + 1] = name
+                    end
+                    table.sort(preset_names)
+                    for _, pname in ipairs(preset_names) do
+                        local pdata = proj.preset_configurations[pname]
+                        local brief = {}
+                        if pdata.generator then brief[#brief + 1] = pdata.generator end
+                        if pdata.toolchain_locked then brief[#brief + 1] = "toolchain" end
+                        local brief_str = #brief > 0
+                                and ("  (" .. table.concat(brief, ", ") .. ")") or ""
+                        tree:leaf(pname .. brief_str .. "  (CMakePresets.json)", "Comment")
                     end
                 end)
             end

@@ -506,6 +506,7 @@ function M.merge(workspace, tools_by_type)
             needs_refresh = needs_refresh,
             refresh_reasons = refresh_reasons,
             configurations = mod_info.configurations or {},
+            preset_configurations = mod_info.preset_configurations or nil,
             cached = cached_config_data,
             cached_configurations = cached_configurations,
             depends_on = project.depends_on,

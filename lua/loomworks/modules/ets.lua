@@ -47,15 +47,17 @@ end
 --- @param config table type_config from loomworks.json
 --- @return table info
 function M.info(path, config)
-    local configurations = {}
+    -- Always start with defaults
+    local configurations = M.default_configurations(path, config)
 
+    -- Merge user overrides/additions on top
     if config.configurations then
         for name, cfg in pairs(config.configurations) do
-            configurations[name] = cfg
+            configurations[name] = configurations[name] or {}
+            for k, v in pairs(cfg) do
+                configurations[name][k] = v
+            end
         end
-    else
-        configurations["debug"] = {}
-        configurations["release"] = {}
     end
 
     return { configurations = configurations }
