@@ -222,9 +222,18 @@ function M.default_configurations(path, config)
     return defaults
 end
 
+--- Normalize inherits to an array. Accepts string, array, or nil.
+--- @param inherits string|string[]|nil
+--- @return string[]
+local function normalize_inherits(inherits)
+    if not inherits then return {} end
+    if type(inherits) == "string" then return { inherits } end
+    return inherits
+end
+
 --- Resolve user-defined configurations from loomworks.json, merging with
 --- defaults. User configs can extend defaults (add options) or define new
---- ones with explicit variant or inheritance.
+--- ones with inheritance. Supports multi-inheritance (array of base names).
 --- @param defaults table<string, table> default configurations
 --- @param config table type_config from loomworks.json
 --- @return table<string, table> merged configurations
@@ -247,17 +256,22 @@ function M.resolve_configurations(defaults, config)
             end
             local cfg = result[name]
 
-            -- Inheritance: variant always derived from the chain
-            if override.inherits then
-                cfg.inherits = override.inherits
-                local base = result[override.inherits]
-                if base then
-                    cfg.variant = base.variant
+            -- Inheritance: variant from first base that has one
+            local bases = normalize_inherits(override.inherits)
+            if #bases > 0 then
+                cfg.inherits = bases
+                for _, base_name in ipairs(bases) do
+                    local base = result[base_name]
+                    if base and base.variant then
+                        cfg.variant = base.variant
+                        break
+                    end
                 end
             end
 
-            -- Defaults get variant from their name; custom configs must inherit
-            if not cfg.variant then
+            -- Defaults get variant from their name; custom configs without
+            -- a variant-providing base remain abstract (no variant)
+            if not cfg.variant and cfg.is_default then
                 cfg.variant = name
             end
 
@@ -285,9 +299,10 @@ function M.resolve_configurations(defaults, config)
         end
     end
 
-    -- Ensure all configs have a variant
+    -- Ensure default configs have a variant (user configs without a
+    -- variant-providing base are abstract mixins — no variant)
     for name, cfg in pairs(result) do
-        if not cfg.variant then
+        if not cfg.variant and cfg.is_default then
             cfg.variant = name
         end
     end
@@ -311,14 +326,15 @@ function M.resolve_options(config, configurations, config_name)
         end
     end
 
-    -- 2. Walk inheritance chain (base first)
+    -- 2. Walk inheritance chain (bases first, left-to-right, depth-first)
     local function apply_inherited(name, visited)
         if visited[name] then return end -- circular guard
         visited[name] = true
         local cfg = configurations[name]
         if not cfg then return end
-        if cfg.inherits then
-            apply_inherited(cfg.inherits, visited)
+        local bases = normalize_inherits(cfg.inherits)
+        for _, base_name in ipairs(bases) do
+            apply_inherited(base_name, visited)
         end
         if cfg.options then
             for k, v in pairs(cfg.options) do

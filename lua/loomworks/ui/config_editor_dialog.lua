@@ -28,7 +28,13 @@ local M = {}
 function M.open(opts)
     local name = opts.name
     local variant = opts.variant or ""
-    local inherits = opts.inherits or ""
+    -- Normalize inherits to array
+    local inherits = opts.inherits or {}
+    if type(inherits) == "string" then
+        inherits = inherits ~= "" and { inherits } or {}
+    else
+        inherits = vim.deepcopy(inherits)
+    end
     local options = vim.deepcopy(opts.options or {})
     local toolchain = opts.toolchain or ""
     local generator = opts.generator or ""
@@ -87,33 +93,49 @@ function M.open(opts)
 
         -- Inherits (for custom configs with options support, not for defaults)
         if opts.has_options and not opts.is_default and #opts.available_configs > 0 then
-            local inh_display = inherits ~= "" and inherits or "(none)"
-            -- Resolve display variant from inheritance chain
-            local resolved_variant = ""
-            if inherits ~= "" then
-                for _, c in ipairs(opts.available_configs) do
-                    if c == inherits then
-                        -- The base config's variant is its name (defaults)
-                        resolved_variant = inherits
-                        break
-                    end
-                end
+            local is_abstract = #inherits == 0
+            if is_abstract then
+                t:leaf("Type:      abstract (mixin only, not buildable)", "DiagnosticWarn")
             end
-            local variant_hint = resolved_variant ~= ""
-                and ("  → " .. resolved_variant) or ""
-            t:item("Inherits   " .. inh_display .. variant_hint .. " ▸", {
-                hl = inherits ~= "" and "LoomworksActionable" or "Comment",
+            local inh_display = #inherits > 0
+                and table.concat(inherits, ", ") or "(none — abstract)"
+            t:leaf("Inherits:  " .. inh_display,
+                #inherits > 0 and "LoomworksActionable" or "Comment")
+
+            -- Show each base with a remove action
+            for i, base in ipairs(inherits) do
+                local idx = i
+                t:item("  " .. base, {
+                    hl = "LoomworksActionable",
+                    on_delete = function()
+                        table.remove(inherits, idx)
+                        if view then view:refresh() end
+                    end,
+                })
+            end
+
+            -- Add base button
+            t:item("  ▸ Add base", {
+                hl = "LoomworksActionable",
                 direct = true,
                 on_enter = function()
+                    -- Filter out already-inherited and self
+                    local already = {}
+                    for _, b in ipairs(inherits) do already[b] = true end
                     local items = {}
                     for _, c in ipairs(opts.available_configs) do
-                        if c ~= name then
+                        if c ~= name and not already[c] then
                             items[#items + 1] = c
                         end
                     end
-                    vim.ui.select(items, { prompt = "Inherits:" }, function(choice)
+                    if #items == 0 then
+                        vim.notify("loomworks: no more configs to inherit from",
+                            vim.log.levels.INFO)
+                        return
+                    end
+                    vim.ui.select(items, { prompt = "Add base:" }, function(choice)
                         if choice then
-                            inherits = choice
+                            inherits[#inherits + 1] = choice
                             if view then view:refresh() end
                         end
                     end)
@@ -248,17 +270,11 @@ function M.open(opts)
                 return { refresh = true }
             end
             if name_error then return {} end
-            -- Custom configs with options support must inherit from a base
-            if opts.has_options and not opts.is_default and inherits == "" then
-                vim.notify("loomworks: custom configuration must inherit from a base",
-                    vim.log.levels.ERROR)
-                return {}
-            end
             accepted = true
             view:close()
             opts.on_accept({
                 name = name,
-                inherits = inherits ~= "" and inherits or nil,
+                inherits = #inherits > 0 and (#inherits == 1 and inherits[1] or inherits) or nil,
                 options = options,
                 toolchain = toolchain ~= "" and toolchain or nil,
                 generator = generator ~= "" and generator or nil,

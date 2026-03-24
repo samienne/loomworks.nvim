@@ -383,13 +383,22 @@ return function(tree, ctx)
                             end
                         end
 
-                        local config_hl = config_has_running and "LoomworksRunning" or "LoomworksActionable"
+                        -- Abstract configs have no variant (mixin only)
+                        local is_abstract = not cdata.variant
+                        local config_hl = is_abstract and "Comment"
+                                or (config_has_running and "LoomworksRunning" or "LoomworksActionable")
 
                         local brief = {}
-                        if cdata.variant and cdata.variant ~= cname then
+                        if is_abstract then
+                            brief[#brief + 1] = "abstract"
+                        elseif cdata.variant and cdata.variant ~= cname then
                             brief[#brief + 1] = cdata.variant
                         end
-                        if cdata.inherits then brief[#brief + 1] = "inherits: " .. cdata.inherits end
+                        if cdata.inherits then
+                            local inh = cdata.inherits
+                            if type(inh) == "table" then inh = table.concat(inh, ", ") end
+                            brief[#brief + 1] = "inherits: " .. inh
+                        end
                         if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
                         if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
                         local brief_str = #brief > 0
@@ -404,16 +413,29 @@ return function(tree, ctx)
                                 and ws_proj.type_config.configurations[cname] ~= nil
                         tree:node(cname .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
-                            spinning = config_has_running,
+                            spinning = not is_abstract and config_has_running or false,
                             hl = config_hl,
                             enter_label = "Edit configuration",
                             on_enter = function() edit_project_configuration(pkey, cfg_name) end,
                             on_delete = has_user_entry
                                     and function() delete_project_configuration(pkey, cfg_name) end
-                                    or (not has_tool_entries
+                                    or (not is_abstract and not has_tool_entries
                                         and actions.delete_config(lw.get_config_unit(key, cname))
                                         or nil),
                         }, function()
+                            if is_abstract then
+                                tree:leaf("Abstract mixin — not directly buildable", "Comment")
+                                if cdata.options and next(cdata.options) then
+                                    local opt_keys = {}
+                                    for k in pairs(cdata.options) do opt_keys[#opt_keys + 1] = k end
+                                    table.sort(opt_keys)
+                                    for _, k in ipairs(opt_keys) do
+                                        tree:leaf(k .. "=" .. cdata.options[k], "Comment")
+                                    end
+                                end
+                                return
+                            end
+
                             if cdata.toolchain then
                                 tree:leaf("Toolchain: " .. tostring(cdata.toolchain), "Comment")
                             end

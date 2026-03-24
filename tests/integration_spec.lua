@@ -1216,7 +1216,7 @@ describe("project configuration lifecycle", function()
         local ctx = wv.compute_edit_configuration_context(ws, "App", "Debug-ASAN")
         assert.is_not_nil(ctx)
         assert.equals("Debug-ASAN", ctx.name)
-        assert.equals("Debug", ctx.inherits)
+        assert.equals("Debug", ctx.inherits[1] or ctx.inherits)
         assert.equals("ON", ctx.options.ASAN)
         assert.is_true(ctx.has_options)
     end)
@@ -1298,5 +1298,72 @@ describe("cmake options resolution", function()
         -- Should not infinite loop
         local opts = cmake.resolve_options({}, configs, "A")
         assert.equals("1", opts.X)
+    end)
+
+    it("multi-inheritance merges left-to-right", function()
+        local configs = {
+            Debug = { variant = "Debug", options = { BUILD_TYPE = "Debug" } },
+            asan = { options = { SANITIZE_ADDRESS = "ON", SANITIZE_UNDEFINED = "ON" } },
+            ["Debug-ASAN"] = {
+                inherits = { "Debug", "asan" },
+                options = { EXTRA = "yes" },
+            },
+        }
+        local opts = cmake.resolve_options({}, configs, "Debug-ASAN")
+        -- Debug options
+        assert.equals("Debug", opts.BUILD_TYPE)
+        -- asan options
+        assert.equals("ON", opts.SANITIZE_ADDRESS)
+        assert.equals("ON", opts.SANITIZE_UNDEFINED)
+        -- Own options
+        assert.equals("yes", opts.EXTRA)
+    end)
+
+    it("multi-inheritance: later base overrides earlier", function()
+        local configs = {
+            base1 = { options = { SHARED = "from-base1", ONLY1 = "yes" } },
+            base2 = { options = { SHARED = "from-base2", ONLY2 = "yes" } },
+            child = {
+                inherits = { "base1", "base2" },
+                options = {},
+            },
+        }
+        local opts = cmake.resolve_options({}, configs, "child")
+        -- base2 overrides base1 for shared key
+        assert.equals("from-base2", opts.SHARED)
+        assert.equals("yes", opts.ONLY1)
+        assert.equals("yes", opts.ONLY2)
+    end)
+
+    it("multi-inheritance: child overrides all bases", function()
+        local configs = {
+            Debug = { variant = "Debug", options = { OPT = "debug" } },
+            asan = { options = { OPT = "asan" } },
+            child = {
+                inherits = { "Debug", "asan" },
+                options = { OPT = "child" },
+            },
+        }
+        local opts = cmake.resolve_options({}, configs, "child")
+        assert.equals("child", opts.OPT)
+    end)
+
+    it("resolve_configurations: multi-inherit gets variant from first base with variant", function()
+        local cmake_mod = require("loomworks.modules.cmake")
+        local defaults = { Debug = { variant = "Debug" }, Release = { variant = "Release" } }
+        local config = {
+            configurations = {
+                asan = { options = { ASAN = "ON" } },  -- mixin, no variant
+                ["Debug-ASAN"] = { inherits = { "Debug", "asan" } },
+            },
+        }
+        local resolved = cmake_mod.resolve_configurations(defaults, config)
+
+        -- Debug-ASAN gets variant from Debug (first base with variant)
+        assert.equals("Debug", resolved["Debug-ASAN"].variant)
+        -- asan has no variant (abstract mixin)
+        assert.is_nil(resolved["asan"].variant)
+        -- Debug is still a default
+        assert.equals("Debug", resolved["Debug"].variant)
     end)
 end)
