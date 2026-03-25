@@ -1,10 +1,24 @@
 local h = require("tests.helpers")
 local ConfigUnit = require("loomworks.config_unit")
+local Project = require("loomworks.project")
 
 describe("ConfigUnit", function()
+    --- Helper: ensure a Project exists in the mock workspace registry.
+    local function ensure_project(core, project_key, type_name)
+        type_name = type_name or "cmake"
+        if not core._projects[project_key] then
+            core._projects[project_key] = Project.new(core, project_key, {
+                type = type_name, path = project_key, status = "unconfigured",
+                configurations = {}, cached_configurations = {},
+            })
+        end
+        return core._projects[project_key]
+    end
+
     local function make_unit(core_overrides)
         local core = h.make_mock_core(core_overrides)
-        local unit = core:get_config_unit("App", "Debug")
+        local project = ensure_project(core, "App")
+        local unit = core:ensure_config_unit(project, "Debug", nil)
         return unit, core
     end
 
@@ -19,17 +33,20 @@ describe("ConfigUnit", function()
     describe("registry", function()
         it("returns same instance for same key pair", function()
             local core = h.make_mock_core()
-            local u1 = core:get_config_unit("App", "Debug")
-            local u2 = core:get_config_unit("App", "Debug")
+            local project = ensure_project(core, "App")
+            local u1 = core:ensure_config_unit(project, "Debug", nil)
+            local u2 = core:ensure_config_unit(project, "Debug", nil)
             assert.equals(u1, u2)
             assert.is_true(rawequal(u1, u2))
         end)
 
         it("returns different instances for different keys", function()
             local core = h.make_mock_core()
-            local u1 = core:get_config_unit("App", "Debug")
-            local u2 = core:get_config_unit("App", "Release")
-            local u3 = core:get_config_unit("Lib", "Debug")
+            local app = ensure_project(core, "App")
+            local lib = ensure_project(core, "Lib")
+            local u1 = core:ensure_config_unit(app, "Debug", nil)
+            local u2 = core:ensure_config_unit(app, "Release", nil)
+            local u3 = core:ensure_config_unit(lib, "Debug", nil)
             assert.is_false(rawequal(u1, u2))
             assert.is_false(rawequal(u1, u3))
         end)
@@ -283,7 +300,8 @@ describe("ConfigUnit", function()
         it("returns elapsed time from clock", function()
             local time = 100
             local ws = h.make_mock_core({ _core = { _deps = { clock = function() return time end } } })
-            local unit = ws:get_config_unit("App", "Debug")
+            local project = ensure_project(ws, "App")
+            local unit = ws:ensure_config_unit(project, "Debug", nil)
 
             unit:register_task(1, "build")
             time = 105
@@ -293,7 +311,8 @@ describe("ConfigUnit", function()
 
     describe("cached_state", function()
         it("returns nil when no workspace", function()
-            local unit = make_unit()
+            -- Create a bare ConfigUnit without a workspace to test nil case
+            local unit = ConfigUnit.new(nil, "App/Debug", "App")
             assert.is_nil(unit:cached_state())
         end)
 
@@ -420,8 +439,9 @@ describe("ConfigUnit", function()
     describe("shared state across profiles", function()
         it("same unit visible from two profiles", function()
             local core = h.make_mock_core()
-            local u1 = core:get_config_unit("App", "debug")
-            local u2 = core:get_config_unit("App", "debug")
+            local project = ensure_project(core, "App")
+            local u1 = core:ensure_config_unit(project, "debug", nil)
+            local u2 = core:ensure_config_unit(project, "debug", nil)
 
             u1:register_task(1, "configure")
             assert.equals("configuring", u2:state())
@@ -443,14 +463,17 @@ describe("ConfigUnit", function()
                     },
                 },
             })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._config_units["App/Debug"]
+                or ConfigUnit.new(core, "App/Debug", "App")
+            core._config_units["App/Debug"] = unit
             assert.is_not_nil(unit._cached)
             assert.equals("Debug", unit._cached.variant)
         end)
 
         it("_cached is nil when no cache entry exists", function()
             local core = h.make_mock_core()
-            local unit = core:get_config_unit("App", "Debug")
+            -- Create a bare ConfigUnit without a cache entry to test nil case
+            local unit = ConfigUnit.new(core, "App/Debug", "App")
             assert.is_nil(unit._cached)
         end)
 
@@ -469,7 +492,9 @@ describe("ConfigUnit", function()
                     },
                 },
             })
-            local unit = core:get_config_unit("App", "cfg-1")
+            local unit = core._config_units["App/cfg-1"]
+                or ConfigUnit.new(core, "App/cfg-1", "App")
+            core._config_units["App/cfg-1"] = unit
             assert.is_not_nil(unit._cached)
             assert.equals("Debug", unit._cached.variant)
             assert.equals("ninja-gcc", unit._cached.tool_key)

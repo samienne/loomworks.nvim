@@ -110,16 +110,41 @@ function M.make_mock_workspace(overrides)
         _build_dir_locks = overrides._build_dir_locks or {},
     }
 
-    -- Add get_config_unit method (same logic as Workspace:get_config_unit)
+    -- Add config unit methods (same logic as Workspace)
     local ConfigUnit = require("loomworks.config_unit")
     local cache_mod_h = require("loomworks.cache")
-    ws.get_config_unit = function(self, project_key, config_key)
-        local id = cache_mod_h.config_cache_key(project_key, config_key)
-        local unit = self._config_units[id]
-        if not unit then
-            unit = ConfigUnit.new(self, id, project_key, config_key)
-            self._config_units[id] = unit
+    local merge_h = require("loomworks.merge")
+    ws.find_config_unit = function(self, project, variant, tool)
+        for _, unit in pairs(self._config_units) do
+            if unit._project == project
+                    and unit._cached and unit._cached.variant == variant
+                    and unit._tool == tool then
+                return unit
+            end
         end
+        return nil
+    end
+    ws.ensure_config_unit = function(self, project, variant, tool)
+        local existing = self:find_config_unit(project, variant, tool)
+        if existing then return existing end
+        local tool_key = tool and tool.key or nil
+        local config_key = merge_h.build_config_key(variant, tool_key)
+        local id = cache_mod_h.config_cache_key(project.key, config_key)
+        local by_id = self._config_units[id]
+        if by_id then return by_id end
+        self.cache.configurations = self.cache.configurations or {}
+        if not self.cache.configurations[id] then
+            self.cache.configurations[id] = {
+                project_key = project.key,
+                config_key = config_key,
+                type = project.type,
+                variant = variant,
+                tool_key = tool_key,
+                tool_data = tool and tool.data or nil,
+            }
+        end
+        local unit = ConfigUnit.new(self, id, project.key)
+        self._config_units[id] = unit
         return unit
     end
 

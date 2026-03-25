@@ -180,6 +180,7 @@ function M.delete_orphaned_config(unit)
                 project_key = pkey,
                 config_key = ckey,
                 disposition = "clean",
+                unit = unit,
             } },
             defined_in_config = false,
         }

@@ -30,6 +30,15 @@ describe("Profile", function()
                 configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
             })
         end
+        -- Ensure ConfigUnits exist for cached configurations so ProfileProject resolves them
+        local ConfigUnit = require("loomworks.config_unit")
+        if core.cache and core.cache.configurations then
+            for id, entry in pairs(core.cache.configurations) do
+                if not core._config_units[id] then
+                    core._config_units[id] = ConfigUnit.new(core, id, entry.project_key)
+                end
+            end
+        end
         local data = vim.tbl_deep_extend("force", {
             configuration_set = "debug",
             tools = nil,
@@ -191,7 +200,7 @@ describe("Profile", function()
 
         it("returns true when profile has running action", function()
             local p, core = make_profile()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:register_task(1, "build")
             assert.is_true(p:is_running())
         end)
@@ -269,7 +278,7 @@ describe("Profile", function()
 
         it("shows running status with number first", function()
             local p, core = make_profile()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:register_task(1, "build")
             local label, hl = p:status()
             assert.matches("1 building", label)
@@ -278,7 +287,7 @@ describe("Profile", function()
 
         it("shows deleting status with number first", function()
             local p, core = make_profile()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:mark_deleting(true)
             local label, hl = p:status()
             assert.matches("1/2 deleting", label)
@@ -410,6 +419,11 @@ describe("ProfileProject", function()
             type = "cmake", path = "App", status = "unconfigured",
             configurations = {}, cached_configurations = {},
         })
+        -- Ensure ConfigUnit exists so ProfileProject resolves it
+        local ConfigUnit = require("loomworks.config_unit")
+        if not core._config_units["App/Debug"] then
+            core._config_units["App/Debug"] = ConfigUnit.new(core, "App/Debug", "App")
+        end
         local tools = tool_key and { cmake = { key = tool_key } } or nil
         local data = {
             configuration_set = "debug",
@@ -436,21 +450,21 @@ describe("ProfileProject", function()
 
         it("returns deleting when unit is marked deleting", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:mark_deleting(true)
             assert.equals("deleting", pp:status())
         end)
 
         it("returns configuring when configure task is running", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:register_task(1, "configure")
             assert.equals("configuring", pp:status())
         end)
 
         it("returns building when build task is running", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:register_task(1, "build")
             assert.equals("building", pp:status())
         end)
@@ -464,7 +478,7 @@ describe("ProfileProject", function()
 
         it("returns the action from the ConfigUnit", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:register_task(1, "build")
             assert.equals("build", pp:running_action())
         end)
@@ -489,6 +503,11 @@ describe("ProfileProject", function()
                 type = "cmake", path = "App", status = "unconfigured",
                 configurations = {}, cached_configurations = {},
             })
+            -- Ensure ConfigUnit exists before ProfileProject construction
+            local ConfigUnit = require("loomworks.config_unit")
+            if not core._config_units["App/Debug"] then
+                core._config_units["App/Debug"] = ConfigUnit.new(core, "App/Debug", "App")
+            end
             local Profile = require("loomworks.profile").Profile
             local p1 = Profile.new(core, "debug:ninja-gcc", {
                 configuration_set = "debug",
@@ -508,7 +527,7 @@ describe("ProfileProject", function()
                 h.finalize_profile(p)
             end
             -- Start a task on the shared unit
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:register_task(1, "build")
             -- Both profiles see it
             assert.equals("build", p1:project("App"):running_action())
@@ -524,7 +543,7 @@ describe("ProfileProject", function()
 
         it("returns true when unit is marked deleting", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
             unit:mark_deleting(true)
             assert.is_true(pp:is_deleting())
         end)

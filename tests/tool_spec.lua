@@ -143,6 +143,9 @@ describe("Workspace Tool registry", function()
 end)
 
 describe("ConfigUnit accessor methods", function()
+    local ConfigUnit = require("loomworks.config_unit")
+    local Project = require("loomworks.project")
+
     it("tool_object() returns Tool domain object", function()
         local ws = h.make_mock_workspace({
             cache = {
@@ -158,18 +161,24 @@ describe("ConfigUnit accessor methods", function()
             },
         })
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
-        local unit = ws:get_config_unit("App", "Debug:ninja-gcc")
+        local unit = ws._config_units["App/Debug:ninja-gcc"]
+            or ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
+        ws._config_units["App/Debug:ninja-gcc"] = unit
         assert.is_true(rawequal(tool, unit:tool_object()))
     end)
 
     it("tool_object() returns nil when no tool", function()
         local ws = h.make_mock_workspace()
-        local unit = ws:get_config_unit("App", "Debug")
+        local project = Project.new(ws, "App", {
+            type = "cmake", path = "App", status = "unconfigured",
+            configurations = {}, cached_configurations = {},
+        })
+        ws._projects["App"] = project
+        local unit = ws:ensure_config_unit(project, "Debug", nil)
         assert.is_nil(unit:tool_object())
     end)
 
     it("project() returns Project reference", function()
-        local Project = require("loomworks.project")
         local ws = h.make_mock_workspace()
         local project = Project.new(ws, "App", {
             type = "cmake", path = "App", status = "unconfigured",
@@ -183,12 +192,13 @@ describe("ConfigUnit accessor methods", function()
                 },
             },
         }
-        local unit = ws:get_config_unit("App", "Debug")
+        local unit = ws._config_units["App/Debug"]
+            or ConfigUnit.new(ws, "App/Debug", "App")
+        ws._config_units["App/Debug"] = unit
         assert.is_true(rawequal(project, unit:project()))
     end)
 
     it("configuration() returns Configuration reference", function()
-        local Project = require("loomworks.project")
         local ws = h.make_mock_workspace({
             cache = {
                 configurations = {
@@ -205,7 +215,9 @@ describe("ConfigUnit accessor methods", function()
             cached_configurations = {},
         })
         ws._projects["App"] = project
-        local unit = ws:get_config_unit("App", "Debug")
+        local unit = ws._config_units["App/Debug"]
+            or ConfigUnit.new(ws, "App/Debug", "App")
+        ws._config_units["App/Debug"] = unit
         local cfg = unit:configuration()
         assert.is_not_nil(cfg)
         assert.equals("Debug", cfg.name)
@@ -226,7 +238,9 @@ describe("ConfigUnit accessor methods", function()
             },
         })
         ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "Ninja + GCC")
-        local unit = ws:get_config_unit("App", "Debug:ninja-gcc")
+        local unit = ws._config_units["App/Debug:ninja-gcc"]
+            or ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
+        ws._config_units["App/Debug:ninja-gcc"] = unit
         local ref = unit:resolve_tool()
         assert.is_not_nil(ref)
         assert.equals("ninja-gcc", ref.key)
@@ -236,6 +250,8 @@ describe("ConfigUnit accessor methods", function()
 end)
 
 describe("ConfigUnit _tool resolution", function()
+    local ConfigUnit = require("loomworks.config_unit")
+
     it("resolves _tool from workspace registry", function()
         local ws = h.make_mock_workspace({
             cache = {
@@ -253,7 +269,9 @@ describe("ConfigUnit _tool resolution", function()
         -- Pre-populate tool registry
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
 
-        local unit = ws:get_config_unit("App", "Debug:ninja-gcc")
+        local unit = ws._config_units["App/Debug:ninja-gcc"]
+            or ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
+        ws._config_units["App/Debug:ninja-gcc"] = unit
         assert.is_not_nil(unit._tool)
         assert.is_true(rawequal(tool, unit._tool))
     end)
@@ -270,7 +288,9 @@ describe("ConfigUnit _tool resolution", function()
                 },
             },
         })
-        local unit = ws:get_config_unit("App", "Debug")
+        local unit = ws._config_units["App/Debug"]
+            or ConfigUnit.new(ws, "App/Debug", "App")
+        ws._config_units["App/Debug"] = unit
         assert.is_nil(unit._tool)
     end)
 end)

@@ -838,7 +838,7 @@ describe("collect helpers", function()
                 },
             }
         )
-        local unit = ws:get_config_unit("App", "Debug")
+        local unit = ws._config_units["App/Debug"]
         local items = wv.collect_clean_items_for_unit(unit)
         assert.equals(1, #items)
         assert.equals("App", items[1].project_key)

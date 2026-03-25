@@ -49,7 +49,7 @@ describe("Project", function()
             local p = make_project(nil, nil, core)
             -- Register the project so ConfigUnit._project resolves
             core._projects["App"] = p
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(p, "Debug", nil)
             unit:_update()
             unit:register_task(1, "build")
             assert.equals("build", p:running_action())
@@ -63,6 +63,7 @@ describe("Project", function()
         end)
 
         it("checks via ConfigUnit with computed cache key", function()
+            local ConfigUnit = require("loomworks.config_unit")
             local core = h.make_mock_core({
                 cache = {
                     configurations = {
@@ -75,7 +76,9 @@ describe("Project", function()
             })
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
             core._projects["App"] = p
-            local unit = core:get_config_unit("App", "Debug:ninja-gcc")
+            local unit = core._config_units["App/Debug:ninja-gcc"]
+                or ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
+            core._config_units["App/Debug:ninja-gcc"] = unit
             unit:_update()
             unit:mark_deleting(true)
             assert.is_true(p:is_deleting_config("Debug"))
@@ -84,6 +87,7 @@ describe("Project", function()
 
     describe("config_running_action", function()
         it("delegates to ConfigUnit with computed cache key", function()
+            local ConfigUnit = require("loomworks.config_unit")
             local core = h.make_mock_core({
                 cache = {
                     configurations = {
@@ -96,7 +100,9 @@ describe("Project", function()
             })
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
             core._projects["App"] = p
-            local unit = core:get_config_unit("App", "Debug:ninja-gcc")
+            local unit = core._config_units["App/Debug:ninja-gcc"]
+                or ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
+            core._config_units["App/Debug:ninja-gcc"] = unit
             unit:_update()
             unit:register_task(1, "configure")
             assert.equals("configure", p:config_running_action("Debug"))

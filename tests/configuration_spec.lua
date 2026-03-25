@@ -266,13 +266,17 @@ describe("ConfigUnit _configuration resolution", function()
         })
         ws._projects["App"] = project
 
-        local unit = ws:get_config_unit("App", "Debug")
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ws._config_units["App/Debug"]
+            or ConfigUnit.new(ws, "App/Debug", "App")
+        ws._config_units["App/Debug"] = unit
         assert.is_not_nil(unit._configuration)
         assert.equals("Debug", unit._configuration.name)
         assert.equals("Debug", unit._configuration.module_config.variant)
     end)
 
     it("_configuration is nil when variant not in project configs", function()
+        local ConfigUnit = require("loomworks.config_unit")
         local ws = h.make_mock_workspace({
             cache = {
                 configurations = {
@@ -294,7 +298,9 @@ describe("ConfigUnit _configuration resolution", function()
         })
         ws._projects["App"] = project
 
-        local unit = ws:get_config_unit("App", "OldConfig")
+        local unit = ws._config_units["App/OldConfig"]
+            or ConfigUnit.new(ws, "App/OldConfig", "App")
+        ws._config_units["App/OldConfig"] = unit
         assert.is_nil(unit._configuration)
     end)
 end)

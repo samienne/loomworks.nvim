@@ -301,11 +301,9 @@ local function start_one_task(overseer, task_def, on_complete)
             -- This order ensures that when unregister fires ConfigUnit
             -- listeners, the cache already reflects the final state.
             if status ~= "CANCELED" then
-                local cached = unit._cached
                 unit._workspace:record_task_result({
-                    project_key = unit._project and unit._project.key or (cached and cached.project_key),
+                    unit = unit,
                     action = lw_meta.action,
-                    configuration_key = cached and cached.config_key,
                     variant = lw_meta.variant,
                     tool = lw_meta.tool,
                     build_dir = lw_meta.build_dir,

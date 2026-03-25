@@ -389,6 +389,7 @@ function ConfigUnit:plan_deletion()
         config_key = config_key,
         build_dir = self:build_dir(),
         disposition = has_ref and "reset" or "clean",
+        unit = self,
     } }
 
     local defined_in_config = self._project ~= nil and not self._project._removed
@@ -435,7 +436,7 @@ function ConfigUnit:clean(on_done)
     local cached = self._cached
     local project_key = self._project and self._project.key or (cached and cached.project_key)
     local config_key = cached and cached.config_key
-    local items = { { project_key = project_key, config_key = config_key } }
+    local items = { { project_key = project_key, config_key = config_key, unit = self } }
 
     -- Cancel conflicting operations
     ws:cancel_conflicting_operations({ self })

@@ -43,8 +43,8 @@ function ProfileProject:_update(profile, variant)
     self._cached = nil
     self._config_unit = nil
 
-    -- Resolve cached entry from the profile's cached configurations array.
-    -- The cache entry is the authoritative source for the config_key.
+    -- Resolve cached entry and ConfigUnit from the profile's cached configurations array.
+    -- The cache entry is the authoritative source; ck is the ConfigUnit's id.
     local cache = self._workspace.cache
     if profile._cached_configurations and cache and cache.configurations then
         for _, ck in ipairs(profile._cached_configurations) do
@@ -52,14 +52,10 @@ function ProfileProject:_update(profile, variant)
             if entry and entry.project_key == project_key
                     and entry.variant == variant then
                 self._cached = entry
+                self._config_unit = self._workspace._config_units[ck]
                 break
             end
         end
-    end
-
-    -- Resolve ConfigUnit if we have a cached entry with config_key
-    if self._cached and self._cached.config_key then
-        self._config_unit = self._workspace:get_config_unit(project_key, self._cached.config_key)
     end
 end
 
@@ -655,6 +651,7 @@ function Profile:clean(on_done)
         items[#items + 1] = {
             project_key = pp._project and pp._project.key or (pp_cached and pp_cached.project_key),
             config_key = pp_cached and pp_cached.config_key,
+            unit = pp._config_unit,
         }
         units[#units + 1] = pp._config_unit
         target_states[pp._config_unit] = "configured"

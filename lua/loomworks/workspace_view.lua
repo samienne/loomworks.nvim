@@ -922,6 +922,7 @@ function M.collect_clean_items(profile)
             project_key = pp._project and pp._project.key or (pp_cached and pp_cached.project_key),
             config_key = pp_cached and pp_cached.config_key,
             build_dir = pp:build_dir(),
+            unit = pp._config_unit,
         }
     end
     return items
@@ -936,6 +937,7 @@ function M.collect_clean_items_for_unit(unit)
         project_key = unit._project and unit._project.key or (cached and cached.project_key),
         config_key = cached and cached.config_key,
         build_dir = unit:build_dir(),
+        unit = unit,
     } }
 end
 

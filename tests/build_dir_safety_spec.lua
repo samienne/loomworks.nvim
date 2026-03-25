@@ -240,8 +240,8 @@ describe("deletion safety with shared dirs", function()
         -- Delete both configs — dir should be deleted
         local done = false
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir },
-            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir, unit = ws._config_units["App/Debug:ninja-gcc"] },
+            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir, unit = ws._config_units["App/Release:ninja-gcc"] },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()
@@ -276,7 +276,7 @@ describe("deletion safety with shared dirs", function()
 
         local done = false
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir, unit = ws._config_units["App/Debug:ninja-gcc"] },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()

@@ -447,28 +447,17 @@ return function(tree, ctx)
                             -- No ConfigUnit yet — find or create one for this variant + tool
                             -- (on-demand creation for uncached detected tools)
                             local ws = project._workspace
-                            local merge = ws._core._deps.merge
-                            local ck = merge.build_config_key(cfg_name, entry.tool_key)
-                            local unit = ws:get_config_unit(project.key, ck)
-                            -- Materialize with the variant and tool so cache entry exists
-                            unit:materialize(cfg_name, entry.tool_key and { key = entry.tool_key } or nil)
-                            return unit
+                            local tool_obj = entry.tool_key and ws:find_tool(project.type, entry.tool_key) or nil
+                            return ws:ensure_config_unit(project, cfg_name, tool_obj)
                         end
 
                         local function with_tool_picker(action_name, action_fn, filter)
                             return function()
                                 if not has_tool_entries then
                                     -- Non-keyed module: find or create unit for this variant
-                                    local units = project:config_units_for_variant(cfg_name)
-                                    if #units > 0 then
-                                        action_fn(units[1])
-                                    else
-                                        -- Create on demand and materialize so cache has variant
-                                        local ws = project._workspace
-                                        local unit = ws:get_config_unit(project.key, cfg_name)
-                                        unit:materialize(cfg_name)
-                                        action_fn(unit)
-                                    end
+                                    local ws = project._workspace
+                                    local unit = ws:ensure_config_unit(project, cfg_name, nil)
+                                    action_fn(unit)
                                     return
                                 end
                                 local entries = tool_entries
