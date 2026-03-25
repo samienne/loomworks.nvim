@@ -128,9 +128,7 @@ end
 --- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
 function M.resolve_config_status(pp, cached)
-    local lw = require("loomworks")
-    local unit = lw.get_config_unit(pp.project_key, pp.config_key)
-    return M.resolve_unit_status(unit)
+    return M.resolve_unit_status(pp._config_unit)
 end
 
 --- Resolve the live status for a ConfigUnit (profile-agnostic).

@@ -495,7 +495,7 @@ function M._pick_target(profile, on_select)
 
     -- Collect executable targets from all projects in the profile
     for _, pp in ipairs(profile:projects()) do
-        local unit = M.get_config_unit(pp.project_key, pp.config_key)
+        local unit = pp._config_unit
         if unit and unit.targets then
             local project = pp._project
             if project then

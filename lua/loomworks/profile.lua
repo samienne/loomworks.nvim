@@ -471,7 +471,7 @@ function Profile:status()
         local all_cleaning = true
         for _, pp in ipairs(pps) do
             if pp:status() == "deleting" then
-                local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
+                local unit = pp._config_unit
                 if unit:deleting_reason() ~= "cleaning" then
                     all_cleaning = false
                     break
