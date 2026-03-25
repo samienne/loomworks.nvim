@@ -49,18 +49,15 @@ end
 --- Build a launch expansion context from workspace state.
 --- @param ws loomworks.Workspace
 --- @param profile loomworks.Profile
---- @param project_key string
+--- @param project loomworks.Project
 --- @return table<string, string>
-function M.launch_context(ws, profile, project_key)
+function M.launch_context(ws, profile, project)
     local ctx = {
         workspace_root = ws.root,
     }
 
     -- Project path
-    local proj_cfg = ws.config.projects[project_key]
-    if proj_cfg then
-        ctx.project_path = proj_cfg.path or project_key
-    end
+    ctx.project_path = project.path or project.key
 
     -- Configuration set name
     if profile.configuration_set then
@@ -68,8 +65,8 @@ function M.launch_context(ws, profile, project_key)
     end
 
     -- Variant for this project in the active config set
-    if profile.mappings and profile.mappings[project_key] then
-        ctx.variant = profile.mappings[project_key]
+    if profile.mappings and profile.mappings[project.key] then
+        ctx.variant = profile.mappings[project.key]
     end
 
     return ctx

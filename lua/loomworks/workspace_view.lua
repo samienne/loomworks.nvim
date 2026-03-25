@@ -120,13 +120,12 @@ function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
         return true
     end
 
+    -- add_project just created this project — resolve from registry at creation boundary
     local project = ws._projects[key]
-    for set_name, variant in pairs(result.mappings) do
-        if variant then
-            local cs = ws._config_sets[set_name]
-            if cs and project then
-                cs:update_mapping(project, variant)
-            end
+    for _, cs in pairs(ws._config_sets) do
+        local variant = result.mappings[cs.name]
+        if variant and project then
+            cs:update_mapping(project, variant)
         end
     end
 
@@ -185,10 +184,10 @@ end
 --- @param project_key string
 --- @return { project_type: string, downgrade_preview: table[], cached_configs: table[], lines: string[], highlights: table[] }|nil
 function M.compute_remove_context(ws, project_key)
-    local proj = ws.config.projects[project_key]
-    if not proj then return nil end
+    local project = ws._projects[project_key]
+    if not project then return nil end
 
-    local proj_type = proj.type
+    local proj_type = project.type
     local downgrade_preview = ws:compute_downgrade_preview(project_key)
     local cached_configs = M.collect_project_configs(ws, project_key)
 
@@ -407,12 +406,12 @@ function M.compute_create_config_set_context(ws)
     local auto_mappings = {}
     local available_configs = {}
 
-    for key, proj_config in pairs(ws.config.projects) do
+    for key, project in pairs(ws._projects) do
         project_keys[#project_keys + 1] = key
-        local mod = modules.get(proj_config.type)
+        local mod = modules.get(project.type)
         if mod and mod.info then
-            local abs_path = ws.root .. "/" .. (proj_config.path or key)
-            local info = mod.info(abs_path, proj_config.type_config)
+            local abs_path = ws.root .. "/" .. (project.path or key)
+            local info = mod.info(abs_path, project.type_config)
             if info and info.configurations then
                 local names = {}
                 for name in pairs(info.configurations) do
@@ -465,14 +464,14 @@ function M.compute_edit_config_set_context(ws, set_name)
     local available_configs = {}
     local project_keys = {}
 
-    for key, proj_config in pairs(ws.config.projects) do
+    for key, project in pairs(ws._projects) do
         project_keys[#project_keys + 1] = key
         mappings[key] = raw_mappings[key] or nil
 
-        local mod = modules.get(proj_config.type)
+        local mod = modules.get(project.type)
         if mod and mod.info then
-            local abs_path = ws.root .. "/" .. (proj_config.path or key)
-            local info = mod.info(abs_path, proj_config.type_config)
+            local abs_path = ws.root .. "/" .. (project.path or key)
+            local info = mod.info(abs_path, project.type_config)
             if info and info.configurations then
                 local names = {}
                 for name in pairs(info.configurations) do
@@ -497,13 +496,14 @@ function M.compute_edit_config_set_context(ws, set_name)
 end
 
 --- Execute config set edit: apply changed mappings, optionally rename.
---- @param ws loomworks.Workspace
---- @param old_name string original config set name
---- @param new_name string new name (same as old_name if not renamed)
+--- @param cs loomworks.ConfigurationSet the config set to edit
+--- @param new_name string new name (same as cs.name if not renamed)
 --- @param new_mappings table<string, string|nil>
 --- @param old_mappings table<string, string|nil>
 --- @return boolean ok, string|nil err
-function M.execute_edit_config_set(ws, old_name, new_name, new_mappings, old_mappings)
+function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
+    local ws = cs._workspace
+    local old_name = cs.name
     local renamed = new_name ~= old_name
 
     if renamed then
@@ -514,8 +514,6 @@ function M.execute_edit_config_set(ws, old_name, new_name, new_mappings, old_map
     end
 
     -- Apply mapping changes to existing set
-    local cs = ws._config_sets[old_name]
-    if not cs then return false, "configuration set '" .. old_name .. "' not found" end
     for key, new_variant in pairs(new_mappings) do
         local old_variant = old_mappings[key]
         if new_variant ~= old_variant then
@@ -853,8 +851,7 @@ end
 --- @param basename string directory basename
 --- @return string|nil project_key
 function M.find_project_key_by_path(ws, rel_path, basename)
-    if not ws.config or not ws.config.projects then return nil end
-    for key, proj in pairs(ws.config.projects) do
+    for key, proj in pairs(ws._projects) do
         local proj_rel = proj.path or key
         if proj_rel == rel_path or proj_rel == basename then
             return key
@@ -1158,21 +1155,21 @@ end
 -- =========================================================================
 
 --- Context for editing a project configuration.
---- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @param config_name string|nil nil for new configuration
 --- @return table context
-function M.compute_edit_configuration_context(ws, project_key, config_name)
-    local proj = ws.config.projects[project_key]
-    if not proj then return nil end
+function M.compute_edit_configuration_context(project, config_name)
+    local ws = project._workspace
+    local project_key = project.key
+    local type_config = project.type_config or {}
 
-    local mod = modules.get(proj.type)
-    local abs_path = ws.root .. "/" .. (proj.path or project_key)
+    local mod = modules.get(project.type)
+    local abs_path = ws.root .. "/" .. (project.path or project_key)
     local defaults = mod and mod.default_configurations
-        and mod.default_configurations(abs_path, proj.type_config or {}) or {}
+        and mod.default_configurations(abs_path, type_config) or {}
 
     -- Build list of available configs for the "inherits" picker
-    local mod_info = mod and mod.info and mod.info(abs_path, proj.type_config or {})
+    local mod_info = mod and mod.info and mod.info(abs_path, type_config)
         or { configurations = {} }
     local available_configs = {}
     for name in pairs(mod_info.configurations or {}) do
@@ -1185,7 +1182,6 @@ function M.compute_edit_configuration_context(ws, project_key, config_name)
     local is_default = false
     if config_name then
         -- Check user overrides first
-        local type_config = proj.type_config or {}
         if type_config.configurations and type_config.configurations[config_name] then
             config_data = type_config.configurations[config_name]
         end
@@ -1200,13 +1196,13 @@ function M.compute_edit_configuration_context(ws, project_key, config_name)
     local variant = resolved_config and resolved_config.variant or (config_name or "")
 
     -- Get project-wide options for display
-    local project_options = (proj.type_config or {}).options or {}
+    local project_options = type_config.options or {}
 
     -- Resolve inherited options with accurate sources
     local inherited_options = {}
     if mod and mod.resolve_options_with_sources and config_name then
         local all_with_sources = mod.resolve_options_with_sources(
-            proj.type_config or {}, mod_info.configurations or {}, config_name)
+            type_config, mod_info.configurations or {}, config_name)
         local own = config_data.options or {}
         for k, info in pairs(all_with_sources) do
             if not own[k] then
@@ -1244,7 +1240,7 @@ function M.compute_edit_configuration_context(ws, project_key, config_name)
 
     return {
         project_key = project_key,
-        project_type = proj.type,
+        project_type = project.type,
         name = config_name or "",
         variant = variant or (config_name or ""),
         variant_source = variant_source,
@@ -1262,21 +1258,17 @@ function M.compute_edit_configuration_context(ws, project_key, config_name)
 end
 
 --- Save a project configuration (create, edit, or rename).
---- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @param old_name string|nil nil for new
 --- @param new_name string
 --- @param data table { variant?, inherits?, options?, toolchain?, generator? }
 --- @return boolean ok, string|nil err
-function M.execute_save_configuration(ws, project_key, old_name, new_name, data)
-    local project = ws._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
-
+function M.execute_save_configuration(project, old_name, new_name, data)
     -- Rename: atomic propagation to config sets, cache entries, and profiles
     if old_name and old_name ~= new_name then
-        local proj = ws.config.projects[project_key]
-        if proj and proj.type_config and proj.type_config.configurations
-                and proj.type_config.configurations[old_name] then
+        local type_config = project.type_config
+        if type_config and type_config.configurations
+                and type_config.configurations[old_name] then
             return project:rename_configuration(old_name, new_name, data)
         end
     end
@@ -1285,24 +1277,18 @@ function M.execute_save_configuration(ws, project_key, old_name, new_name, data)
 end
 
 --- Delete a project configuration.
---- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @param config_name string
 --- @return boolean ok, string|nil err
-function M.execute_delete_configuration(ws, project_key, config_name)
-    local project = ws._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
+function M.execute_delete_configuration(project, config_name)
     return project:delete_configuration(config_name)
 end
 
 --- Save project-wide options.
---- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @param options table<string, string>
 --- @return boolean ok, string|nil err
-function M.execute_save_project_options(ws, project_key, options)
-    local project = ws._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
+function M.execute_save_project_options(project, options)
     return project:save_options(options)
 end
 
@@ -1311,15 +1297,13 @@ end
 -- =========================================================================
 
 --- Get all launch configs for a project.
---- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @return { name: string, config: table }[]
-function M.get_launch_configs(ws, project_key)
-    local proj = ws.config.projects[project_key]
-    if not proj or not proj.launch then return {} end
+function M.get_launch_configs(project)
+    if not project.launch then return {} end
 
     local result = {}
-    for name, config in pairs(proj.launch) do
+    for name, config in pairs(project.launch) do
         result[#result + 1] = { name = name, config = config }
     end
     table.sort(result, function(a, b) return a.name < b.name end)
@@ -1327,21 +1311,19 @@ function M.get_launch_configs(ws, project_key)
 end
 
 --- Context for editing a launch config.
---- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @param launch_name string|nil nil for new config
 --- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string> }
-function M.compute_edit_launch_context(ws, project_key, launch_name)
+function M.compute_edit_launch_context(project, launch_name)
     local config = {}
     if launch_name then
-        local proj = ws.config.projects[project_key]
-        if proj and proj.launch and proj.launch[launch_name] then
-            config = proj.launch[launch_name]
+        if project.launch and project.launch[launch_name] then
+            config = project.launch[launch_name]
         end
     end
 
     return {
-        project_key = project_key,
+        project_key = project.key,
         name = launch_name or "",
         command = config.command or "",
         args = config.args or {},
@@ -1351,16 +1333,12 @@ function M.compute_edit_launch_context(ws, project_key, launch_name)
 end
 
 --- Save a launch config (create or update, with optional rename).
---- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @param old_name string|nil nil for new config
 --- @param new_name string
 --- @param data { command: string, args: string[], working_dir: string, env: table<string, string> }
 --- @return boolean ok, string|nil err
-function M.execute_save_launch_config(ws, project_key, old_name, new_name, data)
-    local project = ws._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
-
+function M.execute_save_launch_config(project, old_name, new_name, data)
     -- Build config table (omit empty fields)
     local config = { command = data.command }
     if data.args and #data.args > 0 then config.args = data.args end
@@ -1377,13 +1355,10 @@ function M.execute_save_launch_config(ws, project_key, old_name, new_name, data)
 end
 
 --- Delete a launch config.
---- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @param launch_name string
 --- @return boolean ok, string|nil err
-function M.execute_delete_launch_config(ws, project_key, launch_name)
-    local project = ws._projects[project_key]
-    if not project then return false, "project '" .. project_key .. "' not found" end
+function M.execute_delete_launch_config(project, launch_name)
     return project:delete_launch_config(launch_name)
 end
 

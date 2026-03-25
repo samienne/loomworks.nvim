@@ -479,9 +479,8 @@ function M._pick_target(profile, on_select)
         for _, pp in ipairs(profile:projects()) do
             local project = pp._project
             if not project then goto next_pp end
-            local proj_cfg = ws.config.projects[project.key]
-            if proj_cfg and proj_cfg.launch then
-                for launch_name, _ in pairs(proj_cfg.launch) do
+            if project.launch then
+                for launch_name, _ in pairs(project.launch) do
                     items[#items + 1] = {
                         label = project.key .. " [launch: " .. launch_name .. "]",
                         project = project,

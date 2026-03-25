@@ -711,13 +711,10 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
     self.cache.configurations = self.cache.configurations or {}
 
     for project, variant in pairs(config_set.mappings) do
-        local project_config = self.config.projects[project.key]
-        if not project_config then goto continue end
-
         -- tool_key applies only to projects whose module type matches the tool
-        local project_tool_key = tools and tools[project_config.type]
-            and tools[project_config.type].key or nil
-        local project_tool_data = project_tool_key and tools[project_config.type].data or nil
+        local project_tool_key = tools and tools[project.type]
+            and tools[project.type].key or nil
+        local project_tool_data = project_tool_key and tools[project.type].data or nil
         local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
 
         local cache_key = self._core._deps.cache.config_cache_key(project.key, config_key)
@@ -728,14 +725,12 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
             self.cache.configurations[cache_key] = {
                 project_key = project.key,
                 config_key = config_key,
-                type = project_config.type,
+                type = project.type,
                 variant = variant,
                 tool_key = project_tool_key,
                 tool_data = project_tool_data,
             }
         end
-
-        ::continue::
     end
 
     -- Write profile to cache
@@ -1023,8 +1018,8 @@ function Workspace:record_task_result(result)
     local cache_key = self._core._deps.cache.config_cache_key(project_key, config_key)
     self.cache.configurations = self.cache.configurations or {}
 
-    local proj_type = self.config.projects[project_key]
-            and self.config.projects[project_key].type or "unknown"
+    local project = self._projects[project_key]
+    local proj_type = project and project.type or "unknown"
 
     if not self.cache.configurations[cache_key] then
         self.cache.configurations[cache_key] = {
@@ -1435,10 +1430,10 @@ function Workspace:_scan_targets_async()
     local units = {}
     local seen_projects = {} -- avoid duplicate project-level scans
     for _, unit in pairs(self._config_units) do
-        local proj_cfg = self.config.projects and self.config.projects[unit.project_key]
-        if not proj_cfg then goto continue end
+        local project = unit._project
+        if not project then goto continue end
 
-        local mod = self._core._deps.modules.get(proj_cfg.type)
+        local mod = self._core._deps.modules.get(project.type)
         if not mod then goto continue end
 
         local build_dir = unit:build_dir()
@@ -1451,7 +1446,7 @@ function Workspace:_scan_targets_async()
         elseif mod.parse_targets_async and not seen_projects[unit.project_key] then
             -- Project-level target scan (e.g., npm scripts) -- once per project
             seen_projects[unit.project_key] = true
-            local abs_path = self.root .. "/" .. (proj_cfg.path or unit.project_key)
+            local abs_path = self.root .. "/" .. (project.path or unit.project_key)
             units[#units + 1] = {
                 unit = unit, mod = mod,
                 scan_type = "project",
@@ -1505,10 +1500,10 @@ function Workspace:_add_launch_config_targets()
     local Target = require("loomworks.target")
 
     for _, unit in pairs(self._config_units) do
-        local proj_cfg = self.config.projects and self.config.projects[unit.project_key]
-        if proj_cfg and proj_cfg.launch then
+        local project = unit._project
+        if project and project.launch then
             unit.targets = unit.targets or {}
-            for name, cfg in pairs(proj_cfg.launch) do
+            for name, cfg in pairs(project.launch) do
                 local launch_key = "launch:" .. name
                 if not unit.targets[launch_key] then
                     unit.targets[launch_key] = Target.new(unit, launch_key, {
@@ -1803,10 +1798,10 @@ function Workspace:_extend_cached_profile(profile_data, tools)
     self.cache.configurations = self.cache.configurations or {}
 
     for project_key, variant in pairs(set_mappings) do
-        local proj_cfg = self.config.projects[project_key]
-        if proj_cfg then
+        local project = self._projects[project_key]
+        if project then
             -- Tool key applies only to projects whose module type matches
-            local project_tool = tools and tools[proj_cfg.type] or nil
+            local project_tool = tools and tools[project.type] or nil
             local project_tool_key = project_tool and project_tool.key or nil
             local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
             local ck = self._core._deps.cache.config_cache_key(project_key, config_key)
@@ -1817,7 +1812,7 @@ function Workspace:_extend_cached_profile(profile_data, tools)
                     self.cache.configurations[ck] = {
                         project_key = project_key,
                         config_key = config_key,
-                        type = proj_cfg.type,
+                        type = project.type,
                         variant = variant,
                         tool_key = project_tool_key,
                         tool_data = project_tool and project_tool.data or nil,
@@ -1895,12 +1890,10 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
 
     -- Only rename profiles whose config set has a project of the tool's module type
     local function should_rename(profile_data)
-        local set_mappings = self.config.configuration_sets
-            and self.config.configuration_sets[profile_data.configuration_set]
-        if not set_mappings then return false end
-        for project_key in pairs(set_mappings) do
-            local proj_cfg = self.config.projects[project_key]
-            if proj_cfg and proj_cfg.type == tool_entry.tool_mod_type then
+        local cs = self._config_sets[profile_data.configuration_set]
+        if not cs then return false end
+        for project in pairs(cs.mappings) do
+            if project.type == tool_entry.tool_mod_type then
                 return true
             end
         end
@@ -1954,20 +1947,20 @@ end
 --- @param project_key string project key about to be removed
 --- @return { old_key: string, new_key: string }[]
 function Workspace:compute_downgrade_preview(project_key)
-    local proj_cfg = self.config.projects[project_key]
-    if not proj_cfg then return {} end
+    local project = self._projects[project_key]
+    if not project then return {} end
 
-    local mod = self._core._deps.modules.get(proj_cfg.type)
+    local mod = self._core._deps.modules.get(project.type)
     if not mod or not mod.has_keyed_tools then return {} end
 
     -- Check if any OTHER project of the same type exists
-    for key, cfg in pairs(self.config.projects) do
-        if key ~= project_key and cfg.type == proj_cfg.type then
+    for key, proj in pairs(self._projects) do
+        if key ~= project_key and proj.type == project.type then
             return {} -- not the last one
         end
     end
 
-    local proj_type = proj_cfg.type
+    local proj_type = project.type
     return self:compute_profile_renames(function(tools)
         if not tools then return nil end
         local t = vim.deepcopy(tools)
@@ -1985,8 +1978,8 @@ function Workspace:downgrade_profiles_from_tool(mod_type)
     if not self.cache.profiles then return end
 
     -- Guard: if any remaining project has this keyed type, do nothing
-    for _, cfg in pairs(self.config.projects) do
-        if cfg.type == mod_type then return end
+    for _, proj in pairs(self._projects) do
+        if proj.type == mod_type then return end
     end
 
     local function remove_tool(tools)

@@ -101,9 +101,8 @@ function ConfigUnit:_update()
         and pp_index[self.project_key][self.config_key] or nil
     if pp then
         self.variant = pp.variant
-        local project = self._workspace._projects[self.project_key]
         local profile_tool = pp._profile and pp._profile.tools
-            and project and pp._profile.tools[project.type] or nil
+            and self._project and pp._profile.tools[self._project.type] or nil
         if profile_tool then
             self.tool = {
                 key = profile_tool.key,
@@ -266,8 +265,7 @@ function ConfigUnit:materialize(variant, tool)
         return
     end
 
-    local project_config = ws.config.projects[self.project_key]
-    if not project_config then return end
+    if not self._project then return end
 
     -- Update fields from caller data
     if variant then self.variant = variant end
@@ -292,7 +290,7 @@ function ConfigUnit:materialize(variant, tool)
         ws.cache.configurations[cache_key] = {
             project_key = self.project_key,
             config_key = self.config_key,
-            type = project_config.type,
+            type = self._project.type,
             variant = self.variant,
             tool_key = tool_key,
             tool_data = tool_data,
@@ -323,8 +321,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
         return nil
     end
 
-    local project_config = ws.config.projects[self.project_key]
-    if not project_config then return nil end
+    if not self._project then return nil end
 
     local ak = ws._core._deps.merge.pinned_key(self.project_key, self.config_key)
 
@@ -383,7 +380,7 @@ function ConfigUnit:plan_deletion()
         disposition = has_ref and "reset" or "clean",
     } }
 
-    local defined_in_config = ws.config.projects[self.project_key] ~= nil
+    local defined_in_config = self._project ~= nil and not self._project._removed
 
     return {
         items = items,
@@ -461,13 +458,12 @@ function ConfigUnit:options()
     local bd = self:build_dir()
     if not bd then return nil end
 
-    local proj_cfg = self._workspace.config.projects[self.project_key]
-    if not proj_cfg then return nil end
+    if not self._project then return nil end
 
-    local mod = self._workspace._core._deps.modules.get(proj_cfg.type)
+    local mod = self._workspace._core._deps.modules.get(self._project.type)
     if not mod or not mod.get_options then return nil end
 
-    return mod.get_options(bd, proj_cfg.type_config)
+    return mod.get_options(bd, self._project.type_config)
 end
 
 -- ---------------------------------------------------------------------------

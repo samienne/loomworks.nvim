@@ -11,31 +11,31 @@ local function collect_configuration_tasks(project_key, config_key)
     local ws = loomworks.get_workspace()
     if not ws then return nil end
 
-    local project_config = ws.config.projects[project_key]
-    if not project_config then return nil end
-
-    local mod = modules.get(project_config.type)
-    if not mod or not mod.tasks then return nil end
-
     -- Get variant and tool from ConfigUnit (never parse config_key)
     local unit = loomworks.get_config_unit(project_key, config_key)
+    local project = unit._project
+    if not project then return nil end
+
+    local mod = modules.get(project.type)
+    if not mod or not mod.tasks then return nil end
+
     local variant = unit.variant
     local tool = unit:resolve_tool()
     local tool_data = tool and tool.data or nil
 
     -- Get module info
-    local abs_path = ws.root .. "/" .. (project_config.path or project_key)
-    local mod_info = mod.info and mod.info(abs_path, project_config.type_config)
+    local abs_path = ws.root .. "/" .. (project.path or project_key)
+    local mod_info = mod.info and mod.info(abs_path, project.type_config)
             or { configurations = {} }
 
     local project_ctx = {
         name = project_key,
-        path = project_config.path or project_key,
-        type = project_config.type,
+        path = project.path or project_key,
+        type = project.type,
         configuration = variant,
         configuration_key = config_key,
         configurations = mod_info.configurations or {},
-        type_config = project_config.type_config,
+        type_config = project.type_config,
         tool_data = tool_data,
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
@@ -93,7 +93,6 @@ local function collect_profile_tasks(profile)
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
-        local proj_config = ws.config.projects[pp.project_key]
         local project_ctx = {
             name = pp.project_key,
             path = project.path or pp.project_key,
@@ -101,7 +100,7 @@ local function collect_profile_tasks(profile)
             configuration = active_config,
             configuration_key = pp.config_key,
             configurations = project.configurations,
-            type_config = proj_config and proj_config.type_config or {},
+            type_config = project.type_config or {},
             tool_data = tool_data,
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},
@@ -142,30 +141,30 @@ local function collect_configuration_clean_tasks(project_key, config_key)
     local ws = loomworks.get_workspace()
     if not ws then return nil end
 
-    local project_config = ws.config.projects[project_key]
-    if not project_config then return nil end
+    local unit = loomworks.get_config_unit(project_key, config_key)
+    local project = unit._project
+    if not project then return nil end
 
-    local mod = modules.get(project_config.type)
+    local mod = modules.get(project.type)
     if not mod or not mod.clean_tasks then return nil end
 
-    local unit = loomworks.get_config_unit(project_key, config_key)
     local variant = unit.variant
     local tool = unit:resolve_tool()
     local tool_data = tool and tool.data or nil
 
-    local abs_path = ws.root .. "/" .. (project_config.path or project_key)
-    local mod_info = mod.info and mod.info(abs_path, project_config.type_config)
+    local abs_path = ws.root .. "/" .. (project.path or project_key)
+    local mod_info = mod.info and mod.info(abs_path, project.type_config)
             or { configurations = {} }
 
     local project_ctx = {
         name = project_key,
-        path = project_config.path or project_key,
-        type = project_config.type,
+        path = project.path or project_key,
+        type = project.type,
         configuration = variant,
         configuration_key = config_key,
         configurations = mod_info.configurations or {},
         tool_data = tool_data,
-        type_config = project_config.type_config,
+        type_config = project.type_config,
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),

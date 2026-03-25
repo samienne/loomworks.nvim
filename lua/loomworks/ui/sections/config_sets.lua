@@ -161,8 +161,9 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
 end
 
 --- Open the config set editor for an existing set.
---- @param set_name string
-local function edit_config_set(set_name)
+--- @param cs loomworks.ConfigurationSet
+local function edit_config_set(cs)
+    local set_name = cs.name
     local lw = require("loomworks")
     local ws = lw.get_workspace()
     if not ws then return end
@@ -190,7 +191,7 @@ local function edit_config_set(set_name)
         on_accept = function(result)
             local new_name = result.name
             local ok, err = workspace_view.execute_edit_config_set(
-                ws, set_name, new_name, result.mappings, old_mappings)
+                cs, new_name, result.mappings, old_mappings)
             if not ok then
                 vim.notify("loomworks: " .. (err or "failed to edit config set"),
                     vim.log.levels.ERROR)
@@ -307,7 +308,7 @@ return function(tree, ctx)
             fold_key = "set:" .. cs.name,
             hl = set_hl,
             enter_label = "Edit mappings",
-            on_enter = function() edit_config_set(sname) end,
+            on_enter = function() edit_config_set(cs) end,
             on_create = function()
                 local all_tool_entries = lw.get_tool_entries()
                 local is_first = not next(all_profiles)
