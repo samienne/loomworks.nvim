@@ -51,20 +51,35 @@ end
 --- @param proj loomworks.Project
 --- @param variant string
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @return table[] entries { config_key, tool_key, display_label, cached }
+--- @return table[] entries { unit?, tool_key, display_label, cached }
 local function collect_tool_entries(proj, variant, tools_by_type)
     local entries = {}
     local seen_tool_keys = {}
     local variant_lower = variant:lower()
 
-    -- 1. Cached entries for this variant (case-insensitive match)
+    -- 1. ConfigUnits for this variant (from project scan)
+    for _, unit in ipairs(proj:config_units_for_variant(variant)) do
+        local tk = unit.tool and unit.tool.key
+        if tk then
+            entries[#entries + 1] = {
+                unit = unit,
+                tool_key = tk,
+                display_label = get_tool_display(tools_by_type, proj.type, tk),
+                cached = unit:cached_state(),
+            }
+            seen_tool_keys[tk] = true
+        end
+    end
+
+    -- Also check cached_configurations for entries whose variant matches
+    -- but may not have a ConfigUnit yet (e.g., orphaned cache entries)
     if proj.cached_configurations then
-        for config_key, cached_config in pairs(proj.cached_configurations) do
+        for _, cached_config in pairs(proj.cached_configurations) do
             local v = cached_config.variant
             local tk = cached_config.tool_key
-            if v and tk and v:lower() == variant_lower then
+            if v and tk and v:lower() == variant_lower and not seen_tool_keys[tk] then
                 entries[#entries + 1] = {
-                    config_key = config_key,
+                    unit = nil, -- will be created on demand
                     tool_key = tk,
                     display_label = get_tool_display(tools_by_type, proj.type, tk),
                     cached = cached_config,
@@ -79,7 +94,7 @@ local function collect_tool_entries(proj, variant, tools_by_type)
     for _, dt in ipairs(relevant_tools) do
         if dt.tool_key and not seen_tool_keys[dt.tool_key] then
             entries[#entries + 1] = {
-                config_key = variant .. ":" .. dt.tool_key,
+                unit = nil, -- will be created on demand
                 tool_key = dt.tool_key,
                 display_label = dt.tool_label or dt.tool_key,
                 cached = nil,
@@ -87,7 +102,7 @@ local function collect_tool_entries(proj, variant, tools_by_type)
         end
     end
 
-    table.sort(entries, function(a, b) return a.config_key < b.config_key end)
+    table.sort(entries, function(a, b) return a.tool_key < b.tool_key end)
     return entries
 end
 
@@ -413,7 +428,6 @@ return function(tree, ctx)
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
 
                         local project = proj  -- capture for closure
-                        local pkey = key  -- capture for get_config_unit calls
                         local cfg_name = cname
                         -- Check if config is user-defined (has entry in type_config.configurations)
                         local has_user_entry = proj.type_config
@@ -426,14 +440,38 @@ return function(tree, ctx)
                         --- @param action_name string for picker prompt
                         --- @param action_fn fun(unit: loomworks.ConfigUnit)
                         --- @param filter? fun(entry: table): boolean filter tool entries
+                        --- Resolve a ConfigUnit from a tool entry.
+                        --- Uses direct reference if available, otherwise finds/creates via variant scan.
+                        local function resolve_unit_from_entry(entry)
+                            if entry.unit then return entry.unit end
+                            -- No ConfigUnit yet — find or create one for this variant + tool
+                            -- (on-demand creation for uncached detected tools)
+                            local ws = project._workspace
+                            local merge = ws._core._deps.merge
+                            local ck = merge.build_config_key(cfg_name, entry.tool_key)
+                            local unit = ws:get_config_unit(project.key, ck)
+                            unit.variant = cfg_name
+                            if entry.tool_key then
+                                unit.tool = unit.tool or {}
+                                unit.tool.key = entry.tool_key
+                            end
+                            return unit
+                        end
+
                         local function with_tool_picker(action_name, action_fn, filter)
                             return function()
-                                local ws = project._workspace
                                 if not has_tool_entries then
-                                    -- Non-keyed module: act on the variant directly
-                                    local unit = ws:get_config_unit(project.key, cfg_name)
-                                    unit.variant = unit.variant or cfg_name
-                                    action_fn(unit)
+                                    -- Non-keyed module: find or create unit for this variant
+                                    local units = project:config_units_for_variant(cfg_name)
+                                    if #units > 0 then
+                                        action_fn(units[1])
+                                    else
+                                        -- Create on demand
+                                        local ws = project._workspace
+                                        local unit = ws:get_config_unit(project.key, cfg_name)
+                                        unit.variant = unit.variant or cfg_name
+                                        action_fn(unit)
+                                    end
                                     return
                                 end
                                 local entries = tool_entries
@@ -449,13 +487,7 @@ return function(tree, ctx)
                                     end
                                 end
                                 if #entries == 1 then
-                                    local unit = ws:get_config_unit(project.key, entries[1].config_key)
-                                    unit.variant = cfg_name
-                                    if entries[1].tool_key then
-                                        unit.tool = unit.tool or {}
-                                        unit.tool.key = entries[1].tool_key
-                                    end
-                                    action_fn(unit)
+                                    action_fn(resolve_unit_from_entry(entries[1]))
                                     return
                                 end
                                 -- Multiple tools — show picker
@@ -464,13 +496,7 @@ return function(tree, ctx)
                                     format_item = function(item) return item.display_label end,
                                 }, function(choice)
                                     if not choice then return end
-                                    local unit = ws:get_config_unit(project.key, choice.config_key)
-                                    unit.variant = cfg_name
-                                    if choice.tool_key then
-                                        unit.tool = unit.tool or {}
-                                        unit.tool.key = choice.tool_key
-                                    end
-                                    action_fn(unit)
+                                    action_fn(resolve_unit_from_entry(choice))
                                 end)
                             end
                         end
