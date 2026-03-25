@@ -122,7 +122,7 @@ function LaunchTarget:_build_deps(deps, idx, on_complete)
         return
     end
 
-    local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
+    local unit = pp._config_unit
     local state = unit:state()
 
     -- Already built or configured — skip

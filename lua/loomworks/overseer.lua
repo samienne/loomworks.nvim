@@ -1,20 +1,16 @@
 local M = {}
 
 --- Collect task definitions for a single project configuration, grouped by action.
---- @param project_key string
---- @param config_key string cache key (variant or variant:tool_key)
+--- @param unit loomworks.ConfigUnit
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
-local function collect_configuration_tasks(project_key, config_key)
-    local loomworks = require("loomworks")
+local function collect_configuration_tasks(unit)
     local modules = require("loomworks.modules")
 
-    local ws = loomworks.get_workspace()
-    if not ws then return nil end
-
-    -- Get variant and tool from ConfigUnit (never parse config_key)
-    local unit = loomworks.get_config_unit(project_key, config_key)
     local project = unit._project
     if not project then return nil end
+
+    local ws = unit._workspace
+    if not ws then return nil end
 
     local mod = modules.get(project.type)
     if not mod or not mod.tasks then return nil end
@@ -24,16 +20,16 @@ local function collect_configuration_tasks(project_key, config_key)
     local tool_data = tool and tool.data or nil
 
     -- Get module info
-    local abs_path = ws.root .. "/" .. (project.path or project_key)
+    local abs_path = ws.root .. "/" .. (project.path or project.key)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
             or { configurations = {} }
 
     local project_ctx = {
-        name = project_key,
-        path = project.path or project_key,
+        name = project.key,
+        path = project.path or project.key,
         type = project.type,
         configuration = variant,
-        configuration_key = config_key,
+        configuration_key = unit.config_key,
         configurations = mod_info.configurations or {},
         type_config = project.type_config,
         tool_data = tool_data,
@@ -135,17 +131,16 @@ end
 --- Collect clean task definitions for a single configuration.
 --- @param project_key string
 --- @param config_key string
+--- @param unit loomworks.ConfigUnit
 --- @return table[]|nil clean_tasks
-local function collect_configuration_clean_tasks(project_key, config_key)
-    local loomworks = require("loomworks")
+local function collect_configuration_clean_tasks(unit)
     local modules = require("loomworks.modules")
 
-    local ws = loomworks.get_workspace()
-    if not ws then return nil end
-
-    local unit = loomworks.get_config_unit(project_key, config_key)
     local project = unit._project
     if not project then return nil end
+
+    local ws = unit._workspace
+    if not ws then return nil end
 
     local mod = modules.get(project.type)
     if not mod or not mod.clean_tasks then return nil end
@@ -154,16 +149,16 @@ local function collect_configuration_clean_tasks(project_key, config_key)
     local tool = unit:resolve_tool()
     local tool_data = tool and tool.data or nil
 
-    local abs_path = ws.root .. "/" .. (project.path or project_key)
+    local abs_path = ws.root .. "/" .. (project.path or project.key)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
             or { configurations = {} }
 
     local project_ctx = {
-        name = project_key,
-        path = project.path or project_key,
+        name = project.key,
+        path = project.path or project.key,
         type = project.type,
         configuration = variant,
-        configuration_key = config_key,
+        configuration_key = unit.config_key,
         configurations = mod_info.configurations or {},
         tool_data = tool_data,
         type_config = project.type_config,
@@ -270,9 +265,14 @@ local function start_one_task(overseer, task_def, on_complete)
             end
         end
 
+        local function emit(event, data)
+            unit._workspace._core._deps.events.emit(event, data)
+        end
+
         -- Lifecycle subscriptions — ConfigUnit captured directly, no key lookups
         task:subscribe("on_start", function()
             unit:register_task(task.id, lw_meta.action)
+            emit("task_started", { task_id = task.id, unit = unit, action = lw_meta.action })
         end)
 
         if progress_parser then
@@ -281,6 +281,7 @@ local function start_one_task(overseer, task_def, on_complete)
                     local update = progress_parser(lines[i])
                     if update then
                         unit:update_progress(task.id, update)
+                        emit("task_progress", { task_id = task.id, unit = unit, progress = update })
                         return
                     end
                 end
@@ -304,11 +305,13 @@ local function start_one_task(overseer, task_def, on_complete)
                 })
             end
             unit:unregister_task(task.id)
+            emit("task_stopped", { task_id = task.id, unit = unit })
             release_lock()
         end)
 
         task:subscribe("on_dispose", function()
             unit:unregister_task(task.id)
+            emit("task_stopped", { task_id = task.id, unit = unit })
             release_lock()
         end)
 
@@ -496,7 +499,7 @@ function M.run_configuration_action(unit, action, on_complete)
             unit:materialize_pinned()
         end
 
-        local all_tasks = collect_configuration_tasks(unit.project_key, unit.config_key)
+        local all_tasks = collect_configuration_tasks(unit)
         if not all_tasks then
             if on_complete then on_complete(false) end
             return
@@ -551,7 +554,7 @@ function M.run_configuration_clean(unit, on_complete)
         return
     end
 
-    local tasks = collect_configuration_clean_tasks(unit.project_key, unit.config_key)
+    local tasks = collect_configuration_clean_tasks(unit)
     if not tasks or #tasks == 0 then
         -- No clean tasks for this module — treat as success
         if on_complete then on_complete(true) end

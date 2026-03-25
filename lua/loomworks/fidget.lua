@@ -59,8 +59,8 @@ end
 --- @return string|nil key
 local function find_handle_for_task(data)
     -- Check if this task's config unit belongs to an active operation
-    local lw = require("loomworks")
-    local unit = lw.get_config_unit(data.project_key, data.configuration_key)
+    local unit = data.unit
+    if not unit then return nil end
     -- Check active operations on referencing profiles
     local refs = unit:referencing_profiles()
     for _, profile in ipairs(refs) do
@@ -146,12 +146,12 @@ function M.setup()
             local handle = handles[handle_key]
             if handle then
                 local action_label = data.action == "configure" and "configuring" or "building"
-                handle:report({ message = data.project_key .. " " .. action_label })
+                handle:report({ message = data.unit.project_key .. " " .. action_label })
             end
         else
             -- Standalone task (from Projects section)
             local title = ACTION_TITLE[data.action] or data.action
-            local message = data.project_key .. "/" .. data.configuration_key
+            local message = data.unit.project_key .. "/" .. data.unit.config_key
             create_handle("task:" .. data.task_id, title, message)
         end
     end)
@@ -165,7 +165,7 @@ function M.setup()
         local p = data.progress
         if p and p.total > 0 then
             local pct = math.floor(p.current / p.total * 100)
-            local msg = data.project_key .. " [" .. p.current .. "/" .. p.total .. "]"
+            local msg = data.unit.project_key .. " [" .. p.current .. "/" .. p.total .. "]"
             handle:report({ message = msg, percentage = pct })
         end
     end)

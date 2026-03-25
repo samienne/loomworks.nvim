@@ -554,6 +554,7 @@ function Profile:plan_deletion()
             config_key = pp.config_key,
             build_dir = pp:build_dir(),
             disposition = has_other_ref and "keep" or "clean",
+            unit = pp._config_unit,
         }
     end
 
@@ -578,10 +579,9 @@ function Profile:delete(on_done)
     local units = {}
     local target_states = {}
     for _, item in ipairs(plan.items) do
-        if item.disposition ~= "keep" then
-            local unit = self._workspace:get_config_unit(item.project_key, item.config_key)
-            units[#units + 1] = unit
-            target_states[unit] = "unconfigured"
+        if item.disposition ~= "keep" and item.unit then
+            units[#units + 1] = item.unit
+            target_states[item.unit] = "unconfigured"
         end
     end
     if #units > 0 then
@@ -610,9 +610,8 @@ function Profile:clean(on_done)
             project_key = pp.project_key,
             config_key = pp.config_key,
         }
-        local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
-        units[#units + 1] = unit
-        target_states[unit] = "configured"
+        units[#units + 1] = pp._config_unit
+        target_states[pp._config_unit] = "configured"
     end
 
     -- Cancel conflicting build/configure operations

@@ -400,10 +400,9 @@ function ConfigUnit:delete(on_done)
     local units = {}
     local target_states = {}
     for _, item in ipairs(plan.items) do
-        if item.disposition ~= "keep" then
-            local unit = self._workspace:get_config_unit(item.project_key, item.config_key)
-            units[#units + 1] = unit
-            target_states[unit] = "unconfigured"
+        if item.disposition ~= "keep" and item.unit then
+            units[#units + 1] = item.unit
+            target_states[item.unit] = "unconfigured"
         end
     end
     if #units > 0 then

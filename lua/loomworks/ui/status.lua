@@ -164,12 +164,4 @@ function M.delete_profile(profile_key)
     actions.delete_profile(profile)()
 end
 
---- Delete a configuration interactively (with confirmation dialog).
---- @param project_key string
---- @param config_key string
-function M.delete_config(project_key, config_key)
-    local unit = require("loomworks").get_config_unit(project_key, config_key)
-    actions.delete_config(unit)()
-end
-
 return M
