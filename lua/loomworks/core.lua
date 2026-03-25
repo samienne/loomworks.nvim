@@ -14,7 +14,6 @@
 local Core = {}
 Core.__index = Core
 
-local ConfigUnit = require("loomworks.config_unit")
 local Workspace = require("loomworks.workspace").Workspace
 
 --- Default dependency table. Tests override individual entries.
@@ -78,14 +77,14 @@ function Core.new(deps)
     return self
 end
 
---- Get or create a ConfigUnit for a (project_key, config_key) pair.
---- Delegates to Workspace.
---- Creates a detached ConfigUnit when no workspace exists.
+--- Get or create a ConfigUnit (internal — not exposed in public API).
+--- Used by internal callers and tests that operate on Core.
 --- @param project_key string
 --- @param config_key string
 --- @return loomworks.ConfigUnit
 function Core:get_config_unit(project_key, config_key)
     if not self._workspace then
+        local ConfigUnit = require("loomworks.config_unit")
         return ConfigUnit.new(nil, project_key, config_key)
     end
     return self._workspace:get_config_unit(project_key, config_key)

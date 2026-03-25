@@ -158,22 +158,6 @@ function M.get_tools_by_type()
     return core:get_tools_by_type()
 end
 
---- Materialize a single configuration in cache (skeleton entry).
---- @param project_key string
---- @param config_key string
-function M.materialize_configuration(project_key, config_key)
-    core:get_config_unit(project_key, config_key):materialize()
-end
-
---- Create a pinned profile entry that pins a single config in cache.
---- Returns the pinned Profile object.
---- @param project_key string
---- @param config_key string
---- @return loomworks.Profile|nil
-function M.materialize_pinned(project_key, config_key)
-    return core:get_config_unit(project_key, config_key):materialize_pinned()
-end
-
 -- ---------------------------------------------------------------------------
 -- Running task tracking
 -- ---------------------------------------------------------------------------
@@ -182,34 +166,6 @@ end
 --- @return boolean
 function M.has_running_tasks()
     return core:has_running_tasks()
-end
-
--- ---------------------------------------------------------------------------
--- Progress tracking
--- ---------------------------------------------------------------------------
-
---- Get a ConfigUnit for a (project_key, config_key) pair.
---- @param project_key string
---- @param config_key string
---- @return loomworks.ConfigUnit
-function M.get_config_unit(project_key, config_key)
-    return core:get_config_unit(project_key, config_key)
-end
-
---- Get progress for a project+config key.
---- @param project_key string
---- @param config_key string
---- @return loomworks.ProgressUpdate|nil
-function M.get_progress(project_key, config_key)
-    return core:get_config_unit(project_key, config_key):progress()
-end
-
---- Get elapsed seconds for a project+config key.
---- @param project_key string
---- @param config_key string
---- @return number|nil seconds
-function M.get_elapsed(project_key, config_key)
-    return core:get_config_unit(project_key, config_key):elapsed()
 end
 
 -- ---------------------------------------------------------------------------
@@ -263,14 +219,6 @@ function M.find_running_tasks_for_items(items)
     return core:find_running_tasks_for_items(items)
 end
 
---- Find all profiles that reference a specific cached config.
---- @param project_key string
---- @param config_key string
---- @return loomworks.Profile[]
-function M.find_referencing_profiles(project_key, config_key)
-    return core:get_config_unit(project_key, config_key):referencing_profiles()
-end
-
 --- Get orphaned cached configs (configs with state not referenced by any profile).
 --- @return loomworks.OrphanedConfig[]
 function M.get_orphaned_configs()
@@ -303,8 +251,11 @@ function M.buf_status(bufnr)
     local set_name = profile and profile.configuration_set or nil
 
     local status
-    if project.configuration_key then
-        status = core:get_config_unit(project_key, project.configuration_key):state()
+    if profile and project.configuration_key then
+        local pp = profile:project(project_key)
+        if pp then
+            status = pp:status()
+        end
     end
 
     return {

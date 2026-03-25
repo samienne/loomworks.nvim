@@ -41,7 +41,7 @@ function M.aggregate_progress(pps)
     for _, pp in ipairs(pps) do
         local status = pp:status()
         if status == "configuring" or status == "building" then
-            local p = lw.get_progress(pp.project_key, pp.config_key)
+            local p = pp._config_unit:progress()
             if p then
                 has_any = true
                 local phase_pct = p.current / p.total
