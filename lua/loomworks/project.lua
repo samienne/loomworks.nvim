@@ -1,6 +1,8 @@
 --- loomworks/project.lua — Project object wrapping merged project data.
 --- Provides query methods for running/deleting/cached state.
 
+local Configuration = require("loomworks.configuration")
+
 --- @class loomworks.Project
 --- @field key string project key
 --- @field type string module type ("cmake", "ets", "typescript")
@@ -10,6 +12,7 @@
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
 --- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
+--- @field _tool? loomworks.Tool direct reference to Tool domain object
 --- @field status loomworks.Status
 --- @field orphaned boolean
 --- @field needs_refresh boolean
@@ -20,6 +23,7 @@
 --- @field cmake? loomworks.ProjectCmakeInfo
 --- @field depends_on? loomworks.Project[] direct references to dependency projects
 --- @field _depends_on_keys? string[] raw keys from merge (resolved to objects in _update)
+--- @field _configurations? table<string, loomworks.Configuration> name -> Configuration domain object
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 local Project = {}
@@ -35,6 +39,7 @@ function Project.new(workspace, key, data)
     self._workspace = workspace
     self.key = key
     self._removed = false
+    self._configurations = {}
     if data then self:_update(data) end
     return self
 end
@@ -54,6 +59,11 @@ function Project:_update(data)
         label = data.tool_label,
         mod_type = data.tool_mod_type,
     } or nil
+    -- Resolve Tool domain object from workspace registry
+    self._tool = nil
+    if data.tool_key and self._workspace.find_tool then
+        self._tool = self._workspace:find_tool(data.tool_mod_type or self.type, data.tool_key)
+    end
     self.status = data.status
     self.orphaned = data.orphaned or false
     self.needs_refresh = data.needs_refresh or false
@@ -79,6 +89,64 @@ function Project:_update(data)
             self.depends_on = deps
         end
     end
+    -- Sync Configuration domain objects from configurations dict
+    self:_sync_configurations()
+end
+
+--- Sync Configuration domain objects from the configurations dict.
+--- Creates/updates/removes Configuration objects to match self.configurations.
+--- Also syncs preset configurations (from_preset flag).
+function Project:_sync_configurations()
+    local new_data = self.configurations or {}
+
+    -- Include preset configurations with from_preset flag
+    local all_config_data = {}
+    for name, info in pairs(new_data) do
+        all_config_data[name] = info
+    end
+    if self.preset_configurations then
+        for name, info in pairs(self.preset_configurations) do
+            if not all_config_data[name] then
+                all_config_data[name] = info
+            end
+        end
+    end
+
+    -- Mark removed
+    for name, cfg in pairs(self._configurations) do
+        if not all_config_data[name] then
+            cfg._removed = true
+            self._configurations[name] = nil
+        end
+    end
+
+    -- Create or update
+    for name, info in pairs(all_config_data) do
+        local existing = self._configurations[name]
+        if existing then
+            existing:_update(info)
+        else
+            self._configurations[name] = Configuration.new(self, name, info)
+        end
+    end
+
+    -- Resolve inherits references (all configs exist now)
+    for _, cfg in pairs(self._configurations) do
+        cfg:_resolve_inherits()
+    end
+end
+
+--- Get a Configuration domain object by name.
+--- @param name string configuration name
+--- @return loomworks.Configuration|nil
+function Project:get_configuration(name)
+    return self._configurations[name]
+end
+
+--- Get all Configuration domain objects.
+--- @return table<string, loomworks.Configuration>
+function Project:get_configurations()
+    return self._configurations
 end
 
 function Project:__tostring()

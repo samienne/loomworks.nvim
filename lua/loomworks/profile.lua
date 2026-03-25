@@ -95,6 +95,22 @@ function ProfileProject:is_deleting()
     return self._config_unit:is_deleting()
 end
 
+--- Get the Configuration domain object for this project-in-profile.
+--- Resolves from the project's configuration registry using the variant.
+--- @return loomworks.Configuration|nil
+function ProfileProject:configuration()
+    if not self._project or not self._project._configurations then return nil end
+    return self._project._configurations[self.variant]
+end
+
+--- Get the Tool domain object for this project-in-profile.
+--- Resolves from the parent profile's tool objects.
+--- @return loomworks.Tool|nil
+function ProfileProject:tool_object()
+    if not self._project or not self._profile then return nil end
+    return self._profile:tool_object_for(self._project.type)
+end
+
 --- Get cached state (direct reference resolved during _update).
 --- @return loomworks.CachedConfig|nil
 function ProfileProject:cached_state()
@@ -114,6 +130,7 @@ end
 --- @field key string profile key
 --- @field configuration_set? string nil for pinned profiles
 --- @field tools? table<string, loomworks.ToolRef> tools dict keyed by module type
+--- @field _tool_objects? table<string, loomworks.Tool> direct Tool references keyed by module type
 --- @field explicit boolean
 --- @field explicit_def? table raw definition from loomworks.json (for serialization)
 --- @field mappings? table<string, string> project_key -> variant name
@@ -164,6 +181,21 @@ function Profile:_update(data)
     self._cached_configurations = data._cached_configurations
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
+
+    -- Resolve Tool domain objects from workspace registry
+    self._tool_objects = nil
+    if self.tools and self._workspace.find_tool then
+        local tool_objs = {}
+        for mod_type, tool_ref in pairs(self.tools) do
+            local tool = self._workspace:find_tool(mod_type, tool_ref.key)
+            if tool then
+                tool_objs[mod_type] = tool
+            end
+        end
+        if next(tool_objs) then
+            self._tool_objects = tool_objs
+        end
+    end
 
     -- Resolve mappings and ConfigurationSet reference
     self._config_set_ref = nil
@@ -239,6 +271,13 @@ end
 --- @return loomworks.ToolRef|nil
 function Profile:tool_for(mod_type)
     return self.tools and self.tools[mod_type] or nil
+end
+
+--- Get the Tool domain object for a specific module type.
+--- @param mod_type string module type (e.g. "cmake")
+--- @return loomworks.Tool|nil
+function Profile:tool_object_for(mod_type)
+    return self._tool_objects and self._tool_objects[mod_type] or nil
 end
 
 --- Compute the cache key for a variant, accounting for tool.

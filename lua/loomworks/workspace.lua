@@ -15,6 +15,7 @@ local Profile = require("loomworks.profile").Profile
 local ProfileProject = require("loomworks.profile").ProfileProject
 local Project = require("loomworks.project")
 local ConfigurationSet = require("loomworks.configuration_set")
+local Tool = require("loomworks.tool")
 
 -- ========================== Static helpers ==========================
 
@@ -207,6 +208,7 @@ function Workspace.new(core, data)
     self._profile_projects = {}
     self._operations = {}
     self._tools_by_type = {}
+    self._tool_objects = {} -- "mod_type\0tool_key" -> Tool (nil key uses "mod_type\0")
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -268,11 +270,12 @@ function Workspace:remerge()
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         self, self._tools_by_type)
     self._active_set = active_set
+    self:_sync_tools()                       -- 0. no deps (tools from detection + cache)
     self:_sync_projects()                    -- 1. no deps
     self:_sync_config_sets()                 -- 2. needs Projects
-    self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets
+    self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets, Tools
     self:_sync_profile_projects()            -- 4. needs Profiles
-    self:_sync_config_units()                -- 5. needs Profiles (for config_keys)
+    self:_sync_config_units()                -- 5. needs Profiles, Tools (for config_keys)
     self:_sync_build_dir_refs()              -- 6. needs ConfigUnits (build_dir data)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -285,6 +288,7 @@ end
 function Workspace:_refresh_after_cache_change()
     local all_profile_defs = self._core._deps.merge.get_all_profiles(
         self.config, self.cache, self._tools_by_type)
+    self:_sync_tools()                       -- tools from cache may have changed
     self:_sync_profiles(all_profile_defs)
     self:_sync_profile_projects()
     self:_sync_config_units()
@@ -481,6 +485,107 @@ end
 --- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
     return self._build_dir_refs[build_dir] or {}
+end
+
+-- ===========================================================================
+-- Tool object registry
+-- ===========================================================================
+
+--- Registry key for a Tool object.
+--- @param mod_type string
+--- @param tool_key string|nil
+--- @return string
+local function tool_registry_key(mod_type, tool_key)
+    return mod_type .. "\0" .. (tool_key or "")
+end
+
+--- Get or create a Tool object for the given module type and key.
+--- If the tool already exists, updates it in place. Otherwise creates a new one.
+--- @param mod_type string module type (e.g., "cmake")
+--- @param tool_key string|nil opaque identifier (nil for default tools)
+--- @param tool_data table module-specific data
+--- @param tool_label string|nil display label
+--- @return loomworks.Tool
+function Workspace:get_or_create_tool(mod_type, tool_key, tool_data, tool_label)
+    local rk = tool_registry_key(mod_type, tool_key)
+    local existing = self._tool_objects[rk]
+    if existing then
+        existing:_update(tool_data, tool_label)
+        return existing
+    end
+    local tool = Tool.new(mod_type, tool_key, tool_data, tool_label)
+    self._tool_objects[rk] = tool
+    return tool
+end
+
+--- Look up a Tool object by module type and key.
+--- @param mod_type string
+--- @param tool_key string|nil
+--- @return loomworks.Tool|nil
+function Workspace:find_tool(mod_type, tool_key)
+    return self._tool_objects[tool_registry_key(mod_type, tool_key)]
+end
+
+--- Sync Tool objects from detected tools (from _tools_by_type) and cache data.
+--- Creates Tool objects for all detected tools and for cached tool_data that
+--- may not be in the detected set (tool was uninstalled but cache references it).
+function Workspace:_sync_tools()
+    -- Mark all existing tools as potentially removed
+    local seen = {}
+
+    -- From detected tools
+    for mod_type, tools in pairs(self._tools_by_type) do
+        for _, dt in ipairs(tools) do
+            local tool = self:get_or_create_tool(
+                mod_type, dt.tool_key, dt.tool_data, dt.tool_label)
+            seen[tool] = true
+        end
+    end
+
+    -- From cache: tool_data stored inline in configurations and profiles
+    if self.cache.configurations then
+        for _, cc in pairs(self.cache.configurations) do
+            if cc.tool_key and cc.type then
+                local tool = self:get_or_create_tool(
+                    cc.type, cc.tool_key, cc.tool_data or {}, nil)
+                seen[tool] = true
+            end
+        end
+    end
+    if self.cache.profiles then
+        for _, cp in pairs(self.cache.profiles) do
+            if cp.tools then
+                for mod_type, t in pairs(cp.tools) do
+                    if t.key then
+                        local tool = self:get_or_create_tool(
+                            mod_type, t.key, t.data or {}, t.label)
+                        seen[tool] = true
+                    end
+                end
+            end
+        end
+    end
+
+    -- Remove tools that are no longer referenced
+    for rk, tool in pairs(self._tool_objects) do
+        if not seen[tool] then
+            tool._removed = true
+            self._tool_objects[rk] = nil
+        end
+    end
+end
+
+--- Get all Tool objects for a module type.
+--- @param mod_type string
+--- @return loomworks.Tool[]
+function Workspace:get_tools_for_type(mod_type)
+    local result = {}
+    for _, tool in pairs(self._tool_objects) do
+        if tool.mod_type == mod_type and not tool._removed then
+            result[#result + 1] = tool
+        end
+    end
+    return result
 end
 
 -- ===========================================================================

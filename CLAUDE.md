@@ -133,8 +133,8 @@ directory safety before merging:
 These are implementation-specific details not covered by the spec or architecture:
 
 - **Workspace as domain container**: `Workspace` class owns all registries
-  (projects, profiles, config sets, config units, profile projects) and all
-  business logic (sync, merge, cache, operations, deletion, task tracking,
+  (projects, profiles, config sets, config units, profile projects, tools) and
+  all business logic (sync, merge, cache, operations, deletion, task tracking,
   tool scanning). Domain objects store a `_workspace` back-reference.
 - **Core is infrastructure-only**: `Core.new(deps)` with injectable
   dependencies for testing. Owns I/O, modules, events, file tracking, setup.
@@ -173,6 +173,24 @@ These are implementation-specific details not covered by the spec or architectur
   shared for build. `acquire_build_dir_lock()` in overseer.lua before task start,
   `release_build_dir_lock()` in task_tracker on complete/dispose (idempotent).
   Prevents concurrent operations from corrupting shared build directories.
+- **Tool domain object** (`tool.lua`): represents a toolchain (ninja-gcc-12,
+  msvc-17-2022). Owned by `Workspace._tool_objects` registry, keyed by
+  `(mod_type, tool_key)`. Created from detection results + cached tool_data.
+  Non-keyed modules (ets, typescript) have a single default Tool with nil key.
+  Domain objects carry `_tool` references. Accessors: `unit:tool_object()`,
+  `profile:tool_object_for(mod_type)`, `pp:tool_object()`.
+- **Configuration domain object** (`configuration.lua`): represents a build
+  variant (Debug, Release, Debug-asan). Owned by `Project._configurations`,
+  created from module.info() output + user overrides. Separates generic fields
+  (name, variant, inherits, options) from module-specific data (`module_config`).
+  Inheritance uses Configuration references. Domain objects carry
+  `_configuration` references. Accessors: `unit:configuration()`,
+  `pp:configuration()`, `cs:configuration(project)`.
+- **Domain object references coexist with string fields**: ConfigUnit carries
+  both `_tool`/`_configuration` (domain object refs) and `tool`/`variant`
+  (string/table fields from cache). String fields are backward-compatible
+  aliases — new code should use accessor methods. Callers will be migrated
+  incrementally.
 
 ## v1 Scope
 

@@ -11,6 +11,8 @@ local cache_mod = require("loomworks.cache")
 --- @field config_key string
 --- @field variant? string configuration variant name (from cache data)
 --- @field tool? loomworks.ToolRef bundled tool reference (from cache data)
+--- @field _tool? loomworks.Tool direct reference to Tool domain object
+--- @field _configuration? loomworks.Configuration direct reference to Configuration domain object
 --- @field _workspace loomworks.Workspace
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID (persists after completion)
@@ -71,6 +73,8 @@ function ConfigUnit:_update()
         self._cached = nil
         self.variant = nil
         self.tool = nil
+        self._tool = nil
+        self._configuration = nil
         return
     end
     -- Resolve direct project reference
@@ -88,11 +92,21 @@ function ConfigUnit:_update()
     local cached = self._cached
     self.variant = cached and cached.variant or nil
     self.tool = nil
+    self._tool = nil
+    self._configuration = nil
     if cached and cached.tool_key then
         self.tool = {
             key = cached.tool_key,
             data = cached.tool_data,
         }
+        -- Resolve Tool domain object from workspace registry
+        if self._workspace.find_tool then
+            self._tool = self._workspace:find_tool(cached.type or (self._project and self._project.type), cached.tool_key)
+        end
+    end
+    -- Resolve Configuration domain object from project registry
+    if self.variant and self._project and self._project._configurations then
+        self._configuration = self._project._configurations[self.variant]
     end
 end
 
@@ -154,8 +168,15 @@ function ConfigUnit:build_dir()
 end
 
 --- Resolve the detected tool, enriching self.tool with label and mod_type.
+--- Prefers the Tool domain object when available.
 --- @return loomworks.ToolRef|nil
 function ConfigUnit:resolve_tool()
+    -- Prefer Tool domain object: already has all data
+    if self._tool then
+        -- Sync the ToolRef from the domain object
+        self.tool = self._tool:to_ref()
+        return self.tool
+    end
     if not self.tool or not self.tool.key then return self.tool end
     if self.tool.label then return self.tool end  -- already resolved
     local dt, mod_type = self._workspace._core._deps.merge.resolve_detected_tool(
@@ -166,6 +187,24 @@ function ConfigUnit:resolve_tool()
         self.tool.data = dt.tool_data
     end
     return self.tool
+end
+
+--- Get the Tool domain object for this unit.
+--- @return loomworks.Tool|nil
+function ConfigUnit:tool_object()
+    return self._tool
+end
+
+--- Get the Configuration domain object for this unit.
+--- @return loomworks.Configuration|nil
+function ConfigUnit:configuration()
+    return self._configuration
+end
+
+--- Get the Project domain object for this unit.
+--- @return loomworks.Project|nil
+function ConfigUnit:project()
+    return self._project
 end
 
 --- Get the current progress update, if any.
