@@ -310,7 +310,7 @@ describe("record_task_result state protection", function()
         local core = make_core_with_state("App", "Debug", "built")
 
         -- Verify initial state
-        local unit = core:get_config_unit("App", "Debug")
+        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("built", unit:state())
 
         -- Record a configure success
@@ -335,7 +335,7 @@ describe("record_task_result state protection", function()
             success = true,
         })
 
-        local cached = core:get_config_unit("App", "Debug"):cached_state()
+        local cached = core._workspace:get_config_unit("App", "Debug"):cached_state()
         assert.equals("built", cached.state)
         assert.is_not_nil(cached.last_configured)
     end)
@@ -350,7 +350,7 @@ describe("record_task_result state protection", function()
             success = true,
         })
 
-        local unit = core:get_config_unit("App", "Debug")
+        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("configured", unit:state())
     end)
 
@@ -364,7 +364,7 @@ describe("record_task_result state protection", function()
             success = false,
         })
 
-        local unit = core:get_config_unit("App", "Debug")
+        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("configure_failed", unit:state())
     end)
 
@@ -378,7 +378,7 @@ describe("record_task_result state protection", function()
             success = true,
         })
 
-        local unit = core:get_config_unit("App", "Debug")
+        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("built", unit:state())
     end)
 
@@ -392,7 +392,7 @@ describe("record_task_result state protection", function()
             success = false,
         })
 
-        local unit = core:get_config_unit("App", "Debug")
+        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("build_failed", unit:state())
     end)
 end)

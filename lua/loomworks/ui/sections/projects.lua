@@ -382,18 +382,12 @@ return function(tree, ctx)
                         local tool_entries = collect_tool_entries(proj, cname, tools_by_type)
                         local has_tool_entries = #tool_entries > 0
 
-                        -- Check running state across all config_keys for this variant
+                        -- Check running state across all ConfigUnits for this variant
                         local config_has_running = false
-                        if has_tool_entries then
-                            for _, entry in ipairs(tool_entries) do
-                                if lw.get_config_unit(key, entry.config_key):is_running() then
-                                    config_has_running = true
-                                    break
-                                end
-                            end
-                        else
-                            if lw.get_config_unit(key, cname):is_running() then
+                        for _, cu in ipairs(proj:config_units_for_variant(cname)) do
+                            if cu:is_running() then
                                 config_has_running = true
+                                break
                             end
                         end
 
@@ -434,9 +428,10 @@ return function(tree, ctx)
                         --- @param filter? fun(entry: table): boolean filter tool entries
                         local function with_tool_picker(action_name, action_fn, filter)
                             return function()
+                                local ws = project._workspace
                                 if not has_tool_entries then
                                     -- Non-keyed module: act on the variant directly
-                                    local unit = lw.get_config_unit(pkey, cfg_name)
+                                    local unit = ws:get_config_unit(project.key, cfg_name)
                                     unit.variant = unit.variant or cfg_name
                                     action_fn(unit)
                                     return
@@ -454,7 +449,7 @@ return function(tree, ctx)
                                     end
                                 end
                                 if #entries == 1 then
-                                    local unit = lw.get_config_unit(pkey, entries[1].config_key)
+                                    local unit = ws:get_config_unit(project.key, entries[1].config_key)
                                     unit.variant = cfg_name
                                     if entries[1].tool_key then
                                         unit.tool = unit.tool or {}
@@ -469,7 +464,7 @@ return function(tree, ctx)
                                     format_item = function(item) return item.display_label end,
                                 }, function(choice)
                                     if not choice then return end
-                                    local unit = lw.get_config_unit(pkey, choice.config_key)
+                                    local unit = ws:get_config_unit(project.key, choice.config_key)
                                     unit.variant = cfg_name
                                     if choice.tool_key then
                                         unit.tool = unit.tool or {}

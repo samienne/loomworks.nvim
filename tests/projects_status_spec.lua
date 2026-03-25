@@ -119,7 +119,7 @@ local function simulate_projects_section_rendering(core, project_key, variant)
     -- Step 2: Replicate resolve_config_status_global -> ConfigUnit:state()
     local results = {}
     for _, entry in ipairs(entries) do
-        local unit = core:get_config_unit(project_key, entry.config_key)
+        local unit = core._workspace:get_config_unit(project_key, entry.config_key)
         local state = unit:state()
         results[#results + 1] = {
             config_key = entry.config_key,
@@ -385,7 +385,7 @@ describe("Projects section cmake status", function()
             "ws.cache should have flat config entry")
 
         -- Verify ConfigUnit reads from the same workspace
-        local unit = core:get_config_unit("App", "Debug:ninja-gcc-12")
+        local unit = core._workspace:get_config_unit("App", "Debug:ninja-gcc-12")
         local cached = unit:cached_state()
         assert.is_not_nil(cached, "ConfigUnit:cached_state() should find the cache entry")
         assert.equals("built", cached.state)
@@ -457,7 +457,7 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
     -- Compute state + highlight for each entry
     local results = {}
     for _, entry in ipairs(entries) do
-        local unit = core:get_config_unit(project_key, entry.config_key)
+        local unit = core._workspace:get_config_unit(project_key, entry.config_key)
         local state = unit:state()
         local is_spinning = (state == "configuring" or state == "building" or state == "deleting")
         local is_active = is_active_variant and active_tool_key == entry.tool_key

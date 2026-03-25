@@ -35,7 +35,7 @@ local function buf_status(core, bufnr)
 
     local status
     if project.configuration_key then
-        status = core:get_config_unit(project_key, project.configuration_key):state()
+        status = core._workspace:get_config_unit(project_key, project.configuration_key):state()
     end
 
     return {

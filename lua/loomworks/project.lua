@@ -85,41 +85,62 @@ function Project:__tostring()
     return "Project(" .. self.key .. ")"
 end
 
+--- Get all ConfigUnits belonging to this project (scan on demand).
+--- @return loomworks.ConfigUnit[]
+function Project:config_units()
+    local result = {}
+    for _, unit in pairs(self._workspace._config_units) do
+        if unit._project == self then
+            result[#result + 1] = unit
+        end
+    end
+    return result
+end
+
+--- Get ConfigUnits matching a variant name (e.g., "Debug").
+--- For keyed-tool modules this may return multiple units (one per tool).
+--- @param variant string
+--- @return loomworks.ConfigUnit[]
+function Project:config_units_for_variant(variant)
+    local result = {}
+    for _, unit in pairs(self._workspace._config_units) do
+        if unit._project == self and unit.variant == variant then
+            result[#result + 1] = unit
+        end
+    end
+    return result
+end
+
 --- Get the running action for this project (any config).
 --- @return string|nil action ("configure" or "build")
 function Project:running_action()
     for _, unit in pairs(self._workspace._config_units) do
-        if unit.project_key == self.key and unit:is_running() then
+        if unit._project == self and unit:is_running() then
             return unit:running_action()
         end
     end
     return nil
 end
 
---- Compute the cache key for a configuration name, accounting for kit_id.
---- @param config_name string
---- @return string
-function Project:config_cache_key(config_name)
-    if self.tool and self.tool.key then
-        return config_name .. ":" .. self.tool.key
-    end
-    return config_name
-end
-
---- Check if a specific configuration is being deleted.
---- @param config_name string
+--- Check if a specific configuration variant is being deleted.
+--- @param variant string configuration variant name
 --- @return boolean
-function Project:is_deleting_config(config_name)
-    local unit = self._workspace:get_config_unit(self.key, self:config_cache_key(config_name))
-    return unit:is_deleting()
+function Project:is_deleting_config(variant)
+    for _, unit in ipairs(self:config_units_for_variant(variant)) do
+        if unit:is_deleting() then return true end
+    end
+    return false
 end
 
---- Get the running action for a specific configuration.
---- @param config_name string
+--- Get the running action for a specific configuration variant.
+--- @param variant string configuration variant name
 --- @return string|nil action
-function Project:config_running_action(config_name)
-    local unit = self._workspace:get_config_unit(self.key, self:config_cache_key(config_name))
-    return unit:running_action()
+function Project:config_running_action(variant)
+    for _, unit in ipairs(self:config_units_for_variant(variant)) do
+        local action = unit:running_action()
+        if action then return action end
+    end
+    return nil
 end
 
 --- Resolve the cached state for a configuration.
