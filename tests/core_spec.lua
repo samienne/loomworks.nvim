@@ -133,12 +133,14 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
                         ["App/production"] = {
                             project_key = "App",
                             config_key = "production",
+                            variant = "production",
                             type = "typescript",
                             state = "configured",
                         },
@@ -269,6 +271,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                         },
                     },
@@ -399,6 +402,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                         },
                     },
@@ -439,6 +443,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "configured",
                         },
@@ -643,6 +648,7 @@ describe("Core", function()
                     ["App/development"] = {
                         project_key = "App",
                         config_key = "development",
+                        variant = "development",
                         type = "typescript",
                         state = "built",
                     },
@@ -817,6 +823,7 @@ describe("Core", function()
                     ["App/development"] = {
                         project_key = "App",
                         config_key = "development",
+                        variant = "development",
                         type = "typescript",
                         state = "configured",
                     },
@@ -856,6 +863,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -964,6 +972,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "configured",
                             build_dir = "/root/.nvim/build/App/development",
@@ -1013,7 +1022,7 @@ describe("Core", function()
                     configurations = {
                         ["App/Debug:ninja-gcc"] = {
                             project_key = "App",
-                            config_key = "Debug:ninja-gcc",
+                            config_key = "Debug:ninja-gcc", variant = "Debug",
                             type = "cmake",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/Debug",
@@ -1054,6 +1063,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/development",
@@ -1134,6 +1144,7 @@ describe("Core", function()
                         ["App/dev"] = {
                             project_key = "App",
                             config_key = "dev",
+                            variant = "dev",
                             type = "typescript",
                             state = "configured",
                         },
@@ -1177,6 +1188,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1231,6 +1243,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1283,6 +1296,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1312,6 +1326,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             -- no state = unconfigured
                         },
@@ -1345,6 +1360,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1380,6 +1396,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1424,6 +1441,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1452,12 +1470,14 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
                         ["App/production"] = {
                             project_key = "App",
                             config_key = "production",
+                            variant = "production",
                             type = "typescript",
                             state = "configured",
                         },
@@ -1483,6 +1503,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             -- unconfigured skeleton — should be dropped by cleanup
                         },
@@ -1507,18 +1528,21 @@ describe("Core", function()
                         ["Bravo/prod"] = {
                             project_key = "Bravo",
                             config_key = "prod",
+                            variant = "prod",
                             type = "typescript",
                             state = "built",
                         },
                         ["Alpha/staging"] = {
                             project_key = "Alpha",
                             config_key = "staging",
+                            variant = "staging",
                             type = "typescript",
                             state = "configured",
                         },
                         ["Alpha/dev"] = {
                             project_key = "Alpha",
                             config_key = "dev",
+                            variant = "dev",
                             type = "typescript",
                             state = "built",
                         },
@@ -1550,6 +1574,7 @@ describe("Core", function()
                         ["App/production"] = {
                             project_key = "App",
                             config_key = "production",
+                            variant = "production",
                             type = "typescript",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/production",
@@ -1606,14 +1631,14 @@ describe("Core", function()
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
-                            config_key = "development",
+                            config_key = "development", variant = "development",
                             type = "typescript",
                             state = "built",
                             variant = "development",
                         },
                         ["App/staging"] = {
                             project_key = "App",
-                            config_key = "staging",
+                            config_key = "staging", variant = "staging",
                             type = "typescript",
                             state = "built",
                             variant = "staging",
@@ -1654,6 +1679,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1661,6 +1687,7 @@ describe("Core", function()
                         ["App/feature-config"] = {
                             project_key = "App",
                             config_key = "feature-config",
+                            variant = "feature-config",
                             type = "typescript",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/feature-config",
@@ -1696,12 +1723,14 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
                         ["App/feature-config"] = {
                             project_key = "App",
                             config_key = "feature-config",
+                            variant = "feature-config",
                             type = "typescript",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/feature-config",
@@ -1767,12 +1796,14 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
                         ["App/production"] = {
                             project_key = "App",
                             config_key = "production",
+                            variant = "production",
                             type = "typescript",
                             state = "configured",
                         },
@@ -1924,6 +1955,7 @@ describe("Core", function()
                 ["App/Debug"] = {
                     project_key = "App",
                     config_key = "Debug",
+                    variant = "Debug",
                     type = "cmake",
                 },
             },
@@ -2324,6 +2356,7 @@ describe("Core", function()
                         ["App/Debug"] = {
                             project_key = "App",
                             config_key = "Debug",
+                            variant = "Debug",
                             type = "cmake",
                             state = "configured",
                             build_dir = "/root/.nvim/build/App/Debug",
@@ -2397,6 +2430,7 @@ describe("Core", function()
                         ["App/Debug"] = {
                             project_key = "App",
                             config_key = "Debug",
+                            variant = "Debug",
                             type = "cmake",
                             state = "configured",
                             build_dir = "/root/.nvim/build/App/Debug",

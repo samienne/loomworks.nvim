@@ -83,6 +83,7 @@ function ConfigUnit:_update()
         self._cached = nil
     end
 
+    -- Cache entry is the source of truth for variant and tool
     local cached = self._cached
     self.variant = cached and cached.variant or nil
     self.tool = nil
@@ -91,42 +92,6 @@ function ConfigUnit:_update()
             key = cached.tool_key,
             data = cached.tool_data,
         }
-    end
-    -- Authoritative: resolve variant from a ProfileProject that references
-    -- this config_key. PP.variant is always correct (comes from profile
-    -- mappings), and takes priority over potentially stale cached variant.
-    -- Uses _pp_by_config index (O(1) lookup, built during _sync_profile_projects).
-    local pp_index = self._workspace._pp_by_config
-    local pp = pp_index and pp_index[self.project_key]
-        and pp_index[self.project_key][self.config_key] or nil
-    if pp then
-        self.variant = pp.variant
-        local profile_tool = pp._profile and pp._profile.tools
-            and self._project and pp._profile.tools[self._project.type] or nil
-        if profile_tool then
-            self.tool = {
-                key = profile_tool.key,
-                data = profile_tool.data,
-            }
-        end
-    end
-    -- Fallback: derive variant from config_key only when the project's module
-    -- has no keyed tools. For keyed modules, the variant must come from cache
-    -- or ProfileProject; callers (e.g. sections/projects.lua) set it
-    -- explicitly for uncached entries.
-    if not self.variant then
-        local has_keyed = self.tool ~= nil
-        if not has_keyed and self._project then
-            local type_tools = self._workspace._tools_by_type[self._project.type]
-            if type_tools then
-                for _, dt in ipairs(type_tools) do
-                    if dt.tool_key then has_keyed = true; break end
-                end
-            end
-        end
-        if not has_keyed then
-            self.variant = self.config_key
-        end
     end
 end
 

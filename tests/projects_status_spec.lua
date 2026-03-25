@@ -152,7 +152,7 @@ describe("Projects section cmake status", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -188,7 +188,7 @@ describe("Projects section cmake status", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -229,7 +229,7 @@ describe("Projects section cmake status", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -237,7 +237,7 @@ describe("Projects section cmake status", function()
                     },
                     ["App/Debug:msvc-17"] = {
                         project_key = "App",
-                        config_key = "Debug:msvc-17",
+                        config_key = "Debug:msvc-17", variant = "Debug",
                         type = "cmake",
                         state = "configured",
                         variant = "Debug",
@@ -245,7 +245,7 @@ describe("Projects section cmake status", function()
                     },
                     ["App/Release:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Release:ninja-gcc-12",
+                        config_key = "Release:ninja-gcc-12", variant = "Release",
                         type = "cmake",
                         state = "built",
                         variant = "Release",
@@ -306,7 +306,7 @@ describe("Projects section cmake status", function()
                 configurations = {
                     ["App/debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "debug:ninja-gcc-12",
+                        config_key = "debug:ninja-gcc-12", variant = "debug",
                         type = "cmake",
                         state = "built",
                         variant = "debug",
@@ -359,7 +359,7 @@ describe("Projects section cmake status", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -506,7 +506,7 @@ describe("Projects section tool entry highlights", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -545,7 +545,7 @@ describe("Projects section tool entry highlights", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -553,7 +553,7 @@ describe("Projects section tool entry highlights", function()
                     },
                     ["App/Debug:msvc-17"] = {
                         project_key = "App",
-                        config_key = "Debug:msvc-17",
+                        config_key = "Debug:msvc-17", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -598,6 +598,7 @@ describe("Projects section tool entry highlights", function()
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
                         config_key = "Debug:ninja-gcc-12",
+                        variant = "Debug",
                         type = "cmake",
                     },
                 },
@@ -658,7 +659,7 @@ describe("Projects section tool entry highlights", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -666,7 +667,7 @@ describe("Projects section tool entry highlights", function()
                     },
                     ["App/Release:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Release:ninja-gcc-12",
+                        config_key = "Release:ninja-gcc-12", variant = "Release",
                         type = "cmake",
                         state = "built",
                         variant = "Release",
@@ -700,7 +701,7 @@ describe("Projects section tool entry highlights", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
                         variant = "Debug",
@@ -739,7 +740,7 @@ describe("Projects section tool entry highlights", function()
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
-                        config_key = "Debug:ninja-gcc-12",
+                        config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "failed_build",
                         variant = "Debug",
@@ -747,7 +748,7 @@ describe("Projects section tool entry highlights", function()
                     },
                     ["App/Debug:msvc-17"] = {
                         project_key = "App",
-                        config_key = "Debug:msvc-17",
+                        config_key = "Debug:msvc-17", variant = "Debug",
                         type = "cmake",
                         state = "failed_configure",
                         variant = "Debug",

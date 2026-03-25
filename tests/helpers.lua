@@ -173,12 +173,6 @@ function M.register_profile_project(ws, profile, project_key, variant)
     profile._projects_list[#profile._projects_list + 1] = pp
     profile._projects_by_key = profile._projects_by_key or {}
     profile._projects_by_key[project_key] = pp
-    -- Update _pp_by_config index
-    ws._pp_by_config = ws._pp_by_config or {}
-    if not ws._pp_by_config[pp.project_key] then
-        ws._pp_by_config[pp.project_key] = {}
-    end
-    ws._pp_by_config[pp.project_key][pp.config_key] = pp
     return pp
 end
 

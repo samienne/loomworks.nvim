@@ -212,7 +212,6 @@ function Workspace.new(core, data)
     self._delete_waiters = {}
     self._build_dir_refs = {}
     self._build_dir_locks = {}
-    self._pp_by_config = {}
 
     return self
 end
@@ -370,7 +369,7 @@ end
 --- Sync the profile projects registry.
 --- Derives data from synced profiles' mappings.
 --- Runs after _sync_profiles so Profile objects and their mappings are available.
---- Also builds per-Profile direct lists and _pp_by_config index.
+--- Also builds per-Profile direct lists.
 function Workspace:_sync_profile_projects()
     -- Build the set of expected (profile_key, project_key) pairs
     -- Carry project_key explicitly to avoid parsing from registry key.
@@ -403,9 +402,8 @@ function Workspace:_sync_profile_projects()
         end
     end
 
-    -- Build per-Profile direct lists (D3) and _pp_by_config index (D4)
+    -- Build per-Profile direct lists
     local dependency = require("loomworks.dependency")
-    local pp_by_config = {}
     for _, profile in pairs(self._profiles) do
         local list = {}
         local by_key = {}
@@ -416,20 +414,12 @@ function Workspace:_sync_profile_projects()
                 if pp then
                     list[#list + 1] = pp
                     by_key[project_key] = pp
-                    -- Build nested index: [project_key][config_key] -> PP
-                    if not pp_by_config[pp.project_key] then
-                        pp_by_config[pp.project_key] = {}
-                    end
-                    if not pp_by_config[pp.project_key][pp.config_key] then
-                        pp_by_config[pp.project_key][pp.config_key] = pp
-                    end
                 end
             end
         end
         profile._projects_list = dependency.toposort(list)
         profile._projects_by_key = by_key
     end
-    self._pp_by_config = pp_by_config
 end
 
 --- Sync the config units registry.
@@ -442,9 +432,11 @@ function Workspace:_sync_config_units()
 
     -- From all profiles' mappings (via profile_projects)
     for _, pp in pairs(self._profile_projects) do
-        local reg_key = pp.project_key .. "\0" .. pp.config_key
-        if not expected[reg_key] then
-            expected[reg_key] = { project_key = pp.project_key, config_key = pp.config_key }
+        if pp.config_key then
+            local reg_key = pp.project_key .. "\0" .. pp.config_key
+            if not expected[reg_key] then
+                expected[reg_key] = { project_key = pp.project_key, config_key = pp.config_key }
+            end
         end
     end
 
@@ -774,8 +766,10 @@ function Workspace:_build_live_referenced_set()
     local referenced = {}
     for _, profile in pairs(self._profiles) do
         for _, pp in ipairs(profile:projects()) do
-            local ck = cache_mod.config_cache_key(pp.project_key, pp.config_key)
-            referenced[ck] = true
+            if pp.config_key then
+                local ck = cache_mod.config_cache_key(pp.project_key, pp.config_key)
+                referenced[ck] = true
+            end
         end
     end
     return referenced

@@ -41,18 +41,13 @@ function ProfileProject:_update(profile, variant)
     self._profile = profile
     self._project = self._workspace._projects[self.project_key]
     self.variant = variant
-
-    -- Resolve config_key from the profile's cached configurations array.
-    -- The cache entry for this project has the authoritative config_key.
-    -- Fall back to computing from variant + tool if no cache entry found.
-    local project = self._project
-    local tool = profile.tools and project and profile.tools[project.type] or nil
     self.config_key = nil
     self._cached = nil
+    self._config_unit = nil
 
-    -- Search profile's cached configurations for this project's entry.
-    -- Must match both project_key AND variant to avoid stale entries
-    -- after mapping changes.
+    -- Resolve config_key from the profile's cached configurations array.
+    -- The cache entry is the authoritative source for the config_key.
+    -- If no matching entry exists, this PP is unconfigured (no config_key).
     local cache = self._workspace.cache
     if profile._cached_configurations and cache and cache.configurations then
         for _, ck in ipairs(profile._cached_configurations) do
@@ -66,22 +61,10 @@ function ProfileProject:_update(profile, variant)
         end
     end
 
-    -- Fall back to computing config_key if no cache entry found
-    if not self.config_key then
-        if tool and tool.key then
-            self.config_key = variant .. ":" .. tool.key
-        else
-            self.config_key = variant
-        end
-        -- Try resolving cache entry via computed key
-        if cache and cache.configurations then
-            local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-            self._cached = cache.configurations[ck]
-        end
+    -- Resolve ConfigUnit if we have a config_key
+    if self.config_key then
+        self._config_unit = self._workspace:get_config_unit(self.project_key, self.config_key)
     end
-
-    -- Resolve ConfigUnit reference
-    self._config_unit = self._workspace:get_config_unit(self.project_key, self.config_key)
 end
 
 function ProfileProject:__tostring()
@@ -92,6 +75,7 @@ end
 --- Delegates to ConfigUnit (direct reference resolved during _update).
 --- @return loomworks.ConfigUnitState status
 function ProfileProject:status()
+    if not self._config_unit then return "unconfigured" end
     return self._config_unit:state()
 end
 
@@ -100,12 +84,14 @@ end
 --- that reference the same (project_key, config_key) pair.
 --- @return string|nil action
 function ProfileProject:running_action()
+    if not self._config_unit then return nil end
     return self._config_unit:running_action()
 end
 
 --- Check if this project-in-profile is being deleted.
 --- @return boolean
 function ProfileProject:is_deleting()
+    if not self._config_unit then return false end
     return self._config_unit:is_deleting()
 end
 

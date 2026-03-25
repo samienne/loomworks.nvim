@@ -431,97 +431,48 @@ describe("ConfigUnit", function()
     end)
 
     describe("variant resolution", function()
-        it("resolves variant from ProfileProject when no cache entry exists", function()
-            local core = h.make_mock_core()
-            -- Simulate a ProfileProject with a tool-qualified config_key
-            -- Populate _pp_by_config index (used by ConfigUnit variant resolution)
-            local mock_pp = {
-                project_key = "App",
-                config_key = "Debug:ninja-gcc",
-                variant = "Debug",
-                _profile = { tool = { key = "ninja-gcc", data = { id = "ninja-gcc" } } },
-            }
-            core._pp_by_config = { App = { ["Debug:ninja-gcc"] = mock_pp } }
-            local unit = core:get_config_unit("App", "Debug:ninja-gcc")
-            assert.equals("Debug", unit.variant)
-        end)
-
-        it("uses config_key as variant for non-keyed modules (no tool)", function()
-            local core = h.make_mock_core()
-            local unit = core:get_config_unit("App", "development")
-            assert.equals("development", unit.variant)
-        end)
-
-        it("uses config_key as variant when no keyed tools detected", function()
-            local core = h.make_mock_core()
-            -- No tools detected, no cache, no PP → safe to use config_key
-            local unit = core:get_config_unit("App", "development")
-            assert.equals("development", unit.variant)
-        end)
-
-        it("leaves variant nil when keyed tools are detected for project type", function()
-            local core = h.make_mock_core()
-            -- Project has type "cmake", and keyed tools are detected
-            core._projects["App"] = { type = "cmake" }
-            core._tools_by_type = {
-                cmake = { { tool_key = "ninja-gcc", tool_data = {} } },
-            }
-            local unit = core:get_config_unit("App", "Debug:ninja-gcc")
-            assert.is_nil(unit.variant)
-        end)
-
-        it("resolves variant from cache when no ProfileProject", function()
+        it("resolves variant from cache entry", function()
             local core = h.make_mock_core({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            configurations = {
-                                ["App/Debug"] = {
-                                    project_key = "App",
-                                    config_key = "Debug",
-                                    type = "cmake",
-                                    variant = "Debug",
-                                },
-                            },
+                cache = {
+                    configurations = {
+                        ["App/Debug"] = {
+                            project_key = "App",
+                            config_key = "Debug",
+                            type = "cmake",
+                            variant = "Debug",
                         },
-                    }
-                end,
+                    },
+                },
             })
             local unit = core:get_config_unit("App", "Debug")
             assert.equals("Debug", unit.variant)
         end)
 
-        it("ProfileProject variant overrides stale cached variant", function()
+        it("variant is nil when no cache entry exists", function()
+            local core = h.make_mock_core()
+            local unit = core:get_config_unit("App", "Debug")
+            assert.is_nil(unit.variant)
+        end)
+
+        it("resolves tool from cache entry", function()
             local core = h.make_mock_core({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            configurations = {
-                                ["App/Debug:ninja-gcc"] = {
-                                    project_key = "App",
-                                    config_key = "Debug:ninja-gcc",
-                                    type = "cmake",
-                                    variant = "Debug:ninja-gcc",
-                                    tool_key = "ninja-gcc",
-                                },
-                            },
+                cache = {
+                    configurations = {
+                        ["App/cfg-1"] = {
+                            project_key = "App",
+                            config_key = "cfg-1",
+                            type = "cmake",
+                            variant = "Debug",
+                            tool_key = "ninja-gcc",
+                            tool_data = { id = "ninja-gcc" },
                         },
-                    }
-                end,
+                    },
+                },
             })
-            -- Populate _pp_by_config index (used by ConfigUnit variant resolution)
-            local mock_pp = {
-                project_key = "App",
-                config_key = "Debug:ninja-gcc",
-                variant = "Debug",
-                _profile = { tool = { key = "ninja-gcc", data = { id = "ninja-gcc" } } },
-            }
-            core._pp_by_config = { App = { ["Debug:ninja-gcc"] = mock_pp } }
-            local unit = core:get_config_unit("App", "Debug:ninja-gcc")
-            -- ProfileProject is authoritative, overrides the stale cached variant
+            local unit = core:get_config_unit("App", "cfg-1")
             assert.equals("Debug", unit.variant)
+            assert.is_not_nil(unit.tool)
+            assert.equals("ninja-gcc", unit.tool.key)
         end)
     end)
 end)

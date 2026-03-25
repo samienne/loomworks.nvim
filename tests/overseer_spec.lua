@@ -173,6 +173,7 @@ describe("overseer launch_tasks", function()
                                 ["App/Debug"] = {
                                     project_key = "App",
                                     config_key = "Debug",
+                                    variant = "Debug",
                                     type = "cmake",
                                     state = "failed_configure",
                                 },
