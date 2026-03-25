@@ -217,16 +217,18 @@ function Workspace.new(core, data)
 end
 
 --- Get or create a ConfigUnit for a (project_key, config_key) pair.
+--- Get or create a ConfigUnit by project_key and config_key.
+--- Uses cache dict key as the internal registry identity.
 --- Returns the same instance for the same pair (registry/flyweight pattern).
 --- @param project_key string
 --- @param config_key string
 --- @return loomworks.ConfigUnit
 function Workspace:get_config_unit(project_key, config_key)
-    local key = project_key .. "\0" .. config_key
-    local unit = self._config_units[key]
+    local id = cache_mod.config_cache_key(project_key, config_key)
+    local unit = self._config_units[id]
     if not unit then
-        unit = ConfigUnit.new(self, project_key, config_key)
-        self._config_units[key] = unit
+        unit = ConfigUnit.new(self, id, project_key, config_key)
+        self._config_units[id] = unit
     end
     return unit
 end
@@ -427,44 +429,34 @@ end
 --- creates/updates/removes ConfigUnit objects. Preserves runtime state.
 --- Carries project_key and config_key explicitly (no key parsing).
 function Workspace:_sync_config_units()
-    -- Collect all valid (project_key, config_key) pairs
-    local expected = {} -- reg_key -> { project_key, config_key }
+    -- Collect expected config units keyed by cache dict key
+    local expected = {} -- cache_dict_key -> { project_key, config_key }
 
-    -- From all profiles' mappings (via profile_projects)
-    for _, pp in pairs(self._profile_projects) do
-        if pp.config_key then
-            local reg_key = pp.project_key .. "\0" .. pp.config_key
-            if not expected[reg_key] then
-                expected[reg_key] = { project_key = pp.project_key, config_key = pp.config_key }
-            end
-        end
-    end
-
-    -- From cache entries
+    -- From cache entries (authoritative — the cache dict key IS the identity)
     if self.cache.configurations then
-        for _, cached_config in pairs(self.cache.configurations) do
-            local reg_key = cached_config.project_key .. "\0" .. cached_config.config_key
-            if not expected[reg_key] then
-                expected[reg_key] = { project_key = cached_config.project_key, config_key = cached_config.config_key }
-            end
+        for cache_dict_key, cached_config in pairs(self.cache.configurations) do
+            expected[cache_dict_key] = {
+                project_key = cached_config.project_key,
+                config_key = cached_config.config_key,
+            }
         end
     end
 
     -- Mark removed (only if not running/deleting -- don't remove active units)
-    for reg_key, unit in pairs(self._config_units) do
-        if not expected[reg_key] and not unit:is_running() and not unit:is_deleting() then
+    for id, unit in pairs(self._config_units) do
+        if not expected[id] and not unit:is_running() and not unit:is_deleting() then
             unit._removed = true
-            self._config_units[reg_key] = nil
+            self._config_units[id] = nil
         end
     end
 
     -- Create or update
-    for reg_key, info in pairs(expected) do
-        local existing = self._config_units[reg_key]
+    for id, info in pairs(expected) do
+        local existing = self._config_units[id]
         if existing then
             existing:_update()
         else
-            self._config_units[reg_key] = ConfigUnit.new(self, info.project_key, info.config_key)
+            self._config_units[id] = ConfigUnit.new(self, id, info.project_key, info.config_key)
         end
     end
 end

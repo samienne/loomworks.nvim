@@ -1,12 +1,12 @@
 --- loomworks/config_unit.lua — ConfigUnit: atomic unit of configuration state.
---- A ConfigUnit represents a unique (project_key, config_key) combination.
---- It owns the running/deleting state for that combination and provides
---- a single derived state value. Multiple profiles may reference the same
---- ConfigUnit; state changes are visible to all of them.
+--- Identity is the cache dict key (e.g., "App/Debug:ninja-gcc").
+--- Owns the running/deleting state and provides a single derived state value.
+--- Multiple profiles may reference the same ConfigUnit.
 
 local cache_mod = require("loomworks.cache")
 
 --- @class loomworks.ConfigUnit
+--- @field id string cache dict key (identity)
 --- @field project_key string
 --- @field config_key string
 --- @field variant? string configuration variant name (from cache data)
@@ -39,12 +39,14 @@ ConfigUnit.__index = ConfigUnit
 
 --- Create a new ConfigUnit.
 --- @param workspace loomworks.Workspace
+--- @param id string cache dict key (identity)
 --- @param project_key string
 --- @param config_key string
 --- @return loomworks.ConfigUnit
-function ConfigUnit.new(workspace, project_key, config_key)
+function ConfigUnit.new(workspace, id, project_key, config_key)
     local self = setmetatable({}, ConfigUnit)
     self._workspace = workspace
+    self.id = id
     self.project_key = project_key
     self.config_key = config_key
     self._task_id = nil
@@ -74,11 +76,10 @@ function ConfigUnit:_update()
     -- Resolve direct project reference
     self._project = self._workspace._projects[self.project_key]
 
-    -- Resolve direct cache reference (key construction at sync boundary only)
+    -- Resolve direct cache reference (id IS the cache dict key)
     local cache = self._workspace.cache
     if cache and cache.configurations then
-        local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-        self._cached = cache.configurations[ck]
+        self._cached = cache.configurations[self.id]
     else
         self._cached = nil
     end
@@ -247,12 +248,11 @@ function ConfigUnit:materialize(variant, tool)
         end
     end
 
-    -- Write directly to flat cache
-    local cache_key = cache_mod.config_cache_key(self.project_key, self.config_key)
+    -- Write directly to flat cache (id IS the cache dict key)
     ws.cache.configurations = ws.cache.configurations or {}
-    local existing = ws.cache.configurations[cache_key]
+    local existing = ws.cache.configurations[self.id]
     if not existing then
-        ws.cache.configurations[cache_key] = {
+        ws.cache.configurations[self.id] = {
             project_key = self.project_key,
             config_key = self.config_key,
             type = self._project.type,
@@ -304,7 +304,6 @@ function ConfigUnit:materialize_pinned(variant, tool)
     local tool_label = self.tool and self.tool.label or nil
     local tool_mod_type = self.tool and self.tool.mod_type or nil
 
-    local cache_key = cache_mod.config_cache_key(self.project_key, self.config_key)
     local tools = nil
     if tool_key and tool_mod_type then
         tools = {
@@ -318,7 +317,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
     ws.cache.profiles[ak] = {
         mappings = { [self.project_key] = self.variant },
         tools = tools,
-        configurations = { cache_key },
+        configurations = { self.id },
     }
 
     ws:_save_cache()

@@ -111,12 +111,13 @@ function M.make_mock_workspace(overrides)
 
     -- Add get_config_unit method (same logic as Workspace:get_config_unit)
     local ConfigUnit = require("loomworks.config_unit")
+    local cache_mod_h = require("loomworks.cache")
     ws.get_config_unit = function(self, project_key, config_key)
-        local key = project_key .. "\0" .. config_key
-        local unit = self._config_units[key]
+        local id = cache_mod_h.config_cache_key(project_key, config_key)
+        local unit = self._config_units[id]
         if not unit then
-            unit = ConfigUnit.new(self, project_key, config_key)
-            self._config_units[key] = unit
+            unit = ConfigUnit.new(self, id, project_key, config_key)
+            self._config_units[id] = unit
         end
         return unit
     end
