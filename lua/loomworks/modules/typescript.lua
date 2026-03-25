@@ -180,6 +180,7 @@ function M.info(path, config)
         for _, name in ipairs(variants) do
             local tsconfig = "tsconfig." .. name .. ".json"
             configurations[name] = {
+                variant = name,
                 tsconfig = tsconfig,
                 outDir = read_outdir(path, tsconfig),
             }
@@ -187,6 +188,7 @@ function M.info(path, config)
     else
         -- Fallback: single default configuration using tsconfig.json
         configurations["default"] = {
+            variant = "default",
             tsconfig = "tsconfig.json",
             outDir = read_outdir(path, "tsconfig.json"),
         }

@@ -22,7 +22,7 @@ function M.toposort(pps)
 
     -- Fast path: no dependencies → just sort alphabetically
     if not has_any_deps then
-        table.sort(pps, function(a, b) return a.project_key < b.project_key end)
+        table.sort(pps, function(a, b) return (a._project and a._project.key or "") < (b._project and b._project.key or "") end)
         return pps, nil
     end
 
@@ -92,7 +92,7 @@ function M.toposort(pps)
     end
     if #sorted - (#pps - with_project) < with_project then
         -- Fall back to alphabetical on cycle
-        table.sort(pps, function(a, b) return a.project_key < b.project_key end)
+        table.sort(pps, function(a, b) return (a._project and a._project.key or "") < (b._project and b._project.key or "") end)
         return pps, "circular dependency detected"
     end
 

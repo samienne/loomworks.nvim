@@ -111,12 +111,12 @@ function ConfigurationSet:find_profile(tool_entry)
     local tool_data = tool_entry and tool_entry.tool_data or nil
     local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
     for _, profile in pairs(self._workspace._profiles) do
-        if profile.configuration_set == self.name then
-            if not tool_data and not profile.tools then
+        if profile._configuration_set_name == self.name then
+            if not tool_data and not profile._tools_raw then
                 return profile
             end
-            if tool_mod_type and profile.tools then
-                local profile_tool = profile.tools[tool_mod_type]
+            if tool_mod_type and profile._tools_raw then
+                local profile_tool = profile._tools_raw[tool_mod_type]
                 if profile_tool then
                     local mods = require("loomworks.modules")
                     local mod = mods.get(tool_mod_type)

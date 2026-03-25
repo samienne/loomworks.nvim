@@ -9,10 +9,9 @@ describe("ConfigUnit", function()
     end
 
     describe("identity", function()
-        it("stores project_key and config_key", function()
+        it("stores id as cache dict key", function()
             local unit = make_unit()
-            assert.equals("App", unit.project_key)
-            assert.equals("Debug", unit.config_key)
+            assert.equals("App/Debug", unit.id)
         end)
 
     end)
@@ -430,8 +429,8 @@ describe("ConfigUnit", function()
         end)
     end)
 
-    describe("variant resolution", function()
-        it("resolves variant from cache entry", function()
+    describe("cache resolution", function()
+        it("resolves cached data from cache entry", function()
             local core = h.make_mock_core({
                 cache = {
                     configurations = {
@@ -445,16 +444,17 @@ describe("ConfigUnit", function()
                 },
             })
             local unit = core:get_config_unit("App", "Debug")
-            assert.equals("Debug", unit.variant)
+            assert.is_not_nil(unit._cached)
+            assert.equals("Debug", unit._cached.variant)
         end)
 
-        it("variant is nil when no cache entry exists", function()
+        it("_cached is nil when no cache entry exists", function()
             local core = h.make_mock_core()
             local unit = core:get_config_unit("App", "Debug")
-            assert.is_nil(unit.variant)
+            assert.is_nil(unit._cached)
         end)
 
-        it("resolves tool from cache entry", function()
+        it("resolves tool domain object from cache entry", function()
             local core = h.make_mock_core({
                 cache = {
                     configurations = {
@@ -470,9 +470,9 @@ describe("ConfigUnit", function()
                 },
             })
             local unit = core:get_config_unit("App", "cfg-1")
-            assert.equals("Debug", unit.variant)
-            assert.is_not_nil(unit.tool)
-            assert.equals("ninja-gcc", unit.tool.key)
+            assert.is_not_nil(unit._cached)
+            assert.equals("Debug", unit._cached.variant)
+            assert.equals("ninja-gcc", unit._cached.tool_key)
         end)
     end)
 end)

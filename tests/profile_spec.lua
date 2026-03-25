@@ -16,6 +16,20 @@ describe("Profile", function()
             ws_overrides = vim.tbl_deep_extend("force", ws_overrides, { cache = default_cache })
         end
         local core = h.make_mock_core(ws_overrides)
+        -- Register minimal mock projects so PP._project resolves
+        local Project = require("loomworks.project")
+        if not core._projects["App"] then
+            core._projects["App"] = Project.new(core, "App", {
+                type = "cmake", path = "App", status = "unconfigured",
+                configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
+            })
+        end
+        if not core._projects["Lib"] then
+            core._projects["Lib"] = Project.new(core, "Lib", {
+                type = "cmake", path = "Lib", status = "unconfigured",
+                configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
+            })
+        end
         local data = vim.tbl_deep_extend("force", {
             configuration_set = "debug",
             tools = nil,
@@ -38,7 +52,7 @@ describe("Profile", function()
         it("sets fields from data", function()
             local p = make_profile()
             assert.equals("debug", p.key)
-            assert.equals("debug", p.configuration_set)
+            assert.equals("debug", p._configuration_set_name)
             assert.is_false(p.explicit)
         end)
 
@@ -54,8 +68,8 @@ describe("Profile", function()
             local p = make_profile()
             local pp = p:project("App")
             assert.is_not_nil(pp)
-            assert.equals("App", pp.project_key)
-            assert.equals("Debug", pp.variant)
+            assert.equals("App", pp._init_project_key)
+            assert.equals("Debug", pp._variant)
         end)
 
         it("returns nil for unknown project", function()
@@ -69,8 +83,8 @@ describe("Profile", function()
             local p = make_profile()
             local pps = p:projects()
             assert.equals(2, #pps)
-            assert.equals("App", pps[1].project_key)
-            assert.equals("Lib", pps[2].project_key)
+            assert.equals("App", pps[1]._init_project_key)
+            assert.equals("Lib", pps[2]._init_project_key)
         end)
 
         it("returns empty when no mappings", function()
@@ -281,17 +295,9 @@ describe("Profile", function()
         end)
 
         it("returns items for each mapped project", function()
-            local p = make_profile(nil, {
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = {}, Lib = {} } },
-                        cache = { configurations = {} },
-                    }
-                end,
-                get_profiles = function()
-                    return {} -- no other profiles
-                end,
-            })
+            local p, core = make_profile()
+            -- Register as the only profile so other_refs is empty
+            core._profiles = { debug = p }
             local plan = p:plan_deletion()
             assert.equals(2, #plan.items)
             assert.equals("App", plan.items[1].project_key)

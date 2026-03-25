@@ -108,7 +108,8 @@
 
 -- ========================== Tool References ==========================
 
---- Bundled tool reference carried by Profile, Project, and ConfigUnit.
+--- Bundled tool reference used in cache data and module contexts.
+--- Domain objects use Tool references instead; ToolRef is for serialization/matching.
 --- @class loomworks.ToolRef
 --- @field key? string cache key suffix (e.g. "ninja-gcc-12")
 --- @field data? table opaque module-specific tool data

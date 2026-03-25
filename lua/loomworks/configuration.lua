@@ -5,7 +5,6 @@
 
 --- @class loomworks.Configuration
 --- @field name string configuration name (e.g., "Debug", "Debug-asan")
---- @field variant string|nil CMAKE_BUILD_TYPE or equivalent (nil for abstract mixins)
 --- @field _project loomworks.Project back-reference
 --- @field _inherits loomworks.Configuration[] resolved base configuration references
 --- @field inherits_names string[] raw base config names (from module data)
@@ -37,7 +36,6 @@ end
 --- @param data table configuration data from module.info()
 function Configuration:_update(data)
     data = data or {}
-    self.variant = data.variant or nil
     self.is_default = data.is_default or false
     self.is_user = data.is_user or false
     self.from_preset = data.from_preset or false
@@ -62,7 +60,7 @@ function Configuration:_update(data)
     -- Module-specific config: everything except the generic fields above
     local module_config = {}
     local generic = {
-        variant = true, is_default = true, is_user = true, from_preset = true,
+        is_default = true, is_user = true, from_preset = true,
         role = true, inherits = true, options = true,
     }
     for k, v in pairs(data) do
@@ -89,7 +87,7 @@ end
 --- Check if this configuration is abstract (no variant — mixin only).
 --- @return boolean
 function Configuration:is_abstract()
-    return self.variant == nil
+    return not self.module_config or self.module_config.variant == nil
 end
 
 function Configuration:__tostring()

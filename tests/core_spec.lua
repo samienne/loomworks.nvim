@@ -281,7 +281,7 @@ describe("Core", function()
             local profile = core:get_profiles()["debug"]
             assert.is_not_nil(profile)
             assert.equals("debug", profile.key)
-            assert.equals("debug", profile.configuration_set)
+            assert.equals("debug", profile._configuration_set_name)
         end)
 
     end)

@@ -248,10 +248,10 @@ function M.buf_status(bufnr)
     if not project_key then return nil end
 
     local profile = core:get_active_profile()
-    local set_name = profile and profile.configuration_set or nil
+    local set_name = profile and (profile._config_set_ref and profile._config_set_ref.name or profile._configuration_set_name) or nil
 
     local status
-    if profile and project.configuration_key then
+    if profile and project.configuration then
         local pp = profile:project(project_key)
         if pp then
             status = pp:status()
@@ -261,7 +261,7 @@ function M.buf_status(bufnr)
     return {
         profile_key = active_set.name,
         set_name = set_name,
-        tool_key = project.tool and project.tool.key or nil,
+        tool_key = project._tool and project._tool.key or nil,
         project = project_key,
         configuration = project.configuration,
         status = status,

@@ -229,7 +229,7 @@ function Workspace:get_config_unit(project_key, config_key)
     local id = cache_mod.config_cache_key(project_key, config_key)
     local unit = self._config_units[id]
     if not unit then
-        unit = ConfigUnit.new(self, id, project_key, config_key)
+        unit = ConfigUnit.new(self, id, project_key)
         self._config_units[id] = unit
     end
     return unit
@@ -460,7 +460,7 @@ function Workspace:_sync_config_units()
         if existing then
             existing:_update()
         else
-            self._config_units[id] = ConfigUnit.new(self, id, info.project_key, info.config_key)
+            self._config_units[id] = ConfigUnit.new(self, id, info.project_key)
         end
     end
 end
@@ -863,8 +863,10 @@ function Workspace:_build_live_referenced_set()
     local referenced = {}
     for _, profile in pairs(self._profiles) do
         for _, pp in ipairs(profile:projects()) do
-            if pp.config_key then
-                local ck = cache_mod.config_cache_key(pp.project_key, pp.config_key)
+            local pp_cached = pp._cached
+            if pp_cached and pp_cached.config_key then
+                local project_key = pp._project and pp._project.key or pp_cached.project_key
+                local ck = cache_mod.config_cache_key(project_key, pp_cached.config_key)
                 referenced[ck] = true
             end
         end
@@ -1052,9 +1054,9 @@ function Workspace:find_running_tasks_for_items(items)
         local unit = self:get_config_unit(item.project_key, item.config_key)
         if unit._task_id then
             matches[unit._task_id] = {
-                project_key = unit.project_key,
+                project_key = item.project_key,
                 action = unit:running_action(),
-                configuration_key = unit.config_key,
+                configuration_key = item.config_key,
             }
         end
     end
@@ -1534,10 +1536,10 @@ function Workspace:_scan_targets_async()
                 scan_type = "file_api",
                 build_dir = build_dir,
             }
-        elseif mod.parse_targets_async and not seen_projects[unit.project_key] then
+        elseif mod.parse_targets_async and not seen_projects[project.key] then
             -- Project-level target scan (e.g., npm scripts) -- once per project
-            seen_projects[unit.project_key] = true
-            local abs_path = self.root .. "/" .. (project.path or unit.project_key)
+            seen_projects[project.key] = true
+            local abs_path = self.root .. "/" .. (project.path or project.key)
             units[#units + 1] = {
                 unit = unit, mod = mod,
                 scan_type = "project",
@@ -1576,9 +1578,11 @@ function Workspace:_scan_targets_async()
         end
 
         if entry.scan_type == "file_api" then
-            entry.mod.parse_file_api_async(entry.build_dir, entry.unit.variant, on_targets)
+            local variant = entry.unit._cached and entry.unit._cached.variant
+            entry.mod.parse_file_api_async(entry.build_dir, variant, on_targets)
         else
-            entry.mod.parse_targets_async(entry.project_path, entry.unit.variant, on_targets)
+            local variant = entry.unit._cached and entry.unit._cached.variant
+            entry.mod.parse_targets_async(entry.project_path, variant, on_targets)
         end
     end
 

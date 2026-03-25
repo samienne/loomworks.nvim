@@ -63,12 +63,20 @@ describe("Project", function()
         end)
 
         it("checks via ConfigUnit with computed cache key", function()
-            local core = h.make_mock_core()
+            local core = h.make_mock_core({
+                cache = {
+                    configurations = {
+                        ["App/Debug:ninja-gcc"] = {
+                            project_key = "App", config_key = "Debug:ninja-gcc",
+                            type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
+                        },
+                    },
+                },
+            })
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
             core._projects["App"] = p
             local unit = core:get_config_unit("App", "Debug:ninja-gcc")
             unit:_update()
-            unit.variant = "Debug"
             unit:mark_deleting(true)
             assert.is_true(p:is_deleting_config("Debug"))
         end)
@@ -76,12 +84,20 @@ describe("Project", function()
 
     describe("config_running_action", function()
         it("delegates to ConfigUnit with computed cache key", function()
-            local core = h.make_mock_core()
+            local core = h.make_mock_core({
+                cache = {
+                    configurations = {
+                        ["App/Debug:ninja-gcc"] = {
+                            project_key = "App", config_key = "Debug:ninja-gcc",
+                            type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
+                        },
+                    },
+                },
+            })
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
             core._projects["App"] = p
             local unit = core:get_config_unit("App", "Debug:ninja-gcc")
             unit:_update()
-            unit.variant = "Debug"
             unit:register_task(1, "configure")
             assert.equals("configure", p:config_running_action("Debug"))
         end)
@@ -105,24 +121,28 @@ describe("Project", function()
         end)
 
         it("tries kit-qualified key first", function()
+            local core = h.make_mock_core()
+            core:get_or_create_tool("cmake", "ninja-gcc", {}, nil)
             local p = make_project({
                 tool_key = "ninja-gcc",
                 cached_configurations = {
                     Debug = { state = "configured" },
                     ["Debug:ninja-gcc"] = { state = "built" },
                 },
-            })
+            }, nil, core)
             local cached = p:cached_config("Debug")
             assert.equals("built", cached.state)
         end)
 
         it("falls back to bare name when kit-qualified not found", function()
+            local core = h.make_mock_core()
+            core:get_or_create_tool("cmake", "ninja-gcc", {}, nil)
             local p = make_project({
                 tool_key = "ninja-gcc",
                 cached_configurations = {
                     Debug = { state = "configured" },
                 },
-            })
+            }, nil, core)
             local cached = p:cached_config("Debug")
             assert.equals("configured", cached.state)
         end)
@@ -130,17 +150,17 @@ describe("Project", function()
 
     describe("to_module_context", function()
         it("builds module context with correct fields", function()
+            local core = h.make_mock_core()
+            core:get_or_create_tool("cmake", "ninja-gcc", { generator = "Ninja", env = { CC = "gcc" } }, nil)
             local p = make_project({
-                configuration_key = "Debug:ninja-gcc",
                 tool_key = "ninja-gcc",
-                tool_data = { generator = "Ninja", env = { CC = "gcc" } },
-            })
+            }, nil, core)
             local ctx = p:to_module_context("/workspace")
             assert.equals("App", ctx.name)
             assert.equals("App", ctx.path)
             assert.equals("cmake", ctx.type)
             assert.equals("Debug", ctx.configuration)
-            assert.equals("Debug:ninja-gcc", ctx.configuration_key)
+            assert.equals("ninja-gcc", ctx.tool_key)
             assert.equals("/workspace", ctx.workspace_root)
             assert.equals("gcc", ctx.env.CC)
         end)

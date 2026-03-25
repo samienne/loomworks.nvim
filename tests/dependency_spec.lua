@@ -35,9 +35,9 @@ describe("dependency", function()
 
             local pps = profile:projects()
             assert.equals(3, #pps)
-            assert.equals("App", pps[1].project_key)
-            assert.equals("Backend", pps[2].project_key)
-            assert.equals("Core", pps[3].project_key)
+            assert.equals("App", pps[1]._init_project_key)
+            assert.equals("Backend", pps[2]._init_project_key)
+            assert.equals("Core", pps[3]._init_project_key)
         end)
 
         it("puts dependencies before dependents", function()
@@ -59,8 +59,8 @@ describe("dependency", function()
 
             local pps = profile:projects()
             assert.equals(2, #pps)
-            assert.equals("Core", pps[1].project_key)
-            assert.equals("App", pps[2].project_key)
+            assert.equals("Core", pps[1]._init_project_key)
+            assert.equals("App", pps[2]._init_project_key)
         end)
 
         it("handles diamond dependencies", function()
@@ -85,13 +85,13 @@ describe("dependency", function()
 
             local pps = profile:projects()
             assert.equals(4, #pps)
-            assert.equals("Base", pps[1].project_key)
+            assert.equals("Base", pps[1]._init_project_key)
             -- Left and Right can be in either order, but both before Top
-            local middle = { pps[2].project_key, pps[3].project_key }
+            local middle = { pps[2]._init_project_key, pps[3]._init_project_key }
             table.sort(middle)
             assert.equals("Left", middle[1])
             assert.equals("Right", middle[2])
-            assert.equals("Top", pps[4].project_key)
+            assert.equals("Top", pps[4]._init_project_key)
         end)
 
         it("detects circular dependencies", function()
@@ -135,7 +135,7 @@ describe("dependency", function()
 
             local pps = profile:projects()
             assert.equals(1, #pps)
-            assert.equals("App", pps[1].project_key)
+            assert.equals("App", pps[1]._init_project_key)
         end)
     end)
 end)

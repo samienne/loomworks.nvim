@@ -39,7 +39,7 @@ end
 --- @param config table type_config from loomworks.json
 --- @return table<string, table>
 function M.default_configurations(path, config)
-    return { debug = {}, release = {} }
+    return { debug = { variant = "debug" }, release = { variant = "release" } }
 end
 
 --- Return what the module knows about the project.

@@ -9,14 +9,14 @@ local actions = require("loomworks.ui.actions")
 --- @param lw table loomworks API
 local function render_profile_details(tree, profile, lw)
     if profile.orphaned_set then
-        tree:leaf("Set '" .. (profile.configuration_set or "?")
+        tree:leaf("Set '" .. (profile._configuration_set_name or "?")
             .. "' removed from loomworks.json", "DiagnosticWarn")
-    elseif profile.configuration_set then
-        tree:leaf("Set: " .. profile.configuration_set, "Comment")
+    elseif profile._config_set_ref then
+        tree:leaf("Set: " .. profile._config_set_ref.name, "Comment")
     end
 
-    if profile.tools then
-        for mod_type, tool in pairs(profile.tools) do
+    if profile._tools_raw then
+        for mod_type, tool in pairs(profile._tools_raw) do
             if tool.label then
                 tree:leaf("Tool: " .. tool.label, "Comment")
             end
@@ -69,8 +69,9 @@ local function render_profile_details(tree, profile, lw)
                 local unit = pp._config_unit
                 local type_tag = pp._project and pp._project.type
                     and (" [" .. pp._project.type .. "]") or ""
-                tree:node(pp.project_key .. type_tag .. " → " .. pp.variant .. progress_str, {
-                    fold_key = "profile_proj:" .. profile.key .. ":" .. pp.project_key,
+                local pp_pkey = pp._project and pp._project.key or "?"
+                tree:node(pp_pkey .. type_tag .. " → " .. pp._variant .. progress_str, {
+                    fold_key = "profile_proj:" .. profile.key .. ":" .. pp_pkey,
                     spinning = is_spinning,
                     hl = status_hl,
                     enter_label = "Open task output",

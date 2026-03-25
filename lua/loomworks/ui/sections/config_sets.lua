@@ -300,7 +300,7 @@ return function(tree, ctx)
     for _, entry in ipairs(sorted) do
         local cs = entry.cs
         local is_active_set = active_profile
-                and active_profile.configuration_set == cs.name
+                and active_profile._config_set_ref == cs
         local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
         local sname = cs.name
 

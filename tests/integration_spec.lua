@@ -820,7 +820,24 @@ describe("collect helpers", function()
     end)
 
     it("collect_clean_items_for_unit returns single item", function()
-        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            nil,
+            {
+                profiles = {
+                    ["App/Debug"] = {
+                        configurations = { "App/Debug" },
+                        mappings = { App = "Debug" },
+                    },
+                },
+                configurations = {
+                    ["App/Debug"] = {
+                        project_key = "App", config_key = "Debug",
+                        type = "cmake", variant = "Debug", state = "configured",
+                    },
+                },
+            }
+        )
         local unit = ws:get_config_unit("App", "Debug")
         local items = wv.collect_clean_items_for_unit(unit)
         assert.equals(1, #items)
@@ -1820,7 +1837,7 @@ describe("opaque keys", function()
         -- ProfileProjects have correct variants
         local variants = {}
         for _, pp in ipairs(pps) do
-            variants[pp.project_key] = pp.variant
+            variants[pp._project.key] = pp._variant
         end
         assert.equals("Debug", variants["proj-alpha"])
         assert.equals("debug", variants["proj-beta"])
@@ -1859,14 +1876,14 @@ describe("opaque keys", function()
         local proj = ws._projects["proj-alpha"]
         local units = proj:config_units_for_variant("Debug")
         assert.equals(1, #units)
-        assert.equals("cfg-42", units[1].config_key)
+        assert.equals("cfg-42", units[1]._cached.config_key)
     end)
 
     it("build_dir_refs track arbitrary cache entries", function()
         local ws = make_opaque_ws()
         local refs = ws:get_build_dir_refs("/root/.nvim/build/arbitrary-dir")
         assert.equals(1, #refs)
-        assert.equals("cfg-42", refs[1].config_key)
+        assert.equals("cfg-42", refs[1]._cached.config_key)
     end)
 
     it("config set mapping updates work with arbitrary project keys", function()

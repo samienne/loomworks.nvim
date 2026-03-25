@@ -10,8 +10,6 @@ local Configuration = require("loomworks.configuration")
 --- @field type_config? table module-specific configuration (options, configurations, etc.)
 --- @field launch? table<string, table> launch configurations
 --- @field configuration? string active configuration name
---- @field configuration_key? string cache key for active configuration
---- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
 --- @field _tool? loomworks.Tool direct reference to Tool domain object
 --- @field status loomworks.Status
 --- @field orphaned boolean
@@ -52,13 +50,6 @@ function Project:_update(data)
     self.type_config = data.type_config
     self.launch = data.launch
     self.configuration = data.configuration
-    self.configuration_key = data.configuration_key
-    self.tool = data.tool_key and {
-        key = data.tool_key,
-        data = data.tool_data,
-        label = data.tool_label,
-        mod_type = data.tool_mod_type,
-    } or nil
     -- Resolve Tool domain object from workspace registry
     self._tool = nil
     if data.tool_key and self._workspace.find_tool then
@@ -172,7 +163,7 @@ end
 function Project:config_units_for_variant(variant)
     local result = {}
     for _, unit in pairs(self._workspace._config_units) do
-        if unit._project == self and unit.variant == variant then
+        if unit._project == self and unit._cached and unit._cached.variant == variant then
             result[#result + 1] = unit
         end
     end
@@ -217,8 +208,8 @@ end
 --- @return loomworks.CachedConfig|nil
 function Project:cached_config(config_name)
     if not self.cached_configurations then return nil end
-    if self.tool and self.tool.key then
-        local cached = self.cached_configurations[config_name .. ":" .. self.tool.key]
+    if self._tool and self._tool.key then
+        local cached = self.cached_configurations[config_name .. ":" .. self._tool.key]
         if cached then return cached end
     end
     return self.cached_configurations[config_name]
@@ -234,17 +225,18 @@ end
 --- @param ws_root string workspace root path
 --- @return loomworks.ModuleContext
 function Project:to_module_context(ws_root)
+    local tool_key = self._tool and self._tool.key or nil
+    local tool_data = self._tool and self._tool.data or nil
     return {
         name = self.key,
         path = self.path or self.key,
         type = self.type,
         configuration = self.configuration,
-        configuration_key = self.configuration_key,
         configurations = self.configurations,
-        tool_key = self.tool and self.tool.key or nil,
-        tool_data = self.tool and self.tool.data or nil,
+        tool_key = tool_key,
+        tool_data = tool_data,
         workspace_root = ws_root,
-        env = self.tool and self.tool.data and self.tool.data.env or {},
+        env = tool_data and tool_data.env or {},
     }
 end
 
