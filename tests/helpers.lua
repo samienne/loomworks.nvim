@@ -111,12 +111,13 @@ function M.make_mock_workspace(overrides)
 
     -- Add get_config_unit method (same logic as Workspace:get_config_unit)
     local ConfigUnit = require("loomworks.config_unit")
+    local cache_mod_h = require("loomworks.cache")
     ws.get_config_unit = function(self, project_key, config_key)
-        local key = project_key .. "\0" .. config_key
-        local unit = self._config_units[key]
+        local id = cache_mod_h.config_cache_key(project_key, config_key)
+        local unit = self._config_units[id]
         if not unit then
-            unit = ConfigUnit.new(self, project_key, config_key)
-            self._config_units[key] = unit
+            unit = ConfigUnit.new(self, id, project_key, config_key)
+            self._config_units[id] = unit
         end
         return unit
     end
@@ -153,6 +154,36 @@ function M.make_mock_workspace(overrides)
     end
 
     return ws
+end
+
+--- Register a ProfileProject in the workspace registry AND update the
+--- Profile's direct lists (_projects_list, _projects_by_key).
+--- Use this instead of manually inserting into _profile_projects in tests.
+--- @param ws table mock workspace
+--- @param profile table Profile object
+--- @param project_key string
+--- @param variant string
+--- @return table ProfileProject
+function M.register_profile_project(ws, profile, project_key, variant)
+    local ProfileProject = require("loomworks.profile").ProfileProject
+    local pp = ProfileProject.new(ws, profile, project_key, variant)
+    local reg_key = profile.key .. "\0" .. project_key
+    ws._profile_projects[reg_key] = pp
+    -- Update Profile's unsorted list and by_key dict
+    profile._projects_list = profile._projects_list or {}
+    profile._projects_list[#profile._projects_list + 1] = pp
+    profile._projects_by_key = profile._projects_by_key or {}
+    profile._projects_by_key[project_key] = pp
+    return pp
+end
+
+--- Finalize a Profile's project list after all PPs are registered.
+--- Sorts _projects_list by dependency order (same as _sync_profile_projects).
+--- Call this after all register_profile_project calls for a profile.
+--- @param profile table Profile object
+function M.finalize_profile(profile)
+    local dependency = require("loomworks.dependency")
+    profile._projects_list = dependency.toposort(profile._projects_list or {})
 end
 
 --- Backward-compatible alias for make_mock_workspace.
@@ -273,6 +304,7 @@ function M.make_test_deps(files, opts)
                     unwatch = function() end,
                     stop = function() end,
                     content = function(_, path) return file_lookup(path) end,
+                    mark_written = function() end,
                 }
             end,
         },

@@ -1,4 +1,5 @@
 local Core = require("loomworks.core")
+local ConfigUnit = require("loomworks.config_unit")
 local h = require("tests.helpers")
 
 --- Find a ConfigurationSet by name from a core's registry.
@@ -132,12 +133,14 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
                         ["App/production"] = {
                             project_key = "App",
                             config_key = "production",
+                            variant = "production",
                             type = "typescript",
                             state = "configured",
                         },
@@ -182,7 +185,7 @@ describe("Core", function()
             local core = make_core()
             core:setup({ root = "/root" })
             assert.is_false(core:has_running_tasks())
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(42, "build")
             assert.is_true(core:has_running_tasks())
             unit:unregister_task(42)
@@ -268,6 +271,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                         },
                     },
@@ -398,6 +402,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                         },
                     },
@@ -438,6 +443,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "configured",
                         },
@@ -642,6 +648,7 @@ describe("Core", function()
                     ["App/development"] = {
                         project_key = "App",
                         config_key = "development",
+                        variant = "development",
                         type = "typescript",
                         state = "built",
                     },
@@ -719,7 +726,7 @@ describe("Core", function()
             assert.is_true(found_warn, "should notify WARN on config reload failure")
         end)
 
-        it("notifies WARN when config validation fails", function()
+        it("logs validation warnings but still loads", function()
             local notifications = {}
             local core = make_core(
                 {
@@ -747,19 +754,26 @@ describe("Core", function()
             core:setup({ root = "/root" })
             notifications = {} -- clear setup notifications
 
-            -- Change config to add a cmake project that will fail validation
+            -- Change config to add a cmake project with validation warnings
             local new_config = h.make_config_json({
                 projects = { BadProject = { cmake = {} } },
             })
             core._workspace:_on_file_changed("/root/loomworks.json", new_config)
 
+            -- Should still reload (not block), but produce a warning
             local found_warn = false
             for _, n in ipairs(notifications) do
-                if n.msg:match("config reload failed") and n.level == vim.log.levels.WARN then
+                if n.msg:match("missing CMakeLists") and n.level == vim.log.levels.WARN then
                     found_warn = true
                 end
             end
-            assert.is_true(found_warn, "should notify WARN when validation fails")
+            assert.is_true(found_warn, "should log validation warning")
+            -- Should have reloaded successfully
+            local found_reload = false
+            for _, n in ipairs(notifications) do
+                if n.msg:match("config reloaded") then found_reload = true end
+            end
+            assert.is_true(found_reload, "should still reload config")
         end)
 
         it("does not update workspace on config reload failure", function()
@@ -809,6 +823,7 @@ describe("Core", function()
                     ["App/development"] = {
                         project_key = "App",
                         config_key = "development",
+                        variant = "development",
                         type = "typescript",
                         state = "configured",
                     },
@@ -848,6 +863,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -916,8 +932,8 @@ describe("Core", function()
         it("finds matching tasks", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            core:get_config_unit("App", "Debug"):register_task(1, "build")
-            core:get_config_unit("Lib", "Debug"):register_task(2, "configure")
+            core._workspace:get_config_unit("App", "Debug"):register_task(1, "build")
+            core._workspace:get_config_unit("Lib", "Debug"):register_task(2, "configure")
 
             local matches = core:find_running_tasks_for_items({
                 { project_key = "App", config_key = "Debug" },
@@ -956,6 +972,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "configured",
                             build_dir = "/root/.nvim/build/App/development",
@@ -964,7 +981,7 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            local plan = core:get_config_unit("App", "development"):plan_deletion()
+            local plan = core._workspace:get_config_unit("App", "development"):plan_deletion()
             assert.equals(1, #plan.items)
             assert.equals("App", plan.items[1].project_key)
             assert.equals("/root/.nvim/build/App/development", plan.items[1].build_dir)
@@ -974,9 +991,9 @@ describe("Core", function()
         end)
 
         it("returns empty plan when no workspace", function()
-            local core = make_core()
-            -- don't setup
-            local plan = core:get_config_unit("App", "Debug"):plan_deletion()
+            -- ConfigUnit with nil workspace returns empty plan
+            local unit = ConfigUnit.new(nil, "App", "Debug")
+            local plan = unit:plan_deletion()
             assert.are.same({}, plan.items)
             assert.is_false(plan.defined_in_config)
         end)
@@ -1005,7 +1022,7 @@ describe("Core", function()
                     configurations = {
                         ["App/Debug:ninja-gcc"] = {
                             project_key = "App",
-                            config_key = "Debug:ninja-gcc",
+                            config_key = "Debug:ninja-gcc", variant = "Debug",
                             type = "cmake",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/Debug",
@@ -1023,7 +1040,7 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            local plan = core:get_config_unit("App", "Debug:ninja-gcc"):plan_deletion()
+            local plan = core._workspace:get_config_unit("App", "Debug:ninja-gcc"):plan_deletion()
             -- Config is referenced by set-based profile — disposition is "reset"
             assert.equals(1, #plan.items)
             assert.equals("reset", plan.items[1].disposition)
@@ -1046,6 +1063,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/development",
@@ -1126,6 +1144,7 @@ describe("Core", function()
                         ["App/dev"] = {
                             project_key = "App",
                             config_key = "dev",
+                            variant = "dev",
                             type = "typescript",
                             state = "configured",
                         },
@@ -1147,7 +1166,7 @@ describe("Core", function()
             core:execute_deletion(plan, nil, function() done = true end)
             assert.is_true(done)
             -- After completion, deleting flag should be cleared
-            assert.is_false(core:get_config_unit("App", "dev"):is_deleting())
+            assert.is_false(core._workspace:get_config_unit("App", "dev"):is_deleting())
         end)
 
         it("removes profile from cache.profiles on profile deletion", function()
@@ -1169,6 +1188,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1223,6 +1243,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1275,6 +1296,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1283,7 +1305,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local refs = core:get_config_unit("App", "development"):referencing_profiles()
+            local refs = core._workspace:get_config_unit("App", "development"):referencing_profiles()
             assert.equals(1, #refs)
             assert.equals("App/development", refs[1].key)
         end)
@@ -1304,6 +1326,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             -- no state = unconfigured
                         },
@@ -1337,6 +1360,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1372,6 +1396,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1416,6 +1441,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1444,12 +1470,14 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
                         ["App/production"] = {
                             project_key = "App",
                             config_key = "production",
+                            variant = "production",
                             type = "typescript",
                             state = "configured",
                         },
@@ -1475,6 +1503,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             -- unconfigured skeleton — should be dropped by cleanup
                         },
@@ -1499,18 +1528,21 @@ describe("Core", function()
                         ["Bravo/prod"] = {
                             project_key = "Bravo",
                             config_key = "prod",
+                            variant = "prod",
                             type = "typescript",
                             state = "built",
                         },
                         ["Alpha/staging"] = {
                             project_key = "Alpha",
                             config_key = "staging",
+                            variant = "staging",
                             type = "typescript",
                             state = "configured",
                         },
                         ["Alpha/dev"] = {
                             project_key = "Alpha",
                             config_key = "dev",
+                            variant = "dev",
                             type = "typescript",
                             state = "built",
                         },
@@ -1542,6 +1574,7 @@ describe("Core", function()
                         ["App/production"] = {
                             project_key = "App",
                             config_key = "production",
+                            variant = "production",
                             type = "typescript",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/production",
@@ -1560,7 +1593,7 @@ describe("Core", function()
             core:setup({ root = "/root" })
             assert.equals(1, #core:get_orphaned_configs())
 
-            core:get_config_unit("App", "production"):delete()
+            core._workspace:get_config_unit("App", "production"):delete()
             assert.equals(0, #core:get_orphaned_configs())
             -- Cache should no longer have the config
             assert.is_not_nil(saved_cache)
@@ -1598,14 +1631,14 @@ describe("Core", function()
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
-                            config_key = "development",
+                            config_key = "development", variant = "development",
                             type = "typescript",
                             state = "built",
                             variant = "development",
                         },
                         ["App/staging"] = {
                             project_key = "App",
-                            config_key = "staging",
+                            config_key = "staging", variant = "staging",
                             type = "typescript",
                             state = "built",
                             variant = "staging",
@@ -1646,6 +1679,7 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
@@ -1653,6 +1687,7 @@ describe("Core", function()
                         ["App/feature-config"] = {
                             project_key = "App",
                             config_key = "feature-config",
+                            variant = "feature-config",
                             type = "typescript",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/feature-config",
@@ -1688,12 +1723,14 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
                         ["App/feature-config"] = {
                             project_key = "App",
                             config_key = "feature-config",
+                            variant = "feature-config",
                             type = "typescript",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/feature-config",
@@ -1715,7 +1752,7 @@ describe("Core", function()
             core:setup({ root = "/root" })
             assert.equals(1, #core:get_orphaned_configs())
 
-            core:get_config_unit("App", "feature-config"):delete()
+            core._workspace:get_config_unit("App", "feature-config"):delete()
 
             -- Orphan should be gone
             assert.equals(0, #core:get_orphaned_configs())
@@ -1759,12 +1796,14 @@ describe("Core", function()
                         ["App/development"] = {
                             project_key = "App",
                             config_key = "development",
+                            variant = "development",
                             type = "typescript",
                             state = "built",
                         },
                         ["App/production"] = {
                             project_key = "App",
                             config_key = "production",
+                            variant = "production",
                             type = "typescript",
                             state = "configured",
                         },
@@ -1808,7 +1847,7 @@ describe("Core", function()
                 { cache = { save = function() return true end } }
             )
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "dev")
+            local unit = core._workspace:get_config_unit("App", "dev")
             unit:mark_deleting(true)
             -- Create a deletion Operation so has_pending_deletions returns true
             core:create_operation(nil, "clean", { unit }, { [unit] = "unconfigured" })
@@ -1823,7 +1862,7 @@ describe("Core", function()
         it("stores and retrieves progress via ConfigUnit", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             unit:update_progress(1, { current = 3, total = 10 })
             local p = unit:progress()
@@ -1835,14 +1874,14 @@ describe("Core", function()
         it("returns nil for non-running config", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             assert.is_nil(unit:progress())
         end)
 
         it("clears progress on unregister", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             unit:update_progress(1, { current = 3, total = 10 })
             unit:unregister_task(1)
@@ -1852,7 +1891,7 @@ describe("Core", function()
         it("emits state_change on progress update", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             local fired = false
             unit:on_state_change(function() fired = true end)
@@ -1863,7 +1902,7 @@ describe("Core", function()
         it("ignores progress when no task registered", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             -- Should not error
             unit:update_progress(999, { current = 1, total = 1 })
             assert.is_nil(unit:progress())
@@ -1877,7 +1916,7 @@ describe("Core", function()
                 clock = function() return time end,
             })
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             time = 142
             assert.equals(42, unit:elapsed())
@@ -1886,14 +1925,14 @@ describe("Core", function()
         it("returns nil for non-running config", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             assert.is_nil(unit:elapsed())
         end)
 
         it("clears elapsed on unregister", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             unit:unregister_task(1)
             assert.is_nil(unit:elapsed())
@@ -1916,6 +1955,7 @@ describe("Core", function()
                 ["App/Debug"] = {
                     project_key = "App",
                     config_key = "Debug",
+                    variant = "Debug",
                     type = "cmake",
                 },
             },
@@ -1937,7 +1977,7 @@ describe("Core", function()
         it("tracks a running operation", function()
             local core, profile, time = make_op_core()
             time.value = 100
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             local op = core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
@@ -1952,7 +1992,7 @@ describe("Core", function()
         it("finishes operation with success message", function()
             local core, profile, time = make_op_core()
             time.value = 100
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
@@ -1972,7 +2012,7 @@ describe("Core", function()
 
         it("finishes operation with failure message", function()
             local core, profile, time = make_op_core()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "configure")
             core:create_operation(profile, "configure", { unit }, { [unit] = "configured" })
 
@@ -1989,7 +2029,7 @@ describe("Core", function()
 
         it("configure+build operation uses generic verb", function()
             local core, profile, time = make_op_core()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             core:create_operation(profile, "configure+build", { unit }, { [unit] = "built" })
 
@@ -2003,7 +2043,7 @@ describe("Core", function()
 
         it("new operation replaces previous result", function()
             local core, profile, time = make_op_core()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
 
             -- First operation completes
             unit:register_task(1, "build")
@@ -2030,7 +2070,7 @@ describe("Core", function()
 
         it("emits operation events", function()
             local core, profile, time = make_op_core()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             unit:register_task(1, "build")
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
@@ -2223,7 +2263,7 @@ describe("Core", function()
             assert.equals("Debug", parse_args.config_name)
 
             -- Targets should be stored on ConfigUnit (not in cache)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._workspace:get_config_unit("App", "Debug")
             assert.is_not_nil(unit.targets)
             assert.equals("executable", unit.targets.app.type)
             assert.are.same({ "libcore" }, unit.targets.app.dependencies)
@@ -2316,6 +2356,7 @@ describe("Core", function()
                         ["App/Debug"] = {
                             project_key = "App",
                             config_key = "Debug",
+                            variant = "Debug",
                             type = "cmake",
                             state = "configured",
                             build_dir = "/root/.nvim/build/App/Debug",
@@ -2345,7 +2386,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local options = core:get_config_unit("App", "Debug"):options()
+            local options = core._workspace:get_config_unit("App", "Debug"):options()
             assert.is_not_nil(options)
             assert.equals(1, #options)
             assert.equals("Project Options", options[1].label)
@@ -2374,7 +2415,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local options = core:get_config_unit("App", "Debug"):options()
+            local options = core._workspace:get_config_unit("App", "Debug"):options()
             assert.is_nil(options)
         end)
 
@@ -2389,6 +2430,7 @@ describe("Core", function()
                         ["App/Debug"] = {
                             project_key = "App",
                             config_key = "Debug",
+                            variant = "Debug",
                             type = "cmake",
                             state = "configured",
                             build_dir = "/root/.nvim/build/App/Debug",
@@ -2410,7 +2452,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local options = core:get_config_unit("App", "Debug"):options()
+            local options = core._workspace:get_config_unit("App", "Debug"):options()
             assert.is_nil(options)
         end)
     end)
@@ -2685,241 +2727,6 @@ describe("Core", function()
         -- Directory traversal (e.g. /test/.nvim/../secret) is handled by
         -- vim.fs.normalize which resolves ".." before the prefix check runs.
         -- Not tested here because the test mock doesn't resolve "..".
-    end)
-
-    describe("_migrate_set_names", function()
-        it("renames cached profile when config set case changes", function()
-            local core = make_core(
-                {
-                    projects = { App = { cmake = {} } },
-                    configuration_sets = { Debug = { App = "Debug" } },
-                },
-                nil,
-                {
-                    profiles = {
-                        ["debug:ninja-gcc-12"] = {
-                            configuration_set = "debug",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc-12",
-                                    data = { id = "ninja-gcc-12" },
-                                    label = "Ninja - GCC 12",
-                                },
-                            },
-                            configurations = { "App/Debug" },
-                        },
-                    },
-                }
-            )
-            core:setup({ root = "/root" })
-            local ws = core:get_workspace()
-            assert.is_nil(ws.cache.profiles["debug:ninja-gcc-12"])
-            assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
-            assert.equals("Debug", ws.cache.profiles["Debug:ninja-gcc-12"].configuration_set)
-        end)
-
-        it("updates active_profile when migrated", function()
-            local core = make_core(
-                {
-                    projects = { App = { cmake = {} } },
-                    configuration_sets = { Debug = { App = "Debug" } },
-                },
-                { active_profile = "debug:ninja-gcc-12" },
-                {
-                    profiles = {
-                        ["debug:ninja-gcc-12"] = {
-                            configuration_set = "debug",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc-12",
-                                    data = { id = "ninja-gcc-12" },
-                                    label = "Ninja - GCC 12",
-                                },
-                            },
-                            configurations = { "App/Debug" },
-                        },
-                    },
-                }
-            )
-            core:setup({ root = "/root" })
-            local ws = core:get_workspace()
-            assert.equals("Debug:ninja-gcc-12", ws.user.active_profile)
-        end)
-
-        it("no-op when names already match", function()
-            local core = make_core(
-                {
-                    projects = { App = { cmake = {} } },
-                    configuration_sets = { debug = { App = "Debug" } },
-                },
-                nil,
-                {
-                    profiles = {
-                        ["debug:ninja-gcc-12"] = {
-                            configuration_set = "debug",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc-12",
-                                    data = { id = "ninja-gcc-12" },
-                                    label = "Ninja - GCC 12",
-                                },
-                            },
-                            configurations = { "App/Debug" },
-                        },
-                    },
-                }
-            )
-            core:setup({ root = "/root" })
-            local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.profiles["debug:ninja-gcc-12"])
-            assert.equals("debug", ws.cache.profiles["debug:ninja-gcc-12"].configuration_set)
-        end)
-
-        it("skips pinned profiles (no configuration_set)", function()
-            local core = make_core(
-                {
-                    projects = { App = { cmake = {} } },
-                    configuration_sets = { Debug = { App = "Debug" } },
-                },
-                nil,
-                {
-                    profiles = {
-                        ["App/Debug:ninja-gcc-12"] = {
-                            mappings = { App = "Debug" },
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc-12",
-                                    data = { id = "ninja-gcc-12" },
-                                    label = "Ninja - GCC 12",
-                                },
-                            },
-                            configurations = { "App/Debug" },
-                        },
-                    },
-                }
-            )
-            core:setup({ root = "/root" })
-            local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.profiles["App/Debug:ninja-gcc-12"])
-        end)
-
-        it("handles multiple renames in one pass", function()
-            local core = make_core(
-                {
-                    projects = { App = { cmake = {} } },
-                    configuration_sets = {
-                        Debug = { App = "Debug" },
-                        Release = { App = "Release" },
-                    },
-                },
-                nil,
-                {
-                    profiles = {
-                        ["debug:ninja-gcc-12"] = {
-                            configuration_set = "debug",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc-12",
-                                    data = { id = "ninja-gcc-12" },
-                                    label = "Ninja - GCC 12",
-                                },
-                            },
-                            configurations = { "App/Debug" },
-                        },
-                        ["release:ninja-gcc-12"] = {
-                            configuration_set = "release",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc-12",
-                                    data = { id = "ninja-gcc-12" },
-                                    label = "Ninja - GCC 12",
-                                },
-                            },
-                            configurations = { "App/Release" },
-                        },
-                    },
-                }
-            )
-            core:setup({ root = "/root" })
-            local ws = core:get_workspace()
-            assert.is_nil(ws.cache.profiles["debug:ninja-gcc-12"])
-            assert.is_nil(ws.cache.profiles["release:ninja-gcc-12"])
-            assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
-            assert.is_not_nil(ws.cache.profiles["Release:ninja-gcc-12"])
-            assert.equals("Debug", ws.cache.profiles["Debug:ninja-gcc-12"].configuration_set)
-            assert.equals("Release", ws.cache.profiles["Release:ninja-gcc-12"].configuration_set)
-        end)
-
-        it("saves cache after migration", function()
-            local saved_cache = {}
-            local core = make_core(
-                {
-                    projects = { App = { cmake = {} } },
-                    configuration_sets = { Debug = { App = "Debug" } },
-                },
-                nil,
-                {
-                    profiles = {
-                        ["debug:ninja-gcc-12"] = {
-                            configuration_set = "debug",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc-12",
-                                    data = { id = "ninja-gcc-12" },
-                                    label = "Ninja - GCC 12",
-                                },
-                            },
-                            configurations = { "App/Debug" },
-                        },
-                    },
-                },
-                {
-                    cache = { save = function(root, data) saved_cache[#saved_cache + 1] = data; return true end },
-                }
-            )
-            core:setup({ root = "/root" })
-            assert.is_true(#saved_cache > 0)
-            -- The last saved cache should have the renamed profile
-            local last = saved_cache[#saved_cache]
-            assert.is_not_nil(last.profiles["Debug:ninja-gcc-12"])
-        end)
-
-        it("saves user.json when active_profile changes", function()
-            local saved_user = {}
-            local core = make_core(
-                {
-                    projects = { App = { cmake = {} } },
-                    configuration_sets = { Debug = { App = "Debug" } },
-                },
-                { active_profile = "debug:ninja-gcc-12" },
-                {
-                    profiles = {
-                        ["debug:ninja-gcc-12"] = {
-                            configuration_set = "debug",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc-12",
-                                    data = { id = "ninja-gcc-12" },
-                                    label = "Ninja - GCC 12",
-                                },
-                            },
-                            configurations = { "App/Debug" },
-                        },
-                    },
-                },
-                {
-                    user = { save = function(root, data) saved_user[#saved_user + 1] = data; return true end },
-                }
-            )
-            core:setup({ root = "/root" })
-            assert.is_true(#saved_user > 0)
-            -- The saved user data should have the new active_profile
-            local found = false
-            for _, u in ipairs(saved_user) do
-                if u.active_profile == "Debug:ninja-gcc-12" then found = true end
-            end
-            assert.is_true(found, "user.json should have been saved with migrated active_profile")
-        end)
     end)
 
 end)

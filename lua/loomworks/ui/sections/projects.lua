@@ -51,20 +51,35 @@ end
 --- @param proj loomworks.Project
 --- @param variant string
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @return table[] entries { config_key, tool_key, display_label, cached }
+--- @return table[] entries { unit?, tool_key, display_label, cached }
 local function collect_tool_entries(proj, variant, tools_by_type)
     local entries = {}
     local seen_tool_keys = {}
     local variant_lower = variant:lower()
 
-    -- 1. Cached entries for this variant (case-insensitive match)
+    -- 1. ConfigUnits for this variant (from project scan)
+    for _, unit in ipairs(proj:config_units_for_variant(variant)) do
+        local tk = unit.tool and unit.tool.key
+        if tk then
+            entries[#entries + 1] = {
+                unit = unit,
+                tool_key = tk,
+                display_label = get_tool_display(tools_by_type, proj.type, tk),
+                cached = unit:cached_state(),
+            }
+            seen_tool_keys[tk] = true
+        end
+    end
+
+    -- Also check cached_configurations for entries whose variant matches
+    -- but may not have a ConfigUnit yet (e.g., orphaned cache entries)
     if proj.cached_configurations then
-        for config_key, cached_config in pairs(proj.cached_configurations) do
+        for _, cached_config in pairs(proj.cached_configurations) do
             local v = cached_config.variant
             local tk = cached_config.tool_key
-            if v and tk and v:lower() == variant_lower then
+            if v and tk and v:lower() == variant_lower and not seen_tool_keys[tk] then
                 entries[#entries + 1] = {
-                    config_key = config_key,
+                    unit = nil, -- will be created on demand
                     tool_key = tk,
                     display_label = get_tool_display(tools_by_type, proj.type, tk),
                     cached = cached_config,
@@ -79,7 +94,7 @@ local function collect_tool_entries(proj, variant, tools_by_type)
     for _, dt in ipairs(relevant_tools) do
         if dt.tool_key and not seen_tool_keys[dt.tool_key] then
             entries[#entries + 1] = {
-                config_key = variant .. ":" .. dt.tool_key,
+                unit = nil, -- will be created on demand
                 tool_key = dt.tool_key,
                 display_label = dt.tool_label or dt.tool_key,
                 cached = nil,
@@ -87,19 +102,17 @@ local function collect_tool_entries(proj, variant, tools_by_type)
         end
     end
 
-    table.sort(entries, function(a, b) return a.config_key < b.config_key end)
+    table.sort(entries, function(a, b) return a.tool_key < b.tool_key end)
     return entries
 end
 
 --- Open the launch editor for an existing or new launch config.
---- @param project_key string
+--- @param project loomworks.Project
 --- @param launch_name? string nil for new config
-local function edit_launch_config(project_key, launch_name)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return end
+local function edit_launch_config(project, launch_name)
+    local project_key = project.key
 
-    local ctx = workspace_view.compute_edit_launch_context(ws, project_key, launch_name)
+    local ctx = workspace_view.compute_edit_launch_context(project, launch_name)
 
     require("loomworks.ui.launch_editor").open({
         title = launch_name
@@ -112,16 +125,15 @@ local function edit_launch_config(project_key, launch_name)
         env = ctx.env,
         validate = function(result)
             if result.name ~= (launch_name or "")
-                    and ws.config.projects[project_key]
-                    and ws.config.projects[project_key].launch
-                    and ws.config.projects[project_key].launch[result.name] then
+                    and project.launch
+                    and project.launch[result.name] then
                 return false, "launch config '" .. result.name .. "' already exists"
             end
             return true
         end,
         on_accept = function(result)
             local ok, err = workspace_view.execute_save_launch_config(
-                ws, project_key, launch_name, result.name, {
+                project, launch_name, result.name, {
                     command = result.command,
                     args = result.args,
                     working_dir = result.working_dir,
@@ -141,12 +153,10 @@ local function edit_launch_config(project_key, launch_name)
 end
 
 --- Delete a launch config with confirmation.
---- @param project_key string
+--- @param project loomworks.Project
 --- @param launch_name string
-local function delete_launch_config(project_key, launch_name)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return end
+local function delete_launch_config(project, launch_name)
+    local project_key = project.key
 
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
@@ -166,7 +176,7 @@ local function delete_launch_config(project_key, launch_name)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_launch_config(ws, project_key, launch_name)
+                local ok, err = workspace_view.execute_delete_launch_config(project, launch_name)
                 if ok then
                     vim.notify("loomworks: launch config '" .. launch_name .. "' deleted",
                         vim.log.levels.INFO)
@@ -180,14 +190,15 @@ local function delete_launch_config(project_key, launch_name)
 end
 
 --- Open the configuration editor for a project configuration.
---- @param project_key string
+--- @param project loomworks.Project
 --- @param config_name? string nil for new configuration
-local function edit_project_configuration(project_key, config_name)
+local function edit_project_configuration(project, config_name)
+    local project_key = project.key
     local lw = require("loomworks")
     local ws = lw.get_workspace()
     if not ws then return end
 
-    local ctx = workspace_view.compute_edit_configuration_context(ws, project_key, config_name)
+    local ctx = workspace_view.compute_edit_configuration_context(project, config_name)
     if not ctx then return end
 
     require("loomworks.ui.config_editor_dialog").open({
@@ -226,9 +237,9 @@ local function edit_project_configuration(project_key, config_name)
                 end
             end
             -- Sibling configs that inherit from this name
-            local proj = ws.config.projects[project_key]
-            if proj and proj.type_config and proj.type_config.configurations then
-                for cname, cdata in pairs(proj.type_config.configurations) do
+            local type_config = project.type_config
+            if type_config and type_config.configurations then
+                for cname, cdata in pairs(type_config.configurations) do
                     if cname ~= config_name and cdata.inherits then
                         local inh = cdata.inherits
                         if type(inh) == "string" then inh = { inh } end
@@ -245,17 +256,16 @@ local function edit_project_configuration(project_key, config_name)
         end or nil,
         validate = function(result)
             if result.name ~= (config_name or "")
-                    and ws.config.projects[project_key]
-                    and ws.config.projects[project_key].type_config
-                    and ws.config.projects[project_key].type_config.configurations
-                    and ws.config.projects[project_key].type_config.configurations[result.name] then
+                    and project.type_config
+                    and project.type_config.configurations
+                    and project.type_config.configurations[result.name] then
                 return false, "configuration '" .. result.name .. "' already exists"
             end
             return true
         end,
         on_accept = function(result)
             local ok, err = workspace_view.execute_save_configuration(
-                ws, project_key, config_name, result.name, {
+                project, config_name, result.name, {
                     variant = result.variant,
                     inherits = result.inherits,
                     options = result.options,
@@ -276,12 +286,10 @@ local function edit_project_configuration(project_key, config_name)
 end
 
 --- Delete a user-defined project configuration with confirmation.
---- @param project_key string
+--- @param project loomworks.Project
 --- @param config_name string
-local function delete_project_configuration(project_key, config_name)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return end
+local function delete_project_configuration(project, config_name)
+    local project_key = project.key
 
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
@@ -303,7 +311,7 @@ local function delete_project_configuration(project_key, config_name)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_configuration(ws, project_key, config_name)
+                local ok, err = workspace_view.execute_delete_configuration(project, config_name)
                 if ok then
                     vim.notify("loomworks: configuration '" .. config_name .. "' deleted",
                         vim.log.levels.INFO)
@@ -389,18 +397,12 @@ return function(tree, ctx)
                         local tool_entries = collect_tool_entries(proj, cname, tools_by_type)
                         local has_tool_entries = #tool_entries > 0
 
-                        -- Check running state across all config_keys for this variant
+                        -- Check running state across all ConfigUnits for this variant
                         local config_has_running = false
-                        if has_tool_entries then
-                            for _, entry in ipairs(tool_entries) do
-                                if lw.get_config_unit(key, entry.config_key):is_running() then
-                                    config_has_running = true
-                                    break
-                                end
-                            end
-                        else
-                            if lw.get_config_unit(key, cname):is_running() then
+                        for _, cu in ipairs(proj:config_units_for_variant(cname)) do
+                            if cu:is_running() then
                                 config_has_running = true
+                                break
                             end
                         end
 
@@ -425,13 +427,12 @@ return function(tree, ctx)
                         local brief_str = #brief > 0
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
 
-                        local pkey = key  -- capture for closure
+                        local project = proj  -- capture for closure
                         local cfg_name = cname
                         -- Check if config is user-defined (has entry in type_config.configurations)
-                        local ws_proj = lw.get_workspace() and lw.get_workspace().config.projects[key]
-                        local has_user_entry = ws_proj and ws_proj.type_config
-                                and ws_proj.type_config.configurations
-                                and ws_proj.type_config.configurations[cname] ~= nil
+                        local has_user_entry = proj.type_config
+                                and proj.type_config.configurations
+                                and proj.type_config.configurations[cname] ~= nil
 
                         -- Build picker-based action closures for keyed-tool modules.
                         -- If only one tool entry, skip picker and act directly.
@@ -439,13 +440,38 @@ return function(tree, ctx)
                         --- @param action_name string for picker prompt
                         --- @param action_fn fun(unit: loomworks.ConfigUnit)
                         --- @param filter? fun(entry: table): boolean filter tool entries
+                        --- Resolve a ConfigUnit from a tool entry.
+                        --- Uses direct reference if available, otherwise finds/creates via variant scan.
+                        local function resolve_unit_from_entry(entry)
+                            if entry.unit then return entry.unit end
+                            -- No ConfigUnit yet — find or create one for this variant + tool
+                            -- (on-demand creation for uncached detected tools)
+                            local ws = project._workspace
+                            local merge = ws._core._deps.merge
+                            local ck = merge.build_config_key(cfg_name, entry.tool_key)
+                            local unit = ws:get_config_unit(project.key, ck)
+                            unit.variant = cfg_name
+                            if entry.tool_key then
+                                unit.tool = unit.tool or {}
+                                unit.tool.key = entry.tool_key
+                            end
+                            return unit
+                        end
+
                         local function with_tool_picker(action_name, action_fn, filter)
                             return function()
                                 if not has_tool_entries then
-                                    -- Non-keyed module: act on the variant directly
-                                    local unit = lw.get_config_unit(pkey, cfg_name)
-                                    unit.variant = unit.variant or cfg_name
-                                    action_fn(unit)
+                                    -- Non-keyed module: find or create unit for this variant
+                                    local units = project:config_units_for_variant(cfg_name)
+                                    if #units > 0 then
+                                        action_fn(units[1])
+                                    else
+                                        -- Create on demand
+                                        local ws = project._workspace
+                                        local unit = ws:get_config_unit(project.key, cfg_name)
+                                        unit.variant = unit.variant or cfg_name
+                                        action_fn(unit)
+                                    end
                                     return
                                 end
                                 local entries = tool_entries
@@ -461,13 +487,7 @@ return function(tree, ctx)
                                     end
                                 end
                                 if #entries == 1 then
-                                    local unit = lw.get_config_unit(pkey, entries[1].config_key)
-                                    unit.variant = cfg_name
-                                    if entries[1].tool_key then
-                                        unit.tool = unit.tool or {}
-                                        unit.tool.key = entries[1].tool_key
-                                    end
-                                    action_fn(unit)
+                                    action_fn(resolve_unit_from_entry(entries[1]))
                                     return
                                 end
                                 -- Multiple tools — show picker
@@ -476,13 +496,7 @@ return function(tree, ctx)
                                     format_item = function(item) return item.display_label end,
                                 }, function(choice)
                                     if not choice then return end
-                                    local unit = lw.get_config_unit(pkey, choice.config_key)
-                                    unit.variant = cfg_name
-                                    if choice.tool_key then
-                                        unit.tool = unit.tool or {}
-                                        unit.tool.key = choice.tool_key
-                                    end
-                                    action_fn(unit)
+                                    action_fn(resolve_unit_from_entry(choice))
                                 end)
                             end
                         end
@@ -492,9 +506,9 @@ return function(tree, ctx)
                             spinning = not is_abstract and config_has_running or false,
                             hl = config_hl,
                             enter_label = "Edit configuration",
-                            on_enter = function() edit_project_configuration(pkey, cfg_name) end,
+                            on_enter = function() edit_project_configuration(project, cfg_name) end,
                             on_delete = has_user_entry
-                                    and function() delete_project_configuration(pkey, cfg_name) end
+                                    and function() delete_project_configuration(project, cfg_name) end
                                     or nil,
                             on_build = not is_abstract and with_tool_picker("Build", function(unit)
                                 require("loomworks.overseer").run_configuration_action(unit, "build")
@@ -550,11 +564,11 @@ return function(tree, ctx)
                     end
                     -- "Add configuration" sentinel
                     if not proj.orphaned then
-                        local pkey = key
+                        local project = proj
                         tree:item("▸ Add configuration", {
                             hl = "LoomworksActionable",
                             direct = true,
-                            on_enter = function() edit_project_configuration(pkey, nil) end,
+                            on_enter = function() edit_project_configuration(project, nil) end,
                         })
                     end
                 end)
@@ -581,9 +595,9 @@ return function(tree, ctx)
             end
 
             -- Launch configurations
-            local ws = lw.get_workspace()
-            local launches = ws and workspace_view.get_launch_configs(ws, key) or {}
+            local launches = workspace_view.get_launch_configs(proj)
             if #launches > 0 or not proj.orphaned then
+                local project = proj  -- capture for closure
                 tree:group("Launch:", "Comment", function()
                     for _, lc in ipairs(launches) do
                         local lname = lc.name
@@ -594,14 +608,14 @@ return function(tree, ctx)
                         tree:item(lname .. "  " .. desc, {
                             hl = "LoomworksActionable",
                             enter_label = "Edit launch config",
-                            on_enter = function() edit_launch_config(key, lname) end,
-                            on_delete = function() delete_launch_config(key, lname) end,
+                            on_enter = function() edit_launch_config(project, lname) end,
+                            on_delete = function() delete_launch_config(project, lname) end,
                         })
                     end
                     tree:item("▸ Add launch config", {
                         hl = "LoomworksActionable",
                         direct = true,
-                        on_enter = function() edit_launch_config(key, nil) end,
+                        on_enter = function() edit_launch_config(project, nil) end,
                     })
                 end)
             end

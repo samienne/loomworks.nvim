@@ -1,12 +1,12 @@
 --- loomworks/config_unit.lua — ConfigUnit: atomic unit of configuration state.
---- A ConfigUnit represents a unique (project_key, config_key) combination.
---- It owns the running/deleting state for that combination and provides
---- a single derived state value. Multiple profiles may reference the same
---- ConfigUnit; state changes are visible to all of them.
+--- Identity is the cache dict key (e.g., "App/Debug:ninja-gcc").
+--- Owns the running/deleting state and provides a single derived state value.
+--- Multiple profiles may reference the same ConfigUnit.
 
 local cache_mod = require("loomworks.cache")
 
 --- @class loomworks.ConfigUnit
+--- @field id string cache dict key (identity)
 --- @field project_key string
 --- @field config_key string
 --- @field variant? string configuration variant name (from cache data)
@@ -39,12 +39,14 @@ ConfigUnit.__index = ConfigUnit
 
 --- Create a new ConfigUnit.
 --- @param workspace loomworks.Workspace
+--- @param id string cache dict key (identity)
 --- @param project_key string
 --- @param config_key string
 --- @return loomworks.ConfigUnit
-function ConfigUnit.new(workspace, project_key, config_key)
+function ConfigUnit.new(workspace, id, project_key, config_key)
     local self = setmetatable({}, ConfigUnit)
     self._workspace = workspace
+    self.id = id
     self.project_key = project_key
     self.config_key = config_key
     self._task_id = nil
@@ -66,6 +68,7 @@ end
 function ConfigUnit:_update()
     if not self._workspace then
         self._project = nil
+        self._cached = nil
         self.variant = nil
         self.tool = nil
         return
@@ -73,7 +76,16 @@ function ConfigUnit:_update()
     -- Resolve direct project reference
     self._project = self._workspace._projects[self.project_key]
 
-    local cached = self:cached_state()
+    -- Resolve direct cache reference (id IS the cache dict key)
+    local cache = self._workspace.cache
+    if cache and cache.configurations then
+        self._cached = cache.configurations[self.id]
+    else
+        self._cached = nil
+    end
+
+    -- Cache entry is the source of truth for variant and tool
+    local cached = self._cached
     self.variant = cached and cached.variant or nil
     self.tool = nil
     if cached and cached.tool_key then
@@ -81,42 +93,6 @@ function ConfigUnit:_update()
             key = cached.tool_key,
             data = cached.tool_data,
         }
-    end
-    -- Authoritative: resolve variant from a ProfileProject that references
-    -- this config_key. PP.variant is always correct (comes from profile
-    -- mappings), and takes priority over potentially stale cached variant.
-    for _, pp in pairs(self._workspace._profile_projects) do
-        if pp.project_key == self.project_key and pp.config_key == self.config_key then
-            self.variant = pp.variant
-            local project = self._workspace._projects[self.project_key]
-            local profile_tool = pp._profile and pp._profile.tools
-                and project and pp._profile.tools[project.type] or nil
-            if profile_tool then
-                self.tool = {
-                    key = profile_tool.key,
-                    data = profile_tool.data,
-                }
-            end
-            break
-        end
-    end
-    -- Fallback: derive variant from config_key only when the project's module
-    -- has no keyed tools. For keyed modules, the variant must come from cache
-    -- or ProfileProject; callers (e.g. sections/projects.lua) set it
-    -- explicitly for uncached entries.
-    if not self.variant then
-        local has_keyed = self.tool ~= nil
-        if not has_keyed and self._project then
-            local type_tools = self._workspace._tools_by_type[self._project.type]
-            if type_tools then
-                for _, dt in ipairs(type_tools) do
-                    if dt.tool_key then has_keyed = true; break end
-                end
-            end
-        end
-        if not has_keyed then
-            self.variant = self.config_key
-        end
     end
 end
 
@@ -164,13 +140,10 @@ function ConfigUnit:is_deleting()
     return self._deleting
 end
 
---- Get cached state from the workspace cache.
+--- Get cached state (direct reference resolved during _update).
 --- @return loomworks.CachedConfig|nil
 function ConfigUnit:cached_state()
-    if not self._workspace then return nil end
-    if not self._workspace.cache or not self._workspace.cache.configurations then return nil end
-    local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-    return self._workspace.cache.configurations[ck]
+    return self._cached
 end
 
 --- Get the build directory from cache.
@@ -258,8 +231,7 @@ function ConfigUnit:materialize(variant, tool)
         return
     end
 
-    local project_config = ws.config.projects[self.project_key]
-    if not project_config then return end
+    if not self._project then return end
 
     -- Update fields from caller data
     if variant then self.variant = variant end
@@ -276,15 +248,14 @@ function ConfigUnit:materialize(variant, tool)
         end
     end
 
-    -- Write directly to flat cache
-    local cache_key = cache_mod.config_cache_key(self.project_key, self.config_key)
+    -- Write directly to flat cache (id IS the cache dict key)
     ws.cache.configurations = ws.cache.configurations or {}
-    local existing = ws.cache.configurations[cache_key]
+    local existing = ws.cache.configurations[self.id]
     if not existing then
-        ws.cache.configurations[cache_key] = {
+        ws.cache.configurations[self.id] = {
             project_key = self.project_key,
             config_key = self.config_key,
-            type = project_config.type,
+            type = self._project.type,
             variant = self.variant,
             tool_key = tool_key,
             tool_data = tool_data,
@@ -315,8 +286,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
         return nil
     end
 
-    local project_config = ws.config.projects[self.project_key]
-    if not project_config then return nil end
+    if not self._project then return nil end
 
     local ak = ws._core._deps.merge.pinned_key(self.project_key, self.config_key)
 
@@ -334,7 +304,6 @@ function ConfigUnit:materialize_pinned(variant, tool)
     local tool_label = self.tool and self.tool.label or nil
     local tool_mod_type = self.tool and self.tool.mod_type or nil
 
-    local cache_key = cache_mod.config_cache_key(self.project_key, self.config_key)
     local tools = nil
     if tool_key and tool_mod_type then
         tools = {
@@ -348,7 +317,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
     ws.cache.profiles[ak] = {
         mappings = { [self.project_key] = self.variant },
         tools = tools,
-        configurations = { cache_key },
+        configurations = { self.id },
     }
 
     ws:_save_cache()
@@ -375,7 +344,7 @@ function ConfigUnit:plan_deletion()
         disposition = has_ref and "reset" or "clean",
     } }
 
-    local defined_in_config = ws.config.projects[self.project_key] ~= nil
+    local defined_in_config = self._project ~= nil and not self._project._removed
 
     return {
         items = items,
@@ -395,10 +364,9 @@ function ConfigUnit:delete(on_done)
     local units = {}
     local target_states = {}
     for _, item in ipairs(plan.items) do
-        if item.disposition ~= "keep" then
-            local unit = self._workspace:get_config_unit(item.project_key, item.config_key)
-            units[#units + 1] = unit
-            target_states[unit] = "unconfigured"
+        if item.disposition ~= "keep" and item.unit then
+            units[#units + 1] = item.unit
+            target_states[item.unit] = "unconfigured"
         end
     end
     if #units > 0 then
@@ -453,17 +421,16 @@ function ConfigUnit:options()
     local bd = self:build_dir()
     if not bd then return nil end
 
-    local proj_cfg = self._workspace.config.projects[self.project_key]
-    if not proj_cfg then return nil end
+    if not self._project then return nil end
 
-    local mod = self._workspace._core._deps.modules.get(proj_cfg.type)
+    local mod = self._workspace._core._deps.modules.get(self._project.type)
     if not mod or not mod.get_options then return nil end
 
-    return mod.get_options(bd, proj_cfg.type_config)
+    return mod.get_options(bd, self._project.type_config)
 end
 
 -- ---------------------------------------------------------------------------
--- Task tracking (called by task_tracker component and Core)
+-- Task tracking (called by overseer subscriptions and Core)
 -- ---------------------------------------------------------------------------
 
 --- Register a running task on this unit.

@@ -57,12 +57,11 @@ function LaunchTarget:_update(descriptor)
         end
     end
 
-    -- Resolve launch config from loomworks.json project definition
+    -- Resolve launch config from project domain object
     self._launch_config = nil
     if self._launch_name and self._project then
-        local proj_cfg = self._workspace.config.projects[self._project.key]
-        if proj_cfg and proj_cfg.launch and proj_cfg.launch[self._launch_name] then
-            self._launch_config = proj_cfg.launch[self._launch_name]
+        if self._project.launch and self._project.launch[self._launch_name] then
+            self._launch_config = self._project.launch[self._launch_name]
         end
     end
 end
@@ -123,7 +122,7 @@ function LaunchTarget:_build_deps(deps, idx, on_complete)
         return
     end
 
-    local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
+    local unit = pp._config_unit
     local state = unit:state()
 
     -- Already built or configured — skip
@@ -166,7 +165,7 @@ function LaunchTarget:_launch_command()
     local ws = self._workspace
 
     -- Build expansion context
-    local ctx = expand.launch_context(ws, self._profile, self._project.key)
+    local ctx = expand.launch_context(ws, self._profile, self._project)
 
     -- Expand variables
     local cmd = expand.expand_string(cfg.command, ctx)

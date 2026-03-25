@@ -324,6 +324,7 @@ function M.get_all_profiles(config, cache, tools_by_type)
                 configuration_set = profile.configuration_set,
                 tools = tools,
                 explicit = true,
+                explicit_def = profile,
             }
         end
     end
@@ -495,6 +496,8 @@ function M.merge(workspace, tools_by_type)
         projects[key] = {
             type = project.type,
             path = project.path,
+            type_config = project.type_config,
+            launch = project.launch,
             configuration = active_configuration,
             configuration_key = cache_config_key,
             tool_key = project_tool_key,

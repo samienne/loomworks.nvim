@@ -35,7 +35,7 @@ local function buf_status(core, bufnr)
 
     local status
     if project.configuration_key then
-        status = core:get_config_unit(project_key, project.configuration_key):state()
+        status = core._workspace:get_config_unit(project_key, project.configuration_key):state()
     end
 
     return {
@@ -81,6 +81,7 @@ describe("buf_status", function()
                 ["App/Debug"] = {
                     project_key = "App",
                     config_key = "Debug",
+                    variant = "Debug",
                     type = "cmake",
                 },
             },
@@ -118,6 +119,7 @@ describe("buf_status", function()
                 ["App/Debug:ninja-gcc-12"] = {
                     project_key = "App",
                     config_key = "Debug:ninja-gcc-12",
+                    variant = "Debug",
                     type = "cmake",
                 },
             },
@@ -162,6 +164,7 @@ describe("buf_status", function()
                 ["App/Debug"] = {
                     project_key = "App",
                     config_key = "Debug",
+                    variant = "Debug",
                     type = "cmake",
                     state = "built",
                     build_dir = "/root/.nvim/build/App/Debug",
@@ -214,6 +217,7 @@ describe("buf_status", function()
                 ["Frontend/debug"] = {
                     project_key = "Frontend",
                     config_key = "debug",
+                    variant = "debug",
                     type = "ets",
                 },
             },

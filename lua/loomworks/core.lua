@@ -14,7 +14,6 @@
 local Core = {}
 Core.__index = Core
 
-local ConfigUnit = require("loomworks.config_unit")
 local Workspace = require("loomworks.workspace").Workspace
 
 --- Default dependency table. Tests override individual entries.
@@ -76,19 +75,6 @@ function Core.new(deps)
     self._setup_error = nil
     self._state = "uninitialized"
     return self
-end
-
---- Get or create a ConfigUnit for a (project_key, config_key) pair.
---- Delegates to Workspace.
---- Creates a detached ConfigUnit when no workspace exists.
---- @param project_key string
---- @param config_key string
---- @return loomworks.ConfigUnit
-function Core:get_config_unit(project_key, config_key)
-    if not self._workspace then
-        return ConfigUnit.new(nil, project_key, config_key)
-    end
-    return self._workspace:get_config_unit(project_key, config_key)
 end
 
 -- ===========================================================================
@@ -192,7 +178,6 @@ function Core:_on_files_read(root, paths, results)
     -- Create Workspace instance with registries
     self._workspace = Workspace.new(self, data)
 
-    self._workspace:_migrate_set_names()
     self._workspace:_cleanup_orphaned_skeletons()
     self._workspace:remerge()
     self._state = "initialized"
@@ -222,10 +207,9 @@ function Core:_validate_projects(config, root)
         if mod and mod.validate then
             local abs_path = root .. "/" .. project.path
             local result = mod.validate(abs_path, project.type_config)
-            if not result.valid then
-                return false, "project '" .. key .. "': " .. table.concat(result.warnings, "; ")
-            end
-            for _, warning in ipairs(result.warnings) do
+            -- Log warnings but don't block loading — missing directories are
+            -- normal when projects come from another branch or were removed
+            for _, warning in ipairs(result.warnings or {}) do
                 self._deps.notify("loomworks: project '" .. key .. "': " .. warning, vim.log.levels.WARN)
             end
         end
@@ -569,12 +553,6 @@ end
 function Core:rescan_tools()
     if not self._workspace then return end
     self._workspace:rescan_tools()
-end
-
---- @see loomworks.Workspace._migrate_set_names
-function Core:_migrate_set_names()
-    if not self._workspace then return end
-    self._workspace:_migrate_set_names()
 end
 
 --- @see loomworks.Workspace._build_referenced_set

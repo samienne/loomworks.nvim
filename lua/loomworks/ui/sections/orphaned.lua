@@ -93,7 +93,7 @@ return function(tree, ctx)
                 hl = "LoomworksUnconfigured",
             }, function()
                 for _, orphan in ipairs(entries) do
-                    local unit = lw.get_config_unit(orphan.project_key, orphan.config_key)
+                    local unit = ws:get_config_unit(orphan.project_key, orphan.config_key)
                     local config_status, status_hl, progress_str, is_spinning =
                             helpers.resolve_config_status_global(unit, orphan.cached)
 

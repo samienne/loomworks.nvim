@@ -1,24 +1,35 @@
 local Profile = require("loomworks.profile").Profile
-local ProfileProject = require("loomworks.profile").ProfileProject
 local h = require("tests.helpers")
 
 describe("Profile", function()
     local function make_profile(overrides, core_overrides)
-        local core = h.make_mock_core(core_overrides)
+        -- Ensure mock workspace cache has skeleton entries so ProfileProject
+        -- can resolve config_key from cache (required after variant-from-cache change).
+        local default_cache = {
+            configurations = {
+                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug" },
+                ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", variant = "Debug" },
+            },
+        }
+        local ws_overrides = core_overrides or {}
+        if not ws_overrides.cache and not ws_overrides.get_workspace then
+            ws_overrides = vim.tbl_deep_extend("force", ws_overrides, { cache = default_cache })
+        end
+        local core = h.make_mock_core(ws_overrides)
         local data = vim.tbl_deep_extend("force", {
             configuration_set = "debug",
             tools = nil,
             explicit = false,
             mappings = { App = "Debug", Lib = "Debug" },
+            _cached_configurations = { "App/Debug", "Lib/Debug" },
         }, overrides or {})
         local profile = Profile.new(core, "debug", data)
-        -- Populate profile_projects registry (mirrors Core._sync_profile_projects)
+        -- Populate profile_projects registry and Profile's direct lists
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. project_key
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, project_key, variant)
+                h.register_profile_project(core, profile, project_key, variant)
             end
+            h.finalize_profile(profile)
         end
         return profile, core
     end
@@ -92,6 +103,7 @@ describe("Profile", function()
                                 ["App/Debug"] = {
                                     project_key = "App",
                                     config_key = "Debug",
+                                    variant = "Debug",
                                     type = "cmake",
                                     state = "configured",
                                 },
@@ -144,6 +156,7 @@ describe("Profile", function()
                                 ["App/Release"] = {
                                     project_key = "App",
                                     config_key = "Release",
+                                    variant = "Release",
                                     type = "cmake",
                                     state = "configured",
                                 },
@@ -192,8 +205,8 @@ describe("Profile", function()
                     return {
                         cache = {
                             configurations = {
-                                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
-                                ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "built" },
+                                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug", state = "built" },
+                                ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", variant = "Debug", state = "built" },
                             },
                         },
                     }
@@ -210,7 +223,7 @@ describe("Profile", function()
                     return {
                         cache = {
                             configurations = {
-                                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "built" },
+                                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug", state = "built" },
                             },
                         },
                     }
@@ -228,8 +241,8 @@ describe("Profile", function()
                     return {
                         cache = {
                             configurations = {
-                                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", state = "failed_build" },
-                                ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", state = "built" },
+                                ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug", state = "failed_build" },
+                                ["Lib/Debug"] = { project_key = "Lib", config_key = "Debug", type = "cmake", variant = "Debug", state = "built" },
                             },
                         },
                     }
@@ -381,6 +394,10 @@ describe("ProfileProject", function()
             get_workspace = function() return default_ws end,
         }, core_overrides or {})
         local core = h.make_mock_core(merged)
+        -- Add skeleton cache entry so ProfileProject can resolve config_key
+        core.cache.configurations["App/Debug"] = {
+            project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug",
+        }
         -- Add a Project object so ProfileProject can resolve it
         local Project = require("loomworks.project")
         core._projects["App"] = Project.new(core, "App", {
@@ -392,15 +409,15 @@ describe("ProfileProject", function()
             configuration_set = "debug",
             tools = tools,
             mappings = { App = "Debug" },
+            _cached_configurations = { "App/Debug" },
         }
         local profile = Profile.new(core, "debug", data)
-        -- Populate profile_projects registry
+        -- Populate profile_projects registry and Profile's direct lists
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. project_key
-                core._profile_projects[reg_key] = ProfileProject.new(
-                    core, profile, project_key, variant)
+                h.register_profile_project(core, profile, project_key, variant)
             end
+            h.finalize_profile(profile)
         end
         return profile:project("App"), core
     end
@@ -450,16 +467,16 @@ describe("ProfileProject", function()
             -- Two profiles referencing the same (project_key, config_key)
             -- should see the same running state
             local core = h.make_mock_core({
-                get_workspace = function()
-                    return {
-                        config = {
-                            projects = {
-                                App = { type = "cmake", path = "App", type_config = {} },
-                            },
-                        },
-                        cache = { configurations = {} },
-                    }
-                end,
+                config = {
+                    projects = {
+                        App = { type = "cmake", path = "App", type_config = {} },
+                    },
+                },
+                cache = {
+                    configurations = {
+                        ["App/Debug"] = { project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug" },
+                    },
+                },
             })
             local Project = require("loomworks.project")
             core._projects["App"] = Project.new(core, "App", {
@@ -467,20 +484,22 @@ describe("ProfileProject", function()
                 configurations = {}, cached_configurations = {},
             })
             local Profile = require("loomworks.profile").Profile
-            local PP = require("loomworks.profile").ProfileProject
             local p1 = Profile.new(core, "debug:ninja-gcc", {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
+                _cached_configurations = { "App/Debug" },
             })
             local p2 = Profile.new(core, "debug:ninja-clang", {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
+                _cached_configurations = { "App/Debug" },
             })
-            -- Populate profile_projects registry
+            -- Populate profile_projects registry and Profile's direct lists
             for _, p in ipairs({ p1, p2 }) do
                 for pk, v in pairs(p.mappings) do
-                    core._profile_projects[p.key .. "\0" .. pk] = PP.new(core, p, pk, v)
+                    h.register_profile_project(core, p, pk, v)
                 end
+                h.finalize_profile(p)
             end
             -- Start a task on the shared unit
             local unit = core:get_config_unit("App", "Debug")

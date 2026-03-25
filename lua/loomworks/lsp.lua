@@ -56,11 +56,13 @@ local function resolve_compile_commands_dir(root_dir)
 
     -- Check compile_commands_from redirect
     if project.cmake and project.cmake.compile_commands_from then
-        local ref_config = project.cmake.compile_commands_from
-        local ref_key = project:config_cache_key(ref_config)
-        local ref_cached = project.cached_configurations and project.cached_configurations[ref_key]
-        if ref_cached and ref_cached.build_dir then
-            build_dir = ref_cached.build_dir
+        local ref_units = project:config_units_for_variant(project.cmake.compile_commands_from)
+        for _, ref_unit in ipairs(ref_units) do
+            local bd = ref_unit:build_dir()
+            if bd then
+                build_dir = bd
+                break
+            end
         end
     end
 

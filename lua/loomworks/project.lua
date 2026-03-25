@@ -5,6 +5,8 @@
 --- @field key string project key
 --- @field type string module type ("cmake", "ets", "typescript")
 --- @field path? string relative path from workspace root
+--- @field type_config? table module-specific configuration (options, configurations, etc.)
+--- @field launch? table<string, table> launch configurations
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
 --- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
@@ -42,6 +44,8 @@ end
 function Project:_update(data)
     self.type = data.type
     self.path = data.path
+    self.type_config = data.type_config
+    self.launch = data.launch
     self.configuration = data.configuration
     self.configuration_key = data.configuration_key
     self.tool = data.tool_key and {
@@ -81,41 +85,62 @@ function Project:__tostring()
     return "Project(" .. self.key .. ")"
 end
 
+--- Get all ConfigUnits belonging to this project (scan on demand).
+--- @return loomworks.ConfigUnit[]
+function Project:config_units()
+    local result = {}
+    for _, unit in pairs(self._workspace._config_units) do
+        if unit._project == self then
+            result[#result + 1] = unit
+        end
+    end
+    return result
+end
+
+--- Get ConfigUnits matching a variant name (e.g., "Debug").
+--- For keyed-tool modules this may return multiple units (one per tool).
+--- @param variant string
+--- @return loomworks.ConfigUnit[]
+function Project:config_units_for_variant(variant)
+    local result = {}
+    for _, unit in pairs(self._workspace._config_units) do
+        if unit._project == self and unit.variant == variant then
+            result[#result + 1] = unit
+        end
+    end
+    return result
+end
+
 --- Get the running action for this project (any config).
 --- @return string|nil action ("configure" or "build")
 function Project:running_action()
     for _, unit in pairs(self._workspace._config_units) do
-        if unit.project_key == self.key and unit:is_running() then
+        if unit._project == self and unit:is_running() then
             return unit:running_action()
         end
     end
     return nil
 end
 
---- Compute the cache key for a configuration name, accounting for kit_id.
---- @param config_name string
---- @return string
-function Project:config_cache_key(config_name)
-    if self.tool and self.tool.key then
-        return config_name .. ":" .. self.tool.key
-    end
-    return config_name
-end
-
---- Check if a specific configuration is being deleted.
---- @param config_name string
+--- Check if a specific configuration variant is being deleted.
+--- @param variant string configuration variant name
 --- @return boolean
-function Project:is_deleting_config(config_name)
-    local unit = self._workspace:get_config_unit(self.key, self:config_cache_key(config_name))
-    return unit:is_deleting()
+function Project:is_deleting_config(variant)
+    for _, unit in ipairs(self:config_units_for_variant(variant)) do
+        if unit:is_deleting() then return true end
+    end
+    return false
 end
 
---- Get the running action for a specific configuration.
---- @param config_name string
+--- Get the running action for a specific configuration variant.
+--- @param variant string configuration variant name
 --- @return string|nil action
-function Project:config_running_action(config_name)
-    local unit = self._workspace:get_config_unit(self.key, self:config_cache_key(config_name))
-    return unit:running_action()
+function Project:config_running_action(variant)
+    for _, unit in ipairs(self:config_units_for_variant(variant)) do
+        local action = unit:running_action()
+        if action then return action end
+    end
+    return nil
 end
 
 --- Resolve the cached state for a configuration.
@@ -153,6 +178,340 @@ function Project:to_module_context(ws_root)
         workspace_root = ws_root,
         env = self.tool and self.tool.data and self.tool.data.env or {},
     }
+end
+
+-- ========================== Mutation methods ==========================
+
+--- Refresh configurations from module info after config changes.
+function Project:_refresh_configurations()
+    local mod = self._workspace._core._deps.modules.get(self.type)
+    if not mod or not mod.info then return end
+    local abs_path = self._workspace.root .. "/" .. (self.path or self.key)
+    local mod_info = mod.info(abs_path, self.type_config or {})
+    if mod_info then
+        self.configurations = mod_info.configurations or {}
+        self.preset_configurations = mod_info.preset_configurations or nil
+    end
+end
+
+--- Save a project configuration (create or update).
+--- @param config_name string configuration name
+--- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
+--- @return boolean ok, string|nil err
+function Project:save_configuration(config_name, config_data)
+    local ws = self._workspace
+
+    -- Validate config name for build dir safety
+    local validate_path_name = require("loomworks.workspace").validate_path_name
+    local existing_names = {}
+    if self.type_config and self.type_config.configurations then
+        for k in pairs(self.type_config.configurations) do
+            existing_names[#existing_names + 1] = k
+        end
+    end
+    local valid, verr = validate_path_name(config_name, existing_names)
+    if not valid then
+        return false, "invalid configuration name: " .. verr
+    end
+
+    -- Ensure type_config.configurations exists
+    if not self.type_config then self.type_config = {} end
+    if not self.type_config.configurations then
+        self.type_config.configurations = {}
+    end
+
+    -- Omit empty fields
+    local clean = {}
+    if config_data.variant then clean.variant = config_data.variant end
+    if config_data.inherits then clean.inherits = config_data.inherits end
+    if config_data.options and next(config_data.options) then
+        clean.options = config_data.options
+    end
+    if config_data.toolchain then clean.toolchain = config_data.toolchain end
+    if config_data.generator then clean.generator = config_data.generator end
+
+    self.type_config.configurations[config_name] = clean
+
+    local ok, err = ws:_save_config()
+    if not ok then
+        self.type_config.configurations[config_name] = nil
+        if not next(self.type_config.configurations) then
+            self.type_config.configurations = nil
+        end
+        return false, err
+    end
+
+    self:_refresh_configurations()
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Delete a project configuration.
+--- @param config_name string
+--- @return boolean ok, string|nil err
+function Project:delete_configuration(config_name)
+    local ws = self._workspace
+    if not self.type_config or not self.type_config.configurations
+            or not self.type_config.configurations[config_name] then
+        return false, "configuration '" .. config_name .. "' not found"
+    end
+
+    local old = self.type_config.configurations[config_name]
+    self.type_config.configurations[config_name] = nil
+    if not next(self.type_config.configurations) then
+        self.type_config.configurations = nil
+    end
+
+    local ok, err = ws:_save_config()
+    if not ok then
+        if not self.type_config.configurations then
+            self.type_config.configurations = {}
+        end
+        proj.type_config.configurations[config_name] = old
+        self.type_config = proj.type_config
+        return false, err
+    end
+
+    self:_refresh_configurations()
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Rename a project configuration atomically: updates loomworks.json
+--- (type_config, inherits, config_set mappings) and cache (rekeys entries,
+--- updates profile configurations arrays). Build dirs are preserved as-is.
+--- @param old_name string current configuration name
+--- @param new_name string desired new name
+--- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
+--- @return boolean ok, string|nil err
+function Project:rename_configuration(old_name, new_name, config_data)
+    local ws = self._workspace
+
+    if not self.type_config or not self.type_config.configurations
+            or not self.type_config.configurations[old_name] then
+        return false, "configuration '" .. old_name .. "' not found"
+    end
+
+    -- Validate new name
+    local validate_path_name = require("loomworks.workspace").validate_path_name
+    local existing_names = {}
+    for k in pairs(self.type_config.configurations) do
+        if k ~= old_name then existing_names[#existing_names + 1] = k end
+    end
+    local valid, verr = validate_path_name(new_name, existing_names)
+    if not valid then
+        return false, "invalid configuration name: " .. verr
+    end
+
+    -- Snapshot for rollback
+    local old_config_data_snapshot = self.type_config.configurations[old_name]
+    local old_inherits_snapshot = {}
+    for cname, cdata in pairs(self.type_config.configurations) do
+        if cdata.inherits then
+            old_inherits_snapshot[cname] = cdata.inherits
+        end
+    end
+    local old_cs_mappings = {} -- cs -> old_variant (for rollback)
+    for _, cs in pairs(ws._config_sets) do
+        if cs.mappings[self] == old_name then
+            old_cs_mappings[cs] = old_name
+        end
+    end
+
+    -- Step 1: Update inherits in sibling configs
+    for _, cdata in pairs(self.type_config.configurations) do
+        if cdata.inherits then
+            if type(cdata.inherits) == "string" then
+                if cdata.inherits == old_name then
+                    cdata.inherits = new_name
+                end
+            elseif type(cdata.inherits) == "table" then
+                for i, base in ipairs(cdata.inherits) do
+                    if base == old_name then
+                        cdata.inherits[i] = new_name
+                    end
+                end
+            end
+        end
+    end
+
+    -- Step 2: Rename in type_config.configurations
+    local clean = {}
+    if config_data.variant then clean.variant = config_data.variant end
+    if config_data.inherits then clean.inherits = config_data.inherits end
+    if config_data.options and next(config_data.options) then
+        clean.options = config_data.options
+    end
+    if config_data.toolchain then clean.toolchain = config_data.toolchain end
+    if config_data.generator then clean.generator = config_data.generator end
+    self.type_config.configurations[old_name] = nil
+    self.type_config.configurations[new_name] = clean
+
+    -- Step 3: Update configuration_set domain objects + raw config
+    for cs in pairs(old_cs_mappings) do
+        cs.mappings[self] = new_name
+        -- Keep raw config in sync (needed by _refresh_after_cache_change)
+        if ws.config.configuration_sets and ws.config.configuration_sets[cs.name] then
+            ws.config.configuration_sets[cs.name][self.key] = new_name
+        end
+    end
+
+    -- Save config to disk
+    local ok, err = ws:_save_config()
+    if not ok then
+        -- Rollback
+        self.type_config.configurations[new_name] = nil
+        self.type_config.configurations[old_name] = old_config_data_snapshot
+        for cname, inh in pairs(old_inherits_snapshot) do
+            if self.type_config.configurations[cname] then
+                self.type_config.configurations[cname].inherits = inh
+            end
+        end
+        for cs, old_val in pairs(old_cs_mappings) do
+            cs.mappings[self] = old_val
+            if ws.config.configuration_sets and ws.config.configuration_sets[cs.name] then
+                ws.config.configuration_sets[cs.name][self.key] = old_val
+            end
+        end
+        return false, err
+    end
+
+    -- Step 4: Migrate cache entries
+    local cache_rename_map = {} -- old_cache_key -> new_cache_key
+    if ws.cache.configurations then
+        local to_migrate = {}
+        for cache_key, entry in pairs(ws.cache.configurations) do
+            if entry.project_key == self.key and entry.variant == old_name then
+                to_migrate[#to_migrate + 1] = { cache_key = cache_key, entry = entry }
+            end
+        end
+        for _, item in ipairs(to_migrate) do
+            local entry = item.entry
+            local new_config_key = ws._core._deps.merge.build_config_key(new_name, entry.tool_key)
+            local new_cache_key = ws._core._deps.cache.config_cache_key(self.key, new_config_key)
+            -- Move entry to new key with updated fields
+            entry.variant = new_name
+            entry.config_key = new_config_key
+            ws.cache.configurations[new_cache_key] = entry
+            ws.cache.configurations[item.cache_key] = nil
+            cache_rename_map[item.cache_key] = new_cache_key
+        end
+    end
+
+    -- Step 5: Update profiles — configurations arrays, pinned mappings, and pinned profile keys.
+    -- Note: pinned_key(project_key, config_key) produces the same string as
+    -- config_cache_key(project_key, config_key) — both are "project_key/config_key".
+    -- So cache_rename_map doubles as the pinned profile rename map.
+    if ws.cache.profiles then
+        local profile_rekeys = {} -- old_profile_key -> new_profile_key
+        for profile_key, profile_data in pairs(ws.cache.profiles) do
+            -- Update configurations arrays (cache key references)
+            if profile_data.configurations and next(cache_rename_map) then
+                for i, ck in ipairs(profile_data.configurations) do
+                    if cache_rename_map[ck] then
+                        profile_data.configurations[i] = cache_rename_map[ck]
+                    end
+                end
+            end
+            -- Update pinned profile mappings (variant references)
+            if profile_data.mappings and profile_data.mappings[self.key] == old_name then
+                profile_data.mappings[self.key] = new_name
+            end
+            -- Rekey pinned profiles (pinned key == cache key format)
+            if cache_rename_map[profile_key] then
+                profile_rekeys[profile_key] = cache_rename_map[profile_key]
+            end
+        end
+        -- Apply profile rekeys
+        for old_pk, new_pk in pairs(profile_rekeys) do
+            local data = ws.cache.profiles[old_pk]
+            ws.cache.profiles[old_pk] = nil
+            ws.cache.profiles[new_pk] = data
+            -- Update active_profile if it was the old key
+            if ws.user.active_profile == old_pk then
+                ws.user.active_profile = new_pk
+                ws:_save_user()
+            end
+        end
+    end
+
+    ws:_save_cache()
+    self:_refresh_configurations()
+    ws:_refresh_after_cache_change()
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Save project-wide options.
+--- @param options table<string, string>
+--- @return boolean ok, string|nil err
+function Project:save_options(options)
+    local ws = self._workspace
+
+    if not self.type_config then self.type_config = {} end
+    local old = self.type_config.options
+    self.type_config.options = next(options) and options or nil
+
+    local ok, err = ws:_save_config()
+    if not ok then
+        self.type_config.options = old
+        return false, err
+    end
+
+    self:_refresh_configurations()
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Save a launch configuration for this project.
+--- @param launch_name string
+--- @param config table { command, args?, working_dir?, env? }
+--- @return boolean ok, string|nil err
+function Project:save_launch_config(launch_name, config)
+    local ws = self._workspace
+    if self._removed then
+        return false, "project '" .. self.key .. "' has been removed"
+    end
+
+    if not self.launch then
+        self.launch = {}
+    end
+    self.launch[launch_name] = config
+
+    local ok, err = ws:_save_config()
+    if not ok then
+        self.launch[launch_name] = nil
+        if not next(self.launch) then self.launch = nil end
+        return false, err
+    end
+
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Delete a launch configuration from this project.
+--- @param launch_name string
+--- @return boolean ok, string|nil err
+function Project:delete_launch_config(launch_name)
+    local ws = self._workspace
+
+    if not self.launch or not self.launch[launch_name] then
+        return false, "launch config '" .. launch_name .. "' not found"
+    end
+
+    local old = self.launch[launch_name]
+    self.launch[launch_name] = nil
+    if not next(self.launch) then self.launch = nil end
+
+    local ok, err = ws:_save_config()
+    if not ok then
+        if not self.launch then self.launch = {} end
+        self.launch[launch_name] = old
+        return false, err
+    end
+
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
 end
 
 return Project

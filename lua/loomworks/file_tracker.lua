@@ -93,4 +93,13 @@ function FileTracker:content(path)
     return self._content[path]
 end
 
+--- Update cached content after a self-write.
+--- Prevents the next poll from detecting our own write as an external change.
+--- @param path string
+function FileTracker:mark_written(path)
+    if self._watches[path] then
+        self._content[path] = self._read_file(path)
+    end
+end
+
 return FileTracker

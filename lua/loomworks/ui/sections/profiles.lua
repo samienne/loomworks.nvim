@@ -66,7 +66,7 @@ local function render_profile_details(tree, profile, lw)
                 local config_status, status_hl, progress_str, is_spinning =
                         helpers.resolve_config_status(pp, cached)
 
-                local unit = lw.get_config_unit(pp.project_key, pp.config_key)
+                local unit = pp._config_unit
                 local type_tag = pp._project and pp._project.type
                     and (" [" .. pp._project.type .. "]") or ""
                 tree:node(pp.project_key .. type_tag .. " → " .. pp.variant .. progress_str, {

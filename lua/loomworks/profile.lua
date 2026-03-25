@@ -41,13 +41,29 @@ function ProfileProject:_update(profile, variant)
     self._profile = profile
     self._project = self._workspace._projects[self.project_key]
     self.variant = variant
-    -- Look up tool for this project's module type from profile's tools dict
-    local project = self._project
-    local tool = profile.tools and project and profile.tools[project.type] or nil
-    if tool and tool.key then
-        self.config_key = variant .. ":" .. tool.key
-    else
-        self.config_key = variant
+    self.config_key = nil
+    self._cached = nil
+    self._config_unit = nil
+
+    -- Resolve config_key from the profile's cached configurations array.
+    -- The cache entry is the authoritative source for the config_key.
+    -- If no matching entry exists, this PP is unconfigured (no config_key).
+    local cache = self._workspace.cache
+    if profile._cached_configurations and cache and cache.configurations then
+        for _, ck in ipairs(profile._cached_configurations) do
+            local entry = cache.configurations[ck]
+            if entry and entry.project_key == self.project_key
+                    and entry.variant == variant then
+                self.config_key = entry.config_key
+                self._cached = entry
+                break
+            end
+        end
+    end
+
+    -- Resolve ConfigUnit if we have a config_key
+    if self.config_key then
+        self._config_unit = self._workspace:get_config_unit(self.project_key, self.config_key)
     end
 end
 
@@ -56,11 +72,11 @@ function ProfileProject:__tostring()
 end
 
 --- Get the resolved status for this project-in-profile.
---- Delegates to ConfigUnit for the single source of truth.
+--- Delegates to ConfigUnit (direct reference resolved during _update).
 --- @return loomworks.ConfigUnitState status
 function ProfileProject:status()
-    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
-    return unit:state()
+    if not self._config_unit then return "unconfigured" end
+    return self._config_unit:state()
 end
 
 --- Get the running action for this project-in-profile.
@@ -68,23 +84,21 @@ end
 --- that reference the same (project_key, config_key) pair.
 --- @return string|nil action
 function ProfileProject:running_action()
-    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
-    return unit:running_action()
+    if not self._config_unit then return nil end
+    return self._config_unit:running_action()
 end
 
 --- Check if this project-in-profile is being deleted.
 --- @return boolean
 function ProfileProject:is_deleting()
-    local unit = self._workspace:get_config_unit(self.project_key, self.config_key)
-    return unit:is_deleting()
+    if not self._config_unit then return false end
+    return self._config_unit:is_deleting()
 end
 
---- Get cached state from the workspace cache.
+--- Get cached state (direct reference resolved during _update).
 --- @return loomworks.CachedConfig|nil
 function ProfileProject:cached_state()
-    if not self._workspace.cache.configurations then return nil end
-    local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-    return self._workspace.cache.configurations[ck]
+    return self._cached
 end
 
 --- Get the build directory from cache.
@@ -101,10 +115,13 @@ end
 --- @field configuration_set? string nil for pinned profiles
 --- @field tools? table<string, loomworks.ToolRef> tools dict keyed by module type
 --- @field explicit boolean
+--- @field explicit_def? table raw definition from loomworks.json (for serialization)
 --- @field mappings? table<string, string> project_key -> variant name
 --- @field orphaned_set boolean true if configuration_set no longer exists in config
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
+--- @field _projects_list loomworks.ProfileProject[] sorted by dependency order
+--- @field _projects_by_key table<string, loomworks.ProfileProject> project_key -> PP
 --- @field _config_set_ref? loomworks.ConfigurationSet direct reference, resolved during _update
 --- @field _valid_variants table<string, boolean> precomputed variant set
 --- @field _operations loomworks.Operation[] active operations on this profile
@@ -144,7 +161,9 @@ end
 function Profile:_update(data)
     self.configuration_set = data.configuration_set
     self.tools = data.tools or nil
+    self._cached_configurations = data._cached_configurations
     self.explicit = data.explicit or false
+    self.explicit_def = data.explicit_def or nil
 
     -- Resolve mappings and ConfigurationSet reference
     self._config_set_ref = nil
@@ -242,35 +261,18 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Get a ProfileProject for a specific project in this profile.
---- Looks up from Workspace's registry.
+--- Uses direct reference populated during sync.
 --- @param project_key string
 --- @return loomworks.ProfileProject|nil
 function Profile:project(project_key)
-    if not self.mappings or not self.mappings[project_key] then return nil end
-    local reg_key = self.key .. "\0" .. project_key
-    return self._workspace._profile_projects[reg_key]
+    return self._projects_by_key and self._projects_by_key[project_key] or nil
 end
 
 --- Get all ProfileProjects in this profile, sorted by dependency order.
---- Projects with no dependencies come first. Falls back to alphabetical
---- if no dependencies exist.
+--- Uses direct list populated during sync.
 --- @return loomworks.ProfileProject[]
 function Profile:projects()
-    if not self.mappings then return {} end
-    local prefix = self.key .. "\0"
-    local result = {}
-    for reg_key, pp in pairs(self._workspace._profile_projects) do
-        if reg_key:sub(1, #prefix) == prefix then
-            result[#result + 1] = pp
-        end
-    end
-    -- Sort by dependency order (falls back to alphabetical for no deps)
-    local dependency = require("loomworks.dependency")
-    local sorted, err = dependency.toposort(result)
-    if err then
-        vim.notify("loomworks: " .. err, vim.log.levels.WARN)
-    end
-    return sorted
+    return self._projects_list or {}
 end
 
 -- ---------------------------------------------------------------------------
@@ -479,7 +481,7 @@ function Profile:status()
         local all_cleaning = true
         for _, pp in ipairs(pps) do
             if pp:status() == "deleting" then
-                local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
+                local unit = pp._config_unit
                 if unit:deleting_reason() ~= "cleaning" then
                     all_cleaning = false
                     break
@@ -539,11 +541,15 @@ function Profile:plan_deletion()
     if not self.mappings then return empty end
 
     -- Build lookup: which configs are referenced by OTHER profiles.
+    -- Nested set: [project_key][config_key] = true
     local other_refs = {}
     for _, other in pairs(self._workspace._profiles) do
         if other.key ~= self.key then
             for _, other_pp in ipairs(other:projects()) do
-                other_refs[other_pp.project_key .. "\0" .. other_pp.config_key] = true
+                if not other_refs[other_pp.project_key] then
+                    other_refs[other_pp.project_key] = {}
+                end
+                other_refs[other_pp.project_key][other_pp.config_key] = true
             end
         end
     end
@@ -551,12 +557,14 @@ function Profile:plan_deletion()
     -- Include ALL project/config combos with disposition
     local items = {}
     for _, pp in ipairs(self:projects()) do
-        local lookup = pp.project_key .. "\0" .. pp.config_key
+        local has_other_ref = other_refs[pp.project_key]
+            and other_refs[pp.project_key][pp.config_key] or false
         items[#items + 1] = {
             project_key = pp.project_key,
             config_key = pp.config_key,
             build_dir = pp:build_dir(),
-            disposition = other_refs[lookup] and "keep" or "clean",
+            disposition = has_other_ref and "keep" or "clean",
+            unit = pp._config_unit,
         }
     end
 
@@ -581,10 +589,9 @@ function Profile:delete(on_done)
     local units = {}
     local target_states = {}
     for _, item in ipairs(plan.items) do
-        if item.disposition ~= "keep" then
-            local unit = self._workspace:get_config_unit(item.project_key, item.config_key)
-            units[#units + 1] = unit
-            target_states[unit] = "unconfigured"
+        if item.disposition ~= "keep" and item.unit then
+            units[#units + 1] = item.unit
+            target_states[item.unit] = "unconfigured"
         end
     end
     if #units > 0 then
@@ -613,9 +620,8 @@ function Profile:clean(on_done)
             project_key = pp.project_key,
             config_key = pp.config_key,
         }
-        local unit = self._workspace:get_config_unit(pp.project_key, pp.config_key)
-        units[#units + 1] = unit
-        target_states[unit] = "configured"
+        units[#units + 1] = pp._config_unit
+        target_states[pp._config_unit] = "configured"
     end
 
     -- Cancel conflicting build/configure operations
