@@ -88,6 +88,8 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
             modules = { get = function(id) return mock_modules[id] end },
             notify = function() end,
             schedule = function(fn) fn() end,
+            clock = function() return 0 end,
+            now = function() return "2000-01-01T00:00:00Z" end,
         },
         _events_log = events_log,
     }
@@ -1742,5 +1744,199 @@ describe("cmake options resolution", function()
         assert.is_nil(resolved["asan"].variant)
         -- Debug is still a default
         assert.equals("Debug", resolved["Debug"].variant)
+    end)
+end)
+
+-- =========================================================================
+-- Opaque key test: arbitrary keys with no semantic structure
+-- =========================================================================
+
+describe("opaque keys", function()
+    -- All keys are arbitrary strings with no pattern.
+    -- Proves the system doesn't depend on key format for runtime navigation.
+
+    local function make_opaque_ws()
+        return make_ws({
+            projects = {
+                ["proj-alpha"] = { cmake = {} },
+                ["proj-beta"] = { ets = {} },
+            },
+            configuration_sets = {
+                ["set-x"] = { ["proj-alpha"] = "Debug", ["proj-beta"] = "debug" },
+            },
+        }, {
+            active_profile = "profile-z",
+        }, {
+            configurations = {
+                -- Dict keys follow cache format (project_key/config_key),
+                -- but config_key itself is arbitrary (not "variant:tool")
+                ["proj-alpha/cfg-42"] = {
+                    project_key = "proj-alpha", config_key = "cfg-42",
+                    type = "cmake", variant = "Debug", tool_key = "tool-7",
+                    state = "built",
+                    build_dir = "/root/.nvim/build/arbitrary-dir",
+                    tool_data = { id = "tool-7", display = "Tool Seven", generator = "Ninja" },
+                },
+                ["proj-beta/cfg-99"] = {
+                    project_key = "proj-beta", config_key = "cfg-99",
+                    type = "ets", variant = "debug",
+                    state = "configured",
+                    build_dir = "/root/.nvim/build/another-dir",
+                },
+            },
+            profiles = {
+                -- Arbitrary profile key
+                ["profile-z"] = {
+                    configuration_set = "set-x",
+                    tools = {
+                        cmake = { key = "tool-7", data = { id = "tool-7", display = "Tool Seven", generator = "Ninja" }, label = "Tool Seven" },
+                    },
+                    configurations = { "proj-alpha/cfg-42", "proj-beta/cfg-99" },
+                },
+            },
+        })
+    end
+
+    it("loads workspace with arbitrary keys", function()
+        local ws = make_opaque_ws()
+        assert.is_not_nil(ws)
+
+        -- Projects resolved
+        assert.is_not_nil(ws._projects["proj-alpha"])
+        assert.equals("cmake", ws._projects["proj-alpha"].type)
+        assert.is_not_nil(ws._projects["proj-beta"])
+        assert.equals("ets", ws._projects["proj-beta"].type)
+    end)
+
+    it("resolves active profile and its projects", function()
+        local ws = make_opaque_ws()
+        local profile = ws:get_active_profile()
+        assert.is_not_nil(profile)
+        assert.equals("profile-z", profile.key)
+
+        local pps = profile:projects()
+        assert.equals(2, #pps)
+
+        -- ProfileProjects have correct variants
+        local variants = {}
+        for _, pp in ipairs(pps) do
+            variants[pp.project_key] = pp.variant
+        end
+        assert.equals("Debug", variants["proj-alpha"])
+        assert.equals("debug", variants["proj-beta"])
+    end)
+
+    it("ProfileProject references resolve correctly", function()
+        local ws = make_opaque_ws()
+        local profile = ws:get_active_profile()
+
+        local pp_alpha = profile:project("proj-alpha")
+        assert.is_not_nil(pp_alpha)
+        assert.is_not_nil(pp_alpha._config_unit)
+        assert.is_not_nil(pp_alpha._project)
+        assert.equals("proj-alpha", pp_alpha._project.key)
+
+        -- ConfigUnit has cached state with arbitrary key
+        local cached = pp_alpha:cached_state()
+        assert.is_not_nil(cached)
+        assert.equals("built", cached.state)
+        assert.equals("/root/.nvim/build/arbitrary-dir", cached.build_dir)
+    end)
+
+    it("ConfigUnit state resolves through arbitrary cache keys", function()
+        local ws = make_opaque_ws()
+        local profile = ws:get_active_profile()
+
+        local pp_alpha = profile:project("proj-alpha")
+        assert.equals("built", pp_alpha:status())
+
+        local pp_beta = profile:project("proj-beta")
+        assert.equals("configured", pp_beta:status())
+    end)
+
+    it("Project:config_units_for_variant finds units with arbitrary keys", function()
+        local ws = make_opaque_ws()
+        local proj = ws._projects["proj-alpha"]
+        local units = proj:config_units_for_variant("Debug")
+        assert.equals(1, #units)
+        assert.equals("cfg-42", units[1].config_key)
+    end)
+
+    it("build_dir_refs track arbitrary cache entries", function()
+        local ws = make_opaque_ws()
+        local refs = ws:get_build_dir_refs("/root/.nvim/build/arbitrary-dir")
+        assert.equals(1, #refs)
+        assert.equals("cfg-42", refs[1].config_key)
+    end)
+
+    it("config set mapping updates work with arbitrary project keys", function()
+        local ws = make_opaque_ws()
+        local cs = ws._config_sets["set-x"]
+        assert.is_not_nil(cs)
+
+        local proj = ws._projects["proj-alpha"]
+        cs:update_mapping(proj, "Release")
+
+        -- Verify mapping changed
+        assert.equals("Release", cs.mappings[proj])
+    end)
+
+    it("save_configuration works on project with arbitrary keys", function()
+        local ws = make_opaque_ws()
+        local proj = ws._projects["proj-alpha"]
+
+        local ok = proj:save_configuration("custom-cfg", {
+            options = { MY_FLAG = "ON" },
+        })
+        assert.is_true(ok)
+        assert.is_not_nil(proj.type_config.configurations["custom-cfg"])
+    end)
+
+    it("rename_configuration propagates with arbitrary keys", function()
+        local ws = make_opaque_ws()
+        local proj = ws._projects["proj-alpha"]
+
+        -- Add a user-defined config to rename
+        proj:save_configuration("temp-name", { options = { X = "1" } })
+
+        local ok = proj:rename_configuration("temp-name", "new-name", {
+            options = { X = "1" },
+        })
+        assert.is_true(ok)
+        assert.is_nil(proj.type_config.configurations["temp-name"])
+        assert.is_not_nil(proj.type_config.configurations["new-name"])
+    end)
+
+    it("delete preserves arbitrary build dirs in cache", function()
+        local ws = make_opaque_ws()
+        local deleted_dirs = {}
+        ws._core._deps.io.rm_rf_async = function(dir, cb)
+            deleted_dirs[#deleted_dirs + 1] = dir
+            cb(true, nil)
+        end
+
+        -- Delete cfg-42's config via profile deletion
+        local profile = ws:get_active_profile()
+        assert.is_not_nil(profile)
+
+        local done = false
+        profile:delete(function() done = true end)
+        assert.is_true(done)
+
+        -- Build dir should have been cleaned
+        assert.is_true(#deleted_dirs > 0)
+    end)
+
+    it("serialization round-trips with arbitrary keys", function()
+        local ws = make_opaque_ws()
+        local raw = ws:_serialize_config()
+
+        -- Projects preserved
+        assert.is_not_nil(raw.projects["proj-alpha"])
+        assert.is_not_nil(raw.projects["proj-beta"])
+
+        -- Config sets preserved
+        assert.is_not_nil(raw.configuration_sets["set-x"])
+        assert.equals("Debug", raw.configuration_sets["set-x"]["proj-alpha"])
     end)
 end)

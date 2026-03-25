@@ -41,24 +41,47 @@ function ProfileProject:_update(profile, variant)
     self._profile = profile
     self._project = self._workspace._projects[self.project_key]
     self.variant = variant
-    -- Look up tool for this project's module type from profile's tools dict
+
+    -- Resolve config_key from the profile's cached configurations array.
+    -- The cache entry for this project has the authoritative config_key.
+    -- Fall back to computing from variant + tool if no cache entry found.
     local project = self._project
     local tool = profile.tools and project and profile.tools[project.type] or nil
-    if tool and tool.key then
-        self.config_key = variant .. ":" .. tool.key
-    else
-        self.config_key = variant
+    self.config_key = nil
+    self._cached = nil
+
+    -- Search profile's cached configurations for this project's entry.
+    -- Must match both project_key AND variant to avoid stale entries
+    -- after mapping changes.
+    local cache = self._workspace.cache
+    if profile._cached_configurations and cache and cache.configurations then
+        for _, ck in ipairs(profile._cached_configurations) do
+            local entry = cache.configurations[ck]
+            if entry and entry.project_key == self.project_key
+                    and entry.variant == variant then
+                self.config_key = entry.config_key
+                self._cached = entry
+                break
+            end
+        end
     end
 
-    -- Resolve direct references (no key construction at runtime)
-    self._config_unit = self._workspace:get_config_unit(self.project_key, self.config_key)
-    local cache = self._workspace.cache
-    if cache and cache.configurations then
-        local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
-        self._cached = cache.configurations[ck]
-    else
-        self._cached = nil
+    -- Fall back to computing config_key if no cache entry found
+    if not self.config_key then
+        if tool and tool.key then
+            self.config_key = variant .. ":" .. tool.key
+        else
+            self.config_key = variant
+        end
+        -- Try resolving cache entry via computed key
+        if cache and cache.configurations then
+            local ck = cache_mod.config_cache_key(self.project_key, self.config_key)
+            self._cached = cache.configurations[ck]
+        end
     end
+
+    -- Resolve ConfigUnit reference
+    self._config_unit = self._workspace:get_config_unit(self.project_key, self.config_key)
 end
 
 function ProfileProject:__tostring()
@@ -152,6 +175,7 @@ end
 function Profile:_update(data)
     self.configuration_set = data.configuration_set
     self.tools = data.tools or nil
+    self._cached_configurations = data._cached_configurations
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
 
