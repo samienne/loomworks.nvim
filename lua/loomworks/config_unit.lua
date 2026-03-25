@@ -467,7 +467,7 @@ function ConfigUnit:options()
 end
 
 -- ---------------------------------------------------------------------------
--- Task tracking (called by task_tracker component and Core)
+-- Task tracking (called by overseer subscriptions and Core)
 -- ---------------------------------------------------------------------------
 
 --- Register a running task on this unit.

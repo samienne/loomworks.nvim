@@ -52,6 +52,7 @@ local function collect_configuration_tasks(project_key, config_key)
     for _, task_def in ipairs(mod_tasks) do
         local lw_meta = task_def.loomworks
         if lw_meta then
+            lw_meta.unit = unit
             lw_meta.progress_tool = pt
             lw_meta.variant = variant
             lw_meta.tool = tool
@@ -115,6 +116,7 @@ local function collect_profile_tasks(profile)
         for _, task_def in ipairs(mod_tasks) do
             local lw_meta = task_def.loomworks
             if lw_meta then
+                lw_meta.unit = pp._config_unit
                 lw_meta.progress_tool = pt
                 lw_meta.variant = active_config
                 lw_meta.tool = project_tool
@@ -237,29 +239,78 @@ end
 --- Build and start a single overseer task from a task definition.
 --- Acquires a build dir lock before starting. If the lock can't be acquired
 --- immediately, the task is queued and started when the lock becomes available.
+--- Uses event subscriptions (not a component) for loomworks integration —
+--- the overseer task stays pure and the ConfigUnit is captured directly.
 --- @param overseer table overseer module
 --- @param task_def table task definition with .builder and .loomworks
 --- @param on_complete? function called with boolean success when task completes
 local function start_one_task(overseer, task_def, on_complete)
     local lw_meta = task_def.loomworks
+    local unit = lw_meta.unit
 
     local function do_start()
         local build_result = task_def.builder()
         build_result.components = build_result.components or { "default" }
-        build_result.components[#build_result.components + 1] = {
-            "loomworks.task_tracker",
-            project_key = lw_meta.project_key,
-            action = lw_meta.action,
-            configuration_key = lw_meta.configuration_key,
-            build_dir = lw_meta.build_dir,
-            variant = lw_meta.variant,
-            tool = lw_meta.tool,
-            cmake = lw_meta.cmake,
-            progress_tool = lw_meta.progress_tool,
-        }
-
         build_result.name = task_def.name
         local task = overseer.new_task(build_result)
+
+        -- Progress parser (lazy-loaded on first output)
+        local progress_parser = lw_meta.progress_tool
+            and require("loomworks.progress").get(lw_meta.progress_tool) or nil
+
+        -- Build dir lock release (idempotent)
+        local lock_released = false
+        local function release_lock()
+            if lock_released or not lw_meta.build_dir then return end
+            lock_released = true
+            local ws = unit._workspace
+            if ws then
+                local dir = ws._core._deps.normalize(lw_meta.build_dir)
+                ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+            end
+        end
+
+        -- Lifecycle subscriptions — ConfigUnit captured directly, no key lookups
+        task:subscribe("on_start", function()
+            unit:register_task(task.id, lw_meta.action)
+        end)
+
+        if progress_parser then
+            task:subscribe("on_output_lines", function(_, lines)
+                for i = #lines, 1, -1 do
+                    local update = progress_parser(lines[i])
+                    if update then
+                        unit:update_progress(task.id, update)
+                        return
+                    end
+                end
+            end)
+        end
+
+        task:subscribe("on_complete", function(_, status)
+            -- Record result first (updates cache state), then unregister.
+            -- This order ensures that when unregister fires ConfigUnit
+            -- listeners, the cache already reflects the final state.
+            if status ~= "CANCELED" then
+                unit._workspace:record_task_result({
+                    project_key = unit.project_key,
+                    action = lw_meta.action,
+                    configuration_key = unit.config_key,
+                    variant = lw_meta.variant,
+                    tool = lw_meta.tool,
+                    build_dir = lw_meta.build_dir,
+                    cmake = lw_meta.cmake,
+                    success = status == "SUCCESS",
+                })
+            end
+            unit:unregister_task(task.id)
+            release_lock()
+        end)
+
+        task:subscribe("on_dispose", function()
+            unit:unregister_task(task.id)
+            release_lock()
+        end)
 
         if on_complete then
             task:subscribe("on_complete", function(_, status)
@@ -272,12 +323,10 @@ local function start_one_task(overseer, task_def, on_complete)
 
     -- Acquire build dir lock if task has a build directory
     if lw_meta.build_dir then
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
+        local ws = unit._workspace
         if ws then
             local dir = ws._core._deps.normalize(lw_meta.build_dir)
-            local lt = lock_type_for_action(lw_meta.action)
-            ws:acquire_build_dir_lock(dir, lt, do_start)
+            ws:acquire_build_dir_lock(dir, lock_type_for_action(lw_meta.action), do_start)
             return
         end
     end
@@ -293,9 +342,8 @@ end
 --- @param task_def table task definition with .loomworks
 --- @return "launch"|"skip"|"defer"|"block"
 local function check_task_readiness(task_def)
-    local lw = require("loomworks")
     local lw_meta = task_def.loomworks
-    local unit = lw.get_config_unit(lw_meta.project_key, lw_meta.configuration_key)
+    local unit = lw_meta.unit
     local state = unit:state()
 
     -- Unknown state blocks all actions — user must clean/delete first
@@ -372,8 +420,7 @@ local function launch_tasks(overseer, task_defs, on_all_done)
 
     -- Defer build tasks waiting for an in-progress configure
     for _, task_def in ipairs(to_defer) do
-        local lw_meta = task_def.loomworks
-        local unit = lw.get_config_unit(lw_meta.project_key, lw_meta.configuration_key)
+        local unit = task_def.loomworks.unit
         local unsub
         unsub = unit:on_state_change(function(u)
             local new_state = u:state()
@@ -411,14 +458,12 @@ end
 --- @param all_tasks table { configure: table[], build: table[] }
 --- @return table[] configure tasks that actually need running
 local function filter_unconfigured_tasks(all_tasks)
-    local loomworks = require("loomworks")
-
     local needs_configure = {}
     for _, task_def in ipairs(all_tasks.configure) do
         local lw_meta = task_def.loomworks
         if not lw_meta then goto next end
 
-        local state = loomworks.get_config_unit(lw_meta.project_key, lw_meta.configuration_key):state()
+        local state = lw_meta.unit:state()
         if state == "unconfigured" or state == "configure_failed" then
             needs_configure[#needs_configure + 1] = task_def
         end
@@ -617,6 +662,11 @@ function M.launch_single_task(task_def, unit, on_complete)
     if state == "unknown" then return end
     if state == "building" then return end
 
+    -- Ensure lw_meta has unit reference for start_one_task subscriptions
+    if task_def.loomworks then
+        task_def.loomworks.unit = unit
+    end
+
     start_one_task(overseer, task_def, on_complete)
 end
 
@@ -626,22 +676,15 @@ end
 --- @return loomworks.ConfigUnit[] units
 --- @return table<loomworks.ConfigUnit, string> target_states
 local function collect_units_from_tasks(task_defs, target_state)
-    local lw = require("loomworks")
     local units = {}
     local target_states = {}
-    local seen = {} -- [project_key][config_key] = true
+    local seen = {} -- unit -> true (dedup by identity)
     for _, task_def in ipairs(task_defs) do
         local meta = task_def.loomworks
-        if meta then
-            if not seen[meta.project_key] then
-                seen[meta.project_key] = {}
-            end
-            if not seen[meta.project_key][meta.configuration_key] then
-                seen[meta.project_key][meta.configuration_key] = true
-                local unit = lw.get_config_unit(meta.project_key, meta.configuration_key)
-                units[#units + 1] = unit
-                target_states[unit] = target_state
-            end
+        if meta and meta.unit and not seen[meta.unit] then
+            seen[meta.unit] = true
+            units[#units + 1] = meta.unit
+            target_states[meta.unit] = target_state
         end
     end
     return units, target_states
