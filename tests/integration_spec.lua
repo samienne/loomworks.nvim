@@ -775,7 +775,7 @@ describe("confirmation contexts", function()
     it("delete confirmation shows empty message when no items", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
 
-        local plan = { items = {}, profile_key = "Debug" }
+        local plan = { items = {}, profile = { key = "Debug" } }
         local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: Debug", plan)
 
         local found = false
@@ -858,8 +858,9 @@ describe("collect helpers", function()
         local unit = ws:find_config_unit_by_id("App/Debug")
         local items = wv.collect_clean_items_for_unit(unit)
         assert.equals(1, #items)
-        assert.equals("App", items[1].project_key)
-        assert.equals("Debug", items[1].config_key)
+        assert.equals(unit, items[1].unit)
+        assert.equals("App", items[1].unit._project.key)
+        assert.equals("Debug", items[1].unit._cached.config_key)
     end)
 end)
 

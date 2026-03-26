@@ -360,24 +360,17 @@ function ConfigUnit:plan_deletion()
     end
 
     local has_ref = #self:referencing_profiles() > 0
-    local cached = self._cached
-    local project_key = self._project and self._project.key or (cached and cached.project_key)
-    local config_key = cached and cached.config_key
 
     local items = { {
-        project_key = project_key,
-        config_key = config_key,
+        unit = self,
         build_dir = self:build_dir(),
         disposition = has_ref and "reset" or "clean",
-        unit = self,
     } }
 
     local defined_in_config = self._project ~= nil and not self._project._removed
 
     return {
         items = items,
-        project_key = project_key,
-        config_key = config_key,
         defined_in_config = defined_in_config,
     }
 end
@@ -413,10 +406,7 @@ end
 function ConfigUnit:clean(on_done)
     local ws = self._workspace
 
-    local cached = self._cached
-    local project_key = self._project and self._project.key or (cached and cached.project_key)
-    local config_key = cached and cached.config_key
-    local items = { { project_key = project_key, config_key = config_key, unit = self } }
+    local items = { { unit = self } }
 
     -- Cancel conflicting operations
     ws:cancel_conflicting_operations({ self })

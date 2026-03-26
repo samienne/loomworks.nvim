@@ -177,10 +177,8 @@ function M.delete_orphaned_config(unit)
         local pkey, ckey = unit_display_keys(unit)
         local orphan_plan = {
             items = { {
-                project_key = pkey,
-                config_key = ckey,
-                disposition = "clean",
                 unit = unit,
+                disposition = "clean",
             } },
             defined_in_config = false,
         }

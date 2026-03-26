@@ -563,19 +563,16 @@ end
 --- Returns a plan object with items, shared analysis, and metadata.
 --- @return loomworks.DeletionPlan
 function Profile:plan_deletion()
-    local empty = { items = {}, profile_key = self.key, defined_in_config = false }
+    local empty = { items = {}, profile = self, defined_in_config = false }
     if not self.mappings then return empty end
 
     -- Build lookup: which configs are referenced by OTHER profiles.
-    -- Nested set: [project_key][config_key] = true
     local other_refs = {}
     for _, other in pairs(self._workspace._profiles) do
         if other.key ~= self.key then
             for _, other_pp in ipairs(other:projects()) do
                 if other_pp._config_unit then
-                    if not other_refs[other_pp._config_unit] then
-                        other_refs[other_pp._config_unit] = true
-                    end
+                    other_refs[other_pp._config_unit] = true
                 end
             end
         end
@@ -584,24 +581,26 @@ function Profile:plan_deletion()
     -- Include ALL project/config combos with disposition
     local items = {}
     for _, pp in ipairs(self:projects()) do
-        local pp_cached = pp._cached
         local has_other_ref = pp._config_unit and other_refs[pp._config_unit] or false
         items[#items + 1] = {
-            project_key = pp._project and pp._project.key or (pp_cached and pp_cached.project_key),
-            config_key = pp_cached and pp_cached.config_key,
+            unit = pp._config_unit,
             build_dir = pp:build_dir(),
             disposition = has_other_ref and "keep" or "clean",
-            unit = pp._config_unit,
         }
     end
 
-    table.sort(items, function(a, b) return (a.project_key or "") < (b.project_key or "") end)
+    -- Sort by project key for deterministic UI order
+    table.sort(items, function(a, b)
+        local a_key = a.unit and a.unit._project and a.unit._project.key or ""
+        local b_key = b.unit and b.unit._project and b.unit._project.key or ""
+        return a_key < b_key
+    end)
 
     local defined_in_config = self._workspace.config.profiles and self._workspace.config.profiles[self.key] or false
 
     return {
         items = items,
-        profile_key = self.key,
+        profile = self,
         defined_in_config = defined_in_config and true or false,
     }
 end
@@ -643,12 +642,7 @@ function Profile:clean(on_done)
     local units = {}
     local target_states = {}
     for _, pp in ipairs(pps) do
-        local pp_cached = pp._cached
-        items[#items + 1] = {
-            project_key = pp._project and pp._project.key or (pp_cached and pp_cached.project_key),
-            config_key = pp_cached and pp_cached.config_key,
-            unit = pp._config_unit,
-        }
+        items[#items + 1] = { unit = pp._config_unit }
         units[#units + 1] = pp._config_unit
         target_states[pp._config_unit] = "configured"
     end

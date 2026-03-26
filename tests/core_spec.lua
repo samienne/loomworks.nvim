@@ -1018,7 +1018,8 @@ describe("Core", function()
             core:setup({ root = "/root" })
             local plan = get_unit(core, "App", "development"):plan_deletion()
             assert.equals(1, #plan.items)
-            assert.equals("App", plan.items[1].project_key)
+            assert.is_not_nil(plan.items[1].unit)
+            assert.equals("App", plan.items[1].unit._project.key)
             assert.equals("/root/.nvim/build/App/development", plan.items[1].build_dir)
             -- Pinned profile still references it, so disposition is "reset"
             assert.equals("reset", plan.items[1].disposition)
@@ -1107,8 +1108,9 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
+            local unit = get_unit(core, "App", "development")
             core:delete_cached_configs({
-                { project_key = "App", config_key = "development" },
+                { unit = unit },
             })
             local ws = core:get_workspace()
             -- Config should be removed from flat cache
@@ -1240,10 +1242,13 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
+            local profile = core:get_profiles()["debug"]
+            assert.is_not_nil(profile)
+            local unit = get_unit(core, "App", "development")
             local plan = {
-                profile_key = "debug",
+                profile = profile,
                 items = {
-                    { project_key = "App", config_key = "development" },
+                    { unit = unit },
                 },
             }
 
@@ -1296,13 +1301,13 @@ describe("Core", function()
             core:setup({ root = "/root" })
 
             -- Empty items = no unreferenced configs, but profile should still be removed
+            local debug_profile = core:get_profiles()["debug"]
             local plan = {
-                profile_key = "debug",
+                profile = debug_profile,
                 items = {},
             }
 
             local done = false
-            local debug_profile = core:get_profiles()["debug"]
             core:execute_deletion(plan, { deactivate_profile = debug_profile }, function() done = true end)
             assert.is_true(done)
             assert.is_not_nil(saved_cache)

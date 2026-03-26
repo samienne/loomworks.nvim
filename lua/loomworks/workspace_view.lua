@@ -9,6 +9,19 @@ local modules = require("loomworks.modules")
 
 local M = {}
 
+--- Extract display-friendly project_key and config_key from a DeletionItem.
+--- Reads from the unit's resolved references, with fallbacks.
+--- @param item loomworks.DeletionItem
+--- @return string project_key, string config_key
+local function item_display_keys(item)
+    local unit = item.unit
+    if not unit then return "?", "?" end
+    local cached = unit._cached
+    local pkey = unit._project and unit._project.key or (cached and cached.project_key) or "?"
+    local ckey = cached and cached.config_key or unit.id
+    return pkey, ckey
+end
+
 -- =========================================================================
 -- Add Project
 -- =========================================================================
@@ -148,13 +161,14 @@ end
 function M.collect_project_configs(ws, project_key)
     local items = {}
     if not ws.cache.configurations then return items end
-    for _, cached in pairs(ws.cache.configurations) do
+    for cache_key, cached in pairs(ws.cache.configurations) do
         if cached.project_key == project_key then
             items[#items + 1] = {
                 project_key = cached.project_key,
                 config_key = cached.config_key,
                 state = cached.state,
                 build_dir = cached.build_dir,
+                unit = ws:find_config_unit_by_id(cache_key),
             }
         end
     end
@@ -733,6 +747,7 @@ function M.compute_orphan_cleanup_context(ws)
             config_key = o.config_key,
             state = o.cached and o.cached.state or nil,
             build_dir = o.cached and o.cached.build_dir or nil,
+            unit = o.unit,
         }
     end
 
@@ -934,12 +949,9 @@ end
 --- @param unit loomworks.ConfigUnit
 --- @return table[]
 function M.collect_clean_items_for_unit(unit)
-    local cached = unit._cached
     return { {
-        project_key = unit._project and unit._project.key or (cached and cached.project_key),
-        config_key = cached and cached.config_key,
-        build_dir = unit:build_dir(),
         unit = unit,
+        build_dir = unit:build_dir(),
     } }
 end
 
@@ -982,7 +994,8 @@ function M.compute_clean_confirmation_context(ws, title, items, opts)
         or "  Will clean build artifacts and reset to configured:"
     add(desc, "DiagnosticWarn")
     for _, item in ipairs(items) do
-        add("    " .. item.project_key .. " / " .. item.config_key, "DiagnosticWarn")
+        local pkey, ckey = item_display_keys(item)
+        add("    " .. pkey .. " / " .. ckey, "DiagnosticWarn")
     end
     add("")
 
@@ -1041,9 +1054,10 @@ function M.compute_delete_confirmation_context(ws, title, plan)
     if #clean_items > 0 then
         add("  Will remove:", "DiagnosticError")
         for _, item in ipairs(clean_items) do
+            local pkey, ckey = item_display_keys(item)
             local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
             local suffix = dir and ("  " .. dir) or ""
-            add("    " .. (item.project_key or "?") .. " / " .. (item.config_key or "?") .. suffix, "DiagnosticError")
+            add("    " .. pkey .. " / " .. ckey .. suffix, "DiagnosticError")
         end
         add("")
     end
@@ -1051,9 +1065,10 @@ function M.compute_delete_confirmation_context(ws, title, plan)
     if #reset_items > 0 then
         add("  Will reset to unconfigured:", "DiagnosticWarn")
         for _, item in ipairs(reset_items) do
+            local pkey, ckey = item_display_keys(item)
             local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
             local suffix = dir and ("  " .. dir) or ""
-            add("    " .. (item.project_key or "?") .. " / " .. (item.config_key or "?") .. suffix, "DiagnosticWarn")
+            add("    " .. pkey .. " / " .. ckey .. suffix, "DiagnosticWarn")
         end
         add("")
     end
@@ -1061,12 +1076,13 @@ function M.compute_delete_confirmation_context(ws, title, plan)
     if #keep_items > 0 then
         add("  Will keep (referenced by another profile):", "Comment")
         for _, item in ipairs(keep_items) do
-            add("    " .. item.project_key .. " / " .. item.config_key, "Comment")
+            local pkey, ckey = item_display_keys(item)
+            add("    " .. pkey .. " / " .. ckey, "Comment")
         end
         add("")
     end
 
-    if #items == 0 and plan.profile_key then
+    if #items == 0 and plan.profile then
         add("  No configurations to clean.", "Comment")
         add("")
     end

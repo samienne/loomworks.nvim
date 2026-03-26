@@ -1316,10 +1316,11 @@ function Workspace:find_running_tasks_for_items(items)
     for _, item in ipairs(items) do
         local unit = item.unit
         if unit and unit._task_id then
+            local cached = unit._cached
             matches[unit._task_id] = {
-                project_key = item.project_key,
+                project_key = unit._project and unit._project.key or (cached and cached.project_key),
                 action = unit:running_action(),
-                configuration_key = item.config_key,
+                configuration_key = cached and cached.config_key or unit.id,
             }
         end
     end
@@ -1453,9 +1454,8 @@ end
 function Workspace:delete_cached_configs(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        if item.project_key and item.config_key then
-            local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-            self.cache.configurations[cache_key] = nil
+        if item.unit then
+            self.cache.configurations[item.unit.id] = nil
         end
     end
 end
@@ -1466,9 +1466,8 @@ end
 function Workspace:reset_cached_configs(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        if not item.project_key or not item.config_key then goto continue end
-        local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = self.cache.configurations[cache_key]
+        if not item.unit then goto continue end
+        local cached_config = self.cache.configurations[item.unit.id]
         if cached_config then
             cached_config.state = nil
             cached_config.build_dir = nil
@@ -1486,9 +1485,8 @@ end
 function Workspace:mark_cached_configs_cleaned(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        if not item.project_key or not item.config_key then goto continue end
-        local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = self.cache.configurations[cache_key]
+        if not item.unit then goto continue end
+        local cached_config = self.cache.configurations[item.unit.id]
         if cached_config then
             cached_config.state = "configured"
             cached_config.last_built = nil
@@ -1504,9 +1502,8 @@ end
 function Workspace:_mark_cache_unknown(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        if not item.project_key or not item.config_key then goto continue end
-        local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = self.cache.configurations[cache_key]
+        if not item.unit then goto continue end
+        local cached_config = self.cache.configurations[item.unit.id]
         if cached_config and cached_config.build_dir then
             cached_config.state = "unknown"
         end
@@ -1718,9 +1715,10 @@ function Workspace:execute_deletion(plan, opts, on_done)
     end
 
     -- Remove profile entry from cache (before async work)
-    if plan.profile_key then
-        if self.cache.profiles and self.cache.profiles[plan.profile_key] then
-            self.cache.profiles[plan.profile_key] = nil
+    if plan.profile then
+        local profile_key = plan.profile.key
+        if self.cache.profiles and self.cache.profiles[profile_key] then
+            self.cache.profiles[profile_key] = nil
             if not next(self.cache.profiles) then
                 self.cache.profiles = nil
             end
@@ -1730,12 +1728,12 @@ function Workspace:execute_deletion(plan, opts, on_done)
 
     -- Split items by disposition
     local actionable = {}
-    local clean_items = {}
+    local clean_units = {} -- unit identity set for "clean" disposition
     local reset_items = {}
     for _, item in ipairs(plan.items) do
         if item.disposition == "clean" then
             actionable[#actionable + 1] = item
-            clean_items[#clean_items + 1] = item
+            if item.unit then clean_units[item.unit] = true end
         elseif item.disposition == "reset" then
             actionable[#actionable + 1] = item
             reset_items[#reset_items + 1] = item
@@ -1749,18 +1747,11 @@ function Workspace:execute_deletion(plan, opts, on_done)
     end
 
     self:_run_deletion(actionable, function(effective_items)
-        -- Split effective items by their original disposition
+        -- Split effective items by their original disposition (unit identity)
         local eff_clean = {}
         local eff_reset = {}
-        local clean_set = {} -- [project_key][config_key] = true
-        for _, item in ipairs(clean_items) do
-            if not clean_set[item.project_key] then
-                clean_set[item.project_key] = {}
-            end
-            clean_set[item.project_key][item.config_key] = true
-        end
         for _, item in ipairs(effective_items) do
-            if clean_set[item.project_key] and clean_set[item.project_key][item.config_key] then
+            if item.unit and clean_units[item.unit] then
                 eff_clean[#eff_clean + 1] = item
             else
                 eff_reset[#eff_reset + 1] = item

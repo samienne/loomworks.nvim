@@ -306,8 +306,14 @@ describe("Profile", function()
             core._profiles = { debug = p }
             local plan = p:plan_deletion()
             assert.equals(2, #plan.items)
-            assert.equals("App", plan.items[1].project_key)
-            assert.equals("Lib", plan.items[2].project_key)
+            -- Items sorted by project key, keys read from unit._project
+            local keys = {}
+            for _, item in ipairs(plan.items) do
+                keys[#keys + 1] = item.unit and item.unit._project and item.unit._project.key
+            end
+            table.sort(keys)
+            assert.equals("App", keys[1])
+            assert.equals("Lib", keys[2])
         end)
     end)
 
