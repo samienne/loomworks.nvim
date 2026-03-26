@@ -54,7 +54,7 @@ function Module:get_or_create_tool(tool_key, tool_data, tool_label)
         existing:_update(tool_data, tool_label)
         return existing
     end
-    local tool = Tool.new(self.id, tool_key, tool_data, tool_label)
+    local tool = Tool.new(self, tool_key, tool_data, tool_label)
     self._tools[rk] = tool
     return tool
 end

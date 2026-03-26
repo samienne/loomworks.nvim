@@ -216,8 +216,7 @@ function Workspace.new(core, data)
     self._profile_projects = {}
     self._operations = {}
     self._tools_by_type = {}
-    self._tool_objects = {} -- "mod_type\0tool_key" -> Tool (nil key uses "mod_type\0")
-    self._modules = {} -- id -> Module domain object
+    self._modules = {} -- id -> Module domain object (tools owned by modules)
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -597,46 +596,41 @@ end
 -- Tool object registry
 -- ===========================================================================
 
---- Registry key for a Tool object.
---- @param mod_type string
---- @param tool_key string|nil
---- @return string
-local function tool_registry_key(mod_type, tool_key)
-    return mod_type .. "\0" .. (tool_key or "")
-end
-
---- Get or create a Tool object for the given module type and key.
---- If the tool already exists, updates it in place. Otherwise creates a new one.
+--- Get or create a Tool object, delegating to the Module's tool registry.
 --- @param mod_type string module type (e.g., "cmake")
 --- @param tool_key string|nil opaque identifier (nil for default tools)
 --- @param tool_data table module-specific data
 --- @param tool_label string|nil display label
 --- @return loomworks.Tool
 function Workspace:get_or_create_tool(mod_type, tool_key, tool_data, tool_label)
-    local rk = tool_registry_key(mod_type, tool_key)
-    local existing = self._tool_objects[rk]
-    if existing then
-        existing:_update(tool_data, tool_label)
-        return existing
+    local mod = self._modules[mod_type]
+    if not mod then
+        -- Module not loaded — create one on the fly (cache references unknown type)
+        local impl = self._core._deps.modules.get(mod_type)
+        if impl then
+            mod = Module.new(mod_type, impl)
+            self._modules[mod_type] = mod
+        else
+            mod = Module.new(mod_type, { id = mod_type })
+            self._modules[mod_type] = mod
+        end
     end
-    local tool = Tool.new(mod_type, tool_key, tool_data, tool_label)
-    self._tool_objects[rk] = tool
-    return tool
+    return mod:get_or_create_tool(tool_key, tool_data, tool_label)
 end
 
 --- Look up a Tool object by module type and key.
+--- Delegates to the Module's tool registry.
 --- @param mod_type string
 --- @param tool_key string|nil
 --- @return loomworks.Tool|nil
 function Workspace:find_tool(mod_type, tool_key)
-    return self._tool_objects[tool_registry_key(mod_type, tool_key)]
+    local mod = self._modules[mod_type]
+    return mod and mod:find_tool(tool_key) or nil
 end
 
 --- Sync Tool objects from detected tools (from _tools_by_type) and cache data.
---- Creates Tool objects for all detected tools and for cached tool_data that
---- may not be in the detected set (tool was uninstalled but cache references it).
+--- Delegates tool creation to Module objects (tools owned by modules).
 function Workspace:_sync_tools()
-    -- Mark all existing tools as potentially removed
     local seen = {}
 
     -- From detected tools
@@ -672,11 +666,13 @@ function Workspace:_sync_tools()
         end
     end
 
-    -- Remove tools that are no longer referenced
-    for rk, tool in pairs(self._tool_objects) do
-        if not seen[tool] then
-            tool._removed = true
-            self._tool_objects[rk] = nil
+    -- Remove tools that are no longer referenced (across all modules)
+    for _, mod in pairs(self._modules) do
+        for rk, tool in pairs(mod._tools) do
+            if not seen[tool] then
+                tool._removed = true
+                mod._tools[rk] = nil
+            end
         end
     end
 end
@@ -685,13 +681,8 @@ end
 --- @param mod_type string
 --- @return loomworks.Tool[]
 function Workspace:get_tools_for_type(mod_type)
-    local result = {}
-    for _, tool in pairs(self._tool_objects) do
-        if tool.mod_type == mod_type and not tool._removed then
-            result[#result + 1] = tool
-        end
-    end
-    return result
+    local mod = self._modules[mod_type]
+    return mod and mod:tools() or {}
 end
 
 -- ===========================================================================

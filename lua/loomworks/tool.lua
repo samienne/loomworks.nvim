@@ -1,6 +1,6 @@
 --- loomworks/tool.lua — Tool domain object.
 --- Represents a toolchain (e.g., ninja-gcc-12, msvc-17-2022-enterprise).
---- Owned by a per-module tool registry on Workspace.
+--- Owned by Module._tools registry.
 --- For non-keyed modules (ets, typescript), a single default Tool with nil key
 --- is created — it doesn't participate in name generation.
 
@@ -8,20 +8,22 @@
 --- @field key string|nil opaque identifier (for display + cache matching). nil for default tools.
 --- @field data table module-specific data (cmake: generator, compiler_path, etc.)
 --- @field label string|nil display label (e.g., "Ninja + GCC 12"). nil for default tools.
---- @field mod_type string module type that owns this tool (e.g., "cmake")
+--- @field _module loomworks.Module owning module domain object
+--- @field mod_type string module type (computed from _module.id, backward compat)
 --- @field _removed boolean
 local Tool = {}
 Tool.__index = Tool
 
 --- Create a new Tool.
---- @param mod_type string module type (e.g., "cmake", "ets", "typescript")
+--- @param module loomworks.Module owning module domain object
 --- @param key string|nil opaque identifier
 --- @param data table module-specific tool data
 --- @param label string|nil display label
 --- @return loomworks.Tool
-function Tool.new(mod_type, key, data, label)
+function Tool.new(module, key, data, label)
     local self = setmetatable({}, Tool)
-    self.mod_type = mod_type
+    self._module = module
+    self.mod_type = module.id
     self.key = key
     self.data = data or {}
     self.label = label
@@ -51,19 +53,19 @@ function Tool:to_ref()
         key = self.key,
         data = self.data,
         label = self.label,
-        mod_type = self.mod_type,
+        mod_type = self._module.id,
     }
 end
 
 function Tool:__tostring()
     if self.key then
-        return "Tool(" .. self.mod_type .. ":" .. self.key .. ")"
+        return "Tool(" .. self._module.id .. ":" .. self.key .. ")"
     end
-    return "Tool(" .. self.mod_type .. ":default)"
+    return "Tool(" .. self._module.id .. ":default)"
 end
 
 function Tool:__eq(other)
-    return self.mod_type == other.mod_type and self.key == other.key
+    return self._module == other._module and self.key == other.key
 end
 
 return Tool

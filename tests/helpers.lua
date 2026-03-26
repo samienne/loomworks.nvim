@@ -96,7 +96,7 @@ function M.make_mock_workspace(overrides)
 
         -- Registries
         _tools_by_type = overrides._tools_by_type or {},
-        _tool_objects = overrides._tool_objects or {},
+        _tool_objects = overrides._tool_objects or {}, -- legacy, for tests that set up tools directly
         _config_units = overrides._config_units or {},
         _config_sets = overrides._config_sets or {},
         _profiles = overrides._profiles or {},
@@ -165,22 +165,14 @@ function M.make_mock_workspace(overrides)
         return mod
     end
 
-    -- Add Tool registry methods (same logic as Workspace)
-    local ToolClass = require("loomworks.tool")
+    -- Add Tool registry methods (delegate through Module objects)
     ws.find_tool = function(self, mod_type, tool_key)
-        local rk = mod_type .. "\0" .. (tool_key or "")
-        return self._tool_objects[rk]
+        local mod = self._modules[mod_type]
+        return mod and mod:find_tool(tool_key) or nil
     end
     ws.get_or_create_tool = function(self, mod_type, tool_key, tool_data, tool_label)
-        local rk = mod_type .. "\0" .. (tool_key or "")
-        local existing = self._tool_objects[rk]
-        if existing then
-            existing:_update(tool_data, tool_label)
-            return existing
-        end
-        local tool = ToolClass.new(mod_type, tool_key, tool_data, tool_label)
-        self._tool_objects[rk] = tool
-        return tool
+        local mod = self:get_or_create_module(mod_type)
+        return mod:get_or_create_tool(tool_key, tool_data, tool_label)
     end
 
     -- Business logic methods now live on workspace.
