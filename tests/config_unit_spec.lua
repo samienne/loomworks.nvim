@@ -463,9 +463,7 @@ describe("ConfigUnit", function()
                     },
                 },
             })
-            local unit = core._config_units["App/Debug"]
-                or ConfigUnit.new(core, "App/Debug", "App")
-            core._config_units["App/Debug"] = unit
+            local unit = h.ensure_config_unit_by_id(core, "App/Debug", "App")
             assert.is_not_nil(unit._cached)
             assert.equals("Debug", unit._cached.variant)
         end)
@@ -492,9 +490,7 @@ describe("ConfigUnit", function()
                     },
                 },
             })
-            local unit = core._config_units["App/cfg-1"]
-                or ConfigUnit.new(core, "App/cfg-1", "App")
-            core._config_units["App/cfg-1"] = unit
+            local unit = h.ensure_config_unit_by_id(core, "App/cfg-1", "App")
             assert.is_not_nil(unit._cached)
             assert.equals("Debug", unit._cached.variant)
             assert.equals("ninja-gcc", unit._cached.tool_key)

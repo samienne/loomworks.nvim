@@ -31,12 +31,9 @@ describe("Profile", function()
             })
         end
         -- Ensure ConfigUnits exist for cached configurations so ProfileProject resolves them
-        local ConfigUnit = require("loomworks.config_unit")
         if core.cache and core.cache.configurations then
             for id, entry in pairs(core.cache.configurations) do
-                if not core._config_units[id] then
-                    core._config_units[id] = ConfigUnit.new(core, id, entry.project_key)
-                end
+                h.ensure_config_unit_by_id(core, id, entry.project_key)
             end
         end
         local data = vim.tbl_deep_extend("force", {
@@ -420,10 +417,7 @@ describe("ProfileProject", function()
             configurations = {}, cached_configurations = {},
         })
         -- Ensure ConfigUnit exists so ProfileProject resolves it
-        local ConfigUnit = require("loomworks.config_unit")
-        if not core._config_units["App/Debug"] then
-            core._config_units["App/Debug"] = ConfigUnit.new(core, "App/Debug", "App")
-        end
+        h.ensure_config_unit_by_id(core, "App/Debug", "App")
         local tools = tool_key and { cmake = { key = tool_key } } or nil
         local data = {
             configuration_set = "debug",
@@ -504,10 +498,7 @@ describe("ProfileProject", function()
                 configurations = {}, cached_configurations = {},
             })
             -- Ensure ConfigUnit exists before ProfileProject construction
-            local ConfigUnit = require("loomworks.config_unit")
-            if not core._config_units["App/Debug"] then
-                core._config_units["App/Debug"] = ConfigUnit.new(core, "App/Debug", "App")
-            end
+            h.ensure_config_unit_by_id(core, "App/Debug", "App")
             local Profile = require("loomworks.profile").Profile
             local p1 = Profile.new(core, "debug:ninja-gcc", {
                 configuration_set = "debug",

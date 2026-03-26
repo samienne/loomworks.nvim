@@ -474,19 +474,31 @@ All objects are **identity-preserving** across remerges: the same table is
 updated in-place via `_update()`, never replaced. Construction uses the same
 path (`new` calls `_update`). Removed objects are marked `_removed = true`.
 
-**Objects own their updates**: given merge output, each object resolves its own
-references by reaching into Workspace's registries. Cross-object navigation
-uses direct references stored during `_update()`, not runtime key lookups.
+**Pre-resolved `_update()`**: `_update()` methods receive all references
+pre-resolved by the `_sync_*` caller — no registry lookups inside `_update()`.
+Cross-object navigation uses direct references stored during `_update()`.
+
+**Deserialization context (ctx)**: at the start of each remerge,
+`_build_ctx()` creates a temporary dict-based context from existing arrays
+for O(1) identity matching during sync. Each `_sync_*` method uses ctx for
+create/update/remove decisions, then writes the result as an array back to
+Workspace. The ctx is discarded after remerge completes.
+
+**Workspace arrays**: `_modules`, `_projects`, `_config_sets`, `_profiles`,
+`_config_units`, `_profile_projects` are plain arrays after sync. Runtime
+callers iterate with `pairs()` or use `find_*` helpers for key lookups
+(`find_project(key)`, `find_profile(key)`, etc.). O(n) scans are fine for
+the small n involved (1–5 projects, < 20 profiles).
 
 **Remerge dependency order** (each step depends on the previous):
-0. `_sync_modules` — no deps (Module domain objects from config + cache types)
-1. `_sync_tools` — needs Modules (tools owned by modules)
-2. `_sync_projects` — needs Modules (for `_module` reference), creates Configurations
-3. `_sync_config_sets` — resolves Project + Configuration references
-4. `_sync_profiles` — resolves ConfigurationSet + Tool references
-5. `_sync_profile_projects` — resolves Profile + Project references
-6. `_sync_config_units` — collects pairs from profiles + cache, resolves Tool + Configuration
-7. `_sync_build_dir_refs` — reverse index from ConfigUnit build dirs
+0. `_sync_modules(ctx)` — no deps (Module domain objects from config + cache types)
+1. `_sync_tools()` — needs Modules (tools owned by modules)
+2. `_sync_projects(ctx)` — needs Modules (for `_module` reference), creates Configurations
+3. `_sync_config_sets(ctx)` — resolves Project + Configuration references
+4. `_sync_profiles(ctx)` — resolves ConfigurationSet + Tool references
+5. `_sync_config_units(ctx)` — collects pairs from cache, resolves Tool + Configuration
+6. `_sync_profile_projects(ctx)` — resolves Profile + Project + ConfigUnit references
+7. `_sync_build_dir_refs()` — reverse index from ConfigUnit build dirs
 
 **Module** (`module.lua`) wraps a stateless module function table (cmake.lua,
 ets.lua, typescript.lua) as a per-workspace domain object. Owns the Tool

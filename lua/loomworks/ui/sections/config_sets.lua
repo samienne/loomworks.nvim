@@ -142,7 +142,7 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
         end
         table.sort(proj_names, function(a, b) return a.key < b.key end)
         for _, entry in ipairs(proj_names) do
-            local project = cs._workspace._projects[entry.key]
+            local project = cs._workspace:find_project(entry.key)
             local cfg_missing = project
                 and not project:get_configuration(entry.variant)
             if cfg_missing then

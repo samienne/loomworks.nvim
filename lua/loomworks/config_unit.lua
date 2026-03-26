@@ -35,7 +35,7 @@ ConfigUnit.__index = ConfigUnit
 --- | "deleting"
 --- | "unknown"
 
---- Create a new ConfigUnit.
+--- Create a new ConfigUnit (shell only — call _update(data) to resolve references).
 --- @param workspace loomworks.Workspace
 --- @param id string cache dict key (identity)
 --- @param project_key? string hint for initial project resolution (before cache exists)
@@ -55,51 +55,28 @@ function ConfigUnit.new(workspace, id, project_key)
     self._listeners = {}
     self._removed = false
     self.targets = nil
-    self:_update()
+    self._cached = nil
+    self._project = nil
+    self._tool = nil
+    self._configuration = nil
     return self
 end
 
---- Refresh project, tool, and configuration references from cache/registries.
+--- Refresh project, tool, and configuration references from pre-resolved data.
 --- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners, targets).
-function ConfigUnit:_update()
-    if not self._workspace then
+--- @param data? { cached?: loomworks.CachedConfig, project?: loomworks.Project, tool?: loomworks.Tool, configuration?: loomworks.Configuration }
+function ConfigUnit:_update(data)
+    if not data then
         self._project = nil
         self._cached = nil
         self._tool = nil
         self._configuration = nil
         return
     end
-
-    -- Resolve direct cache reference (id IS the cache dict key)
-    local cache = self._workspace.cache
-    if cache and cache.configurations then
-        self._cached = cache.configurations[self.id]
-    else
-        self._cached = nil
-    end
-
-    -- Resolve direct project reference: prefer cache, fall back to constructor hint
-    local cached = self._cached
-    local project_key = cached and cached.project_key or self._init_project_key
-    self._project = project_key and self._workspace._projects[project_key] or nil
-
-    -- Resolve Tool domain object via Module
-    self._tool = nil
-    if cached and cached.tool_key then
-        local mod = self._project and self._project._module
-            or (cached.type and self._workspace.find_module
-                and self._workspace:find_module(cached.type))
-        if mod then
-            self._tool = mod:find_tool(cached.tool_key)
-        end
-    end
-
-    -- Resolve Configuration domain object from project registry
-    self._configuration = nil
-    local variant = cached and cached.variant or nil
-    if variant and self._project and self._project._configurations then
-        self._configuration = self._project._configurations[variant]
-    end
+    self._cached = data.cached
+    self._project = data.project
+    self._tool = data.tool
+    self._configuration = data.configuration
 end
 
 function ConfigUnit:__tostring()
@@ -334,7 +311,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
 
     -- Check if pinned profile already exists
     ws.cache.profiles = ws.cache.profiles or {}
-    if ws.cache.profiles[ak] then return ws._profiles[ak] end
+    if ws.cache.profiles[ak] then return ws:find_profile(ak) end
 
     -- Read tool info from domain object or cache
     local tool_obj = self._tool
@@ -369,7 +346,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
 
     ws:_save_cache()
     ws:remerge()
-    return ws._profiles[ak]
+    return ws:find_profile(ak)
 end
 
 --- Plan a deletion for this config.

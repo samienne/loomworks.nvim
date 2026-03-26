@@ -155,7 +155,6 @@ describe("Workspace Tool registry", function()
 end)
 
 describe("ConfigUnit accessor methods", function()
-    local ConfigUnit = require("loomworks.config_unit")
     local Project = require("loomworks.project")
 
     it("tool_object() returns Tool domain object", function()
@@ -173,9 +172,7 @@ describe("ConfigUnit accessor methods", function()
             },
         })
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
-        local unit = ws._config_units["App/Debug:ninja-gcc"]
-            or ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
-        ws._config_units["App/Debug:ninja-gcc"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/Debug:ninja-gcc", "App")
         assert.is_true(rawequal(tool, unit:tool_object()))
     end)
 
@@ -204,9 +201,7 @@ describe("ConfigUnit accessor methods", function()
                 },
             },
         }
-        local unit = ws._config_units["App/Debug"]
-            or ConfigUnit.new(ws, "App/Debug", "App")
-        ws._config_units["App/Debug"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/Debug", "App")
         assert.is_true(rawequal(project, unit:project()))
     end)
 
@@ -227,9 +222,7 @@ describe("ConfigUnit accessor methods", function()
             cached_configurations = {},
         })
         ws._projects["App"] = project
-        local unit = ws._config_units["App/Debug"]
-            or ConfigUnit.new(ws, "App/Debug", "App")
-        ws._config_units["App/Debug"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/Debug", "App")
         local cfg = unit:configuration()
         assert.is_not_nil(cfg)
         assert.equals("Debug", cfg.name)
@@ -250,9 +243,7 @@ describe("ConfigUnit accessor methods", function()
             },
         })
         ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "Ninja + GCC")
-        local unit = ws._config_units["App/Debug:ninja-gcc"]
-            or ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
-        ws._config_units["App/Debug:ninja-gcc"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/Debug:ninja-gcc", "App")
         local ref = unit:resolve_tool()
         assert.is_not_nil(ref)
         assert.equals("ninja-gcc", ref.key)
@@ -262,8 +253,6 @@ describe("ConfigUnit accessor methods", function()
 end)
 
 describe("ConfigUnit _tool resolution", function()
-    local ConfigUnit = require("loomworks.config_unit")
-
     it("resolves _tool from workspace registry", function()
         local ws = h.make_mock_workspace({
             cache = {
@@ -281,9 +270,7 @@ describe("ConfigUnit _tool resolution", function()
         -- Pre-populate tool registry
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
 
-        local unit = ws._config_units["App/Debug:ninja-gcc"]
-            or ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
-        ws._config_units["App/Debug:ninja-gcc"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/Debug:ninja-gcc", "App")
         assert.is_not_nil(unit._tool)
         assert.is_true(rawequal(tool, unit._tool))
     end)
@@ -300,9 +287,7 @@ describe("ConfigUnit _tool resolution", function()
                 },
             },
         })
-        local unit = ws._config_units["App/Debug"]
-            or ConfigUnit.new(ws, "App/Debug", "App")
-        ws._config_units["App/Debug"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/Debug", "App")
         assert.is_nil(unit._tool)
     end)
 end)
@@ -313,24 +298,26 @@ describe("Profile _tool_objects resolution", function()
     it("resolves tool objects from module registry", function()
         local ws = h.make_mock_workspace()
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
+        local cmake_mod = ws:find_module("cmake")
 
         local profile = Profile.new(ws, "debug:ninja-gcc", {
             configuration_set = "debug",
             tools = { cmake = { key = "ninja-gcc", data = { gen = "Ninja" }, label = "label" } },
+            _tool_objects = { [cmake_mod] = tool },
         })
         assert.is_not_nil(profile._tool_objects)
-        local cmake_mod = ws:find_module("cmake")
         assert.is_true(rawequal(tool, profile._tool_objects[cmake_mod]))
     end)
 
     it("tool_object_for returns Tool object", function()
         local ws = h.make_mock_workspace()
-        ws:get_or_create_tool("cmake", "ninja-gcc", {}, "label")
+        local tool = ws:get_or_create_tool("cmake", "ninja-gcc", {}, "label")
+        local cmake_mod = ws:find_module("cmake")
 
         local profile = Profile.new(ws, "debug:ninja-gcc", {
             tools = { cmake = { key = "ninja-gcc", data = {}, label = "label" } },
+            _tool_objects = { [cmake_mod] = tool },
         })
-        local cmake_mod = ws:find_module("cmake")
         local t = profile:tool_object_for(cmake_mod)
         assert.is_not_nil(t)
         assert.equals("ninja-gcc", t.key)

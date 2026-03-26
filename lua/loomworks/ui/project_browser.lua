@@ -27,8 +27,8 @@ local function build_added_set(root)
     if not ws then return {} end
 
     local added = {}
-    for key, proj in pairs(ws._projects) do
-        local rel = proj.path or key
+    for _, proj in pairs(ws._projects) do
+        local rel = proj.path or proj.key
         if not added[rel] then added[rel] = {} end
         added[rel][proj.type] = true
     end

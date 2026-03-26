@@ -43,6 +43,7 @@ function Project.new(workspace, key, data)
 end
 
 --- Update all data fields in place (preserves table identity).
+--- Pre-resolved fields (_module, _tool, _depends_on) are set by _sync_projects.
 --- @param data loomworks.MergedProjectData
 function Project:_update(data)
     self.type = data.type
@@ -50,14 +51,9 @@ function Project:_update(data)
     self.type_config = data.type_config
     self.launch = data.launch
     self.configuration = data.configuration
-    -- Resolve Module domain object
-    self._module = self._workspace.find_module
-        and self._workspace:find_module(self.type) or nil
-    -- Resolve Tool domain object via Module
-    self._tool = nil
-    if data.tool_key and self._module then
-        self._tool = self._module:find_tool(data.tool_key)
-    end
+    -- Read pre-resolved Module and Tool domain objects (set by _sync_projects)
+    self._module = data._module
+    self._tool = data._tool
     self.status = data.status
     self.orphaned = data.orphaned or false
     self.needs_refresh = data.needs_refresh or false
@@ -69,20 +65,8 @@ function Project:_update(data)
     self.cmake = data.cmake
     -- Store raw keys for deferred resolution (projects may not all exist yet)
     self._depends_on_keys = data.depends_on
-    -- Resolve to Project objects (best effort — some deps may not exist)
-    self.depends_on = nil
-    if data.depends_on then
-        local deps = {}
-        for _, dep_key in ipairs(data.depends_on) do
-            local dep = self._workspace._projects[dep_key]
-            if dep then
-                deps[#deps + 1] = dep
-            end
-        end
-        if #deps > 0 then
-            self.depends_on = deps
-        end
-    end
+    -- Read pre-resolved dependency Project objects (set by _sync_projects)
+    self.depends_on = data._depends_on
     -- Sync Configuration domain objects from configurations dict
     self:_sync_configurations()
 end
@@ -522,6 +506,20 @@ function Project:rename_configuration(old_name, new_name, config_data)
     end
 
     ws:_save_cache()
+
+    -- Step 6: Rename running ConfigUnits so they follow the new cache keys.
+    -- Without this, a running ConfigUnit keeps the old id, sync creates a
+    -- new (non-running) unit for the new key, and ProfileProjects lose their
+    -- running state reference.
+    if next(cache_rename_map) then
+        for _, unit in pairs(ws._config_units) do
+            local new_id = cache_rename_map[unit.id]
+            if new_id then
+                unit.id = new_id
+            end
+        end
+    end
+
     self:_refresh_configurations()
     ws:_refresh_after_cache_change()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)

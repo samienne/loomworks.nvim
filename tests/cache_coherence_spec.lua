@@ -19,7 +19,7 @@ local cache_mod = require("loomworks.cache")
 --- @param name string
 --- @return loomworks.ConfigurationSet
 local function get_cs(core, name)
-    return core._workspace._config_sets[name]
+    return core._workspace:find_config_set(name)
 end
 
 --- Get or create a ConfigUnit by project_key and config_key.
@@ -30,9 +30,9 @@ end
 --- @return loomworks.ConfigUnit
 local function get_unit(core, project_key, config_key)
     local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = core._workspace._config_units[id]
+    local unit = core._workspace:find_config_unit_by_id(id)
     if unit then return unit end
-    local project = core._workspace._projects[project_key]
+    local project = core._workspace:find_project(project_key)
     assert(project, "project " .. project_key .. " not found in workspace")
     -- Parse variant and tool from config_key for ensure_config_unit
     local variant = config_key

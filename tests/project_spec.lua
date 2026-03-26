@@ -23,6 +23,13 @@ local function make_project(data_overrides, core_overrides, existing_core)
         },
         cached_configurations = {},
     }, data_overrides or {})
+    -- Pre-resolve Module and Tool (mirrors _sync_projects behavior)
+    if data.type and core.find_module then
+        data._module = core:find_module(data.type)
+        if data.tool_key and data._module then
+            data._tool = data._module:find_tool(data.tool_key)
+        end
+    end
     return Project.new(core, "App", data), core
 end
 
@@ -50,7 +57,7 @@ describe("Project", function()
             -- Register the project so ConfigUnit._project resolves
             core._projects["App"] = p
             local unit = core:ensure_config_unit(p, h.get_or_create_config(p, "Debug"), nil)
-            unit:_update()
+            h.refresh_config_unit(core, unit)
             unit:register_task(1, "build")
             assert.equals("build", p:running_action())
         end)
@@ -76,11 +83,13 @@ describe("Project", function()
                 },
             })
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
-            core._projects["App"] = p
-            local unit = core._config_units["App/Debug:ninja-gcc"]
+            core._projects[#core._projects + 1] = p
+            local unit = core:find_config_unit_by_id("App/Debug:ninja-gcc")
                 or ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
-            core._config_units["App/Debug:ninja-gcc"] = unit
-            unit:_update()
+            if not core:find_config_unit_by_id("App/Debug:ninja-gcc") then
+                core._config_units[#core._config_units + 1] = unit
+            end
+            h.refresh_config_unit(core, unit)
             unit:mark_deleting(true)
             local cfg = p:get_configuration("Debug")
             assert.is_true(p:is_deleting_config(cfg))
@@ -101,11 +110,13 @@ describe("Project", function()
                 },
             })
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
-            core._projects["App"] = p
-            local unit = core._config_units["App/Debug:ninja-gcc"]
+            core._projects[#core._projects + 1] = p
+            local unit = core:find_config_unit_by_id("App/Debug:ninja-gcc")
                 or ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
-            core._config_units["App/Debug:ninja-gcc"] = unit
-            unit:_update()
+            if not core:find_config_unit_by_id("App/Debug:ninja-gcc") then
+                core._config_units[#core._config_units + 1] = unit
+            end
+            h.refresh_config_unit(core, unit)
             unit:register_task(1, "configure")
             local cfg = p:get_configuration("Debug")
             assert.equals("configure", p:config_running_action(cfg))
