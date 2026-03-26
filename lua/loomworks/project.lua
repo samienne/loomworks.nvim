@@ -506,6 +506,20 @@ function Project:rename_configuration(old_name, new_name, config_data)
     end
 
     ws:_save_cache()
+
+    -- Step 6: Rename running ConfigUnits so they follow the new cache keys.
+    -- Without this, a running ConfigUnit keeps the old id, sync creates a
+    -- new (non-running) unit for the new key, and ProfileProjects lose their
+    -- running state reference.
+    if next(cache_rename_map) then
+        for _, unit in pairs(ws._config_units) do
+            local new_id = cache_rename_map[unit.id]
+            if new_id then
+                unit.id = new_id
+            end
+        end
+    end
+
     self:_refresh_configurations()
     ws:_refresh_after_cache_change()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
