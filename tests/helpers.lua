@@ -41,7 +41,7 @@ end
 --- @return string JSON content
 function M.make_cache_json(overrides)
     local base = {
-        _meta = { version = 5, loomworks_hash = "", cached_at = "" },
+        _meta = { version = 6, loomworks_hash = "", cached_at = "" },
         configurations = {},
     }
     if overrides then
@@ -114,19 +114,20 @@ function M.make_mock_workspace(overrides)
     local ConfigUnit = require("loomworks.config_unit")
     local cache_mod_h = require("loomworks.cache")
     local merge_h = require("loomworks.merge")
-    ws.find_config_unit = function(self, project, variant, tool)
+    ws.find_config_unit = function(self, project, configuration, tool)
         for _, unit in pairs(self._config_units) do
             if unit._project == project
-                    and unit._cached and unit._cached.variant == variant
+                    and unit._configuration == configuration
                     and unit._tool == tool then
                 return unit
             end
         end
         return nil
     end
-    ws.ensure_config_unit = function(self, project, variant, tool)
-        local existing = self:find_config_unit(project, variant, tool)
+    ws.ensure_config_unit = function(self, project, configuration, tool)
+        local existing = self:find_config_unit(project, configuration, tool)
         if existing then return existing end
+        local variant = configuration.name
         local tool_key = tool and tool.key or nil
         local config_key = merge_h.build_config_key(variant, tool_key)
         local id = cache_mod_h.config_cache_key(project.key, config_key)
@@ -228,6 +229,20 @@ end
 function M.finalize_profile(profile)
     local dependency = require("loomworks.dependency")
     profile._projects_list = dependency.toposort(profile._projects_list or {})
+end
+
+--- Get or create a Configuration domain object on a project.
+--- For tests that need a Configuration object to pass to ensure_config_unit.
+--- @param project loomworks.Project
+--- @param name string configuration name
+--- @return loomworks.Configuration
+function M.get_or_create_config(project, name)
+    local cfg = project:get_configuration(name)
+    if cfg then return cfg end
+    local Configuration = require("loomworks.configuration")
+    cfg = Configuration.new(project, name, {})
+    project._configurations[name] = cfg
+    return cfg
 end
 
 --- Backward-compatible alias for make_mock_workspace.

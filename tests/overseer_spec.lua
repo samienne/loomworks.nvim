@@ -20,7 +20,7 @@ local function make_unit(project_key, config_key, state)
         })
     end
     local project = core._projects[project_key]
-    local unit = core:ensure_config_unit(project, config_key, nil)
+    local unit = core:ensure_config_unit(project, h.get_or_create_config(project, config_key), nil)
 
     -- Set up cached state or running state as needed
     if state == "configuring" then
@@ -146,7 +146,7 @@ describe("overseer launch_tasks", function()
                     configurations = {}, cached_configurations = {},
                 })
             end
-            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure") -- state = configuring
 
             local build_fired = false
@@ -202,7 +202,7 @@ describe("overseer launch_tasks", function()
                     configurations = {}, cached_configurations = {},
                 })
             end
-            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure") -- state = configuring
 
             local build_fired = false
@@ -236,7 +236,7 @@ describe("overseer launch_tasks", function()
                     configurations = {}, cached_configurations = {},
                 })
             end
-            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure")
 
             local fire_count = 0
@@ -268,7 +268,7 @@ describe("overseer launch_tasks", function()
                     configurations = {}, cached_configurations = {},
                 })
             end
-            local unit = core:ensure_config_unit(core._projects["App"], "Debug", nil)
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure")
 
             local build_fired = false
@@ -378,7 +378,7 @@ describe("record_task_result state protection", function()
         -- The "unconfigured" skeleton may be cleaned up by _cleanup_orphaned_skeletons
         -- since no profile references it. Use ensure_config_unit to create it.
         local project = core._workspace._projects["App"]
-        local unit = core._workspace:ensure_config_unit(project, "Debug", nil)
+        local unit = core._workspace:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
         core:record_task_result({
             unit = unit,
             action = "configure",

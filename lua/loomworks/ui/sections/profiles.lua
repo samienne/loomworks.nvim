@@ -70,10 +70,14 @@ local function render_profile_details(tree, profile, lw)
                 local type_tag = pp._project and pp._project.type
                     and (" [" .. pp._project.type .. "]") or ""
                 local pp_pkey = pp._project and pp._project.key or "?"
-                tree:node(pp_pkey .. type_tag .. " → " .. pp._variant .. progress_str, {
+                local variant_display = pp:variant_name() or "?"
+                if pp:is_configuration_missing() then
+                    variant_display = variant_display .. " (missing)"
+                end
+                tree:node(pp_pkey .. type_tag .. " → " .. variant_display .. progress_str, {
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp_pkey,
                     spinning = is_spinning,
-                    hl = status_hl,
+                    hl = pp:is_configuration_missing() and "DiagnosticWarn" or status_hl,
                     enter_label = "Open task output",
                     on_enter = actions.open_task(unit),
                     on_task = actions.open_task(unit),

@@ -174,7 +174,7 @@ describe("ConfigUnit accessor methods", function()
             configurations = {}, cached_configurations = {},
         })
         ws._projects["App"] = project
-        local unit = ws:ensure_config_unit(project, "Debug", nil)
+        local unit = ws:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
         assert.is_nil(unit:tool_object())
     end)
 

@@ -8,7 +8,7 @@ local cache_mod = require("loomworks.cache")
 -- ========================== ProfileProject ==========================
 
 --- @class loomworks.ProfileProject
---- @field _variant string configuration variant name (from config_set mapping)
+--- @field _configuration loomworks.Configuration|nil resolved Configuration domain object
 --- @field _workspace loomworks.Workspace
 --- @field _profile loomworks.Profile direct reference to parent profile
 --- @field _project loomworks.Project|nil direct reference to project object
@@ -39,7 +39,10 @@ function ProfileProject:_update(profile, variant)
     self._profile = profile
     local project_key = self._init_project_key
     self._project = self._workspace._projects[project_key]
-    self._variant = variant
+    self._configuration = nil
+    if self._project and self._project._configurations then
+        self._configuration = self._project._configurations[variant]
+    end
     self._cached = nil
     self._config_unit = nil
 
@@ -88,12 +91,37 @@ function ProfileProject:is_deleting()
     return self._config_unit:is_deleting()
 end
 
---- Get the Configuration domain object for this project-in-profile.
---- Resolves from the project's configuration registry using the variant.
+--- Get the live Configuration domain object for this project-in-profile.
+--- Returns nil if the Configuration was removed (stale reference).
 --- @return loomworks.Configuration|nil
 function ProfileProject:configuration()
-    if not self._project or not self._project._configurations then return nil end
-    return self._project._configurations[self._variant]
+    if self._configuration and not self._configuration._removed then
+        return self._configuration
+    end
+    return nil
+end
+
+--- Get the variant name string for this project-in-profile.
+--- Returns the Configuration name if resolved, otherwise falls back to the
+--- raw variant string from the profile's mappings.
+--- @return string|nil
+function ProfileProject:variant_name()
+    if self._configuration and not self._configuration._removed then
+        return self._configuration.name
+    end
+    -- Fallback: read from profile mappings
+    return self._profile and self._profile.mappings
+        and self._profile.mappings[self._init_project_key] or nil
+end
+
+--- Check if this PP's variant mapping references a non-existent Configuration.
+--- True when the profile maps a variant but no matching Configuration exists
+--- in the project (e.g., the configuration was deleted from loomworks.json).
+--- @return boolean
+function ProfileProject:is_configuration_missing()
+    if self._configuration and not self._configuration._removed then return false end
+    return self._profile ~= nil and self._profile.mappings ~= nil
+        and self._profile.mappings[self._init_project_key] ~= nil
 end
 
 --- Get the Tool domain object for this project-in-profile.

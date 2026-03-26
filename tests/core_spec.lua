@@ -41,7 +41,8 @@ local function get_unit(core, project_key, config_key)
             tool = ws:get_or_create_tool(project.type, tool_key, {}, nil)
         end
     end
-    return ws:ensure_config_unit(project, variant, tool)
+    local cfg = h.get_or_create_config(project, variant)
+    return ws:ensure_config_unit(project, cfg, tool)
 end
 
 --- Create a Core with mocked deps and standard test files.
@@ -2547,6 +2548,54 @@ describe("Core", function()
             local core = make_core()
             core:setup({ root = "/test" })
             assert.is_nil(core:get_setup_error())
+        end)
+    end)
+
+    describe("cache inconsistency", function()
+        local function make_inconsistent_core(dep_overrides)
+            -- Profile references a configuration that doesn't exist
+            local files = {
+                ["loomworks.json"] = h.make_config_json(),
+                ["loomworks.cache.json"] = vim.json.encode({
+                    _meta = { version = 6, loomworks_hash = "", cached_at = "" },
+                    configurations = {},
+                    profiles = {
+                        ["debug:ninja-gcc"] = {
+                            configuration_set = "debug",
+                            configurations = { "App/Debug:ninja-gcc" },
+                        },
+                    },
+                }),
+            }
+            local deps = h.make_test_deps(files, dep_overrides)
+            return Core.new(deps), deps
+        end
+
+        it("refuses to load workspace on cache inconsistency", function()
+            local core = make_inconsistent_core()
+            core:setup({ root = "/test" })
+            assert.equals("uninitialized", core:state())
+            assert.is_nil(core:get_workspace())
+        end)
+
+        it("stores setup error with inconsistency message", function()
+            local core = make_inconsistent_core()
+            core:setup({ root = "/test" })
+            local err = core:get_setup_error()
+            assert.is_not_nil(err)
+            assert.equals("/test", err.root)
+            assert.matches("inconsistent", err.message)
+        end)
+
+        it("notifies user on cache inconsistency", function()
+            local notifications = {}
+            local core = make_inconsistent_core({
+                notify = function(msg, level) notifications[#notifications + 1] = { msg = msg, level = level } end,
+            })
+            core:setup({ root = "/test" })
+            assert.equals(1, #notifications)
+            assert.matches("inconsistent", notifications[1].msg)
+            assert.equals(vim.log.levels.ERROR, notifications[1].level)
         end)
     end)
 

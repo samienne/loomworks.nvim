@@ -46,7 +46,13 @@ local function get_unit(core, project_key, config_key)
             tool = core._workspace:get_or_create_tool(project.type, tool_key, {}, nil)
         end
     end
-    return core._workspace:ensure_config_unit(project, variant, tool)
+    local Configuration = require("loomworks.configuration")
+    local cfg = project:get_configuration(variant)
+    if not cfg then
+        cfg = Configuration.new(project, variant, {})
+        project._configurations[variant] = cfg
+    end
+    return core._workspace:ensure_config_unit(project, cfg, tool)
 end
 
 -- ---------------------------------------------------------------------------
@@ -953,10 +959,9 @@ describe("cache coherence", function()
             assert.equals(3, count_cached_configs(core))
         end)
 
-        it("stale profile with missing config entry leaves other config as orphan", function()
-            -- Profile references a config_key but the config entry is missing from cache
-            -- The profile still holds the reference, so no adoption needed.
-            -- A separate unreferenced config stays as an orphan.
+        it("stale profile with missing config entry refuses to load", function()
+            -- Profile references a config_key but the config entry is missing from cache.
+            -- Cache consistency validation catches this and refuses to load.
             local core = make_tracked_core(
                 {
                     projects = { App = { typescript = {} } },
@@ -984,13 +989,11 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
 
-            -- "production" is orphaned — no pinned profile created
-            assert_cache_coherent(core, "stale profile + orphaned config")
-            assert.equals(1, count_profiles(core))
-
-            local orphans = core:get_orphaned_configs()
-            assert.equals(1, #orphans)
-            assert.equals("production", orphans[1].config_key)
+            -- Setup refuses to load due to cache inconsistency
+            assert.equals("uninitialized", core:state())
+            local err = core:get_setup_error()
+            assert.is_not_nil(err)
+            assert.matches("inconsistent", err.message)
         end)
 
         it("multiple pinned profiles for same project different configs", function()

@@ -448,7 +448,8 @@ return function(tree, ctx)
                             -- (on-demand creation for uncached detected tools)
                             local ws = project._workspace
                             local tool_obj = entry.tool_key and ws:find_tool(project.type, entry.tool_key) or nil
-                            return ws:ensure_config_unit(project, cfg_name, tool_obj)
+                            local cfg = project:get_configuration(cfg_name)
+                            return ws:ensure_config_unit(project, cfg, tool_obj)
                         end
 
                         local function with_tool_picker(action_name, action_fn, filter)
@@ -456,7 +457,8 @@ return function(tree, ctx)
                                 if not has_tool_entries then
                                     -- Non-keyed module: find or create unit for this variant
                                     local ws = project._workspace
-                                    local unit = ws:ensure_config_unit(project, cfg_name, nil)
+                                    local cfg = project:get_configuration(cfg_name)
+                                    local unit = ws:ensure_config_unit(project, cfg, nil)
                                     action_fn(unit)
                                     return
                                 end

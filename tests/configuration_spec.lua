@@ -240,6 +240,183 @@ describe("Project _configurations", function()
         })
         assert.is_nil(project:get_configuration("Release"))
     end)
+
+    -- Cache-sourced Configuration enrichment (Phase 1)
+
+    it("enriches from cache: creates Configuration with _source_missing for cache-only variant", function()
+        local ws = h.make_mock_workspace()
+        local project = Project.new(ws, "App", {
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = { Debug = { variant = "Debug" } },
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        local cfg = project:get_configuration("Release")
+        assert.is_not_nil(cfg)
+        assert.equals("Release", cfg.name)
+        assert.is_true(cfg._source_missing)
+    end)
+
+    it("module-sourced configuration has _source_missing = false", function()
+        local ws = h.make_mock_workspace()
+        local project = Project.new(ws, "App", {
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = { Debug = { variant = "Debug", is_default = true } },
+            cached_configurations = {},
+        })
+        local cfg = project:get_configuration("Debug")
+        assert.is_not_nil(cfg)
+        assert.is_false(cfg._source_missing)
+    end)
+
+    it("_source_missing clears when source reappears on re-update", function()
+        local ws = h.make_mock_workspace()
+        local project = Project.new(ws, "App", {
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = {},
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        local cfg = project:get_configuration("Release")
+        assert.is_true(cfg._source_missing)
+
+        -- Source reappears on re-update
+        project:_update({
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = { Release = { variant = "Release", is_default = true } },
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        local cfg2 = project:get_configuration("Release")
+        assert.is_false(cfg2._source_missing)
+    end)
+
+    it("preserves identity for cache-sourced Configuration across remerge", function()
+        local ws = h.make_mock_workspace()
+        local project = Project.new(ws, "App", {
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = {},
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        local cfg = project:get_configuration("Release")
+        assert.is_not_nil(cfg)
+
+        -- Re-update with same cache — identity must be preserved
+        project:_update({
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = {},
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        local cfg2 = project:get_configuration("Release")
+        assert.is_true(rawequal(cfg, cfg2))
+    end)
+
+    it("removes Configuration absent from both module output and cache", function()
+        local ws = h.make_mock_workspace()
+        local project = Project.new(ws, "App", {
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = { Debug = { variant = "Debug" } },
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        assert.is_not_nil(project:get_configuration("Release"))
+
+        -- Remove from cache — now absent from both sources
+        project:_update({
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = { Debug = { variant = "Debug" } },
+            cached_configurations = {},
+        })
+        assert.is_nil(project:get_configuration("Release"))
+    end)
+
+    it("ConfigUnit._configuration resolves for cache-only variant", function()
+        local ConfigUnit = require("loomworks.config_unit")
+        local ws = h.make_mock_workspace({
+            cache = {
+                configurations = {
+                    ["App/Release"] = {
+                        project_key = "App",
+                        config_key = "Release",
+                        type = "cmake",
+                        variant = "Release",
+                    },
+                },
+            },
+        })
+        local project = Project.new(ws, "App", {
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = {},
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        ws._projects["App"] = project
+
+        local unit = ws._config_units["App/Release"]
+            or ConfigUnit.new(ws, "App/Release", "App")
+        ws._config_units["App/Release"] = unit
+        assert.is_not_nil(unit._configuration)
+        assert.equals("Release", unit._configuration.name)
+        assert.is_true(unit._configuration._source_missing)
+    end)
+
+    it("retains cache-enriched Configuration when module source is removed", function()
+        local ws = h.make_mock_workspace()
+        local project = Project.new(ws, "App", {
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = {
+                Debug = { variant = "Debug" },
+                Release = { variant = "Release" },
+            },
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        assert.is_false(project:get_configuration("Release")._source_missing)
+
+        -- Module source removed, but cache still references Release
+        project:_update({
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = { Debug = { variant = "Debug" } },
+            cached_configurations = {
+                Release = { variant = "Release", build_dir = "/build/Release" },
+            },
+        })
+        local cfg = project:get_configuration("Release")
+        assert.is_not_nil(cfg)
+        assert.is_true(cfg._source_missing)
+    end)
 end)
 
 describe("ConfigUnit _configuration resolution", function()

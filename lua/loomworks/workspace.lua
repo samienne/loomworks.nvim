@@ -142,6 +142,12 @@ function M.assemble(root, config_content, user_content, cache_content)
         cache_data._meta.loomworks_hash = cache_mod.compute_hash(config_content)
     end
 
+    -- Validate cache internal consistency
+    local cache_consistent = true
+    if not cache_version_mismatch then
+        cache_consistent = cache_mod.validate_consistency(cache_data)
+    end
+
     local dir_name = root:match("([^/]+)$") or root
 
     return {
@@ -151,6 +157,7 @@ function M.assemble(root, config_content, user_content, cache_content)
         user = user_data,
         cache = cache_data,
         cache_version_mismatch = cache_version_mismatch,
+        cache_inconsistent = not cache_consistent,
         user_version_mismatch = user_version_mismatch,
     }, nil
 end
@@ -221,13 +228,13 @@ end
 --- Get or create a ConfigUnit for a (project_key, config_key) pair.
 --- Find an existing ConfigUnit by property match.
 --- @param project loomworks.Project
---- @param variant string configuration variant name
+--- @param configuration loomworks.Configuration configuration domain object
 --- @param tool? loomworks.Tool tool domain object (nil for non-keyed modules)
 --- @return loomworks.ConfigUnit|nil
-function Workspace:find_config_unit(project, variant, tool)
+function Workspace:find_config_unit(project, configuration, tool)
     for _, unit in pairs(self._config_units) do
         if unit._project == project
-                and unit._cached and unit._cached.variant == variant
+                and unit._configuration == configuration
                 and unit._tool == tool then
             return unit
         end
@@ -235,18 +242,19 @@ function Workspace:find_config_unit(project, variant, tool)
     return nil
 end
 
---- Find or create a ConfigUnit for the given project, variant, and tool.
+--- Find or create a ConfigUnit for the given project, configuration, and tool.
 --- Searches by properties first. If not found, creates a new cache entry
 --- and ConfigUnit. Key generation is a write-time cache concern only.
 --- @param project loomworks.Project
---- @param variant string configuration variant name
+--- @param configuration loomworks.Configuration configuration domain object
 --- @param tool? loomworks.Tool tool domain object (nil for non-keyed modules)
 --- @return loomworks.ConfigUnit
-function Workspace:ensure_config_unit(project, variant, tool)
-    local existing = self:find_config_unit(project, variant, tool)
+function Workspace:ensure_config_unit(project, configuration, tool)
+    local existing = self:find_config_unit(project, configuration, tool)
     if existing then return existing end
 
     -- Generate cache key (write-time concern — opaque identity for the new entry)
+    local variant = configuration.name
     local tool_key = tool and tool.key or nil
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
     local id = cache_mod.config_cache_key(project.key, config_key)
@@ -1306,7 +1314,25 @@ function Workspace:_validate_build_dir(build_dir, safe_prefix)
     return true
 end
 
+--- Remove empty ancestor directories up to (but not including) the stop path.
+--- Synchronous — only removes genuinely empty directories.
+--- @param dir string normalized path of the deleted directory
+--- @param stop string normalized path to stop at (build root)
+function Workspace:_cleanup_empty_ancestors(dir, stop)
+    local uv = vim.uv or vim.loop
+    local parent = dir:match("^(.+)/[^/]+$")
+    while parent and #parent > #stop do
+        local handle = uv.fs_scandir(parent)
+        if not handle then break end
+        local name = uv.fs_scandir_next(handle)
+        if name then break end -- not empty
+        uv.fs_rmdir(parent)
+        parent = parent:match("^(.+)/[^/]+$")
+    end
+end
+
 --- Delete multiple build directories asynchronously via subprocesses (parallel).
+--- After deletion, cleans up empty ancestor directories up to the build root.
 --- @param dirs string[] list of normalized directory paths
 --- @param callback fun(results: {dir: string, ok: boolean, err: string|nil}[])
 function Workspace:_delete_build_dirs_async(dirs, callback)
@@ -1315,11 +1341,15 @@ function Workspace:_delete_build_dirs_async(dirs, callback)
         return
     end
 
+    local build_root = self._core._deps.normalize(self.root .. "/.nvim/build")
     local results = {}
     local remaining = #dirs
     for _, dir in ipairs(dirs) do
         self._core._deps.io.rm_rf_async(dir, function(ok, err)
             results[#results + 1] = { dir = dir, ok = ok, err = err }
+            if ok then
+                self:_cleanup_empty_ancestors(dir, build_root)
+            end
             remaining = remaining - 1
             if remaining == 0 then
                 callback(results)

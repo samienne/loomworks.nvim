@@ -38,7 +38,7 @@ describe("Operation", function()
         local target_states = {}
         for _, s in ipairs(states) do
             local project = ensure_project(core, s.project)
-            local unit = core:ensure_config_unit(project, s.config, nil)
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, s.config), nil)
             units[#units + 1] = unit
             target_states[unit] = s.target
         end
@@ -206,7 +206,7 @@ describe("Operation", function()
             })
 
             local project = ensure_project(core, "App")
-            local unit = core:ensure_config_unit(project, "Debug", nil)
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             local op = Operation.new(core, profile, "build", { unit }, { [unit] = "built" })
 
             -- Operations only complete on state transitions, not initial state
@@ -228,7 +228,7 @@ describe("Operation", function()
                 { project = "App", config = "Debug", target = "built" },
             })
             local lib = ensure_project(core, "Lib")
-            local other = core:ensure_config_unit(lib, "Release", nil)
+            local other = core:ensure_config_unit(lib, h.get_or_create_config(lib, "Release"), nil)
             assert.is_false(op:has_unit(other))
         end)
     end)
@@ -366,7 +366,7 @@ describe("Operation", function()
             })
 
             local project = ensure_project(core, "App")
-            local unit = core:ensure_config_unit(project, "Debug", nil)
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             local op = Operation.new(core, profile, "build", { unit }, { [unit] = "built" })
 
             -- "configured" does NOT satisfy "built" target
@@ -396,7 +396,7 @@ describe("Operation", function()
             })
 
             local ts_project = ensure_project(core, "TS")
-            local unit = core:ensure_config_unit(ts_project, "default", nil)
+            local unit = core:ensure_config_unit(ts_project, h.get_or_create_config(ts_project, "default"), nil)
 
             -- Profile A starts configure
             unit:register_task(1, "configure")
@@ -556,7 +556,7 @@ describe("Operation", function()
             })
 
             local project = ensure_project(core, "App")
-            local unit = core:ensure_config_unit(project, "Debug", nil)
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             unit:register_task(1, "build")
 
             local callback_called = false
@@ -580,7 +580,7 @@ describe("Operation", function()
             })
 
             local project = ensure_project(core, "App")
-            local unit = core:ensure_config_unit(project, "Debug", nil)
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             unit:mark_deleting(true, "cleaning")
 
             local op = Operation.new(core, nil, "clean", { unit }, { [unit] = "unconfigured" })

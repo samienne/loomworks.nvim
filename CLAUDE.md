@@ -151,7 +151,7 @@ These are implementation-specific details not covered by the spec or architectur
 - **Multi-tool profile model**: CachedProfile stores `tools` dict keyed by
   module type (e.g. `{ cmake = { key, data, label } }`), not flat fields.
   Profile objects expose `profile.tools` dict and `profile:tool_for(mod_type)`.
-  Cache version 5. Unified rename via `compute_profile_renames(transform)` +
+  Cache version 6. Unified rename via `compute_profile_renames(transform)` +
   `apply_profile_renames(renames, transform)`.
 - **Bootstrap**: `create_workspace_config()` is a static function on the
   workspace module for creating a new `loomworks.json` on disk (no Workspace
@@ -181,16 +181,25 @@ These are implementation-specific details not covered by the spec or architectur
   `profile:tool_object_for(mod_type)`, `pp:tool_object()`.
 - **Configuration domain object** (`configuration.lua`): represents a build
   variant (Debug, Release, Debug-asan). Owned by `Project._configurations`,
-  created from module.info() output + user overrides. Separates generic fields
-  (name, variant, inherits, options) from module-specific data (`module_config`).
-  Inheritance uses Configuration references. Domain objects carry
-  `_configuration` references. Accessors: `unit:configuration()`,
-  `pp:configuration()`, `cs:configuration(project)`.
+  created from module.info() output + user overrides + cache enrichment.
+  Separates generic fields (name, variant, inherits, options) from
+  module-specific data (`module_config`). Inheritance uses Configuration
+  references. `_source_missing = true` for configs that exist only in cache
+  (no live module source). Domain objects carry `_configuration` references.
+  Accessors: `unit:configuration()`, `pp:configuration()`,
+  `cs:configuration(project)`, `pp:variant_name()`.
+- **ProfileProject stores `_configuration`** (Configuration object), not a
+  variant string. `pp:variant_name()` returns the name string for callers
+  that need it. `find_config_unit`/`ensure_config_unit` accept Configuration
+  objects (not variant strings).
+- **Cache-sourced Configuration enrichment**: `Project._sync_configurations()`
+  enriches `_configurations` from `cached_configurations` so that every variant
+  in cache always has a Configuration object. Source-missing configs get
+  `_source_missing = true`; the flag clears when the source reappears.
 - **Domain object references coexist with string fields**: ConfigUnit carries
   both `_tool`/`_configuration` (domain object refs) and `tool`/`variant`
   (string/table fields from cache). String fields are backward-compatible
-  aliases — new code should use accessor methods. Callers will be migrated
-  incrementally.
+  aliases — new code should use accessor methods.
 
 ## v1 Scope
 

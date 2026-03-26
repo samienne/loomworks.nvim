@@ -103,21 +103,42 @@ function Project:_sync_configurations()
         end
     end
 
-    -- Mark removed
+    -- Collect unique variant names from cache
+    local cache_variants = {}
+    for _, entry in pairs(self.cached_configurations) do
+        if entry.variant then
+            cache_variants[entry.variant] = true
+        end
+    end
+
+    -- Mark removed (only if absent from both sources AND cache)
     for name, cfg in pairs(self._configurations) do
-        if not all_config_data[name] then
+        if not all_config_data[name] and not cache_variants[name] then
             cfg._removed = true
             self._configurations[name] = nil
         end
     end
 
-    -- Create or update
+    -- Create or update from module/preset sources
     for name, info in pairs(all_config_data) do
         local existing = self._configurations[name]
         if existing then
             existing:_update(info)
+            existing._source_missing = false
         else
             self._configurations[name] = Configuration.new(self, name, info)
+        end
+    end
+
+    -- Enrich from cache: create Configuration for cache-only variants,
+    -- and mark existing ones as source-missing if not in module/preset output
+    for variant_name in pairs(cache_variants) do
+        if not self._configurations[variant_name] then
+            local cfg = Configuration.new(self, variant_name, {})
+            cfg._source_missing = true
+            self._configurations[variant_name] = cfg
+        elseif not all_config_data[variant_name] then
+            self._configurations[variant_name]._source_missing = true
         end
     end
 
@@ -243,6 +264,7 @@ end
 -- ========================== Mutation methods ==========================
 
 --- Refresh configurations from module info after config changes.
+--- Re-syncs Configuration domain objects so callers see updated names/data.
 function Project:_refresh_configurations()
     local mod = self._workspace._core._deps.modules.get(self.type)
     if not mod or not mod.info then return end
@@ -252,6 +274,7 @@ function Project:_refresh_configurations()
         self.configurations = mod_info.configurations or {}
         self.preset_configurations = mod_info.preset_configurations or nil
     end
+    self:_sync_configurations()
 end
 
 --- Save a project configuration (create or update).

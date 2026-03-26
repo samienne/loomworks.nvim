@@ -49,7 +49,7 @@ describe("Project", function()
             local p = make_project(nil, nil, core)
             -- Register the project so ConfigUnit._project resolves
             core._projects["App"] = p
-            local unit = core:ensure_config_unit(p, "Debug", nil)
+            local unit = core:ensure_config_unit(p, h.get_or_create_config(p, "Debug"), nil)
             unit:_update()
             unit:register_task(1, "build")
             assert.equals("build", p:running_action())

@@ -125,7 +125,11 @@ local function simulate_projects_section_rendering(core, project_key, variant)
             -- Lazily create for unconfigured entries (detected tools with no cache entry)
             local ws_project = core._workspace._projects[project_key]
             if ws_project then
-                unit = core._workspace:ensure_config_unit(ws_project, entry.config_key, nil)
+                local cfg_variant = entry.config_key
+                local colon = cfg_variant:find(":")
+                if colon then cfg_variant = cfg_variant:sub(1, colon - 1) end
+                local cfg_obj = h.get_or_create_config(ws_project, cfg_variant)
+                unit = core._workspace:ensure_config_unit(ws_project, cfg_obj, nil)
             end
         end
         local state = unit:state()
@@ -470,7 +474,11 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
         if not unit then
             local ws_project = core._workspace._projects[project_key]
             if ws_project then
-                unit = core._workspace:ensure_config_unit(ws_project, entry.config_key, nil)
+                local cfg_variant = entry.config_key
+                local colon = cfg_variant:find(":")
+                if colon then cfg_variant = cfg_variant:sub(1, colon - 1) end
+                local cfg_obj = h.get_or_create_config(ws_project, cfg_variant)
+                unit = core._workspace:ensure_config_unit(ws_project, cfg_obj, nil)
             end
         end
         local state = unit:state()

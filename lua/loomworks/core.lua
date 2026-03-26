@@ -132,10 +132,16 @@ end
 function Core:_on_files_read(root, paths, results)
     local ws_mod = self._deps.workspace
 
+    local function fail(msg, setup_error)
+        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        self._setup_error = setup_error
+        self._state = "uninitialized"
+        self._deps.events.emit("workspace_changed", nil)
+    end
+
     local config_content = results[paths.config]
     if not config_content then
-        self._deps.notify("loomworks: loomworks.json not found in " .. root, vim.log.levels.ERROR)
-        self._state = "uninitialized"
+        fail("loomworks.json not found in " .. root)
         return
     end
     local user_content = results[paths.user]
@@ -144,34 +150,36 @@ function Core:_on_files_read(root, paths, results)
     -- Assemble workspace data from raw content
     local data, err = ws_mod.assemble(root, config_content, user_content, cache_content)
     if not data then
-        self._deps.notify("loomworks: " .. err, vim.log.levels.ERROR)
-        self._state = "uninitialized"
+        fail(err)
         return
     end
 
     -- Refuse to load when cache has incompatible version
     if data.cache_version_mismatch then
-        local msg = "Cache version mismatch. Press <C-n> to reset."
-        self._setup_error = { root = root, message = msg }
-        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
-        self._state = "uninitialized"
+        fail("Cache version mismatch. Press <C-n> to reset.",
+            { root = root, message = "Cache version mismatch. Press <C-n> to reset." })
+        return
+    end
+
+    -- Refuse to load when cache is internally inconsistent
+    if data.cache_inconsistent then
+        fail("Cache is internally inconsistent. Press <C-n> to reset.",
+            { root = root, message = "Cache is internally inconsistent. Press <C-n> to reset." })
         return
     end
 
     -- Refuse to load when user.json has incompatible version
     if data.user_version_mismatch then
-        local msg = "user.json version mismatch. Press U to delete user preferences and reload."
-        self._setup_error = { root = root, message = msg, user_version_mismatch = true }
-        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
-        self._state = "uninitialized"
+        fail("user.json version mismatch. Press U to delete user preferences and reload.",
+            { root = root, message = "user.json version mismatch. Press U to delete user preferences and reload.",
+              user_version_mismatch = true })
         return
     end
 
     -- Validate projects
     local ok, val_err = self:_validate_projects(data.config, data.root)
     if not ok then
-        self._deps.notify("loomworks: " .. val_err, vim.log.levels.ERROR)
-        self._state = "uninitialized"
+        fail(val_err)
         return
     end
 

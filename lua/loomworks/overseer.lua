@@ -90,7 +90,7 @@ local function collect_profile_tasks(profile)
         local mod = modules.get(project.type)
         if not mod or not mod.tasks then goto continue end
 
-        local active_config = pp._variant
+        local active_config = pp:variant_name()
         if not active_config then goto continue end
 
         local project_tool = profile:tool_for(project.type)
@@ -199,7 +199,7 @@ local function collect_profile_clean_tasks(profile)
         local mod = modules.get(project.type)
         if not mod or not mod.clean_tasks then goto continue end
 
-        local active_config = pp._variant
+        local active_config = pp:variant_name()
         if not active_config then goto continue end
 
         local project_tool = profile:tool_for(project.type)
@@ -279,6 +279,12 @@ local function start_one_task(overseer, task_def, on_complete)
 
         -- Lifecycle subscriptions — ConfigUnit captured directly, no key lookups
         task:subscribe("on_start", function()
+            -- Crash-safe: persist build_dir to cache before the task creates files
+            -- on disk. If we crash mid-configure, the cache still knows about the dir.
+            if lw_meta.build_dir and unit._cached then
+                unit._cached.build_dir = lw_meta.build_dir
+                unit._workspace:_save_cache()
+            end
             unit:register_task(task.id, lw_meta.action)
             emit("task_started", { task_id = task.id, unit = unit, action = lw_meta.action })
         end)
