@@ -287,7 +287,7 @@ Sparse record of what has actually been configured and built.
 
 ```json
 {
-  "_meta": { "version": 4, "cached_at": "..." },
+  "_meta": { "version": 6, "cached_at": "..." },
   "configurations": {
     "App/Debug:ninja-gcc-12": {
       "project_key": "App",
