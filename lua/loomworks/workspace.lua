@@ -16,6 +16,7 @@ local ProfileProject = require("loomworks.profile").ProfileProject
 local Project = require("loomworks.project")
 local ConfigurationSet = require("loomworks.configuration_set")
 local Tool = require("loomworks.tool")
+local Module = require("loomworks.module")
 
 -- ========================== Static helpers ==========================
 
@@ -216,6 +217,7 @@ function Workspace.new(core, data)
     self._operations = {}
     self._tools_by_type = {}
     self._tool_objects = {} -- "mod_type\0tool_key" -> Tool (nil key uses "mod_type\0")
+    self._modules = {} -- id -> Module domain object
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -319,13 +321,14 @@ function Workspace:remerge()
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         self, self._tools_by_type)
     self._active_set = active_set
-    self:_sync_tools()                       -- 0. no deps (tools from detection + cache)
-    self:_sync_projects()                    -- 1. no deps
-    self:_sync_config_sets()                 -- 2. needs Projects
-    self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets, Tools
-    self:_sync_config_units()                -- 4. needs cache data, Projects, Tools
-    self:_sync_profile_projects()            -- 5. needs Profiles, ConfigUnits
-    self:_sync_build_dir_refs()              -- 6. needs ConfigUnits (build_dir data)
+    self:_sync_modules()                     -- 0. no deps (module domain objects)
+    self:_sync_tools()                       -- 1. needs Modules
+    self:_sync_projects()                    -- 2. needs Modules, Tools
+    self:_sync_config_sets()                 -- 3. needs Projects
+    self:_sync_profiles(all_profile_defs)    -- 4. needs ConfigurationSets, Tools
+    self:_sync_config_units()                -- 5. needs cache data, Projects, Tools
+    self:_sync_profile_projects()            -- 6. needs Profiles, ConfigUnits
+    self:_sync_build_dir_refs()              -- 7. needs ConfigUnits (build_dir data)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -534,6 +537,60 @@ end
 --- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
     return self._build_dir_refs[build_dir] or {}
+end
+
+-- ===========================================================================
+-- Module object registry
+-- ===========================================================================
+
+--- Look up a Module domain object by type identifier.
+--- @param mod_type string module type (e.g., "cmake")
+--- @return loomworks.Module|nil
+function Workspace:find_module(mod_type)
+    return self._modules[mod_type]
+end
+
+--- Sync Module domain objects from config projects and cache.
+--- Creates Module objects for every module type referenced in the workspace.
+function Workspace:_sync_modules()
+    -- Collect all unique module types
+    local needed = {}
+    if self.config and self.config.projects then
+        for _, project in pairs(self.config.projects) do
+            if project.type then
+                needed[project.type] = true
+            end
+        end
+    end
+    if self.cache and self.cache.configurations then
+        for _, cc in pairs(self.cache.configurations) do
+            if cc.type then
+                needed[cc.type] = true
+            end
+        end
+    end
+
+    -- Mark removed
+    for id, mod in pairs(self._modules) do
+        if not needed[id] then
+            mod._removed = true
+            self._modules[id] = nil
+        end
+    end
+
+    -- Create or update
+    for id in pairs(needed) do
+        local impl = self._core._deps.modules.get(id)
+        if impl then
+            local existing = self._modules[id]
+            if existing then
+                existing:_update(impl)
+                existing._removed = false
+            else
+                self._modules[id] = Module.new(id, impl)
+            end
+        end
+    end
 end
 
 -- ===========================================================================

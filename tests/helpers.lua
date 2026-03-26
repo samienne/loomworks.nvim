@@ -108,6 +108,7 @@ function M.make_mock_workspace(overrides)
         _delete_waiters = overrides._delete_waiters or {},
         _build_dir_refs = overrides._build_dir_refs or {},
         _build_dir_locks = overrides._build_dir_locks or {},
+        _modules = overrides._modules or {},
     }
 
     -- Add config unit methods (same logic as Workspace)
@@ -147,6 +148,21 @@ function M.make_mock_workspace(overrides)
         local unit = ConfigUnit.new(self, id, project.key)
         self._config_units[id] = unit
         return unit
+    end
+
+    -- Add Module registry methods
+    local ModuleClass = require("loomworks.module")
+    ws.find_module = function(self, mod_type)
+        return self._modules[mod_type]
+    end
+    ws.get_or_create_module = function(self, mod_type)
+        local existing = self._modules[mod_type]
+        if existing then return existing end
+        -- Create a minimal mock impl
+        local impl = { id = mod_type, has_keyed_tools = (mod_type == "cmake") }
+        local mod = ModuleClass.new(mod_type, impl)
+        self._modules[mod_type] = mod
+        return mod
     end
 
     -- Add Tool registry methods (same logic as Workspace)
