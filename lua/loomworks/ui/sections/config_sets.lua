@@ -212,14 +212,14 @@ local function edit_config_set(cs)
 end
 
 --- Show confirmation and delete a config set.
---- @param set_name string
-local function delete_config_set(set_name)
+--- @param cs loomworks.ConfigurationSet
+local function delete_config_set(cs)
     local lw = require("loomworks")
     local ws = lw.get_workspace()
     if not ws then return end
 
     local workspace_view = require("loomworks.workspace_view")
-    local ctx = workspace_view.compute_delete_config_set_context(ws, set_name)
+    local ctx = workspace_view.compute_delete_config_set_context(ws, cs)
     if not ctx then return end
 
     local dialog = require("loomworks.ui.dialog")
@@ -231,9 +231,9 @@ local function delete_config_set(set_name)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_config_set(ws, set_name)
+                local ok, err = workspace_view.execute_delete_config_set(ws, cs)
                 if ok then
-                    vim.notify("loomworks: configuration set '" .. set_name .. "' removed",
+                    vim.notify("loomworks: configuration set '" .. cs.name .. "' removed",
                         vim.log.levels.INFO)
                 else
                     vim.notify("loomworks: " .. (err or "failed to delete config set"),
@@ -321,7 +321,7 @@ return function(tree, ctx)
                 local is_first = not next(all_profiles)
                 actions._create_profile_step2(cs, sname, all_tool_entries, is_first)
             end,
-            on_delete = function() delete_config_set(sname) end,
+            on_delete = function() delete_config_set(cs) end,
         }, function()
             render_set_details(tree, cs,
                 tool_entries[cs.name] or {}, all_profiles, active_profile, lw)

@@ -2039,10 +2039,11 @@ function Workspace:add_project(key, type, path)
 end
 
 --- Remove a project from the workspace.
---- Updates config, removes from configuration sets, remerges, and saves.
---- @param key string project key to remove
+--- Updates config, removes from configuration sets, and saves.
+--- @param project loomworks.Project project to remove
 --- @return boolean ok, string|nil err
-function Workspace:remove_project(key)
+function Workspace:remove_project(project)
+    local key = project.key
     if not self.config.projects[key] then
         return false, "project '" .. key .. "' not found"
     end
@@ -2050,12 +2051,9 @@ function Workspace:remove_project(key)
     self.config.projects[key] = nil
 
     -- Remove from domain objects
-    local removed_project = self:find_project(key)
-    if removed_project then
-        removed_project._removed = true
-        for i, p in ipairs(self._projects) do
-            if p == removed_project then table.remove(self._projects, i); break end
-        end
+    project._removed = true
+    for i, p in ipairs(self._projects) do
+        if p == project then table.remove(self._projects, i); break end
     end
 
     -- Remove from configuration_sets (config + domain objects)
@@ -2077,10 +2075,8 @@ function Workspace:remove_project(key)
         end
     end
     -- Update ConfigurationSet domain objects
-    if removed_project then
-        for _, cs in pairs(self._config_sets) do
-            cs.mappings[removed_project] = nil
-        end
+    for _, cs in pairs(self._config_sets) do
+        cs.mappings[project] = nil
     end
 
     local ok, err = self:_save_config()
@@ -2146,9 +2142,10 @@ function Workspace:add_configuration_set(name, mappings)
 end
 
 --- Remove a configuration set from the workspace.
---- @param name string configuration set name
+--- @param cs loomworks.ConfigurationSet configuration set to remove
 --- @return boolean ok, string|nil err
-function Workspace:remove_configuration_set(name)
+function Workspace:remove_configuration_set(cs)
+    local name = cs.name
     if not self.config.configuration_sets or not self.config.configuration_sets[name] then
         return false, "configuration set '" .. name .. "' not found"
     end
@@ -2160,12 +2157,9 @@ function Workspace:remove_configuration_set(name)
     end
 
     -- Remove domain object
-    local cs = self:find_config_set(name)
-    if cs then
-        cs._removed = true
-        for i, c in ipairs(self._config_sets) do
-            if c == cs then table.remove(self._config_sets, i); break end
-        end
+    cs._removed = true
+    for i, c in ipairs(self._config_sets) do
+        if c == cs then table.remove(self._config_sets, i); break end
     end
 
     local ok, err = self:_save_config()
@@ -2346,17 +2340,14 @@ end
 --- Compute profile renames that would occur if a project were removed.
 --- Pure query — does not mutate state. Uses compute_profile_renames
 --- with a remove-tool transform.
---- @param project_key string project key about to be removed
+--- @param project loomworks.Project project about to be removed
 --- @return { old_key: string, new_key: string }[]
-function Workspace:compute_downgrade_preview(project_key)
-    local project = self:find_project(project_key)
-    if not project then return {} end
-
+function Workspace:compute_downgrade_preview(project)
     if not project._module or not project._module.has_keyed_tools then return {} end
 
     -- Check if any OTHER project of the same type exists
     for _, proj in pairs(self._projects) do
-        if proj.key ~= project_key and proj.type == project.type then
+        if proj ~= project and proj.type == project.type then
             return {} -- not the last one
         end
     end

@@ -171,10 +171,11 @@ describe("config set lifecycle", function()
         assert.is_not_nil(ws.config.configuration_sets["Production"])
 
         -- 4. Delete
-        local del_ctx = wv.compute_delete_config_set_context(ws, "Production")
+        local prod_cs = ws:find_config_set("Production")
+        local del_ctx = wv.compute_delete_config_set_context(ws, prod_cs)
         assert.is_not_nil(del_ctx)
 
-        ok = wv.execute_delete_config_set(ws, "Production")
+        ok = wv.execute_delete_config_set(ws, prod_cs)
         assert.is_true(ok)
         -- Last set removed → configuration_sets is nil
         assert.is_true(ws.config.configuration_sets == nil
@@ -344,14 +345,15 @@ describe("project lifecycle", function()
         ws:remerge()
 
         -- Compute removal context
-        local ctx = wv.compute_remove_context(ws, "App")
+        local app = ws:find_project("App")
+        local ctx = wv.compute_remove_context(ws, app)
         assert.is_not_nil(ctx)
         assert.equals("cmake", ctx.project_type)
         assert.equals(1, #ctx.cached_configs)
 
         -- Execute removal
         local done = false
-        wv.execute_remove_project(ws, "App", ctx, function(success)
+        wv.execute_remove_project(ws, app, ctx, function(success)
             done = true
             assert.is_true(success)
         end)
@@ -516,11 +518,12 @@ describe("profile upgrade and downgrade", function()
             }
         )
 
-        local ctx = wv.compute_remove_context(ws, "App")
+        local app = ws:find_project("App")
+        local ctx = wv.compute_remove_context(ws, app)
         assert.equals(1, #ctx.downgrade_preview)
 
         local done = false
-        wv.execute_remove_project(ws, "App", ctx, function(ok)
+        wv.execute_remove_project(ws, app, ctx, function(ok)
             done = true
             assert.is_true(ok)
         end)
@@ -646,7 +649,7 @@ describe("orphan lifecycle", function()
 
         -- Delete config set — profile becomes orphaned_set but still
         -- references the config via cached configurations
-        local ok = wv.execute_delete_config_set(ws, "Debug")
+        local ok = wv.execute_delete_config_set(ws, ws:find_config_set("Debug"))
         assert.is_true(ok)
 
         -- Profile is orphaned_set
@@ -904,7 +907,7 @@ describe("config set rename", function()
             }
         )
 
-        local ok = wv.execute_rename_config_set(ws, "debug", "Debug",
+        local ok = wv.execute_rename_config_set(ws, ws:find_config_set("debug"), "Debug",
             { App = "Debug", Frontend = "debug" })
         assert.is_true(ok)
 
@@ -1719,7 +1722,7 @@ describe("launch config lifecycle", function()
         local app = ws:find_project("App")
 
         -- Simulate project removal: remove from config
-        ws:remove_project("App")
+        ws:remove_project(app)
 
         local ok, err = app:save_launch_config("test", { command = "echo" })
         assert.is_false(ok)

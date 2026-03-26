@@ -154,17 +154,16 @@ end
 -- =========================================================================
 
 --- Collect all cached configurations for a project.
---- Returns items sorted by config_key, with build_dir and state.
+--- Returns items sorted by config_key, with build_dir, state, and unit.
 --- @param ws loomworks.Workspace
---- @param project_key string
---- @return { project_key: string, config_key: string, state: string|nil, build_dir: string|nil }[]
-function M.collect_project_configs(ws, project_key)
+--- @param project loomworks.Project
+--- @return { config_key: string, state: string|nil, build_dir: string|nil, unit: loomworks.ConfigUnit|nil }[]
+function M.collect_project_configs(ws, project)
     local items = {}
     if not ws.cache.configurations then return items end
     for cache_key, cached in pairs(ws.cache.configurations) do
-        if cached.project_key == project_key then
+        if cached.project_key == project.key then
             items[#items + 1] = {
-                project_key = cached.project_key,
                 config_key = cached.config_key,
                 state = cached.state,
                 build_dir = cached.build_dir,
@@ -195,18 +194,15 @@ end
 --- Context for removal confirmation: type, downgrade preview, cached
 --- configs, dialog lines and highlights. Pure query.
 --- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @return { project_type: string, downgrade_preview: table[], cached_configs: table[], lines: string[], highlights: table[] }|nil
-function M.compute_remove_context(ws, project_key)
-    local project = ws:find_project(project_key)
-    if not project then return nil end
-
+function M.compute_remove_context(ws, project)
     local proj_type = project.type
-    local downgrade_preview = ws:compute_downgrade_preview(project_key)
-    local cached_configs = M.collect_project_configs(ws, project_key)
+    local downgrade_preview = ws:compute_downgrade_preview(project)
+    local cached_configs = M.collect_project_configs(ws, project)
 
     local lines = {
-        "  Remove project: " .. project_key,
+        "  Remove project: " .. project.key,
         "",
         "  This removes the project from loomworks.json.",
     }
@@ -231,7 +227,7 @@ function M.compute_remove_context(ws, project_key)
             local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
             local suffix = dir and ("  " .. dir) or ""
             local state_label = item.state and (" (" .. item.state .. ")") or ""
-            lines[#lines + 1] = "    " .. project_key .. " / " .. item.config_key
+            lines[#lines + 1] = "    " .. project.key .. " / " .. item.config_key
                 .. state_label .. suffix
             highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
         end
@@ -267,10 +263,10 @@ end
 --- downgrade profiles. The deletion is async (build dirs deleted via
 --- subprocess), so on_done is called when complete.
 --- @param ws loomworks.Workspace
---- @param key string project key
+--- @param project loomworks.Project project to remove
 --- @param ctx { project_type: string, cached_configs: table[], downgrade_preview: table[] }
 --- @param on_done? fun(ok: boolean, err: string|nil)
-function M.execute_remove_project(ws, key, ctx, on_done)
+function M.execute_remove_project(ws, project, ctx, on_done)
     on_done = on_done or function() end
 
     -- Step 1: Delete cached configs and build dirs (async)
@@ -282,7 +278,7 @@ function M.execute_remove_project(ws, key, ctx, on_done)
             ws:remerge()
         end, function()
             -- Step 2: Remove project from config (after deletion completes)
-            local ok, err = ws:remove_project(key)
+            local ok, err = ws:remove_project(project)
             if not ok then
                 on_done(false, err)
                 return
@@ -295,7 +291,7 @@ function M.execute_remove_project(ws, key, ctx, on_done)
         end)
     else
         -- No cached configs to delete — remove directly
-        local ok, err = ws:remove_project(key)
+        local ok, err = ws:remove_project(project)
         if not ok then
             on_done(false, err)
             return
@@ -524,7 +520,7 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
 
     if renamed then
         -- Rename: create new set, migrate profiles, remove old
-        local ok, err = M.execute_rename_config_set(ws, old_name, new_name, new_mappings)
+        local ok, err = M.execute_rename_config_set(ws, cs, new_name, new_mappings)
         if not ok then return false, err end
         return true
     end
@@ -554,18 +550,19 @@ end
 --- Rename a configuration set: create new, migrate cached profiles, remove old.
 --- The new set gets the provided mappings (which may also have changed).
 --- @param ws loomworks.Workspace
---- @param old_name string
+--- @param cs loomworks.ConfigurationSet configuration set being renamed
 --- @param new_name string
 --- @param mappings table<string, string|nil> final mappings for the new set
 --- @return boolean ok, string|nil err
-function M.execute_rename_config_set(ws, old_name, new_name, mappings)
+function M.execute_rename_config_set(ws, cs, new_name, mappings)
     -- Filter nil mappings
     local clean = {}
     for k, v in pairs(mappings) do
         if v then clean[k] = v end
     end
 
-    -- Migrate cached profiles that reference old_name (before removing old set)
+    -- Migrate cached profiles that reference old name (before removing old set)
+    local old_name = cs.name
     if ws.cache.profiles then
         for _, profile_data in pairs(ws.cache.profiles) do
             if profile_data.configuration_set == old_name then
@@ -575,7 +572,7 @@ function M.execute_rename_config_set(ws, old_name, new_name, mappings)
     end
 
     -- Remove old set first (avoids case-collision check blocking case-only renames)
-    local ok, err = ws:remove_configuration_set(old_name)
+    local ok, err = ws:remove_configuration_set(cs)
     if not ok then return false, err end
 
     -- Create new set
@@ -587,9 +584,10 @@ end
 
 --- Context for deleting a config set: affected profiles, warning lines.
 --- @param ws loomworks.Workspace
---- @param set_name string
+--- @param cs loomworks.ConfigurationSet
 --- @return { profiles: string[], lines: string[], highlights: table[] }|nil
-function M.compute_delete_config_set_context(ws, set_name)
+function M.compute_delete_config_set_context(ws, cs)
+    local set_name = cs.name
     if not ws.config.configuration_sets
             or not ws.config.configuration_sets[set_name] then
         return nil
@@ -640,10 +638,10 @@ end
 
 --- Execute config set deletion (orphans profiles, does not delete caches).
 --- @param ws loomworks.Workspace
---- @param set_name string
+--- @param cs loomworks.ConfigurationSet
 --- @return boolean ok, string|nil err
-function M.execute_delete_config_set(ws, set_name)
-    return ws:remove_configuration_set(set_name)
+function M.execute_delete_config_set(ws, cs)
+    return ws:remove_configuration_set(cs)
 end
 
 -- =========================================================================
