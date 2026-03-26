@@ -57,8 +57,9 @@ local function collect_tool_entries(proj, variant, tools_by_type)
     local seen_tool_keys = {}
     local variant_lower = variant:lower()
 
-    -- 1. ConfigUnits for this variant (from project scan)
-    for _, unit in ipairs(proj:config_units_for_variant(variant)) do
+    -- 1. ConfigUnits for this configuration (from project scan)
+    local cfg = proj:get_configuration(variant)
+    for _, unit in ipairs(cfg and proj:config_units_for_configuration(cfg) or {}) do
         local tk = unit._cached and unit._cached.tool_key
         if tk then
             entries[#entries + 1] = {
@@ -397,9 +398,10 @@ return function(tree, ctx)
                         local tool_entries = collect_tool_entries(proj, cname, tools_by_type)
                         local has_tool_entries = #tool_entries > 0
 
-                        -- Check running state across all ConfigUnits for this variant
+                        -- Check running state across all ConfigUnits for this configuration
                         local config_has_running = false
-                        for _, cu in ipairs(proj:config_units_for_variant(cname)) do
+                        local cname_cfg = proj:get_configuration(cname)
+                        for _, cu in ipairs(cname_cfg and proj:config_units_for_configuration(cname_cfg) or {}) do
                             if cu:is_running() then
                                 config_has_running = true
                                 break

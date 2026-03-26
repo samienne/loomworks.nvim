@@ -177,14 +177,14 @@ function Project:config_units()
     return result
 end
 
---- Get ConfigUnits matching a variant name (e.g., "Debug").
+--- Get ConfigUnits matching a Configuration domain object.
 --- For keyed-tool modules this may return multiple units (one per tool).
---- @param variant string
+--- @param configuration loomworks.Configuration
 --- @return loomworks.ConfigUnit[]
-function Project:config_units_for_variant(variant)
+function Project:config_units_for_configuration(configuration)
     local result = {}
     for _, unit in pairs(self._workspace._config_units) do
-        if unit._project == self and unit._cached and unit._cached.variant == variant then
+        if unit._project == self and unit._configuration == configuration then
             result[#result + 1] = unit
         end
     end
@@ -202,21 +202,21 @@ function Project:running_action()
     return nil
 end
 
---- Check if a specific configuration variant is being deleted.
---- @param variant string configuration variant name
+--- Check if a specific configuration is being deleted.
+--- @param configuration loomworks.Configuration
 --- @return boolean
-function Project:is_deleting_config(variant)
-    for _, unit in ipairs(self:config_units_for_variant(variant)) do
+function Project:is_deleting_config(configuration)
+    for _, unit in ipairs(self:config_units_for_configuration(configuration)) do
         if unit:is_deleting() then return true end
     end
     return false
 end
 
---- Get the running action for a specific configuration variant.
---- @param variant string configuration variant name
+--- Get the running action for a specific configuration.
+--- @param configuration loomworks.Configuration
 --- @return string|nil action
-function Project:config_running_action(variant)
-    for _, unit in ipairs(self:config_units_for_variant(variant)) do
+function Project:config_running_action(configuration)
+    for _, unit in ipairs(self:config_units_for_configuration(configuration)) do
         local action = unit:running_action()
         if action then return action end
     end

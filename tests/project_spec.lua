@@ -59,10 +59,11 @@ describe("Project", function()
     describe("is_deleting_config", function()
         it("returns false by default", function()
             local p = make_project()
-            assert.is_false(p:is_deleting_config("Debug"))
+            local cfg = p:get_configuration("Debug")
+            assert.is_false(p:is_deleting_config(cfg))
         end)
 
-        it("checks via ConfigUnit with computed cache key", function()
+        it("checks via ConfigUnit matching Configuration object", function()
             local ConfigUnit = require("loomworks.config_unit")
             local core = h.make_mock_core({
                 cache = {
@@ -81,12 +82,13 @@ describe("Project", function()
             core._config_units["App/Debug:ninja-gcc"] = unit
             unit:_update()
             unit:mark_deleting(true)
-            assert.is_true(p:is_deleting_config("Debug"))
+            local cfg = p:get_configuration("Debug")
+            assert.is_true(p:is_deleting_config(cfg))
         end)
     end)
 
     describe("config_running_action", function()
-        it("delegates to ConfigUnit with computed cache key", function()
+        it("delegates to ConfigUnit matching Configuration object", function()
             local ConfigUnit = require("loomworks.config_unit")
             local core = h.make_mock_core({
                 cache = {
@@ -105,7 +107,8 @@ describe("Project", function()
             core._config_units["App/Debug:ninja-gcc"] = unit
             unit:_update()
             unit:register_task(1, "configure")
-            assert.equals("configure", p:config_running_action("Debug"))
+            local cfg = p:get_configuration("Debug")
+            assert.equals("configure", p:config_running_action(cfg))
         end)
     end)
 
