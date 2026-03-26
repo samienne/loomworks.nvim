@@ -83,11 +83,14 @@ function ConfigUnit:_update()
     local project_key = cached and cached.project_key or self._init_project_key
     self._project = project_key and self._workspace._projects[project_key] or nil
 
-    -- Resolve Tool domain object from workspace registry
+    -- Resolve Tool domain object via Module
     self._tool = nil
     if cached and cached.tool_key then
-        if self._workspace.find_tool then
-            self._tool = self._workspace:find_tool(cached.type or (self._project and self._project.type), cached.tool_key)
+        local mod = self._project and self._project._module
+            or (cached.type and self._workspace.find_module
+                and self._workspace:find_module(cached.type))
+        if mod then
+            self._tool = mod:find_tool(cached.tool_key)
         end
     end
 
@@ -474,10 +477,10 @@ function ConfigUnit:options()
 
     if not self._project then return nil end
 
-    local mod = self._workspace._core._deps.modules.get(self._project.type)
-    if not mod or not mod.get_options then return nil end
+    local impl = self._project._module and self._project._module.impl or nil
+    if not impl or not impl.get_options then return nil end
 
-    return mod.get_options(bd, self._project.type_config)
+    return impl.get_options(bd, self._project.type_config)
 end
 
 -- ---------------------------------------------------------------------------

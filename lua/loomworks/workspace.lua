@@ -16,6 +16,7 @@ local ProfileProject = require("loomworks.profile").ProfileProject
 local Project = require("loomworks.project")
 local ConfigurationSet = require("loomworks.configuration_set")
 local Tool = require("loomworks.tool")
+local Module = require("loomworks.module")
 
 -- ========================== Static helpers ==========================
 
@@ -215,7 +216,7 @@ function Workspace.new(core, data)
     self._profile_projects = {}
     self._operations = {}
     self._tools_by_type = {}
-    self._tool_objects = {} -- "mod_type\0tool_key" -> Tool (nil key uses "mod_type\0")
+    self._modules = {} -- id -> Module domain object (tools owned by modules)
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -319,13 +320,14 @@ function Workspace:remerge()
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         self, self._tools_by_type)
     self._active_set = active_set
-    self:_sync_tools()                       -- 0. no deps (tools from detection + cache)
-    self:_sync_projects()                    -- 1. no deps
-    self:_sync_config_sets()                 -- 2. needs Projects
-    self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets, Tools
-    self:_sync_config_units()                -- 4. needs cache data, Projects, Tools
-    self:_sync_profile_projects()            -- 5. needs Profiles, ConfigUnits
-    self:_sync_build_dir_refs()              -- 6. needs ConfigUnits (build_dir data)
+    self:_sync_modules()                     -- 0. no deps (module domain objects)
+    self:_sync_tools()                       -- 1. needs Modules
+    self:_sync_projects()                    -- 2. needs Modules, Tools
+    self:_sync_config_sets()                 -- 3. needs Projects
+    self:_sync_profiles(all_profile_defs)    -- 4. needs ConfigurationSets, Tools
+    self:_sync_config_units()                -- 5. needs cache data, Projects, Tools
+    self:_sync_profile_projects()            -- 6. needs Profiles, ConfigUnits
+    self:_sync_build_dir_refs()              -- 7. needs ConfigUnits (build_dir data)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -537,49 +539,98 @@ function Workspace:get_build_dir_refs(build_dir)
 end
 
 -- ===========================================================================
+-- Module object registry
+-- ===========================================================================
+
+--- Look up a Module domain object by type identifier.
+--- @param mod_type string module type (e.g., "cmake")
+--- @return loomworks.Module|nil
+function Workspace:find_module(mod_type)
+    return self._modules[mod_type]
+end
+
+--- Sync Module domain objects from config projects and cache.
+--- Creates Module objects for every module type referenced in the workspace.
+function Workspace:_sync_modules()
+    -- Collect all unique module types
+    local needed = {}
+    if self.config and self.config.projects then
+        for _, project in pairs(self.config.projects) do
+            if project.type then
+                needed[project.type] = true
+            end
+        end
+    end
+    if self.cache and self.cache.configurations then
+        for _, cc in pairs(self.cache.configurations) do
+            if cc.type then
+                needed[cc.type] = true
+            end
+        end
+    end
+
+    -- Mark removed
+    for id, mod in pairs(self._modules) do
+        if not needed[id] then
+            mod._removed = true
+            self._modules[id] = nil
+        end
+    end
+
+    -- Create or update
+    for id in pairs(needed) do
+        local impl = self._core._deps.modules.get(id)
+        if impl then
+            local existing = self._modules[id]
+            if existing then
+                existing:_update(impl)
+                existing._removed = false
+            else
+                self._modules[id] = Module.new(id, impl)
+            end
+        end
+    end
+end
+
+-- ===========================================================================
 -- Tool object registry
 -- ===========================================================================
 
---- Registry key for a Tool object.
---- @param mod_type string
---- @param tool_key string|nil
---- @return string
-local function tool_registry_key(mod_type, tool_key)
-    return mod_type .. "\0" .. (tool_key or "")
-end
-
---- Get or create a Tool object for the given module type and key.
---- If the tool already exists, updates it in place. Otherwise creates a new one.
+--- Get or create a Tool object, delegating to the Module's tool registry.
 --- @param mod_type string module type (e.g., "cmake")
 --- @param tool_key string|nil opaque identifier (nil for default tools)
 --- @param tool_data table module-specific data
 --- @param tool_label string|nil display label
 --- @return loomworks.Tool
 function Workspace:get_or_create_tool(mod_type, tool_key, tool_data, tool_label)
-    local rk = tool_registry_key(mod_type, tool_key)
-    local existing = self._tool_objects[rk]
-    if existing then
-        existing:_update(tool_data, tool_label)
-        return existing
+    local mod = self._modules[mod_type]
+    if not mod then
+        -- Module not loaded — create one on the fly (cache references unknown type)
+        local impl = self._core._deps.modules.get(mod_type)
+        if impl then
+            mod = Module.new(mod_type, impl)
+            self._modules[mod_type] = mod
+        else
+            mod = Module.new(mod_type, { id = mod_type })
+            self._modules[mod_type] = mod
+        end
     end
-    local tool = Tool.new(mod_type, tool_key, tool_data, tool_label)
-    self._tool_objects[rk] = tool
-    return tool
+    return mod:get_or_create_tool(tool_key, tool_data, tool_label)
 end
 
 --- Look up a Tool object by module type and key.
+--- Delegates to the Module's tool registry.
 --- @param mod_type string
 --- @param tool_key string|nil
 --- @return loomworks.Tool|nil
 function Workspace:find_tool(mod_type, tool_key)
-    return self._tool_objects[tool_registry_key(mod_type, tool_key)]
+    local mod = self._modules[mod_type]
+    return mod and mod:find_tool(tool_key) or nil
 end
 
 --- Sync Tool objects from detected tools (from _tools_by_type) and cache data.
---- Creates Tool objects for all detected tools and for cached tool_data that
---- may not be in the detected set (tool was uninstalled but cache references it).
+--- Delegates tool creation to Module objects (tools owned by modules).
 function Workspace:_sync_tools()
-    -- Mark all existing tools as potentially removed
     local seen = {}
 
     -- From detected tools
@@ -615,11 +666,13 @@ function Workspace:_sync_tools()
         end
     end
 
-    -- Remove tools that are no longer referenced
-    for rk, tool in pairs(self._tool_objects) do
-        if not seen[tool] then
-            tool._removed = true
-            self._tool_objects[rk] = nil
+    -- Remove tools that are no longer referenced (across all modules)
+    for _, mod in pairs(self._modules) do
+        for rk, tool in pairs(mod._tools) do
+            if not seen[tool] then
+                tool._removed = true
+                mod._tools[rk] = nil
+            end
         end
     end
 end
@@ -628,13 +681,8 @@ end
 --- @param mod_type string
 --- @return loomworks.Tool[]
 function Workspace:get_tools_for_type(mod_type)
-    local result = {}
-    for _, tool in pairs(self._tool_objects) do
-        if tool.mod_type == mod_type and not tool._removed then
-            result[#result + 1] = tool
-        end
-    end
-    return result
+    local mod = self._modules[mod_type]
+    return mod and mod:tools() or {}
 end
 
 -- ===========================================================================
@@ -1240,8 +1288,10 @@ end
 function Workspace:delete_cached_configs(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-        self.cache.configurations[cache_key] = nil
+        if item.project_key and item.config_key then
+            local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
+            self.cache.configurations[cache_key] = nil
+        end
     end
 end
 
@@ -1251,6 +1301,7 @@ end
 function Workspace:reset_cached_configs(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
+        if not item.project_key or not item.config_key then goto continue end
         local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
         local cached_config = self.cache.configurations[cache_key]
         if cached_config then
@@ -1260,6 +1311,7 @@ function Workspace:reset_cached_configs(items)
             cached_config.last_built = nil
             cached_config.cmake = nil
         end
+        ::continue::
     end
 end
 
@@ -1269,12 +1321,14 @@ end
 function Workspace:mark_cached_configs_cleaned(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
+        if not item.project_key or not item.config_key then goto continue end
         local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
         local cached_config = self.cache.configurations[cache_key]
         if cached_config then
             cached_config.state = "configured"
             cached_config.last_built = nil
         end
+        ::continue::
     end
     self:_save_cache()
     self:_refresh_after_cache_change()
@@ -1285,11 +1339,13 @@ end
 function Workspace:_mark_cache_unknown(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
+        if not item.project_key or not item.config_key then goto continue end
         local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
         local cached_config = self.cache.configurations[cache_key]
         if cached_config and cached_config.build_dir then
             cached_config.state = "unknown"
         end
+        ::continue::
     end
 end
 
@@ -1606,7 +1662,7 @@ function Workspace:_scan_targets_async()
         local project = unit._project
         if not project then goto continue end
 
-        local mod = self._core._deps.modules.get(project.type)
+        local mod = project._module and project._module.impl or nil
         if not mod then goto continue end
 
         local build_dir = unit:build_dir()
@@ -2125,8 +2181,7 @@ function Workspace:compute_downgrade_preview(project_key)
     local project = self._projects[project_key]
     if not project then return {} end
 
-    local mod = self._core._deps.modules.get(project.type)
-    if not mod or not mod.has_keyed_tools then return {} end
+    if not project._module or not project._module.has_keyed_tools then return {} end
 
     -- Check if any OTHER project of the same type exists
     for key, proj in pairs(self._projects) do

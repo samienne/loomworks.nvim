@@ -15,7 +15,12 @@ local Workspace = workspace.Workspace
 --- Mock modules with info() returning detectable configurations.
 local mock_modules = {
     cmake = {
+        id = "cmake",
         has_keyed_tools = true,
+        has_options = true,
+        default_configurations = function()
+            return { Debug = { variant = "Debug" }, Release = { variant = "Release" }, RelWithDebInfo = { variant = "RelWithDebInfo" } }
+        end,
         map_variant = function(variant_type, available_configs)
             for _, name in ipairs(available_configs) do
                 if name:lower() == variant_type then return name end
@@ -40,6 +45,7 @@ local mock_modules = {
         end,
     },
     ets = {
+        id = "ets",
         has_keyed_tools = false,
         map_variant = function(variant_type, available_configs)
             for _, name in ipairs(available_configs) do
@@ -52,6 +58,7 @@ local mock_modules = {
         end,
     },
     typescript = {
+        id = "typescript",
         has_keyed_tools = false,
         map_variant = function(variant_type, available_configs)
             for _, name in ipairs(available_configs) do

@@ -12,7 +12,7 @@ local function collect_configuration_tasks(unit)
     local ws = unit._workspace
     if not ws then return nil end
 
-    local mod = modules.get(project.type)
+    local mod = project._module and project._module.impl or nil
     if not mod or not mod.tasks then return nil end
 
     local cached = unit._cached
@@ -87,7 +87,7 @@ local function collect_profile_tasks(profile)
         local project = pp._project
         if not project then goto continue end
 
-        local mod = modules.get(project.type)
+        local mod = project._module and project._module.impl or nil
         if not mod or not mod.tasks then goto continue end
 
         local active_config = pp:variant_name()
@@ -148,7 +148,7 @@ local function collect_configuration_clean_tasks(unit)
     local ws = unit._workspace
     if not ws then return nil end
 
-    local mod = modules.get(project.type)
+    local mod = project._module and project._module.impl or nil
     if not mod or not mod.clean_tasks then return nil end
 
     local cached = unit._cached
@@ -196,7 +196,7 @@ local function collect_profile_clean_tasks(profile)
         local project = pp._project
         if not project then goto continue end
 
-        local mod = modules.get(project.type)
+        local mod = project._module and project._module.impl or nil
         if not mod or not mod.clean_tasks then goto continue end
 
         local active_config = pp:variant_name()

@@ -104,6 +104,36 @@ label. Rename would then be a simple field update with no rekeying.
 This would also align with the architectural principle that keys should
 not be used for runtime lookups — only direct object references.
 
+## Modules as domain objects + cache deserialization isolation
+
+Modules are currently stateless function tables loaded via `require`.
+Making them domain objects would:
+
+1. **Module domain objects** — Workspace owns Module instances. Each
+   module owns its Tool registry. `project._module` replaces
+   `project.type` string. `tool._module` replaces `tool.mod_type`
+   string. Module-specific logic (cmake task generation, info parsing)
+   lives on the module object; generic behavior stays in shared code.
+
+2. **Deserialization layer** — The `_sync_*` methods become the only
+   place that does key→object resolution. They resolve every string
+   reference from cache/config into domain object references, then
+   pass fully-resolved data to `_update()`. After deserialization,
+   key→object tables are not accessible to domain objects.
+
+3. **No key lookups in domain objects** — `_update()` receives
+   pre-resolved references. `_workspace` back-reference either goes
+   away or becomes a narrow interface (no registry access). Domain
+   objects navigate only via direct references.
+
+This eliminates the remaining string-based lookups: `find_tool(mod_type,
+tool_key)`, `mod_type` strings throughout the codebase, and
+`_workspace._projects[key]` during `_update()`. Cache format stays
+the same (strings on disk, resolved on load). Object identity
+preservation and remerge ordering are unchanged.
+
+Entry point: Module domain objects (wrapping existing function tables).
+
 ## Built-in sanitizer/tool configuration templates
 
 Provide pre-built abstract mixin configurations for common development
