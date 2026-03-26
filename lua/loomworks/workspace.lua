@@ -226,6 +226,67 @@ function Workspace.new(core, data)
     return self
 end
 
+--- Build a temporary deserialization context from existing arrays.
+--- The ctx provides O(1) key->object lookups for identity matching during sync.
+--- Discarded after remerge completes.
+--- @return table ctx
+function Workspace:_build_ctx()
+    local ctx = {
+        modules = {},
+        projects = {},
+        config_sets = {},
+        profiles = {},
+        config_units = {},
+        profile_projects = {},
+    }
+    for _, mod in pairs(self._modules) do ctx.modules[mod.id] = mod end
+    for _, p in pairs(self._projects) do ctx.projects[p.key] = p end
+    for _, cs in pairs(self._config_sets) do ctx.config_sets[cs.name] = cs end
+    for _, pr in pairs(self._profiles) do ctx.profiles[pr.key] = pr end
+    for _, cu in pairs(self._config_units) do ctx.config_units[cu.id] = cu end
+    for _, pp in pairs(self._profile_projects) do
+        local reg_key = pp._profile.key .. "\0" .. pp._init_project_key
+        ctx.profile_projects[reg_key] = pp
+    end
+    return ctx
+end
+
+--- Find a Project by key (O(n) scan, n is small).
+--- @param key string project key
+--- @return loomworks.Project|nil
+function Workspace:find_project(key)
+    for _, p in pairs(self._projects) do
+        if p.key == key then return p end
+    end
+end
+
+--- Find a Profile by key (O(n) scan).
+--- @param key string profile key
+--- @return loomworks.Profile|nil
+function Workspace:find_profile(key)
+    for _, p in pairs(self._profiles) do
+        if p.key == key then return p end
+    end
+end
+
+--- Find a ConfigurationSet by name (O(n) scan).
+--- @param name string configuration set name
+--- @return loomworks.ConfigurationSet|nil
+function Workspace:find_config_set(name)
+    for _, cs in pairs(self._config_sets) do
+        if cs.name == name then return cs end
+    end
+end
+
+--- Find a ConfigUnit by id (O(n) scan).
+--- @param id string cache dict key
+--- @return loomworks.ConfigUnit|nil
+function Workspace:find_config_unit_by_id(id)
+    for _, unit in pairs(self._config_units) do
+        if unit.id == id then return unit end
+    end
+end
+
 --- Get or create a ConfigUnit for a (project_key, config_key) pair.
 --- Find an existing ConfigUnit by property match.
 --- @param project loomworks.Project
@@ -262,7 +323,7 @@ function Workspace:ensure_config_unit(project, configuration, tool)
 
     -- Check if a ConfigUnit with this id already exists (created during remerge
     -- but perhaps with different resolved references)
-    local by_id = self._config_units[id]
+    local by_id = self:find_config_unit_by_id(id)
     if by_id then return by_id end
 
     -- Create cache entry
@@ -279,9 +340,15 @@ function Workspace:ensure_config_unit(project, configuration, tool)
         self:_save_cache()
     end
 
-    -- Create ConfigUnit and register
+    -- Create ConfigUnit and register — pre-resolve references
     local unit = ConfigUnit.new(self, id, project.key)
-    self._config_units[id] = unit
+    unit:_update({
+        cached = self.cache.configurations[id],
+        project = project,
+        tool = tool,
+        configuration = configuration,
+    })
+    self._config_units[#self._config_units + 1] = unit
     return unit
 end
 
@@ -320,14 +387,18 @@ function Workspace:remerge()
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         self, self._tools_by_type)
     self._active_set = active_set
-    self:_sync_modules()                     -- 0. no deps (module domain objects)
-    self:_sync_tools()                       -- 1. needs Modules
-    self:_sync_projects()                    -- 2. needs Modules, Tools
-    self:_sync_config_sets()                 -- 3. needs Projects
-    self:_sync_profiles(all_profile_defs)    -- 4. needs ConfigurationSets, Tools
-    self:_sync_config_units()                -- 5. needs cache data, Projects, Tools
-    self:_sync_profile_projects()            -- 6. needs Profiles, ConfigUnits
-    self:_sync_build_dir_refs()              -- 7. needs ConfigUnits (build_dir data)
+    local ctx = self:_build_ctx()
+    self:_sync_modules(ctx)
+    self:_sync_tools()                       -- uses find_module, may create modules
+    -- Rebuild ctx.modules (new modules may have been created by _sync_tools)
+    ctx.modules = {}
+    for _, mod in pairs(self._modules) do ctx.modules[mod.id] = mod end
+    self:_sync_projects(ctx)
+    self:_sync_config_sets(ctx)
+    self:_sync_profiles(ctx, all_profile_defs)
+    self:_sync_config_units(ctx)
+    self:_sync_profile_projects(ctx)
+    self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -339,135 +410,210 @@ end
 function Workspace:_refresh_after_cache_change()
     local all_profile_defs = self._core._deps.merge.get_all_profiles(
         self.config, self.cache, self._tools_by_type)
-    self:_sync_tools()                       -- tools from cache may have changed
-    self:_sync_profiles(all_profile_defs)
-    self:_sync_config_units()
-    self:_sync_profile_projects()
+    local ctx = self:_build_ctx()
+    self:_sync_tools()
+    ctx.modules = {}
+    for _, mod in pairs(self._modules) do ctx.modules[mod.id] = mod end
+    self:_sync_profiles(ctx, all_profile_defs)
+    self:_sync_config_units(ctx)
+    self:_sync_profile_projects(ctx)
     self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
 --- Sync the profiles registry with current merge data.
 --- Creates new Profile objects, updates existing ones in place, removes stale ones.
---- Profile._update resolves its own mappings from Workspace's config sets registry.
+--- Pre-resolves Tool objects and ConfigurationSet before calling _update.
+--- @param ctx table deserialization context with O(1) lookups
 --- @param all_defs table<string, loomworks.ProfileDef> profile definitions from merge
-function Workspace:_sync_profiles(all_defs)
-    -- Mark removed profiles
-    for key, profile in pairs(self._profiles) do
+function Workspace:_sync_profiles(ctx, all_defs)
+    for key, profile in pairs(ctx.profiles) do
         if not all_defs[key] then
             profile._removed = true
-            self._profiles[key] = nil
+            ctx.profiles[key] = nil
         end
     end
 
-    -- Create or update -- Profile._update handles mapping resolution internally
     for key, data in pairs(all_defs) do
         data._ws_cache = self.cache
-        local existing = self._profiles[key]
+        data._tool_objects = nil
+        if data.tools then
+            local tool_objs = {}
+            for mod_type, tool_ref in pairs(data.tools) do
+                local mod = ctx.modules[mod_type]
+                if mod then
+                    local tool = mod:find_tool(tool_ref.key)
+                    if tool then tool_objs[mod] = tool end
+                end
+            end
+            if next(tool_objs) then data._tool_objects = tool_objs end
+        end
+        data._config_set_ref = nil
+        if data.configuration_set then
+            data._config_set_ref = ctx.config_sets[data.configuration_set]
+        end
+
+        local existing = ctx.profiles[key]
         if existing then
             existing:_update(data)
         else
-            self._profiles[key] = Profile.new(self, key, data)
+            ctx.profiles[key] = Profile.new(self, key, data)
         end
     end
+
+    local arr = {}
+    for _, p in pairs(ctx.profiles) do arr[#arr + 1] = p end
+    self._profiles = arr
 end
 
 --- Sync the projects registry with current active set data.
 --- Creates new Project objects, updates existing ones in place, removes stale ones.
-function Workspace:_sync_projects()
+--- Pre-resolves Module, Tool, and dependency references before calling _update.
+--- @param ctx table deserialization context with O(1) lookups
+function Workspace:_sync_projects(ctx)
     if not self._active_set then return end
-
     local new_data = self._active_set.projects
 
-    -- Mark removed projects
-    for key, project in pairs(self._projects) do
+    for key, project in pairs(ctx.projects) do
         if not new_data[key] then
             project._removed = true
-            self._projects[key] = nil
+            ctx.projects[key] = nil
         end
     end
 
-    -- Create or update
     for key, data in pairs(new_data) do
-        local existing = self._projects[key]
+        local mod = data.type and ctx.modules[data.type] or nil
+        data._module = mod
+        data._tool = nil
+        if data.tool_key and mod then
+            data._tool = mod:find_tool(data.tool_key)
+        end
+        data._depends_on = nil
+        if data.depends_on then
+            local deps = {}
+            for _, dep_key in ipairs(data.depends_on) do
+                local dep = ctx.projects[dep_key]
+                if dep then deps[#deps + 1] = dep end
+            end
+            if #deps > 0 then data._depends_on = deps end
+        end
+
+        local existing = ctx.projects[key]
         if existing then
             existing:_update(data)
         else
-            self._projects[key] = Project.new(self, key, data)
+            ctx.projects[key] = Project.new(self, key, data)
         end
     end
+
+    local arr = {}
+    for _, p in pairs(ctx.projects) do arr[#arr + 1] = p end
+    self._projects = arr
 end
 
 --- Sync the config sets registry with current config data.
 --- Runs after _sync_projects so Project objects are available.
---- ConfigurationSet._update resolves project_key -> Project internally.
-function Workspace:_sync_config_sets()
+--- Pre-resolves project_key -> Project before calling _update.
+--- @param ctx table deserialization context with O(1) lookups
+function Workspace:_sync_config_sets(ctx)
     local defs = self.config.configuration_sets or {}
 
-    -- Mark removed
-    for name, cs in pairs(self._config_sets) do
+    for name, cs in pairs(ctx.config_sets) do
         if not defs[name] then
             cs._removed = true
-            self._config_sets[name] = nil
+            ctx.config_sets[name] = nil
         end
     end
 
-    -- Create or update
     for name, raw_mappings in pairs(defs) do
-        local existing = self._config_sets[name]
+        local resolved = {}
+        for project_key, variant in pairs(raw_mappings) do
+            local project = ctx.projects[project_key]
+            if project then resolved[project] = variant end
+        end
+        local existing = ctx.config_sets[name]
         if existing then
-            existing:_update(raw_mappings)
+            existing:_update(resolved)
         else
-            self._config_sets[name] = ConfigurationSet.new(self, name, raw_mappings)
+            ctx.config_sets[name] = ConfigurationSet.new(self, name, resolved)
         end
     end
+
+    local arr = {}
+    for _, cs in pairs(ctx.config_sets) do arr[#arr + 1] = cs end
+    self._config_sets = arr
 end
 
 --- Sync the profile projects registry.
 --- Derives data from synced profiles' mappings.
 --- Runs after _sync_profiles so Profile objects and their mappings are available.
 --- Also builds per-Profile direct lists.
-function Workspace:_sync_profile_projects()
-    -- Build the set of expected (profile_key, project_key) pairs
-    -- Carry project_key explicitly to avoid parsing from registry key.
+--- @param ctx table deserialization context with O(1) lookups
+function Workspace:_sync_profile_projects(ctx)
     local expected = {}
-    for profile_key, profile in pairs(self._profiles) do
+    for _, profile in pairs(ctx.profiles) do
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
-                local reg_key = profile_key .. "\0" .. project_key
-                expected[reg_key] = { profile = profile, variant = variant, project_key = project_key }
+                local reg_key = profile.key .. "\0" .. project_key
+                local project = ctx.projects[project_key]
+                local configuration = nil
+                if project and project._configurations then
+                    configuration = project._configurations[variant]
+                end
+                local cached, config_unit = nil, nil
+                if profile._cached_configurations and self.cache
+                        and self.cache.configurations then
+                    for _, ck in ipairs(profile._cached_configurations) do
+                        local entry = self.cache.configurations[ck]
+                        if entry and entry.project_key == project_key
+                                and entry.variant == variant then
+                            cached = entry
+                            config_unit = ctx.config_units[ck]
+                            break
+                        end
+                    end
+                end
+                expected[reg_key] = {
+                    project_key = project_key,
+                    profile = profile,
+                    project = project,
+                    configuration = configuration,
+                    cached = cached,
+                    config_unit = config_unit,
+                }
             end
         end
     end
 
-    -- Mark removed
-    for reg_key, pp in pairs(self._profile_projects) do
+    for reg_key, pp in pairs(ctx.profile_projects) do
         if not expected[reg_key] then
             pp._removed = true
-            self._profile_projects[reg_key] = nil
+            ctx.profile_projects[reg_key] = nil
         end
     end
 
-    -- Create or update
-    for reg_key, info in pairs(expected) do
-        local existing = self._profile_projects[reg_key]
+    for reg_key, data in pairs(expected) do
+        local existing = ctx.profile_projects[reg_key]
         if existing then
-            existing:_update(info.profile, info.variant)
+            existing:_update(data)
         else
-            self._profile_projects[reg_key] = ProfileProject.new(
-                self, info.profile, info.project_key, info.variant)
+            ctx.profile_projects[reg_key] = ProfileProject.new(
+                self, data.project_key, data)
         end
     end
 
-    -- Build per-Profile direct lists
+    local arr = {}
+    for _, pp in pairs(ctx.profile_projects) do arr[#arr + 1] = pp end
+    self._profile_projects = arr
+
     local dependency = require("loomworks.dependency")
-    for _, profile in pairs(self._profiles) do
+    for _, profile in pairs(ctx.profiles) do
         local list = {}
         local by_key = {}
         if profile.mappings then
             for project_key in pairs(profile.mappings) do
                 local reg_key = profile.key .. "\0" .. project_key
-                local pp = self._profile_projects[reg_key]
+                local pp = ctx.profile_projects[reg_key]
                 if pp then
                     list[#list + 1] = pp
                     by_key[project_key] = pp
@@ -480,40 +626,59 @@ function Workspace:_sync_profile_projects()
 end
 
 --- Sync the config units registry.
---- Collects all valid (project_key, config_key) pairs from profiles and cache,
+--- Collects all valid (project_key, config_key) pairs from cache,
 --- creates/updates/removes ConfigUnit objects. Preserves runtime state.
---- Carries project_key and config_key explicitly (no key parsing).
-function Workspace:_sync_config_units()
-    -- Collect expected config units keyed by cache dict key
-    local expected = {} -- cache_dict_key -> { project_key, config_key }
+--- Pre-resolves project, tool, and configuration references before calling _update.
+--- @param ctx table deserialization context with O(1) lookups
+function Workspace:_sync_config_units(ctx)
+    local expected = {}
 
-    -- From cache entries (authoritative — the cache dict key IS the identity)
     if self.cache.configurations then
         for cache_dict_key, cached_config in pairs(self.cache.configurations) do
+            local project_key = cached_config.project_key
+            local project = project_key and ctx.projects[project_key] or nil
+            local tool = nil
+            if cached_config.tool_key then
+                local mod = project and project._module
+                    or (cached_config.type and ctx.modules[cached_config.type])
+                if mod then tool = mod:find_tool(cached_config.tool_key) end
+            end
+            local configuration = nil
+            local variant = cached_config.variant
+            if variant and project and project._configurations then
+                configuration = project._configurations[variant]
+            end
             expected[cache_dict_key] = {
-                project_key = cached_config.project_key,
-                config_key = cached_config.config_key,
+                project_key = project_key,
+                cached = cached_config,
+                project = project,
+                tool = tool,
+                configuration = configuration,
             }
         end
     end
 
-    -- Mark removed (only if not running/deleting -- don't remove active units)
-    for id, unit in pairs(self._config_units) do
+    for id, unit in pairs(ctx.config_units) do
         if not expected[id] and not unit:is_running() and not unit:is_deleting() then
             unit._removed = true
-            self._config_units[id] = nil
+            ctx.config_units[id] = nil
         end
     end
 
-    -- Create or update
-    for id, info in pairs(expected) do
-        local existing = self._config_units[id]
+    for id, data in pairs(expected) do
+        local existing = ctx.config_units[id]
         if existing then
-            existing:_update()
+            existing:_update(data)
         else
-            self._config_units[id] = ConfigUnit.new(self, id, info.project_key)
+            local unit = ConfigUnit.new(self, id, data.project_key)
+            unit:_update(data)
+            ctx.config_units[id] = unit
         end
     end
+
+    local arr = {}
+    for _, unit in pairs(ctx.config_units) do arr[#arr + 1] = unit end
+    self._config_units = arr
 end
 
 --- Rebuild the build dir reverse index from ConfigUnit objects.
@@ -546,50 +711,50 @@ end
 --- @param mod_type string module type (e.g., "cmake")
 --- @return loomworks.Module|nil
 function Workspace:find_module(mod_type)
-    return self._modules[mod_type]
+    for _, mod in pairs(self._modules) do
+        if mod.id == mod_type then return mod end
+    end
 end
 
 --- Sync Module domain objects from config projects and cache.
 --- Creates Module objects for every module type referenced in the workspace.
-function Workspace:_sync_modules()
-    -- Collect all unique module types
+--- @param ctx table deserialization context with O(1) lookups
+function Workspace:_sync_modules(ctx)
     local needed = {}
     if self.config and self.config.projects then
         for _, project in pairs(self.config.projects) do
-            if project.type then
-                needed[project.type] = true
-            end
+            if project.type then needed[project.type] = true end
         end
     end
     if self.cache and self.cache.configurations then
         for _, cc in pairs(self.cache.configurations) do
-            if cc.type then
-                needed[cc.type] = true
-            end
+            if cc.type then needed[cc.type] = true end
         end
     end
 
-    -- Mark removed
-    for id, mod in pairs(self._modules) do
+    for id, mod in pairs(ctx.modules) do
         if not needed[id] then
             mod._removed = true
-            self._modules[id] = nil
+            ctx.modules[id] = nil
         end
     end
 
-    -- Create or update
     for id in pairs(needed) do
         local impl = self._core._deps.modules.get(id)
         if impl then
-            local existing = self._modules[id]
+            local existing = ctx.modules[id]
             if existing then
                 existing:_update(impl)
                 existing._removed = false
             else
-                self._modules[id] = Module.new(id, impl)
+                ctx.modules[id] = Module.new(id, impl)
             end
         end
     end
+
+    local arr = {}
+    for _, mod in pairs(ctx.modules) do arr[#arr + 1] = mod end
+    self._modules = arr
 end
 
 -- ===========================================================================
@@ -603,17 +768,11 @@ end
 --- @param tool_label string|nil display label
 --- @return loomworks.Tool
 function Workspace:get_or_create_tool(mod_type, tool_key, tool_data, tool_label)
-    local mod = self._modules[mod_type]
+    local mod = self:find_module(mod_type)
     if not mod then
-        -- Module not loaded — create one on the fly (cache references unknown type)
         local impl = self._core._deps.modules.get(mod_type)
-        if impl then
-            mod = Module.new(mod_type, impl)
-            self._modules[mod_type] = mod
-        else
-            mod = Module.new(mod_type, { id = mod_type })
-            self._modules[mod_type] = mod
-        end
+        mod = Module.new(mod_type, impl or { id = mod_type })
+        self._modules[#self._modules + 1] = mod
     end
     return mod:get_or_create_tool(tool_key, tool_data, tool_label)
 end
@@ -624,7 +783,7 @@ end
 --- @param tool_key string|nil
 --- @return loomworks.Tool|nil
 function Workspace:find_tool(mod_type, tool_key)
-    local mod = self._modules[mod_type]
+    local mod = self:find_module(mod_type)
     return mod and mod:find_tool(tool_key) or nil
 end
 
@@ -681,7 +840,7 @@ end
 --- @param mod_type string
 --- @return loomworks.Tool[]
 function Workspace:get_tools_for_type(mod_type)
-    local mod = self._modules[mod_type]
+    local mod = self:find_module(mod_type)
     return mod and mod:tools() or {}
 end
 
@@ -818,25 +977,31 @@ end
 function Workspace:get_active_profile()
     local active_set = self._active_set
     if not active_set or not active_set.name then return nil end
-    return self._profiles[active_set.name]
+    return self:find_profile(active_set.name)
 end
 
---- Get all Profile objects as a dict.
+--- Get all Profile objects as a dict (keyed by profile key).
 --- @return table<string, loomworks.Profile>
 function Workspace:get_profiles()
-    return self._profiles
+    local dict = {}
+    for _, p in pairs(self._profiles) do dict[p.key] = p end
+    return dict
 end
 
---- Get all Project objects from the active set as a dict.
+--- Get all Project objects from the active set as a dict (keyed by project key).
 --- @return table<string, loomworks.Project>
 function Workspace:get_projects()
-    return self._projects
+    local dict = {}
+    for _, p in pairs(self._projects) do dict[p.key] = p end
+    return dict
 end
 
---- Get all ConfigurationSet objects.
+--- Get all ConfigurationSet objects as a dict (keyed by name).
 --- @return table<string, loomworks.ConfigurationSet>
 function Workspace:get_config_sets()
-    return self._config_sets
+    local dict = {}
+    for _, cs in pairs(self._config_sets) do dict[cs.name] = cs end
+    return dict
 end
 
 --- Get tool entries for the configuration sets UI.
@@ -1019,7 +1184,7 @@ function Workspace:get_orphaned_configs()
                 project_key = cached_config.project_key,
                 config_key = cached_config.config_key,
                 cached = cached_config,
-                unit = self._config_units[cache_key],
+                unit = self:find_config_unit_by_id(cache_key),
             }
         end
     end
@@ -1215,7 +1380,7 @@ function Workspace:record_task_result(result)
         -- Fallback for results without a ConfigUnit (e.g. buggy multi-config tasks)
         cache_key = self._core._deps.cache.config_cache_key(result.project_key, result.configuration_key)
         self.cache.configurations = self.cache.configurations or {}
-        project = self._projects[result.project_key]
+        project = self:find_project(result.project_key)
         proj_type = project and project.type or "unknown"
         if not self.cache.configurations[cache_key] then
             self.cache.configurations[cache_key] = {
@@ -1769,10 +1934,10 @@ function Workspace:_serialize_config()
     end
 
     -- Projects from domain objects (skip cache-only orphans)
-    for key, project in pairs(self._projects) do
+    for _, project in pairs(self._projects) do
         if not project.orphaned then
             local entry = { [project.type] = project.type_config or vim.empty_dict() }
-            if project.path and project.path ~= key then
+            if project.path and project.path ~= project.key then
                 entry.path = project.path
             end
             if project._depends_on_keys then
@@ -1781,22 +1946,22 @@ function Workspace:_serialize_config()
             if project.launch then
                 entry.launch = project.launch
             end
-            raw.projects[key] = entry
+            raw.projects[project.key] = entry
         end
     end
 
     -- Configuration sets from domain objects
     local sets = {}
-    for name, cs in pairs(self._config_sets) do
-        sets[name] = cs:raw_mappings()
+    for _, cs in pairs(self._config_sets) do
+        sets[cs.name] = cs:raw_mappings()
     end
     if next(sets) then raw.configuration_sets = sets end
 
     -- Explicit profiles from domain objects
     local profiles = {}
-    for key, profile in pairs(self._profiles) do
+    for _, profile in pairs(self._profiles) do
         if profile.explicit_def then
-            profiles[key] = profile.explicit_def
+            profiles[profile.key] = profile.explicit_def
         end
     end
     if next(profiles) then raw.profiles = profiles end
@@ -1866,13 +2031,15 @@ function Workspace:add_project(key, type, path)
         configurations = {},
         cached_configurations = {},
     })
-    self._projects[key] = project
+    self._projects[#self._projects + 1] = project
 
     local ok, err = self:_save_config()
     if not ok then
         -- Rollback
         self.config.projects[key] = nil
-        self._projects[key] = nil
+        for i, p in ipairs(self._projects) do
+            if p.key == key then table.remove(self._projects, i); break end
+        end
         return false, err
     end
 
@@ -1892,10 +2059,12 @@ function Workspace:remove_project(key)
     self.config.projects[key] = nil
 
     -- Remove from domain objects
-    local removed_project = self._projects[key]
+    local removed_project = self:find_project(key)
     if removed_project then
         removed_project._removed = true
-        self._projects[key] = nil
+        for i, p in ipairs(self._projects) do
+            if p == removed_project then table.remove(self._projects, i); break end
+        end
     end
 
     -- Remove from configuration_sets (config + domain objects)
@@ -1961,14 +2130,23 @@ function Workspace:add_configuration_set(name, mappings)
 
     self.config.configuration_sets[name] = mappings
 
-    -- Create domain object
-    local cs = ConfigurationSet.new(self, name, mappings)
-    self._config_sets[name] = cs
+    -- Create domain object — resolve projects for _update
+    local resolved = {}
+    for project_key, variant in pairs(mappings) do
+        local project = self:find_project(project_key)
+        if project then
+            resolved[project] = variant
+        end
+    end
+    local cs = ConfigurationSet.new(self, name, resolved)
+    self._config_sets[#self._config_sets + 1] = cs
 
     local ok, err = self:_save_config()
     if not ok then
         self.config.configuration_sets[name] = nil
-        self._config_sets[name] = nil
+        for i, c in ipairs(self._config_sets) do
+            if c.name == name then table.remove(self._config_sets, i); break end
+        end
         return false, err
     end
 
@@ -1991,10 +2169,12 @@ function Workspace:remove_configuration_set(name)
     end
 
     -- Remove domain object
-    local cs = self._config_sets[name]
+    local cs = self:find_config_set(name)
     if cs then
         cs._removed = true
-        self._config_sets[name] = nil
+        for i, c in ipairs(self._config_sets) do
+            if c == cs then table.remove(self._config_sets, i); break end
+        end
     end
 
     local ok, err = self:_save_config()
@@ -2029,7 +2209,7 @@ function Workspace:_extend_cached_profile(profile_data, tools)
     self.cache.configurations = self.cache.configurations or {}
 
     for project_key, variant in pairs(set_mappings) do
-        local project = self._projects[project_key]
+        local project = self:find_project(project_key)
         if project then
             -- Tool key applies only to projects whose module type matches
             local project_tool = tools and tools[project.type] or nil
@@ -2121,7 +2301,7 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
 
     -- Only rename profiles whose config set has a project of the tool's module type
     local function should_rename(profile_data)
-        local cs = self._config_sets[profile_data.configuration_set]
+        local cs = self:find_config_set(profile_data.configuration_set)
         if not cs then return false end
         for project in pairs(cs.mappings) do
             if project.type == tool_entry.tool_mod_type then
@@ -2178,14 +2358,14 @@ end
 --- @param project_key string project key about to be removed
 --- @return { old_key: string, new_key: string }[]
 function Workspace:compute_downgrade_preview(project_key)
-    local project = self._projects[project_key]
+    local project = self:find_project(project_key)
     if not project then return {} end
 
     if not project._module or not project._module.has_keyed_tools then return {} end
 
     -- Check if any OTHER project of the same type exists
-    for key, proj in pairs(self._projects) do
-        if key ~= project_key and proj.type == project.type then
+    for _, proj in pairs(self._projects) do
+        if proj.key ~= project_key and proj.type == project.type then
             return {} -- not the last one
         end
     end

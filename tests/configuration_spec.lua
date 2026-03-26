@@ -355,7 +355,6 @@ describe("Project _configurations", function()
     end)
 
     it("ConfigUnit._configuration resolves for cache-only variant", function()
-        local ConfigUnit = require("loomworks.config_unit")
         local ws = h.make_mock_workspace({
             cache = {
                 configurations = {
@@ -379,9 +378,7 @@ describe("Project _configurations", function()
         })
         ws._projects["App"] = project
 
-        local unit = ws._config_units["App/Release"]
-            or ConfigUnit.new(ws, "App/Release", "App")
-        ws._config_units["App/Release"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/Release", "App")
         assert.is_not_nil(unit._configuration)
         assert.equals("Release", unit._configuration.name)
         assert.is_true(unit._configuration._source_missing)
@@ -443,17 +440,13 @@ describe("ConfigUnit _configuration resolution", function()
         })
         ws._projects["App"] = project
 
-        local ConfigUnit = require("loomworks.config_unit")
-        local unit = ws._config_units["App/Debug"]
-            or ConfigUnit.new(ws, "App/Debug", "App")
-        ws._config_units["App/Debug"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/Debug", "App")
         assert.is_not_nil(unit._configuration)
         assert.equals("Debug", unit._configuration.name)
         assert.equals("Debug", unit._configuration.module_config.variant)
     end)
 
     it("_configuration is nil when variant not in project configs", function()
-        local ConfigUnit = require("loomworks.config_unit")
         local ws = h.make_mock_workspace({
             cache = {
                 configurations = {
@@ -475,9 +468,7 @@ describe("ConfigUnit _configuration resolution", function()
         })
         ws._projects["App"] = project
 
-        local unit = ws._config_units["App/OldConfig"]
-            or ConfigUnit.new(ws, "App/OldConfig", "App")
-        ws._config_units["App/OldConfig"] = unit
+        local unit = h.ensure_config_unit_by_id(ws, "App/OldConfig", "App")
         assert.is_nil(unit._configuration)
     end)
 end)
@@ -498,7 +489,11 @@ describe("ProfileProject accessor methods", function()
         local profile = Profile.new(ws, "debug", {
             mappings = { App = "Debug" },
         })
-        local pp = ProfileProject.new(ws, profile, "App", "Debug")
+        local pp = ProfileProject.new(ws, "App", {
+            profile = profile,
+            project = project,
+            configuration = project:get_configuration("Debug"),
+        })
 
         local cfg = pp:configuration()
         assert.is_not_nil(cfg)
@@ -518,7 +513,11 @@ describe("ProfileProject accessor methods", function()
         local profile = Profile.new(ws, "debug", {
             mappings = { App = "Release" },
         })
-        local pp = ProfileProject.new(ws, profile, "App", "Release")
+        local pp = ProfileProject.new(ws, "App", {
+            profile = profile,
+            project = project,
+            configuration = project:get_configuration("Release"),
+        })
 
         assert.is_nil(pp:configuration())
     end)
@@ -526,18 +525,25 @@ describe("ProfileProject accessor methods", function()
     it("tool_object() returns Tool from profile", function()
         local ws = h.make_mock_workspace()
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
+        local cmake_mod = ws:find_module("cmake")
         local project = Project.new(ws, "App", {
             type = "cmake", path = "App", status = "unconfigured",
             configurations = { Debug = { variant = "Debug" } },
             cached_configurations = {},
+            _module = cmake_mod,
         })
         ws._projects["App"] = project
 
         local profile = Profile.new(ws, "debug:ninja-gcc", {
             tools = { cmake = { key = "ninja-gcc", data = { gen = "Ninja" }, label = "label" } },
+            _tool_objects = { [cmake_mod] = tool },
             mappings = { App = "Debug" },
         })
-        local pp = ProfileProject.new(ws, profile, "App", "Debug")
+        local pp = ProfileProject.new(ws, "App", {
+            profile = profile,
+            project = project,
+            configuration = project:get_configuration("Debug"),
+        })
 
         local t = pp:tool_object()
         assert.is_not_nil(t)
@@ -555,7 +561,10 @@ describe("ProfileProject accessor methods", function()
         local profile = Profile.new(ws, "debug", {
             mappings = { App = "Debug" },
         })
-        local pp = ProfileProject.new(ws, profile, "App", "Debug")
+        local pp = ProfileProject.new(ws, "App", {
+            profile = profile,
+            project = project,
+        })
 
         assert.is_nil(pp:tool_object())
     end)
@@ -575,7 +584,7 @@ describe("ConfigurationSet _configuration_mappings", function()
         })
         ws._projects["App"] = project
 
-        local cs = ConfigurationSet.new(ws, "debug", { App = "Debug" })
+        local cs = ConfigurationSet.new(ws, "debug", { [project] = "Debug" })
         assert.is_not_nil(cs._configuration_mappings[project])
         assert.equals("Debug", cs._configuration_mappings[project].name)
     end)
@@ -591,7 +600,7 @@ describe("ConfigurationSet _configuration_mappings", function()
         })
         ws._projects["App"] = project
 
-        local cs = ConfigurationSet.new(ws, "debug", { App = "Debug" })
+        local cs = ConfigurationSet.new(ws, "debug", { [project] = "Debug" })
         local cfg = cs:configuration(project)
         assert.is_not_nil(cfg)
         assert.equals("Debug", cfg.name)

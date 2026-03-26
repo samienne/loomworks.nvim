@@ -41,7 +41,7 @@ function LaunchTarget:_update(descriptor)
     self._launch_name = descriptor.launch
 
     -- Resolve project string to Project object
-    self._project = self._workspace._projects[descriptor.project]
+    self._project = self._workspace:find_project(descriptor.project)
 
     -- Resolve ConfigUnit via ProfileProject reference chain
     self._config_unit = nil

@@ -18,48 +18,27 @@ ProfileProject.__index = ProfileProject
 
 --- Create a ProfileProject.
 --- @param workspace loomworks.Workspace
---- @param profile loomworks.Profile parent Profile
---- @param project_key string used for initial project resolution
---- @param variant string configuration variant name
+--- @param project_key string used for identity and fallback resolution
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, cached?: loomworks.CachedConfig, config_unit?: loomworks.ConfigUnit }
 --- @return loomworks.ProfileProject
-function ProfileProject.new(workspace, profile, project_key, variant)
+function ProfileProject.new(workspace, project_key, data)
     local self = setmetatable({}, ProfileProject)
     self._workspace = workspace
     self._init_project_key = project_key
     self._removed = false
-    self:_update(profile, variant)
+    if data then self:_update(data) end
     return self
 end
 
 --- Update in place (preserves table identity).
---- Resolves direct references to Profile and Project from Workspace registries.
---- @param profile loomworks.Profile
---- @param variant string
-function ProfileProject:_update(profile, variant)
-    self._profile = profile
-    local project_key = self._init_project_key
-    self._project = self._workspace._projects[project_key]
-    self._configuration = nil
-    if self._project and self._project._configurations then
-        self._configuration = self._project._configurations[variant]
-    end
-    self._cached = nil
-    self._config_unit = nil
-
-    -- Resolve cached entry and ConfigUnit from the profile's cached configurations array.
-    -- The cache entry is the authoritative source; ck is the ConfigUnit's id.
-    local cache = self._workspace.cache
-    if profile._cached_configurations and cache and cache.configurations then
-        for _, ck in ipairs(profile._cached_configurations) do
-            local entry = cache.configurations[ck]
-            if entry and entry.project_key == project_key
-                    and entry.variant == variant then
-                self._cached = entry
-                self._config_unit = self._workspace._config_units[ck]
-                break
-            end
-        end
-    end
+--- Receives pre-resolved references from _sync_profile_projects.
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, cached?: loomworks.CachedConfig, config_unit?: loomworks.ConfigUnit }
+function ProfileProject:_update(data)
+    self._profile = data.profile
+    self._project = data.project
+    self._configuration = data.configuration
+    self._cached = data.cached
+    self._config_unit = data.config_unit
 end
 
 function ProfileProject:__tostring()
@@ -192,7 +171,7 @@ function Profile.new(workspace, key, data)
 end
 
 --- Update all data fields in place (preserves table identity).
---- Resolves mappings and ConfigurationSet reference from Workspace's registries.
+--- Pre-resolved fields (_tool_objects, _config_set_ref) are set by _sync_profiles.
 --- @param data loomworks.ProfileDef
 function Profile:_update(data)
     self._configuration_set_name = data.configuration_set
@@ -201,26 +180,13 @@ function Profile:_update(data)
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
 
-    -- Resolve Tool domain objects via Module objects
-    self._tool_objects = nil
-    if self._tools_raw and self._workspace.find_module then
-        local tool_objs = {}
-        for mod_type, tool_ref in pairs(self._tools_raw) do
-            local mod = self._workspace:find_module(mod_type)
-            if mod then
-                local tool = mod:find_tool(tool_ref.key)
-                if tool then
-                    tool_objs[mod] = tool
-                end
-            end
-        end
-        if next(tool_objs) then
-            self._tool_objects = tool_objs
-        end
-    end
+    -- Read pre-resolved Tool domain objects (set by _sync_profiles)
+    self._tool_objects = data._tool_objects
 
-    -- Resolve mappings and ConfigurationSet reference
-    self._config_set_ref = nil
+    -- Read pre-resolved ConfigurationSet reference (set by _sync_profiles)
+    self._config_set_ref = data._config_set_ref
+
+    -- Resolve mappings from the pre-resolved ConfigurationSet or fallbacks
     self.mappings, self.orphaned_set = self:_resolve_mappings(data)
 
     -- Precompute valid variants for is_configured checks
@@ -232,7 +198,7 @@ function Profile:_update(data)
     end
 end
 
---- Resolve mappings for this profile from Workspace's registries.
+--- Resolve mappings for this profile from pre-resolved references.
 --- Three tiers: (1) reactive from ConfigurationSet, (2) stored mappings,
 --- (3) fallback from cached profile project data.
 --- @param data loomworks.ProfileDef
@@ -241,9 +207,8 @@ end
 function Profile:_resolve_mappings(data)
     -- Tier 1: Set-based profiles — derive from live ConfigurationSet (reactive)
     if data.configuration_set then
-        local cs = self._workspace._config_sets[data.configuration_set]
+        local cs = self._config_set_ref
         if cs then
-            self._config_set_ref = cs
             local mappings = {}
             for project, variant in pairs(cs.mappings) do
                 mappings[project.key] = variant

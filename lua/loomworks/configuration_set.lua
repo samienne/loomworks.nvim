@@ -12,35 +12,31 @@ ConfigurationSet.__index = ConfigurationSet
 --- Create a new ConfigurationSet.
 --- @param workspace loomworks.Workspace
 --- @param name string
---- @param raw_mappings table<string, string> project_key -> variant (from config)
+--- @param resolved_mappings table<loomworks.Project, string> project -> variant (pre-resolved)
 --- @return loomworks.ConfigurationSet
-function ConfigurationSet.new(workspace, name, raw_mappings)
+function ConfigurationSet.new(workspace, name, resolved_mappings)
     local self = setmetatable({}, ConfigurationSet)
     self._workspace = workspace
     self.name = name
     self._removed = false
-    self:_update(raw_mappings)
+    self:_update(resolved_mappings)
     return self
 end
 
 --- Update mappings in place (preserves table identity).
---- Receives raw { project_key: variant } from config.configuration_sets and
---- resolves project_key → Project objects from Workspace's registry.
---- Also resolves Configuration objects from Project's registry.
---- @param raw_mappings table<string, string> project_key -> variant
-function ConfigurationSet:_update(raw_mappings)
+--- Receives pre-resolved { Project -> variant } from _sync_config_sets.
+--- Also resolves Configuration objects from Project's own registry.
+--- @param resolved_mappings table<loomworks.Project, string> project -> variant
+function ConfigurationSet:_update(resolved_mappings)
     self.mappings = {}
     self._configuration_mappings = {}
-    for project_key, variant in pairs(raw_mappings) do
-        local project = self._workspace._projects[project_key]
-        if project then
-            self.mappings[project] = variant
-            -- Resolve Configuration domain object
-            if project._configurations then
-                local cfg = project._configurations[variant]
-                if cfg then
-                    self._configuration_mappings[project] = cfg
-                end
+    for project, variant in pairs(resolved_mappings) do
+        self.mappings[project] = variant
+        -- Resolve Configuration domain object (within Project's own registry)
+        if project._configurations then
+            local cfg = project._configurations[variant]
+            if cfg then
+                self._configuration_mappings[project] = cfg
             end
         end
     end

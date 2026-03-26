@@ -120,10 +120,10 @@ local function simulate_projects_section_rendering(core, project_key, variant)
     local results = {}
     for _, entry in ipairs(entries) do
         local cache_id = project_key .. "/" .. entry.config_key
-        local unit = core._workspace._config_units[cache_id]
+        local unit = core._workspace:find_config_unit_by_id(cache_id)
         if not unit then
             -- Lazily create for unconfigured entries (detected tools with no cache entry)
-            local ws_project = core._workspace._projects[project_key]
+            local ws_project = core._workspace:find_project(project_key)
             if ws_project then
                 local cfg_variant = entry.config_key
                 local colon = cfg_variant:find(":")
@@ -397,7 +397,7 @@ describe("Projects section cmake status", function()
             "ws.cache should have flat config entry")
 
         -- Verify ConfigUnit reads from the same workspace
-        local unit = core._workspace._config_units["App/Debug:ninja-gcc-12"]
+        local unit = core._workspace:find_config_unit_by_id("App/Debug:ninja-gcc-12")
         local cached = unit:cached_state()
         assert.is_not_nil(cached, "ConfigUnit:cached_state() should find the cache entry")
         assert.equals("built", cached.state)
@@ -470,9 +470,9 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
     local results = {}
     for _, entry in ipairs(entries) do
         local cache_id = project_key .. "/" .. entry.config_key
-        local unit = core._workspace._config_units[cache_id]
+        local unit = core._workspace:find_config_unit_by_id(cache_id)
         if not unit then
-            local ws_project = core._workspace._projects[project_key]
+            local ws_project = core._workspace:find_project(project_key)
             if ws_project then
                 local cfg_variant = entry.config_key
                 local colon = cfg_variant:find(":")

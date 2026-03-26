@@ -21,14 +21,12 @@ end
 local function get_unit(core, project_key, config_key)
     local ws = core._workspace
     local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = ws._config_units[id]
+    local unit = ws:find_config_unit_by_id(id)
     if unit then return unit end
-    local project = ws._projects[project_key]
+    local project = ws:find_project(project_key)
     if not project then
         -- Project not in workspace — create bare ConfigUnit (test-only scenario)
-        unit = ConfigUnit.new(ws, id, project_key)
-        ws._config_units[id] = unit
-        return unit
+        return h.ensure_config_unit_by_id(ws, id, project_key)
     end
     local variant = config_key
     local tool = nil

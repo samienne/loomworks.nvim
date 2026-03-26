@@ -157,6 +157,21 @@ These are implementation-specific details not covered by the spec or architectur
   workspace module for creating a new `loomworks.json` on disk (no Workspace
   instance needed).
 - All objects identity-preserving across remerges via `_update()`; `_removed` flag for dead references
+- **Deserialization context (ctx)**: temporary dict created by `_build_ctx()`
+  at start of remerge for O(1) identity matching during sync. Each `_sync_*`
+  uses ctx for lookups, then writes plain array to Workspace. Discarded after
+  remerge. `_refresh_after_cache_change` builds its own ctx.
+- **Workspace arrays**: `_modules`, `_projects`, `_config_sets`, `_profiles`,
+  `_config_units`, `_profile_projects` are arrays after sync. Runtime callers
+  iterate with `pairs()` or use `find_*` helpers (`find_project(key)`,
+  `find_profile(key)`, `find_config_set(name)`, `find_config_unit_by_id(id)`,
+  `find_module(mod_type)`).
+- **Pre-resolved `_update()`**: all `_update()` methods receive pre-resolved
+  object references from the `_sync_*` caller. No registry lookups inside
+  `_update()`. This includes `_module`, `_tool`, `_depends_on` for Project;
+  `_tool_objects`, `_config_set_ref` for Profile; resolved Project→variant
+  mappings for ConfigurationSet; `cached`, `project`, `tool`, `configuration`
+  for ConfigUnit; and full resolved data tables for ProfileProject.
 - `types.lua` defines LuaCATS type annotations (data shapes, not runtime code)
 - init.lua is thin facade; core.lua is infrastructure; status.lua is pure rendering
 - Progress tracking: ninja parser, operation timing, weighted aggregate

@@ -347,7 +347,7 @@ function Core:project_for_buf(bufnr)
     end
 
     if best_key then
-        return best_key, self._workspace._projects[best_key]
+        return best_key, self._workspace:find_project(best_key)
     end
     return nil, nil
 end

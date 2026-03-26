@@ -121,7 +121,7 @@ function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
     end
 
     -- add_project just created this project — resolve from registry at creation boundary
-    local project = ws._projects[key]
+    local project = ws:find_project(key)
     for _, cs in pairs(ws._config_sets) do
         local variant = result.mappings[cs.name]
         if variant and project then
@@ -184,7 +184,7 @@ end
 --- @param project_key string
 --- @return { project_type: string, downgrade_preview: table[], cached_configs: table[], lines: string[], highlights: table[] }|nil
 function M.compute_remove_context(ws, project_key)
-    local project = ws._projects[project_key]
+    local project = ws:find_project(project_key)
     if not project then return nil end
 
     local proj_type = project.type
@@ -406,7 +406,8 @@ function M.compute_create_config_set_context(ws)
     local auto_mappings = {}
     local available_configs = {}
 
-    for key, project in pairs(ws._projects) do
+    for _, project in pairs(ws._projects) do
+        local key = project.key
         project_keys[#project_keys + 1] = key
         local impl = project._module and project._module.impl or nil
         if impl and impl.info then
@@ -464,7 +465,8 @@ function M.compute_edit_config_set_context(ws, set_name)
     local available_configs = {}
     local project_keys = {}
 
-    for key, project in pairs(ws._projects) do
+    for _, project in pairs(ws._projects) do
+        local key = project.key
         project_keys[#project_keys + 1] = key
         mappings[key] = raw_mappings[key] or nil
 
@@ -517,7 +519,7 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     for key, new_variant in pairs(new_mappings) do
         local old_variant = old_mappings[key]
         if new_variant ~= old_variant then
-            local project = ws._projects[key]
+            local project = ws:find_project(key)
             if not project then return false, "project '" .. key .. "' not found" end
             local ok, err = cs:update_mapping(project, new_variant)
             if not ok then return false, err end
@@ -526,7 +528,7 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     -- Handle keys that were in old but not in new (removed)
     for key, old_variant in pairs(old_mappings) do
         if old_variant and new_mappings[key] == nil then
-            local project = ws._projects[key]
+            local project = ws:find_project(key)
             if not project then return false, "project '" .. key .. "' not found" end
             local ok, err = cs:update_mapping(project, nil)
             if not ok then return false, err end
@@ -851,10 +853,10 @@ end
 --- @param basename string directory basename
 --- @return string|nil project_key
 function M.find_project_key_by_path(ws, rel_path, basename)
-    for key, proj in pairs(ws._projects) do
-        local proj_rel = proj.path or key
+    for _, proj in pairs(ws._projects) do
+        local proj_rel = proj.path or proj.key
         if proj_rel == rel_path or proj_rel == basename then
-            return key
+            return proj.key
         end
     end
     return nil

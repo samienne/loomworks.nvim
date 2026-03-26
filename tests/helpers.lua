@@ -125,6 +125,11 @@ function M.make_mock_workspace(overrides)
         end
         return nil
     end
+    ws.find_config_unit_by_id = function(self, id)
+        for _, unit in pairs(self._config_units) do
+            if unit.id == id then return unit end
+        end
+    end
     ws.ensure_config_unit = function(self, project, configuration, tool)
         local existing = self:find_config_unit(project, configuration, tool)
         if existing then return existing end
@@ -132,7 +137,7 @@ function M.make_mock_workspace(overrides)
         local tool_key = tool and tool.key or nil
         local config_key = merge_h.build_config_key(variant, tool_key)
         local id = cache_mod_h.config_cache_key(project.key, config_key)
-        local by_id = self._config_units[id]
+        local by_id = self:find_config_unit_by_id(id)
         if by_id then return by_id end
         self.cache.configurations = self.cache.configurations or {}
         if not self.cache.configurations[id] then
@@ -146,28 +151,53 @@ function M.make_mock_workspace(overrides)
             }
         end
         local unit = ConfigUnit.new(self, id, project.key)
-        self._config_units[id] = unit
+        unit:_update({
+            cached = self.cache.configurations[id],
+            project = project,
+            tool = tool,
+            configuration = configuration,
+        })
+        self._config_units[#self._config_units + 1] = unit
         return unit
     end
 
     -- Add Module registry methods
     local ModuleClass = require("loomworks.module")
     ws.find_module = function(self, mod_type)
-        return self._modules[mod_type]
+        for _, mod in pairs(self._modules) do
+            if mod.id == mod_type then return mod end
+        end
     end
     ws.get_or_create_module = function(self, mod_type)
-        local existing = self._modules[mod_type]
+        local existing = self:find_module(mod_type)
         if existing then return existing end
         -- Create a minimal mock impl
         local impl = { id = mod_type, has_keyed_tools = (mod_type == "cmake") }
         local mod = ModuleClass.new(mod_type, impl)
-        self._modules[mod_type] = mod
+        self._modules[#self._modules + 1] = mod
         return mod
+    end
+
+    -- Add find helpers (same as Workspace class)
+    ws.find_project = function(self, key)
+        for _, p in pairs(self._projects) do
+            if p.key == key then return p end
+        end
+    end
+    ws.find_profile = function(self, key)
+        for _, p in pairs(self._profiles) do
+            if p.key == key then return p end
+        end
+    end
+    ws.find_config_set = function(self, name)
+        for _, cs in pairs(self._config_sets) do
+            if cs.name == name then return cs end
+        end
     end
 
     -- Add Tool registry methods (delegate through Module objects)
     ws.find_tool = function(self, mod_type, tool_key)
-        local mod = self._modules[mod_type]
+        local mod = self:find_module(mod_type)
         return mod and mod:find_tool(tool_key) or nil
     end
     ws.get_or_create_tool = function(self, mod_type, tool_key, tool_data, tool_label)
@@ -212,6 +242,7 @@ end
 --- Register a ProfileProject in the workspace registry AND update the
 --- Profile's direct lists (_projects_list, _projects_by_key).
 --- Use this instead of manually inserting into _profile_projects in tests.
+--- Pre-resolves project, configuration, cached, and config_unit references.
 --- @param ws table mock workspace
 --- @param profile table Profile object
 --- @param project_key string
@@ -219,9 +250,33 @@ end
 --- @return table ProfileProject
 function M.register_profile_project(ws, profile, project_key, variant)
     local ProfileProject = require("loomworks.profile").ProfileProject
-    local pp = ProfileProject.new(ws, profile, project_key, variant)
+    -- Pre-resolve references
+    local project = ws:find_project(project_key)
+    local configuration = nil
+    if project and project._configurations then
+        configuration = project._configurations[variant]
+    end
+    local cached, config_unit = nil, nil
+    if profile._cached_configurations and ws.cache and ws.cache.configurations then
+        for _, ck in ipairs(profile._cached_configurations) do
+            local entry = ws.cache.configurations[ck]
+            if entry and entry.project_key == project_key
+                    and entry.variant == variant then
+                cached = entry
+                config_unit = ws:find_config_unit_by_id(ck)
+                break
+            end
+        end
+    end
+    local pp = ProfileProject.new(ws, project_key, {
+        profile = profile,
+        project = project,
+        configuration = configuration,
+        cached = cached,
+        config_unit = config_unit,
+    })
     local reg_key = profile.key .. "\0" .. project_key
-    ws._profile_projects[reg_key] = pp
+    ws._profile_projects[#ws._profile_projects + 1] = pp
     -- Update Profile's unsorted list and by_key dict
     profile._projects_list = profile._projects_list or {}
     profile._projects_list[#profile._projects_list + 1] = pp
@@ -251,6 +306,54 @@ function M.get_or_create_config(project, name)
     cfg = Configuration.new(project, name, {})
     project._configurations[name] = cfg
     return cfg
+end
+
+--- Refresh a ConfigUnit's resolved references from the workspace.
+--- Mirrors what _sync_config_units does for a single unit.
+--- @param ws table mock workspace
+--- @param unit table ConfigUnit
+function M.refresh_config_unit(ws, unit)
+    local cached = nil
+    if ws.cache and ws.cache.configurations then
+        cached = ws.cache.configurations[unit.id]
+    end
+    local project_key = cached and cached.project_key or unit._init_project_key
+    local project = project_key and ws:find_project(project_key) or nil
+    local tool = nil
+    if cached and cached.tool_key then
+        local mod = project and project._module
+            or (cached.type and ws:find_module(cached.type))
+        if mod then
+            tool = mod:find_tool(cached.tool_key)
+        end
+    end
+    local configuration = nil
+    if cached and cached.variant and project and project._configurations then
+        configuration = project._configurations[cached.variant]
+    end
+    unit:_update({
+        cached = cached,
+        project = project,
+        tool = tool,
+        configuration = configuration,
+    })
+end
+
+--- Get or create a ConfigUnit by id, with resolved references.
+--- Combines ConfigUnit.new + registry insertion + refresh in one call.
+--- @param ws table mock workspace
+--- @param id string cache dict key
+--- @param project_key string
+--- @return table ConfigUnit
+function M.ensure_config_unit_by_id(ws, id, project_key)
+    local ConfigUnit = require("loomworks.config_unit")
+    local unit = ws:find_config_unit_by_id(id)
+    if not unit then
+        unit = ConfigUnit.new(ws, id, project_key)
+        ws._config_units[#ws._config_units + 1] = unit
+    end
+    M.refresh_config_unit(ws, unit)
+    return unit
 end
 
 --- Backward-compatible alias for make_mock_workspace.
