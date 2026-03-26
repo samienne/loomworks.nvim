@@ -1288,8 +1288,10 @@ end
 function Workspace:delete_cached_configs(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-        self.cache.configurations[cache_key] = nil
+        if item.project_key and item.config_key then
+            local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
+            self.cache.configurations[cache_key] = nil
+        end
     end
 end
 
@@ -1299,6 +1301,7 @@ end
 function Workspace:reset_cached_configs(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
+        if not item.project_key or not item.config_key then goto continue end
         local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
         local cached_config = self.cache.configurations[cache_key]
         if cached_config then
@@ -1308,6 +1311,7 @@ function Workspace:reset_cached_configs(items)
             cached_config.last_built = nil
             cached_config.cmake = nil
         end
+        ::continue::
     end
 end
 
@@ -1317,12 +1321,14 @@ end
 function Workspace:mark_cached_configs_cleaned(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
+        if not item.project_key or not item.config_key then goto continue end
         local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
         local cached_config = self.cache.configurations[cache_key]
         if cached_config then
             cached_config.state = "configured"
             cached_config.last_built = nil
         end
+        ::continue::
     end
     self:_save_cache()
     self:_refresh_after_cache_change()
@@ -1333,11 +1339,13 @@ end
 function Workspace:_mark_cache_unknown(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
+        if not item.project_key or not item.config_key then goto continue end
         local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
         local cached_config = self.cache.configurations[cache_key]
         if cached_config and cached_config.build_dir then
             cached_config.state = "unknown"
         end
+        ::continue::
     end
 end
 
@@ -1654,7 +1662,7 @@ function Workspace:_scan_targets_async()
         local project = unit._project
         if not project then goto continue end
 
-        local mod = self._core._deps.modules.get(project.type)
+        local mod = project._module and project._module.impl or nil
         if not mod then goto continue end
 
         local build_dir = unit:build_dir()
@@ -2173,8 +2181,7 @@ function Workspace:compute_downgrade_preview(project_key)
     local project = self._projects[project_key]
     if not project then return {} end
 
-    local mod = self._core._deps.modules.get(project.type)
-    if not mod or not mod.has_keyed_tools then return {} end
+    if not project._module or not project._module.has_keyed_tools then return {} end
 
     -- Check if any OTHER project of the same type exists
     for key, proj in pairs(self._projects) do

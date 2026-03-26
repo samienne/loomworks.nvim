@@ -60,8 +60,7 @@ function Target:build(on_complete)
     local unit = self._config_unit
     if not unit or not unit._project then return end
 
-    local modules = require("loomworks.modules")
-    local mod = modules.get(unit._project.type)
+    local mod = unit._project._module and unit._project._module.impl or nil
     if not mod then return end
 
     if mod.build_target_task then

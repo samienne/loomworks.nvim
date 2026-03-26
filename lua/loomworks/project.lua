@@ -50,10 +50,13 @@ function Project:_update(data)
     self.type_config = data.type_config
     self.launch = data.launch
     self.configuration = data.configuration
-    -- Resolve Tool domain object from workspace registry
+    -- Resolve Module domain object
+    self._module = self._workspace.find_module
+        and self._workspace:find_module(self.type) or nil
+    -- Resolve Tool domain object via Module
     self._tool = nil
-    if data.tool_key and self._workspace.find_tool then
-        self._tool = self._workspace:find_tool(data.tool_mod_type or self.type, data.tool_key)
+    if data.tool_key and self._module then
+        self._tool = self._module:find_tool(data.tool_key)
     end
     self.status = data.status
     self.orphaned = data.orphaned or false
@@ -266,7 +269,7 @@ end
 --- Refresh configurations from module info after config changes.
 --- Re-syncs Configuration domain objects so callers see updated names/data.
 function Project:_refresh_configurations()
-    local mod = self._workspace._core._deps.modules.get(self.type)
+    local mod = self._module and self._module.impl or nil
     if not mod or not mod.info then return end
     local abs_path = self._workspace.root .. "/" .. (self.path or self.key)
     local mod_info = mod.info(abs_path, self.type_config or {})

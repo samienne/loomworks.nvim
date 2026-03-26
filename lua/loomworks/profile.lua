@@ -128,8 +128,8 @@ end
 --- Resolves from the parent profile's tool objects.
 --- @return loomworks.Tool|nil
 function ProfileProject:tool_object()
-    if not self._project or not self._profile then return nil end
-    return self._profile:tool_object_for(self._project.type)
+    if not self._project or not self._project._module or not self._profile then return nil end
+    return self._profile:tool_object_for(self._project._module)
 end
 
 --- Get cached state (direct reference resolved during _update).
@@ -149,7 +149,7 @@ end
 
 --- @class loomworks.Profile
 --- @field key string profile key
---- @field _tool_objects? table<string, loomworks.Tool> direct Tool references keyed by module type
+--- @field _tool_objects? table<loomworks.Module, loomworks.Tool> direct Tool references keyed by Module
 --- @field explicit boolean
 --- @field explicit_def? table raw definition from loomworks.json (for serialization)
 --- @field mappings? table<string, string> project_key -> variant name
@@ -201,14 +201,17 @@ function Profile:_update(data)
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
 
-    -- Resolve Tool domain objects from workspace registry
+    -- Resolve Tool domain objects via Module objects
     self._tool_objects = nil
-    if self._tools_raw and self._workspace.find_tool then
+    if self._tools_raw and self._workspace.find_module then
         local tool_objs = {}
         for mod_type, tool_ref in pairs(self._tools_raw) do
-            local tool = self._workspace:find_tool(mod_type, tool_ref.key)
-            if tool then
-                tool_objs[mod_type] = tool
+            local mod = self._workspace:find_module(mod_type)
+            if mod then
+                local tool = mod:find_tool(tool_ref.key)
+                if tool then
+                    tool_objs[mod] = tool
+                end
             end
         end
         if next(tool_objs) then
@@ -292,11 +295,11 @@ function Profile:tool_for(mod_type)
     return self._tools_raw and self._tools_raw[mod_type] or nil
 end
 
---- Get the Tool domain object for a specific module type.
---- @param mod_type string module type (e.g. "cmake")
+--- Get the Tool domain object for a specific module.
+--- @param module loomworks.Module
 --- @return loomworks.Tool|nil
-function Profile:tool_object_for(mod_type)
-    return self._tool_objects and self._tool_objects[mod_type] or nil
+function Profile:tool_object_for(module)
+    return self._tool_objects and self._tool_objects[module] or nil
 end
 
 --- Compute the cache key for a variant, accounting for tool.

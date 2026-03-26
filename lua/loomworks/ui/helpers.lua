@@ -128,6 +128,9 @@ end
 --- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
 function M.resolve_config_status(pp, cached)
+    if not pp._config_unit then
+        return "unconfigured", M.STATUS_HL.unconfigured, "", false
+    end
     return M.resolve_unit_status(pp._config_unit)
 end
 

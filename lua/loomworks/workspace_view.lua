@@ -408,10 +408,10 @@ function M.compute_create_config_set_context(ws)
 
     for key, project in pairs(ws._projects) do
         project_keys[#project_keys + 1] = key
-        local mod = modules.get(project.type)
-        if mod and mod.info then
+        local impl = project._module and project._module.impl or nil
+        if impl and impl.info then
             local abs_path = ws.root .. "/" .. (project.path or key)
-            local info = mod.info(abs_path, project.type_config)
+            local info = impl.info(abs_path, project.type_config)
             if info and info.configurations then
                 local names = {}
                 for name in pairs(info.configurations) do
@@ -468,10 +468,10 @@ function M.compute_edit_config_set_context(ws, set_name)
         project_keys[#project_keys + 1] = key
         mappings[key] = raw_mappings[key] or nil
 
-        local mod = modules.get(project.type)
-        if mod and mod.info then
+        local impl = project._module and project._module.impl or nil
+        if impl and impl.info then
             local abs_path = ws.root .. "/" .. (project.path or key)
-            local info = mod.info(abs_path, project.type_config)
+            local info = impl.info(abs_path, project.type_config)
             if info and info.configurations then
                 local names = {}
                 for name in pairs(info.configurations) do
@@ -1041,7 +1041,7 @@ function M.compute_delete_confirmation_context(ws, title, plan)
         for _, item in ipairs(clean_items) do
             local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
             local suffix = dir and ("  " .. dir) or ""
-            add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticError")
+            add("    " .. (item.project_key or "?") .. " / " .. (item.config_key or "?") .. suffix, "DiagnosticError")
         end
         add("")
     end
@@ -1051,7 +1051,7 @@ function M.compute_delete_confirmation_context(ws, title, plan)
         for _, item in ipairs(reset_items) do
             local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
             local suffix = dir and ("  " .. dir) or ""
-            add("    " .. item.project_key .. " / " .. item.config_key .. suffix, "DiagnosticWarn")
+            add("    " .. (item.project_key or "?") .. " / " .. (item.config_key or "?") .. suffix, "DiagnosticWarn")
         end
         add("")
     end
@@ -1167,13 +1167,13 @@ function M.compute_edit_configuration_context(project, config_name)
     local project_key = project.key
     local type_config = project.type_config or {}
 
-    local mod = modules.get(project.type)
+    local impl = project._module and project._module.impl or nil
     local abs_path = ws.root .. "/" .. (project.path or project_key)
-    local defaults = mod and mod.default_configurations
-        and mod.default_configurations(abs_path, type_config) or {}
+    local defaults = impl and impl.default_configurations
+        and impl.default_configurations(abs_path, type_config) or {}
 
     -- Build list of available configs for the "inherits" picker
-    local mod_info = mod and mod.info and mod.info(abs_path, type_config)
+    local mod_info = impl and impl.info and impl.info(abs_path, type_config)
         or { configurations = {} }
     local available_configs = {}
     for name in pairs(mod_info.configurations or {}) do
@@ -1217,8 +1217,8 @@ function M.compute_edit_configuration_context(project, config_name)
 
     -- Resolve variant source
     local variant_source = nil
-    if mod and mod.resolve_variant_source and config_name then
-        variant_source = mod.resolve_variant_source(
+    if impl and impl.resolve_variant_source and config_name then
+        variant_source = impl.resolve_variant_source(
             mod_info.configurations or {}, config_name)
     end
 
@@ -1253,7 +1253,7 @@ function M.compute_edit_configuration_context(project, config_name)
         toolchain = config_data.toolchain or "",
         generator = config_data.generator or "",
         is_default = is_default,
-        has_options = mod and mod.has_options or false,
+        has_options = impl and impl.has_options or false,
         available_configs = available_configs,
         project_options = project_options,
         inherited_options = inherited_options,

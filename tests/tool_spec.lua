@@ -310,7 +310,7 @@ end)
 describe("Profile _tool_objects resolution", function()
     local Profile = require("loomworks.profile").Profile
 
-    it("resolves tool objects from workspace registry", function()
+    it("resolves tool objects from module registry", function()
         local ws = h.make_mock_workspace()
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
 
@@ -319,7 +319,8 @@ describe("Profile _tool_objects resolution", function()
             tools = { cmake = { key = "ninja-gcc", data = { gen = "Ninja" }, label = "label" } },
         })
         assert.is_not_nil(profile._tool_objects)
-        assert.is_true(rawequal(tool, profile._tool_objects.cmake))
+        local cmake_mod = ws:find_module("cmake")
+        assert.is_true(rawequal(tool, profile._tool_objects[cmake_mod]))
     end)
 
     it("tool_object_for returns Tool object", function()
@@ -329,14 +330,16 @@ describe("Profile _tool_objects resolution", function()
         local profile = Profile.new(ws, "debug:ninja-gcc", {
             tools = { cmake = { key = "ninja-gcc", data = {}, label = "label" } },
         })
-        local t = profile:tool_object_for("cmake")
+        local cmake_mod = ws:find_module("cmake")
+        local t = profile:tool_object_for(cmake_mod)
         assert.is_not_nil(t)
         assert.equals("ninja-gcc", t.key)
     end)
 
-    it("tool_object_for returns nil for missing module type", function()
+    it("tool_object_for returns nil for missing module", function()
         local ws = h.make_mock_workspace()
         local profile = Profile.new(ws, "debug", {})
-        assert.is_nil(profile:tool_object_for("cmake"))
+        local cmake_mod = ws:get_or_create_module("cmake")
+        assert.is_nil(profile:tool_object_for(cmake_mod))
     end)
 end)
