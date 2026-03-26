@@ -1371,6 +1371,75 @@ describe("configuration rename propagation", function()
         assert.is_not_nil(pp:configuration())
     end)
 
+    it("rename while building preserves running state on ProfileProject", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "Debug-asan" },
+            },
+        }, nil, {
+            configurations = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-gcc",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
+                },
+            },
+            profiles = {
+                ["debug:ninja-gcc"] = {
+                    configuration_set = "debug",
+                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "GCC" } },
+                    configurations = { "App/Debug-asan:ninja-gcc" },
+                },
+            },
+        })
+
+        -- Simulate a running build on the config unit
+        local old_unit = ws:find_config_unit_by_id("App/Debug-asan:ninja-gcc")
+        assert.is_not_nil(old_unit)
+        old_unit:register_task(42, "build")
+        assert.is_true(old_unit:is_running())
+
+        -- Verify ProfileProject sees the running state before rename
+        local profile = ws:find_profile("debug:ninja-gcc")
+        assert.is_not_nil(profile)
+        local pp = profile:project("App")
+        assert.is_not_nil(pp)
+        assert.equals("build", pp:running_action())
+
+        -- Rename while building
+        local ok = ws:find_project("App"):rename_configuration("Debug-asan", "DebugASAN", {
+            inherits = "Debug",
+        })
+        assert.is_true(ok)
+
+        -- ConfigUnit should have the new id and still be running
+        local new_unit = ws:find_config_unit_by_id("App/DebugASAN:ninja-gcc")
+        assert.is_not_nil(new_unit)
+        assert.is_true(new_unit:is_running())
+        assert.equals("build", new_unit:running_action())
+        -- Should be the same object (identity preserved)
+        assert.is_true(rawequal(old_unit, new_unit))
+
+        -- ProfileProject should still see running state
+        profile = ws:find_profile("debug:ninja-gcc")
+        pp = profile:project("App")
+        assert.is_not_nil(pp)
+        assert.equals("build", pp:running_action())
+        assert.equals("DebugASAN", pp:variant_name())
+
+        -- Old id should no longer exist
+        assert.is_nil(ws:find_config_unit_by_id("App/Debug-asan:ninja-gcc"))
+    end)
+
     it("cache-only variant creates Configuration for PP resolution", function()
         -- Simulates: variant exists only in cache (source removed, e.g. branch switch).
         -- PP should still resolve via cache-enriched Configuration.

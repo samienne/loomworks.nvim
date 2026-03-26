@@ -76,6 +76,17 @@ Before merging ANY branch to master, verify:
 **Do not merge if documentation is out of sync.** Fix the docs first, then
 merge. If the user does not ask for this check, remind them before merging.
 
+### Bugfix workflow
+
+When a bug is encountered, reproduce it with an integration test first,
+then fix it. This builds real-world scenarios into the test bank and
+prevents regressions.
+
+1. Write a failing integration test that reproduces the bug
+2. Verify it fails for the right reason
+3. Fix the bug
+4. Verify the test passes
+
 ### Merge format
 
 Use `git merge --no-ff` with a summary commit message that describes *what*
