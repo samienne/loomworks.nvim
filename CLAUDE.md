@@ -173,12 +173,18 @@ These are implementation-specific details not covered by the spec or architectur
   shared for build. `acquire_build_dir_lock()` in overseer.lua before task start,
   `release_build_dir_lock()` in task_tracker on complete/dispose (idempotent).
   Prevents concurrent operations from corrupting shared build directories.
+- **Module domain object** (`module.lua`): wraps a stateless module function
+  table (cmake.lua, ets.lua, typescript.lua) as a per-workspace domain object.
+  Owns the Tool registry for its module type. No `_workspace` back-reference.
+  `Project._module` replaces `project.type` string for module identity.
+  Created during `_sync_modules()`, first step of remerge.
 - **Tool domain object** (`tool.lua`): represents a toolchain (ninja-gcc-12,
-  msvc-17-2022). Owned by `Workspace._tool_objects` registry, keyed by
-  `(mod_type, tool_key)`. Created from detection results + cached tool_data.
-  Non-keyed modules (ets, typescript) have a single default Tool with nil key.
-  Domain objects carry `_tool` references. Accessors: `unit:tool_object()`,
-  `profile:tool_object_for(mod_type)`, `pp:tool_object()`.
+  msvc-17-2022). Owned by `Module._tools` registry, keyed by `tool_key`.
+  `Tool._module` references the owning Module. Created from detection results
+  + cached tool_data. Non-keyed modules (ets, typescript) have a single
+  default Tool with nil key. Domain objects carry `_tool` references.
+  Accessors: `unit:tool_object()`, `profile:tool_object_for(module)`,
+  `pp:tool_object()`.
 - **Configuration domain object** (`configuration.lua`): represents a build
   variant (Debug, Release, Debug-asan). Owned by `Project._configurations`,
   created from module.info() output + user overrides + cache enrichment.

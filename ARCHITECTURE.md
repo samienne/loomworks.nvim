@@ -265,7 +265,7 @@ may import from its own layer or any layer below it, never above.
 | `workspace.lua` | **Workspace class**: all object registries (`_projects`, `_profiles`, `_config_sets`, `_profile_projects`, `_config_units`, `_operations`, `_tools_by_type`, `_active_set`), tool state (`_tool_state`, `_tool_waiters`), delete waiters, build dir reverse index (`_build_dir_refs`: normalized dir → set of cache keys, rebuilt in `_sync_build_dir_refs()` during remerge), build dir operation locks (`_build_dir_locks`: per-dir exclusive/shared locks with FIFO queue, `acquire_build_dir_lock`/`release_build_dir_lock`). Business logic: remerge, `_sync_*`, `_save_cache`, `_save_config`, `_save_user`, `_serialize_config`, `create_operation`, `execute_deletion`, `record_task_result`, `_scan_tools_async`. Mutation methods: `add_project`, `remove_project`, `add_configuration_set`, `remove_configuration_set`, `update_config_set_mapping`, `rename_project_configuration` (atomic rename with cache migration), `create_profile`, `activate_profile`, `upgrade_profiles_for_tool`, `downgrade_profiles_from_tool`. Preview: `compute_downgrade_preview`. Query methods: `query_available_configs`, `map_variant`, `generate_default_config_sets`, `get_module`. File tracking: `_start_tracking`, `_stop_tracking`, `_on_file_changed`, `reload_config`. **Static helpers** (on the module table, not the class): `resolve_root`, `paths`, `assemble` (pure), `create_workspace_config` (bootstrap) | Do I/O directly (delegates via `_core._deps`); know about UI; render anything |
 | `merge.lua` | Three-file merge algorithm, profile collection, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua or workspace.lua |
 | `configuration_set.lua` | ConfigurationSet class: identity-preserving with `_update()`, owns activation (`activate()`/`ensure_profile()`), property-based profile lookup (`find_profile()`), resolves Project references internally. References Workspace via `_workspace` | Own state beyond config data; do I/O |
-| `profile.lua` | Profile and ProfileProject classes (tools dict keyed by module type, `tool_for(mod_type)` accessor), status aggregation, plan_deletion, activate/deactivate. Profile resolves mappings + ConfigurationSet reference in `_update()`. ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
+| `profile.lua` | Profile and ProfileProject classes (tools dict keyed by Module object, `tool_object_for(module)` accessor), status aggregation, plan_deletion, activate/deactivate. Profile resolves mappings + ConfigurationSet reference in `_update()`. ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation. References Workspace via `_workspace` | Own state beyond what workspace provides |
 | `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag (with reason: "deleting"/"cleaning"), queued action. Synced during remerge (`_update()` refreshes variant/tool from cache, preserves runtime state) + lazy creation via `get_config_unit()`. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `resolve_tool()`, `referencing_profiles()`. References Workspace via `_workspace` | Persist anything (runtime only) |
 | `operation.lua` | Operation class: tracks a user-initiated profile action. Watches ConfigUnit state changes to determine completion. Multiple Operations can coexist. Created by `Workspace:create_operation()`, cleaned up on completion via callback | Own state beyond what workspace provides; persist anything |
@@ -479,21 +479,29 @@ references by reaching into Workspace's registries. Cross-object navigation
 uses direct references stored during `_update()`, not runtime key lookups.
 
 **Remerge dependency order** (each step depends on the previous):
-0. `_sync_tools` — no deps (from detection results + cache data)
-1. `_sync_projects` — no deps (creates Configuration objects internally)
-2. `_sync_config_sets` — resolves Project + Configuration references
-3. `_sync_profiles` — resolves ConfigurationSet + Tool references
-4. `_sync_profile_projects` — resolves Profile + Project references
-5. `_sync_config_units` — collects pairs from profiles + cache, resolves Tool + Configuration
-6. `_sync_build_dir_refs` — reverse index from ConfigUnit build dirs
+0. `_sync_modules` — no deps (Module domain objects from config + cache types)
+1. `_sync_tools` — needs Modules (tools owned by modules)
+2. `_sync_projects` — needs Modules (for `_module` reference), creates Configurations
+3. `_sync_config_sets` — resolves Project + Configuration references
+4. `_sync_profiles` — resolves ConfigurationSet + Tool references
+5. `_sync_profile_projects` — resolves Profile + Project references
+6. `_sync_config_units` — collects pairs from profiles + cache, resolves Tool + Configuration
+7. `_sync_build_dir_refs` — reverse index from ConfigUnit build dirs
+
+**Module** (`module.lua`) wraps a stateless module function table (cmake.lua,
+ets.lua, typescript.lua) as a per-workspace domain object. Owns the Tool
+registry for its module type. No `_workspace` back-reference — pure domain
+object. Created during `_sync_modules()`. `Project._module` replaces
+`project.type` string for module identity (type string kept for display).
 
 **Tool** (`tool.lua`) represents a toolchain (ninja-gcc-12, msvc-17-2022).
-Owned by `Workspace._tool_objects` registry, keyed by `(mod_type, tool_key)`.
+Owned by `Module._tools` registry, keyed by `tool_key`.
+`Tool._module` references the owning Module domain object.
 Created from async detection results AND from cached tool_data at startup.
 For non-keyed modules (ets, typescript), a single default Tool with nil key
 exists. ConfigUnit, Profile, and Project carry `_tool` references alongside
 legacy `tool` ToolRef tables. Accessor: `unit:tool_object()`,
-`profile:tool_object_for(mod_type)`.
+`profile:tool_object_for(module)`.
 
 **Configuration** (`configuration.lua`) represents a build variant (Debug,
 Release, Debug-asan). Owned by `Project._configurations` registry, created
