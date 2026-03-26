@@ -43,14 +43,13 @@ function LaunchTarget:_update(descriptor)
     -- Resolve project string to Project object
     self._project = self._workspace._projects[descriptor.project]
 
-    -- Resolve ConfigUnit and Target
+    -- Resolve ConfigUnit via ProfileProject reference chain
     self._config_unit = nil
     self._target = nil
-    if self._project and self._profile.mappings then
-        local variant = self._profile.mappings[descriptor.project]
-        if variant then
-            local config_key = self._profile:config_key(variant, self._project.type)
-            self._config_unit = self._workspace:get_config_unit(descriptor.project, config_key)
+    if self._project then
+        local pp = self._profile:project(descriptor.project)
+        if pp then
+            self._config_unit = pp._config_unit
             if self._config_unit and self._config_unit.targets and self._target_id then
                 self._target = self._config_unit.targets[self._target_id]
             end

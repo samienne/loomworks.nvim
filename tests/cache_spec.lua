@@ -2,9 +2,9 @@ local cache = require("loomworks.cache")
 
 describe("cache", function()
     describe("default", function()
-        it("returns table with version 5 and empty configurations", function()
+        it("returns table with version 6 and empty configurations", function()
             local d = cache.default()
-            assert.equals(5, d._meta.version)
+            assert.equals(6, d._meta.version)
             assert.are.same({}, d.configurations)
         end)
     end)
@@ -12,7 +12,7 @@ describe("cache", function()
     describe("parse", function()
         it("parses valid cache.json", function()
             local json = vim.json.encode({
-                _meta = { version = 5, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                _meta = { version = 6, loomworks_hash = "abc", cached_at = "2025-01-01" },
                 configurations = {
                     ["App/Debug"] = {
                         project_key = "App",
@@ -24,13 +24,13 @@ describe("cache", function()
                 },
             })
             local result = cache.parse(json)
-            assert.equals(5, result._meta.version)
+            assert.equals(6, result._meta.version)
             assert.equals("built", result.configurations["App/Debug"].state)
         end)
 
         it("returns no version mismatch on valid parse", function()
             local json = vim.json.encode({
-                _meta = { version = 5, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                _meta = { version = 6, loomworks_hash = "abc", cached_at = "2025-01-01" },
                 configurations = {},
             })
             local _, mismatch = cache.parse(json)
@@ -39,7 +39,7 @@ describe("cache", function()
 
         it("returns defaults on invalid JSON without version mismatch", function()
             local result, mismatch = cache.parse("broken {{{")
-            assert.equals(5, result._meta.version)
+            assert.equals(6, result._meta.version)
             assert.are.same({}, result.configurations)
             assert.is_false(mismatch)
         end)
@@ -75,7 +75,7 @@ describe("cache", function()
 
         it("ensures configurations field exists", function()
             local json = vim.json.encode({
-                _meta = { version = 5 },
+                _meta = { version = 6 },
             })
             local result = cache.parse(json)
             assert.are.same({}, result.configurations)
@@ -107,6 +107,63 @@ describe("cache", function()
         it("returns same hash for same content", function()
             local content = '{"projects": {}}'
             assert.equals(cache.compute_hash(content), cache.compute_hash(content))
+        end)
+    end)
+
+    describe("validate_consistency", function()
+        it("passes for cache without profiles", function()
+            local ok = cache.validate_consistency({ configurations = {} })
+            assert.is_true(ok)
+        end)
+
+        it("passes when all profile references exist", function()
+            local data = {
+                configurations = {
+                    ["App/Debug"] = { project_key = "App", variant = "Debug" },
+                },
+                profiles = {
+                    ["debug"] = { configurations = { "App/Debug" } },
+                },
+            }
+            local ok = cache.validate_consistency(data)
+            assert.is_true(ok)
+        end)
+
+        it("fails when profile references missing configuration", function()
+            local data = {
+                configurations = {},
+                profiles = {
+                    ["debug"] = { configurations = { "App/Debug" } },
+                },
+            }
+            local ok, err = cache.validate_consistency(data)
+            assert.is_false(ok)
+            assert.matches("missing configuration", err)
+        end)
+
+        it("fails when configuration entry has no variant field", function()
+            local data = {
+                configurations = {
+                    ["App/Debug"] = { project_key = "App" },
+                },
+                profiles = {
+                    ["debug"] = { configurations = { "App/Debug" } },
+                },
+            }
+            local ok, err = cache.validate_consistency(data)
+            assert.is_false(ok)
+            assert.matches("missing variant", err)
+        end)
+
+        it("passes for profiles with no configurations array", function()
+            local data = {
+                configurations = {},
+                profiles = {
+                    ["empty"] = {},
+                },
+            }
+            local ok = cache.validate_consistency(data)
+            assert.is_true(ok)
         end)
     end)
 

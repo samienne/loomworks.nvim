@@ -56,7 +56,8 @@ local function resolve_compile_commands_dir(root_dir)
 
     -- Check compile_commands_from redirect
     if project.cmake and project.cmake.compile_commands_from then
-        local ref_units = project:config_units_for_variant(project.cmake.compile_commands_from)
+        local ref_cfg = project:get_configuration(project.cmake.compile_commands_from)
+        local ref_units = ref_cfg and project:config_units_for_configuration(ref_cfg) or {}
         for _, ref_unit in ipairs(ref_units) do
             local bd = ref_unit:build_dir()
             if bd then

@@ -16,6 +16,29 @@ describe("Profile", function()
             ws_overrides = vim.tbl_deep_extend("force", ws_overrides, { cache = default_cache })
         end
         local core = h.make_mock_core(ws_overrides)
+        -- Register minimal mock projects so PP._project resolves
+        local Project = require("loomworks.project")
+        if not core._projects["App"] then
+            core._projects["App"] = Project.new(core, "App", {
+                type = "cmake", path = "App", status = "unconfigured",
+                configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
+            })
+        end
+        if not core._projects["Lib"] then
+            core._projects["Lib"] = Project.new(core, "Lib", {
+                type = "cmake", path = "Lib", status = "unconfigured",
+                configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
+            })
+        end
+        -- Ensure ConfigUnits exist for cached configurations so ProfileProject resolves them
+        local ConfigUnit = require("loomworks.config_unit")
+        if core.cache and core.cache.configurations then
+            for id, entry in pairs(core.cache.configurations) do
+                if not core._config_units[id] then
+                    core._config_units[id] = ConfigUnit.new(core, id, entry.project_key)
+                end
+            end
+        end
         local data = vim.tbl_deep_extend("force", {
             configuration_set = "debug",
             tools = nil,
@@ -38,7 +61,7 @@ describe("Profile", function()
         it("sets fields from data", function()
             local p = make_profile()
             assert.equals("debug", p.key)
-            assert.equals("debug", p.configuration_set)
+            assert.equals("debug", p._configuration_set_name)
             assert.is_false(p.explicit)
         end)
 
@@ -54,8 +77,8 @@ describe("Profile", function()
             local p = make_profile()
             local pp = p:project("App")
             assert.is_not_nil(pp)
-            assert.equals("App", pp.project_key)
-            assert.equals("Debug", pp.variant)
+            assert.equals("App", pp._init_project_key)
+            assert.equals("Debug", pp:variant_name())
         end)
 
         it("returns nil for unknown project", function()
@@ -69,8 +92,8 @@ describe("Profile", function()
             local p = make_profile()
             local pps = p:projects()
             assert.equals(2, #pps)
-            assert.equals("App", pps[1].project_key)
-            assert.equals("Lib", pps[2].project_key)
+            assert.equals("App", pps[1]._init_project_key)
+            assert.equals("Lib", pps[2]._init_project_key)
         end)
 
         it("returns empty when no mappings", function()
@@ -177,7 +200,7 @@ describe("Profile", function()
 
         it("returns true when profile has running action", function()
             local p, core = make_profile()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "build")
             assert.is_true(p:is_running())
         end)
@@ -255,7 +278,7 @@ describe("Profile", function()
 
         it("shows running status with number first", function()
             local p, core = make_profile()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "build")
             local label, hl = p:status()
             assert.matches("1 building", label)
@@ -264,7 +287,7 @@ describe("Profile", function()
 
         it("shows deleting status with number first", function()
             local p, core = make_profile()
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:mark_deleting(true)
             local label, hl = p:status()
             assert.matches("1/2 deleting", label)
@@ -281,17 +304,9 @@ describe("Profile", function()
         end)
 
         it("returns items for each mapped project", function()
-            local p = make_profile(nil, {
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = {}, Lib = {} } },
-                        cache = { configurations = {} },
-                    }
-                end,
-                get_profiles = function()
-                    return {} -- no other profiles
-                end,
-            })
+            local p, core = make_profile()
+            -- Register as the only profile so other_refs is empty
+            core._profiles = { debug = p }
             local plan = p:plan_deletion()
             assert.equals(2, #plan.items)
             assert.equals("App", plan.items[1].project_key)
@@ -404,6 +419,11 @@ describe("ProfileProject", function()
             type = "cmake", path = "App", status = "unconfigured",
             configurations = {}, cached_configurations = {},
         })
+        -- Ensure ConfigUnit exists so ProfileProject resolves it
+        local ConfigUnit = require("loomworks.config_unit")
+        if not core._config_units["App/Debug"] then
+            core._config_units["App/Debug"] = ConfigUnit.new(core, "App/Debug", "App")
+        end
         local tools = tool_key and { cmake = { key = tool_key } } or nil
         local data = {
             configuration_set = "debug",
@@ -430,21 +450,21 @@ describe("ProfileProject", function()
 
         it("returns deleting when unit is marked deleting", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:mark_deleting(true)
             assert.equals("deleting", pp:status())
         end)
 
         it("returns configuring when configure task is running", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure")
             assert.equals("configuring", pp:status())
         end)
 
         it("returns building when build task is running", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "build")
             assert.equals("building", pp:status())
         end)
@@ -458,7 +478,7 @@ describe("ProfileProject", function()
 
         it("returns the action from the ConfigUnit", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "build")
             assert.equals("build", pp:running_action())
         end)
@@ -483,6 +503,11 @@ describe("ProfileProject", function()
                 type = "cmake", path = "App", status = "unconfigured",
                 configurations = {}, cached_configurations = {},
             })
+            -- Ensure ConfigUnit exists before ProfileProject construction
+            local ConfigUnit = require("loomworks.config_unit")
+            if not core._config_units["App/Debug"] then
+                core._config_units["App/Debug"] = ConfigUnit.new(core, "App/Debug", "App")
+            end
             local Profile = require("loomworks.profile").Profile
             local p1 = Profile.new(core, "debug:ninja-gcc", {
                 configuration_set = "debug",
@@ -502,7 +527,7 @@ describe("ProfileProject", function()
                 h.finalize_profile(p)
             end
             -- Start a task on the shared unit
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "build")
             -- Both profiles see it
             assert.equals("build", p1:project("App"):running_action())
@@ -518,7 +543,7 @@ describe("ProfileProject", function()
 
         it("returns true when unit is marked deleting", function()
             local pp, core = make_pp(nil)
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:mark_deleting(true)
             assert.is_true(pp:is_deleting())
         end)

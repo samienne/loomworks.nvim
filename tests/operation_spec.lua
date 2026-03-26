@@ -1,7 +1,19 @@
 local h = require("tests.helpers")
 local Operation = require("loomworks.operation")
+local ProjectClass = require("loomworks.project")
 
 describe("Operation", function()
+    --- Helper: ensure a Project exists in the mock workspace registry.
+    local function ensure_project(core, project_key)
+        if not core._projects[project_key] then
+            core._projects[project_key] = ProjectClass.new(core, project_key, {
+                type = "cmake", path = project_key, status = "unconfigured",
+                configurations = {}, cached_configurations = {},
+            })
+        end
+        return core._projects[project_key]
+    end
+
     local function make_operation(action, states, opts)
         opts = opts or {}
         local time = { value = opts.start_time or 0 }
@@ -25,7 +37,8 @@ describe("Operation", function()
         local units = {}
         local target_states = {}
         for _, s in ipairs(states) do
-            local unit = core:get_config_unit(s.project, s.config)
+            local project = ensure_project(core, s.project)
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, s.config), nil)
             units[#units + 1] = unit
             target_states[unit] = s.target
         end
@@ -55,7 +68,7 @@ describe("Operation", function()
 
         it("starts as not completed", function()
             local op, core = make_operation("build", {{ project = "App", config = "Debug", target = "built" }})
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._config_units["App/Debug"]
             unit:register_task(1, "build") -- keep it running
             -- Need to create a new op with the running unit
             local op2 = make_operation("build", {{ project = "App", config = "Debug", target = "built" }})
@@ -192,7 +205,8 @@ describe("Operation", function()
                 mappings = { App = "Debug" },
             })
 
-            local unit = core:get_config_unit("App", "Debug")
+            local project = ensure_project(core, "App")
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             local op = Operation.new(core, profile, "build", { unit }, { [unit] = "built" })
 
             -- Operations only complete on state transitions, not initial state
@@ -205,7 +219,7 @@ describe("Operation", function()
             local op, core = make_operation("build", {
                 { project = "App", config = "Debug", target = "built" },
             })
-            local unit = core:get_config_unit("App", "Debug")
+            local unit = core._config_units["App/Debug"]
             assert.is_true(op:has_unit(unit))
         end)
 
@@ -213,7 +227,8 @@ describe("Operation", function()
             local op, core = make_operation("build", {
                 { project = "App", config = "Debug", target = "built" },
             })
-            local other = core:get_config_unit("Lib", "Release")
+            local lib = ensure_project(core, "Lib")
+            local other = core:ensure_config_unit(lib, h.get_or_create_config(lib, "Release"), nil)
             assert.is_false(op:has_unit(other))
         end)
     end)
@@ -350,7 +365,8 @@ describe("Operation", function()
                 mappings = { App = "Debug" },
             })
 
-            local unit = core:get_config_unit("App", "Debug")
+            local project = ensure_project(core, "App")
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             local op = Operation.new(core, profile, "build", { unit }, { [unit] = "built" })
 
             -- "configured" does NOT satisfy "built" target
@@ -379,7 +395,8 @@ describe("Operation", function()
                 mappings = { TS = "default" },
             })
 
-            local unit = core:get_config_unit("TS", "default")
+            local ts_project = ensure_project(core, "TS")
+            local unit = core:ensure_config_unit(ts_project, h.get_or_create_config(ts_project, "default"), nil)
 
             -- Profile A starts configure
             unit:register_task(1, "configure")
@@ -538,7 +555,8 @@ describe("Operation", function()
                 mappings = { App = "Debug" },
             })
 
-            local unit = core:get_config_unit("App", "Debug")
+            local project = ensure_project(core, "App")
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             unit:register_task(1, "build")
 
             local callback_called = false
@@ -561,7 +579,8 @@ describe("Operation", function()
                 },
             })
 
-            local unit = core:get_config_unit("App", "Debug")
+            local project = ensure_project(core, "App")
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             unit:mark_deleting(true, "cleaning")
 
             local op = Operation.new(core, nil, "clean", { unit }, { [unit] = "unconfigured" })

@@ -48,12 +48,12 @@ system does (data model, state machines, UI behavior, invariants), see
 
                        workspace.lua (Workspace)
                              |
-     +------------+----------+----------+-----------+
-     |            |                     |           |
-configuration  config_unit.lua   profile.lua   project.lua
-  _set.lua     Runtime state     Profile +      Project
-ConfigSet      per (proj,cfg)    ProfileProject  wrapper
-  object       synced + lazy     objects         object
+     +-------+----+----------+----------+-----------+
+     |       |    |                     |           |
+ tool.lua  cfg   configuration  config_unit.lua   profile.lua   project.lua
+  Tool    _set    .lua          Runtime state     Profile +      Project
+  domain  .lua    Configuration per (proj,cfg)    ProfileProject  + Config[]
+  object  ConfigSet domain obj  synced + lazy     objects         objects
           |
           +-- progress/init.lua + ninja.lua
               Parser registry for build output
@@ -458,11 +458,13 @@ See specification.md §1.6, §1.7 for behavioral rules.
 ```
 Core (singleton via init.lua)
   └── Workspace             ← domain container, owns all registries
+        ├── Tool{}              ← per-module tool registry, from detection + cache
         ├── ConfigurationSet[]  ← from config, identity-preserving
         ├── Profile[]           ← from merge, identity-preserving
         │     └── LaunchTarget? ← per-profile default target (from user/config)
         ├── ProfileProject[]    ← registered, one per (profile, project) pair
         ├── Project[]           ← from active set, identity-preserving
+        │     └── Configuration[] ← from module.info() + user overrides
         ├── ConfigUnit{}        ← synced during remerge + lazy fallback
         │     └── Target{}      ← runtime, from module detection (set_targets)
         └── Operation[]         ← active profile actions, cleaned up on completion
@@ -477,21 +479,41 @@ references by reaching into Workspace's registries. Cross-object navigation
 uses direct references stored during `_update()`, not runtime key lookups.
 
 **Remerge dependency order** (each step depends on the previous):
-1. `_sync_projects` — no deps
-2. `_sync_config_sets` — resolves Project references
-3. `_sync_profiles` — resolves ConfigurationSet references
+0. `_sync_tools` — no deps (from detection results + cache data)
+1. `_sync_projects` — no deps (creates Configuration objects internally)
+2. `_sync_config_sets` — resolves Project + Configuration references
+3. `_sync_profiles` — resolves ConfigurationSet + Tool references
 4. `_sync_profile_projects` — resolves Profile + Project references
-5. `_sync_config_units` — collects pairs from profiles + cache
+5. `_sync_config_units` — collects pairs from profiles + cache, resolves Tool + Configuration
+6. `_sync_build_dir_refs` — reverse index from ConfigUnit build dirs
+
+**Tool** (`tool.lua`) represents a toolchain (ninja-gcc-12, msvc-17-2022).
+Owned by `Workspace._tool_objects` registry, keyed by `(mod_type, tool_key)`.
+Created from async detection results AND from cached tool_data at startup.
+For non-keyed modules (ets, typescript), a single default Tool with nil key
+exists. ConfigUnit, Profile, and Project carry `_tool` references alongside
+legacy `tool` ToolRef tables. Accessor: `unit:tool_object()`,
+`profile:tool_object_for(mod_type)`.
+
+**Configuration** (`configuration.lua`) represents a build variant (Debug,
+Release, Debug-asan). Owned by `Project._configurations` registry, created
+from module.info() output + loomworks.json user overrides. Separates generic
+fields (name, variant, inherits, options) from module-specific data
+(`module_config`). Inheritance uses Configuration object references resolved
+within the project. ConfigUnit carries `_configuration` reference. Accessor:
+`unit:configuration()`, `pp:configuration()`.
 
 **ConfigurationSet** owns activation: `cs:activate(tool_entry)` finds or
 materializes a profile by property matching, never by computing a key.
 `cs:ensure_profile(tool_entry)` materializes without activating.
+`cs:configuration(project)` returns the Configuration object for a project.
 
 **ConfigUnit** is the meeting point — Profile, Project, and task_tracker all
 reference the same ConfigUnit for a given (project_key, config_key). State
 changes on a ConfigUnit are immediately visible to all consumers. ConfigUnits
 are synced during remerge (variant/tool refreshed from cache, runtime state
 preserved) and also created lazily via `get_config_unit()` between remerges.
+ConfigUnit carries direct references: `_project`, `_tool`, `_configuration`.
 
 **Target** wraps raw module detection data (type, dependencies, artifact)
 into an object with query methods (`is_executable()`, `display_name()`) and
@@ -569,9 +591,11 @@ loomworks.nvim/
 │   │   ├── cache.lua                  cache.json read/write
 │   │   ├── merge.lua                  Three-file merge → ActiveSet
 │   │   ├── events.lua                 Event/signal system
+│   │   ├── tool.lua                    Tool domain object (per-module toolchain)
+│   │   ├── configuration.lua          Configuration domain object (per-project variant)
 │   │   ├── configuration_set.lua       ConfigurationSet class (owns activation)
 │   │   ├── profile.lua                Profile + ProfileProject classes
-│   │   ├── project.lua                Project class
+│   │   ├── project.lua                Project class (owns Configuration[])
 │   │   ├── config_unit.lua            Per-config runtime state (synced + lazy)
 │   │   ├── operation.lua              Operation class (profile action tracking)
 │   │   ├── cmake_kits.lua             CMake tool detection

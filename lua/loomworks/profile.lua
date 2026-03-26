@@ -8,9 +8,7 @@ local cache_mod = require("loomworks.cache")
 -- ========================== ProfileProject ==========================
 
 --- @class loomworks.ProfileProject
---- @field project_key string
---- @field variant string configuration variant name
---- @field config_key string precomputed cache key (variant or variant:kit_id)
+--- @field _configuration loomworks.Configuration|nil resolved Configuration domain object
 --- @field _workspace loomworks.Workspace
 --- @field _profile loomworks.Profile direct reference to parent profile
 --- @field _project loomworks.Project|nil direct reference to project object
@@ -21,13 +19,13 @@ ProfileProject.__index = ProfileProject
 --- Create a ProfileProject.
 --- @param workspace loomworks.Workspace
 --- @param profile loomworks.Profile parent Profile
---- @param project_key string
+--- @param project_key string used for initial project resolution
 --- @param variant string configuration variant name
 --- @return loomworks.ProfileProject
 function ProfileProject.new(workspace, profile, project_key, variant)
     local self = setmetatable({}, ProfileProject)
     self._workspace = workspace
-    self.project_key = project_key
+    self._init_project_key = project_key
     self._removed = false
     self:_update(profile, variant)
     return self
@@ -39,36 +37,34 @@ end
 --- @param variant string
 function ProfileProject:_update(profile, variant)
     self._profile = profile
-    self._project = self._workspace._projects[self.project_key]
-    self.variant = variant
-    self.config_key = nil
+    local project_key = self._init_project_key
+    self._project = self._workspace._projects[project_key]
+    self._configuration = nil
+    if self._project and self._project._configurations then
+        self._configuration = self._project._configurations[variant]
+    end
     self._cached = nil
     self._config_unit = nil
 
-    -- Resolve config_key from the profile's cached configurations array.
-    -- The cache entry is the authoritative source for the config_key.
-    -- If no matching entry exists, this PP is unconfigured (no config_key).
+    -- Resolve cached entry and ConfigUnit from the profile's cached configurations array.
+    -- The cache entry is the authoritative source; ck is the ConfigUnit's id.
     local cache = self._workspace.cache
     if profile._cached_configurations and cache and cache.configurations then
         for _, ck in ipairs(profile._cached_configurations) do
             local entry = cache.configurations[ck]
-            if entry and entry.project_key == self.project_key
+            if entry and entry.project_key == project_key
                     and entry.variant == variant then
-                self.config_key = entry.config_key
                 self._cached = entry
+                self._config_unit = self._workspace._config_units[ck]
                 break
             end
         end
     end
-
-    -- Resolve ConfigUnit if we have a config_key
-    if self.config_key then
-        self._config_unit = self._workspace:get_config_unit(self.project_key, self.config_key)
-    end
 end
 
 function ProfileProject:__tostring()
-    return "ProfileProject(" .. self.project_key .. " @ " .. self._profile.key .. ")"
+    local pkey = self._project and self._project.key or self._init_project_key or "?"
+    return "ProfileProject(" .. pkey .. " @ " .. self._profile.key .. ")"
 end
 
 --- Get the resolved status for this project-in-profile.
@@ -95,6 +91,47 @@ function ProfileProject:is_deleting()
     return self._config_unit:is_deleting()
 end
 
+--- Get the live Configuration domain object for this project-in-profile.
+--- Returns nil if the Configuration was removed (stale reference).
+--- @return loomworks.Configuration|nil
+function ProfileProject:configuration()
+    if self._configuration and not self._configuration._removed then
+        return self._configuration
+    end
+    return nil
+end
+
+--- Get the variant name string for this project-in-profile.
+--- Returns the Configuration name if resolved, otherwise falls back to the
+--- raw variant string from the profile's mappings.
+--- @return string|nil
+function ProfileProject:variant_name()
+    if self._configuration and not self._configuration._removed then
+        return self._configuration.name
+    end
+    -- Fallback: read from profile mappings
+    return self._profile and self._profile.mappings
+        and self._profile.mappings[self._init_project_key] or nil
+end
+
+--- Check if this PP's variant mapping references a non-existent Configuration.
+--- True when the profile maps a variant but no matching Configuration exists
+--- in the project (e.g., the configuration was deleted from loomworks.json).
+--- @return boolean
+function ProfileProject:is_configuration_missing()
+    if self._configuration and not self._configuration._removed then return false end
+    return self._profile ~= nil and self._profile.mappings ~= nil
+        and self._profile.mappings[self._init_project_key] ~= nil
+end
+
+--- Get the Tool domain object for this project-in-profile.
+--- Resolves from the parent profile's tool objects.
+--- @return loomworks.Tool|nil
+function ProfileProject:tool_object()
+    if not self._project or not self._profile then return nil end
+    return self._profile:tool_object_for(self._project.type)
+end
+
 --- Get cached state (direct reference resolved during _update).
 --- @return loomworks.CachedConfig|nil
 function ProfileProject:cached_state()
@@ -112,8 +149,7 @@ end
 
 --- @class loomworks.Profile
 --- @field key string profile key
---- @field configuration_set? string nil for pinned profiles
---- @field tools? table<string, loomworks.ToolRef> tools dict keyed by module type
+--- @field _tool_objects? table<string, loomworks.Tool> direct Tool references keyed by module type
 --- @field explicit boolean
 --- @field explicit_def? table raw definition from loomworks.json (for serialization)
 --- @field mappings? table<string, string> project_key -> variant name
@@ -159,11 +195,26 @@ end
 --- Resolves mappings and ConfigurationSet reference from Workspace's registries.
 --- @param data loomworks.ProfileDef
 function Profile:_update(data)
-    self.configuration_set = data.configuration_set
-    self.tools = data.tools or nil
+    self._configuration_set_name = data.configuration_set
+    self._tools_raw = data.tools or nil
     self._cached_configurations = data._cached_configurations
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
+
+    -- Resolve Tool domain objects from workspace registry
+    self._tool_objects = nil
+    if self._tools_raw and self._workspace.find_tool then
+        local tool_objs = {}
+        for mod_type, tool_ref in pairs(self._tools_raw) do
+            local tool = self._workspace:find_tool(mod_type, tool_ref.key)
+            if tool then
+                tool_objs[mod_type] = tool
+            end
+        end
+        if next(tool_objs) then
+            self._tool_objects = tool_objs
+        end
+    end
 
     -- Resolve mappings and ConfigurationSet reference
     self._config_set_ref = nil
@@ -238,7 +289,14 @@ end
 --- @param mod_type string module type (e.g. "cmake")
 --- @return loomworks.ToolRef|nil
 function Profile:tool_for(mod_type)
-    return self.tools and self.tools[mod_type] or nil
+    return self._tools_raw and self._tools_raw[mod_type] or nil
+end
+
+--- Get the Tool domain object for a specific module type.
+--- @param mod_type string module type (e.g. "cmake")
+--- @return loomworks.Tool|nil
+function Profile:tool_object_for(mod_type)
+    return self._tool_objects and self._tool_objects[mod_type] or nil
 end
 
 --- Compute the cache key for a variant, accounting for tool.
@@ -247,8 +305,8 @@ end
 --- @param project_type? string module type of the project
 --- @return string
 function Profile:config_key(variant, project_type)
-    if self.tools and project_type then
-        local tool = self.tools[project_type]
+    if self._tools_raw and project_type then
+        local tool = self._tools_raw[project_type]
         if tool and tool.key then
             return variant .. ":" .. tool.key
         end
@@ -425,9 +483,9 @@ function Profile:is_configured()
     local cached_profile = self._workspace.cache.profiles and self._workspace.cache.profiles[self.key]
     if not cached_profile or not cached_profile.configurations then
         -- Fallback: value matching for set-based profiles
-        if self.configuration_set then
+        if self._configuration_set_name then
             cached_profile = merge.find_cached_profile(
-                self._workspace.cache, self.configuration_set, self.tools)
+                self._workspace.cache, self._configuration_set_name, self._tools_raw)
         end
         if not cached_profile or not cached_profile.configurations then return false end
     end
@@ -546,10 +604,11 @@ function Profile:plan_deletion()
     for _, other in pairs(self._workspace._profiles) do
         if other.key ~= self.key then
             for _, other_pp in ipairs(other:projects()) do
-                if not other_refs[other_pp.project_key] then
-                    other_refs[other_pp.project_key] = {}
+                if other_pp._config_unit then
+                    if not other_refs[other_pp._config_unit] then
+                        other_refs[other_pp._config_unit] = true
+                    end
                 end
-                other_refs[other_pp.project_key][other_pp.config_key] = true
             end
         end
     end
@@ -557,18 +616,18 @@ function Profile:plan_deletion()
     -- Include ALL project/config combos with disposition
     local items = {}
     for _, pp in ipairs(self:projects()) do
-        local has_other_ref = other_refs[pp.project_key]
-            and other_refs[pp.project_key][pp.config_key] or false
+        local pp_cached = pp._cached
+        local has_other_ref = pp._config_unit and other_refs[pp._config_unit] or false
         items[#items + 1] = {
-            project_key = pp.project_key,
-            config_key = pp.config_key,
+            project_key = pp._project and pp._project.key or (pp_cached and pp_cached.project_key),
+            config_key = pp_cached and pp_cached.config_key,
             build_dir = pp:build_dir(),
             disposition = has_other_ref and "keep" or "clean",
             unit = pp._config_unit,
         }
     end
 
-    table.sort(items, function(a, b) return a.project_key < b.project_key end)
+    table.sort(items, function(a, b) return (a.project_key or "") < (b.project_key or "") end)
 
     local defined_in_config = self._workspace.config.profiles and self._workspace.config.profiles[self.key] or false
 
@@ -616,9 +675,11 @@ function Profile:clean(on_done)
     local units = {}
     local target_states = {}
     for _, pp in ipairs(pps) do
+        local pp_cached = pp._cached
         items[#items + 1] = {
-            project_key = pp.project_key,
-            config_key = pp.config_key,
+            project_key = pp._project and pp._project.key or (pp_cached and pp_cached.project_key),
+            config_key = pp_cached and pp_cached.config_key,
+            unit = pp._config_unit,
         }
         units[#units + 1] = pp._config_unit
         target_states[pp._config_unit] = "configured"

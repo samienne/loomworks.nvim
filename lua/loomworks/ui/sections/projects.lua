@@ -57,9 +57,10 @@ local function collect_tool_entries(proj, variant, tools_by_type)
     local seen_tool_keys = {}
     local variant_lower = variant:lower()
 
-    -- 1. ConfigUnits for this variant (from project scan)
-    for _, unit in ipairs(proj:config_units_for_variant(variant)) do
-        local tk = unit.tool and unit.tool.key
+    -- 1. ConfigUnits for this configuration (from project scan)
+    local cfg = proj:get_configuration(variant)
+    for _, unit in ipairs(cfg and proj:config_units_for_configuration(cfg) or {}) do
+        local tk = unit._cached and unit._cached.tool_key
         if tk then
             entries[#entries + 1] = {
                 unit = unit,
@@ -397,9 +398,10 @@ return function(tree, ctx)
                         local tool_entries = collect_tool_entries(proj, cname, tools_by_type)
                         local has_tool_entries = #tool_entries > 0
 
-                        -- Check running state across all ConfigUnits for this variant
+                        -- Check running state across all ConfigUnits for this configuration
                         local config_has_running = false
-                        for _, cu in ipairs(proj:config_units_for_variant(cname)) do
+                        local cname_cfg = proj:get_configuration(cname)
+                        for _, cu in ipairs(cname_cfg and proj:config_units_for_configuration(cname_cfg) or {}) do
                             if cu:is_running() then
                                 config_has_running = true
                                 break
@@ -447,31 +449,19 @@ return function(tree, ctx)
                             -- No ConfigUnit yet — find or create one for this variant + tool
                             -- (on-demand creation for uncached detected tools)
                             local ws = project._workspace
-                            local merge = ws._core._deps.merge
-                            local ck = merge.build_config_key(cfg_name, entry.tool_key)
-                            local unit = ws:get_config_unit(project.key, ck)
-                            unit.variant = cfg_name
-                            if entry.tool_key then
-                                unit.tool = unit.tool or {}
-                                unit.tool.key = entry.tool_key
-                            end
-                            return unit
+                            local tool_obj = entry.tool_key and ws:find_tool(project.type, entry.tool_key) or nil
+                            local cfg = project:get_configuration(cfg_name)
+                            return ws:ensure_config_unit(project, cfg, tool_obj)
                         end
 
                         local function with_tool_picker(action_name, action_fn, filter)
                             return function()
                                 if not has_tool_entries then
                                     -- Non-keyed module: find or create unit for this variant
-                                    local units = project:config_units_for_variant(cfg_name)
-                                    if #units > 0 then
-                                        action_fn(units[1])
-                                    else
-                                        -- Create on demand
-                                        local ws = project._workspace
-                                        local unit = ws:get_config_unit(project.key, cfg_name)
-                                        unit.variant = unit.variant or cfg_name
-                                        action_fn(unit)
-                                    end
+                                    local ws = project._workspace
+                                    local cfg = project:get_configuration(cfg_name)
+                                    local unit = ws:ensure_config_unit(project, cfg, nil)
+                                    action_fn(unit)
                                     return
                                 end
                                 local entries = tool_entries
@@ -517,12 +507,15 @@ return function(tree, ctx)
                                 require("loomworks.overseer").run_configuration_action(unit, "configure")
                             end) or nil,
                             on_pin = not is_abstract and with_tool_picker("Pin", function(unit)
+                                local cached = unit._cached
+                                local pkey = unit._project and unit._project.key or (cached and cached.project_key) or "?"
+                                local ckey = cached and cached.config_key or unit.id
                                 if #unit:referencing_profiles() > 0 then
-                                    vim.notify("loomworks: already pinned " .. unit.project_key .. " / " .. unit.config_key, vim.log.levels.INFO)
+                                    vim.notify("loomworks: already pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
                                     return
                                 end
                                 unit:materialize_pinned()
-                                vim.notify("loomworks: pinned " .. unit.project_key .. " / " .. unit.config_key, vim.log.levels.INFO)
+                                vim.notify("loomworks: pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
                             end) or nil,
                             on_options = not is_abstract and with_tool_picker("Options", function(unit)
                                 actions.show_options(unit)()

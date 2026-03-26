@@ -7,10 +7,8 @@ local cache_mod = require("loomworks.cache")
 
 --- @class loomworks.ConfigUnit
 --- @field id string cache dict key (identity)
---- @field project_key string
---- @field config_key string
---- @field variant? string configuration variant name (from cache data)
---- @field tool? loomworks.ToolRef bundled tool reference (from cache data)
+--- @field _tool? loomworks.Tool direct reference to Tool domain object
+--- @field _configuration? loomworks.Configuration direct reference to Configuration domain object
 --- @field _workspace loomworks.Workspace
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID (persists after completion)
@@ -40,15 +38,13 @@ ConfigUnit.__index = ConfigUnit
 --- Create a new ConfigUnit.
 --- @param workspace loomworks.Workspace
 --- @param id string cache dict key (identity)
---- @param project_key string
---- @param config_key string
+--- @param project_key? string hint for initial project resolution (before cache exists)
 --- @return loomworks.ConfigUnit
-function ConfigUnit.new(workspace, id, project_key, config_key)
+function ConfigUnit.new(workspace, id, project_key)
     local self = setmetatable({}, ConfigUnit)
     self._workspace = workspace
     self.id = id
-    self.project_key = project_key
-    self.config_key = config_key
+    self._init_project_key = project_key
     self._task_id = nil
     self._last_task_id = nil
     self._action = nil
@@ -63,18 +59,16 @@ function ConfigUnit.new(workspace, id, project_key, config_key)
     return self
 end
 
---- Refresh variant, tool, and project reference from cache/registries.
+--- Refresh project, tool, and configuration references from cache/registries.
 --- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners, targets).
 function ConfigUnit:_update()
     if not self._workspace then
         self._project = nil
         self._cached = nil
-        self.variant = nil
-        self.tool = nil
+        self._tool = nil
+        self._configuration = nil
         return
     end
-    -- Resolve direct project reference
-    self._project = self._workspace._projects[self.project_key]
 
     -- Resolve direct cache reference (id IS the cache dict key)
     local cache = self._workspace.cache
@@ -84,20 +78,34 @@ function ConfigUnit:_update()
         self._cached = nil
     end
 
-    -- Cache entry is the source of truth for variant and tool
+    -- Resolve direct project reference: prefer cache, fall back to constructor hint
     local cached = self._cached
-    self.variant = cached and cached.variant or nil
-    self.tool = nil
+    local project_key = cached and cached.project_key or self._init_project_key
+    self._project = project_key and self._workspace._projects[project_key] or nil
+
+    -- Resolve Tool domain object from workspace registry
+    self._tool = nil
     if cached and cached.tool_key then
-        self.tool = {
-            key = cached.tool_key,
-            data = cached.tool_data,
-        }
+        if self._workspace.find_tool then
+            self._tool = self._workspace:find_tool(cached.type or (self._project and self._project.type), cached.tool_key)
+        end
+    end
+
+    -- Resolve Configuration domain object from project registry
+    self._configuration = nil
+    local variant = cached and cached.variant or nil
+    if variant and self._project and self._project._configurations then
+        self._configuration = self._project._configurations[variant]
     end
 end
 
 function ConfigUnit:__tostring()
-    return "ConfigUnit(" .. self.project_key .. ", " .. self.config_key .. ")"
+    if self._project then
+        return "ConfigUnit(" .. self._project.key .. ", " .. self.id .. ")"
+    elseif self._cached then
+        return "ConfigUnit(" .. self._cached.project_key .. ", " .. self.id .. ")"
+    end
+    return "ConfigUnit(" .. self.id .. ")"
 end
 
 -- ---------------------------------------------------------------------------
@@ -153,19 +161,29 @@ function ConfigUnit:build_dir()
     return cached and cached.build_dir
 end
 
---- Resolve the detected tool, enriching self.tool with label and mod_type.
---- @return loomworks.ToolRef|nil
+--- Get the Tool domain object for this unit.
+--- Falls back to cache data when no domain object is available.
+--- @return loomworks.Tool|nil
 function ConfigUnit:resolve_tool()
-    if not self.tool or not self.tool.key then return self.tool end
-    if self.tool.label then return self.tool end  -- already resolved
-    local dt, mod_type = self._workspace._core._deps.merge.resolve_detected_tool(
-        self._workspace._tools_by_type, self.tool.key)
-    if dt then
-        self.tool.label = dt.tool_label
-        self.tool.mod_type = mod_type
-        self.tool.data = dt.tool_data
-    end
-    return self.tool
+    return self._tool
+end
+
+--- Get the Tool domain object for this unit.
+--- @return loomworks.Tool|nil
+function ConfigUnit:tool_object()
+    return self._tool
+end
+
+--- Get the Configuration domain object for this unit.
+--- @return loomworks.Configuration|nil
+function ConfigUnit:configuration()
+    return self._configuration
+end
+
+--- Get the Project domain object for this unit.
+--- @return loomworks.Project|nil
+function ConfigUnit:project()
+    return self._project
 end
 
 --- Get the current progress update, if any.
@@ -185,14 +203,14 @@ end
 -- Config-level actions
 -- ---------------------------------------------------------------------------
 
---- Find all profiles that reference this (project_key, config_key) pair.
+--- Find all profiles that reference this ConfigUnit.
 --- @return loomworks.Profile[]
 function ConfigUnit:referencing_profiles()
     if not self._workspace then return {} end
     local result = {}
     for _, profile in pairs(self._workspace._profiles) do
         for _, pp in ipairs(profile:projects()) do
-            if pp.project_key == self.project_key and pp.config_key == self.config_key then
+            if pp._config_unit == self then
                 result[#result + 1] = profile
                 break
             end
@@ -218,8 +236,8 @@ end
 
 --- Materialize a skeleton cache entry for this configuration.
 --- Used for configuration-level build/configure actions.
---- @param variant? string configuration variant name (uses self.variant if nil)
---- @param tool? loomworks.ToolRef tool reference (uses self.tool if nil)
+--- @param variant? string configuration variant name
+--- @param tool? loomworks.ToolRef tool reference { key, data }
 function ConfigUnit:materialize(variant, tool)
     local ws = self._workspace
 
@@ -233,47 +251,53 @@ function ConfigUnit:materialize(variant, tool)
 
     if not self._project then return end
 
-    -- Update fields from caller data
-    if variant then self.variant = variant end
-    if tool then self.tool = tool end
+    -- Read variant from params > cached > configuration name
+    local mat_variant = variant
+        or (self._cached and self._cached.variant)
+        or (self._configuration and self._configuration.name)
+    -- Read tool from params > domain object > cached
+    local tool_key = tool and tool.key or (self._tool and self._tool.key) or (self._cached and self._cached.tool_key)
+    local tool_data = tool and tool.data or (self._tool and self._tool.data) or (self._cached and self._cached.tool_data)
 
     -- Resolve tool_data from detected tools if not already available
-    local tool_key = self.tool and self.tool.key or nil
-    local tool_data = self.tool and self.tool.data or nil
     if tool_key and not tool_data then
         local dt = ws._core._deps.merge.resolve_detected_tool(ws._tools_by_type, tool_key)
         if dt then
             tool_data = dt.tool_data
-            self.tool.data = tool_data
         end
     end
+
+    -- Read project_key and config_key from domain objects / cache
+    local project_key = self._project.key
+    local config_key = self._cached and self._cached.config_key
+        or ws._core._deps.merge.build_config_key(mat_variant, tool_key)
 
     -- Write directly to flat cache (id IS the cache dict key)
     ws.cache.configurations = ws.cache.configurations or {}
     local existing = ws.cache.configurations[self.id]
     if not existing then
         ws.cache.configurations[self.id] = {
-            project_key = self.project_key,
-            config_key = self.config_key,
+            project_key = project_key,
+            config_key = config_key,
             type = self._project.type,
-            variant = self.variant,
+            variant = mat_variant,
             tool_key = tool_key,
             tool_data = tool_data,
         }
 
         ws:_save_cache()
         ws:remerge()
-    elseif existing.variant ~= self.variant and self.variant then
+    elseif existing.variant ~= mat_variant and mat_variant then
         -- Repair stale variant in cache
-        existing.variant = self.variant
+        existing.variant = mat_variant
         ws:_save_cache()
     end
 end
 
 --- Materialize a pinned profile for this configuration.
 --- Creates the config skeleton and a pinned profile entry in cache.
---- @param variant? string configuration variant name (uses self.variant if nil)
---- @param tool? loomworks.ToolRef tool reference (uses self.tool if nil)
+--- @param variant? string configuration variant name
+--- @param tool? loomworks.ToolRef tool reference { key, data }
 --- @return loomworks.Profile|nil
 function ConfigUnit:materialize_pinned(variant, tool)
     local ws = self._workspace
@@ -288,21 +312,41 @@ function ConfigUnit:materialize_pinned(variant, tool)
 
     if not self._project then return nil end
 
-    local ak = ws._core._deps.merge.pinned_key(self.project_key, self.config_key)
+    -- Read project_key and config_key from domain objects / cache
+    local project_key = self._project.key
+    local cached = self._cached
+    local config_key = cached and cached.config_key
 
-    -- Ensure config skeleton exists
+    -- Ensure config skeleton exists (may update self._cached)
     self:materialize(variant, tool)
+    cached = self._cached
+
+    -- config_key may now be available from the newly-created cache entry
+    if not config_key and cached then
+        config_key = cached.config_key
+    end
+    if not config_key then return nil end
+
+    local ak = ws._core._deps.merge.pinned_key(project_key, config_key)
 
     -- Check if pinned profile already exists
     ws.cache.profiles = ws.cache.profiles or {}
     if ws.cache.profiles[ak] then return ws._profiles[ak] end
 
-    -- Use self.variant and self.tool (set by materialize or caller)
-    self:resolve_tool()
-    local tool_key = self.tool and self.tool.key or nil
-    local tool_data = self.tool and self.tool.data or nil
-    local tool_label = self.tool and self.tool.label or nil
-    local tool_mod_type = self.tool and self.tool.mod_type or nil
+    -- Read tool info from domain object or cache
+    local tool_obj = self._tool
+    local tool_key = tool_obj and tool_obj.key or (cached and cached.tool_key)
+    local tool_data = tool_obj and tool_obj.data or (cached and cached.tool_data)
+    local tool_label = tool_obj and tool_obj.label or nil
+    local tool_mod_type = tool_obj and tool_obj.mod_type or nil
+
+    -- If no mod_type from Tool object, try to determine from detected tools
+    if tool_key and not tool_mod_type then
+        local _, mt = ws._core._deps.merge.resolve_detected_tool(ws._tools_by_type, tool_key)
+        tool_mod_type = mt
+    end
+
+    local mat_variant = cached and cached.variant or variant
 
     local tools = nil
     if tool_key and tool_mod_type then
@@ -315,7 +359,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
         }
     end
     ws.cache.profiles[ak] = {
-        mappings = { [self.project_key] = self.variant },
+        mappings = { [project_key] = mat_variant },
         tools = tools,
         configurations = { self.id },
     }
@@ -336,20 +380,24 @@ function ConfigUnit:plan_deletion()
     end
 
     local has_ref = #self:referencing_profiles() > 0
+    local cached = self._cached
+    local project_key = self._project and self._project.key or (cached and cached.project_key)
+    local config_key = cached and cached.config_key
 
     local items = { {
-        project_key = self.project_key,
-        config_key = self.config_key,
+        project_key = project_key,
+        config_key = config_key,
         build_dir = self:build_dir(),
         disposition = has_ref and "reset" or "clean",
+        unit = self,
     } }
 
     local defined_in_config = self._project ~= nil and not self._project._removed
 
     return {
         items = items,
-        project_key = self.project_key,
-        config_key = self.config_key,
+        project_key = project_key,
+        config_key = config_key,
         defined_in_config = defined_in_config,
     }
 end
@@ -385,7 +433,10 @@ end
 function ConfigUnit:clean(on_done)
     local ws = self._workspace
 
-    local items = { { project_key = self.project_key, config_key = self.config_key } }
+    local cached = self._cached
+    local project_key = self._project and self._project.key or (cached and cached.project_key)
+    local config_key = cached and cached.config_key
+    local items = { { project_key = project_key, config_key = config_key, unit = self } }
 
     -- Cancel conflicting operations
     ws:cancel_conflicting_operations({ self })

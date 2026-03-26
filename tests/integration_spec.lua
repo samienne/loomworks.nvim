@@ -25,8 +25,18 @@ local mock_modules = {
         tool_key = function(tool_data) return tool_data.id end,
         tool_label = function(tool_data) return tool_data.display end,
         detect_tools_async = function(callback) callback({}) end,
-        info = function()
-            return { configurations = { Debug = {}, Release = {}, RelWithDebInfo = {} } }
+        info = function(path, config)
+            local configs = {
+                Debug = { variant = "Debug", is_default = true },
+                Release = { variant = "Release", is_default = true },
+                RelWithDebInfo = { variant = "RelWithDebInfo", is_default = true },
+            }
+            if config and config.configurations then
+                for name, data in pairs(config.configurations) do
+                    configs[name] = vim.tbl_extend("force", { is_user = true }, data)
+                end
+            end
+            return { configurations = configs }
         end,
     },
     ets = {
@@ -820,8 +830,25 @@ describe("collect helpers", function()
     end)
 
     it("collect_clean_items_for_unit returns single item", function()
-        local ws = make_ws({ projects = { App = { cmake = {} } } })
-        local unit = ws:get_config_unit("App", "Debug")
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            nil,
+            {
+                profiles = {
+                    ["App/Debug"] = {
+                        configurations = { "App/Debug" },
+                        mappings = { App = "Debug" },
+                    },
+                },
+                configurations = {
+                    ["App/Debug"] = {
+                        project_key = "App", config_key = "Debug",
+                        type = "cmake", variant = "Debug", state = "configured",
+                    },
+                },
+            }
+        )
+        local unit = ws._config_units["App/Debug"]
         local items = wv.collect_clean_items_for_unit(unit)
         assert.equals(1, #items)
         assert.equals("App", items[1].project_key)
@@ -1221,6 +1248,205 @@ describe("configuration rename propagation", function()
 
         -- Active profile updated to new key
         assert.equals("App/DebugASAN:ninja-gcc", ws.user.active_profile)
+    end)
+
+    it("rename updates Configuration domain objects and PP resolves new name", function()
+        -- Simulates: user configures Debug-asan, then renames it to DebugASAN.
+        -- The PP._configuration must resolve to the renamed Configuration.
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                asan = { App = "Debug-asan" },
+            },
+        }, nil, {
+            configurations = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-gcc",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
+                },
+            },
+            profiles = {
+                ["asan:ninja-gcc"] = {
+                    configuration_set = "asan",
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
+                    configurations = { "App/Debug-asan:ninja-gcc" },
+                },
+            },
+        })
+
+        -- Before rename: PP resolves correctly
+        local profile = ws._profiles["asan:ninja-gcc"]
+        assert.is_not_nil(profile)
+        local pp = profile:project("App")
+        assert.is_not_nil(pp)
+        assert.equals("Debug-asan", pp:variant_name())
+        assert.is_not_nil(pp:configuration())
+
+        -- Rename
+        local project = ws._projects["App"]
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
+            inherits = "Debug",
+        })
+        assert.is_true(ok)
+
+        -- Configuration domain object exists under new name
+        assert.is_not_nil(project:get_configuration("DebugASAN"))
+        assert.is_nil(project:get_configuration("Debug-asan"))
+
+        -- PP resolves the renamed Configuration
+        profile = ws._profiles["asan:ninja-gcc"]
+        pp = profile:project("App")
+        assert.is_not_nil(pp)
+        assert.equals("DebugASAN", pp:variant_name())
+        assert.is_not_nil(pp:configuration())
+        assert.equals("DebugASAN", pp:configuration().name)
+    end)
+
+    it("rename updates pinned profile PP._configuration", function()
+        -- Simulates: pinned profile references Debug-asan, user renames to DebugASAN.
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+        }, nil, {
+            configurations = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-gcc",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
+                },
+            },
+            profiles = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    mappings = { App = "Debug-asan" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
+                    configurations = { "App/Debug-asan:ninja-gcc" },
+                },
+            },
+        })
+
+        -- Before rename: PP works
+        local profile = ws._profiles["App/Debug-asan:ninja-gcc"]
+        assert.is_not_nil(profile)
+        local pp = profile:project("App")
+        assert.equals("Debug-asan", pp:variant_name())
+
+        -- Rename
+        local ok = ws._projects["App"]:rename_configuration("Debug-asan", "DebugASAN", {
+            inherits = "Debug",
+        })
+        assert.is_true(ok)
+
+        -- Pinned profile key changed
+        assert.is_nil(ws._profiles["App/Debug-asan:ninja-gcc"])
+        profile = ws._profiles["App/DebugASAN:ninja-gcc"]
+        assert.is_not_nil(profile)
+
+        -- PP resolves new name
+        pp = profile:project("App")
+        assert.is_not_nil(pp)
+        assert.equals("DebugASAN", pp:variant_name())
+        assert.is_not_nil(pp:configuration())
+    end)
+
+    it("cache-only variant creates Configuration for PP resolution", function()
+        -- Simulates: variant exists only in cache (source removed, e.g. branch switch).
+        -- PP should still resolve via cache-enriched Configuration.
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },  -- no user-defined configs
+            },
+            configuration_sets = {
+                custom = { App = "CustomBuild" },
+            },
+        }, nil, {
+            configurations = {
+                ["App/CustomBuild:ninja-gcc"] = {
+                    project_key = "App", config_key = "CustomBuild:ninja-gcc",
+                    type = "cmake", variant = "CustomBuild", tool_key = "ninja-gcc",
+                    state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/CustomBuild",
+                },
+            },
+            profiles = {
+                ["custom:ninja-gcc"] = {
+                    configuration_set = "custom",
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
+                    configurations = { "App/CustomBuild:ninja-gcc" },
+                },
+            },
+        })
+
+        -- "CustomBuild" is not in cmake defaults or user configs,
+        -- but exists in cache — should be enriched as _source_missing
+        local project = ws._projects["App"]
+        local cfg = project:get_configuration("CustomBuild")
+        assert.is_not_nil(cfg)
+        assert.is_true(cfg._source_missing)
+
+        -- PP resolves the cache-enriched Configuration
+        local profile = ws._profiles["custom:ninja-gcc"]
+        assert.is_not_nil(profile)
+        local pp = profile:project("App")
+        assert.is_not_nil(pp)
+        assert.equals("CustomBuild", pp:variant_name())
+        assert.is_not_nil(pp:configuration())
+        assert.is_true(pp:configuration()._source_missing)
+    end)
+
+    it("save_configuration creates Configuration domain object for PP", function()
+        -- Simulates: user creates a new custom config, then a profile uses it.
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = {
+                custom = { App = "Debug" },
+            },
+        })
+
+        local project = ws._projects["App"]
+
+        -- Create a new configuration
+        local ok = project:save_configuration("Debug-ASAN", {
+            inherits = "Debug",
+            options = { ASAN = "ON" },
+        })
+        assert.is_true(ok)
+
+        -- Configuration domain object exists immediately
+        local cfg = project:get_configuration("Debug-ASAN")
+        assert.is_not_nil(cfg)
+        assert.is_false(cfg._source_missing)
+        assert.is_true(cfg.is_user)
+
+        -- Update config set to use the new configuration
+        local cs = ws._config_sets["custom"]
+        ok = cs:update_mapping(project, "Debug-ASAN")
+        assert.is_true(ok)
+
+        -- PP now resolves the new Configuration
+        for _, profile in pairs(ws._profiles) do
+            if profile._config_set_ref == cs then
+                local pp = profile:project("App")
+                if pp then
+                    assert.equals("Debug-ASAN", pp:variant_name())
+                    assert.is_not_nil(pp:configuration())
+                end
+            end
+        end
     end)
 
     it("execute_save_configuration uses rename for name change", function()
@@ -1820,7 +2046,7 @@ describe("opaque keys", function()
         -- ProfileProjects have correct variants
         local variants = {}
         for _, pp in ipairs(pps) do
-            variants[pp.project_key] = pp.variant
+            variants[pp._project.key] = pp:variant_name()
         end
         assert.equals("Debug", variants["proj-alpha"])
         assert.equals("debug", variants["proj-beta"])
@@ -1854,19 +2080,21 @@ describe("opaque keys", function()
         assert.equals("configured", pp_beta:status())
     end)
 
-    it("Project:config_units_for_variant finds units with arbitrary keys", function()
+    it("Project:config_units_for_configuration finds units with arbitrary keys", function()
         local ws = make_opaque_ws()
         local proj = ws._projects["proj-alpha"]
-        local units = proj:config_units_for_variant("Debug")
+        local cfg = proj:get_configuration("Debug")
+        assert.is_not_nil(cfg)
+        local units = proj:config_units_for_configuration(cfg)
         assert.equals(1, #units)
-        assert.equals("cfg-42", units[1].config_key)
+        assert.equals("cfg-42", units[1]._cached.config_key)
     end)
 
     it("build_dir_refs track arbitrary cache entries", function()
         local ws = make_opaque_ws()
         local refs = ws:get_build_dir_refs("/root/.nvim/build/arbitrary-dir")
         assert.equals(1, #refs)
-        assert.equals("cfg-42", refs[1].config_key)
+        assert.equals("cfg-42", refs[1]._cached.config_key)
     end)
 
     it("config set mapping updates work with arbitrary project keys", function()

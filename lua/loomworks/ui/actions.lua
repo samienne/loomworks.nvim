@@ -6,6 +6,16 @@
 
 local M = {}
 
+--- Get display-friendly project_key and config_key from a ConfigUnit.
+--- @param unit loomworks.ConfigUnit
+--- @return string project_key, string config_key
+local function unit_display_keys(unit)
+    local cached = unit._cached
+    local pkey = unit._project and unit._project.key or (cached and cached.project_key) or "?"
+    local ckey = cached and cached.config_key or unit.id
+    return pkey, ckey
+end
+
 -- ---------------------------------------------------------------------------
 -- Profile action factories (take Profile objects)
 -- ---------------------------------------------------------------------------
@@ -118,8 +128,9 @@ function M.rebuild_configuration(unit)
         local wv = require("loomworks.workspace_view")
         local ws = require("loomworks").get_workspace()
         local items = wv.collect_clean_items_for_unit(unit)
+        local pkey, ckey = unit_display_keys(unit)
         local ctx = wv.compute_clean_confirmation_context(ws,
-            "Rebuild: " .. unit.project_key .. " / " .. unit.config_key, items, { rebuild = true })
+            "Rebuild: " .. pkey .. " / " .. ckey, items, { rebuild = true })
         M._show_confirmation(ctx, function()
             unit:clean(function()
                 require("loomworks.overseer").run_configuration_action(unit, "build")
@@ -134,8 +145,9 @@ function M.clean_configuration(unit)
         local wv = require("loomworks.workspace_view")
         local ws = require("loomworks").get_workspace()
         local items = wv.collect_clean_items_for_unit(unit)
+        local pkey, ckey = unit_display_keys(unit)
         local ctx = wv.compute_clean_confirmation_context(ws,
-            "Clean: " .. unit.project_key .. " / " .. unit.config_key, items)
+            "Clean: " .. pkey .. " / " .. ckey, items)
         M._show_confirmation(ctx, function() unit:clean() end)
     end
 end
@@ -146,8 +158,9 @@ function M.delete_config(unit)
         local wv = require("loomworks.workspace_view")
         local ws = require("loomworks").get_workspace()
         local plan = unit:plan_deletion()
+        local pkey, ckey = unit_display_keys(unit)
         local ctx = wv.compute_delete_confirmation_context(ws,
-            "Delete: " .. unit.project_key .. " / " .. unit.config_key, plan)
+            "Delete: " .. pkey .. " / " .. ckey, plan)
         M._show_confirmation(ctx, function()
             unit:delete(function()
                 vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
@@ -161,16 +174,18 @@ function M.delete_orphaned_config(unit)
     return function()
         local wv = require("loomworks.workspace_view")
         local ws = require("loomworks").get_workspace()
+        local pkey, ckey = unit_display_keys(unit)
         local orphan_plan = {
             items = { {
-                project_key = unit.project_key,
-                config_key = unit.config_key,
+                project_key = pkey,
+                config_key = ckey,
                 disposition = "clean",
+                unit = unit,
             } },
             defined_in_config = false,
         }
         local ctx = wv.compute_delete_confirmation_context(ws,
-            "Delete orphaned: " .. unit.project_key .. " / " .. unit.config_key, orphan_plan)
+            "Delete orphaned: " .. pkey .. " / " .. ckey, orphan_plan)
         M._show_confirmation(ctx, function()
             unit:delete(function()
                 vim.notify("loomworks: orphaned configuration removed", vim.log.levels.INFO)
@@ -229,12 +244,13 @@ end
 --- @param unit loomworks.ConfigUnit
 function M.pin_config(unit)
     return function()
+        local pkey, ckey = unit_display_keys(unit)
         if #unit:referencing_profiles() > 0 then
-            vim.notify("loomworks: already pinned " .. unit.project_key .. " / " .. unit.config_key, vim.log.levels.INFO)
+            vim.notify("loomworks: already pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
             return
         end
         unit:materialize_pinned()
-        vim.notify("loomworks: pinned " .. unit.project_key .. " / " .. unit.config_key, vim.log.levels.INFO)
+        vim.notify("loomworks: pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
     end
 end
 
@@ -402,7 +418,7 @@ function M.show_options(unit)
                 height = 0.8,
                 zindex = 60,
                 backdrop = 60,
-                title = " " .. unit.project_key .. " — Options ",
+                title = " " .. (unit._project and unit._project.key or (unit._cached and unit._cached.project_key) or "?") .. " — Options ",
                 title_pos = "center",
             },
             keymaps = {

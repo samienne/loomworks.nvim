@@ -60,8 +60,8 @@ function M.launch_context(ws, profile, project)
     ctx.project_path = project.path or project.key
 
     -- Configuration set name
-    if profile.configuration_set then
-        ctx.config_set = profile.configuration_set
+    if profile._config_set_ref then
+        ctx.config_set = profile._config_set_ref.name
     end
 
     -- Variant for this project in the active config set

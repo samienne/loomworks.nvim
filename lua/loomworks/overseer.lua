@@ -15,9 +15,10 @@ local function collect_configuration_tasks(unit)
     local mod = modules.get(project.type)
     if not mod or not mod.tasks then return nil end
 
-    local variant = unit.variant
-    local tool = unit:resolve_tool()
-    local tool_data = tool and tool.data or nil
+    local cached = unit._cached
+    local variant = cached and cached.variant or nil
+    local tool = unit._tool
+    local tool_data = tool and tool.data or (cached and cached.tool_data) or nil
 
     -- Get module info
     local abs_path = ws.root .. "/" .. (project.path or project.key)
@@ -29,7 +30,7 @@ local function collect_configuration_tasks(unit)
         path = project.path or project.key,
         type = project.type,
         configuration = variant,
-        configuration_key = unit.config_key,
+        configuration_key = cached and cached.config_key or nil,
         configurations = mod_info.configurations or {},
         type_config = project.type_config,
         tool_data = tool_data,
@@ -45,13 +46,17 @@ local function collect_configuration_tasks(unit)
     local mod_tasks = mod.tasks(project_ctx, variant)
     local by_action = { configure = {}, build = {} }
 
+    local tool_ref = tool and tool:to_ref() or (cached and cached.tool_key and {
+        key = cached.tool_key, data = cached.tool_data,
+    }) or nil
+
     for _, task_def in ipairs(mod_tasks) do
         local lw_meta = task_def.loomworks
         if lw_meta then
             lw_meta.unit = unit
             lw_meta.progress_tool = pt
             lw_meta.variant = variant
-            lw_meta.tool = tool
+            lw_meta.tool = tool_ref
             if by_action[lw_meta.action] then
                 by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
             end
@@ -85,17 +90,18 @@ local function collect_profile_tasks(profile)
         local mod = modules.get(project.type)
         if not mod or not mod.tasks then goto continue end
 
-        local active_config = pp.variant
+        local active_config = pp:variant_name()
         if not active_config then goto continue end
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
+        local pp_cached = pp._cached
         local project_ctx = {
-            name = pp.project_key,
-            path = project.path or pp.project_key,
+            name = project.key,
+            path = project.path or project.key,
             type = project.type,
             configuration = active_config,
-            configuration_key = pp.config_key,
+            configuration_key = pp_cached and pp_cached.config_key or nil,
             configurations = project.configurations,
             type_config = project.type_config or {},
             tool_data = tool_data,
@@ -145,9 +151,10 @@ local function collect_configuration_clean_tasks(unit)
     local mod = modules.get(project.type)
     if not mod or not mod.clean_tasks then return nil end
 
-    local variant = unit.variant
-    local tool = unit:resolve_tool()
-    local tool_data = tool and tool.data or nil
+    local cached = unit._cached
+    local variant = cached and cached.variant or nil
+    local tool = unit._tool
+    local tool_data = tool and tool.data or (cached and cached.tool_data) or nil
 
     local abs_path = ws.root .. "/" .. (project.path or project.key)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
@@ -158,7 +165,7 @@ local function collect_configuration_clean_tasks(unit)
         path = project.path or project.key,
         type = project.type,
         configuration = variant,
-        configuration_key = unit.config_key,
+        configuration_key = cached and cached.config_key or nil,
         configurations = mod_info.configurations or {},
         tool_data = tool_data,
         type_config = project.type_config,
@@ -192,17 +199,18 @@ local function collect_profile_clean_tasks(profile)
         local mod = modules.get(project.type)
         if not mod or not mod.clean_tasks then goto continue end
 
-        local active_config = pp.variant
+        local active_config = pp:variant_name()
         if not active_config then goto continue end
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
+        local pp_cached = pp._cached
         local project_ctx = {
-            name = pp.project_key,
-            path = project.path or pp.project_key,
+            name = project.key,
+            path = project.path or project.key,
             type = project.type,
             configuration = active_config,
-            configuration_key = pp.config_key,
+            configuration_key = pp_cached and pp_cached.config_key or nil,
             configurations = project.configurations,
             tool_data = tool_data,
             type_config = project.type_config,
@@ -271,6 +279,12 @@ local function start_one_task(overseer, task_def, on_complete)
 
         -- Lifecycle subscriptions — ConfigUnit captured directly, no key lookups
         task:subscribe("on_start", function()
+            -- Crash-safe: persist build_dir to cache before the task creates files
+            -- on disk. If we crash mid-configure, the cache still knows about the dir.
+            if lw_meta.build_dir and unit._cached then
+                unit._cached.build_dir = lw_meta.build_dir
+                unit._workspace:_save_cache()
+            end
             unit:register_task(task.id, lw_meta.action)
             emit("task_started", { task_id = task.id, unit = unit, action = lw_meta.action })
         end)
@@ -294,9 +308,8 @@ local function start_one_task(overseer, task_def, on_complete)
             -- listeners, the cache already reflects the final state.
             if status ~= "CANCELED" then
                 unit._workspace:record_task_result({
-                    project_key = unit.project_key,
+                    unit = unit,
                     action = lw_meta.action,
-                    configuration_key = unit.config_key,
                     variant = lw_meta.variant,
                     tool = lw_meta.tool,
                     build_dir = lw_meta.build_dir,

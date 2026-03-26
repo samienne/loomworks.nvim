@@ -1,6 +1,8 @@
 --- loomworks/project.lua — Project object wrapping merged project data.
 --- Provides query methods for running/deleting/cached state.
 
+local Configuration = require("loomworks.configuration")
+
 --- @class loomworks.Project
 --- @field key string project key
 --- @field type string module type ("cmake", "ets", "typescript")
@@ -8,8 +10,7 @@
 --- @field type_config? table module-specific configuration (options, configurations, etc.)
 --- @field launch? table<string, table> launch configurations
 --- @field configuration? string active configuration name
---- @field configuration_key? string cache key for active configuration
---- @field tool? loomworks.ToolRef bundled tool reference (nil for non-keyed modules)
+--- @field _tool? loomworks.Tool direct reference to Tool domain object
 --- @field status loomworks.Status
 --- @field orphaned boolean
 --- @field needs_refresh boolean
@@ -20,6 +21,7 @@
 --- @field cmake? loomworks.ProjectCmakeInfo
 --- @field depends_on? loomworks.Project[] direct references to dependency projects
 --- @field _depends_on_keys? string[] raw keys from merge (resolved to objects in _update)
+--- @field _configurations? table<string, loomworks.Configuration> name -> Configuration domain object
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 local Project = {}
@@ -35,6 +37,7 @@ function Project.new(workspace, key, data)
     self._workspace = workspace
     self.key = key
     self._removed = false
+    self._configurations = {}
     if data then self:_update(data) end
     return self
 end
@@ -47,13 +50,11 @@ function Project:_update(data)
     self.type_config = data.type_config
     self.launch = data.launch
     self.configuration = data.configuration
-    self.configuration_key = data.configuration_key
-    self.tool = data.tool_key and {
-        key = data.tool_key,
-        data = data.tool_data,
-        label = data.tool_label,
-        mod_type = data.tool_mod_type,
-    } or nil
+    -- Resolve Tool domain object from workspace registry
+    self._tool = nil
+    if data.tool_key and self._workspace.find_tool then
+        self._tool = self._workspace:find_tool(data.tool_mod_type or self.type, data.tool_key)
+    end
     self.status = data.status
     self.orphaned = data.orphaned or false
     self.needs_refresh = data.needs_refresh or false
@@ -79,6 +80,85 @@ function Project:_update(data)
             self.depends_on = deps
         end
     end
+    -- Sync Configuration domain objects from configurations dict
+    self:_sync_configurations()
+end
+
+--- Sync Configuration domain objects from the configurations dict.
+--- Creates/updates/removes Configuration objects to match self.configurations.
+--- Also syncs preset configurations (from_preset flag).
+function Project:_sync_configurations()
+    local new_data = self.configurations or {}
+
+    -- Include preset configurations with from_preset flag
+    local all_config_data = {}
+    for name, info in pairs(new_data) do
+        all_config_data[name] = info
+    end
+    if self.preset_configurations then
+        for name, info in pairs(self.preset_configurations) do
+            if not all_config_data[name] then
+                all_config_data[name] = info
+            end
+        end
+    end
+
+    -- Collect unique variant names from cache
+    local cache_variants = {}
+    for _, entry in pairs(self.cached_configurations) do
+        if entry.variant then
+            cache_variants[entry.variant] = true
+        end
+    end
+
+    -- Mark removed (only if absent from both sources AND cache)
+    for name, cfg in pairs(self._configurations) do
+        if not all_config_data[name] and not cache_variants[name] then
+            cfg._removed = true
+            self._configurations[name] = nil
+        end
+    end
+
+    -- Create or update from module/preset sources
+    for name, info in pairs(all_config_data) do
+        local existing = self._configurations[name]
+        if existing then
+            existing:_update(info)
+            existing._source_missing = false
+        else
+            self._configurations[name] = Configuration.new(self, name, info)
+        end
+    end
+
+    -- Enrich from cache: create Configuration for cache-only variants,
+    -- and mark existing ones as source-missing if not in module/preset output
+    for variant_name in pairs(cache_variants) do
+        if not self._configurations[variant_name] then
+            local cfg = Configuration.new(self, variant_name, {})
+            cfg._source_missing = true
+            self._configurations[variant_name] = cfg
+        elseif not all_config_data[variant_name] then
+            self._configurations[variant_name]._source_missing = true
+        end
+    end
+
+    -- Resolve inherits references (all configs exist now)
+    for _, cfg in pairs(self._configurations) do
+        cfg:_resolve_inherits()
+    end
+end
+
+--- Get a Configuration domain object by name.
+--- @param name string configuration name
+--- @return loomworks.Configuration|nil
+function Project:get_configuration(name)
+    return self._configurations[name]
+end
+
+--- Get all Configuration domain objects.
+--- @return table<string, loomworks.Configuration>
+function Project:get_configurations()
+    return self._configurations
 end
 
 function Project:__tostring()
@@ -97,14 +177,14 @@ function Project:config_units()
     return result
 end
 
---- Get ConfigUnits matching a variant name (e.g., "Debug").
+--- Get ConfigUnits matching a Configuration domain object.
 --- For keyed-tool modules this may return multiple units (one per tool).
---- @param variant string
+--- @param configuration loomworks.Configuration
 --- @return loomworks.ConfigUnit[]
-function Project:config_units_for_variant(variant)
+function Project:config_units_for_configuration(configuration)
     local result = {}
     for _, unit in pairs(self._workspace._config_units) do
-        if unit._project == self and unit.variant == variant then
+        if unit._project == self and unit._configuration == configuration then
             result[#result + 1] = unit
         end
     end
@@ -122,21 +202,21 @@ function Project:running_action()
     return nil
 end
 
---- Check if a specific configuration variant is being deleted.
---- @param variant string configuration variant name
+--- Check if a specific configuration is being deleted.
+--- @param configuration loomworks.Configuration
 --- @return boolean
-function Project:is_deleting_config(variant)
-    for _, unit in ipairs(self:config_units_for_variant(variant)) do
+function Project:is_deleting_config(configuration)
+    for _, unit in ipairs(self:config_units_for_configuration(configuration)) do
         if unit:is_deleting() then return true end
     end
     return false
 end
 
---- Get the running action for a specific configuration variant.
---- @param variant string configuration variant name
+--- Get the running action for a specific configuration.
+--- @param configuration loomworks.Configuration
 --- @return string|nil action
-function Project:config_running_action(variant)
-    for _, unit in ipairs(self:config_units_for_variant(variant)) do
+function Project:config_running_action(configuration)
+    for _, unit in ipairs(self:config_units_for_configuration(configuration)) do
         local action = unit:running_action()
         if action then return action end
     end
@@ -149,8 +229,8 @@ end
 --- @return loomworks.CachedConfig|nil
 function Project:cached_config(config_name)
     if not self.cached_configurations then return nil end
-    if self.tool and self.tool.key then
-        local cached = self.cached_configurations[config_name .. ":" .. self.tool.key]
+    if self._tool and self._tool.key then
+        local cached = self.cached_configurations[config_name .. ":" .. self._tool.key]
         if cached then return cached end
     end
     return self.cached_configurations[config_name]
@@ -166,23 +246,25 @@ end
 --- @param ws_root string workspace root path
 --- @return loomworks.ModuleContext
 function Project:to_module_context(ws_root)
+    local tool_key = self._tool and self._tool.key or nil
+    local tool_data = self._tool and self._tool.data or nil
     return {
         name = self.key,
         path = self.path or self.key,
         type = self.type,
         configuration = self.configuration,
-        configuration_key = self.configuration_key,
         configurations = self.configurations,
-        tool_key = self.tool and self.tool.key or nil,
-        tool_data = self.tool and self.tool.data or nil,
+        tool_key = tool_key,
+        tool_data = tool_data,
         workspace_root = ws_root,
-        env = self.tool and self.tool.data and self.tool.data.env or {},
+        env = tool_data and tool_data.env or {},
     }
 end
 
 -- ========================== Mutation methods ==========================
 
 --- Refresh configurations from module info after config changes.
+--- Re-syncs Configuration domain objects so callers see updated names/data.
 function Project:_refresh_configurations()
     local mod = self._workspace._core._deps.modules.get(self.type)
     if not mod or not mod.info then return end
@@ -192,6 +274,7 @@ function Project:_refresh_configurations()
         self.configurations = mod_info.configurations or {}
         self.preset_configurations = mod_info.preset_configurations or nil
     end
+    self:_sync_configurations()
 end
 
 --- Save a project configuration (create or update).

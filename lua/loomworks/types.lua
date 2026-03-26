@@ -81,9 +81,35 @@
 --- @field dependencies? string[] project-owned targets this target links against
 --- @field artifact? string primary output file path (relative to build directory)
 
+-- ========================== Configuration Domain Object ==========================
+
+--- @class loomworks.Configuration
+--- @field name string configuration name (e.g., "Debug", "Debug-asan")
+--- @field variant string|nil CMAKE_BUILD_TYPE or equivalent (nil for abstract)
+--- @field _project loomworks.Project back-reference
+--- @field _inherits loomworks.Configuration[] resolved base configs
+--- @field inherits_names string[] raw base config names
+--- @field options table<string, string>|nil generic options
+--- @field module_config table opaque module-specific data
+--- @field is_default boolean from module detection
+--- @field is_user boolean from user override
+--- @field from_preset boolean from CMakePresets.json
+--- @field role string|nil special role
+--- @field _removed boolean
+
+-- ========================== Tool Domain Object ==========================
+
+--- @class loomworks.Tool
+--- @field key string|nil opaque identifier (nil for default tools)
+--- @field data table module-specific data
+--- @field label string|nil display label
+--- @field mod_type string module type that owns this tool
+--- @field _removed boolean
+
 -- ========================== Tool References ==========================
 
---- Bundled tool reference carried by Profile, Project, and ConfigUnit.
+--- Bundled tool reference used in cache data and module contexts.
+--- Domain objects use Tool references instead; ToolRef is for serialization/matching.
 --- @class loomworks.ToolRef
 --- @field key? string cache key suffix (e.g. "ninja-gcc-12")
 --- @field data? table opaque module-specific tool data

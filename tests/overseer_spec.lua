@@ -6,13 +6,21 @@
 
 local h = require("tests.helpers")
 local ConfigUnit = require("loomworks.config_unit")
+local Project = require("loomworks.project")
 
 --- Build a mock ConfigUnit with a given state.
 --- @param state string ConfigUnit state to simulate
 --- @return loomworks.ConfigUnit
 local function make_unit(project_key, config_key, state)
     local core = h.make_mock_core()
-    local unit = core:get_config_unit(project_key, config_key)
+    if not core._projects[project_key] then
+        core._projects[project_key] = Project.new(core, project_key, {
+            type = "cmake", path = project_key, status = "unconfigured",
+            configurations = {}, cached_configurations = {},
+        })
+    end
+    local project = core._projects[project_key]
+    local unit = core:ensure_config_unit(project, h.get_or_create_config(project, config_key), nil)
 
     -- Set up cached state or running state as needed
     if state == "configuring" then
@@ -132,7 +140,13 @@ describe("overseer launch_tasks", function()
     describe("deferred build waits for configure", function()
         it("fires build after configure completes successfully", function()
             local core = h.make_mock_core()
-            local unit = core:get_config_unit("App", "Debug")
+            if not core._projects["App"] then
+                core._projects["App"] = Project.new(core, "App", {
+                    type = "cmake", path = "App", status = "unconfigured",
+                    configurations = {}, cached_configurations = {},
+                })
+            end
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure") -- state = configuring
 
             local build_fired = false
@@ -182,7 +196,13 @@ describe("overseer launch_tasks", function()
                     }
                 end,
             })
-            local unit = core:get_config_unit("App", "Debug")
+            if not core._projects["App"] then
+                core._projects["App"] = Project.new(core, "App", {
+                    type = "cmake", path = "App", status = "unconfigured",
+                    configurations = {}, cached_configurations = {},
+                })
+            end
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure") -- state = configuring
 
             local build_fired = false
@@ -210,7 +230,13 @@ describe("overseer launch_tasks", function()
 
         it("listener is one-shot (does not fire again after initial trigger)", function()
             local core = h.make_mock_core()
-            local unit = core:get_config_unit("App", "Debug")
+            if not core._projects["App"] then
+                core._projects["App"] = Project.new(core, "App", {
+                    type = "cmake", path = "App", status = "unconfigured",
+                    configurations = {}, cached_configurations = {},
+                })
+            end
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure")
 
             local fire_count = 0
@@ -236,7 +262,13 @@ describe("overseer launch_tasks", function()
 
         it("ignores progress updates during configuring", function()
             local core = h.make_mock_core()
-            local unit = core:get_config_unit("App", "Debug")
+            if not core._projects["App"] then
+                core._projects["App"] = Project.new(core, "App", {
+                    type = "cmake", path = "App", status = "unconfigured",
+                    configurations = {}, cached_configurations = {},
+                })
+            end
+            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
             unit:register_task(1, "configure")
 
             local build_fired = false
@@ -311,14 +343,13 @@ describe("record_task_result state protection", function()
         local core = make_core_with_state("App", "Debug", "built")
 
         -- Verify initial state
-        local unit = core._workspace:get_config_unit("App", "Debug")
+        local unit = core._workspace._config_units["App/Debug"]
         assert.equals("built", unit:state())
 
         -- Record a configure success
         core:record_task_result({
-            project_key = "App",
+            unit = unit,
             action = "configure",
-            configuration_key = "Debug",
             success = true,
         })
 
@@ -329,14 +360,14 @@ describe("record_task_result state protection", function()
     it("updates last_configured even when state stays built", function()
         local core = make_core_with_state("App", "Debug", "built")
 
+        local unit = core._workspace._config_units["App/Debug"]
         core:record_task_result({
-            project_key = "App",
+            unit = unit,
             action = "configure",
-            configuration_key = "Debug",
             success = true,
         })
 
-        local cached = core._workspace:get_config_unit("App", "Debug"):cached_state()
+        local cached = unit:cached_state()
         assert.equals("built", cached.state)
         assert.is_not_nil(cached.last_configured)
     end)
@@ -344,56 +375,55 @@ describe("record_task_result state protection", function()
     it("sets configured state when previously unconfigured", function()
         local core = make_core_with_state("App", "Debug", "unconfigured")
 
+        -- The "unconfigured" skeleton may be cleaned up by _cleanup_orphaned_skeletons
+        -- since no profile references it. Use ensure_config_unit to create it.
+        local project = core._workspace._projects["App"]
+        local unit = core._workspace:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
         core:record_task_result({
-            project_key = "App",
+            unit = unit,
             action = "configure",
-            configuration_key = "Debug",
             success = true,
         })
 
-        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("configured", unit:state())
     end)
 
     it("sets configure_failed on failed configure", function()
         local core = make_core_with_state("App", "Debug", "built")
 
+        local unit = core._workspace._config_units["App/Debug"]
         core:record_task_result({
-            project_key = "App",
+            unit = unit,
             action = "configure",
-            configuration_key = "Debug",
             success = false,
         })
 
-        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("configure_failed", unit:state())
     end)
 
     it("sets built state on successful build", function()
         local core = make_core_with_state("App", "Debug", "configured")
 
+        local unit = core._workspace._config_units["App/Debug"]
         core:record_task_result({
-            project_key = "App",
+            unit = unit,
             action = "build",
-            configuration_key = "Debug",
             success = true,
         })
 
-        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("built", unit:state())
     end)
 
     it("sets build_failed on failed build", function()
         local core = make_core_with_state("App", "Debug", "configured")
 
+        local unit = core._workspace._config_units["App/Debug"]
         core:record_task_result({
-            project_key = "App",
+            unit = unit,
             action = "build",
-            configuration_key = "Debug",
             success = false,
         })
 
-        local unit = core._workspace:get_config_unit("App", "Debug")
         assert.equals("build_failed", unit:state())
     end)
 end)

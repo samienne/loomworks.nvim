@@ -917,10 +917,12 @@ end
 function M.collect_clean_items(profile)
     local items = {}
     for _, pp in ipairs(profile:projects()) do
+        local pp_cached = pp._cached
         items[#items + 1] = {
-            project_key = pp.project_key,
-            config_key = pp.config_key,
+            project_key = pp._project and pp._project.key or (pp_cached and pp_cached.project_key),
+            config_key = pp_cached and pp_cached.config_key,
             build_dir = pp:build_dir(),
+            unit = pp._config_unit,
         }
     end
     return items
@@ -930,10 +932,12 @@ end
 --- @param unit loomworks.ConfigUnit
 --- @return table[]
 function M.collect_clean_items_for_unit(unit)
+    local cached = unit._cached
     return { {
-        project_key = unit.project_key,
-        config_key = unit.config_key,
+        project_key = unit._project and unit._project.key or (cached and cached.project_key),
+        config_key = cached and cached.config_key,
         build_dir = unit:build_dir(),
+        unit = unit,
     } }
 end
 

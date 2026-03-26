@@ -264,9 +264,9 @@ describe("multi-config cmake", function()
 
             local pps = profile:projects()
             for _, pp in ipairs(pps) do
-                if pp.project_key == "Frontend" then
+                if pp._project and pp._project.key == "Frontend" then
                     -- TypeScript project should NOT have a tool suffix
-                    assert.equals("default", pp.config_key,
+                    assert.equals("default", pp._cached and pp._cached.config_key,
                         "typescript project should not have cmake tool suffix")
                 end
             end

@@ -95,11 +95,11 @@ describe("build dir refs", function()
 
         local refs1 = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
         assert.equals(1, #refs1)
-        assert.equals("Debug:ninja-gcc", refs1[1].config_key)
+        assert.equals("Debug:ninja-gcc", refs1[1]._cached.config_key)
 
         local refs2 = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc/Release")
         assert.equals(1, #refs2)
-        assert.equals("Release:ninja-gcc", refs2[1].config_key)
+        assert.equals("Release:ninja-gcc", refs2[1]._cached.config_key)
     end)
 
     it("returns empty table for unknown build dirs", function()
@@ -240,8 +240,8 @@ describe("deletion safety with shared dirs", function()
         -- Delete both configs — dir should be deleted
         local done = false
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir },
-            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir, unit = ws._config_units["App/Debug:ninja-gcc"] },
+            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir, unit = ws._config_units["App/Release:ninja-gcc"] },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()
@@ -276,7 +276,7 @@ describe("deletion safety with shared dirs", function()
 
         local done = false
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir, unit = ws._config_units["App/Debug:ninja-gcc"] },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()

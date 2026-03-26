@@ -11,6 +11,8 @@
 
 local Core = require("loomworks.core")
 local h = require("tests.helpers")
+local merge_mod = require("loomworks.merge")
+local cache_mod = require("loomworks.cache")
 
 --- Find a ConfigurationSet by name from a core's registry.
 --- @param core loomworks.Core
@@ -18,6 +20,39 @@ local h = require("tests.helpers")
 --- @return loomworks.ConfigurationSet
 local function get_cs(core, name)
     return core._workspace._config_sets[name]
+end
+
+--- Get or create a ConfigUnit by project_key and config_key.
+--- Falls back to ensure_config_unit when the unit does not yet exist.
+--- @param core loomworks.Core
+--- @param project_key string
+--- @param config_key string
+--- @return loomworks.ConfigUnit
+local function get_unit(core, project_key, config_key)
+    local id = cache_mod.config_cache_key(project_key, config_key)
+    local unit = core._workspace._config_units[id]
+    if unit then return unit end
+    local project = core._workspace._projects[project_key]
+    assert(project, "project " .. project_key .. " not found in workspace")
+    -- Parse variant and tool from config_key for ensure_config_unit
+    local variant = config_key
+    local tool = nil
+    local colon = config_key:find(":")
+    if colon then
+        variant = config_key:sub(1, colon - 1)
+        local tool_key = config_key:sub(colon + 1)
+        tool = core._workspace:find_tool(project.type, tool_key)
+        if not tool then
+            tool = core._workspace:get_or_create_tool(project.type, tool_key, {}, nil)
+        end
+    end
+    local Configuration = require("loomworks.configuration")
+    local cfg = project:get_configuration(variant)
+    if not cfg then
+        cfg = Configuration.new(project, variant, {})
+        project._configurations[variant] = cfg
+    end
+    return core._workspace:ensure_config_unit(project, cfg, tool)
 end
 
 -- ---------------------------------------------------------------------------
@@ -113,16 +148,15 @@ end
 
 --- Simulate a configure+build result for a config.
 local function simulate_build(core, project_key, config_key, build_dir)
+    local unit = get_unit(core, project_key, config_key)
     core:record_task_result({
-        project_key = project_key,
-        configuration_key = config_key,
+        unit = unit,
         action = "configure",
         success = true,
         build_dir = build_dir,
     })
     core:record_task_result({
-        project_key = project_key,
-        configuration_key = config_key,
+        unit = unit,
         action = "build",
         success = true,
         build_dir = build_dir,
@@ -223,7 +257,7 @@ describe("cache coherence", function()
             })
             core:setup({ root = "/root" })
 
-            core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
+            get_unit(core, "App", "development"):materialize_pinned("development")
             assert_cache_coherent(core, "after materialize_pinned")
             assert.equals(1, count_profiles(core))
 
@@ -237,7 +271,7 @@ describe("cache coherence", function()
             })
             core:setup({ root = "/root" })
 
-            core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
+            get_unit(core, "App", "development"):materialize_pinned("development")
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
             assert.equals(1, count_cached_configs(core))
 
@@ -271,7 +305,7 @@ describe("cache coherence", function()
             assert_cache_coherent(core, "after set-based profile build")
 
             -- Also create an pinned for the same config
-            core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
+            get_unit(core, "App", "development"):materialize_pinned("development")
             assert_cache_coherent(core, "after also creating pinned")
             local n_profiles = count_profiles(core)
             assert.is_true(n_profiles >= 2)
@@ -317,12 +351,12 @@ describe("cache coherence", function()
             assert_cache_coherent(core, "after setup")
 
             -- Build with gcc
-            core._workspace:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
+            get_unit(core, "Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
             simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
             assert_cache_coherent(core, "after gcc build")
 
             -- Build with clang
-            core._workspace:get_config_unit("Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
+            get_unit(core, "Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
             simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
             assert_cache_coherent(core, "after clang build")
             assert.equals(2, count_cached_configs(core))
@@ -364,9 +398,9 @@ describe("cache coherence", function()
             )
             setup({ root = "/root" })
 
-            core._workspace:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
+            get_unit(core, "Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
             simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug")
-            core._workspace:get_config_unit("Lib", "Release:ninja-gcc"):materialize_pinned("Release", { key = "ninja-gcc" })
+            get_unit(core, "Lib", "Release:ninja-gcc"):materialize_pinned("Release", { key = "ninja-gcc" })
             simulate_build(core, "Lib", "Release:ninja-gcc", "/root/.nvim/build/Lib/Release")
             assert.equals(2, count_cached_configs(core))
             assert_cache_coherent(core, "after two builds")
@@ -454,7 +488,7 @@ describe("cache coherence", function()
             simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
             -- Pinned: build Backend with same config (overlapping reference)
-            core._workspace:get_config_unit("Backend", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
+            get_unit(core, "Backend", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
             assert_cache_coherent(core, "after pinned overlapping")
 
             -- Delete pinned — config shared by set-based profile, kept intact
@@ -488,12 +522,12 @@ describe("cache coherence", function()
             })
             core:setup({ root = "/root" })
 
-            core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
+            get_unit(core, "App", "development"):materialize_pinned("development")
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
             assert_cache_coherent(core, "after build")
 
             local done = false
-            core._workspace:get_config_unit("App", "development"):delete(function() done = true end)
+            get_unit(core, "App", "development"):delete(function() done = true end)
             assert.is_true(done)
 
             assert_cache_coherent(core, "after delete_config")
@@ -514,13 +548,13 @@ describe("cache coherence", function()
 
             -- Full profile + pinned both reference the config
             get_cs(core, "debug"):activate()
-            core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
+            get_unit(core, "App", "development"):materialize_pinned("development")
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
             assert_cache_coherent(core, "after build")
 
             -- delete_config resets config (both profiles still ref it)
             local done = false
-            core._workspace:get_config_unit("App", "development"):delete(function() done = true end)
+            get_unit(core, "App", "development"):delete(function() done = true end)
             assert.is_true(done)
 
             assert_cache_coherent(core, "after delete_config with full ref")
@@ -549,13 +583,13 @@ describe("cache coherence", function()
             })
             setup({ root = "/root" })
 
-            core._workspace:get_config_unit("Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
+            get_unit(core, "Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
             simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
-            core._workspace:get_config_unit("Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
+            get_unit(core, "Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
             simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
             assert.equals(2, count_cached_configs(core))
 
-            core._workspace:get_config_unit("Lib", "Debug:ninja-gcc"):delete()
+            get_unit(core, "Lib", "Debug:ninja-gcc"):delete()
             assert_cache_coherent(core, "after delete one tool config")
             -- Both configs still exist (gcc was reset, clang is built)
             assert.equals(2, count_cached_configs(core))
@@ -925,10 +959,9 @@ describe("cache coherence", function()
             assert.equals(3, count_cached_configs(core))
         end)
 
-        it("stale profile with missing config entry leaves other config as orphan", function()
-            -- Profile references a config_key but the config entry is missing from cache
-            -- The profile still holds the reference, so no adoption needed.
-            -- A separate unreferenced config stays as an orphan.
+        it("stale profile with missing config entry refuses to load", function()
+            -- Profile references a config_key but the config entry is missing from cache.
+            -- Cache consistency validation catches this and refuses to load.
             local core = make_tracked_core(
                 {
                     projects = { App = { typescript = {} } },
@@ -956,13 +989,11 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
 
-            -- "production" is orphaned — no pinned profile created
-            assert_cache_coherent(core, "stale profile + orphaned config")
-            assert.equals(1, count_profiles(core))
-
-            local orphans = core:get_orphaned_configs()
-            assert.equals(1, #orphans)
-            assert.equals("production", orphans[1].config_key)
+            -- Setup refuses to load due to cache inconsistency
+            assert.equals("uninitialized", core:state())
+            local err = core:get_setup_error()
+            assert.is_not_nil(err)
+            assert.matches("inconsistent", err.message)
         end)
 
         it("multiple pinned profiles for same project different configs", function()
@@ -1254,7 +1285,7 @@ describe("cache coherence", function()
             core:setup({ root = "/root" })
 
             -- First build
-            core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
+            get_unit(core, "App", "development"):materialize_pinned("development")
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
             assert_cache_coherent(core, "first build")
 
@@ -1265,7 +1296,7 @@ describe("cache coherence", function()
             assert_cache_empty(core, "first delete")
 
             -- Rebuild (materialize_pinned creates a new pinned)
-            core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
+            get_unit(core, "App", "development"):materialize_pinned("development")
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
             assert_cache_coherent(core, "rebuild")
 
@@ -1287,9 +1318,9 @@ describe("cache coherence", function()
             get_cs(core, "debug"):activate()
 
             -- Configure succeeds
+            local unit = get_unit(core, "App", "development")
             core:record_task_result({
-                project_key = "App",
-                configuration_key = "development",
+                unit = unit,
                 action = "configure",
                 success = true,
                 build_dir = "/root/.nvim/build/App/development",
@@ -1298,8 +1329,7 @@ describe("cache coherence", function()
 
             -- Build fails
             core:record_task_result({
-                project_key = "App",
-                configuration_key = "development",
+                unit = unit,
                 action = "build",
                 success = false,
             })
@@ -1322,8 +1352,8 @@ describe("cache coherence", function()
             })
             core:setup({ root = "/root" })
 
-            local key1 = core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
-            local key2 = core._workspace:get_config_unit("App", "development"):materialize_pinned("development")
+            local key1 = get_unit(core, "App", "development"):materialize_pinned("development")
+            local key2 = get_unit(core, "App", "development"):materialize_pinned("development")
             assert.equals(key1, key2)
             assert.equals(1, count_profiles(core))
             assert_cache_coherent(core, "idempotent materialize")
@@ -1541,7 +1571,7 @@ describe("cache coherence", function()
             })
             core:setup({ root = "/root" })
 
-            core._workspace:get_config_unit("App", "production"):materialize_pinned("production")
+            get_unit(core, "App", "production"):materialize_pinned("production")
             assert_cache_coherent(core, "after materialize_pinned")
             assert.equals(1, count_profiles(core))
 
@@ -1926,12 +1956,12 @@ describe("cache coherence", function()
             core:setup({ root = "/root" })
 
             -- plan_config_deletion should return "reset" since set-based profile refs it
-            local plan = core._workspace:get_config_unit("App", "development"):plan_deletion()
+            local plan = get_unit(core, "App", "development"):plan_deletion()
             assert.equals(1, #plan.items)
             assert.equals("reset", plan.items[1].disposition)
 
             -- Execute deletion
-            core._workspace:get_config_unit("App", "development"):delete()
+            get_unit(core, "App", "development"):delete()
             assert_cache_coherent(core, "after config delete with full ref")
 
             -- Config reset to unconfigured (skeleton kept for set-based profile)
@@ -1976,11 +2006,11 @@ describe("cache coherence", function()
             core:setup({ root = "/root" })
 
             -- plan_config_deletion should return "reset" (pinned profile still refs it)
-            local plan = core._workspace:get_config_unit("App", "development"):plan_deletion()
+            local plan = get_unit(core, "App", "development"):plan_deletion()
             assert.equals(1, #plan.items)
             assert.equals("reset", plan.items[1].disposition)
 
-            core._workspace:get_config_unit("App", "development"):delete()
+            get_unit(core, "App", "development"):delete()
             assert_cache_coherent(core, "after config delete with pinned ref")
             assert.equals(1, #rm_calls)
 
@@ -2032,7 +2062,7 @@ describe("cache coherence", function()
             assert.is_nil(debug_profile)
 
             -- referencing_profiles should only find the cached pinned
-            local refs = core._workspace:get_config_unit("App", "development"):referencing_profiles()
+            local refs = get_unit(core, "App", "development"):referencing_profiles()
             assert.equals(1, #refs)
             assert.equals("App/development", refs[1].key)
         end)
@@ -2045,7 +2075,7 @@ describe("cache coherence", function()
             core:setup({ root = "/root" })
 
             -- No cached profiles at all
-            local refs = core._workspace:get_config_unit("App", "development"):referencing_profiles()
+            local refs = get_unit(core, "App", "development"):referencing_profiles()
             assert.equals(0, #refs)
         end)
 
@@ -2083,7 +2113,7 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
 
-            local refs = core._workspace:get_config_unit("App", "development"):referencing_profiles()
+            local refs = get_unit(core, "App", "development"):referencing_profiles()
             assert.equals(2, #refs)
             -- Sorted alphabetically
             assert.equals("debug", refs[1].key)
@@ -2103,16 +2133,16 @@ describe("cache coherence", function()
             core:setup({ root = "/root" })
 
             -- Build both projects via pinned
-            core._workspace:get_config_unit("Backend", "development"):materialize_pinned("development")
+            get_unit(core, "Backend", "development"):materialize_pinned("development")
             simulate_build(core, "Backend", "development", "/root/.nvim/build/Backend/dev")
-            core._workspace:get_config_unit("Frontend", "development"):materialize_pinned("development")
+            get_unit(core, "Frontend", "development"):materialize_pinned("development")
             simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
             assert_cache_coherent(core, "both built")
             assert.equals(2, count_profiles(core))
             assert.equals(2, count_cached_configs(core))
 
             -- Delete Backend config — Frontend unaffected, Backend profile stays
-            core._workspace:get_config_unit("Backend", "development"):delete()
+            get_unit(core, "Backend", "development"):delete()
             assert_cache_coherent(core, "after Backend delete")
             assert.equals(2, count_profiles(core)) -- both pinned profiles stay
             assert.equals(2, count_cached_configs(core)) -- Backend reset, Frontend built
@@ -2148,11 +2178,11 @@ describe("cache coherence", function()
             simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
             -- Also pin Backend via pinned
-            core._workspace:get_config_unit("Backend", "development"):materialize_pinned("development")
+            get_unit(core, "Backend", "development"):materialize_pinned("development")
             assert_cache_coherent(core, "full + pinned")
 
             -- delete_config on Backend — resets config (both profiles still ref it)
-            core._workspace:get_config_unit("Backend", "development"):delete()
+            get_unit(core, "Backend", "development"):delete()
             assert_cache_coherent(core, "after delete_config")
             assert.equals(2, count_cached_configs(core)) -- both still there
             assert.equals(1, #rm_calls) -- Backend build dir cleaned on reset

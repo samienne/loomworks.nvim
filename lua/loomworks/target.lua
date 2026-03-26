@@ -67,9 +67,10 @@ function Target:build(on_complete)
     if mod.build_target_task then
         local ws = unit._workspace
         local project_ctx = unit._project:to_module_context(ws.root)
-        project_ctx.configuration = unit.variant
-        project_ctx.configuration_key = unit.config_key
-        project_ctx.tool_data = unit.tool and unit.tool.data or nil
+        local cached = unit._cached
+        project_ctx.configuration = cached and cached.variant or nil
+        project_ctx.configuration_key = cached and cached.config_key or nil
+        project_ctx.tool_data = unit._tool and unit._tool.data or (cached and cached.tool_data) or nil
         project_ctx.env = project_ctx.tool_data and project_ctx.tool_data.env or {}
 
         local task_def = mod.build_target_task(project_ctx, self.id)
@@ -101,7 +102,7 @@ function Target:launch()
     end
 
     local artifact_path = build_dir .. "/" .. self.artifact
-    local project_name = unit._project and unit._project.key or unit.project_key
+    local project_name = unit._project and unit._project.key or (unit._cached and unit._cached.project_key) or "?"
 
     local overseer = require("loomworks.overseer")
     return overseer.launch_run_task({

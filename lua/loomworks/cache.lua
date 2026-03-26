@@ -2,7 +2,7 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local CURRENT_VERSION = 5
+local CURRENT_VERSION = 6
 
 --- Return the file path for a workspace root.
 --- @param root string
@@ -52,6 +52,32 @@ function M.parse(content)
     end
     raw.configurations = raw.configurations or {}
     return raw, false
+end
+
+--- Validate internal consistency of cache data.
+--- Checks that every configuration referenced by a profile exists in the
+--- configurations dict and has a variant field.
+--- @param data loomworks.CacheData
+--- @return boolean ok, string|nil err
+function M.validate_consistency(data)
+    if not data.profiles then return true end
+    local configs = data.configurations or {}
+    for profile_key, profile in pairs(data.profiles) do
+        if profile.configurations then
+            for _, ck in ipairs(profile.configurations) do
+                local entry = configs[ck]
+                if not entry then
+                    return false, "profile '" .. profile_key
+                        .. "' references missing configuration '" .. ck .. "'"
+                end
+                if not entry.variant then
+                    return false, "configuration '" .. ck
+                        .. "' is missing variant field"
+                end
+            end
+        end
+    end
+    return true
 end
 
 --- Load cache for a workspace.

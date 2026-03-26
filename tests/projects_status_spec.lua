@@ -119,7 +119,19 @@ local function simulate_projects_section_rendering(core, project_key, variant)
     -- Step 2: Replicate resolve_config_status_global -> ConfigUnit:state()
     local results = {}
     for _, entry in ipairs(entries) do
-        local unit = core._workspace:get_config_unit(project_key, entry.config_key)
+        local cache_id = project_key .. "/" .. entry.config_key
+        local unit = core._workspace._config_units[cache_id]
+        if not unit then
+            -- Lazily create for unconfigured entries (detected tools with no cache entry)
+            local ws_project = core._workspace._projects[project_key]
+            if ws_project then
+                local cfg_variant = entry.config_key
+                local colon = cfg_variant:find(":")
+                if colon then cfg_variant = cfg_variant:sub(1, colon - 1) end
+                local cfg_obj = h.get_or_create_config(ws_project, cfg_variant)
+                unit = core._workspace:ensure_config_unit(ws_project, cfg_obj, nil)
+            end
+        end
         local state = unit:state()
         results[#results + 1] = {
             config_key = entry.config_key,
@@ -385,7 +397,7 @@ describe("Projects section cmake status", function()
             "ws.cache should have flat config entry")
 
         -- Verify ConfigUnit reads from the same workspace
-        local unit = core._workspace:get_config_unit("App", "Debug:ninja-gcc-12")
+        local unit = core._workspace._config_units["App/Debug:ninja-gcc-12"]
         local cached = unit:cached_state()
         assert.is_not_nil(cached, "ConfigUnit:cached_state() should find the cache entry")
         assert.equals("built", cached.state)
@@ -416,8 +428,8 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
     local tools_by_type = core:get_tools_by_type()
     -- Derive active_tool_key from the active profile object, matching production code
     local active_profile = active_profile_key and core:get_profiles()[active_profile_key] or nil
-    local active_project_tool = active_profile and active_profile.tools
-            and active_profile.tools[proj.type] or nil
+    local active_project_tool = active_profile and active_profile._tools_raw
+            and active_profile._tools_raw[proj.type] or nil
     local active_tool_key = active_project_tool and active_project_tool.key or nil
     local is_active_project = proj.configuration ~= nil and not proj.orphaned
     local is_active_variant = is_active_project
@@ -457,7 +469,18 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
     -- Compute state + highlight for each entry
     local results = {}
     for _, entry in ipairs(entries) do
-        local unit = core._workspace:get_config_unit(project_key, entry.config_key)
+        local cache_id = project_key .. "/" .. entry.config_key
+        local unit = core._workspace._config_units[cache_id]
+        if not unit then
+            local ws_project = core._workspace._projects[project_key]
+            if ws_project then
+                local cfg_variant = entry.config_key
+                local colon = cfg_variant:find(":")
+                if colon then cfg_variant = cfg_variant:sub(1, colon - 1) end
+                local cfg_obj = h.get_or_create_config(ws_project, cfg_variant)
+                unit = core._workspace:ensure_config_unit(ws_project, cfg_obj, nil)
+            end
+        end
         local state = unit:state()
         local is_spinning = (state == "configuring" or state == "building" or state == "deleting")
         local is_active = is_active_variant and active_tool_key == entry.tool_key

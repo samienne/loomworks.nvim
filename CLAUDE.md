@@ -133,8 +133,8 @@ directory safety before merging:
 These are implementation-specific details not covered by the spec or architecture:
 
 - **Workspace as domain container**: `Workspace` class owns all registries
-  (projects, profiles, config sets, config units, profile projects) and all
-  business logic (sync, merge, cache, operations, deletion, task tracking,
+  (projects, profiles, config sets, config units, profile projects, tools) and
+  all business logic (sync, merge, cache, operations, deletion, task tracking,
   tool scanning). Domain objects store a `_workspace` back-reference.
 - **Core is infrastructure-only**: `Core.new(deps)` with injectable
   dependencies for testing. Owns I/O, modules, events, file tracking, setup.
@@ -151,7 +151,7 @@ These are implementation-specific details not covered by the spec or architectur
 - **Multi-tool profile model**: CachedProfile stores `tools` dict keyed by
   module type (e.g. `{ cmake = { key, data, label } }`), not flat fields.
   Profile objects expose `profile.tools` dict and `profile:tool_for(mod_type)`.
-  Cache version 5. Unified rename via `compute_profile_renames(transform)` +
+  Cache version 6. Unified rename via `compute_profile_renames(transform)` +
   `apply_profile_renames(renames, transform)`.
 - **Bootstrap**: `create_workspace_config()` is a static function on the
   workspace module for creating a new `loomworks.json` on disk (no Workspace
@@ -173,6 +173,33 @@ These are implementation-specific details not covered by the spec or architectur
   shared for build. `acquire_build_dir_lock()` in overseer.lua before task start,
   `release_build_dir_lock()` in task_tracker on complete/dispose (idempotent).
   Prevents concurrent operations from corrupting shared build directories.
+- **Tool domain object** (`tool.lua`): represents a toolchain (ninja-gcc-12,
+  msvc-17-2022). Owned by `Workspace._tool_objects` registry, keyed by
+  `(mod_type, tool_key)`. Created from detection results + cached tool_data.
+  Non-keyed modules (ets, typescript) have a single default Tool with nil key.
+  Domain objects carry `_tool` references. Accessors: `unit:tool_object()`,
+  `profile:tool_object_for(mod_type)`, `pp:tool_object()`.
+- **Configuration domain object** (`configuration.lua`): represents a build
+  variant (Debug, Release, Debug-asan). Owned by `Project._configurations`,
+  created from module.info() output + user overrides + cache enrichment.
+  Separates generic fields (name, variant, inherits, options) from
+  module-specific data (`module_config`). Inheritance uses Configuration
+  references. `_source_missing = true` for configs that exist only in cache
+  (no live module source). Domain objects carry `_configuration` references.
+  Accessors: `unit:configuration()`, `pp:configuration()`,
+  `cs:configuration(project)`, `pp:variant_name()`.
+- **ProfileProject stores `_configuration`** (Configuration object), not a
+  variant string. `pp:variant_name()` returns the name string for callers
+  that need it. `find_config_unit`/`ensure_config_unit` accept Configuration
+  objects (not variant strings).
+- **Cache-sourced Configuration enrichment**: `Project._sync_configurations()`
+  enriches `_configurations` from `cached_configurations` so that every variant
+  in cache always has a Configuration object. Source-missing configs get
+  `_source_missing = true`; the flag clears when the source reappears.
+- **Domain object references coexist with string fields**: ConfigUnit carries
+  both `_tool`/`_configuration` (domain object refs) and `tool`/`variant`
+  (string/table fields from cache). String fields are backward-compatible
+  aliases — new code should use accessor methods.
 
 ## v1 Scope
 

@@ -15,6 +15,7 @@ local Profile = require("loomworks.profile").Profile
 local ProfileProject = require("loomworks.profile").ProfileProject
 local Project = require("loomworks.project")
 local ConfigurationSet = require("loomworks.configuration_set")
+local Tool = require("loomworks.tool")
 
 -- ========================== Static helpers ==========================
 
@@ -141,6 +142,12 @@ function M.assemble(root, config_content, user_content, cache_content)
         cache_data._meta.loomworks_hash = cache_mod.compute_hash(config_content)
     end
 
+    -- Validate cache internal consistency
+    local cache_consistent = true
+    if not cache_version_mismatch then
+        cache_consistent = cache_mod.validate_consistency(cache_data)
+    end
+
     local dir_name = root:match("([^/]+)$") or root
 
     return {
@@ -150,6 +157,7 @@ function M.assemble(root, config_content, user_content, cache_content)
         user = user_data,
         cache = cache_data,
         cache_version_mismatch = cache_version_mismatch,
+        cache_inconsistent = not cache_consistent,
         user_version_mismatch = user_version_mismatch,
     }, nil
 end
@@ -207,6 +215,7 @@ function Workspace.new(core, data)
     self._profile_projects = {}
     self._operations = {}
     self._tools_by_type = {}
+    self._tool_objects = {} -- "mod_type\0tool_key" -> Tool (nil key uses "mod_type\0")
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -217,19 +226,61 @@ function Workspace.new(core, data)
 end
 
 --- Get or create a ConfigUnit for a (project_key, config_key) pair.
---- Get or create a ConfigUnit by project_key and config_key.
---- Uses cache dict key as the internal registry identity.
---- Returns the same instance for the same pair (registry/flyweight pattern).
---- @param project_key string
---- @param config_key string
---- @return loomworks.ConfigUnit
-function Workspace:get_config_unit(project_key, config_key)
-    local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = self._config_units[id]
-    if not unit then
-        unit = ConfigUnit.new(self, id, project_key, config_key)
-        self._config_units[id] = unit
+--- Find an existing ConfigUnit by property match.
+--- @param project loomworks.Project
+--- @param configuration loomworks.Configuration configuration domain object
+--- @param tool? loomworks.Tool tool domain object (nil for non-keyed modules)
+--- @return loomworks.ConfigUnit|nil
+function Workspace:find_config_unit(project, configuration, tool)
+    for _, unit in pairs(self._config_units) do
+        if unit._project == project
+                and unit._configuration == configuration
+                and unit._tool == tool then
+            return unit
+        end
     end
+    return nil
+end
+
+--- Find or create a ConfigUnit for the given project, configuration, and tool.
+--- Searches by properties first. If not found, creates a new cache entry
+--- and ConfigUnit. Key generation is a write-time cache concern only.
+--- @param project loomworks.Project
+--- @param configuration loomworks.Configuration configuration domain object
+--- @param tool? loomworks.Tool tool domain object (nil for non-keyed modules)
+--- @return loomworks.ConfigUnit
+function Workspace:ensure_config_unit(project, configuration, tool)
+    local existing = self:find_config_unit(project, configuration, tool)
+    if existing then return existing end
+
+    -- Generate cache key (write-time concern — opaque identity for the new entry)
+    local variant = configuration.name
+    local tool_key = tool and tool.key or nil
+    local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
+    local id = cache_mod.config_cache_key(project.key, config_key)
+
+    -- Check if a ConfigUnit with this id already exists (created during remerge
+    -- but perhaps with different resolved references)
+    local by_id = self._config_units[id]
+    if by_id then return by_id end
+
+    -- Create cache entry
+    self.cache.configurations = self.cache.configurations or {}
+    if not self.cache.configurations[id] then
+        self.cache.configurations[id] = {
+            project_key = project.key,
+            config_key = config_key,
+            type = project.type,
+            variant = variant,
+            tool_key = tool_key,
+            tool_data = tool and tool.data or nil,
+        }
+        self:_save_cache()
+    end
+
+    -- Create ConfigUnit and register
+    local unit = ConfigUnit.new(self, id, project.key)
+    self._config_units[id] = unit
     return unit
 end
 
@@ -268,11 +319,12 @@ function Workspace:remerge()
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         self, self._tools_by_type)
     self._active_set = active_set
+    self:_sync_tools()                       -- 0. no deps (tools from detection + cache)
     self:_sync_projects()                    -- 1. no deps
     self:_sync_config_sets()                 -- 2. needs Projects
-    self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets
-    self:_sync_profile_projects()            -- 4. needs Profiles
-    self:_sync_config_units()                -- 5. needs Profiles (for config_keys)
+    self:_sync_profiles(all_profile_defs)    -- 3. needs ConfigurationSets, Tools
+    self:_sync_config_units()                -- 4. needs cache data, Projects, Tools
+    self:_sync_profile_projects()            -- 5. needs Profiles, ConfigUnits
     self:_sync_build_dir_refs()              -- 6. needs ConfigUnits (build_dir data)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -285,9 +337,10 @@ end
 function Workspace:_refresh_after_cache_change()
     local all_profile_defs = self._core._deps.merge.get_all_profiles(
         self.config, self.cache, self._tools_by_type)
+    self:_sync_tools()                       -- tools from cache may have changed
     self:_sync_profiles(all_profile_defs)
-    self:_sync_profile_projects()
     self:_sync_config_units()
+    self:_sync_profile_projects()
     self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -456,7 +509,7 @@ function Workspace:_sync_config_units()
         if existing then
             existing:_update()
         else
-            self._config_units[id] = ConfigUnit.new(self, id, info.project_key, info.config_key)
+            self._config_units[id] = ConfigUnit.new(self, id, info.project_key)
         end
     end
 end
@@ -481,6 +534,107 @@ end
 --- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
     return self._build_dir_refs[build_dir] or {}
+end
+
+-- ===========================================================================
+-- Tool object registry
+-- ===========================================================================
+
+--- Registry key for a Tool object.
+--- @param mod_type string
+--- @param tool_key string|nil
+--- @return string
+local function tool_registry_key(mod_type, tool_key)
+    return mod_type .. "\0" .. (tool_key or "")
+end
+
+--- Get or create a Tool object for the given module type and key.
+--- If the tool already exists, updates it in place. Otherwise creates a new one.
+--- @param mod_type string module type (e.g., "cmake")
+--- @param tool_key string|nil opaque identifier (nil for default tools)
+--- @param tool_data table module-specific data
+--- @param tool_label string|nil display label
+--- @return loomworks.Tool
+function Workspace:get_or_create_tool(mod_type, tool_key, tool_data, tool_label)
+    local rk = tool_registry_key(mod_type, tool_key)
+    local existing = self._tool_objects[rk]
+    if existing then
+        existing:_update(tool_data, tool_label)
+        return existing
+    end
+    local tool = Tool.new(mod_type, tool_key, tool_data, tool_label)
+    self._tool_objects[rk] = tool
+    return tool
+end
+
+--- Look up a Tool object by module type and key.
+--- @param mod_type string
+--- @param tool_key string|nil
+--- @return loomworks.Tool|nil
+function Workspace:find_tool(mod_type, tool_key)
+    return self._tool_objects[tool_registry_key(mod_type, tool_key)]
+end
+
+--- Sync Tool objects from detected tools (from _tools_by_type) and cache data.
+--- Creates Tool objects for all detected tools and for cached tool_data that
+--- may not be in the detected set (tool was uninstalled but cache references it).
+function Workspace:_sync_tools()
+    -- Mark all existing tools as potentially removed
+    local seen = {}
+
+    -- From detected tools
+    for mod_type, tools in pairs(self._tools_by_type) do
+        for _, dt in ipairs(tools) do
+            local tool = self:get_or_create_tool(
+                mod_type, dt.tool_key, dt.tool_data, dt.tool_label)
+            seen[tool] = true
+        end
+    end
+
+    -- From cache: tool_data stored inline in configurations and profiles
+    if self.cache.configurations then
+        for _, cc in pairs(self.cache.configurations) do
+            if cc.tool_key and cc.type then
+                local tool = self:get_or_create_tool(
+                    cc.type, cc.tool_key, cc.tool_data or {}, nil)
+                seen[tool] = true
+            end
+        end
+    end
+    if self.cache.profiles then
+        for _, cp in pairs(self.cache.profiles) do
+            if cp.tools then
+                for mod_type, t in pairs(cp.tools) do
+                    if t.key then
+                        local tool = self:get_or_create_tool(
+                            mod_type, t.key, t.data or {}, t.label)
+                        seen[tool] = true
+                    end
+                end
+            end
+        end
+    end
+
+    -- Remove tools that are no longer referenced
+    for rk, tool in pairs(self._tool_objects) do
+        if not seen[tool] then
+            tool._removed = true
+            self._tool_objects[rk] = nil
+        end
+    end
+end
+
+--- Get all Tool objects for a module type.
+--- @param mod_type string
+--- @return loomworks.Tool[]
+function Workspace:get_tools_for_type(mod_type)
+    local result = {}
+    for _, tool in pairs(self._tool_objects) do
+        if tool.mod_type == mod_type and not tool._removed then
+            result[#result + 1] = tool
+        end
+    end
+    return result
 end
 
 -- ===========================================================================
@@ -758,8 +912,10 @@ function Workspace:_build_live_referenced_set()
     local referenced = {}
     for _, profile in pairs(self._profiles) do
         for _, pp in ipairs(profile:projects()) do
-            if pp.config_key then
-                local ck = cache_mod.config_cache_key(pp.project_key, pp.config_key)
+            local pp_cached = pp._cached
+            if pp_cached and pp_cached.config_key then
+                local project_key = pp._project and pp._project.key or pp_cached.project_key
+                local ck = cache_mod.config_cache_key(project_key, pp_cached.config_key)
                 referenced[ck] = true
             end
         end
@@ -815,6 +971,7 @@ function Workspace:get_orphaned_configs()
                 project_key = cached_config.project_key,
                 config_key = cached_config.config_key,
                 cached = cached_config,
+                unit = self._config_units[cache_key],
             }
         end
     end
@@ -944,12 +1101,12 @@ end
 function Workspace:find_running_tasks_for_items(items)
     local matches = {}
     for _, item in ipairs(items) do
-        local unit = self:get_config_unit(item.project_key, item.config_key)
-        if unit._task_id then
+        local unit = item.unit
+        if unit and unit._task_id then
             matches[unit._task_id] = {
-                project_key = unit.project_key,
+                project_key = item.project_key,
                 action = unit:running_action(),
-                configuration_key = unit.config_key,
+                configuration_key = item.config_key,
             }
         end
     end
@@ -994,30 +1151,37 @@ end
 --- Record a task result and update the cache.
 --- @param result loomworks.TaskResult
 function Workspace:record_task_result(result)
-    local project_key = result.project_key
-    local config_key = result.configuration_key
+    local config_unit = result.unit
     local action = result.action
     local success = result.success
     local now = self._core._deps.now()
 
-    -- Ensure cache structure exists
-    local cache_key = self._core._deps.cache.config_cache_key(project_key, config_key)
-    self.cache.configurations = self.cache.configurations or {}
-
-    local project = self._projects[project_key]
-    local proj_type = project and project.type or "unknown"
-
-    if not self.cache.configurations[cache_key] then
-        self.cache.configurations[cache_key] = {
-            project_key = project_key,
-            config_key = config_key,
-            type = proj_type,
-            variant = result.variant,
-            tool_key = result.tool and result.tool.key or nil,
-        }
+    -- Resolve cache entry: prefer ConfigUnit, fall back to key-based cache write
+    local cached_config, cache_key, project, proj_type
+    if config_unit and config_unit._cached then
+        cached_config = config_unit._cached
+        cache_key = config_unit.id
+        project = config_unit._project
+        proj_type = project and project.type or "unknown"
+    elseif result.project_key and result.configuration_key then
+        -- Fallback for results without a ConfigUnit (e.g. buggy multi-config tasks)
+        cache_key = self._core._deps.cache.config_cache_key(result.project_key, result.configuration_key)
+        self.cache.configurations = self.cache.configurations or {}
+        project = self._projects[result.project_key]
+        proj_type = project and project.type or "unknown"
+        if not self.cache.configurations[cache_key] then
+            self.cache.configurations[cache_key] = {
+                project_key = result.project_key,
+                config_key = result.configuration_key,
+                type = proj_type,
+                variant = result.variant,
+                tool_key = result.tool and result.tool.key or nil,
+            }
+        end
+        cached_config = self.cache.configurations[cache_key]
+    else
+        return
     end
-
-    local cached_config = self.cache.configurations[cache_key]
 
     if action == "configure" then
         if success then
@@ -1056,12 +1220,11 @@ function Workspace:record_task_result(result)
     self:_refresh_after_cache_change()
 
     -- Parse file-api targets after successful configure (runtime only, not cached)
-    if action == "configure" and success and result.build_dir then
+    if config_unit and action == "configure" and success and result.build_dir then
         if proj_type ~= "unknown" then
             local mod = self._core._deps.modules.get(proj_type)
             if mod and mod.parse_file_api then
-                local unit = self:get_config_unit(project_key, config_key)
-                unit:set_targets(mod.parse_file_api(result.build_dir, result.variant))
+                config_unit:set_targets(mod.parse_file_api(result.build_dir, result.variant))
             end
         end
     end
@@ -1151,7 +1314,25 @@ function Workspace:_validate_build_dir(build_dir, safe_prefix)
     return true
 end
 
+--- Remove empty ancestor directories up to (but not including) the stop path.
+--- Synchronous — only removes genuinely empty directories.
+--- @param dir string normalized path of the deleted directory
+--- @param stop string normalized path to stop at (build root)
+function Workspace:_cleanup_empty_ancestors(dir, stop)
+    local uv = vim.uv or vim.loop
+    local parent = dir:match("^(.+)/[^/]+$")
+    while parent and #parent > #stop do
+        local handle = uv.fs_scandir(parent)
+        if not handle then break end
+        local name = uv.fs_scandir_next(handle)
+        if name then break end -- not empty
+        uv.fs_rmdir(parent)
+        parent = parent:match("^(.+)/[^/]+$")
+    end
+end
+
 --- Delete multiple build directories asynchronously via subprocesses (parallel).
+--- After deletion, cleans up empty ancestor directories up to the build root.
 --- @param dirs string[] list of normalized directory paths
 --- @param callback fun(results: {dir: string, ok: boolean, err: string|nil}[])
 function Workspace:_delete_build_dirs_async(dirs, callback)
@@ -1160,11 +1341,15 @@ function Workspace:_delete_build_dirs_async(dirs, callback)
         return
     end
 
+    local build_root = self._core._deps.normalize(self.root .. "/.nvim/build")
     local results = {}
     local remaining = #dirs
     for _, dir in ipairs(dirs) do
         self._core._deps.io.rm_rf_async(dir, function(ok, err)
             results[#results + 1] = { dir = dir, ok = ok, err = err }
+            if ok then
+                self:_cleanup_empty_ancestors(dir, build_root)
+            end
             remaining = remaining - 1
             if remaining == 0 then
                 callback(results)
@@ -1190,7 +1375,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
     -- Cancel any active build/configure Operations on the affected units
     local units = {}
     for _, item in ipairs(items) do
-        units[#units + 1] = self:get_config_unit(item.project_key, item.config_key)
+        if item.unit then
+            units[#units + 1] = item.unit
+        end
     end
     self:cancel_conflicting_operations(units)
 
@@ -1429,10 +1616,10 @@ function Workspace:_scan_targets_async()
                 scan_type = "file_api",
                 build_dir = build_dir,
             }
-        elseif mod.parse_targets_async and not seen_projects[unit.project_key] then
+        elseif mod.parse_targets_async and not seen_projects[project.key] then
             -- Project-level target scan (e.g., npm scripts) -- once per project
-            seen_projects[unit.project_key] = true
-            local abs_path = self.root .. "/" .. (project.path or unit.project_key)
+            seen_projects[project.key] = true
+            local abs_path = self.root .. "/" .. (project.path or project.key)
             units[#units + 1] = {
                 unit = unit, mod = mod,
                 scan_type = "project",
@@ -1471,9 +1658,11 @@ function Workspace:_scan_targets_async()
         end
 
         if entry.scan_type == "file_api" then
-            entry.mod.parse_file_api_async(entry.build_dir, entry.unit.variant, on_targets)
+            local variant = entry.unit._cached and entry.unit._cached.variant
+            entry.mod.parse_file_api_async(entry.build_dir, variant, on_targets)
         else
-            entry.mod.parse_targets_async(entry.project_path, entry.unit.variant, on_targets)
+            local variant = entry.unit._cached and entry.unit._cached.variant
+            entry.mod.parse_targets_async(entry.project_path, variant, on_targets)
         end
     end
 

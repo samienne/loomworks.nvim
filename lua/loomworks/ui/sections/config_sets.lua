@@ -142,7 +142,14 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
         end
         table.sort(proj_names, function(a, b) return a.key < b.key end)
         for _, entry in ipairs(proj_names) do
-            tree:leaf(entry.key .. " → " .. entry.variant, "Comment")
+            local project = cs._workspace._projects[entry.key]
+            local cfg_missing = project
+                and not project:get_configuration(entry.variant)
+            if cfg_missing then
+                tree:leaf(entry.key .. " → " .. entry.variant .. " (missing)", "DiagnosticWarn")
+            else
+                tree:leaf(entry.key .. " → " .. entry.variant, "Comment")
+            end
         end
     end)
 
@@ -300,7 +307,7 @@ return function(tree, ctx)
     for _, entry in ipairs(sorted) do
         local cs = entry.cs
         local is_active_set = active_profile
-                and active_profile.configuration_set == cs.name
+                and active_profile._config_set_ref == cs
         local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
         local sname = cs.name
 

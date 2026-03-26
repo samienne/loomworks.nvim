@@ -5,6 +5,7 @@
 --- @class loomworks.ConfigurationSet
 --- @field name string configuration set name
 --- @field mappings table<loomworks.Project, string> project -> variant
+--- @field _configuration_mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
 local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 
@@ -25,13 +26,22 @@ end
 --- Update mappings in place (preserves table identity).
 --- Receives raw { project_key: variant } from config.configuration_sets and
 --- resolves project_key → Project objects from Workspace's registry.
+--- Also resolves Configuration objects from Project's registry.
 --- @param raw_mappings table<string, string> project_key -> variant
 function ConfigurationSet:_update(raw_mappings)
     self.mappings = {}
+    self._configuration_mappings = {}
     for project_key, variant in pairs(raw_mappings) do
         local project = self._workspace._projects[project_key]
         if project then
             self.mappings[project] = variant
+            -- Resolve Configuration domain object
+            if project._configurations then
+                local cfg = project._configurations[variant]
+                if cfg then
+                    self._configuration_mappings[project] = cfg
+                end
+            end
         end
     end
 end
@@ -45,6 +55,13 @@ end
 --- @return string|nil
 function ConfigurationSet:variant(project)
     return self.mappings[project]
+end
+
+--- Get the Configuration object for a project in this set.
+--- @param project loomworks.Project
+--- @return loomworks.Configuration|nil
+function ConfigurationSet:configuration(project)
+    return self._configuration_mappings and self._configuration_mappings[project] or nil
 end
 
 --- Return raw mappings (project_key → variant) for serialization.
@@ -94,12 +111,12 @@ function ConfigurationSet:find_profile(tool_entry)
     local tool_data = tool_entry and tool_entry.tool_data or nil
     local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
     for _, profile in pairs(self._workspace._profiles) do
-        if profile.configuration_set == self.name then
-            if not tool_data and not profile.tools then
+        if profile._configuration_set_name == self.name then
+            if not tool_data and not profile._tools_raw then
                 return profile
             end
-            if tool_mod_type and profile.tools then
-                local profile_tool = profile.tools[tool_mod_type]
+            if tool_mod_type and profile._tools_raw then
+                local profile_tool = profile._tools_raw[tool_mod_type]
                 if profile_tool then
                     local mods = require("loomworks.modules")
                     local mod = mods.get(tool_mod_type)

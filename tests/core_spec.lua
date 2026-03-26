@@ -1,5 +1,6 @@
 local Core = require("loomworks.core")
 local ConfigUnit = require("loomworks.config_unit")
+local cache_mod = require("loomworks.cache")
 local h = require("tests.helpers")
 
 --- Find a ConfigurationSet by name from a core's registry.
@@ -8,6 +9,40 @@ local h = require("tests.helpers")
 --- @return loomworks.ConfigurationSet|nil
 local function get_cs(core, name)
     return core:get_config_sets()[name]
+end
+
+--- Get or create a ConfigUnit from the workspace by project_key and config_key.
+--- Falls back to ensure_config_unit when the unit does not yet exist in the registry.
+--- If the project doesn't exist either, creates a bare ConfigUnit directly.
+--- @param core loomworks.Core
+--- @param project_key string
+--- @param config_key string
+--- @return loomworks.ConfigUnit
+local function get_unit(core, project_key, config_key)
+    local ws = core._workspace
+    local id = cache_mod.config_cache_key(project_key, config_key)
+    local unit = ws._config_units[id]
+    if unit then return unit end
+    local project = ws._projects[project_key]
+    if not project then
+        -- Project not in workspace — create bare ConfigUnit (test-only scenario)
+        unit = ConfigUnit.new(ws, id, project_key)
+        ws._config_units[id] = unit
+        return unit
+    end
+    local variant = config_key
+    local tool = nil
+    local colon = config_key:find(":")
+    if colon then
+        variant = config_key:sub(1, colon - 1)
+        local tool_key = config_key:sub(colon + 1)
+        tool = ws:find_tool(project.type, tool_key)
+        if not tool then
+            tool = ws:get_or_create_tool(project.type, tool_key, {}, nil)
+        end
+    end
+    local cfg = h.get_or_create_config(project, variant)
+    return ws:ensure_config_unit(project, cfg, tool)
 end
 
 --- Create a Core with mocked deps and standard test files.
@@ -185,7 +220,7 @@ describe("Core", function()
             local core = make_core()
             core:setup({ root = "/root" })
             assert.is_false(core:has_running_tasks())
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(42, "build")
             assert.is_true(core:has_running_tasks())
             unit:unregister_task(42)
@@ -205,10 +240,10 @@ describe("Core", function()
                 },
             })
             core:setup({ root = "/root" })
+            local unit = get_unit(core, "App", "Debug")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "configure",
-                configuration_key = "Debug",
                 success = true,
                 build_dir = "/root/.nvim/build/App/Debug",
             })
@@ -230,10 +265,10 @@ describe("Core", function()
                 },
             })
             core:setup({ root = "/root" })
+            local unit = get_unit(core, "App", "Debug")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "build",
-                configuration_key = "Debug",
                 success = false,
             })
             assert.is_not_nil(saved_cache)
@@ -281,7 +316,7 @@ describe("Core", function()
             local profile = core:get_profiles()["debug"]
             assert.is_not_nil(profile)
             assert.equals("debug", profile.key)
-            assert.equals("debug", profile.configuration_set)
+            assert.equals("debug", profile._configuration_set_name)
         end)
 
     end)
@@ -932,11 +967,13 @@ describe("Core", function()
         it("finds matching tasks", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            core._workspace:get_config_unit("App", "Debug"):register_task(1, "build")
-            core._workspace:get_config_unit("Lib", "Debug"):register_task(2, "configure")
+            local app_unit = get_unit(core, "App", "Debug")
+            local lib_unit = get_unit(core, "Lib", "Debug")
+            app_unit:register_task(1, "build")
+            lib_unit:register_task(2, "configure")
 
             local matches = core:find_running_tasks_for_items({
-                { project_key = "App", config_key = "Debug" },
+                { project_key = "App", config_key = "Debug", unit = app_unit },
             })
             assert.is_not_nil(matches[1])
             assert.is_nil(matches[2])
@@ -981,7 +1018,7 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            local plan = core._workspace:get_config_unit("App", "development"):plan_deletion()
+            local plan = get_unit(core, "App", "development"):plan_deletion()
             assert.equals(1, #plan.items)
             assert.equals("App", plan.items[1].project_key)
             assert.equals("/root/.nvim/build/App/development", plan.items[1].build_dir)
@@ -1040,7 +1077,7 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            local plan = core._workspace:get_config_unit("App", "Debug:ninja-gcc"):plan_deletion()
+            local plan = get_unit(core, "App", "Debug:ninja-gcc"):plan_deletion()
             -- Config is referenced by set-based profile — disposition is "reset"
             assert.equals(1, #plan.items)
             assert.equals("reset", plan.items[1].disposition)
@@ -1166,7 +1203,7 @@ describe("Core", function()
             core:execute_deletion(plan, nil, function() done = true end)
             assert.is_true(done)
             -- After completion, deleting flag should be cleared
-            assert.is_false(core._workspace:get_config_unit("App", "dev"):is_deleting())
+            assert.is_false(get_unit(core, "App", "dev"):is_deleting())
         end)
 
         it("removes profile from cache.profiles on profile deletion", function()
@@ -1305,7 +1342,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local refs = core._workspace:get_config_unit("App", "development"):referencing_profiles()
+            local refs = get_unit(core, "App", "development"):referencing_profiles()
             assert.equals(1, #refs)
             assert.equals("App/development", refs[1].key)
         end)
@@ -1593,7 +1630,7 @@ describe("Core", function()
             core:setup({ root = "/root" })
             assert.equals(1, #core:get_orphaned_configs())
 
-            core._workspace:get_config_unit("App", "production"):delete()
+            get_unit(core, "App", "production"):delete()
             assert.equals(0, #core:get_orphaned_configs())
             -- Cache should no longer have the config
             assert.is_not_nil(saved_cache)
@@ -1752,7 +1789,7 @@ describe("Core", function()
             core:setup({ root = "/root" })
             assert.equals(1, #core:get_orphaned_configs())
 
-            core._workspace:get_config_unit("App", "feature-config"):delete()
+            get_unit(core, "App", "feature-config"):delete()
 
             -- Orphan should be gone
             assert.equals(0, #core:get_orphaned_configs())
@@ -1847,7 +1884,7 @@ describe("Core", function()
                 { cache = { save = function() return true end } }
             )
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "dev")
+            local unit = get_unit(core, "App", "dev")
             unit:mark_deleting(true)
             -- Create a deletion Operation so has_pending_deletions returns true
             core:create_operation(nil, "clean", { unit }, { [unit] = "unconfigured" })
@@ -1862,7 +1899,7 @@ describe("Core", function()
         it("stores and retrieves progress via ConfigUnit", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             unit:update_progress(1, { current = 3, total = 10 })
             local p = unit:progress()
@@ -1874,14 +1911,14 @@ describe("Core", function()
         it("returns nil for non-running config", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             assert.is_nil(unit:progress())
         end)
 
         it("clears progress on unregister", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             unit:update_progress(1, { current = 3, total = 10 })
             unit:unregister_task(1)
@@ -1891,7 +1928,7 @@ describe("Core", function()
         it("emits state_change on progress update", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             local fired = false
             unit:on_state_change(function() fired = true end)
@@ -1902,7 +1939,7 @@ describe("Core", function()
         it("ignores progress when no task registered", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             -- Should not error
             unit:update_progress(999, { current = 1, total = 1 })
             assert.is_nil(unit:progress())
@@ -1916,7 +1953,7 @@ describe("Core", function()
                 clock = function() return time end,
             })
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             time = 142
             assert.equals(42, unit:elapsed())
@@ -1925,14 +1962,14 @@ describe("Core", function()
         it("returns nil for non-running config", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             assert.is_nil(unit:elapsed())
         end)
 
         it("clears elapsed on unregister", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             unit:unregister_task(1)
             assert.is_nil(unit:elapsed())
@@ -1977,7 +2014,7 @@ describe("Core", function()
         it("tracks a running operation", function()
             local core, profile, time = make_op_core()
             time.value = 100
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             local op = core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
@@ -1992,7 +2029,7 @@ describe("Core", function()
         it("finishes operation with success message", function()
             local core, profile, time = make_op_core()
             time.value = 100
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
@@ -2012,7 +2049,7 @@ describe("Core", function()
 
         it("finishes operation with failure message", function()
             local core, profile, time = make_op_core()
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "configure")
             core:create_operation(profile, "configure", { unit }, { [unit] = "configured" })
 
@@ -2029,7 +2066,7 @@ describe("Core", function()
 
         it("configure+build operation uses generic verb", function()
             local core, profile, time = make_op_core()
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             core:create_operation(profile, "configure+build", { unit }, { [unit] = "built" })
 
@@ -2043,7 +2080,7 @@ describe("Core", function()
 
         it("new operation replaces previous result", function()
             local core, profile, time = make_op_core()
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
 
             -- First operation completes
             unit:register_task(1, "build")
@@ -2070,7 +2107,7 @@ describe("Core", function()
 
         it("emits operation events", function()
             local core, profile, time = make_op_core()
-            local unit = core._workspace:get_config_unit("App", "Debug")
+            local unit = get_unit(core, "App", "Debug")
             unit:register_task(1, "build")
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
@@ -2125,16 +2162,15 @@ describe("Core", function()
 
         it("configure then build -> built", function()
             local core, get_cache = make_recording_core()
+            local unit = get_unit(core, "App", "development")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "configure",
-                configuration_key = "development",
                 success = true,
             })
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "build",
-                configuration_key = "development",
                 success = true,
             })
             local state = get_cache().configurations["App/development"]
@@ -2145,10 +2181,10 @@ describe("Core", function()
 
         it("records build_dir from result", function()
             local core, get_cache = make_recording_core()
+            local unit = get_unit(core, "App", "development")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "configure",
-                configuration_key = "development",
                 success = true,
                 build_dir = "/root/.nvim/build/App/development",
             })
@@ -2158,10 +2194,10 @@ describe("Core", function()
 
         it("records cmake data from result", function()
             local core, get_cache = make_recording_core()
+            local unit = get_unit(core, "App", "development")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "configure",
-                configuration_key = "development",
                 success = true,
                 cmake = { compile_commands_dir = "/root/.nvim/build/App/development" },
             })
@@ -2178,11 +2214,10 @@ describe("Core", function()
                 compiler_id = "gcc-14.2.0",
                 compiler_path = "/usr/bin/g++-14",
             }
+            local unit = get_unit(core, "App", "Debug:ninja-gcc-14.2.0")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "configure",
-                configuration_key = "Debug:ninja-gcc-14.2.0",
-                variant = "Debug",
                 success = true,
                 tool = { key = "ninja-gcc-14.2.0", data = tool_data },
             })
@@ -2197,20 +2232,17 @@ describe("Core", function()
         it("preserves existing tool_data when result has no tool_data", function()
             local core, get_cache = make_recording_core()
             -- First, record with tool
+            local unit = get_unit(core, "App", "Debug")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "configure",
-                configuration_key = "Debug",
-                variant = "Debug",
                 success = true,
                 tool = { key = "ninja-gcc-14.2.0", data = { id = "ninja-gcc-14.2.0", display = "Ninja - GCC 14.2.0" } },
             })
             -- Second, record build without tool
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "build",
-                configuration_key = "Debug",
-                variant = "Debug",
                 success = true,
             })
             local cached = get_cache().configurations["App/Debug"]
@@ -2248,10 +2280,10 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
+            local unit = get_unit(core, "App", "Debug")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "configure",
-                configuration_key = "Debug",
                 variant = "Debug",
                 success = true,
                 build_dir = "/root/.nvim/build/App/Debug",
@@ -2263,7 +2295,6 @@ describe("Core", function()
             assert.equals("Debug", parse_args.config_name)
 
             -- Targets should be stored on ConfigUnit (not in cache)
-            local unit = core._workspace:get_config_unit("App", "Debug")
             assert.is_not_nil(unit.targets)
             assert.equals("executable", unit.targets.app.type)
             assert.are.same({ "libcore" }, unit.targets.app.dependencies)
@@ -2295,10 +2326,10 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
+            local unit = get_unit(core, "App", "Debug")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "configure",
-                configuration_key = "Debug",
                 success = false,
                 build_dir = "/root/.nvim/build/App/Debug",
             })
@@ -2331,10 +2362,10 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
+            local unit = get_unit(core, "App", "Debug")
             core:record_task_result({
-                project_key = "App",
+                unit = unit,
                 action = "build",
-                configuration_key = "Debug",
                 success = true,
                 build_dir = "/root/.nvim/build/App/Debug",
             })
@@ -2386,7 +2417,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local options = core._workspace:get_config_unit("App", "Debug"):options()
+            local options = get_unit(core, "App", "Debug"):options()
             assert.is_not_nil(options)
             assert.equals(1, #options)
             assert.equals("Project Options", options[1].label)
@@ -2415,7 +2446,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local options = core._workspace:get_config_unit("App", "Debug"):options()
+            local options = get_unit(core, "App", "Debug"):options()
             assert.is_nil(options)
         end)
 
@@ -2452,7 +2483,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local options = core._workspace:get_config_unit("App", "Debug"):options()
+            local options = get_unit(core, "App", "Debug"):options()
             assert.is_nil(options)
         end)
     end)
@@ -2517,6 +2548,54 @@ describe("Core", function()
             local core = make_core()
             core:setup({ root = "/test" })
             assert.is_nil(core:get_setup_error())
+        end)
+    end)
+
+    describe("cache inconsistency", function()
+        local function make_inconsistent_core(dep_overrides)
+            -- Profile references a configuration that doesn't exist
+            local files = {
+                ["loomworks.json"] = h.make_config_json(),
+                ["loomworks.cache.json"] = vim.json.encode({
+                    _meta = { version = 6, loomworks_hash = "", cached_at = "" },
+                    configurations = {},
+                    profiles = {
+                        ["debug:ninja-gcc"] = {
+                            configuration_set = "debug",
+                            configurations = { "App/Debug:ninja-gcc" },
+                        },
+                    },
+                }),
+            }
+            local deps = h.make_test_deps(files, dep_overrides)
+            return Core.new(deps), deps
+        end
+
+        it("refuses to load workspace on cache inconsistency", function()
+            local core = make_inconsistent_core()
+            core:setup({ root = "/test" })
+            assert.equals("uninitialized", core:state())
+            assert.is_nil(core:get_workspace())
+        end)
+
+        it("stores setup error with inconsistency message", function()
+            local core = make_inconsistent_core()
+            core:setup({ root = "/test" })
+            local err = core:get_setup_error()
+            assert.is_not_nil(err)
+            assert.equals("/test", err.root)
+            assert.matches("inconsistent", err.message)
+        end)
+
+        it("notifies user on cache inconsistency", function()
+            local notifications = {}
+            local core = make_inconsistent_core({
+                notify = function(msg, level) notifications[#notifications + 1] = { msg = msg, level = level } end,
+            })
+            core:setup({ root = "/test" })
+            assert.equals(1, #notifications)
+            assert.matches("inconsistent", notifications[1].msg)
+            assert.equals(vim.log.levels.ERROR, notifications[1].level)
         end)
     end)
 
