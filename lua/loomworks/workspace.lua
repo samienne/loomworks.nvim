@@ -209,6 +209,7 @@ function Workspace.new(core, data)
 
     -- Object registries (moved from Core)
     self._active_set = nil
+    self._active_profile = nil
     self._config_units = {}
     self._config_sets = {}
     self._profiles = {}
@@ -256,15 +257,6 @@ end
 --- @return loomworks.Project|nil
 function Workspace:find_project(key)
     for _, p in pairs(self._projects) do
-        if p.key == key then return p end
-    end
-end
-
---- Find a Profile by key (O(n) scan).
---- @param key string profile key
---- @return loomworks.Profile|nil
-function Workspace:find_profile(key)
-    for _, p in pairs(self._profiles) do
         if p.key == key then return p end
     end
 end
@@ -399,6 +391,7 @@ function Workspace:remerge()
     self:_sync_config_units(ctx)
     self:_sync_profile_projects(ctx)
     self:_sync_build_dir_refs()
+    self:_resolve_active_profile()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -418,7 +411,22 @@ function Workspace:_refresh_after_cache_change()
     self:_sync_config_units(ctx)
     self:_sync_profile_projects(ctx)
     self:_sync_build_dir_refs()
+    self:_resolve_active_profile()
     self._core._deps.events.emit("active_set_changed", self._active_set)
+end
+
+--- Resolve the active Profile object from the active set name.
+--- Called at the end of remerge/refresh to cache the resolved reference.
+function Workspace:_resolve_active_profile()
+    self._active_profile = nil
+    local active_set = self._active_set
+    if not active_set or not active_set.name then return end
+    for _, p in pairs(self._profiles) do
+        if p.key == active_set.name then
+            self._active_profile = p
+            return
+        end
+    end
 end
 
 --- Sync the profiles registry with current merge data.
@@ -972,12 +980,10 @@ function Workspace:get_active_configuration_set()
     return self._active_set
 end
 
---- Get the active Profile object.
+--- Get the active Profile object (resolved during remerge/refresh).
 --- @return loomworks.Profile|nil
 function Workspace:get_active_profile()
-    local active_set = self._active_set
-    if not active_set or not active_set.name then return nil end
-    return self:find_profile(active_set.name)
+    return self._active_profile
 end
 
 --- Get all Profile objects as a dict (keyed by profile key).

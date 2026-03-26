@@ -654,7 +654,7 @@ describe("orphan lifecycle", function()
 
         -- Profile is orphaned_set
         local profiles = ws:get_config_sets()
-        local profile = ws:find_profile("Debug")
+        local profile = ws:get_profiles()["Debug"]
         assert.is_not_nil(profile)
         assert.is_true(profile.orphaned_set)
 
@@ -1295,7 +1295,7 @@ describe("configuration rename propagation", function()
         })
 
         -- Before rename: PP resolves correctly
-        local profile = ws:find_profile("asan:ninja-gcc")
+        local profile = ws:get_profiles()["asan:ninja-gcc"]
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.is_not_nil(pp)
@@ -1314,7 +1314,7 @@ describe("configuration rename propagation", function()
         assert.is_nil(project:get_configuration("Debug-asan"))
 
         -- PP resolves the renamed Configuration
-        profile = ws:find_profile("asan:ninja-gcc")
+        profile = ws:get_profiles()["asan:ninja-gcc"]
         pp = profile:project("App")
         assert.is_not_nil(pp)
         assert.equals("DebugASAN", pp:variant_name())
@@ -1352,7 +1352,7 @@ describe("configuration rename propagation", function()
         })
 
         -- Before rename: PP works
-        local profile = ws:find_profile("App/Debug-asan:ninja-gcc")
+        local profile = ws:get_profiles()["App/Debug-asan:ninja-gcc"]
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.equals("Debug-asan", pp:variant_name())
@@ -1364,8 +1364,8 @@ describe("configuration rename propagation", function()
         assert.is_true(ok)
 
         -- Pinned profile key changed
-        assert.is_nil(ws:find_profile("App/Debug-asan:ninja-gcc"))
-        profile = ws:find_profile("App/DebugASAN:ninja-gcc")
+        assert.is_nil(ws:get_profiles()["App/Debug-asan:ninja-gcc"])
+        profile = ws:get_profiles()["App/DebugASAN:ninja-gcc"]
         assert.is_not_nil(profile)
 
         -- PP resolves new name
@@ -1413,7 +1413,7 @@ describe("configuration rename propagation", function()
         assert.is_true(old_unit:is_running())
 
         -- Verify ProfileProject sees the running state before rename
-        local profile = ws:find_profile("debug:ninja-gcc")
+        local profile = ws:get_profiles()["debug:ninja-gcc"]
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.is_not_nil(pp)
@@ -1434,7 +1434,7 @@ describe("configuration rename propagation", function()
         assert.is_true(rawequal(old_unit, new_unit))
 
         -- ProfileProject should still see running state
-        profile = ws:find_profile("debug:ninja-gcc")
+        profile = ws:get_profiles()["debug:ninja-gcc"]
         pp = profile:project("App")
         assert.is_not_nil(pp)
         assert.equals("build", pp:running_action())
@@ -1479,7 +1479,7 @@ describe("configuration rename propagation", function()
         assert.is_true(cfg._source_missing)
 
         -- PP resolves the cache-enriched Configuration
-        local profile = ws:find_profile("custom:ninja-gcc")
+        local profile = ws:get_profiles()["custom:ninja-gcc"]
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.is_not_nil(pp)

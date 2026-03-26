@@ -215,7 +215,7 @@ function ConfigUnit:set_targets(raw)
 end
 
 --- Materialize a skeleton cache entry for this configuration.
---- Used for configuration-level build/configure actions.
+--- Creates the entry and updates self._cached directly — no remerge needed.
 --- @param variant? string configuration variant name
 --- @param tool? loomworks.ToolRef tool reference { key, data }
 function ConfigUnit:materialize(variant, tool)
@@ -256,7 +256,7 @@ function ConfigUnit:materialize(variant, tool)
     ws.cache.configurations = ws.cache.configurations or {}
     local existing = ws.cache.configurations[self.id]
     if not existing then
-        ws.cache.configurations[self.id] = {
+        local entry = {
             project_key = project_key,
             config_key = config_key,
             type = self._project.type,
@@ -264,9 +264,9 @@ function ConfigUnit:materialize(variant, tool)
             tool_key = tool_key,
             tool_data = tool_data,
         }
-
+        ws.cache.configurations[self.id] = entry
+        self._cached = entry
         ws:_save_cache()
-        ws:remerge()
     elseif existing.variant ~= mat_variant and mat_variant then
         -- Repair stale variant in cache
         existing.variant = mat_variant
@@ -275,7 +275,10 @@ function ConfigUnit:materialize(variant, tool)
 end
 
 --- Materialize a pinned profile for this configuration.
---- Creates the config skeleton and a pinned profile entry in cache.
+--- Uses property-based matching: if an existing pinned profile already
+--- references this ConfigUnit with matching tool, returns it.
+--- Otherwise creates a new Profile and ProfileProject directly.
+--- Key generation uses next_available_key to avoid collisions.
 --- @param variant? string configuration variant name
 --- @param tool? loomworks.ToolRef tool reference { key, data }
 --- @return loomworks.Profile|nil
@@ -292,45 +295,43 @@ function ConfigUnit:materialize_pinned(variant, tool)
 
     if not self._project then return nil end
 
-    -- Read project_key and config_key from domain objects / cache
-    local project_key = self._project.key
-    local cached = self._cached
-    local config_key = cached and cached.config_key
-
-    -- Ensure config skeleton exists (may update self._cached)
-    self:materialize(variant, tool)
-    cached = self._cached
-
-    -- config_key may now be available from the newly-created cache entry
-    if not config_key and cached then
-        config_key = cached.config_key
+    -- Property-based idempotency: check if any pinned profile already
+    -- references this ConfigUnit (regardless of key).
+    for _, profile in pairs(ws._profiles) do
+        if not profile._configuration_set_name then
+            for _, pp in ipairs(profile:projects()) do
+                if pp._config_unit == self then
+                    return profile
+                end
+            end
+        end
     end
-    if not config_key then return nil end
 
-    local ak = ws._core._deps.merge.pinned_key(project_key, config_key)
+    -- Ensure config skeleton exists (updates self._cached directly)
+    self:materialize(variant, tool)
+    local cached = self._cached
+    if not cached or not cached.config_key then return nil end
 
-    -- Check if pinned profile already exists
-    ws.cache.profiles = ws.cache.profiles or {}
-    if ws.cache.profiles[ak] then return ws:find_profile(ak) end
+    local project_key = self._project.key
+    local config_key = cached.config_key
 
-    -- Read tool info from domain object or cache
+    -- Build tool info for cache entry
     local tool_obj = self._tool
-    local tool_key = tool_obj and tool_obj.key or (cached and cached.tool_key)
-    local tool_data = tool_obj and tool_obj.data or (cached and cached.tool_data)
+    local tool_key = tool_obj and tool_obj.key or cached.tool_key
+    local tool_data = tool_obj and tool_obj.data or cached.tool_data
     local tool_label = tool_obj and tool_obj.label or nil
     local tool_mod_type = tool_obj and tool_obj.mod_type or nil
 
-    -- If no mod_type from Tool object, try to determine from detected tools
     if tool_key and not tool_mod_type then
         local _, mt = ws._core._deps.merge.resolve_detected_tool(ws._tools_by_type, tool_key)
         tool_mod_type = mt
     end
 
-    local mat_variant = cached and cached.variant or variant
+    local mat_variant = cached.variant or variant
 
-    local tools = nil
+    local tools_raw = nil
     if tool_key and tool_mod_type then
-        tools = {
+        tools_raw = {
             [tool_mod_type] = {
                 key = tool_key,
                 data = tool_data,
@@ -338,15 +339,50 @@ function ConfigUnit:materialize_pinned(variant, tool)
             },
         }
     end
+
+    -- Generate collision-safe key
+    local base_key = ws._core._deps.merge.pinned_key(project_key, config_key)
+    ws.cache.profiles = ws.cache.profiles or {}
+    local ak = ws._core._deps.cache.next_available_key(base_key, ws.cache.profiles)
+
+    -- Write profile to cache
     ws.cache.profiles[ak] = {
         mappings = { [project_key] = mat_variant },
-        tools = tools,
+        tools = tools_raw,
         configurations = { self.id },
     }
-
     ws:_save_cache()
-    ws:remerge()
-    return ws:find_profile(ak)
+
+    -- Create Profile object directly with pre-resolved references
+    local Profile = require("loomworks.profile").Profile
+    local ProfileProject = require("loomworks.profile").ProfileProject
+
+    local tool_objects = nil
+    if tool_obj and self._project._module then
+        tool_objects = { [self._project._module] = tool_obj }
+    end
+
+    local profile = Profile.new(ws, ak, {
+        tools = tools_raw,
+        mappings = { [project_key] = mat_variant },
+        _cached_configurations = { self.id },
+        _tool_objects = tool_objects,
+    })
+    ws._profiles[#ws._profiles + 1] = profile
+
+    -- Create ProfileProject with pre-resolved references
+    local pp = ProfileProject.new(ws, project_key, {
+        profile = profile,
+        project = self._project,
+        configuration = self._configuration,
+        cached = cached,
+        config_unit = self,
+    })
+    ws._profile_projects[#ws._profile_projects + 1] = pp
+    profile._projects_list = { pp }
+    profile._projects_by_key = { [project_key] = pp }
+
+    return profile
 end
 
 --- Plan a deletion for this config.

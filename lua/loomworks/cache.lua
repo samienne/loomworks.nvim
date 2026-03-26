@@ -28,6 +28,20 @@ function M.config_cache_key(project_key, config_key)
     return project_key .. "/" .. config_key
 end
 
+--- Return the next available key that doesn't collide with existing entries.
+--- If base_key is available, returns it unchanged. Otherwise appends -2, -3, etc.
+--- @param base_key string desired key
+--- @param existing table<string, any> dict of existing keys
+--- @return string available_key
+function M.next_available_key(base_key, existing)
+    if not existing[base_key] then return base_key end
+    local n = 2
+    while existing[base_key .. "-" .. n] do
+        n = n + 1
+    end
+    return base_key .. "-" .. n
+end
+
 --- Return a default (empty) CacheData structure.
 --- @return loomworks.CacheData
 function M.default()

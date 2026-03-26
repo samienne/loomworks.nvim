@@ -67,7 +67,10 @@ function M.make_mock_workspace(overrides)
             events = { emit = function() end },
             merge = { resolve_detected_tool = function() return nil end },
             user = { save = function() return true end },
-            cache = { config_cache_key = function(pk, ck) return pk .. "/" .. ck end },
+            cache = {
+                config_cache_key = function(pk, ck) return pk .. "/" .. ck end,
+                next_available_key = require("loomworks.cache").next_available_key,
+            },
             modules = { get = function() return nil end },
             get_overseer_task = function() return nil end,
             normalize = function(p) return p end,
@@ -181,11 +184,6 @@ function M.make_mock_workspace(overrides)
     -- Add find helpers (same as Workspace class)
     ws.find_project = function(self, key)
         for _, p in pairs(self._projects) do
-            if p.key == key then return p end
-        end
-    end
-    ws.find_profile = function(self, key)
-        for _, p in pairs(self._profiles) do
             if p.key == key then return p end
         end
     end
@@ -461,6 +459,7 @@ function M.make_test_deps(files, opts)
             filepath = real_cache.filepath,
             compute_hash = real_cache.compute_hash,
             config_cache_key = real_cache.config_cache_key,
+            next_available_key = real_cache.next_available_key,
             save = function() return true end,
         },
         detect_tools_async = function(config, cache, callback) callback({}) end,
