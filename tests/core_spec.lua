@@ -23,7 +23,7 @@ local function get_unit(core, project_key, config_key)
     local id = cache_mod.config_cache_key(project_key, config_key)
     local unit = ws:find_config_unit_by_id(id)
     if unit then return unit end
-    local project = ws:find_project(project_key)
+    local project = h.find_project_in(core:get_projects(), project_key)
     if not project then
         -- Project not in workspace — create bare ConfigUnit (test-only scenario)
         return h.ensure_config_unit_by_id(ws, id, project_key)
@@ -339,9 +339,9 @@ describe("Core", function()
                 normalize = test_normalize,
             })
             core:setup({ root = "/root" })
-            local key, proj = core:project_for_buf(1)
-            assert.equals("App", key)
+            local proj = core:project_for_buf(1)
             assert.is_not_nil(proj)
+            assert.equals("App", proj.key)
         end)
 
         it("picks innermost project for nested paths", function()
@@ -356,8 +356,9 @@ describe("Core", function()
                 normalize = test_normalize,
             })
             core:setup({ root = "/root" })
-            local key = core:project_for_buf(1)
-            assert.equals("Root/Sub", key)
+            local proj = core:project_for_buf(1)
+            assert.is_not_nil(proj)
+            assert.equals("Root/Sub", proj.key)
         end)
 
     end)

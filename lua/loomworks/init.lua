@@ -231,7 +231,7 @@ end
 
 --- Find the project containing a buffer's file.
 --- @param bufnr number
---- @return string|nil project_key, loomworks.Project|nil
+--- @return loomworks.Project|nil
 function M.project_for_buf(bufnr)
     return core:project_for_buf(bufnr)
 end
@@ -244,15 +244,15 @@ function M.buf_status(bufnr)
     local active_set = core:get_active_configuration_set()
     if not active_set then return nil end
 
-    local project_key, project = core:project_for_buf(bufnr)
-    if not project_key then return nil end
+    local project = core:project_for_buf(bufnr)
+    if not project then return nil end
 
     local profile = core:get_active_profile()
     local set_name = profile and (profile._config_set_ref and profile._config_set_ref.name or profile._configuration_set_name) or nil
 
     local status
     if profile and project.configuration then
-        local pp = profile:project(project_key)
+        local pp = profile:project(project.key)
         if pp then
             status = pp:status()
         end
@@ -262,7 +262,7 @@ function M.buf_status(bufnr)
         profile_key = active_set.name,
         set_name = set_name,
         tool_key = project._tool and project._tool.key or nil,
-        project = project_key,
+        project = project.key,
         configuration = project.configuration,
         status = status,
     }

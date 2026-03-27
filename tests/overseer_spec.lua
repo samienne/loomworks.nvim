@@ -377,7 +377,7 @@ describe("record_task_result state protection", function()
 
         -- The "unconfigured" skeleton may be cleaned up by _cleanup_orphaned_skeletons
         -- since no profile references it. Use ensure_config_unit to create it.
-        local project = core._workspace:find_project("App")
+        local project = h.find_project_in(core:get_projects(), "App")
         local unit = core._workspace:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
         core:record_task_result({
             unit = unit,

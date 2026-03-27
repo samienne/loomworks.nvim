@@ -182,11 +182,6 @@ function M.make_mock_workspace(overrides)
     end
 
     -- Add find helpers (same as Workspace class)
-    ws.find_project = function(self, key)
-        for _, p in pairs(self._projects) do
-            if p.key == key then return p end
-        end
-    end
     -- Add Tool registry methods (delegate through Module objects)
     ws.find_tool = function(self, mod_type, tool_key)
         local mod = self:find_module(mod_type)
@@ -243,7 +238,7 @@ end
 function M.register_profile_project(ws, profile, project_key, variant)
     local ProfileProject = require("loomworks.profile").ProfileProject
     -- Pre-resolve references
-    local project = ws:find_project(project_key)
+    local project = M.find_project_in(ws._projects, project_key)
     local configuration = nil
     if project and project._configurations then
         configuration = project._configurations[variant]
@@ -310,7 +305,7 @@ function M.refresh_config_unit(ws, unit)
         cached = ws.cache.configurations[unit.id]
     end
     local project_key = cached and cached.project_key or unit._init_project_key
-    local project = project_key and ws:find_project(project_key) or nil
+    local project = project_key and M.find_project_in(ws._projects, project_key) or nil
     local tool = nil
     if cached and cached.tool_key then
         local mod = project and project._module

@@ -165,7 +165,7 @@ function M.clangd_root_dir(fallback)
     return function(bufnr, on_dir)
         local ok, lw = pcall(require, "loomworks")
         if ok then
-            local _, project = lw.project_for_buf(bufnr)
+            local project = lw.project_for_buf(bufnr)
             if project and project.type == "cmake" then
                 local ws = lw.get_workspace()
                 if ws then

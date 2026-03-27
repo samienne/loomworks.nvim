@@ -9,20 +9,20 @@ local workspace_view = require("loomworks.workspace_view")
 
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
 --- @param projects table<string, loomworks.Project>
---- @return string[]
-local function sorted_project_keys(projects)
+--- @return loomworks.Project[]
+local function sorted_projects(projects)
     local normal, orphaned = {}, {}
     for _, proj in pairs(projects) do
         if proj.orphaned then
-            orphaned[#orphaned + 1] = proj.key
+            orphaned[#orphaned + 1] = proj
         else
-            normal[#normal + 1] = proj.key
+            normal[#normal + 1] = proj
         end
     end
-    table.sort(normal)
-    table.sort(orphaned)
-    for _, key in ipairs(orphaned) do
-        normal[#normal + 1] = key
+    table.sort(normal, function(a, b) return a.key < b.key end)
+    table.sort(orphaned, function(a, b) return a.key < b.key end)
+    for _, proj in ipairs(orphaned) do
+        normal[#normal + 1] = proj
     end
     return normal
 end
@@ -357,12 +357,12 @@ return function(tree, ctx)
     tree:blank()
 
     local tools_by_type = lw.get_tools_by_type()
-    local sorted = sorted_project_keys(projects)
+    local sorted = sorted_projects(projects)
     local active_tool_key = ctx.active_profile and ctx.active_profile.tool
             and ctx.active_profile.tool.key or nil
 
-    for _, key in ipairs(sorted) do
-        local proj = projects[key]
+    for _, proj in ipairs(sorted) do
+        local key = proj.key
         local proj_running = proj:running_action()
         local is_active_project = proj.configuration ~= nil and not proj.orphaned
         local proj_hl = proj_running and "LoomworksRunning"

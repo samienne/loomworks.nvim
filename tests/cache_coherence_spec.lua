@@ -32,7 +32,7 @@ local function get_unit(core, project_key, config_key)
     local id = cache_mod.config_cache_key(project_key, config_key)
     local unit = core._workspace:find_config_unit_by_id(id)
     if unit then return unit end
-    local project = core._workspace:find_project(project_key)
+    local project = h.find_project_in(core:get_projects(), project_key)
     assert(project, "project " .. project_key .. " not found in workspace")
     -- Parse variant and tool from config_key for ensure_config_unit
     local variant = config_key

@@ -40,8 +40,14 @@ function LaunchTarget:_update(descriptor)
     self._target_id = descriptor.target
     self._launch_name = descriptor.launch
 
-    -- Resolve project string to Project object
-    self._project = self._workspace:find_project(descriptor.project)
+    -- Resolve project from descriptor key (deserialization from user.json)
+    self._project = nil
+    for _, p in pairs(self._workspace._projects) do
+        if p.key == descriptor.project then
+            self._project = p
+            break
+        end
+    end
 
     -- Resolve ConfigUnit via ProfileProject reference chain
     self._config_unit = nil

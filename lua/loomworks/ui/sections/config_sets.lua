@@ -136,19 +136,17 @@ end
 local function render_set_details(tree, cs, tool_entries, profiles_by_key, active_profile, lw)
     local set_name = cs.name
     tree:group("Projects:", "Comment", function()
-        local proj_names = {}
+        local sorted = {}
         for project, variant in pairs(cs.mappings) do
-            proj_names[#proj_names + 1] = { key = project.key, variant = variant }
+            sorted[#sorted + 1] = { project = project, variant = variant }
         end
-        table.sort(proj_names, function(a, b) return a.key < b.key end)
-        for _, entry in ipairs(proj_names) do
-            local project = cs._workspace:find_project(entry.key)
-            local cfg_missing = project
-                and not project:get_configuration(entry.variant)
+        table.sort(sorted, function(a, b) return a.project.key < b.project.key end)
+        for _, entry in ipairs(sorted) do
+            local cfg_missing = not entry.project:get_configuration(entry.variant)
             if cfg_missing then
-                tree:leaf(entry.key .. " → " .. entry.variant .. " (missing)", "DiagnosticWarn")
+                tree:leaf(entry.project.key .. " → " .. entry.variant .. " (missing)", "DiagnosticWarn")
             else
-                tree:leaf(entry.key .. " → " .. entry.variant, "Comment")
+                tree:leaf(entry.project.key .. " → " .. entry.variant, "Comment")
             end
         end
     end)

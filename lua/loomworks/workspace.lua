@@ -252,15 +252,6 @@ function Workspace:_build_ctx()
     return ctx
 end
 
---- Find a Project by key (O(n) scan, n is small).
---- @param key string project key
---- @return loomworks.Project|nil
-function Workspace:find_project(key)
-    for _, p in pairs(self._projects) do
-        if p.key == key then return p end
-    end
-end
-
 --- Find a ConfigUnit by id (O(n) scan).
 --- @param id string cache dict key
 --- @return loomworks.ConfigUnit|nil
@@ -1372,7 +1363,9 @@ function Workspace:record_task_result(result)
         -- Fallback for results without a ConfigUnit (e.g. buggy multi-config tasks)
         cache_key = self._core._deps.cache.config_cache_key(result.project_key, result.configuration_key)
         self.cache.configurations = self.cache.configurations or {}
-        project = self:find_project(result.project_key)
+        for _, p in pairs(self._projects) do
+            if p.key == result.project_key then project = p; break end
+        end
         proj_type = project and project.type or "unknown"
         if not self.cache.configurations[cache_key] then
             self.cache.configurations[cache_key] = {
@@ -1986,7 +1979,7 @@ end
 --- @return boolean ok, string|nil err
 function Workspace:add_project(key, type, path)
     if self.config.projects[key] then
-        return false, "project '" .. key .. "' already exists"
+        return nil, "project '" .. key .. "' already exists"
     end
 
     -- Validate name for build dir safety (slashes, traversal, sanitization collisions)
@@ -1994,7 +1987,7 @@ function Workspace:add_project(key, type, path)
     for k in pairs(self.config.projects) do existing_keys[#existing_keys + 1] = k end
     local valid, verr = M.validate_path_name(key, existing_keys)
     if not valid then
-        return false, "invalid project key: " .. verr
+        return nil, "invalid project key: " .. verr
     end
 
     -- Add to parsed config + domain object
@@ -2022,11 +2015,11 @@ function Workspace:add_project(key, type, path)
         for i, p in ipairs(self._projects) do
             if p.key == key then table.remove(self._projects, i); break end
         end
-        return false, err
+        return nil, err
     end
 
     self._core._deps.events.emit("active_set_changed", self._active_set)
-    return true
+    return project
 end
 
 --- Remove a project from the workspace.
@@ -2087,13 +2080,13 @@ function Workspace:add_configuration_set(name, mappings)
     end
 
     if self.config.configuration_sets[name] then
-        return false, "configuration set '" .. name .. "' already exists"
+        return nil, "configuration set '" .. name .. "' already exists"
     end
 
     -- Basic name validation (slashes, dots)
     local valid, verr = M.validate_path_name(name)
     if not valid then
-        return false, "invalid configuration set name: " .. verr
+        return nil, "invalid configuration set name: " .. verr
     end
 
     -- Reject case-colliding names (same profile key on case-insensitive FS).
@@ -2102,16 +2095,18 @@ function Workspace:add_configuration_set(name, mappings)
     local name_lower = name:lower()
     for existing in pairs(self.config.configuration_sets) do
         if existing ~= name and existing:lower() == name_lower then
-            return false, "configuration set '" .. name .. "' collides with '" .. existing .. "' (case-insensitive)"
+            return nil, "configuration set '" .. name .. "' collides with '" .. existing .. "' (case-insensitive)"
         end
     end
 
     self.config.configuration_sets[name] = mappings
 
-    -- Create domain object — resolve projects for _update
+    -- Create domain object — resolve projects for _update (deserialization boundary)
+    local projects_by_key = {}
+    for _, p in pairs(self._projects) do projects_by_key[p.key] = p end
     local resolved = {}
     for project_key, variant in pairs(mappings) do
-        local project = self:find_project(project_key)
+        local project = projects_by_key[project_key]
         if project then
             resolved[project] = variant
         end
@@ -2125,11 +2120,11 @@ function Workspace:add_configuration_set(name, mappings)
         for i, c in ipairs(self._config_sets) do
             if c.name == name then table.remove(self._config_sets, i); break end
         end
-        return false, err
+        return nil, err
     end
 
     self._core._deps.events.emit("active_set_changed", self._active_set)
-    return true, nil, cs
+    return cs
 end
 
 --- Remove a configuration set from the workspace.
@@ -2184,8 +2179,12 @@ function Workspace:_extend_cached_profile(profile_data, tools)
     profile_data.configurations = profile_data.configurations or {}
     self.cache.configurations = self.cache.configurations or {}
 
+    -- Build project lookup (deserialization boundary — set_mappings keys are strings)
+    local projects_by_key = {}
+    for _, p in pairs(self._projects) do projects_by_key[p.key] = p end
+
     for project_key, variant in pairs(set_mappings) do
-        local project = self:find_project(project_key)
+        local project = projects_by_key[project_key]
         if project then
             -- Tool key applies only to projects whose module type matches
             local project_tool = tools and tools[project.type] or nil

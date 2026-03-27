@@ -329,27 +329,25 @@ end
 
 --- Find the project containing a buffer's file.
 --- @param bufnr number
---- @return string|nil project_key, loomworks.Project|nil
+--- @return loomworks.Project|nil
 function Core:project_for_buf(bufnr)
-    if not self._workspace then return nil, nil end
+    if not self._workspace then return nil end
 
     local buf_path = self._deps.buf_name(bufnr)
-    if buf_path == "" then return nil, nil end
+    if buf_path == "" then return nil end
     buf_path = self._deps.normalize(buf_path)
 
-    local best_key, best_len = nil, 0
-    for key, project in pairs(self._workspace.config.projects) do
-        local project_abs = self._deps.normalize(self._workspace.root .. "/" .. project.path)
+    local best_project, best_len = nil, 0
+    for _, project in pairs(self._workspace._projects) do
+        local project_path = project.path or project.key
+        local project_abs = self._deps.normalize(self._workspace.root .. "/" .. project_path)
         if buf_path:sub(1, #project_abs) == project_abs and #project_abs > best_len then
-            best_key = key
+            best_project = project
             best_len = #project_abs
         end
     end
 
-    if best_key then
-        return best_key, self._workspace:find_project(best_key)
-    end
-    return nil, nil
+    return best_project
 end
 
 --- Stop file tracking and clean up.

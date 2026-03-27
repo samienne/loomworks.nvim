@@ -122,8 +122,8 @@ end
 --- @param has_keyed boolean whether module has keyed tools
 --- @return boolean ok, string|nil err
 function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
-    local ok, err = ws:add_project(key, mod_type, path)
-    if not ok then
+    local project, err = ws:add_project(key, mod_type, path)
+    if not project then
         return false, err
     end
 
@@ -132,9 +132,6 @@ function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
     if has_keyed and not result.tool_entry then
         return true
     end
-
-    -- add_project just created this project — resolve from registry at creation boundary
-    local project = ws:find_project(key)
     for _, cs in pairs(ws._config_sets) do
         local variant = result.mappings[cs.name]
         if variant and project then
@@ -525,11 +522,15 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
         return true
     end
 
+    -- Build project lookup from workspace array (deserialization boundary)
+    local projects_by_key = {}
+    for _, p in pairs(ws._projects) do projects_by_key[p.key] = p end
+
     -- Apply mapping changes to existing set
     for key, new_variant in pairs(new_mappings) do
         local old_variant = old_mappings[key]
         if new_variant ~= old_variant then
-            local project = ws:find_project(key)
+            local project = projects_by_key[key]
             if not project then return false, "project '" .. key .. "' not found" end
             local ok, err = cs:update_mapping(project, new_variant)
             if not ok then return false, err end
@@ -538,7 +539,7 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     -- Handle keys that were in old but not in new (removed)
     for key, old_variant in pairs(old_mappings) do
         if old_variant and new_mappings[key] == nil then
-            local project = ws:find_project(key)
+            local project = projects_by_key[key]
             if not project then return false, "project '" .. key .. "' not found" end
             local ok, err = cs:update_mapping(project, nil)
             if not ok then return false, err end
@@ -576,8 +577,8 @@ function M.execute_rename_config_set(ws, cs, new_name, mappings)
     if not ok then return false, err end
 
     -- Create new set
-    ok, err = ws:add_configuration_set(new_name, clean)
-    if not ok then return false, err end
+    local new_cs, add_err = ws:add_configuration_set(new_name, clean)
+    if not new_cs then return false, add_err end
 
     return true
 end
@@ -861,15 +862,16 @@ function M.derive_key_and_path(root, abs_path, name)
 end
 
 --- Find the project key in workspace config that matches a browser entry path.
+--- Find a project by its relative path or basename.
 --- @param ws loomworks.Workspace
 --- @param rel_path string relative path from root
 --- @param basename string directory basename
---- @return string|nil project_key
-function M.find_project_key_by_path(ws, rel_path, basename)
+--- @return loomworks.Project|nil
+function M.find_project_by_path(ws, rel_path, basename)
     for _, proj in pairs(ws._projects) do
         local proj_rel = proj.path or proj.key
         if proj_rel == rel_path or proj_rel == basename then
-            return proj.key
+            return proj
         end
     end
     return nil
@@ -1145,8 +1147,8 @@ end
 function M.resolve_config_set_choice(ws, choice)
     local cs = choice.cs
     if choice.auto then
-        local ok, err, created = ws:add_configuration_set(choice.real_name, choice.mappings)
-        if not ok then
+        local created, err = ws:add_configuration_set(choice.real_name, choice.mappings)
+        if not created then
             return nil, err or "failed to add config set"
         end
         cs = created
