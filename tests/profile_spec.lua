@@ -30,12 +30,7 @@ describe("Profile", function()
                 configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
             })
         end
-        -- Ensure ConfigUnits exist for cached configurations so ProfileProject resolves them
-        if core.cache and core.cache.configurations then
-            for id, entry in pairs(core.cache.configurations) do
-                h.ensure_config_unit_by_id(core, id, entry.project_key)
-            end
-        end
+        -- ConfigUnits are created via ensure_config_unit_by_id when needed
         local data = vim.tbl_deep_extend("force", {
             configuration_set = "debug",
             tools = nil,
@@ -406,24 +401,25 @@ describe("ProfileProject", function()
                     App = { type = "cmake", path = "App", type_config = {} },
                 },
             },
-            cache = { configurations = {} },
         }
         local merged = vim.tbl_deep_extend("force", {
             get_workspace = function() return default_ws end,
         }, core_overrides or {})
         local core = h.make_mock_core(merged)
-        -- Add skeleton cache entry so ProfileProject can resolve config_key
-        core.cache.configurations["App/Debug"] = {
-            project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug",
-        }
         -- Add a Project object so ProfileProject can resolve it
         local Project = require("loomworks.project")
         core._projects["App"] = Project.new(core, "App", {
             type = "cmake", path = "App", status = "unconfigured",
             configurations = {}, cached_configurations = {},
         })
-        -- Ensure ConfigUnit exists so ProfileProject resolves it
-        h.ensure_config_unit_by_id(core, "App/Debug", "App")
+        -- Create ConfigUnit with cached entry so ProfileProject resolves it
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ConfigUnit.new(core, "App/Debug", "App")
+        unit._cached = {
+            project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug",
+        }
+        core._config_units[#core._config_units + 1] = unit
+        h.refresh_config_unit(core, unit)
         local tools = tool_key and { cmake = { key = tool_key } } or nil
         local data = {
             configuration_set = "debug",

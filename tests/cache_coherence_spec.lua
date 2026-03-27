@@ -30,7 +30,7 @@ end
 --- @return loomworks.ConfigUnit
 local function get_unit(core, project_key, config_key)
     local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations[id])
+    local unit = h.find_config_unit_by_id(core._workspace._config_units, id)
     if unit then return unit end
     local project = h.find_project_in(core:get_projects(), project_key)
     assert(project, "project " .. project_key .. " not found in workspace")
@@ -67,11 +67,12 @@ local function assert_cache_coherent(core, msg)
     if not ws then return end
 
     local prefix = msg and (msg .. ": ") or ""
+    local cache = ws:_serialize_cache()
 
     -- Build a set of all cache keys referenced by profiles
     local referenced = {}
-    if ws.cache.profiles then
-        for _, profile in pairs(ws.cache.profiles) do
+    if cache.profiles then
+        for _, profile in pairs(cache.profiles) do
             if profile.configurations then
                 for _, ck in ipairs(profile.configurations) do
                     referenced[ck] = true
@@ -90,8 +91,8 @@ local function assert_cache_coherent(core, msg)
     end
 
     -- Check every cached config is either referenced or a known orphan
-    if ws.cache.configurations then
-        for cache_key, cached_config in pairs(ws.cache.configurations) do
+    if cache.configurations then
+        for cache_key, cached_config in pairs(cache.configurations) do
             local state = cached_config.state
             if state and state ~= "unconfigured" then
                 assert(referenced[cache_key] or orphan_set[cache_key],
@@ -117,19 +118,22 @@ local function assert_cache_empty(core, msg)
     local prefix = msg and (msg .. ": ") or ""
     assert(ws, prefix .. "workspace should exist")
 
-    local has_configs = ws.cache.configurations and next(ws.cache.configurations)
+    local cache = ws:_serialize_cache()
+    local has_configs = cache.configurations and next(cache.configurations)
     assert(not has_configs, prefix .. "cache should have no configurations")
 
-    local has_profiles = ws.cache.profiles and next(ws.cache.profiles)
+    local has_profiles = cache.profiles and next(cache.profiles)
     assert(not has_profiles, prefix .. "cache should have no profiles")
 end
 
 --- Count cached configs in the flat dict.
 local function count_cached_configs(core)
     local ws = core:get_workspace()
-    if not ws or not ws.cache.configurations then return 0 end
+    if not ws then return 0 end
+    local cache = ws:_serialize_cache()
+    if not cache.configurations then return 0 end
     local count = 0
-    for _ in pairs(ws.cache.configurations) do
+    for _ in pairs(cache.configurations) do
         count = count + 1
     end
     return count
@@ -138,9 +142,11 @@ end
 --- Count profiles in cache.
 local function count_profiles(core)
     local ws = core:get_workspace()
-    if not ws or not ws.cache.profiles then return 0 end
+    if not ws then return 0 end
+    local cache = ws:_serialize_cache()
+    if not cache.profiles then return 0 end
     local count = 0
-    for _ in pairs(ws.cache.profiles) do
+    for _ in pairs(cache.profiles) do
         count = count + 1
     end
     return count
@@ -326,7 +332,8 @@ describe("cache coherence", function()
             assert.equals(1, count_cached_configs(core))
             -- Config entry exists with state preserved
             local ws = core:get_workspace()
-            assert.equals("built", ws.cache.configurations["App/development"].state)
+            local cache = ws:_serialize_cache()
+            assert.equals("built", cache.configurations["App/development"].state)
         end)
     end)
 
@@ -379,7 +386,8 @@ describe("cache coherence", function()
 
             -- Clang config should still be there
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.configurations["Lib/Debug:ninja-clang"])
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.configurations["Lib/Debug:ninja-clang"])
         end)
 
         it("delete all profiles leaves cache empty", function()
@@ -535,8 +543,9 @@ describe("cache coherence", function()
 
             -- Config reset but pinned profile stays
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.profiles["App/development"])
-            assert.is_nil(ws.cache.configurations["App/development"].state)
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.profiles["App/development"])
+            assert.is_nil(cache.configurations["App/development"].state)
         end)
 
         it("keeps config when set-based profile references it", function()
@@ -563,11 +572,12 @@ describe("cache coherence", function()
 
             -- Config entry exists but state cleared to unconfigured
             local ws = core:get_workspace()
-            assert.is_nil(ws.cache.configurations["App/development"].state)
+            local cache = ws:_serialize_cache()
+            assert.is_nil(cache.configurations["App/development"].state)
 
             -- Both profiles still intact
-            assert.is_not_nil(ws.cache.profiles.debug)
-            assert.is_not_nil(ws.cache.profiles["App/development"])
+            assert.is_not_nil(cache.profiles.debug)
+            assert.is_not_nil(cache.profiles["App/development"])
         end)
 
         it("keyed tool: deletes specific tool config, keeps other tools", function()
@@ -597,13 +607,14 @@ describe("cache coherence", function()
 
             -- GCC config reset, clang config still built
             local ws = core:get_workspace()
-            assert.is_nil(ws.cache.configurations["Lib/Debug:ninja-gcc"].state)
-            assert.is_not_nil(ws.cache.configurations["Lib/Debug:ninja-clang"])
-            assert.equals("built", ws.cache.configurations["Lib/Debug:ninja-clang"].state)
+            local cache = ws:_serialize_cache()
+            assert.is_nil(cache.configurations["Lib/Debug:ninja-gcc"].state)
+            assert.is_not_nil(cache.configurations["Lib/Debug:ninja-clang"])
+            assert.equals("built", cache.configurations["Lib/Debug:ninja-clang"].state)
 
             -- Both pinned profiles still intact
-            assert.is_not_nil(ws.cache.profiles["Lib/Debug:ninja-gcc"])
-            assert.is_not_nil(ws.cache.profiles["Lib/Debug:ninja-clang"])
+            assert.is_not_nil(cache.profiles["Lib/Debug:ninja-gcc"])
+            assert.is_not_nil(cache.profiles["Lib/Debug:ninja-clang"])
         end)
     end)
 
@@ -785,8 +796,9 @@ describe("cache coherence", function()
             assert.equals(1, count_cached_configs(core))
 
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.profiles.debug)
-            assert.equals("built", ws.cache.configurations["App/development"].state)
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.profiles.debug)
+            assert.equals("built", cache.configurations["App/development"].state)
         end)
 
         it("multiple set-based profiles sharing same config stays coherent", function()
@@ -1109,8 +1121,9 @@ describe("cache coherence", function()
 
             -- Both profiles should exist (cached + auto-generated overlap is fine)
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.profiles["debug:ninja-gcc"])
-            assert.is_not_nil(ws.cache.profiles["debug:ninja-clang"])
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.profiles["debug:ninja-gcc"])
+            assert.is_not_nil(cache.profiles["debug:ninja-clang"])
         end)
 
         it("init then delete all profiles leaves cache clean", function()
@@ -1213,7 +1226,8 @@ describe("cache coherence", function()
 
             -- The orphaned production config should still exist (not auto-deleted)
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.configurations["App/production"])
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.configurations["App/production"])
 
             -- And it's still an orphan
             orphans = core:get_orphaned_configs()
@@ -1273,7 +1287,8 @@ describe("cache coherence", function()
             assert.equals(1, count_cached_configs(core))
 
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.profiles["debug:ninja-old-compiler"])
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.profiles["debug:ninja-old-compiler"])
         end)
     end)
 
@@ -1415,7 +1430,8 @@ describe("cache coherence", function()
 
             -- Config still has its state
             local ws = core:get_workspace()
-            assert.equals("built", ws.cache.configurations["App/development"].state)
+            local cache = ws:_serialize_cache()
+            assert.equals("built", cache.configurations["App/development"].state)
 
             -- Delete second profile — config now unreferenced, cleaned
             local p2 = h.find_profile(core:get_profiles(), "staging")
@@ -1551,7 +1567,7 @@ describe("cache coherence", function()
 
             -- Config is a skeleton (no state, no build_dir)
             local ws = core:get_workspace()
-            local cached = ws.cache.configurations["App/development"]
+            local cached = ws:_serialize_cache().configurations["App/development"]
             assert.is_nil(cached.state)
             assert.is_nil(cached.build_dir)
 
@@ -1801,7 +1817,7 @@ describe("cache coherence", function()
 
             -- Config entry still exists with all fields intact
             local ws = core:get_workspace()
-            local cached = ws.cache.configurations["Lib/Debug:ninja-gcc"]
+            local cached = ws:_serialize_cache().configurations["Lib/Debug:ninja-gcc"]
             assert.is_not_nil(cached, "config entry should still exist after keep")
 
             -- All fields preserved
@@ -1863,7 +1879,7 @@ describe("cache coherence", function()
 
             -- Config still built
             local ws = core:get_workspace()
-            local cached = ws.cache.configurations["App/development"]
+            local cached = ws:_serialize_cache().configurations["App/development"]
             assert.equals("built", cached.state)
             assert.equals("/root/.nvim/build/App/development", cached.build_dir)
             assert_cache_coherent(core, "config stays built")
@@ -1967,7 +1983,8 @@ describe("cache coherence", function()
 
             -- Config reset to unconfigured (skeleton kept for set-based profile)
             local ws = core:get_workspace()
-            local cached = ws.cache.configurations["App/development"]
+            local scache = ws:_serialize_cache()
+            local cached = scache.configurations["App/development"]
             assert.is_not_nil(cached, "config should survive reset")
             assert.is_nil(cached.state)
             assert.is_nil(cached.build_dir)
@@ -1976,7 +1993,7 @@ describe("cache coherence", function()
             assert.equals(1, #rm_calls)
 
             -- Profile still intact
-            assert.is_not_nil(ws.cache.profiles.debug)
+            assert.is_not_nil(scache.profiles.debug)
         end)
 
         it("delete_config with only pinned profile resets config", function()
@@ -2017,13 +2034,14 @@ describe("cache coherence", function()
 
             -- Config reset to unconfigured (skeleton kept for pinned profile)
             local ws = core:get_workspace()
-            local cached = ws.cache.configurations["App/development"]
+            local scache = ws:_serialize_cache()
+            local cached = scache.configurations["App/development"]
             assert.is_not_nil(cached, "config should survive reset")
             assert.is_nil(cached.state)
             assert.is_nil(cached.build_dir)
 
             -- Pinned profile still intact
-            assert.is_not_nil(ws.cache.profiles["App/development"])
+            assert.is_not_nil(scache.profiles["App/development"])
         end)
     end)
 
@@ -2151,13 +2169,14 @@ describe("cache coherence", function()
 
             -- Backend config reset, pinned profile still exists
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.profiles["Backend/development"])
-            assert.is_nil(ws.cache.configurations["Backend/development"].state)
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.profiles["Backend/development"])
+            assert.is_nil(cache.configurations["Backend/development"].state)
 
             -- Frontend still fully intact
-            assert.is_not_nil(ws.cache.profiles["Frontend/development"])
-            assert.is_not_nil(ws.cache.configurations["Frontend/development"])
-            assert.equals("built", ws.cache.configurations["Frontend/development"].state)
+            assert.is_not_nil(cache.profiles["Frontend/development"])
+            assert.is_not_nil(cache.configurations["Frontend/development"])
+            assert.equals("built", cache.configurations["Frontend/development"].state)
         end)
 
         it("delete_config removes only target from multi-config profile's reachable set", function()
@@ -2190,12 +2209,13 @@ describe("cache coherence", function()
 
             -- Backend config reset to unconfigured
             local ws = core:get_workspace()
-            assert.is_nil(ws.cache.configurations["Backend/development"].state)
+            local cache = ws:_serialize_cache()
+            assert.is_nil(cache.configurations["Backend/development"].state)
 
             -- Both profiles still intact
-            assert.is_not_nil(ws.cache.profiles["Backend/development"])
-            assert.is_not_nil(ws.cache.profiles.debug)
-            assert.equals("built", ws.cache.configurations["Frontend/development"].state)
+            assert.is_not_nil(cache.profiles["Backend/development"])
+            assert.is_not_nil(cache.profiles.debug)
+            assert.equals("built", cache.configurations["Frontend/development"].state)
         end)
     end)
 end)

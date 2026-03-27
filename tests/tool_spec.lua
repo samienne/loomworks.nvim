@@ -158,21 +158,19 @@ describe("ConfigUnit accessor methods", function()
     local Project = require("loomworks.project")
 
     it("tool_object() returns Tool domain object", function()
-        local ws = h.make_mock_workspace({
-            cache = {
-                configurations = {
-                    ["App/Debug:ninja-gcc"] = {
-                        project_key = "App",
-                        config_key = "Debug:ninja-gcc",
-                        type = "cmake",
-                        tool_key = "ninja-gcc",
-                        tool_data = { gen = "Ninja" },
-                    },
-                },
-            },
-        })
+        local ws = h.make_mock_workspace()
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
-        local unit = h.ensure_config_unit_by_id(ws, "App/Debug:ninja-gcc", "App")
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
+        unit._cached = {
+            project_key = "App",
+            config_key = "Debug:ninja-gcc",
+            type = "cmake",
+            tool_key = "ninja-gcc",
+            tool_data = { gen = "Ninja" },
+        }
+        ws._config_units[#ws._config_units + 1] = unit
+        h.refresh_config_unit(ws, unit)
         assert.is_true(rawequal(tool, unit:tool_object()))
     end)
 
@@ -194,56 +192,51 @@ describe("ConfigUnit accessor methods", function()
             configurations = {}, cached_configurations = {},
         })
         ws._projects["App"] = project
-        ws.cache = {
-            configurations = {
-                ["App/Debug"] = {
-                    project_key = "App", config_key = "Debug", type = "cmake",
-                },
-            },
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ConfigUnit.new(ws, "App/Debug", "App")
+        unit._cached = {
+            project_key = "App", config_key = "Debug", type = "cmake",
         }
-        local unit = h.ensure_config_unit_by_id(ws, "App/Debug", "App")
+        ws._config_units[#ws._config_units + 1] = unit
+        h.refresh_config_unit(ws, unit)
         assert.is_true(rawequal(project, unit:project()))
     end)
 
     it("configuration() returns Configuration reference", function()
-        local ws = h.make_mock_workspace({
-            cache = {
-                configurations = {
-                    ["App/Debug"] = {
-                        project_key = "App", config_key = "Debug",
-                        type = "cmake", variant = "Debug",
-                    },
-                },
-            },
-        })
+        local ws = h.make_mock_workspace()
         local project = Project.new(ws, "App", {
             type = "cmake", path = "App", status = "unconfigured",
             configurations = { Debug = { variant = "Debug", is_default = true } },
             cached_configurations = {},
         })
         ws._projects["App"] = project
-        local unit = h.ensure_config_unit_by_id(ws, "App/Debug", "App")
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ConfigUnit.new(ws, "App/Debug", "App")
+        unit._cached = {
+            project_key = "App", config_key = "Debug",
+            type = "cmake", variant = "Debug",
+        }
+        ws._config_units[#ws._config_units + 1] = unit
+        h.refresh_config_unit(ws, unit)
         local cfg = unit:configuration()
         assert.is_not_nil(cfg)
         assert.equals("Debug", cfg.name)
     end)
 
     it("resolve_tool() uses _tool when available", function()
-        local ws = h.make_mock_workspace({
-            cache = {
-                configurations = {
-                    ["App/Debug:ninja-gcc"] = {
-                        project_key = "App",
-                        config_key = "Debug:ninja-gcc",
-                        type = "cmake",
-                        tool_key = "ninja-gcc",
-                        tool_data = { gen = "Ninja" },
-                    },
-                },
-            },
-        })
+        local ws = h.make_mock_workspace()
         ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "Ninja + GCC")
-        local unit = h.ensure_config_unit_by_id(ws, "App/Debug:ninja-gcc", "App")
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
+        unit._cached = {
+            project_key = "App",
+            config_key = "Debug:ninja-gcc",
+            type = "cmake",
+            tool_key = "ninja-gcc",
+            tool_data = { gen = "Ninja" },
+        }
+        ws._config_units[#ws._config_units + 1] = unit
+        h.refresh_config_unit(ws, unit)
         local ref = unit:resolve_tool()
         assert.is_not_nil(ref)
         assert.equals("ninja-gcc", ref.key)
@@ -254,40 +247,36 @@ end)
 
 describe("ConfigUnit _tool resolution", function()
     it("resolves _tool from workspace registry", function()
-        local ws = h.make_mock_workspace({
-            cache = {
-                configurations = {
-                    ["App/Debug:ninja-gcc"] = {
-                        project_key = "App",
-                        config_key = "Debug:ninja-gcc",
-                        type = "cmake",
-                        tool_key = "ninja-gcc",
-                        tool_data = { gen = "Ninja" },
-                    },
-                },
-            },
-        })
+        local ws = h.make_mock_workspace()
         -- Pre-populate tool registry
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
 
-        local unit = h.ensure_config_unit_by_id(ws, "App/Debug:ninja-gcc", "App")
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ConfigUnit.new(ws, "App/Debug:ninja-gcc", "App")
+        unit._cached = {
+            project_key = "App",
+            config_key = "Debug:ninja-gcc",
+            type = "cmake",
+            tool_key = "ninja-gcc",
+            tool_data = { gen = "Ninja" },
+        }
+        ws._config_units[#ws._config_units + 1] = unit
+        h.refresh_config_unit(ws, unit)
         assert.is_not_nil(unit._tool)
         assert.is_true(rawequal(tool, unit._tool))
     end)
 
     it("_tool is nil when no tool in cache", function()
-        local ws = h.make_mock_workspace({
-            cache = {
-                configurations = {
-                    ["App/Debug"] = {
-                        project_key = "App",
-                        config_key = "Debug",
-                        type = "cmake",
-                    },
-                },
-            },
-        })
-        local unit = h.ensure_config_unit_by_id(ws, "App/Debug", "App")
+        local ws = h.make_mock_workspace()
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ConfigUnit.new(ws, "App/Debug", "App")
+        unit._cached = {
+            project_key = "App",
+            config_key = "Debug",
+            type = "cmake",
+        }
+        ws._config_units[#ws._config_units + 1] = unit
+        h.refresh_config_unit(ws, unit)
         assert.is_nil(unit._tool)
     end)
 end)

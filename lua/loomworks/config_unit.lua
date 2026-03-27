@@ -252,10 +252,8 @@ function ConfigUnit:materialize(variant, tool)
     local config_key = self._cached and self._cached.config_key
         or ws._core._deps.merge.build_config_key(mat_variant, tool_key)
 
-    -- Write directly to flat cache (id IS the cache dict key)
-    ws.cache.configurations = ws.cache.configurations or {}
-    local existing = ws.cache.configurations[self.id]
-    if not existing then
+    -- Write to owned _cached table (serialized via _serialize_cache)
+    if not self._cached then
         local entry = {
             project_key = project_key,
             config_key = config_key,
@@ -264,12 +262,11 @@ function ConfigUnit:materialize(variant, tool)
             tool_key = tool_key,
             tool_data = tool_data,
         }
-        ws.cache.configurations[self.id] = entry
         self._cached = entry
         ws:_save_cache()
-    elseif existing.variant ~= mat_variant and mat_variant then
-        -- Repair stale variant in cache
-        existing.variant = mat_variant
+    elseif self._cached.variant ~= mat_variant and mat_variant then
+        -- Repair stale variant
+        self._cached.variant = mat_variant
         ws:_save_cache()
     end
 end
@@ -347,18 +344,11 @@ function ConfigUnit:materialize_pinned(variant, tool)
         }
     end
 
-    -- Generate collision-safe key
+    -- Generate collision-safe key using domain objects
     local base_key = ws._core._deps.merge.pinned_key(project_key, config_key)
-    ws.cache.profiles = ws.cache.profiles or {}
-    local ak = ws._core._deps.cache.next_available_key(base_key, ws.cache.profiles)
-
-    -- Write profile to cache
-    ws.cache.profiles[ak] = {
-        mappings = { [project_key] = mat_variant },
-        tools = tools_raw,
-        configurations = { self.id },
-    }
-    ws:_save_cache()
+    local existing_keys = {}
+    for _, p in pairs(ws._profiles) do existing_keys[p.key] = true end
+    local ak = ws._core._deps.cache.next_available_key(base_key, existing_keys)
 
     -- Create Profile object directly with pre-resolved references
     local Profile = require("loomworks.profile").Profile

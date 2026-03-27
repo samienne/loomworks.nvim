@@ -21,7 +21,7 @@ end
 local function get_unit(core, project_key, config_key)
     local ws = core._workspace
     local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = ws:find_config_unit_for_cached(ws.cache.configurations[id])
+    local unit = h.find_config_unit_by_id(ws._config_units, id)
     if unit then return unit end
     local project = h.find_project_in(core:get_projects(), project_key)
     if not project then
@@ -689,7 +689,7 @@ describe("Core", function()
                 },
             })
             core._workspace:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
-            assert.is_not_nil(core._workspace.cache.configurations["App/development"])
+            assert.is_not_nil(core._workspace:_serialize_cache().configurations["App/development"])
         end)
 
         it("does nothing for unrecognized path", function()
@@ -905,13 +905,13 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            assert.is_not_nil(core._workspace.cache.configurations["App/development"])
+            assert.is_not_nil(core._workspace:_serialize_cache().configurations["App/development"])
 
             -- Simulate cache file being deleted (nil content)
             core._workspace:_on_file_changed("/root/.nvim/loomworks.cache.json", nil)
 
             -- Cache should be reset to default (empty configurations)
-            assert.same({}, core._workspace.cache.configurations)
+            assert.same({}, core._workspace:_serialize_cache().configurations)
         end)
 
         it("emits active_set_changed when config file changes", function()
@@ -1115,7 +1115,7 @@ describe("Core", function()
             })
             local ws = core:get_workspace()
             -- Config should be removed from flat cache
-            assert.is_nil(ws.cache.configurations["App/development"])
+            assert.is_nil(ws:_serialize_cache().configurations["App/development"])
         end)
 
         it("refuses to delete build dir outside workspace root", function()
@@ -1411,11 +1411,12 @@ describe("Core", function()
             core:setup({ root = "/root" })
             -- Config should NOT be dropped — it has state
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.configurations)
-            assert.is_not_nil(ws.cache.configurations["App/development"])
-            assert.equals("built", ws.cache.configurations["App/development"].state)
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.configurations)
+            assert.is_not_nil(cache.configurations["App/development"])
+            assert.equals("built", cache.configurations["App/development"].state)
             -- No pinned profile should be created
-            assert.is_nil(ws.cache.profiles)
+            assert.is_nil(cache.profiles)
         end)
 
         it("does not touch configs referenced by a profile", function()
@@ -1805,7 +1806,7 @@ describe("Core", function()
             assert.is_true(found_dir, "build directory should be deleted")
             -- Referenced config should still exist
             local ws = core:get_workspace()
-            assert.is_not_nil(ws.cache.configurations["App/development"])
+            assert.is_not_nil(ws:_serialize_cache().configurations["App/development"])
         end)
 
         it("round-trip: master->feature->master leaves cache intact", function()
@@ -2038,8 +2039,7 @@ describe("Core", function()
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
             -- Simulate build completing: cache state = "built", unregister task
-            local ws = core:get_workspace()
-            ws.cache.configurations["App/Debug"].state = "built"
+            unit._cached.state = "built"
             time.value = 190
             unit:unregister_task(1)
 
@@ -2058,8 +2058,7 @@ describe("Core", function()
             core:create_operation(profile, "configure", { unit }, { [unit] = "configured" })
 
             -- Simulate configure failure
-            local ws = core:get_workspace()
-            ws.cache.configurations["App/Debug"].state = "failed_configure"
+            unit._cached.state = "failed_configure"
             time.value = 45
             unit:unregister_task(1)
 
@@ -2074,8 +2073,7 @@ describe("Core", function()
             unit:register_task(1, "build")
             core:create_operation(profile, "configure+build", { unit }, { [unit] = "built" })
 
-            local ws = core:get_workspace()
-            ws.cache.configurations["App/Debug"].state = "built"
+            unit._cached.state = "built"
             time.value = 120
             unit:unregister_task(1)
 
@@ -2089,15 +2087,14 @@ describe("Core", function()
             -- First operation completes
             unit:register_task(1, "build")
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
-            local ws = core:get_workspace()
-            ws.cache.configurations["App/Debug"].state = "built"
+            unit._cached.state = "built"
             time.value = 10
             unit:unregister_task(1)
             assert.is_not_nil(profile:operation().message)
 
             -- Second operation starts
             unit:register_task(2, "build")
-            ws.cache.configurations["App/Debug"].state = "configured"
+            unit._cached.state = "configured"
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
             -- Has active operation, previous result still available until new one completes
             assert.is_true(profile:has_active_operation())
@@ -2115,8 +2112,7 @@ describe("Core", function()
             unit:register_task(1, "build")
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
-            local ws = core:get_workspace()
-            ws.cache.configurations["App/Debug"].state = "built"
+            unit._cached.state = "built"
             time.value = 10
             unit:unregister_task(1)
 

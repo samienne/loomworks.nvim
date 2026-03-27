@@ -72,23 +72,15 @@ describe("Project", function()
 
         it("checks via ConfigUnit matching Configuration object", function()
             local ConfigUnit = require("loomworks.config_unit")
-            local core = h.make_mock_core({
-                cache = {
-                    configurations = {
-                        ["App/Debug:ninja-gcc"] = {
-                            project_key = "App", config_key = "Debug:ninja-gcc",
-                            type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
-                        },
-                    },
-                },
-            })
+            local core = h.make_mock_core()
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
             core._projects[#core._projects + 1] = p
-            local unit = core:find_config_unit_for_cached(core.cache.configurations["App/Debug:ninja-gcc"])
-                or ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
-            if not core:find_config_unit_for_cached(core.cache.configurations["App/Debug:ninja-gcc"]) then
-                core._config_units[#core._config_units + 1] = unit
-            end
+            local unit = ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
+            unit._cached = {
+                project_key = "App", config_key = "Debug:ninja-gcc",
+                type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
+            }
+            core._config_units[#core._config_units + 1] = unit
             h.refresh_config_unit(core, unit)
             unit:mark_deleting(true)
             local cfg = p:get_configuration("Debug")
@@ -99,23 +91,15 @@ describe("Project", function()
     describe("config_running_action", function()
         it("delegates to ConfigUnit matching Configuration object", function()
             local ConfigUnit = require("loomworks.config_unit")
-            local core = h.make_mock_core({
-                cache = {
-                    configurations = {
-                        ["App/Debug:ninja-gcc"] = {
-                            project_key = "App", config_key = "Debug:ninja-gcc",
-                            type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
-                        },
-                    },
-                },
-            })
+            local core = h.make_mock_core()
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
             core._projects[#core._projects + 1] = p
-            local unit = core:find_config_unit_for_cached(core.cache.configurations["App/Debug:ninja-gcc"])
-                or ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
-            if not core:find_config_unit_for_cached(core.cache.configurations["App/Debug:ninja-gcc"]) then
-                core._config_units[#core._config_units + 1] = unit
-            end
+            local unit = ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
+            unit._cached = {
+                project_key = "App", config_key = "Debug:ninja-gcc",
+                type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
+            }
+            core._config_units[#core._config_units + 1] = unit
             h.refresh_config_unit(core, unit)
             unit:register_task(1, "configure")
             local cfg = p:get_configuration("Debug")

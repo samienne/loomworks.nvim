@@ -95,7 +95,7 @@ function M.make_mock_workspace(overrides)
         name = overrides.name or "test",
         config = overrides.config or { projects = {} },
         user = overrides.user or { _meta = { version = 1 } },
-        cache = overrides.cache or { configurations = {} },
+        cache = nil,  -- cache is nil after remerge; tests use unit._cached or _serialize_cache()
 
         -- Registries
         _tools_by_type = overrides._tools_by_type or {},
@@ -140,25 +140,32 @@ function M.make_mock_workspace(overrides)
         local tool_key = tool and tool.key or nil
         local config_key = merge_h.build_config_key(variant, tool_key)
         local id = cache_mod_h.config_cache_key(project.key, config_key)
-        self.cache.configurations = self.cache.configurations or {}
-        if not self.cache.configurations[id] then
-            self.cache.configurations[id] = {
-                project_key = project.key,
-                config_key = config_key,
-                type = project.type,
-                variant = variant,
-                tool_key = tool_key,
-                tool_data = tool and tool.data or nil,
-            }
+        -- Check if a unit with this id already exists (pre-created from cache data)
+        local unit = nil
+        for _, u in pairs(self._config_units) do
+            if u.id == id then unit = u; break end
         end
-        local unit = ConfigUnit.new(self, id, project.key)
+        if not unit then
+            unit = ConfigUnit.new(self, id, project.key)
+            self._config_units[#self._config_units + 1] = unit
+        end
+        -- Preserve existing _cached data (e.g. state from cache overrides),
+        -- but ensure base fields are populated
+        local cached_entry = unit._cached or {}
+        cached_entry.project_key = cached_entry.project_key or project.key
+        cached_entry.config_key = cached_entry.config_key or config_key
+        cached_entry.type = cached_entry.type or project.type
+        cached_entry.variant = cached_entry.variant or variant
+        if tool_key then
+            cached_entry.tool_key = cached_entry.tool_key or tool_key
+            cached_entry.tool_data = cached_entry.tool_data or (tool and tool.data or nil)
+        end
         unit:_update({
-            cached = self.cache.configurations[id],
+            cached = cached_entry,
             project = project,
             tool = tool,
             configuration = configuration,
         })
-        self._config_units[#self._config_units + 1] = unit
         return unit
     end
 
@@ -221,6 +228,24 @@ function M.make_mock_workspace(overrides)
         self_ws._core._deps.user.save(self_ws.root, self_ws.user)
     end
 
+    -- If cache overrides were provided, pre-create ConfigUnits from configurations.
+    -- This replaces the old pattern of storing cache data on ws.cache.
+    local cache_data = overrides.cache
+    if cache_data and cache_data.configurations then
+        for id, entry in pairs(cache_data.configurations) do
+            -- Skip if a unit already exists for this id
+            local exists = false
+            for _, u in pairs(ws._config_units) do
+                if u.id == id then exists = true; break end
+            end
+            if not exists then
+                local unit = ConfigUnit.new(ws, id, entry.project_key)
+                unit._cached = entry
+                ws._config_units[#ws._config_units + 1] = unit
+            end
+        end
+    end
+
     return ws
 end
 
@@ -242,15 +267,18 @@ function M.register_profile_project(ws, profile, project_key, variant)
         configuration = project._configurations[variant]
     end
     local cached, config_unit = nil, nil
-    if profile._cached_configurations and ws.cache and ws.cache.configurations then
-        for _, ck in ipairs(profile._cached_configurations) do
-            local entry = ws.cache.configurations[ck]
-            if entry and entry.project_key == project_key
-                    and entry.variant == variant then
-                cached = entry
-                config_unit = ws:find_config_unit_for_cached(entry)
-                break
+    -- Find cached entry via config units (cache is nil after remerge)
+    for _, unit in pairs(ws._config_units) do
+        if unit._cached
+                and unit._cached.project_key == project_key
+                and unit._cached.variant == variant then
+            -- Resolve references if not yet resolved (e.g. pre-created from cache)
+            if not unit._project then
+                M.refresh_config_unit(ws, unit)
             end
+            cached = unit._cached
+            config_unit = unit
+            break
         end
     end
     local pp = ProfileProject.new(ws, project_key, {
@@ -298,10 +326,7 @@ end
 --- @param ws table mock workspace
 --- @param unit table ConfigUnit
 function M.refresh_config_unit(ws, unit)
-    local cached = nil
-    if ws.cache and ws.cache.configurations then
-        cached = ws.cache.configurations[unit.id]
-    end
+    local cached = unit._cached
     local project_key = cached and cached.project_key or unit._init_project_key
     local project = project_key and M.find_project_in(ws._projects, project_key) or nil
     local tool = nil
@@ -332,13 +357,11 @@ end
 --- @return table ConfigUnit
 function M.ensure_config_unit_by_id(ws, id, project_key)
     local ConfigUnit = require("loomworks.config_unit")
-    -- Check if a unit already exists for this cache entry
-    local cached_entry = ws.cache and ws.cache.configurations and ws.cache.configurations[id]
-    if cached_entry then
-        local existing = ws:find_config_unit_for_cached(cached_entry)
-        if existing then
-            M.refresh_config_unit(ws, existing)
-            return existing
+    -- Check if a unit already exists with this id
+    for _, unit in pairs(ws._config_units) do
+        if unit.id == id then
+            M.refresh_config_unit(ws, unit)
+            return unit
         end
     end
     local unit = ConfigUnit.new(ws, id, project_key)
@@ -519,6 +542,16 @@ end
 function M.find_project_in(projects, key)
     for _, p in pairs(projects) do
         if p.key == key then return p end
+    end
+end
+
+--- Find a ConfigUnit by id (cache dict key) in a config_units array.
+--- @param config_units loomworks.ConfigUnit[]
+--- @param id string
+--- @return loomworks.ConfigUnit|nil
+function M.find_config_unit_by_id(config_units, id)
+    for _, unit in pairs(config_units) do
+        if unit.id == id then return unit end
     end
 end
 

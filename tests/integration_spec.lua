@@ -339,13 +339,17 @@ describe("project lifecycle", function()
         assert.is_not_nil(h.find_project_in(ws:get_projects(), "App"))
         assert.equals("Debug", ws.config.configuration_sets["Debug"]["App"])
 
-        -- Simulate cached state
+        -- Simulate cached state by injecting cache before remerge
         local ck = cache_mod.config_cache_key("App", "Debug")
-        ws.cache.configurations = ws.cache.configurations or {}
-        ws.cache.configurations[ck] = {
-            project_key = "App", config_key = "Debug",
-            type = "cmake", variant = "Debug", state = "built",
-            build_dir = "/root/.nvim/build/App/Debug",
+        ws.cache = {
+            _meta = ws._cache_meta or {},
+            configurations = {
+                [ck] = {
+                    project_key = "App", config_key = "Debug",
+                    type = "cmake", variant = "Debug", state = "built",
+                    build_dir = "/root/.nvim/build/App/Debug",
+                },
+            },
         }
         ws:remerge()
 
@@ -364,7 +368,8 @@ describe("project lifecycle", function()
         end)
         assert.is_true(done)
         assert.is_nil(h.find_project_in(ws:get_projects(), "App"))
-        assert.is_nil(ws.cache.configurations[ck])
+        local post_cache = ws:_serialize_cache()
+        assert.is_nil(post_cache.configurations[ck])
     end)
 
     it("prepare_add_project_from_browser returns add_direct when no config sets", function()
@@ -479,17 +484,18 @@ describe("profile upgrade and downgrade", function()
         assert.is_true(ok)
 
         -- Profile upgraded: Debug → Debug:ninja-gcc-12
-        assert.is_nil(ws.cache.profiles["Debug"])
-        assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
+        local cache = ws:_serialize_cache()
+        assert.is_nil(cache.profiles["Debug"])
+        assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"])
         assert.equals("Debug:ninja-gcc-12", ws.user.active_profile)
 
         -- Skeleton cache entry created for cmake project
-        assert.is_not_nil(ws.cache.configurations["App/Debug:ninja-gcc-12"])
-        assert.equals("cmake", ws.cache.configurations["App/Debug:ninja-gcc-12"].type)
+        assert.is_not_nil(cache.configurations["App/Debug:ninja-gcc-12"])
+        assert.equals("cmake", cache.configurations["App/Debug:ninja-gcc-12"].type)
 
         -- Non-keyed entry preserved without tool suffix
-        assert.is_not_nil(ws.cache.configurations["Frontend/debug"])
-        assert.is_nil(ws.cache.configurations["Frontend/debug:ninja-gcc-12"])
+        assert.is_not_nil(cache.configurations["Frontend/debug"])
+        assert.is_nil(cache.configurations["Frontend/debug:ninja-gcc-12"])
     end)
 
     it("removing last keyed-tool project downgrades profiles", function()
@@ -539,9 +545,10 @@ describe("profile upgrade and downgrade", function()
         assert.is_true(done)
 
         -- Profile downgraded: Debug:ninja-gcc-12 → Debug
-        assert.is_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
-        assert.is_not_nil(ws.cache.profiles["Debug"])
-        assert.is_nil(ws.cache.profiles["Debug"].tools)
+        local cache = ws:_serialize_cache()
+        assert.is_nil(cache.profiles["Debug:ninja-gcc-12"])
+        assert.is_not_nil(cache.profiles["Debug"])
+        assert.is_nil(cache.profiles["Debug"].tools)
         assert.equals("Debug", ws.user.active_profile)
     end)
 
@@ -583,12 +590,13 @@ describe("profile upgrade and downgrade", function()
         ws:upgrade_profiles_for_tool(tool_entry)
 
         -- Set-based profile upgraded
-        assert.is_nil(ws.cache.profiles["Debug"])
-        assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
+        local cache = ws:_serialize_cache()
+        assert.is_nil(cache.profiles["Debug"])
+        assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"])
 
         -- Pinned profile unchanged
-        assert.is_not_nil(ws.cache.profiles["App/Debug"])
-        assert.is_nil(ws.cache.profiles["App/Debug"].tools)
+        assert.is_not_nil(cache.profiles["App/Debug"])
+        assert.is_nil(cache.profiles["App/Debug"].tools)
     end)
 
     it("downgrade is no-op when other keyed-module projects remain", function()
@@ -619,8 +627,9 @@ describe("profile upgrade and downgrade", function()
         ws:downgrade_profiles_from_tool("cmake")
 
         -- Profile unchanged — Lib still uses cmake
-        assert.is_not_nil(ws.cache.profiles["Debug:ninja-gcc-12"])
-        assert.is_nil(ws.cache.profiles["Debug"])
+        local cache = ws:_serialize_cache()
+        assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"])
+        assert.is_nil(cache.profiles["Debug"])
     end)
 end)
 
@@ -671,7 +680,9 @@ describe("orphan lifecycle", function()
         assert.equals(0, #ws:get_orphaned_configs())
 
         -- Delete the profile from cache → config becomes orphaned
-        ws.cache.profiles["Debug"] = nil
+        local temp_cache = ws:_serialize_cache()
+        temp_cache.profiles["Debug"] = nil
+        ws.cache = temp_cache
         ws:remerge()
 
         local orphans = ws:get_orphaned_configs()
@@ -690,7 +701,7 @@ describe("orphan lifecycle", function()
         assert.is_true(done)
 
         -- Cache entry removed
-        assert.is_nil(ws.cache.configurations["Frontend/debug"])
+        assert.is_nil(ws:_serialize_cache().configurations["Frontend/debug"])
         assert.equals(0, #ws:get_orphaned_configs())
     end)
 
@@ -870,7 +881,7 @@ describe("collect helpers", function()
                 },
             }
         )
-        local unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug"])
+        local unit = h.find_config_unit_by_id(ws._config_units, "App/Debug")
         local items = wv.collect_clean_items_for_unit(unit)
         assert.equals(1, #items)
         assert.equals(unit, items[1].unit)
@@ -929,7 +940,7 @@ describe("config set rename", function()
 
         -- Cached profile points to new name
         assert.equals("Debug",
-            ws.cache.profiles["debug:ninja-gcc-12"].configuration_set)
+            ws:_serialize_cache().profiles["debug:ninja-gcc-12"].configuration_set)
     end)
 end)
 
@@ -1056,8 +1067,9 @@ describe("configuration rename propagation", function()
         assert.is_true(ok)
 
         -- Old cache key gone, new one exists
-        assert.is_nil(ws.cache.configurations["App/Debug-asan:ninja-gcc"])
-        local new_entry = ws.cache.configurations["App/DebugASAN:ninja-gcc"]
+        local cache = ws:_serialize_cache()
+        assert.is_nil(cache.configurations["App/Debug-asan:ninja-gcc"])
+        local new_entry = cache.configurations["App/DebugASAN:ninja-gcc"]
         assert.is_not_nil(new_entry)
 
         -- Fields updated
@@ -1068,7 +1080,7 @@ describe("configuration rename propagation", function()
         assert.equals("/root/.nvim/build/App/ninja-gcc/Debug-asan", new_entry.build_dir)
 
         -- Profile configurations array updated
-        local profile = ws.cache.profiles["debug:ninja-gcc"]
+        local profile = cache.profiles["debug:ninja-gcc"]
         assert.is_not_nil(profile)
         assert.equals("App/DebugASAN:ninja-gcc", profile.configurations[1])
     end)
@@ -1172,14 +1184,15 @@ describe("configuration rename propagation", function()
         assert.is_true(ok)
 
         -- Both cache entries migrated
-        assert.is_not_nil(ws.cache.configurations["App/DebugASAN:ninja-gcc"])
-        assert.is_not_nil(ws.cache.configurations["App/DebugASAN:ninja-clang"])
+        local cache = ws:_serialize_cache()
+        assert.is_not_nil(cache.configurations["App/DebugASAN:ninja-gcc"])
+        assert.is_not_nil(cache.configurations["App/DebugASAN:ninja-clang"])
 
         -- Both profiles updated
         assert.equals("App/DebugASAN:ninja-gcc",
-            ws.cache.profiles["debug:ninja-gcc"].configurations[1])
+            cache.profiles["debug:ninja-gcc"].configurations[1])
         assert.equals("App/DebugASAN:ninja-clang",
-            ws.cache.profiles["debug:ninja-clang"].configurations[1])
+            cache.profiles["debug:ninja-clang"].configurations[1])
     end)
 
     it("updates pinned profile mappings", function()
@@ -1217,15 +1230,16 @@ describe("configuration rename propagation", function()
         assert.is_true(ok)
 
         -- Old pinned profile key gone
-        assert.is_nil(ws.cache.profiles["App/Debug-asan:ninja-gcc"])
+        local cache = ws:_serialize_cache()
+        assert.is_nil(cache.profiles["App/Debug-asan:ninja-gcc"])
 
         -- New pinned profile key exists with updated mapping
-        local profile = ws.cache.profiles["App/DebugASAN:ninja-gcc"]
+        local profile = cache.profiles["App/DebugASAN:ninja-gcc"]
         assert.is_not_nil(profile)
         assert.equals("DebugASAN", profile.mappings.App)
 
         -- Cache entry rekeyed
-        assert.is_not_nil(ws.cache.configurations["App/DebugASAN:ninja-gcc"])
+        assert.is_not_nil(cache.configurations["App/DebugASAN:ninja-gcc"])
 
         -- Profile configurations array updated
         assert.equals("App/DebugASAN:ninja-gcc", profile.configurations[1])
@@ -1419,7 +1433,7 @@ describe("configuration rename propagation", function()
         })
 
         -- Simulate a running build on the config unit
-        local old_unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug-asan:ninja-gcc"])
+        local old_unit = h.find_config_unit_by_id(ws._config_units, "App/Debug-asan:ninja-gcc")
         assert.is_not_nil(old_unit)
         old_unit:register_task(42, "build")
         assert.is_true(old_unit:is_running())
@@ -1438,7 +1452,7 @@ describe("configuration rename propagation", function()
         assert.is_true(ok)
 
         -- ConfigUnit should have the new id and still be running
-        local new_unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/DebugASAN:ninja-gcc"])
+        local new_unit = h.find_config_unit_by_id(ws._config_units, "App/DebugASAN:ninja-gcc")
         assert.is_not_nil(new_unit)
         assert.is_true(new_unit:is_running())
         assert.equals("build", new_unit:running_action())
@@ -1453,7 +1467,7 @@ describe("configuration rename propagation", function()
         assert.equals("DebugASAN", pp:variant_name())
 
         -- Old id should no longer exist
-        assert.is_nil(ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug-asan:ninja-gcc"]))
+        assert.is_nil(h.find_config_unit_by_id(ws._config_units, "App/Debug-asan:ninja-gcc"))
     end)
 
     it("cache-only variant creates Configuration for PP resolution", function()

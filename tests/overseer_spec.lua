@@ -343,7 +343,7 @@ describe("record_task_result state protection", function()
         local core = make_core_with_state("App", "Debug", "built")
 
         -- Verify initial state
-        local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations["App/Debug"])
+        local unit = h.find_config_unit_by_id(core._workspace._config_units, "App/Debug")
         assert.equals("built", unit:state())
 
         -- Record a configure success
@@ -360,7 +360,7 @@ describe("record_task_result state protection", function()
     it("updates last_configured even when state stays built", function()
         local core = make_core_with_state("App", "Debug", "built")
 
-        local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations["App/Debug"])
+        local unit = h.find_config_unit_by_id(core._workspace._config_units, "App/Debug")
         core:record_task_result({
             unit = unit,
             action = "configure",
@@ -391,7 +391,7 @@ describe("record_task_result state protection", function()
     it("sets configure_failed on failed configure", function()
         local core = make_core_with_state("App", "Debug", "built")
 
-        local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations["App/Debug"])
+        local unit = h.find_config_unit_by_id(core._workspace._config_units, "App/Debug")
         core:record_task_result({
             unit = unit,
             action = "configure",
@@ -404,7 +404,7 @@ describe("record_task_result state protection", function()
     it("sets built state on successful build", function()
         local core = make_core_with_state("App", "Debug", "configured")
 
-        local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations["App/Debug"])
+        local unit = h.find_config_unit_by_id(core._workspace._config_units, "App/Debug")
         core:record_task_result({
             unit = unit,
             action = "build",
@@ -417,7 +417,7 @@ describe("record_task_result state protection", function()
     it("sets build_failed on failed build", function()
         local core = make_core_with_state("App", "Debug", "configured")
 
-        local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations["App/Debug"])
+        local unit = h.find_config_unit_by_id(core._workspace._config_units, "App/Debug")
         core:record_task_result({
             unit = unit,
             action = "build",

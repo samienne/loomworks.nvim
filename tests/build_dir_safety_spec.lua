@@ -144,12 +144,14 @@ describe("build dir refs", function()
             },
         })
 
-        -- Add a new cache entry
-        ws.cache.configurations["App/Release:ninja-gcc"] = {
+        -- Add a new cache entry by injecting into cache before remerge
+        local temp_cache = ws:_serialize_cache()
+        temp_cache.configurations["App/Release:ninja-gcc"] = {
             project_key = "App", config_key = "Release:ninja-gcc",
             type = "cmake", variant = "Release", tool_key = "ninja-gcc",
             state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc",
         }
+        ws.cache = temp_cache
         ws:remerge()
 
         local refs = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
@@ -240,8 +242,8 @@ describe("deletion safety with shared dirs", function()
         -- Delete both configs — dir should be deleted
         local done = false
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir, unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug:ninja-gcc"]) },
-            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir, unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Release:ninja-gcc"]) },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Debug:ninja-gcc") },
+            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Release:ninja-gcc") },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()
@@ -276,7 +278,7 @@ describe("deletion safety with shared dirs", function()
 
         local done = false
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir, unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug:ninja-gcc"]) },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Debug:ninja-gcc") },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()

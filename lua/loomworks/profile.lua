@@ -2,9 +2,6 @@
 --- Profile represents a configuration_set × kit combination.
 --- ProfileProject represents a single project within a profile.
 
-local merge = require("loomworks.merge")
-local cache_mod = require("loomworks.cache")
-
 -- ========================== ProfileProject ==========================
 
 --- @class loomworks.ProfileProject
@@ -223,17 +220,11 @@ function Profile:_resolve_mappings(data)
         return data.mappings, orphaned
     end
 
-    -- Tier 3: Fallback from cached profile configuration keys
-    if data._cached_configurations and data._ws_cache then
-        local mappings = {}
-        for _, ck in ipairs(data._cached_configurations) do
-            local cached_config = data._ws_cache.configurations
-                    and data._ws_cache.configurations[ck]
-            if cached_config and cached_config.variant then
-                mappings[cached_config.project_key] = cached_config.variant
-            end
+    -- Tier 3: Fallback from pre-resolved cached configuration mappings
+    if data._resolved_mappings then
+        if next(data._resolved_mappings) then
+            return data._resolved_mappings, data.configuration_set ~= nil
         end
-        if next(mappings) then return mappings, data.configuration_set ~= nil end
     end
 
     return nil, false
@@ -280,6 +271,35 @@ function Profile:config_key(variant, project_type)
         end
     end
     return variant
+end
+
+--- Serialize this profile to a cache entry for persistence.
+--- Builds the entry from owned fields — not from ws.cache.
+--- @return table cache entry suitable for cache.profiles[key]
+function Profile:serialize_cache()
+    local entry = {}
+    if self._configuration_set_name then
+        entry.configuration_set = self._configuration_set_name
+    end
+    if self._tools_raw then
+        entry.tools = self._tools_raw
+    end
+    if self.mappings and not self._configuration_set_name then
+        entry.mappings = self.mappings
+    end
+    -- Build configurations array from ProfileProject config units
+    local configs = {}
+    for _, pp in ipairs(self:projects()) do
+        if pp._config_unit then
+            configs[#configs + 1] = pp._config_unit.id
+        end
+    end
+    if #configs > 0 then
+        entry.configurations = configs
+    elseif self._cached_configurations then
+        entry.configurations = self._cached_configurations
+    end
+    return entry
 end
 
 -- ---------------------------------------------------------------------------
@@ -442,28 +462,16 @@ end
 -- Queries
 -- ---------------------------------------------------------------------------
 
---- Check if this profile has any configured entries in cache.
+--- Check if this profile has any configured entries.
+--- Iterates ProfileProjects and checks each ConfigUnit's state.
 --- @return boolean
 function Profile:is_configured()
-    if not self._workspace.cache then return false end
-
-    -- Look up profile in cache by key
-    local cached_profile = self._workspace.cache.profiles and self._workspace.cache.profiles[self.key]
-    if not cached_profile or not cached_profile.configurations then
-        -- Fallback: value matching for set-based profiles
-        if self._configuration_set_name then
-            cached_profile = merge.find_cached_profile(
-                self._workspace.cache, self._configuration_set_name, self._tools_raw)
-        end
-        if not cached_profile or not cached_profile.configurations then return false end
-    end
-
-    -- Check if any referenced configuration has actual build state
-    for _, ck in ipairs(cached_profile.configurations) do
-        local cached_config = self._workspace.cache.configurations and self._workspace.cache.configurations[ck]
-        if cached_config and cached_config.state
-                and cached_config.state ~= "unconfigured" then
-            return true
+    for _, pp in ipairs(self:projects()) do
+        if pp._config_unit then
+            local state = pp._config_unit:state()
+            if state and state ~= "unconfigured" then
+                return true
+            end
         end
     end
     return false
