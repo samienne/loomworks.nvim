@@ -8,7 +8,7 @@ local h = require("tests.helpers")
 --- @param name string
 --- @return loomworks.ConfigurationSet|nil
 local function get_cs(core, name)
-    return core:get_config_sets()[name]
+    return h.find_config_set_in(core:get_config_sets(), name)
 end
 
 --- Get or create a ConfigUnit from the workspace by project_key and config_key.
@@ -323,7 +323,7 @@ describe("Core", function()
         it("returns Project for known project", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local proj = core:get_projects()["App"]
+            local proj = h.find_project_in(core:get_projects(), "App")
             assert.is_not_nil(proj)
             assert.equals("App", proj.key)
             assert.equals("cmake", proj.type)

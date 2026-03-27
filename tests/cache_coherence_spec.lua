@@ -19,7 +19,7 @@ local cache_mod = require("loomworks.cache")
 --- @param name string
 --- @return loomworks.ConfigurationSet
 local function get_cs(core, name)
-    return core._workspace:find_config_set(name)
+    return h.find_config_set_in(core:get_config_sets(), name)
 end
 
 --- Get or create a ConfigUnit by project_key and config_key.

@@ -1145,14 +1145,11 @@ end
 function M.resolve_config_set_choice(ws, choice)
     local cs = choice.cs
     if choice.auto then
-        local ok, err = ws:add_configuration_set(choice.real_name, choice.mappings)
+        local ok, err, created = ws:add_configuration_set(choice.real_name, choice.mappings)
         if not ok then
             return nil, err or "failed to add config set"
         end
-        cs = ws:get_config_sets()[choice.real_name]
-        if not cs then
-            return nil, "config set '" .. choice.real_name .. "' not found after add"
-        end
+        cs = created
     end
     return cs
 end

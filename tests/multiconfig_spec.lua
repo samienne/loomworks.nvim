@@ -257,7 +257,7 @@ describe("multi-config cmake", function()
             core:setup({ root = "/root" })
 
             -- Activate the debug config set to materialize a profile
-            local cs = core._workspace:find_config_set("debug")
+            local cs = h.find_config_set_in(core:get_config_sets(), "debug")
             assert.is_not_nil(cs, "debug config set should exist")
             local profile = cs:activate()
             assert.is_not_nil(profile, "profile should be materialized")

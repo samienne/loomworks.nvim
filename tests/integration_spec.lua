@@ -144,8 +144,7 @@ describe("config set lifecycle", function()
         assert.is_not_nil(ws.config.configuration_sets["Debug"])
 
         -- Verify config set object was created
-        local config_sets = ws:get_config_sets()
-        assert.is_not_nil(config_sets["Debug"])
+        assert.is_not_nil(h.find_config_set_in(ws:get_config_sets(),"Debug"))
 
         -- 2. Edit: change Frontend mapping
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
@@ -153,7 +152,7 @@ describe("config set lifecycle", function()
         assert.equals("Debug", edit_ctx.mappings["App"])
         assert.equals("debug", edit_ctx.mappings["Frontend"])
 
-        local cs = ws:find_config_set("Debug")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         ok = wv.execute_edit_config_set(cs, "Debug",
             { App = "Release", Frontend = "release" },
             { App = "Debug", Frontend = "debug" })
@@ -162,7 +161,7 @@ describe("config set lifecycle", function()
         assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
 
         -- 3. Rename: Debug → Production
-        cs = ws:find_config_set("Debug")
+        cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         ok = wv.execute_edit_config_set(cs, "Production",
             { App = "Release", Frontend = "release" },
             { App = "Release", Frontend = "release" })
@@ -171,7 +170,7 @@ describe("config set lifecycle", function()
         assert.is_not_nil(ws.config.configuration_sets["Production"])
 
         -- 4. Delete
-        local prod_cs = ws:find_config_set("Production")
+        local prod_cs = h.find_config_set_in(ws:get_config_sets(),"Production")
         local del_ctx = wv.compute_delete_config_set_context(ws, prod_cs)
         assert.is_not_nil(del_ctx)
 
@@ -204,7 +203,7 @@ describe("config set lifecycle", function()
             },
         })
 
-        local cs = ws:find_config_set("Debug")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
             { App = "Debug" }, -- Frontend removed
             { App = "Debug", Frontend = "debug" })
@@ -224,8 +223,7 @@ describe("profile lifecycle", function()
             configuration_sets = { Debug = { Frontend = "debug" } },
         })
 
-        local config_sets = ws:get_config_sets()
-        local cs = config_sets["Debug"]
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         assert.is_not_nil(cs)
 
         -- Create profile (activate since first)
@@ -263,8 +261,7 @@ describe("profile lifecycle", function()
             }
         )
 
-        local config_sets = ws:get_config_sets()
-        local cs = config_sets["Debug"]
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
 
         local tool_entry = {
             tool_key = "ninja-gcc-12",
@@ -649,7 +646,7 @@ describe("orphan lifecycle", function()
 
         -- Delete config set — profile becomes orphaned_set but still
         -- references the config via cached configurations
-        local ok = wv.execute_delete_config_set(ws, ws:find_config_set("Debug"))
+        local ok = wv.execute_delete_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"Debug"))
         assert.is_true(ok)
 
         -- Profile is orphaned_set
@@ -709,7 +706,7 @@ describe("orphan lifecycle", function()
         )
 
         -- Change mapping from "debug" to "release"
-        local cs = ws:find_config_set("Debug")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
             { Frontend = "release" },
             { Frontend = "debug" })
@@ -829,7 +826,8 @@ describe("collect helpers", function()
             }
         )
 
-        local profiles = ws:get_config_sets()["Debug"]:find_profile(nil)
+        local debug_cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
+        local profiles = debug_cs:find_profile(nil)
         assert.is_not_nil(profiles)
 
         local items = wv.collect_clean_items(profiles)
@@ -907,7 +905,7 @@ describe("config set rename", function()
             }
         )
 
-        local ok = wv.execute_rename_config_set(ws, ws:find_config_set("debug"), "Debug",
+        local ok = wv.execute_rename_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"debug"), "Debug",
             { App = "Debug", Frontend = "debug" })
         assert.is_true(ok)
 
@@ -1513,7 +1511,7 @@ describe("configuration rename propagation", function()
         assert.is_true(cfg.is_user)
 
         -- Update config set to use the new configuration
-        local cs = ws:find_config_set("custom")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"custom")
         ok = cs:update_mapping(project, "Debug-ASAN")
         assert.is_true(ok)
 
@@ -1588,8 +1586,7 @@ describe("end-to-end workspace setup", function()
         assert.equals("debug", edit_ctx.mappings["Frontend"])
 
         -- Create profile from config set
-        local config_sets = ws:get_config_sets()
-        local cs = config_sets["Debug"]
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         assert.is_not_nil(cs)
 
         local profile = wv.execute_create_profile(cs, nil, true)
@@ -2179,7 +2176,7 @@ describe("opaque keys", function()
 
     it("config set mapping updates work with arbitrary project keys", function()
         local ws = make_opaque_ws()
-        local cs = ws:find_config_set("set-x")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"set-x")
         assert.is_not_nil(cs)
 
         local proj = ws:find_project("proj-alpha")

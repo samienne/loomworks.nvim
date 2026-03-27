@@ -12,11 +12,11 @@ local workspace_view = require("loomworks.workspace_view")
 --- @return string[]
 local function sorted_project_keys(projects)
     local normal, orphaned = {}, {}
-    for key, proj in pairs(projects) do
+    for _, proj in pairs(projects) do
         if proj.orphaned then
-            orphaned[#orphaned + 1] = key
+            orphaned[#orphaned + 1] = proj.key
         else
-            normal[#normal + 1] = key
+            normal[#normal + 1] = proj.key
         end
     end
     table.sort(normal)

@@ -261,15 +261,6 @@ function Workspace:find_project(key)
     end
 end
 
---- Find a ConfigurationSet by name (O(n) scan).
---- @param name string configuration set name
---- @return loomworks.ConfigurationSet|nil
-function Workspace:find_config_set(name)
-    for _, cs in pairs(self._config_sets) do
-        if cs.name == name then return cs end
-    end
-end
-
 --- Find a ConfigUnit by id (O(n) scan).
 --- @param id string cache dict key
 --- @return loomworks.ConfigUnit|nil
@@ -995,17 +986,13 @@ end
 --- Get all Project objects from the active set as a dict (keyed by project key).
 --- @return table<string, loomworks.Project>
 function Workspace:get_projects()
-    local dict = {}
-    for _, p in pairs(self._projects) do dict[p.key] = p end
-    return dict
+    return self._projects
 end
 
 --- Get all ConfigurationSet objects as a dict (keyed by name).
 --- @return table<string, loomworks.ConfigurationSet>
 function Workspace:get_config_sets()
-    local dict = {}
-    for _, cs in pairs(self._config_sets) do dict[cs.name] = cs end
-    return dict
+    return self._config_sets
 end
 
 --- Get tool entries for the configuration sets UI.
@@ -2142,7 +2129,7 @@ function Workspace:add_configuration_set(name, mappings)
     end
 
     self._core._deps.events.emit("active_set_changed", self._active_set)
-    return true
+    return true, nil, cs
 end
 
 --- Remove a configuration set from the workspace.
@@ -2290,11 +2277,15 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
 
     -- Only rename profiles whose config set has a project of the tool's module type
     local function should_rename(profile_data)
-        local cs = self:find_config_set(profile_data.configuration_set)
-        if not cs then return false end
-        for project in pairs(cs.mappings) do
-            if project.type == tool_entry.tool_mod_type then
-                return true
+        if not profile_data.configuration_set then return false end
+        for _, cs in pairs(self._config_sets) do
+            if cs.name == profile_data.configuration_set then
+                for project in pairs(cs.mappings) do
+                    if project.type == tool_entry.tool_mod_type then
+                        return true
+                    end
+                end
+                return false
             end
         end
         return false

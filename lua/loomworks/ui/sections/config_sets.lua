@@ -305,13 +305,12 @@ return function(tree, ctx)
     tree:blank()
 
     local sorted = {}
-    for name, cs in pairs(config_sets) do
-        sorted[#sorted + 1] = { name = name, cs = cs }
+    for _, cs in pairs(config_sets) do
+        sorted[#sorted + 1] = cs
     end
     table.sort(sorted, function(a, b) return a.name < b.name end)
 
-    for _, entry in ipairs(sorted) do
-        local cs = entry.cs
+    for _, cs in ipairs(sorted) do
         local is_active_set = active_profile
                 and active_profile._config_set_ref == cs
         local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"

@@ -187,12 +187,6 @@ function M.make_mock_workspace(overrides)
             if p.key == key then return p end
         end
     end
-    ws.find_config_set = function(self, name)
-        for _, cs in pairs(self._config_sets) do
-            if cs.name == name then return cs end
-        end
-    end
-
     -- Add Tool registry methods (delegate through Module objects)
     ws.find_tool = function(self, mod_type, tool_key)
         local mod = self:find_module(mod_type)
@@ -516,6 +510,26 @@ end
 function M.find_profile(profiles, key)
     for _, p in pairs(profiles) do
         if p.key == key then return p end
+    end
+end
+
+--- Find a Project by key in a projects array (test convenience).
+--- @param projects loomworks.Project[]
+--- @param key string
+--- @return loomworks.Project|nil
+function M.find_project_in(projects, key)
+    for _, p in pairs(projects) do
+        if p.key == key then return p end
+    end
+end
+
+--- Find a ConfigurationSet by name in an array (test convenience).
+--- @param config_sets loomworks.ConfigurationSet[]
+--- @param name string
+--- @return loomworks.ConfigurationSet|nil
+function M.find_config_set_in(config_sets, name)
+    for _, cs in pairs(config_sets) do
+        if cs.name == name then return cs end
     end
 end
 
