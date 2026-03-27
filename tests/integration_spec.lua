@@ -133,12 +133,14 @@ describe("config set lifecycle", function()
         -- 1. Create config set with auto-detected mappings
         local ctx = wv.compute_create_config_set_context(ws)
         assert.equals(2, #ctx.projects)
-        assert.is_not_nil(ctx.available_configs["App"])
-        assert.is_not_nil(ctx.available_configs["Frontend"])
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local frontend = h.find_project_in(ws:get_projects(), "Frontend")
+        assert.is_not_nil(ctx.available_configs[app])
+        assert.is_not_nil(ctx.available_configs[frontend])
 
         local cs, err = wv.execute_create_config_set(ws, "Debug", {
-            App = "Debug",
-            Frontend = "debug",
+            [app] = app:get_configuration("Debug"),
+            [frontend] = frontend:get_configuration("debug"),
         })
         assert.is_not_nil(cs)
         assert.is_not_nil(ws.config.configuration_sets["Debug"])
@@ -149,14 +151,13 @@ describe("config set lifecycle", function()
         -- 2. Edit: change Frontend mapping
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         assert.is_not_nil(edit_ctx)
-        assert.equals("Debug", edit_ctx.mappings["App"])
-        assert.equals("debug", edit_ctx.mappings["Frontend"])
+        assert.equals("Debug", edit_ctx.mappings[app].name)
+        assert.equals("debug", edit_ctx.mappings[frontend].name)
 
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         ok = wv.execute_edit_config_set(cs, "Debug",
-            { App = "Release", Frontend = "release" },
-            { App = "Debug", Frontend = "debug" },
-            edit_ctx.projects_by_key)
+            { [app] = app:get_configuration("Release"), [frontend] = frontend:get_configuration("release") },
+            edit_ctx.mappings)
         assert.is_true(ok)
         assert.equals("Release", ws.config.configuration_sets["Debug"]["App"])
         assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
@@ -165,9 +166,8 @@ describe("config set lifecycle", function()
         cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         ok = wv.execute_edit_config_set(cs, "Production",
-            { App = "Release", Frontend = "release" },
-            { App = "Release", Frontend = "release" },
-            edit_ctx.projects_by_key)
+            { [app] = app:get_configuration("Release"), [frontend] = frontend:get_configuration("release") },
+            edit_ctx.mappings)
         assert.is_true(ok)
         assert.is_nil(ws.config.configuration_sets["Debug"])
         assert.is_not_nil(ws.config.configuration_sets["Production"])
@@ -190,7 +190,10 @@ describe("config set lifecycle", function()
             configuration_sets = { Debug = { App = "Debug" } },
         })
 
-        local cs, err = wv.execute_create_config_set(ws, "Debug", { App = "Debug" })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local cs, err = wv.execute_create_config_set(ws, "Debug", {
+            [app] = app:get_configuration("Debug"),
+        })
         assert.is_nil(cs)
         assert.is_not_nil(err)
     end)
@@ -206,12 +209,12 @@ describe("config set lifecycle", function()
             },
         })
 
+        local app = h.find_project_in(ws:get_projects(), "App")
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
-            { App = "Debug" }, -- Frontend removed
-            { App = "Debug", Frontend = "debug" },
-            edit_ctx.projects_by_key)
+            { [app] = app:get_configuration("Debug") }, -- Frontend removed
+            edit_ctx.mappings)
         assert.is_true(ok)
         assert.is_nil(ws.config.configuration_sets["Debug"]["Frontend"])
     end)
@@ -715,12 +718,12 @@ describe("orphan lifecycle", function()
         )
 
         -- Change mapping from "debug" to "release"
+        local frontend = h.find_project_in(ws:get_projects(), "Frontend")
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
-            { Frontend = "release" },
-            { Frontend = "debug" },
-            edit_ctx.projects_by_key)
+            { [frontend] = frontend:get_configuration("release") },
+            edit_ctx.mappings)
         assert.is_true(ok)
         assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
 
@@ -1582,19 +1585,24 @@ describe("end-to-end workspace setup", function()
         ok, err = wv.execute_add_project(ws, "Frontend", "ets", nil, { mappings = {} }, false)
         assert.is_true(ok)
 
+        -- Remerge so projects get Configuration objects from module defaults
+        ws:remerge()
+
         -- Create config set
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local frontend = h.find_project_in(ws:get_projects(), "Frontend")
         local cs = wv.execute_create_config_set(ws, "Debug", {
-            App = "Debug",
-            Frontend = "debug",
+            [app] = app:get_configuration("Debug"),
+            [frontend] = frontend:get_configuration("debug"),
         })
         assert.is_not_nil(cs)
 
         -- Verify config set context is correct
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         assert.is_not_nil(edit_ctx)
-        assert.equals(2, #edit_ctx.project_keys)
-        assert.equals("Debug", edit_ctx.mappings["App"])
-        assert.equals("debug", edit_ctx.mappings["Frontend"])
+        assert.equals(2, #edit_ctx.projects)
+        assert.equals("Debug", edit_ctx.mappings[app].name)
+        assert.equals("debug", edit_ctx.mappings[frontend].name)
 
         -- Create profile from config set
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")

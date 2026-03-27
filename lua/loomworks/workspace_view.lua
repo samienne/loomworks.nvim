@@ -407,53 +407,47 @@ end
 --- Context for creating a new config set: project keys, auto-detected
 --- mappings, and available configs per project (from module.info).
 --- @param ws loomworks.Workspace
---- @return { projects: string[], auto_mappings: table<string, string|nil>, available_configs: table<string, string[]> }
+--- @return { projects: loomworks.Project[], mappings: table<loomworks.Project, loomworks.Configuration|nil>, available_configs: table<loomworks.Project, loomworks.Configuration[]> }
 function M.compute_create_config_set_context(ws)
-    local project_keys = {}
-    local auto_mappings = {}
+    local projects = {}
+    local mappings = {}
     local available_configs = {}
 
     for _, project in pairs(ws._projects) do
-        local key = project.key
-        project_keys[#project_keys + 1] = key
-        local impl = project._module and project._module.impl or nil
-        if impl and impl.info then
-            local abs_path = ws.root .. "/" .. (project.path or key)
-            local info = impl.info(abs_path, project.type_config)
-            if info and info.configurations then
-                local names = {}
-                for name in pairs(info.configurations) do
-                    names[#names + 1] = name
-                end
-                table.sort(names)
-                available_configs[key] = names
+        projects[#projects + 1] = project
+        local configs = {}
+        if project._configurations then
+            for _, cfg in pairs(project._configurations) do
+                configs[#configs + 1] = cfg
             end
+            table.sort(configs, function(a, b) return a.name < b.name end)
         end
-        if not available_configs[key] then
-            available_configs[key] = {}
-        end
+        available_configs[project] = configs
     end
-    table.sort(project_keys)
+    table.sort(projects, function(a, b) return a.key < b.key end)
 
     return {
-        projects = project_keys,
-        auto_mappings = auto_mappings,
+        projects = projects,
+        mappings = mappings,
         available_configs = available_configs,
     }
 end
 
 --- Execute config set creation.
+--- Accepts object-based mappings and serializes to key strings for disk.
 --- @param ws loomworks.Workspace
 --- @param name string config set name
---- @param mappings table<string, string|nil> project_key → variant
---- @return boolean ok, string|nil err
+--- @param mappings table<loomworks.Project, loomworks.Configuration|nil>
+--- @return loomworks.ConfigurationSet|nil cs, string|nil err
 function M.execute_create_config_set(ws, name, mappings)
-    -- Filter out nil mappings
-    local clean = {}
-    for k, v in pairs(mappings) do
-        if v then clean[k] = v end
+    -- Serialize to {project_key → variant_name} for add_configuration_set
+    local raw = {}
+    for project, config in pairs(mappings) do
+        if config then
+            raw[project.key] = config.name
+        end
     end
-    return ws:add_configuration_set(name, clean)
+    return ws:add_configuration_set(name, raw)
 end
 
 --- Context for editing a config set: current mappings, available configs
@@ -468,79 +462,72 @@ function M.compute_edit_config_set_context(ws, set_name)
     end
 
     local raw_mappings = ws.config.configuration_sets[set_name]
-    local mappings = {}
-    local available_configs = {}
-    local project_keys = {}
-    local projects_by_key = {}
+    local projects = {}
+    local mappings = {}     -- Project → Configuration|nil
+    local available_configs = {} -- Project → Configuration[]
 
     for _, project in pairs(ws._projects) do
-        local key = project.key
-        project_keys[#project_keys + 1] = key
-        projects_by_key[key] = project
-        mappings[key] = raw_mappings[key] or nil
-
-        local impl = project._module and project._module.impl or nil
-        if impl and impl.info then
-            local abs_path = ws.root .. "/" .. (project.path or key)
-            local info = impl.info(abs_path, project.type_config)
-            if info and info.configurations then
-                local names = {}
-                for name in pairs(info.configurations) do
-                    names[#names + 1] = name
-                end
-                table.sort(names)
-                available_configs[key] = names
+        projects[#projects + 1] = project
+        -- Resolve current mapping to Configuration object
+        local variant = raw_mappings[project.key]
+        mappings[project] = variant
+            and project._configurations and project._configurations[variant]
+            or nil
+        -- Collect available Configuration objects
+        local configs = {}
+        if project._configurations then
+            for _, cfg in pairs(project._configurations) do
+                configs[#configs + 1] = cfg
             end
+            table.sort(configs, function(a, b) return a.name < b.name end)
         end
-        if not available_configs[key] then
-            available_configs[key] = {}
-        end
+        available_configs[project] = configs
     end
-    table.sort(project_keys)
+    table.sort(projects, function(a, b) return a.key < b.key end)
 
     return {
         set_name = set_name,
+        projects = projects,
         mappings = mappings,
         available_configs = available_configs,
-        project_keys = project_keys,
-        projects_by_key = projects_by_key,
     }
 end
 
 --- Execute config set edit: apply changed mappings, optionally rename.
 --- @param cs loomworks.ConfigurationSet the config set to edit
 --- @param new_name string new name (same as cs.name if not renamed)
---- @param new_mappings table<string, string|nil>
---- @param old_mappings table<string, string|nil>
---- @param projects_by_key table<string, loomworks.Project> resolved during compute
+--- @param new_mappings table<loomworks.Project, loomworks.Configuration|nil>
+--- @param old_mappings table<loomworks.Project, loomworks.Configuration|nil>
 --- @return boolean ok, string|nil err
-function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings, projects_by_key)
+function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     local ws = cs._workspace
     local old_name = cs.name
     local renamed = new_name ~= old_name
 
     if renamed then
-        -- Rename: create new set, migrate profiles, remove old
-        local ok, err = M.execute_rename_config_set(ws, cs, new_name, new_mappings)
+        -- Serialize object mappings to raw for rename
+        local raw = {}
+        for project, config in pairs(new_mappings) do
+            if config then raw[project.key] = config.name end
+        end
+        local ok, err = M.execute_rename_config_set(ws, cs, new_name, raw)
         if not ok then return false, err end
         return true
     end
 
     -- Apply mapping changes to existing set
-    for key, new_variant in pairs(new_mappings) do
-        local old_variant = old_mappings[key]
+    for project, new_config in pairs(new_mappings) do
+        local old_config = old_mappings[project]
+        local new_variant = new_config and new_config.name or nil
+        local old_variant = old_config and old_config.name or nil
         if new_variant ~= old_variant then
-            local project = projects_by_key[key]
-            if not project then return false, "project '" .. key .. "' not found" end
             local ok, err = cs:update_mapping(project, new_variant)
             if not ok then return false, err end
         end
     end
-    -- Handle keys that were in old but not in new (removed)
-    for key, old_variant in pairs(old_mappings) do
-        if old_variant and new_mappings[key] == nil then
-            local project = projects_by_key[key]
-            if not project then return false, "project '" .. key .. "' not found" end
+    -- Handle projects that were mapped but now removed
+    for project, old_config in pairs(old_mappings) do
+        if old_config and not new_mappings[project] then
             local ok, err = cs:update_mapping(project, nil)
             if not ok then return false, err end
         end

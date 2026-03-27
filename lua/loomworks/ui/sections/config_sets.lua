@@ -174,12 +174,15 @@ local function edit_config_set(cs)
     local ctx = workspace_view.compute_edit_config_set_context(ws, set_name)
     if not ctx then return end
 
-    local old_mappings = vim.deepcopy(ctx.mappings)
+    local old_mappings = {}
+    for project, config in pairs(ctx.mappings) do
+        old_mappings[project] = config
+    end
 
     require("loomworks.ui.config_set_editor").open({
         title = "Edit configuration set",
         name = set_name,
-        project_keys = ctx.project_keys,
+        projects = ctx.projects,
         mappings = ctx.mappings,
         available_configs = ctx.available_configs,
         validate = function(result)
@@ -193,7 +196,7 @@ local function edit_config_set(cs)
         on_accept = function(result)
             local new_name = result.name
             local ok, err = workspace_view.execute_edit_config_set(
-                cs, new_name, result.mappings, old_mappings, ctx.projects_by_key)
+                cs, new_name, result.mappings, old_mappings)
             if not ok then
                 vim.notify("loomworks: " .. (err or "failed to edit config set"),
                     vim.log.levels.ERROR)
@@ -251,8 +254,8 @@ local function create_config_set()
     require("loomworks.ui.config_set_editor").open({
         title = "New configuration set",
         name = "",
-        project_keys = ctx.projects,
-        mappings = ctx.auto_mappings,
+        projects = ctx.projects,
+        mappings = ctx.mappings,
         available_configs = ctx.available_configs,
         validate = function(result)
             if ws.config.configuration_sets and ws.config.configuration_sets[result.name] then
@@ -262,8 +265,8 @@ local function create_config_set()
         end,
         on_accept = function(result)
             local name = result.name
-            local ok, err = workspace_view.execute_create_config_set(ws, name, result.mappings)
-            if ok then
+            local cs_new, err = workspace_view.execute_create_config_set(ws, name, result.mappings)
+            if cs_new then
                 vim.notify("loomworks: configuration set '" .. name .. "' created",
                     vim.log.levels.INFO)
             else
