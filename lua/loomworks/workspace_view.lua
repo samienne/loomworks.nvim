@@ -9,6 +9,19 @@ local modules = require("loomworks.modules")
 
 local M = {}
 
+--- Extract display-friendly project_key and config_key from a DeletionItem.
+--- Reads from the unit's resolved references, with fallbacks.
+--- @param item loomworks.DeletionItem
+--- @return string project_key, string config_key
+local function item_display_keys(item)
+    local unit = item.unit
+    if not unit then return "?", "?" end
+    local cached = unit._cached
+    local pkey = unit._project and unit._project.key or (cached and cached.project_key) or "?"
+    local ckey = cached and cached.config_key or unit.id
+    return pkey, ckey
+end
+
 -- =========================================================================
 -- Add Project
 -- =========================================================================
@@ -109,8 +122,8 @@ end
 --- @param has_keyed boolean whether module has keyed tools
 --- @return boolean ok, string|nil err
 function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
-    local ok, err = ws:add_project(key, mod_type, path)
-    if not ok then
+    local project, err = ws:add_project(key, mod_type, path)
+    if not project then
         return false, err
     end
 
@@ -119,9 +132,6 @@ function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
     if has_keyed and not result.tool_entry then
         return true
     end
-
-    -- add_project just created this project — resolve from registry at creation boundary
-    local project = ws:find_project(key)
     for _, cs in pairs(ws._config_sets) do
         local variant = result.mappings[cs.name]
         if variant and project then
@@ -141,20 +151,20 @@ end
 -- =========================================================================
 
 --- Collect all cached configurations for a project.
---- Returns items sorted by config_key, with build_dir and state.
+--- Returns items sorted by config_key, with build_dir, state, and unit.
 --- @param ws loomworks.Workspace
---- @param project_key string
---- @return { project_key: string, config_key: string, state: string|nil, build_dir: string|nil }[]
-function M.collect_project_configs(ws, project_key)
+--- @param project loomworks.Project
+--- @return { config_key: string, state: string|nil, build_dir: string|nil, unit: loomworks.ConfigUnit|nil }[]
+function M.collect_project_configs(ws, project)
     local items = {}
     if not ws.cache.configurations then return items end
-    for _, cached in pairs(ws.cache.configurations) do
-        if cached.project_key == project_key then
+    for cache_key, cached in pairs(ws.cache.configurations) do
+        if cached.project_key == project.key then
             items[#items + 1] = {
-                project_key = cached.project_key,
                 config_key = cached.config_key,
                 state = cached.state,
                 build_dir = cached.build_dir,
+                unit = ws:find_config_unit_for_cached(cached),
             }
         end
     end
@@ -181,18 +191,15 @@ end
 --- Context for removal confirmation: type, downgrade preview, cached
 --- configs, dialog lines and highlights. Pure query.
 --- @param ws loomworks.Workspace
---- @param project_key string
+--- @param project loomworks.Project
 --- @return { project_type: string, downgrade_preview: table[], cached_configs: table[], lines: string[], highlights: table[] }|nil
-function M.compute_remove_context(ws, project_key)
-    local project = ws:find_project(project_key)
-    if not project then return nil end
-
+function M.compute_remove_context(ws, project)
     local proj_type = project.type
-    local downgrade_preview = ws:compute_downgrade_preview(project_key)
-    local cached_configs = M.collect_project_configs(ws, project_key)
+    local downgrade_preview = ws:compute_downgrade_preview(project)
+    local cached_configs = M.collect_project_configs(ws, project)
 
     local lines = {
-        "  Remove project: " .. project_key,
+        "  Remove project: " .. project.key,
         "",
         "  This removes the project from loomworks.json.",
     }
@@ -217,7 +224,7 @@ function M.compute_remove_context(ws, project_key)
             local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
             local suffix = dir and ("  " .. dir) or ""
             local state_label = item.state and (" (" .. item.state .. ")") or ""
-            lines[#lines + 1] = "    " .. project_key .. " / " .. item.config_key
+            lines[#lines + 1] = "    " .. project.key .. " / " .. item.config_key
                 .. state_label .. suffix
             highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
         end
@@ -253,10 +260,10 @@ end
 --- downgrade profiles. The deletion is async (build dirs deleted via
 --- subprocess), so on_done is called when complete.
 --- @param ws loomworks.Workspace
---- @param key string project key
+--- @param project loomworks.Project project to remove
 --- @param ctx { project_type: string, cached_configs: table[], downgrade_preview: table[] }
 --- @param on_done? fun(ok: boolean, err: string|nil)
-function M.execute_remove_project(ws, key, ctx, on_done)
+function M.execute_remove_project(ws, project, ctx, on_done)
     on_done = on_done or function() end
 
     -- Step 1: Delete cached configs and build dirs (async)
@@ -268,7 +275,7 @@ function M.execute_remove_project(ws, key, ctx, on_done)
             ws:remerge()
         end, function()
             -- Step 2: Remove project from config (after deletion completes)
-            local ok, err = ws:remove_project(key)
+            local ok, err = ws:remove_project(project)
             if not ok then
                 on_done(false, err)
                 return
@@ -281,7 +288,7 @@ function M.execute_remove_project(ws, key, ctx, on_done)
         end)
     else
         -- No cached configs to delete — remove directly
-        local ok, err = ws:remove_project(key)
+        local ok, err = ws:remove_project(project)
         if not ok then
             on_done(false, err)
             return
@@ -400,53 +407,47 @@ end
 --- Context for creating a new config set: project keys, auto-detected
 --- mappings, and available configs per project (from module.info).
 --- @param ws loomworks.Workspace
---- @return { projects: string[], auto_mappings: table<string, string|nil>, available_configs: table<string, string[]> }
+--- @return { projects: loomworks.Project[], mappings: table<loomworks.Project, loomworks.Configuration|nil>, available_configs: table<loomworks.Project, loomworks.Configuration[]> }
 function M.compute_create_config_set_context(ws)
-    local project_keys = {}
-    local auto_mappings = {}
+    local projects = {}
+    local mappings = {}
     local available_configs = {}
 
     for _, project in pairs(ws._projects) do
-        local key = project.key
-        project_keys[#project_keys + 1] = key
-        local impl = project._module and project._module.impl or nil
-        if impl and impl.info then
-            local abs_path = ws.root .. "/" .. (project.path or key)
-            local info = impl.info(abs_path, project.type_config)
-            if info and info.configurations then
-                local names = {}
-                for name in pairs(info.configurations) do
-                    names[#names + 1] = name
-                end
-                table.sort(names)
-                available_configs[key] = names
+        projects[#projects + 1] = project
+        local configs = {}
+        if project._configurations then
+            for _, cfg in pairs(project._configurations) do
+                configs[#configs + 1] = cfg
             end
+            table.sort(configs, function(a, b) return a.name < b.name end)
         end
-        if not available_configs[key] then
-            available_configs[key] = {}
-        end
+        available_configs[project] = configs
     end
-    table.sort(project_keys)
+    table.sort(projects, function(a, b) return a.key < b.key end)
 
     return {
-        projects = project_keys,
-        auto_mappings = auto_mappings,
+        projects = projects,
+        mappings = mappings,
         available_configs = available_configs,
     }
 end
 
 --- Execute config set creation.
+--- Accepts object-based mappings and serializes to key strings for disk.
 --- @param ws loomworks.Workspace
 --- @param name string config set name
---- @param mappings table<string, string|nil> project_key → variant
---- @return boolean ok, string|nil err
+--- @param mappings table<loomworks.Project, loomworks.Configuration|nil>
+--- @return loomworks.ConfigurationSet|nil cs, string|nil err
 function M.execute_create_config_set(ws, name, mappings)
-    -- Filter out nil mappings
-    local clean = {}
-    for k, v in pairs(mappings) do
-        if v then clean[k] = v end
+    -- Serialize to {project_key → variant_name} for add_configuration_set
+    local raw = {}
+    for project, config in pairs(mappings) do
+        if config then
+            raw[project.key] = config.name
+        end
     end
-    return ws:add_configuration_set(name, clean)
+    return ws:add_configuration_set(name, raw)
 end
 
 --- Context for editing a config set: current mappings, available configs
@@ -461,47 +462,42 @@ function M.compute_edit_config_set_context(ws, set_name)
     end
 
     local raw_mappings = ws.config.configuration_sets[set_name]
-    local mappings = {}
-    local available_configs = {}
-    local project_keys = {}
+    local projects = {}
+    local mappings = {}     -- Project → Configuration|nil
+    local available_configs = {} -- Project → Configuration[]
 
     for _, project in pairs(ws._projects) do
-        local key = project.key
-        project_keys[#project_keys + 1] = key
-        mappings[key] = raw_mappings[key] or nil
-
-        local impl = project._module and project._module.impl or nil
-        if impl and impl.info then
-            local abs_path = ws.root .. "/" .. (project.path or key)
-            local info = impl.info(abs_path, project.type_config)
-            if info and info.configurations then
-                local names = {}
-                for name in pairs(info.configurations) do
-                    names[#names + 1] = name
-                end
-                table.sort(names)
-                available_configs[key] = names
+        projects[#projects + 1] = project
+        -- Resolve current mapping to Configuration object
+        local variant = raw_mappings[project.key]
+        mappings[project] = variant
+            and project._configurations and project._configurations[variant]
+            or nil
+        -- Collect available Configuration objects
+        local configs = {}
+        if project._configurations then
+            for _, cfg in pairs(project._configurations) do
+                configs[#configs + 1] = cfg
             end
+            table.sort(configs, function(a, b) return a.name < b.name end)
         end
-        if not available_configs[key] then
-            available_configs[key] = {}
-        end
+        available_configs[project] = configs
     end
-    table.sort(project_keys)
+    table.sort(projects, function(a, b) return a.key < b.key end)
 
     return {
         set_name = set_name,
+        projects = projects,
         mappings = mappings,
         available_configs = available_configs,
-        project_keys = project_keys,
     }
 end
 
 --- Execute config set edit: apply changed mappings, optionally rename.
 --- @param cs loomworks.ConfigurationSet the config set to edit
 --- @param new_name string new name (same as cs.name if not renamed)
---- @param new_mappings table<string, string|nil>
---- @param old_mappings table<string, string|nil>
+--- @param new_mappings table<loomworks.Project, loomworks.Configuration|nil>
+--- @param old_mappings table<loomworks.Project, loomworks.Configuration|nil>
 --- @return boolean ok, string|nil err
 function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     local ws = cs._workspace
@@ -509,27 +505,29 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     local renamed = new_name ~= old_name
 
     if renamed then
-        -- Rename: create new set, migrate profiles, remove old
-        local ok, err = M.execute_rename_config_set(ws, old_name, new_name, new_mappings)
+        -- Serialize object mappings to raw for rename
+        local raw = {}
+        for project, config in pairs(new_mappings) do
+            if config then raw[project.key] = config.name end
+        end
+        local ok, err = M.execute_rename_config_set(ws, cs, new_name, raw)
         if not ok then return false, err end
         return true
     end
 
     -- Apply mapping changes to existing set
-    for key, new_variant in pairs(new_mappings) do
-        local old_variant = old_mappings[key]
+    for project, new_config in pairs(new_mappings) do
+        local old_config = old_mappings[project]
+        local new_variant = new_config and new_config.name or nil
+        local old_variant = old_config and old_config.name or nil
         if new_variant ~= old_variant then
-            local project = ws:find_project(key)
-            if not project then return false, "project '" .. key .. "' not found" end
             local ok, err = cs:update_mapping(project, new_variant)
             if not ok then return false, err end
         end
     end
-    -- Handle keys that were in old but not in new (removed)
-    for key, old_variant in pairs(old_mappings) do
-        if old_variant and new_mappings[key] == nil then
-            local project = ws:find_project(key)
-            if not project then return false, "project '" .. key .. "' not found" end
+    -- Handle projects that were mapped but now removed
+    for project, old_config in pairs(old_mappings) do
+        if old_config and not new_mappings[project] then
             local ok, err = cs:update_mapping(project, nil)
             if not ok then return false, err end
         end
@@ -540,18 +538,19 @@ end
 --- Rename a configuration set: create new, migrate cached profiles, remove old.
 --- The new set gets the provided mappings (which may also have changed).
 --- @param ws loomworks.Workspace
---- @param old_name string
+--- @param cs loomworks.ConfigurationSet configuration set being renamed
 --- @param new_name string
 --- @param mappings table<string, string|nil> final mappings for the new set
 --- @return boolean ok, string|nil err
-function M.execute_rename_config_set(ws, old_name, new_name, mappings)
+function M.execute_rename_config_set(ws, cs, new_name, mappings)
     -- Filter nil mappings
     local clean = {}
     for k, v in pairs(mappings) do
         if v then clean[k] = v end
     end
 
-    -- Migrate cached profiles that reference old_name (before removing old set)
+    -- Migrate cached profiles that reference old name (before removing old set)
+    local old_name = cs.name
     if ws.cache.profiles then
         for _, profile_data in pairs(ws.cache.profiles) do
             if profile_data.configuration_set == old_name then
@@ -561,21 +560,22 @@ function M.execute_rename_config_set(ws, old_name, new_name, mappings)
     end
 
     -- Remove old set first (avoids case-collision check blocking case-only renames)
-    local ok, err = ws:remove_configuration_set(old_name)
+    local ok, err = ws:remove_configuration_set(cs)
     if not ok then return false, err end
 
     -- Create new set
-    ok, err = ws:add_configuration_set(new_name, clean)
-    if not ok then return false, err end
+    local new_cs, add_err = ws:add_configuration_set(new_name, clean)
+    if not new_cs then return false, add_err end
 
     return true
 end
 
 --- Context for deleting a config set: affected profiles, warning lines.
 --- @param ws loomworks.Workspace
---- @param set_name string
+--- @param cs loomworks.ConfigurationSet
 --- @return { profiles: string[], lines: string[], highlights: table[] }|nil
-function M.compute_delete_config_set_context(ws, set_name)
+function M.compute_delete_config_set_context(ws, cs)
+    local set_name = cs.name
     if not ws.config.configuration_sets
             or not ws.config.configuration_sets[set_name] then
         return nil
@@ -626,10 +626,10 @@ end
 
 --- Execute config set deletion (orphans profiles, does not delete caches).
 --- @param ws loomworks.Workspace
---- @param set_name string
+--- @param cs loomworks.ConfigurationSet
 --- @return boolean ok, string|nil err
-function M.execute_delete_config_set(ws, set_name)
-    return ws:remove_configuration_set(set_name)
+function M.execute_delete_config_set(ws, cs)
+    return ws:remove_configuration_set(cs)
 end
 
 -- =========================================================================
@@ -733,6 +733,7 @@ function M.compute_orphan_cleanup_context(ws)
             config_key = o.config_key,
             state = o.cached and o.cached.state or nil,
             build_dir = o.cached and o.cached.build_dir or nil,
+            unit = o.unit,
         }
     end
 
@@ -848,15 +849,16 @@ function M.derive_key_and_path(root, abs_path, name)
 end
 
 --- Find the project key in workspace config that matches a browser entry path.
+--- Find a project by its relative path or basename.
 --- @param ws loomworks.Workspace
 --- @param rel_path string relative path from root
 --- @param basename string directory basename
---- @return string|nil project_key
-function M.find_project_key_by_path(ws, rel_path, basename)
+--- @return loomworks.Project|nil
+function M.find_project_by_path(ws, rel_path, basename)
     for _, proj in pairs(ws._projects) do
         local proj_rel = proj.path or proj.key
         if proj_rel == rel_path or proj_rel == basename then
-            return proj.key
+            return proj
         end
     end
     return nil
@@ -934,12 +936,9 @@ end
 --- @param unit loomworks.ConfigUnit
 --- @return table[]
 function M.collect_clean_items_for_unit(unit)
-    local cached = unit._cached
     return { {
-        project_key = unit._project and unit._project.key or (cached and cached.project_key),
-        config_key = cached and cached.config_key,
-        build_dir = unit:build_dir(),
         unit = unit,
+        build_dir = unit:build_dir(),
     } }
 end
 
@@ -982,7 +981,8 @@ function M.compute_clean_confirmation_context(ws, title, items, opts)
         or "  Will clean build artifacts and reset to configured:"
     add(desc, "DiagnosticWarn")
     for _, item in ipairs(items) do
-        add("    " .. item.project_key .. " / " .. item.config_key, "DiagnosticWarn")
+        local pkey, ckey = item_display_keys(item)
+        add("    " .. pkey .. " / " .. ckey, "DiagnosticWarn")
     end
     add("")
 
@@ -1041,9 +1041,10 @@ function M.compute_delete_confirmation_context(ws, title, plan)
     if #clean_items > 0 then
         add("  Will remove:", "DiagnosticError")
         for _, item in ipairs(clean_items) do
+            local pkey, ckey = item_display_keys(item)
             local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
             local suffix = dir and ("  " .. dir) or ""
-            add("    " .. (item.project_key or "?") .. " / " .. (item.config_key or "?") .. suffix, "DiagnosticError")
+            add("    " .. pkey .. " / " .. ckey .. suffix, "DiagnosticError")
         end
         add("")
     end
@@ -1051,9 +1052,10 @@ function M.compute_delete_confirmation_context(ws, title, plan)
     if #reset_items > 0 then
         add("  Will reset to unconfigured:", "DiagnosticWarn")
         for _, item in ipairs(reset_items) do
+            local pkey, ckey = item_display_keys(item)
             local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
             local suffix = dir and ("  " .. dir) or ""
-            add("    " .. (item.project_key or "?") .. " / " .. (item.config_key or "?") .. suffix, "DiagnosticWarn")
+            add("    " .. pkey .. " / " .. ckey .. suffix, "DiagnosticWarn")
         end
         add("")
     end
@@ -1061,12 +1063,13 @@ function M.compute_delete_confirmation_context(ws, title, plan)
     if #keep_items > 0 then
         add("  Will keep (referenced by another profile):", "Comment")
         for _, item in ipairs(keep_items) do
-            add("    " .. item.project_key .. " / " .. item.config_key, "Comment")
+            local pkey, ckey = item_display_keys(item)
+            add("    " .. pkey .. " / " .. ckey, "Comment")
         end
         add("")
     end
 
-    if #items == 0 and plan.profile_key then
+    if #items == 0 and plan.profile then
         add("  No configurations to clean.", "Comment")
         add("")
     end
@@ -1131,14 +1134,11 @@ end
 function M.resolve_config_set_choice(ws, choice)
     local cs = choice.cs
     if choice.auto then
-        local ok, err = ws:add_configuration_set(choice.real_name, choice.mappings)
-        if not ok then
+        local created, err = ws:add_configuration_set(choice.real_name, choice.mappings)
+        if not created then
             return nil, err or "failed to add config set"
         end
-        cs = ws:get_config_sets()[choice.real_name]
-        if not cs then
-            return nil, "config set '" .. choice.real_name .. "' not found after add"
-        end
+        cs = created
     end
     return cs
 end

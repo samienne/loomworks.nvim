@@ -126,7 +126,12 @@ There is one Profile class. Profiles differ in two optional properties:
   under `"profiles"` and always appears in the UI, even before
   materialization.
 
-**Profile key formats**:
+**Profile keys are opaque identifiers** — they exist solely for cache
+persistence and display. They carry no semantic meaning and must never be
+parsed, compared, or used to match profiles to other objects. All matching
+uses object references or property-based comparison.
+
+**Profile key formats** (write-time conventions, not runtime contracts):
 
 | Variant    | Key format                        | configuration_set |
 |------------|-----------------------------------|-------------------|
@@ -134,9 +139,8 @@ There is one Profile class. Profiles differ in two optional properties:
 | Pinned     | `project/config_key`              | nil               |
 | Explicit   | User-defined key                  | non-nil (typically)|
 
-Pinned keys use `/` as separator to avoid collision with set-based keys that
-use `:`. The config_key already includes the tool_key for keyed modules (e.g.,
-`"App/Debug:ninja-gcc"`), so the tool is visible in the key.
+Key collisions are resolved by appending `-2`, `-3`, etc. via
+`cache.next_available_key()`.
 
 **Profile lifecycle**:
 
@@ -528,15 +532,16 @@ UI, or `p` key (pinned).
 5. Save cache, trigger remerge
 
 **Process (pinned profiles)**:
-1. Receive project_key and config_key directly
-2. Compute mappings = `{ [project_key] = variant }` (variant parsed from
-   config_key)
-3. Create skeleton cache entry if absent
+1. Property-based idempotency check: scan existing pinned profiles for one
+   that references this ConfigUnit. If found, return it (no-op).
+2. Create skeleton cache entry if absent (updates ConfigUnit directly)
+3. Generate profile key via `cache.next_available_key()` to avoid collisions
 4. Write profile entry (with `configuration_set = nil` and `mappings`) to
    `cache.profiles`
-5. Save cache, trigger remerge
+5. Create Profile and ProfileProject objects directly (no remerge needed)
+6. Save cache
 
-**Idempotent**: no-op if profile already exists in cache.
+**Idempotent**: no-op if a pinned profile already references this ConfigUnit.
 
 ### 4.2 Activation
 

@@ -8,7 +8,7 @@ local h = require("tests.helpers")
 --- @param name string
 --- @return loomworks.ConfigurationSet|nil
 local function get_cs(core, name)
-    return core:get_config_sets()[name]
+    return h.find_config_set_in(core:get_config_sets(), name)
 end
 
 --- Get or create a ConfigUnit from the workspace by project_key and config_key.
@@ -21,9 +21,9 @@ end
 local function get_unit(core, project_key, config_key)
     local ws = core._workspace
     local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = ws:find_config_unit_by_id(id)
+    local unit = ws:find_config_unit_for_cached(ws.cache.configurations[id])
     if unit then return unit end
-    local project = ws:find_project(project_key)
+    local project = h.find_project_in(core:get_projects(), project_key)
     if not project then
         -- Project not in workspace — create bare ConfigUnit (test-only scenario)
         return h.ensure_config_unit_by_id(ws, id, project_key)
@@ -283,7 +283,7 @@ describe("Core", function()
                 configuration_sets = { debug = { App = "development" } },
             })
             core:setup({ root = "/root" })
-            assert.is_nil(core:get_profiles()["nonexistent"])
+            assert.is_nil(h.find_profile(core:get_profiles(), "nonexistent"))
         end)
 
         it("returns Profile object for known profile", function()
@@ -311,7 +311,7 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            local profile = core:get_profiles()["debug"]
+            local profile = h.find_profile(core:get_profiles(), "debug")
             assert.is_not_nil(profile)
             assert.equals("debug", profile.key)
             assert.equals("debug", profile._configuration_set_name)
@@ -323,7 +323,7 @@ describe("Core", function()
         it("returns Project for known project", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            local proj = core:get_projects()["App"]
+            local proj = h.find_project_in(core:get_projects(), "App")
             assert.is_not_nil(proj)
             assert.equals("App", proj.key)
             assert.equals("cmake", proj.type)
@@ -339,9 +339,9 @@ describe("Core", function()
                 normalize = test_normalize,
             })
             core:setup({ root = "/root" })
-            local key, proj = core:project_for_buf(1)
-            assert.equals("App", key)
+            local proj = core:project_for_buf(1)
             assert.is_not_nil(proj)
+            assert.equals("App", proj.key)
         end)
 
         it("picks innermost project for nested paths", function()
@@ -356,8 +356,9 @@ describe("Core", function()
                 normalize = test_normalize,
             })
             core:setup({ root = "/root" })
-            local key = core:project_for_buf(1)
-            assert.equals("Root/Sub", key)
+            local proj = core:project_for_buf(1)
+            assert.is_not_nil(proj)
+            assert.equals("Root/Sub", proj.key)
         end)
 
     end)
@@ -450,7 +451,7 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            core:get_profiles()["debug"]:deactivate()
+            h.find_profile(core:get_profiles(), "debug"):deactivate()
             assert.is_nil(saved.data.active_profile)
         end)
 
@@ -493,7 +494,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
             save_called = false -- reset from setup
-            core:get_profiles()["release"]:deactivate()
+            h.find_profile(core:get_profiles(), "release"):deactivate()
             assert.is_false(save_called)
         end)
     end)
@@ -1018,7 +1019,8 @@ describe("Core", function()
             core:setup({ root = "/root" })
             local plan = get_unit(core, "App", "development"):plan_deletion()
             assert.equals(1, #plan.items)
-            assert.equals("App", plan.items[1].project_key)
+            assert.is_not_nil(plan.items[1].unit)
+            assert.equals("App", plan.items[1].unit._project.key)
             assert.equals("/root/.nvim/build/App/development", plan.items[1].build_dir)
             -- Pinned profile still references it, so disposition is "reset"
             assert.equals("reset", plan.items[1].disposition)
@@ -1107,8 +1109,9 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
+            local unit = get_unit(core, "App", "development")
             core:delete_cached_configs({
-                { project_key = "App", config_key = "development" },
+                { unit = unit },
             })
             local ws = core:get_workspace()
             -- Config should be removed from flat cache
@@ -1240,10 +1243,13 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
+            local profile = h.find_profile(core:get_profiles(), "debug")
+            assert.is_not_nil(profile)
+            local unit = get_unit(core, "App", "development")
             local plan = {
-                profile_key = "debug",
+                profile = profile,
                 items = {
-                    { project_key = "App", config_key = "development" },
+                    { unit = unit },
                 },
             }
 
@@ -1296,13 +1302,13 @@ describe("Core", function()
             core:setup({ root = "/root" })
 
             -- Empty items = no unreferenced configs, but profile should still be removed
+            local debug_profile = h.find_profile(core:get_profiles(), "debug")
             local plan = {
-                profile_key = "debug",
+                profile = debug_profile,
                 items = {},
             }
 
             local done = false
-            local debug_profile = core:get_profiles()["debug"]
             core:execute_deletion(plan, { deactivate_profile = debug_profile }, function() done = true end)
             assert.is_true(done)
             assert.is_not_nil(saved_cache)
@@ -1688,7 +1694,7 @@ describe("Core", function()
             assert.same({}, core:get_orphaned_configs())
 
             -- The "feature" profile should still exist but with orphaned_set=true
-            local profile = core:get_profiles()["feature"]
+            local profile = h.find_profile(core:get_profiles(), "feature")
             assert.is_not_nil(profile)
             assert.is_true(profile.orphaned_set)
         end)
@@ -2005,7 +2011,7 @@ describe("Core", function()
                 clock = clock_fn,
             })
             core:setup({ root = "/root" })
-            local profile = core:get_profiles()["debug"]
+            local profile = h.find_profile(core:get_profiles(), "debug")
             return core, profile, time
         end
 

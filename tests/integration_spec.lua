@@ -133,48 +133,51 @@ describe("config set lifecycle", function()
         -- 1. Create config set with auto-detected mappings
         local ctx = wv.compute_create_config_set_context(ws)
         assert.equals(2, #ctx.projects)
-        assert.is_not_nil(ctx.available_configs["App"])
-        assert.is_not_nil(ctx.available_configs["Frontend"])
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local frontend = h.find_project_in(ws:get_projects(), "Frontend")
+        assert.is_not_nil(ctx.available_configs[app])
+        assert.is_not_nil(ctx.available_configs[frontend])
 
-        local ok, err = wv.execute_create_config_set(ws, "Debug", {
-            App = "Debug",
-            Frontend = "debug",
+        local cs, err = wv.execute_create_config_set(ws, "Debug", {
+            [app] = app:get_configuration("Debug"),
+            [frontend] = frontend:get_configuration("debug"),
         })
-        assert.is_true(ok)
+        assert.is_not_nil(cs)
         assert.is_not_nil(ws.config.configuration_sets["Debug"])
 
         -- Verify config set object was created
-        local config_sets = ws:get_config_sets()
-        assert.is_not_nil(config_sets["Debug"])
+        assert.is_not_nil(h.find_config_set_in(ws:get_config_sets(),"Debug"))
 
         -- 2. Edit: change Frontend mapping
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         assert.is_not_nil(edit_ctx)
-        assert.equals("Debug", edit_ctx.mappings["App"])
-        assert.equals("debug", edit_ctx.mappings["Frontend"])
+        assert.equals("Debug", edit_ctx.mappings[app].name)
+        assert.equals("debug", edit_ctx.mappings[frontend].name)
 
-        local cs = ws:find_config_set("Debug")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         ok = wv.execute_edit_config_set(cs, "Debug",
-            { App = "Release", Frontend = "release" },
-            { App = "Debug", Frontend = "debug" })
+            { [app] = app:get_configuration("Release"), [frontend] = frontend:get_configuration("release") },
+            edit_ctx.mappings)
         assert.is_true(ok)
         assert.equals("Release", ws.config.configuration_sets["Debug"]["App"])
         assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
 
         -- 3. Rename: Debug → Production
-        cs = ws:find_config_set("Debug")
+        cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
+        edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         ok = wv.execute_edit_config_set(cs, "Production",
-            { App = "Release", Frontend = "release" },
-            { App = "Release", Frontend = "release" })
+            { [app] = app:get_configuration("Release"), [frontend] = frontend:get_configuration("release") },
+            edit_ctx.mappings)
         assert.is_true(ok)
         assert.is_nil(ws.config.configuration_sets["Debug"])
         assert.is_not_nil(ws.config.configuration_sets["Production"])
 
         -- 4. Delete
-        local del_ctx = wv.compute_delete_config_set_context(ws, "Production")
+        local prod_cs = h.find_config_set_in(ws:get_config_sets(),"Production")
+        local del_ctx = wv.compute_delete_config_set_context(ws, prod_cs)
         assert.is_not_nil(del_ctx)
 
-        ok = wv.execute_delete_config_set(ws, "Production")
+        ok = wv.execute_delete_config_set(ws, prod_cs)
         assert.is_true(ok)
         -- Last set removed → configuration_sets is nil
         assert.is_true(ws.config.configuration_sets == nil
@@ -187,8 +190,11 @@ describe("config set lifecycle", function()
             configuration_sets = { Debug = { App = "Debug" } },
         })
 
-        local ok, err = wv.execute_create_config_set(ws, "Debug", { App = "Debug" })
-        assert.is_false(ok)
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local cs, err = wv.execute_create_config_set(ws, "Debug", {
+            [app] = app:get_configuration("Debug"),
+        })
+        assert.is_nil(cs)
         assert.is_not_nil(err)
     end)
 
@@ -203,10 +209,12 @@ describe("config set lifecycle", function()
             },
         })
 
-        local cs = ws:find_config_set("Debug")
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
+        local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
-            { App = "Debug" }, -- Frontend removed
-            { App = "Debug", Frontend = "debug" })
+            { [app] = app:get_configuration("Debug") }, -- Frontend removed
+            edit_ctx.mappings)
         assert.is_true(ok)
         assert.is_nil(ws.config.configuration_sets["Debug"]["Frontend"])
     end)
@@ -223,8 +231,7 @@ describe("profile lifecycle", function()
             configuration_sets = { Debug = { Frontend = "debug" } },
         })
 
-        local config_sets = ws:get_config_sets()
-        local cs = config_sets["Debug"]
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         assert.is_not_nil(cs)
 
         -- Create profile (activate since first)
@@ -262,8 +269,7 @@ describe("profile lifecycle", function()
             }
         )
 
-        local config_sets = ws:get_config_sets()
-        local cs = config_sets["Debug"]
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
 
         local tool_entry = {
             tool_key = "ninja-gcc-12",
@@ -330,7 +336,7 @@ describe("project lifecycle", function()
         local result = { mappings = { Debug = "Debug", Release = "Release" }, tool_entry = nil }
         local ok, err = wv.execute_add_project(ws, "App", "cmake", nil, result, false)
         assert.is_true(ok)
-        assert.is_not_nil(ws:find_project("App"))
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App"))
         assert.equals("Debug", ws.config.configuration_sets["Debug"]["App"])
 
         -- Simulate cached state
@@ -344,19 +350,20 @@ describe("project lifecycle", function()
         ws:remerge()
 
         -- Compute removal context
-        local ctx = wv.compute_remove_context(ws, "App")
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ctx = wv.compute_remove_context(ws, app)
         assert.is_not_nil(ctx)
         assert.equals("cmake", ctx.project_type)
         assert.equals(1, #ctx.cached_configs)
 
         -- Execute removal
         local done = false
-        wv.execute_remove_project(ws, "App", ctx, function(success)
+        wv.execute_remove_project(ws, app, ctx, function(success)
             done = true
             assert.is_true(success)
         end)
         assert.is_true(done)
-        assert.is_nil(ws:find_project("App"))
+        assert.is_nil(h.find_project_in(ws:get_projects(), "App"))
         assert.is_nil(ws.cache.configurations[ck])
     end)
 
@@ -383,23 +390,27 @@ describe("project lifecycle", function()
         assert.is_true(prep.has_keyed)
     end)
 
-    it("find_project_key_by_path matches by path", function()
+    it("find_project_by_path matches by path", function()
         local ws = make_ws({
             projects = {
                 MyApp = { cmake = {}, path = "src/app" },
             },
         })
 
-        assert.equals("MyApp", wv.find_project_key_by_path(ws, "src/app", "app"))
-        assert.is_nil(wv.find_project_key_by_path(ws, "other", "other"))
+        local proj = wv.find_project_by_path(ws, "src/app", "app")
+        assert.is_not_nil(proj)
+        assert.equals("MyApp", proj.key)
+        assert.is_nil(wv.find_project_by_path(ws, "other", "other"))
     end)
 
-    it("find_project_key_by_path matches by basename", function()
+    it("find_project_by_path matches by basename", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
         })
 
-        assert.equals("App", wv.find_project_key_by_path(ws, "App", "App"))
+        local proj = wv.find_project_by_path(ws, "App", "App")
+        assert.is_not_nil(proj)
+        assert.equals("App", proj.key)
     end)
 
     it("derive_key_and_path handles root, root-level, and nested", function()
@@ -516,11 +527,12 @@ describe("profile upgrade and downgrade", function()
             }
         )
 
-        local ctx = wv.compute_remove_context(ws, "App")
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ctx = wv.compute_remove_context(ws, app)
         assert.equals(1, #ctx.downgrade_preview)
 
         local done = false
-        wv.execute_remove_project(ws, "App", ctx, function(ok)
+        wv.execute_remove_project(ws, app, ctx, function(ok)
             done = true
             assert.is_true(ok)
         end)
@@ -646,12 +658,12 @@ describe("orphan lifecycle", function()
 
         -- Delete config set — profile becomes orphaned_set but still
         -- references the config via cached configurations
-        local ok = wv.execute_delete_config_set(ws, "Debug")
+        local ok = wv.execute_delete_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"Debug"))
         assert.is_true(ok)
 
         -- Profile is orphaned_set
         local profiles = ws:get_config_sets()
-        local profile = ws:find_profile("Debug")
+        local profile = h.find_profile(ws:get_profiles(), "Debug")
         assert.is_not_nil(profile)
         assert.is_true(profile.orphaned_set)
 
@@ -706,10 +718,12 @@ describe("orphan lifecycle", function()
         )
 
         -- Change mapping from "debug" to "release"
-        local cs = ws:find_config_set("Debug")
+        local frontend = h.find_project_in(ws:get_projects(), "Frontend")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
+        local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
-            { Frontend = "release" },
-            { Frontend = "debug" })
+            { [frontend] = frontend:get_configuration("release") },
+            edit_ctx.mappings)
         assert.is_true(ok)
         assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
 
@@ -775,7 +789,7 @@ describe("confirmation contexts", function()
     it("delete confirmation shows empty message when no items", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
 
-        local plan = { items = {}, profile_key = "Debug" }
+        local plan = { items = {}, profile = { key = "Debug" } }
         local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: Debug", plan)
 
         local found = false
@@ -826,7 +840,8 @@ describe("collect helpers", function()
             }
         )
 
-        local profiles = ws:get_config_sets()["Debug"]:find_profile(nil)
+        local debug_cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
+        local profiles = debug_cs:find_profile(nil)
         assert.is_not_nil(profiles)
 
         local items = wv.collect_clean_items(profiles)
@@ -855,11 +870,12 @@ describe("collect helpers", function()
                 },
             }
         )
-        local unit = ws:find_config_unit_by_id("App/Debug")
+        local unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug"])
         local items = wv.collect_clean_items_for_unit(unit)
         assert.equals(1, #items)
-        assert.equals("App", items[1].project_key)
-        assert.equals("Debug", items[1].config_key)
+        assert.equals(unit, items[1].unit)
+        assert.equals("App", items[1].unit._project.key)
+        assert.equals("Debug", items[1].unit._cached.config_key)
     end)
 end)
 
@@ -903,7 +919,7 @@ describe("config set rename", function()
             }
         )
 
-        local ok = wv.execute_rename_config_set(ws, "debug", "Debug",
+        local ok = wv.execute_rename_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"debug"), "Debug",
             { App = "Debug", Frontend = "debug" })
         assert.is_true(ok)
 
@@ -926,43 +942,43 @@ describe("name validation and collision prevention", function()
         local ws = make_ws({
             configuration_sets = { Debug = { App = "Debug" } },
         })
-        local ok, err = ws:add_configuration_set("debug", { App = "debug" })
-        assert.is_false(ok)
+        local cs, err = ws:add_configuration_set("debug", { App = "debug" })
+        assert.is_nil(cs)
         assert.matches("case%-insensitive", err)
     end)
 
     it("add_project rejects case-colliding key", function()
         local ws = make_ws()
         -- "App" already exists from default config
-        local ok, err = ws:add_project("app", "cmake")
-        assert.is_false(ok)
+        local proj, err = ws:add_project("app", "cmake")
+        assert.is_nil(proj)
         assert.matches("same build directory", err)
     end)
 
     it("add_project rejects slashes in key", function()
         local ws = make_ws()
-        local ok, err = ws:add_project("foo/bar", "cmake")
-        assert.is_false(ok)
+        local proj, err = ws:add_project("foo/bar", "cmake")
+        assert.is_nil(proj)
         assert.matches("slashes", err)
     end)
 
     it("add_project rejects dot-dot key", function()
         local ws = make_ws()
-        local ok, err = ws:add_project("..", "cmake")
-        assert.is_false(ok)
+        local proj, err = ws:add_project("..", "cmake")
+        assert.is_nil(proj)
     end)
 
     it("add_project rejects sanitization collision", function()
         local ws = make_ws({ projects = { ["My_App"] = { cmake = {} } } })
         -- "My:App" sanitizes to "My_App" — collision
-        local ok, err = ws:add_project("My:App", "cmake")
-        assert.is_false(ok)
+        local proj, err = ws:add_project("My:App", "cmake")
+        assert.is_nil(proj)
         assert.matches("same build directory", err)
     end)
 
     it("save_configuration rejects slashes", function()
         local ws = make_ws()
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok, err = project:save_configuration("foo/bar", {})
         assert.is_false(ok)
         assert.matches("slashes", err)
@@ -990,15 +1006,15 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug", options = { ASAN = "ON" },
         })
         assert.is_true(ok)
 
         -- Config renamed in type_config
-        assert.is_nil(ws:find_project("App").type_config.configurations["Debug-asan"])
-        assert.is_not_nil(ws:find_project("App").type_config.configurations["DebugASAN"])
+        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-asan"])
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["DebugASAN"])
 
         -- Config set mapping updated
         assert.equals("DebugASAN", ws.config.configuration_sets.debug.App)
@@ -1035,7 +1051,7 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {})
         assert.is_true(ok)
 
@@ -1072,7 +1088,7 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("base", "BaseConfig", {
             options = { X = "1" },
         })
@@ -1080,10 +1096,10 @@ describe("configuration rename propagation", function()
 
         -- String inherits updated
         assert.equals("BaseConfig",
-            ws:find_project("App").type_config.configurations.child.inherits)
+            h.find_project_in(ws:get_projects(), "App").type_config.configurations.child.inherits)
 
         -- Array inherits updated
-        local multi_inh = ws:find_project("App").type_config.configurations.multi.inherits
+        local multi_inh = h.find_project_in(ws:get_projects(), "App").type_config.configurations.multi.inherits
         assert.equals("Debug", multi_inh[1])
         assert.equals("BaseConfig", multi_inh[2])
     end)
@@ -1101,13 +1117,13 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("old", "new", {
             options = { A = "1" },
         })
         assert.is_true(ok)
-        assert.is_nil(ws:find_project("App").type_config.configurations.old)
-        assert.is_not_nil(ws:find_project("App").type_config.configurations.new)
+        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.old)
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.new)
     end)
 
     it("updates multiple profiles referencing same variant", function()
@@ -1151,7 +1167,7 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {})
         assert.is_true(ok)
 
@@ -1194,7 +1210,7 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
@@ -1247,7 +1263,7 @@ describe("configuration rename propagation", function()
 
         assert.equals("App/Debug-asan:ninja-gcc", ws.user.active_profile)
 
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
@@ -1291,7 +1307,7 @@ describe("configuration rename propagation", function()
         })
 
         -- Before rename: PP resolves correctly
-        local profile = ws:find_profile("asan:ninja-gcc")
+        local profile = h.find_profile(ws:get_profiles(), "asan:ninja-gcc")
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.is_not_nil(pp)
@@ -1299,7 +1315,7 @@ describe("configuration rename propagation", function()
         assert.is_not_nil(pp:configuration())
 
         -- Rename
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
@@ -1310,7 +1326,7 @@ describe("configuration rename propagation", function()
         assert.is_nil(project:get_configuration("Debug-asan"))
 
         -- PP resolves the renamed Configuration
-        profile = ws:find_profile("asan:ninja-gcc")
+        profile = h.find_profile(ws:get_profiles(), "asan:ninja-gcc")
         pp = profile:project("App")
         assert.is_not_nil(pp)
         assert.equals("DebugASAN", pp:variant_name())
@@ -1348,20 +1364,20 @@ describe("configuration rename propagation", function()
         })
 
         -- Before rename: PP works
-        local profile = ws:find_profile("App/Debug-asan:ninja-gcc")
+        local profile = h.find_profile(ws:get_profiles(), "App/Debug-asan:ninja-gcc")
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.equals("Debug-asan", pp:variant_name())
 
         -- Rename
-        local ok = ws:find_project("App"):rename_configuration("Debug-asan", "DebugASAN", {
+        local ok = h.find_project_in(ws:get_projects(), "App"):rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
         assert.is_true(ok)
 
         -- Pinned profile key changed
-        assert.is_nil(ws:find_profile("App/Debug-asan:ninja-gcc"))
-        profile = ws:find_profile("App/DebugASAN:ninja-gcc")
+        assert.is_nil(h.find_profile(ws:get_profiles(), "App/Debug-asan:ninja-gcc"))
+        profile = h.find_profile(ws:get_profiles(), "App/DebugASAN:ninja-gcc")
         assert.is_not_nil(profile)
 
         -- PP resolves new name
@@ -1403,26 +1419,26 @@ describe("configuration rename propagation", function()
         })
 
         -- Simulate a running build on the config unit
-        local old_unit = ws:find_config_unit_by_id("App/Debug-asan:ninja-gcc")
+        local old_unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug-asan:ninja-gcc"])
         assert.is_not_nil(old_unit)
         old_unit:register_task(42, "build")
         assert.is_true(old_unit:is_running())
 
         -- Verify ProfileProject sees the running state before rename
-        local profile = ws:find_profile("debug:ninja-gcc")
+        local profile = h.find_profile(ws:get_profiles(), "debug:ninja-gcc")
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.is_not_nil(pp)
         assert.equals("build", pp:running_action())
 
         -- Rename while building
-        local ok = ws:find_project("App"):rename_configuration("Debug-asan", "DebugASAN", {
+        local ok = h.find_project_in(ws:get_projects(), "App"):rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
         assert.is_true(ok)
 
         -- ConfigUnit should have the new id and still be running
-        local new_unit = ws:find_config_unit_by_id("App/DebugASAN:ninja-gcc")
+        local new_unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/DebugASAN:ninja-gcc"])
         assert.is_not_nil(new_unit)
         assert.is_true(new_unit:is_running())
         assert.equals("build", new_unit:running_action())
@@ -1430,14 +1446,14 @@ describe("configuration rename propagation", function()
         assert.is_true(rawequal(old_unit, new_unit))
 
         -- ProfileProject should still see running state
-        profile = ws:find_profile("debug:ninja-gcc")
+        profile = h.find_profile(ws:get_profiles(), "debug:ninja-gcc")
         pp = profile:project("App")
         assert.is_not_nil(pp)
         assert.equals("build", pp:running_action())
         assert.equals("DebugASAN", pp:variant_name())
 
         -- Old id should no longer exist
-        assert.is_nil(ws:find_config_unit_by_id("App/Debug-asan:ninja-gcc"))
+        assert.is_nil(ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug-asan:ninja-gcc"]))
     end)
 
     it("cache-only variant creates Configuration for PP resolution", function()
@@ -1469,13 +1485,13 @@ describe("configuration rename propagation", function()
 
         -- "CustomBuild" is not in cmake defaults or user configs,
         -- but exists in cache — should be enriched as _source_missing
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
         local cfg = project:get_configuration("CustomBuild")
         assert.is_not_nil(cfg)
         assert.is_true(cfg._source_missing)
 
         -- PP resolves the cache-enriched Configuration
-        local profile = ws:find_profile("custom:ninja-gcc")
+        local profile = h.find_profile(ws:get_profiles(), "custom:ninja-gcc")
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.is_not_nil(pp)
@@ -1493,7 +1509,7 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local project = ws:find_project("App")
+        local project = h.find_project_in(ws:get_projects(), "App")
 
         -- Create a new configuration
         local ok = project:save_configuration("Debug-ASAN", {
@@ -1509,7 +1525,7 @@ describe("configuration rename propagation", function()
         assert.is_true(cfg.is_user)
 
         -- Update config set to use the new configuration
-        local cs = ws:find_config_set("custom")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"custom")
         ok = cs:update_mapping(project, "Debug-ASAN")
         assert.is_true(ok)
 
@@ -1541,14 +1557,14 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local ok = wv.execute_save_configuration(ws:find_project("App"), "old_cfg", "new_cfg", {
+        local ok = wv.execute_save_configuration(h.find_project_in(ws:get_projects(), "App"), "old_cfg", "new_cfg", {
             options = { A = "1" },
         })
         assert.is_true(ok)
 
         -- Config renamed (not delete+create)
-        assert.is_nil(ws:find_project("App").type_config.configurations.old_cfg)
-        assert.is_not_nil(ws:find_project("App").type_config.configurations.new_cfg)
+        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.old_cfg)
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.new_cfg)
 
         -- Config set mapping updated atomically
         assert.equals("new_cfg", ws.config.configuration_sets.debug.App)
@@ -1569,23 +1585,27 @@ describe("end-to-end workspace setup", function()
         ok, err = wv.execute_add_project(ws, "Frontend", "ets", nil, { mappings = {} }, false)
         assert.is_true(ok)
 
+        -- Remerge so projects get Configuration objects from module defaults
+        ws:remerge()
+
         -- Create config set
-        ok = wv.execute_create_config_set(ws, "Debug", {
-            App = "Debug",
-            Frontend = "debug",
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local frontend = h.find_project_in(ws:get_projects(), "Frontend")
+        local cs = wv.execute_create_config_set(ws, "Debug", {
+            [app] = app:get_configuration("Debug"),
+            [frontend] = frontend:get_configuration("debug"),
         })
-        assert.is_true(ok)
+        assert.is_not_nil(cs)
 
         -- Verify config set context is correct
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         assert.is_not_nil(edit_ctx)
-        assert.equals(2, #edit_ctx.project_keys)
-        assert.equals("Debug", edit_ctx.mappings["App"])
-        assert.equals("debug", edit_ctx.mappings["Frontend"])
+        assert.equals(2, #edit_ctx.projects)
+        assert.equals("Debug", edit_ctx.mappings[app].name)
+        assert.equals("debug", edit_ctx.mappings[frontend].name)
 
         -- Create profile from config set
-        local config_sets = ws:get_config_sets()
-        local cs = config_sets["Debug"]
+        local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         assert.is_not_nil(cs)
 
         local profile = wv.execute_create_profile(cs, nil, true)
@@ -1612,7 +1632,7 @@ describe("launch config lifecycle", function()
         })
 
         -- 1. Create launch config
-        local app = ws:find_project("App")
+        local app = h.find_project_in(ws:get_projects(), "App")
         local ok, err = wv.execute_save_launch_config(app, nil, "debug", {
             command = "node",
             args = { "app.js" },
@@ -1637,8 +1657,8 @@ describe("launch config lifecycle", function()
             env = { NODE_ENV = "development", DEBUG = "true" },
         })
         assert.is_true(ok)
-        assert.equals("npx", ws:find_project("App").launch["debug"].command)
-        assert.equals("true", ws:find_project("App").launch["debug"].env.DEBUG)
+        assert.equals("npx", h.find_project_in(ws:get_projects(), "App").launch["debug"].command)
+        assert.equals("true", h.find_project_in(ws:get_projects(), "App").launch["debug"].env.DEBUG)
 
         -- 4. Rename: debug → dev
         ok = wv.execute_save_launch_config(app, "debug", "dev", {
@@ -1648,20 +1668,20 @@ describe("launch config lifecycle", function()
             env = { NODE_ENV = "development" },
         })
         assert.is_true(ok)
-        assert.is_nil(ws:find_project("App").launch["debug"])
-        assert.is_not_nil(ws:find_project("App").launch["dev"])
+        assert.is_nil(h.find_project_in(ws:get_projects(), "App").launch["debug"])
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").launch["dev"])
 
         -- 5. Delete
         ok = wv.execute_delete_launch_config(app, "dev")
         assert.is_true(ok)
         -- launch key cleaned up when empty
-        assert.is_nil(ws:find_project("App").launch)
+        assert.is_nil(h.find_project_in(ws:get_projects(), "App").launch)
     end)
 
     it("compute_edit_launch_context returns defaults for new config", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
 
-        local ctx = wv.compute_edit_launch_context(ws:find_project("App"), nil)
+        local ctx = wv.compute_edit_launch_context(h.find_project_in(ws:get_projects(), "App"), nil)
         assert.equals("App", ctx.project_key)
         assert.equals("", ctx.name)
         assert.equals("", ctx.command)
@@ -1687,7 +1707,7 @@ describe("launch config lifecycle", function()
             },
         })
 
-        local ctx = wv.compute_edit_launch_context(ws:find_project("App"), "debug")
+        local ctx = wv.compute_edit_launch_context(h.find_project_in(ws:get_projects(), "App"), "debug")
         assert.equals("debug", ctx.name)
         assert.equals("node", ctx.command)
         assert.equals(2, #ctx.args)
@@ -1699,14 +1719,14 @@ describe("launch config lifecycle", function()
     it("omits empty optional fields when saving", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
 
-        wv.execute_save_launch_config(ws:find_project("App"), nil, "minimal", {
+        wv.execute_save_launch_config(h.find_project_in(ws:get_projects(), "App"), nil, "minimal", {
             command = "echo",
             args = {},
             working_dir = "",
             env = {},
         })
 
-        local saved = ws:find_project("App").launch["minimal"]
+        local saved = h.find_project_in(ws:get_projects(), "App").launch["minimal"]
         assert.equals("echo", saved.command)
         assert.is_nil(saved.args)
         assert.is_nil(saved.working_dir)
@@ -1715,10 +1735,10 @@ describe("launch config lifecycle", function()
 
     it("returns error for removed project", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
-        local app = ws:find_project("App")
+        local app = h.find_project_in(ws:get_projects(), "App")
 
         -- Simulate project removal: remove from config
-        ws:remove_project("App")
+        ws:remove_project(app)
 
         local ok, err = app:save_launch_config("test", { command = "echo" })
         assert.is_false(ok)
@@ -1727,7 +1747,7 @@ describe("launch config lifecycle", function()
 
     it("get_launch_configs returns empty for project without launches", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
-        local configs = wv.get_launch_configs(ws:find_project("App"))
+        local configs = wv.get_launch_configs(h.find_project_in(ws:get_projects(), "App"))
         assert.equals(0, #configs)
     end)
 
@@ -1744,7 +1764,7 @@ describe("launch config lifecycle", function()
             },
         })
 
-        local configs = wv.get_launch_configs(ws:find_project("App"))
+        local configs = wv.get_launch_configs(h.find_project_in(ws:get_projects(), "App"))
         assert.equals(2, #configs)
         assert.equals("debug", configs[1].name)
         assert.equals("release", configs[2].name)
@@ -1762,15 +1782,15 @@ describe("project configuration lifecycle", function()
         })
 
         -- Create a custom configuration inheriting from Debug
-        local ok, err = wv.execute_save_configuration(ws:find_project("App"), nil, "Debug-ASAN", {
+        local ok, err = wv.execute_save_configuration(h.find_project_in(ws:get_projects(), "App"), nil, "Debug-ASAN", {
             inherits = "Debug",
             options = { SANITIZE_ADDRESS = "ON" },
         })
         assert.is_true(ok)
-        assert.is_not_nil(ws:find_project("App").type_config)
-        assert.is_not_nil(ws:find_project("App").type_config.configurations["Debug-ASAN"])
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config)
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-ASAN"])
         assert.equals("Debug",
-            ws:find_project("App").type_config.configurations["Debug-ASAN"].inherits)
+            h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-ASAN"].inherits)
     end)
 
     it("edits existing configuration options", function()
@@ -1786,14 +1806,14 @@ describe("project configuration lifecycle", function()
             },
         })
 
-        local ok = wv.execute_save_configuration(ws:find_project("App"), "Debug", "Debug", {
+        local ok = wv.execute_save_configuration(h.find_project_in(ws:get_projects(), "App"), "Debug", "Debug", {
             options = { ENABLE_TESTS = "OFF", VERBOSE = "ON" },
         })
         assert.is_true(ok)
         assert.equals("OFF",
-            ws:find_project("App").type_config.configurations["Debug"].options.ENABLE_TESTS)
+            h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug"].options.ENABLE_TESTS)
         assert.equals("ON",
-            ws:find_project("App").type_config.configurations["Debug"].options.VERBOSE)
+            h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug"].options.VERBOSE)
     end)
 
     it("renames custom configuration", function()
@@ -1809,13 +1829,13 @@ describe("project configuration lifecycle", function()
             },
         })
 
-        local ok = wv.execute_save_configuration(ws:find_project("App"), "Debug-ASAN", "Debug-Sanitized", {
+        local ok = wv.execute_save_configuration(h.find_project_in(ws:get_projects(), "App"), "Debug-ASAN", "Debug-Sanitized", {
             inherits = "Debug",
             options = { ASAN = "ON" },
         })
         assert.is_true(ok)
-        assert.is_nil(ws:find_project("App").type_config.configurations["Debug-ASAN"])
-        assert.is_not_nil(ws:find_project("App").type_config.configurations["Debug-Sanitized"])
+        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-ASAN"])
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-Sanitized"])
     end)
 
     it("deletes custom configuration", function()
@@ -1831,12 +1851,12 @@ describe("project configuration lifecycle", function()
             },
         })
 
-        local ok = wv.execute_delete_configuration(ws:find_project("App"), "Debug-ASAN")
+        local ok = wv.execute_delete_configuration(h.find_project_in(ws:get_projects(), "App"), "Debug-ASAN")
         assert.is_true(ok)
         -- configurations key cleaned up when empty
         assert.is_true(
-            ws:find_project("App").type_config.configurations == nil
-            or ws:find_project("App").type_config.configurations["Debug-ASAN"] == nil)
+            h.find_project_in(ws:get_projects(), "App").type_config.configurations == nil
+            or h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-ASAN"] == nil)
     end)
 
     it("saves project-wide options", function()
@@ -1844,13 +1864,13 @@ describe("project configuration lifecycle", function()
             projects = { App = { cmake = {} } },
         })
 
-        local ok = wv.execute_save_project_options(ws:find_project("App"), {
+        local ok = wv.execute_save_project_options(h.find_project_in(ws:get_projects(), "App"), {
             CMAKE_EXPORT_COMPILE_COMMANDS = "ON",
             MY_FLAG = "hello",
         })
         assert.is_true(ok)
-        assert.equals("ON", ws:find_project("App").type_config.options.CMAKE_EXPORT_COMPILE_COMMANDS)
-        assert.equals("hello", ws:find_project("App").type_config.options.MY_FLAG)
+        assert.equals("ON", h.find_project_in(ws:get_projects(), "App").type_config.options.CMAKE_EXPORT_COMPILE_COMMANDS)
+        assert.equals("hello", h.find_project_in(ws:get_projects(), "App").type_config.options.MY_FLAG)
     end)
 
     it("clears project-wide options when empty", function()
@@ -1860,9 +1880,9 @@ describe("project configuration lifecycle", function()
             },
         })
 
-        local ok = wv.execute_save_project_options(ws:find_project("App"), {})
+        local ok = wv.execute_save_project_options(h.find_project_in(ws:get_projects(), "App"), {})
         assert.is_true(ok)
-        assert.is_nil(ws:find_project("App").type_config.options)
+        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.options)
     end)
 
     it("compute_edit_configuration_context returns defaults for new config", function()
@@ -1870,7 +1890,7 @@ describe("project configuration lifecycle", function()
             projects = { App = { cmake = {} } },
         })
 
-        local ctx = wv.compute_edit_configuration_context(ws:find_project("App"), nil)
+        local ctx = wv.compute_edit_configuration_context(h.find_project_in(ws:get_projects(), "App"), nil)
         assert.is_not_nil(ctx)
         assert.equals("", ctx.name)
         assert.equals("", ctx.variant)
@@ -1894,7 +1914,7 @@ describe("project configuration lifecycle", function()
             },
         })
 
-        local ctx = wv.compute_edit_configuration_context(ws:find_project("App"), "Debug-ASAN")
+        local ctx = wv.compute_edit_configuration_context(h.find_project_in(ws:get_projects(), "App"), "Debug-ASAN")
         assert.is_not_nil(ctx)
         assert.equals("Debug-ASAN", ctx.name)
         assert.equals("Debug", ctx.inherits[1] or ctx.inherits)
@@ -1907,7 +1927,7 @@ describe("project configuration lifecycle", function()
             projects = { App = { cmake = {} } },
         })
 
-        local ctx = wv.compute_edit_configuration_context(ws:find_project("App"), "Debug")
+        local ctx = wv.compute_edit_configuration_context(h.find_project_in(ws:get_projects(), "App"), "Debug")
         assert.is_not_nil(ctx)
         assert.equals("Debug", ctx.name)
         assert.equals("Debug", ctx.variant)
@@ -2104,10 +2124,10 @@ describe("opaque keys", function()
         assert.is_not_nil(ws)
 
         -- Projects resolved
-        assert.is_not_nil(ws:find_project("proj-alpha"))
-        assert.equals("cmake", ws:find_project("proj-alpha").type)
-        assert.is_not_nil(ws:find_project("proj-beta"))
-        assert.equals("ets", ws:find_project("proj-beta").type)
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "proj-alpha"))
+        assert.equals("cmake", h.find_project_in(ws:get_projects(), "proj-alpha").type)
+        assert.is_not_nil(h.find_project_in(ws:get_projects(), "proj-beta"))
+        assert.equals("ets", h.find_project_in(ws:get_projects(), "proj-beta").type)
     end)
 
     it("resolves active profile and its projects", function()
@@ -2158,7 +2178,7 @@ describe("opaque keys", function()
 
     it("Project:config_units_for_configuration finds units with arbitrary keys", function()
         local ws = make_opaque_ws()
-        local proj = ws:find_project("proj-alpha")
+        local proj = h.find_project_in(ws:get_projects(), "proj-alpha")
         local cfg = proj:get_configuration("Debug")
         assert.is_not_nil(cfg)
         local units = proj:config_units_for_configuration(cfg)
@@ -2175,10 +2195,10 @@ describe("opaque keys", function()
 
     it("config set mapping updates work with arbitrary project keys", function()
         local ws = make_opaque_ws()
-        local cs = ws:find_config_set("set-x")
+        local cs = h.find_config_set_in(ws:get_config_sets(),"set-x")
         assert.is_not_nil(cs)
 
-        local proj = ws:find_project("proj-alpha")
+        local proj = h.find_project_in(ws:get_projects(), "proj-alpha")
         cs:update_mapping(proj, "Release")
 
         -- Verify mapping changed
@@ -2187,7 +2207,7 @@ describe("opaque keys", function()
 
     it("save_configuration works on project with arbitrary keys", function()
         local ws = make_opaque_ws()
-        local proj = ws:find_project("proj-alpha")
+        local proj = h.find_project_in(ws:get_projects(), "proj-alpha")
 
         local ok = proj:save_configuration("custom-cfg", {
             options = { MY_FLAG = "ON" },
@@ -2198,7 +2218,7 @@ describe("opaque keys", function()
 
     it("rename_configuration propagates with arbitrary keys", function()
         local ws = make_opaque_ws()
-        local proj = ws:find_project("proj-alpha")
+        local proj = h.find_project_in(ws:get_projects(), "proj-alpha")
 
         -- Add a user-defined config to rename
         proj:save_configuration("temp-name", { options = { X = "1" } })

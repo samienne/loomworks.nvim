@@ -5,6 +5,7 @@
 --- upgrade preview).
 ---
 --- Used for both "create new config set" and "edit existing config set".
+--- Works with Project and Configuration domain objects — no string keys.
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
@@ -14,23 +15,27 @@ local M = {}
 --- Open the config set editor dialog.
 --- @param opts table
 ---   name: string — current config set name (editable)
----   project_keys: string[] — sorted project keys
----   mappings: table<string, string|nil> — current mappings (project_key → variant)
----   available_configs: table<string, string[]> — available configs per project
+---   projects: loomworks.Project[] — sorted project list
+---   mappings: table<loomworks.Project, loomworks.Configuration|nil> — current mappings
+---   available_configs: table<loomworks.Project, loomworks.Configuration[]> — available configs per project
 ---   validate?: fun(result): boolean, string|nil — return false + error message to block accept
----   on_accept: fun(result: { name: string, mappings: table<string, string|nil> })
+---   on_accept: fun(result: { name: string, mappings: table<loomworks.Project, loomworks.Configuration|nil> })
 ---   on_cancel: fun()
 function M.open(opts)
-    local project_keys = opts.project_keys
-    local mappings = vim.deepcopy(opts.mappings)
+    local projects = opts.projects
+    local mappings = {}
+    -- Deep copy mappings (object refs are stable, just copy the table structure)
+    for project, config in pairs(opts.mappings) do
+        mappings[project] = config
+    end
     local available_configs = opts.available_configs
     local name = opts.name
     local name_error = nil
 
     -- Compute max label width for alignment (include "Name" as a label)
     local max_name_len = 4 -- "Name"
-    for _, key in ipairs(project_keys) do
-        if #key > max_name_len then max_name_len = #key end
+    for _, project in ipairs(projects) do
+        if #project.key > max_name_len then max_name_len = #project.key end
     end
 
     --- Run validate and update name_error.
@@ -85,28 +90,38 @@ function M.open(opts)
 
         t:blank()
 
-        for _, key in ipairs(project_keys) do
-            local variant = mappings[key]
-            local display_variant = variant or "None"
-            local padded_name = key .. string.rep(" ", max_name_len - #key)
+        for _, project in ipairs(projects) do
+            local config = mappings[project]
+            local display_variant = config and config.name or "None"
+            local padded_name = project.key .. string.rep(" ", max_name_len - #project.key)
             local display = padded_name .. "  " .. display_variant .. " ▸"
-            local hl = variant and "LoomworksActionable" or "Comment"
+            local hl = config and "LoomworksActionable" or "Comment"
 
             t:item(display, {
                 hl = hl,
                 direct = true,
                 on_enter = function()
+                    local configs = available_configs[project] or {}
                     local items = {}
-                    local configs = available_configs[key] or {}
-                    for _, config_name in ipairs(configs) do
-                        items[#items + 1] = config_name
+                    for _, cfg in ipairs(configs) do
+                        items[#items + 1] = cfg.name
                     end
                     items[#items + 1] = "None"
                     vim.ui.select(items, {
-                        prompt = key .. ":",
+                        prompt = project.key .. ":",
                     }, function(choice)
                         if choice then
-                            mappings[key] = choice ~= "None" and choice or nil
+                            if choice == "None" then
+                                mappings[project] = nil
+                            else
+                                -- Find the Configuration object by name
+                                for _, cfg in ipairs(configs) do
+                                    if cfg.name == choice then
+                                        mappings[project] = cfg
+                                        break
+                                    end
+                                end
+                            end
                             if view then view:refresh() end
                         end
                     end)
@@ -141,7 +156,7 @@ function M.open(opts)
 
     local parent_win = vim.api.nvim_get_current_win()
 
-    local content_rows = #project_keys + 7 -- title + blank + name + blank + rows + blank + footer
+    local content_rows = #projects + 7 -- title + blank + name + blank + rows + blank + footer
     local height = math.min(content_rows, math.floor(vim.o.lines * 0.8))
     local width = max_name_len + 30
     width = math.max(width, #(opts.title or "Configuration Set") + 10)

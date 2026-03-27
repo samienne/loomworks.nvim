@@ -209,6 +209,7 @@ function Workspace.new(core, data)
 
     -- Object registries (moved from Core)
     self._active_set = nil
+    self._active_profile = nil
     self._config_units = {}
     self._config_sets = {}
     self._profiles = {}
@@ -251,39 +252,13 @@ function Workspace:_build_ctx()
     return ctx
 end
 
---- Find a Project by key (O(n) scan, n is small).
---- @param key string project key
---- @return loomworks.Project|nil
-function Workspace:find_project(key)
-    for _, p in pairs(self._projects) do
-        if p.key == key then return p end
-    end
-end
-
---- Find a Profile by key (O(n) scan).
---- @param key string profile key
---- @return loomworks.Profile|nil
-function Workspace:find_profile(key)
-    for _, p in pairs(self._profiles) do
-        if p.key == key then return p end
-    end
-end
-
---- Find a ConfigurationSet by name (O(n) scan).
---- @param name string configuration set name
---- @return loomworks.ConfigurationSet|nil
-function Workspace:find_config_set(name)
-    for _, cs in pairs(self._config_sets) do
-        if cs.name == name then return cs end
-    end
-end
-
---- Find a ConfigUnit by id (O(n) scan).
---- @param id string cache dict key
+--- Find the ConfigUnit whose _cached reference points to the given cache entry.
+--- Used at cache→domain boundaries when iterating cache.configurations.
+--- @param cached_entry table cache entry reference
 --- @return loomworks.ConfigUnit|nil
-function Workspace:find_config_unit_by_id(id)
+function Workspace:find_config_unit_for_cached(cached_entry)
     for _, unit in pairs(self._config_units) do
-        if unit.id == id then return unit end
+        if unit._cached == cached_entry then return unit end
     end
 end
 
@@ -320,11 +295,6 @@ function Workspace:ensure_config_unit(project, configuration, tool)
     local tool_key = tool and tool.key or nil
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
     local id = cache_mod.config_cache_key(project.key, config_key)
-
-    -- Check if a ConfigUnit with this id already exists (created during remerge
-    -- but perhaps with different resolved references)
-    local by_id = self:find_config_unit_by_id(id)
-    if by_id then return by_id end
 
     -- Create cache entry
     self.cache.configurations = self.cache.configurations or {}
@@ -399,6 +369,7 @@ function Workspace:remerge()
     self:_sync_config_units(ctx)
     self:_sync_profile_projects(ctx)
     self:_sync_build_dir_refs()
+    self:_resolve_active_profile()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -418,7 +389,22 @@ function Workspace:_refresh_after_cache_change()
     self:_sync_config_units(ctx)
     self:_sync_profile_projects(ctx)
     self:_sync_build_dir_refs()
+    self:_resolve_active_profile()
     self._core._deps.events.emit("active_set_changed", self._active_set)
+end
+
+--- Resolve the active Profile object from the active set name.
+--- Called at the end of remerge/refresh to cache the resolved reference.
+function Workspace:_resolve_active_profile()
+    self._active_profile = nil
+    local active_set = self._active_set
+    if not active_set or not active_set.name then return end
+    for _, p in pairs(self._profiles) do
+        if p.key == active_set.name then
+            self._active_profile = p
+            return
+        end
+    end
 end
 
 --- Sync the profiles registry with current merge data.
@@ -972,43 +958,50 @@ function Workspace:get_active_configuration_set()
     return self._active_set
 end
 
---- Get the active Profile object.
+--- Get the active Profile object (resolved during remerge/refresh).
 --- @return loomworks.Profile|nil
 function Workspace:get_active_profile()
-    local active_set = self._active_set
-    if not active_set or not active_set.name then return nil end
-    return self:find_profile(active_set.name)
+    return self._active_profile
 end
 
---- Get all Profile objects as a dict (keyed by profile key).
---- @return table<string, loomworks.Profile>
+--- Get all Profile objects.
+--- @return loomworks.Profile[]
 function Workspace:get_profiles()
-    local dict = {}
-    for _, p in pairs(self._profiles) do dict[p.key] = p end
-    return dict
+    return self._profiles
 end
 
 --- Get all Project objects from the active set as a dict (keyed by project key).
 --- @return table<string, loomworks.Project>
 function Workspace:get_projects()
-    local dict = {}
-    for _, p in pairs(self._projects) do dict[p.key] = p end
-    return dict
+    return self._projects
 end
 
 --- Get all ConfigurationSet objects as a dict (keyed by name).
 --- @return table<string, loomworks.ConfigurationSet>
 function Workspace:get_config_sets()
-    local dict = {}
-    for _, cs in pairs(self._config_sets) do dict[cs.name] = cs end
-    return dict
+    return self._config_sets
 end
 
 --- Get tool entries for the configuration sets UI.
+--- Enriches merge results with Profile object references.
 --- @return table<string, loomworks.ToolEntry[]> set_name -> entries
 function Workspace:get_tool_entries()
-    return self._core._deps.merge.get_tool_entries(
+    local raw = self._core._deps.merge.get_tool_entries(
         self.config, self.cache, self._tools_by_type)
+    -- Resolve profile_key strings to Profile object references
+    for _, entries in pairs(raw) do
+        for _, entry in ipairs(entries) do
+            if entry.cached and entry.profile_key then
+                for _, p in pairs(self._profiles) do
+                    if p.key == entry.profile_key then
+                        entry.profile = p
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return raw
 end
 
 --- Get detected tools organized by module type.
@@ -1184,7 +1177,7 @@ function Workspace:get_orphaned_configs()
                 project_key = cached_config.project_key,
                 config_key = cached_config.config_key,
                 cached = cached_config,
-                unit = self:find_config_unit_by_id(cache_key),
+                unit = self:find_config_unit_for_cached(cached_config),
             }
         end
     end
@@ -1316,10 +1309,11 @@ function Workspace:find_running_tasks_for_items(items)
     for _, item in ipairs(items) do
         local unit = item.unit
         if unit and unit._task_id then
+            local cached = unit._cached
             matches[unit._task_id] = {
-                project_key = item.project_key,
+                project_key = unit._project and unit._project.key or (cached and cached.project_key),
                 action = unit:running_action(),
-                configuration_key = item.config_key,
+                configuration_key = cached and cached.config_key or unit.id,
             }
         end
     end
@@ -1380,7 +1374,9 @@ function Workspace:record_task_result(result)
         -- Fallback for results without a ConfigUnit (e.g. buggy multi-config tasks)
         cache_key = self._core._deps.cache.config_cache_key(result.project_key, result.configuration_key)
         self.cache.configurations = self.cache.configurations or {}
-        project = self:find_project(result.project_key)
+        for _, p in pairs(self._projects) do
+            if p.key == result.project_key then project = p; break end
+        end
         proj_type = project and project.type or "unknown"
         if not self.cache.configurations[cache_key] then
             self.cache.configurations[cache_key] = {
@@ -1453,9 +1449,8 @@ end
 function Workspace:delete_cached_configs(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        if item.project_key and item.config_key then
-            local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-            self.cache.configurations[cache_key] = nil
+        if item.unit then
+            self.cache.configurations[item.unit.id] = nil
         end
     end
 end
@@ -1466,9 +1461,8 @@ end
 function Workspace:reset_cached_configs(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        if not item.project_key or not item.config_key then goto continue end
-        local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = self.cache.configurations[cache_key]
+        if not item.unit then goto continue end
+        local cached_config = self.cache.configurations[item.unit.id]
         if cached_config then
             cached_config.state = nil
             cached_config.build_dir = nil
@@ -1486,9 +1480,8 @@ end
 function Workspace:mark_cached_configs_cleaned(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        if not item.project_key or not item.config_key then goto continue end
-        local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = self.cache.configurations[cache_key]
+        if not item.unit then goto continue end
+        local cached_config = self.cache.configurations[item.unit.id]
         if cached_config then
             cached_config.state = "configured"
             cached_config.last_built = nil
@@ -1504,9 +1497,8 @@ end
 function Workspace:_mark_cache_unknown(items)
     if not self.cache.configurations then return end
     for _, item in ipairs(items) do
-        if not item.project_key or not item.config_key then goto continue end
-        local cache_key = self._core._deps.cache.config_cache_key(item.project_key, item.config_key)
-        local cached_config = self.cache.configurations[cache_key]
+        if not item.unit then goto continue end
+        local cached_config = self.cache.configurations[item.unit.id]
         if cached_config and cached_config.build_dir then
             cached_config.state = "unknown"
         end
@@ -1718,9 +1710,10 @@ function Workspace:execute_deletion(plan, opts, on_done)
     end
 
     -- Remove profile entry from cache (before async work)
-    if plan.profile_key then
-        if self.cache.profiles and self.cache.profiles[plan.profile_key] then
-            self.cache.profiles[plan.profile_key] = nil
+    if plan.profile then
+        local profile_key = plan.profile.key
+        if self.cache.profiles and self.cache.profiles[profile_key] then
+            self.cache.profiles[profile_key] = nil
             if not next(self.cache.profiles) then
                 self.cache.profiles = nil
             end
@@ -1730,12 +1723,12 @@ function Workspace:execute_deletion(plan, opts, on_done)
 
     -- Split items by disposition
     local actionable = {}
-    local clean_items = {}
+    local clean_units = {} -- unit identity set for "clean" disposition
     local reset_items = {}
     for _, item in ipairs(plan.items) do
         if item.disposition == "clean" then
             actionable[#actionable + 1] = item
-            clean_items[#clean_items + 1] = item
+            if item.unit then clean_units[item.unit] = true end
         elseif item.disposition == "reset" then
             actionable[#actionable + 1] = item
             reset_items[#reset_items + 1] = item
@@ -1749,18 +1742,11 @@ function Workspace:execute_deletion(plan, opts, on_done)
     end
 
     self:_run_deletion(actionable, function(effective_items)
-        -- Split effective items by their original disposition
+        -- Split effective items by their original disposition (unit identity)
         local eff_clean = {}
         local eff_reset = {}
-        local clean_set = {} -- [project_key][config_key] = true
-        for _, item in ipairs(clean_items) do
-            if not clean_set[item.project_key] then
-                clean_set[item.project_key] = {}
-            end
-            clean_set[item.project_key][item.config_key] = true
-        end
         for _, item in ipairs(effective_items) do
-            if clean_set[item.project_key] and clean_set[item.project_key][item.config_key] then
+            if item.unit and clean_units[item.unit] then
                 eff_clean[#eff_clean + 1] = item
             else
                 eff_reset[#eff_reset + 1] = item
@@ -2004,7 +1990,7 @@ end
 --- @return boolean ok, string|nil err
 function Workspace:add_project(key, type, path)
     if self.config.projects[key] then
-        return false, "project '" .. key .. "' already exists"
+        return nil, "project '" .. key .. "' already exists"
     end
 
     -- Validate name for build dir safety (slashes, traversal, sanitization collisions)
@@ -2012,7 +1998,7 @@ function Workspace:add_project(key, type, path)
     for k in pairs(self.config.projects) do existing_keys[#existing_keys + 1] = k end
     local valid, verr = M.validate_path_name(key, existing_keys)
     if not valid then
-        return false, "invalid project key: " .. verr
+        return nil, "invalid project key: " .. verr
     end
 
     -- Add to parsed config + domain object
@@ -2040,18 +2026,19 @@ function Workspace:add_project(key, type, path)
         for i, p in ipairs(self._projects) do
             if p.key == key then table.remove(self._projects, i); break end
         end
-        return false, err
+        return nil, err
     end
 
     self._core._deps.events.emit("active_set_changed", self._active_set)
-    return true
+    return project
 end
 
 --- Remove a project from the workspace.
---- Updates config, removes from configuration sets, remerges, and saves.
---- @param key string project key to remove
+--- Updates config, removes from configuration sets, and saves.
+--- @param project loomworks.Project project to remove
 --- @return boolean ok, string|nil err
-function Workspace:remove_project(key)
+function Workspace:remove_project(project)
+    local key = project.key
     if not self.config.projects[key] then
         return false, "project '" .. key .. "' not found"
     end
@@ -2059,12 +2046,9 @@ function Workspace:remove_project(key)
     self.config.projects[key] = nil
 
     -- Remove from domain objects
-    local removed_project = self:find_project(key)
-    if removed_project then
-        removed_project._removed = true
-        for i, p in ipairs(self._projects) do
-            if p == removed_project then table.remove(self._projects, i); break end
-        end
+    project._removed = true
+    for i, p in ipairs(self._projects) do
+        if p == project then table.remove(self._projects, i); break end
     end
 
     -- Remove from configuration_sets (config + domain objects)
@@ -2086,10 +2070,8 @@ function Workspace:remove_project(key)
         end
     end
     -- Update ConfigurationSet domain objects
-    if removed_project then
-        for _, cs in pairs(self._config_sets) do
-            cs.mappings[removed_project] = nil
-        end
+    for _, cs in pairs(self._config_sets) do
+        cs.mappings[project] = nil
     end
 
     local ok, err = self:_save_config()
@@ -2109,13 +2091,13 @@ function Workspace:add_configuration_set(name, mappings)
     end
 
     if self.config.configuration_sets[name] then
-        return false, "configuration set '" .. name .. "' already exists"
+        return nil, "configuration set '" .. name .. "' already exists"
     end
 
     -- Basic name validation (slashes, dots)
     local valid, verr = M.validate_path_name(name)
     if not valid then
-        return false, "invalid configuration set name: " .. verr
+        return nil, "invalid configuration set name: " .. verr
     end
 
     -- Reject case-colliding names (same profile key on case-insensitive FS).
@@ -2124,16 +2106,18 @@ function Workspace:add_configuration_set(name, mappings)
     local name_lower = name:lower()
     for existing in pairs(self.config.configuration_sets) do
         if existing ~= name and existing:lower() == name_lower then
-            return false, "configuration set '" .. name .. "' collides with '" .. existing .. "' (case-insensitive)"
+            return nil, "configuration set '" .. name .. "' collides with '" .. existing .. "' (case-insensitive)"
         end
     end
 
     self.config.configuration_sets[name] = mappings
 
-    -- Create domain object — resolve projects for _update
+    -- Create domain object — resolve projects for _update (deserialization boundary)
+    local projects_by_key = {}
+    for _, p in pairs(self._projects) do projects_by_key[p.key] = p end
     local resolved = {}
     for project_key, variant in pairs(mappings) do
-        local project = self:find_project(project_key)
+        local project = projects_by_key[project_key]
         if project then
             resolved[project] = variant
         end
@@ -2147,17 +2131,18 @@ function Workspace:add_configuration_set(name, mappings)
         for i, c in ipairs(self._config_sets) do
             if c.name == name then table.remove(self._config_sets, i); break end
         end
-        return false, err
+        return nil, err
     end
 
     self._core._deps.events.emit("active_set_changed", self._active_set)
-    return true
+    return cs
 end
 
 --- Remove a configuration set from the workspace.
---- @param name string configuration set name
+--- @param cs loomworks.ConfigurationSet configuration set to remove
 --- @return boolean ok, string|nil err
-function Workspace:remove_configuration_set(name)
+function Workspace:remove_configuration_set(cs)
+    local name = cs.name
     if not self.config.configuration_sets or not self.config.configuration_sets[name] then
         return false, "configuration set '" .. name .. "' not found"
     end
@@ -2169,12 +2154,9 @@ function Workspace:remove_configuration_set(name)
     end
 
     -- Remove domain object
-    local cs = self:find_config_set(name)
-    if cs then
-        cs._removed = true
-        for i, c in ipairs(self._config_sets) do
-            if c == cs then table.remove(self._config_sets, i); break end
-        end
+    cs._removed = true
+    for i, c in ipairs(self._config_sets) do
+        if c == cs then table.remove(self._config_sets, i); break end
     end
 
     local ok, err = self:_save_config()
@@ -2208,8 +2190,12 @@ function Workspace:_extend_cached_profile(profile_data, tools)
     profile_data.configurations = profile_data.configurations or {}
     self.cache.configurations = self.cache.configurations or {}
 
+    -- Build project lookup (deserialization boundary — set_mappings keys are strings)
+    local projects_by_key = {}
+    for _, p in pairs(self._projects) do projects_by_key[p.key] = p end
+
     for project_key, variant in pairs(set_mappings) do
-        local project = self:find_project(project_key)
+        local project = projects_by_key[project_key]
         if project then
             -- Tool key applies only to projects whose module type matches
             local project_tool = tools and tools[project.type] or nil
@@ -2301,11 +2287,15 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
 
     -- Only rename profiles whose config set has a project of the tool's module type
     local function should_rename(profile_data)
-        local cs = self:find_config_set(profile_data.configuration_set)
-        if not cs then return false end
-        for project in pairs(cs.mappings) do
-            if project.type == tool_entry.tool_mod_type then
-                return true
+        if not profile_data.configuration_set then return false end
+        for _, cs in pairs(self._config_sets) do
+            if cs.name == profile_data.configuration_set then
+                for project in pairs(cs.mappings) do
+                    if project.type == tool_entry.tool_mod_type then
+                        return true
+                    end
+                end
+                return false
             end
         end
         return false
@@ -2355,17 +2345,14 @@ end
 --- Compute profile renames that would occur if a project were removed.
 --- Pure query — does not mutate state. Uses compute_profile_renames
 --- with a remove-tool transform.
---- @param project_key string project key about to be removed
+--- @param project loomworks.Project project about to be removed
 --- @return { old_key: string, new_key: string }[]
-function Workspace:compute_downgrade_preview(project_key)
-    local project = self:find_project(project_key)
-    if not project then return {} end
-
+function Workspace:compute_downgrade_preview(project)
     if not project._module or not project._module.has_keyed_tools then return {} end
 
     -- Check if any OTHER project of the same type exists
     for _, proj in pairs(self._projects) do
-        if proj.key ~= project_key and proj.type == project.type then
+        if proj ~= project and proj.type == project.type then
             return {} -- not the last one
         end
     end

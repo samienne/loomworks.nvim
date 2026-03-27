@@ -64,10 +64,9 @@ end
 --- @param tree loomworks.Tree
 --- @param cs loomworks.ConfigurationSet
 --- @param entry loomworks.ToolEntry
---- @param all_profiles table<string, loomworks.Profile>
 --- @param active_profile loomworks.Profile|nil
-local function render_tool_entry(tree, cs, entry, all_profiles, active_profile)
-    local profile = entry.cached and all_profiles[entry.profile_key] or nil
+local function render_tool_entry(tree, cs, entry, active_profile)
+    local profile = entry.profile or nil
     local is_active = profile ~= nil and profile == active_profile
     local suffix, hl, marker, spinning = resolve_profile_display(profile, is_active)
     local display = entry.tool_label or entry.tool_key
@@ -94,9 +93,8 @@ end
 --- @param tree loomworks.Tree
 --- @param cs loomworks.ConfigurationSet
 --- @param profile loomworks.Profile|nil existing no-tool profile
---- @param all_profiles table<string, loomworks.Profile>
 --- @param active_profile loomworks.Profile|nil
-local function render_no_tool_entry(tree, cs, profile, all_profiles, active_profile)
+local function render_no_tool_entry(tree, cs, profile, active_profile)
     local is_active = profile ~= nil and profile == active_profile
     local suffix, hl, marker, spinning = resolve_profile_display(profile, is_active)
 
@@ -130,25 +128,22 @@ end
 --- @param tree loomworks.Tree
 --- @param cs loomworks.ConfigurationSet
 --- @param tool_entries loomworks.ToolEntry[]
---- @param all_profiles table<string, loomworks.Profile>
 --- @param active_profile loomworks.Profile|nil
 --- @param lw table loomworks API
-local function render_set_details(tree, cs, tool_entries, all_profiles, active_profile, lw)
+local function render_set_details(tree, cs, tool_entries, active_profile, lw)
     local set_name = cs.name
     tree:group("Projects:", "Comment", function()
-        local proj_names = {}
+        local sorted = {}
         for project, variant in pairs(cs.mappings) do
-            proj_names[#proj_names + 1] = { key = project.key, variant = variant }
+            sorted[#sorted + 1] = { project = project, variant = variant }
         end
-        table.sort(proj_names, function(a, b) return a.key < b.key end)
-        for _, entry in ipairs(proj_names) do
-            local project = cs._workspace:find_project(entry.key)
-            local cfg_missing = project
-                and not project:get_configuration(entry.variant)
+        table.sort(sorted, function(a, b) return a.project.key < b.project.key end)
+        for _, entry in ipairs(sorted) do
+            local cfg_missing = not entry.project:get_configuration(entry.variant)
             if cfg_missing then
-                tree:leaf(entry.key .. " → " .. entry.variant .. " (missing)", "DiagnosticWarn")
+                tree:leaf(entry.project.key .. " → " .. entry.variant .. " (missing)", "DiagnosticWarn")
             else
-                tree:leaf(entry.key .. " → " .. entry.variant, "Comment")
+                tree:leaf(entry.project.key .. " → " .. entry.variant, "Comment")
             end
         end
     end)
@@ -156,13 +151,13 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
     if #tool_entries > 0 then
         tree:group({{"Tools:  ", "LoomworksActionable"}, {"[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
             for _, entry in ipairs(tool_entries) do
-                render_tool_entry(tree, cs, entry, all_profiles, active_profile)
+                render_tool_entry(tree, cs, entry, active_profile)
             end
         end)
     else
         -- No keyed tools — render a single activatable entry for the set itself
         local profile = cs:find_profile(nil)
-        render_no_tool_entry(tree, cs, profile, all_profiles, active_profile)
+        render_no_tool_entry(tree, cs, profile, active_profile)
     end
 
 end
@@ -179,12 +174,15 @@ local function edit_config_set(cs)
     local ctx = workspace_view.compute_edit_config_set_context(ws, set_name)
     if not ctx then return end
 
-    local old_mappings = vim.deepcopy(ctx.mappings)
+    local old_mappings = {}
+    for project, config in pairs(ctx.mappings) do
+        old_mappings[project] = config
+    end
 
     require("loomworks.ui.config_set_editor").open({
         title = "Edit configuration set",
         name = set_name,
-        project_keys = ctx.project_keys,
+        projects = ctx.projects,
         mappings = ctx.mappings,
         available_configs = ctx.available_configs,
         validate = function(result)
@@ -212,14 +210,14 @@ local function edit_config_set(cs)
 end
 
 --- Show confirmation and delete a config set.
---- @param set_name string
-local function delete_config_set(set_name)
+--- @param cs loomworks.ConfigurationSet
+local function delete_config_set(cs)
     local lw = require("loomworks")
     local ws = lw.get_workspace()
     if not ws then return end
 
     local workspace_view = require("loomworks.workspace_view")
-    local ctx = workspace_view.compute_delete_config_set_context(ws, set_name)
+    local ctx = workspace_view.compute_delete_config_set_context(ws, cs)
     if not ctx then return end
 
     local dialog = require("loomworks.ui.dialog")
@@ -231,9 +229,9 @@ local function delete_config_set(set_name)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_config_set(ws, set_name)
+                local ok, err = workspace_view.execute_delete_config_set(ws, cs)
                 if ok then
-                    vim.notify("loomworks: configuration set '" .. set_name .. "' removed",
+                    vim.notify("loomworks: configuration set '" .. cs.name .. "' removed",
                         vim.log.levels.INFO)
                 else
                     vim.notify("loomworks: " .. (err or "failed to delete config set"),
@@ -256,8 +254,8 @@ local function create_config_set()
     require("loomworks.ui.config_set_editor").open({
         title = "New configuration set",
         name = "",
-        project_keys = ctx.projects,
-        mappings = ctx.auto_mappings,
+        projects = ctx.projects,
+        mappings = ctx.mappings,
         available_configs = ctx.available_configs,
         validate = function(result)
             if ws.config.configuration_sets and ws.config.configuration_sets[result.name] then
@@ -267,8 +265,8 @@ local function create_config_set()
         end,
         on_accept = function(result)
             local name = result.name
-            local ok, err = workspace_view.execute_create_config_set(ws, name, result.mappings)
-            if ok then
+            local cs_new, err = workspace_view.execute_create_config_set(ws, name, result.mappings)
+            if cs_new then
                 vim.notify("loomworks: configuration set '" .. name .. "' created",
                     vim.log.levels.INFO)
             else
@@ -299,13 +297,12 @@ return function(tree, ctx)
     tree:blank()
 
     local sorted = {}
-    for name, cs in pairs(config_sets) do
-        sorted[#sorted + 1] = { name = name, cs = cs }
+    for _, cs in pairs(config_sets) do
+        sorted[#sorted + 1] = cs
     end
     table.sort(sorted, function(a, b) return a.name < b.name end)
 
-    for _, entry in ipairs(sorted) do
-        local cs = entry.cs
+    for _, cs in ipairs(sorted) do
         local is_active_set = active_profile
                 and active_profile._config_set_ref == cs
         local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
@@ -321,10 +318,10 @@ return function(tree, ctx)
                 local is_first = not next(all_profiles)
                 actions._create_profile_step2(cs, sname, all_tool_entries, is_first)
             end,
-            on_delete = function() delete_config_set(sname) end,
+            on_delete = function() delete_config_set(cs) end,
         }, function()
             render_set_details(tree, cs,
-                tool_entries[cs.name] or {}, all_profiles, active_profile, lw)
+                tool_entries[cs.name] or {}, active_profile, lw)
         end)
     end
 

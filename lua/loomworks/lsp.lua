@@ -165,7 +165,7 @@ function M.clangd_root_dir(fallback)
     return function(bufnr, on_dir)
         local ok, lw = pcall(require, "loomworks")
         if ok then
-            local _, project = lw.project_for_buf(bufnr)
+            local project = lw.project_for_buf(bufnr)
             if project and project.type == "cmake" then
                 local ws = lw.get_workspace()
                 if ws then
@@ -206,14 +206,13 @@ function M.get_status()
     local projects = lw.get_projects()
 
     -- Sort projects alphabetically
-    local sorted_keys = {}
-    for key in pairs(projects) do
-        sorted_keys[#sorted_keys + 1] = key
+    local sorted = {}
+    for _, p in pairs(projects) do
+        sorted[#sorted + 1] = p
     end
-    table.sort(sorted_keys)
+    table.sort(sorted, function(a, b) return a.key < b.key end)
 
-    for _, key in ipairs(sorted_keys) do
-        local project = projects[key]
+    for _, project in ipairs(sorted) do
         if not project.path then goto continue end
 
         local server_names = LSP_SERVERS[project.type]
@@ -243,7 +242,7 @@ function M.get_status()
         end
 
         results[#results + 1] = {
-            project_key = key,
+            project_key = project.key,
             project_type = project.type,
             root_dir = project_abs,
             clients = matched_clients,

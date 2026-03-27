@@ -242,16 +242,13 @@
 
 --- @class loomworks.DeletionPlan
 --- @field items loomworks.DeletionItem[]
---- @field profile_key? string profile being deleted
---- @field project_key? string single config deletion target
---- @field config_key? string single config deletion target
+--- @field profile loomworks.Profile|nil profile being deleted
 --- @field defined_in_config boolean
 
 --- @alias loomworks.DeletionDisposition "clean"|"reset"|"keep"
 
 --- @class loomworks.DeletionItem
---- @field project_key string
---- @field config_key string
+--- @field unit loomworks.ConfigUnit|nil the config unit (nil for unmaterialized combos)
 --- @field build_dir? string
 --- @field disposition loomworks.DeletionDisposition "clean" removes entry, "reset" clears state (keeps skeleton), "keep" untouched
 

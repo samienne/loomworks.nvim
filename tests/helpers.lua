@@ -67,7 +67,10 @@ function M.make_mock_workspace(overrides)
             events = { emit = function() end },
             merge = { resolve_detected_tool = function() return nil end },
             user = { save = function() return true end },
-            cache = { config_cache_key = function(pk, ck) return pk .. "/" .. ck end },
+            cache = {
+                config_cache_key = function(pk, ck) return pk .. "/" .. ck end,
+                next_available_key = require("loomworks.cache").next_available_key,
+            },
             modules = { get = function() return nil end },
             get_overseer_task = function() return nil end,
             normalize = function(p) return p end,
@@ -125,9 +128,9 @@ function M.make_mock_workspace(overrides)
         end
         return nil
     end
-    ws.find_config_unit_by_id = function(self, id)
+    ws.find_config_unit_for_cached = function(self, cached_entry)
         for _, unit in pairs(self._config_units) do
-            if unit.id == id then return unit end
+            if unit._cached == cached_entry then return unit end
         end
     end
     ws.ensure_config_unit = function(self, project, configuration, tool)
@@ -137,8 +140,6 @@ function M.make_mock_workspace(overrides)
         local tool_key = tool and tool.key or nil
         local config_key = merge_h.build_config_key(variant, tool_key)
         local id = cache_mod_h.config_cache_key(project.key, config_key)
-        local by_id = self:find_config_unit_by_id(id)
-        if by_id then return by_id end
         self.cache.configurations = self.cache.configurations or {}
         if not self.cache.configurations[id] then
             self.cache.configurations[id] = {
@@ -179,22 +180,6 @@ function M.make_mock_workspace(overrides)
     end
 
     -- Add find helpers (same as Workspace class)
-    ws.find_project = function(self, key)
-        for _, p in pairs(self._projects) do
-            if p.key == key then return p end
-        end
-    end
-    ws.find_profile = function(self, key)
-        for _, p in pairs(self._profiles) do
-            if p.key == key then return p end
-        end
-    end
-    ws.find_config_set = function(self, name)
-        for _, cs in pairs(self._config_sets) do
-            if cs.name == name then return cs end
-        end
-    end
-
     -- Add Tool registry methods (delegate through Module objects)
     ws.find_tool = function(self, mod_type, tool_key)
         local mod = self:find_module(mod_type)
@@ -251,7 +236,7 @@ end
 function M.register_profile_project(ws, profile, project_key, variant)
     local ProfileProject = require("loomworks.profile").ProfileProject
     -- Pre-resolve references
-    local project = ws:find_project(project_key)
+    local project = M.find_project_in(ws._projects, project_key)
     local configuration = nil
     if project and project._configurations then
         configuration = project._configurations[variant]
@@ -263,7 +248,7 @@ function M.register_profile_project(ws, profile, project_key, variant)
             if entry and entry.project_key == project_key
                     and entry.variant == variant then
                 cached = entry
-                config_unit = ws:find_config_unit_by_id(ck)
+                config_unit = ws:find_config_unit_for_cached(entry)
                 break
             end
         end
@@ -318,7 +303,7 @@ function M.refresh_config_unit(ws, unit)
         cached = ws.cache.configurations[unit.id]
     end
     local project_key = cached and cached.project_key or unit._init_project_key
-    local project = project_key and ws:find_project(project_key) or nil
+    local project = project_key and M.find_project_in(ws._projects, project_key) or nil
     local tool = nil
     if cached and cached.tool_key then
         local mod = project and project._module
@@ -339,19 +324,25 @@ function M.refresh_config_unit(ws, unit)
     })
 end
 
---- Get or create a ConfigUnit by id, with resolved references.
---- Combines ConfigUnit.new + registry insertion + refresh in one call.
+--- Get or create a ConfigUnit for a cache entry, with resolved references.
+--- Simulates what _sync_config_units does at the deserialization boundary.
 --- @param ws table mock workspace
---- @param id string cache dict key
+--- @param id string cache dict key (used for ConfigUnit identity + cache lookup)
 --- @param project_key string
 --- @return table ConfigUnit
 function M.ensure_config_unit_by_id(ws, id, project_key)
     local ConfigUnit = require("loomworks.config_unit")
-    local unit = ws:find_config_unit_by_id(id)
-    if not unit then
-        unit = ConfigUnit.new(ws, id, project_key)
-        ws._config_units[#ws._config_units + 1] = unit
+    -- Check if a unit already exists for this cache entry
+    local cached_entry = ws.cache and ws.cache.configurations and ws.cache.configurations[id]
+    if cached_entry then
+        local existing = ws:find_config_unit_for_cached(cached_entry)
+        if existing then
+            M.refresh_config_unit(ws, existing)
+            return existing
+        end
     end
+    local unit = ConfigUnit.new(ws, id, project_key)
+    ws._config_units[#ws._config_units + 1] = unit
     M.refresh_config_unit(ws, unit)
     return unit
 end
@@ -461,6 +452,7 @@ function M.make_test_deps(files, opts)
             filepath = real_cache.filepath,
             compute_hash = real_cache.compute_hash,
             config_cache_key = real_cache.config_cache_key,
+            next_available_key = real_cache.next_available_key,
             save = function() return true end,
         },
         detect_tools_async = function(config, cache, callback) callback({}) end,
@@ -508,6 +500,36 @@ function M.make_test_deps(files, opts)
     end
 
     return deps
+end
+
+--- Find a Profile by key in a profiles array (test convenience).
+--- @param profiles loomworks.Profile[]
+--- @param key string
+--- @return loomworks.Profile|nil
+function M.find_profile(profiles, key)
+    for _, p in pairs(profiles) do
+        if p.key == key then return p end
+    end
+end
+
+--- Find a Project by key in a projects array (test convenience).
+--- @param projects loomworks.Project[]
+--- @param key string
+--- @return loomworks.Project|nil
+function M.find_project_in(projects, key)
+    for _, p in pairs(projects) do
+        if p.key == key then return p end
+    end
+end
+
+--- Find a ConfigurationSet by name in an array (test convenience).
+--- @param config_sets loomworks.ConfigurationSet[]
+--- @param name string
+--- @return loomworks.ConfigurationSet|nil
+function M.find_config_set_in(config_sets, name)
+    for _, cs in pairs(config_sets) do
+        if cs.name == name then return cs end
+    end
 end
 
 return M

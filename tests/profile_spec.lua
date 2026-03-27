@@ -306,8 +306,14 @@ describe("Profile", function()
             core._profiles = { debug = p }
             local plan = p:plan_deletion()
             assert.equals(2, #plan.items)
-            assert.equals("App", plan.items[1].project_key)
-            assert.equals("Lib", plan.items[2].project_key)
+            -- Items sorted by project key, keys read from unit._project
+            local keys = {}
+            for _, item in ipairs(plan.items) do
+                keys[#keys + 1] = item.unit and item.unit._project and item.unit._project.key
+            end
+            table.sort(keys)
+            assert.equals("App", keys[1])
+            assert.equals("Lib", keys[2])
         end)
     end)
 
@@ -443,23 +449,23 @@ describe("ProfileProject", function()
         end)
 
         it("returns deleting when unit is marked deleting", function()
-            local pp, core = make_pp(nil)
-            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
-            unit:mark_deleting(true)
+            local pp = make_pp(nil)
+            assert.is_not_nil(pp._config_unit)
+            pp._config_unit:mark_deleting(true)
             assert.equals("deleting", pp:status())
         end)
 
         it("returns configuring when configure task is running", function()
-            local pp, core = make_pp(nil)
-            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
-            unit:register_task(1, "configure")
+            local pp = make_pp(nil)
+            assert.is_not_nil(pp._config_unit)
+            pp._config_unit:register_task(1, "configure")
             assert.equals("configuring", pp:status())
         end)
 
         it("returns building when build task is running", function()
-            local pp, core = make_pp(nil)
-            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
-            unit:register_task(1, "build")
+            local pp = make_pp(nil)
+            assert.is_not_nil(pp._config_unit)
+            pp._config_unit:register_task(1, "build")
             assert.equals("building", pp:status())
         end)
     end)
@@ -471,9 +477,9 @@ describe("ProfileProject", function()
         end)
 
         it("returns the action from the ConfigUnit", function()
-            local pp, core = make_pp(nil)
-            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
-            unit:register_task(1, "build")
+            local pp = make_pp(nil)
+            assert.is_not_nil(pp._config_unit)
+            pp._config_unit:register_task(1, "build")
             assert.equals("build", pp:running_action())
         end)
 
@@ -517,12 +523,16 @@ describe("ProfileProject", function()
                 end
                 h.finalize_profile(p)
             end
+            -- Both profiles should share the same ConfigUnit
+            local pp1 = p1:project("App")
+            local pp2 = p2:project("App")
+            assert.is_not_nil(pp1._config_unit)
+            assert.is_true(rawequal(pp1._config_unit, pp2._config_unit))
             -- Start a task on the shared unit
-            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
-            unit:register_task(1, "build")
+            pp1._config_unit:register_task(1, "build")
             -- Both profiles see it
-            assert.equals("build", p1:project("App"):running_action())
-            assert.equals("build", p2:project("App"):running_action())
+            assert.equals("build", pp1:running_action())
+            assert.equals("build", pp2:running_action())
         end)
     end)
 
@@ -533,9 +543,9 @@ describe("ProfileProject", function()
         end)
 
         it("returns true when unit is marked deleting", function()
-            local pp, core = make_pp(nil)
-            local unit = core:ensure_config_unit(core._projects["App"], h.get_or_create_config(core._projects["App"], "Debug"), nil)
-            unit:mark_deleting(true)
+            local pp = make_pp(nil)
+            assert.is_not_nil(pp._config_unit)
+            pp._config_unit:mark_deleting(true)
             assert.is_true(pp:is_deleting())
         end)
     end)

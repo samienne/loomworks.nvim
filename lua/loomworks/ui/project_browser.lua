@@ -156,13 +156,13 @@ function M.open(root)
         local ws = lw.get_workspace()
         if not ws then return end
 
-        local found_key = workspace_view.find_project_key_by_path(ws, rel, entry.name)
-        if not found_key then
+        local project = workspace_view.find_project_by_path(ws, rel, entry.name)
+        if not project then
             vim.notify("loomworks: project not found in workspace", vim.log.levels.WARN)
             return
         end
 
-        local ctx = workspace_view.compute_remove_context(ws, found_key)
+        local ctx = workspace_view.compute_remove_context(ws, project)
         if not ctx then return end
 
         local dialog = require("loomworks.ui.dialog")
@@ -174,7 +174,7 @@ function M.open(root)
                 n = "close",
                 y = function(self)
                     self:close()
-                    workspace_view.execute_remove_project(ws, found_key, ctx, function(ok, err)
+                    workspace_view.execute_remove_project(ws, project, ctx, function(ok, err)
                         if not ok then
                             vim.notify("loomworks: " .. (err or "failed to remove"), vim.log.levels.ERROR)
                         end

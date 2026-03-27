@@ -80,7 +80,7 @@ local cmake_module = {
 --- @param variant string configuration name (e.g. "Debug")
 --- @return table[] entries with { config_key, tool_key, state }
 local function simulate_projects_section_rendering(core, project_key, variant)
-    local proj = core:get_projects()[project_key]
+    local proj = h.find_project_in(core:get_projects(), project_key)
     if not proj then return {} end
 
     local tools_by_type = core:get_tools_by_type()
@@ -120,10 +120,10 @@ local function simulate_projects_section_rendering(core, project_key, variant)
     local results = {}
     for _, entry in ipairs(entries) do
         local cache_id = project_key .. "/" .. entry.config_key
-        local unit = core._workspace:find_config_unit_by_id(cache_id)
+        local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations[cache_id])
         if not unit then
             -- Lazily create for unconfigured entries (detected tools with no cache entry)
-            local ws_project = core._workspace:find_project(project_key)
+            local ws_project = h.find_project_in(core:get_projects(), project_key)
             if ws_project then
                 local cfg_variant = entry.config_key
                 local colon = cfg_variant:find(":")
@@ -387,7 +387,7 @@ describe("Projects section cmake status", function()
         core:setup({ root = "/root" })
 
         -- Verify the Project object has correct cached_configurations
-        local proj = core:get_projects()["App"]
+        local proj = h.find_project_in(core:get_projects(), "App")
         assert.is_not_nil(proj.cached_configurations["Debug:ninja-gcc-12"],
             "Project.cached_configurations should have tool-qualified key")
 
@@ -397,7 +397,7 @@ describe("Projects section cmake status", function()
             "ws.cache should have flat config entry")
 
         -- Verify ConfigUnit reads from the same workspace
-        local unit = core._workspace:find_config_unit_by_id("App/Debug:ninja-gcc-12")
+        local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations["App/Debug:ninja-gcc-12"])
         local cached = unit:cached_state()
         assert.is_not_nil(cached, "ConfigUnit:cached_state() should find the cache entry")
         assert.equals("built", cached.state)
@@ -422,12 +422,12 @@ end
 --- @param active_profile_key string|nil
 --- @return table[] entries with { config_key, tool_key, state, hl }
 local function simulate_with_highlights(core, project_key, variant, active_profile_key)
-    local proj = core:get_projects()[project_key]
+    local proj = h.find_project_in(core:get_projects(), project_key)
     if not proj then return {} end
 
     local tools_by_type = core:get_tools_by_type()
     -- Derive active_tool_key from the active profile object, matching production code
-    local active_profile = active_profile_key and core:get_profiles()[active_profile_key] or nil
+    local active_profile = active_profile_key and h.find_profile(core:get_profiles(), active_profile_key) or nil
     local active_project_tool = active_profile and active_profile._tools_raw
             and active_profile._tools_raw[proj.type] or nil
     local active_tool_key = active_project_tool and active_project_tool.key or nil
@@ -470,9 +470,9 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
     local results = {}
     for _, entry in ipairs(entries) do
         local cache_id = project_key .. "/" .. entry.config_key
-        local unit = core._workspace:find_config_unit_by_id(cache_id)
+        local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations[cache_id])
         if not unit then
-            local ws_project = core._workspace:find_project(project_key)
+            local ws_project = h.find_project_in(core:get_projects(), project_key)
             if ws_project then
                 local cfg_variant = entry.config_key
                 local colon = cfg_variant:find(":")
