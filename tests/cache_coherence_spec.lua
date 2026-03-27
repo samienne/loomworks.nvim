@@ -30,7 +30,7 @@ end
 --- @return loomworks.ConfigUnit
 local function get_unit(core, project_key, config_key)
     local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = core._workspace:find_config_unit_by_id(id)
+    local unit = core._workspace:find_config_unit_for_cached(core._workspace.cache.configurations[id])
     if unit then return unit end
     local project = h.find_project_in(core:get_projects(), project_key)
     assert(project, "project " .. project_key .. " not found in workspace")

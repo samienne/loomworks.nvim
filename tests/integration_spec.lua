@@ -860,7 +860,7 @@ describe("collect helpers", function()
                 },
             }
         )
-        local unit = ws:find_config_unit_by_id("App/Debug")
+        local unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug"])
         local items = wv.collect_clean_items_for_unit(unit)
         assert.equals(1, #items)
         assert.equals(unit, items[1].unit)
@@ -1409,7 +1409,7 @@ describe("configuration rename propagation", function()
         })
 
         -- Simulate a running build on the config unit
-        local old_unit = ws:find_config_unit_by_id("App/Debug-asan:ninja-gcc")
+        local old_unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug-asan:ninja-gcc"])
         assert.is_not_nil(old_unit)
         old_unit:register_task(42, "build")
         assert.is_true(old_unit:is_running())
@@ -1428,7 +1428,7 @@ describe("configuration rename propagation", function()
         assert.is_true(ok)
 
         -- ConfigUnit should have the new id and still be running
-        local new_unit = ws:find_config_unit_by_id("App/DebugASAN:ninja-gcc")
+        local new_unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/DebugASAN:ninja-gcc"])
         assert.is_not_nil(new_unit)
         assert.is_true(new_unit:is_running())
         assert.equals("build", new_unit:running_action())
@@ -1443,7 +1443,7 @@ describe("configuration rename propagation", function()
         assert.equals("DebugASAN", pp:variant_name())
 
         -- Old id should no longer exist
-        assert.is_nil(ws:find_config_unit_by_id("App/Debug-asan:ninja-gcc"))
+        assert.is_nil(ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug-asan:ninja-gcc"]))
     end)
 
     it("cache-only variant creates Configuration for PP resolution", function()

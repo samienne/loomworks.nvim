@@ -175,7 +175,7 @@ These are implementation-specific details not covered by the spec or architectur
 - **Workspace arrays**: `_modules`, `_projects`, `_config_sets`, `_profiles`,
   `_config_units`, `_profile_projects` are arrays after sync. Runtime callers
   iterate with `pairs()` or use `find_*` helpers (`find_project(key)`,
-  `find_profile(key)`, `find_config_set(name)`, `find_config_unit_by_id(id)`,
+  `find_profile(key)`, `find_config_set(name)`, `find_config_unit_for_cached(entry)`,
   `find_module(mod_type)`).
 - **Pre-resolved `_update()`**: all `_update()` methods receive pre-resolved
   object references from the `_sync_*` caller. No registry lookups inside

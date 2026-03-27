@@ -21,7 +21,7 @@ end
 local function get_unit(core, project_key, config_key)
     local ws = core._workspace
     local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = ws:find_config_unit_by_id(id)
+    local unit = ws:find_config_unit_for_cached(ws.cache.configurations[id])
     if unit then return unit end
     local project = h.find_project_in(core:get_projects(), project_key)
     if not project then

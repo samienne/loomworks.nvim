@@ -164,7 +164,7 @@ function M.collect_project_configs(ws, project)
                 config_key = cached.config_key,
                 state = cached.state,
                 build_dir = cached.build_dir,
-                unit = ws:find_config_unit_by_id(cache_key),
+                unit = ws:find_config_unit_for_cached(cached),
             }
         end
     end

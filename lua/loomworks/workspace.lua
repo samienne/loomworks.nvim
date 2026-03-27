@@ -252,12 +252,13 @@ function Workspace:_build_ctx()
     return ctx
 end
 
---- Find a ConfigUnit by id (O(n) scan).
---- @param id string cache dict key
+--- Find the ConfigUnit whose _cached reference points to the given cache entry.
+--- Used at cache→domain boundaries when iterating cache.configurations.
+--- @param cached_entry table cache entry reference
 --- @return loomworks.ConfigUnit|nil
-function Workspace:find_config_unit_by_id(id)
+function Workspace:find_config_unit_for_cached(cached_entry)
     for _, unit in pairs(self._config_units) do
-        if unit.id == id then return unit end
+        if unit._cached == cached_entry then return unit end
     end
 end
 
@@ -294,11 +295,6 @@ function Workspace:ensure_config_unit(project, configuration, tool)
     local tool_key = tool and tool.key or nil
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
     local id = cache_mod.config_cache_key(project.key, config_key)
-
-    -- Check if a ConfigUnit with this id already exists (created during remerge
-    -- but perhaps with different resolved references)
-    local by_id = self:find_config_unit_by_id(id)
-    if by_id then return by_id end
 
     -- Create cache entry
     self.cache.configurations = self.cache.configurations or {}
@@ -1166,7 +1162,7 @@ function Workspace:get_orphaned_configs()
                 project_key = cached_config.project_key,
                 config_key = cached_config.config_key,
                 cached = cached_config,
-                unit = self:find_config_unit_by_id(cache_key),
+                unit = self:find_config_unit_for_cached(cached_config),
             }
         end
     end
