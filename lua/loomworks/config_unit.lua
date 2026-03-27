@@ -295,12 +295,19 @@ function ConfigUnit:materialize_pinned(variant, tool)
 
     if not self._project then return nil end
 
-    -- Property-based idempotency: check if any pinned profile already
-    -- references this ConfigUnit (regardless of key).
+    -- Property-based idempotency: check if a fully matching pinned profile
+    -- already exists — same single-project mapping pointing to this ConfigUnit
+    -- with matching tool.
     for _, profile in pairs(ws._profiles) do
         if not profile._configuration_set_name then
-            for _, pp in ipairs(profile:projects()) do
-                if pp._config_unit == self then
+            local pps = profile:projects()
+            if #pps == 1 and pps[1]._config_unit == self
+                    and pps[1]._project == self._project then
+                -- Verify tool matches
+                local existing_tool = profile:tool_for(self._project.type)
+                local my_tool_key = self._tool and self._tool.key
+                local existing_key = existing_tool and existing_tool.key
+                if my_tool_key == existing_key then
                     return profile
                 end
             end

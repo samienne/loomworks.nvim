@@ -986,12 +986,10 @@ function Workspace:get_active_profile()
     return self._active_profile
 end
 
---- Get all Profile objects as a dict (keyed by profile key).
---- @return table<string, loomworks.Profile>
+--- Get all Profile objects.
+--- @return loomworks.Profile[]
 function Workspace:get_profiles()
-    local dict = {}
-    for _, p in pairs(self._profiles) do dict[p.key] = p end
-    return dict
+    return self._profiles
 end
 
 --- Get all Project objects from the active set as a dict (keyed by project key).

@@ -283,7 +283,7 @@ describe("Core", function()
                 configuration_sets = { debug = { App = "development" } },
             })
             core:setup({ root = "/root" })
-            assert.is_nil(core:get_profiles()["nonexistent"])
+            assert.is_nil(h.find_profile(core:get_profiles(), "nonexistent"))
         end)
 
         it("returns Profile object for known profile", function()
@@ -311,7 +311,7 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            local profile = core:get_profiles()["debug"]
+            local profile = h.find_profile(core:get_profiles(), "debug")
             assert.is_not_nil(profile)
             assert.equals("debug", profile.key)
             assert.equals("debug", profile._configuration_set_name)
@@ -450,7 +450,7 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            core:get_profiles()["debug"]:deactivate()
+            h.find_profile(core:get_profiles(), "debug"):deactivate()
             assert.is_nil(saved.data.active_profile)
         end)
 
@@ -493,7 +493,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
             save_called = false -- reset from setup
-            core:get_profiles()["release"]:deactivate()
+            h.find_profile(core:get_profiles(), "release"):deactivate()
             assert.is_false(save_called)
         end)
     end)
@@ -1242,7 +1242,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            local profile = core:get_profiles()["debug"]
+            local profile = h.find_profile(core:get_profiles(), "debug")
             assert.is_not_nil(profile)
             local unit = get_unit(core, "App", "development")
             local plan = {
@@ -1301,7 +1301,7 @@ describe("Core", function()
             core:setup({ root = "/root" })
 
             -- Empty items = no unreferenced configs, but profile should still be removed
-            local debug_profile = core:get_profiles()["debug"]
+            local debug_profile = h.find_profile(core:get_profiles(), "debug")
             local plan = {
                 profile = debug_profile,
                 items = {},
@@ -1693,7 +1693,7 @@ describe("Core", function()
             assert.same({}, core:get_orphaned_configs())
 
             -- The "feature" profile should still exist but with orphaned_set=true
-            local profile = core:get_profiles()["feature"]
+            local profile = h.find_profile(core:get_profiles(), "feature")
             assert.is_not_nil(profile)
             assert.is_true(profile.orphaned_set)
         end)
@@ -2010,7 +2010,7 @@ describe("Core", function()
                 clock = clock_fn,
             })
             core:setup({ root = "/root" })
-            local profile = core:get_profiles()["debug"]
+            local profile = h.find_profile(core:get_profiles(), "debug")
             return core, profile, time
         end
 

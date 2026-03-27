@@ -509,4 +509,14 @@ function M.make_test_deps(files, opts)
     return deps
 end
 
+--- Find a Profile by key in a profiles array (test convenience).
+--- @param profiles loomworks.Profile[]
+--- @param key string
+--- @return loomworks.Profile|nil
+function M.find_profile(profiles, key)
+    for _, p in pairs(profiles) do
+        if p.key == key then return p end
+    end
+end
+
 return M

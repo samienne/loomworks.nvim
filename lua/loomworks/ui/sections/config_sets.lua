@@ -64,10 +64,10 @@ end
 --- @param tree loomworks.Tree
 --- @param cs loomworks.ConfigurationSet
 --- @param entry loomworks.ToolEntry
---- @param all_profiles table<string, loomworks.Profile>
+--- @param profiles_by_key table<string, loomworks.Profile>
 --- @param active_profile loomworks.Profile|nil
-local function render_tool_entry(tree, cs, entry, all_profiles, active_profile)
-    local profile = entry.cached and all_profiles[entry.profile_key] or nil
+local function render_tool_entry(tree, cs, entry, profiles_by_key, active_profile)
+    local profile = entry.cached and profiles_by_key[entry.profile_key] or nil
     local is_active = profile ~= nil and profile == active_profile
     local suffix, hl, marker, spinning = resolve_profile_display(profile, is_active)
     local display = entry.tool_label or entry.tool_key
@@ -94,9 +94,9 @@ end
 --- @param tree loomworks.Tree
 --- @param cs loomworks.ConfigurationSet
 --- @param profile loomworks.Profile|nil existing no-tool profile
---- @param all_profiles table<string, loomworks.Profile>
+--- @param profiles_by_key table<string, loomworks.Profile>
 --- @param active_profile loomworks.Profile|nil
-local function render_no_tool_entry(tree, cs, profile, all_profiles, active_profile)
+local function render_no_tool_entry(tree, cs, profile, profiles_by_key, active_profile)
     local is_active = profile ~= nil and profile == active_profile
     local suffix, hl, marker, spinning = resolve_profile_display(profile, is_active)
 
@@ -130,10 +130,10 @@ end
 --- @param tree loomworks.Tree
 --- @param cs loomworks.ConfigurationSet
 --- @param tool_entries loomworks.ToolEntry[]
---- @param all_profiles table<string, loomworks.Profile>
+--- @param profiles_by_key table<string, loomworks.Profile>
 --- @param active_profile loomworks.Profile|nil
 --- @param lw table loomworks API
-local function render_set_details(tree, cs, tool_entries, all_profiles, active_profile, lw)
+local function render_set_details(tree, cs, tool_entries, profiles_by_key, active_profile, lw)
     local set_name = cs.name
     tree:group("Projects:", "Comment", function()
         local proj_names = {}
@@ -156,13 +156,13 @@ local function render_set_details(tree, cs, tool_entries, all_profiles, active_p
     if #tool_entries > 0 then
         tree:group({{"Tools:  ", "LoomworksActionable"}, {"[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
             for _, entry in ipairs(tool_entries) do
-                render_tool_entry(tree, cs, entry, all_profiles, active_profile)
+                render_tool_entry(tree, cs, entry, profiles_by_key, active_profile)
             end
         end)
     else
         -- No keyed tools — render a single activatable entry for the set itself
         local profile = cs:find_profile(nil)
-        render_no_tool_entry(tree, cs, profile, all_profiles, active_profile)
+        render_no_tool_entry(tree, cs, profile, profiles_by_key, active_profile)
     end
 
 end
@@ -295,6 +295,12 @@ return function(tree, ctx)
     local tool_entries = ctx.tool_entries or {}
     local lw = ctx.lw
 
+    -- Build key→Profile dict for tool entry rendering (tool entries carry
+    -- profile_key strings from merge; this is the only place that needs
+    -- key-based lookup on profiles).
+    local profiles_by_key = {}
+    for _, p in pairs(all_profiles) do profiles_by_key[p.key] = p end
+
     tree:leaf("Configuration Sets", "Title")
     tree:blank()
 
@@ -324,7 +330,7 @@ return function(tree, ctx)
             on_delete = function() delete_config_set(cs) end,
         }, function()
             render_set_details(tree, cs,
-                tool_entries[cs.name] or {}, all_profiles, active_profile, lw)
+                tool_entries[cs.name] or {}, profiles_by_key, active_profile, lw)
         end)
     end
 

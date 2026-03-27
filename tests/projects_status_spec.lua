@@ -427,7 +427,7 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
 
     local tools_by_type = core:get_tools_by_type()
     -- Derive active_tool_key from the active profile object, matching production code
-    local active_profile = active_profile_key and core:get_profiles()[active_profile_key] or nil
+    local active_profile = active_profile_key and h.find_profile(core:get_profiles(), active_profile_key) or nil
     local active_project_tool = active_profile and active_profile._tools_raw
             and active_profile._tools_raw[proj.type] or nil
     local active_tool_key = active_project_tool and active_project_tool.key or nil
