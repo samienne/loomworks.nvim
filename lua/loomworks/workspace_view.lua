@@ -471,10 +471,12 @@ function M.compute_edit_config_set_context(ws, set_name)
     local mappings = {}
     local available_configs = {}
     local project_keys = {}
+    local projects_by_key = {}
 
     for _, project in pairs(ws._projects) do
         local key = project.key
         project_keys[#project_keys + 1] = key
+        projects_by_key[key] = project
         mappings[key] = raw_mappings[key] or nil
 
         local impl = project._module and project._module.impl or nil
@@ -501,6 +503,7 @@ function M.compute_edit_config_set_context(ws, set_name)
         mappings = mappings,
         available_configs = available_configs,
         project_keys = project_keys,
+        projects_by_key = projects_by_key,
     }
 end
 
@@ -509,8 +512,9 @@ end
 --- @param new_name string new name (same as cs.name if not renamed)
 --- @param new_mappings table<string, string|nil>
 --- @param old_mappings table<string, string|nil>
+--- @param projects_by_key table<string, loomworks.Project> resolved during compute
 --- @return boolean ok, string|nil err
-function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
+function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings, projects_by_key)
     local ws = cs._workspace
     local old_name = cs.name
     local renamed = new_name ~= old_name
@@ -521,10 +525,6 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
         if not ok then return false, err end
         return true
     end
-
-    -- Build project lookup from workspace array (deserialization boundary)
-    local projects_by_key = {}
-    for _, p in pairs(ws._projects) do projects_by_key[p.key] = p end
 
     -- Apply mapping changes to existing set
     for key, new_variant in pairs(new_mappings) do

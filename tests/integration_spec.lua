@@ -155,16 +155,19 @@ describe("config set lifecycle", function()
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         ok = wv.execute_edit_config_set(cs, "Debug",
             { App = "Release", Frontend = "release" },
-            { App = "Debug", Frontend = "debug" })
+            { App = "Debug", Frontend = "debug" },
+            edit_ctx.projects_by_key)
         assert.is_true(ok)
         assert.equals("Release", ws.config.configuration_sets["Debug"]["App"])
         assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
 
         -- 3. Rename: Debug → Production
         cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
+        edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         ok = wv.execute_edit_config_set(cs, "Production",
             { App = "Release", Frontend = "release" },
-            { App = "Release", Frontend = "release" })
+            { App = "Release", Frontend = "release" },
+            edit_ctx.projects_by_key)
         assert.is_true(ok)
         assert.is_nil(ws.config.configuration_sets["Debug"])
         assert.is_not_nil(ws.config.configuration_sets["Production"])
@@ -204,9 +207,11 @@ describe("config set lifecycle", function()
         })
 
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
+        local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
             { App = "Debug" }, -- Frontend removed
-            { App = "Debug", Frontend = "debug" })
+            { App = "Debug", Frontend = "debug" },
+            edit_ctx.projects_by_key)
         assert.is_true(ok)
         assert.is_nil(ws.config.configuration_sets["Debug"]["Frontend"])
     end)
@@ -711,9 +716,11 @@ describe("orphan lifecycle", function()
 
         -- Change mapping from "debug" to "release"
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
+        local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
             { Frontend = "release" },
-            { Frontend = "debug" })
+            { Frontend = "debug" },
+            edit_ctx.projects_by_key)
         assert.is_true(ok)
         assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
 

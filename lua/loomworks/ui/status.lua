@@ -156,15 +156,4 @@ function M.is_open()
     return view:is_open()
 end
 
---- Delete a profile interactively (with confirmation dialog).
---- @param profile_key string
-function M.delete_profile(profile_key)
-    local profile
-    for _, p in pairs(require("loomworks").get_profiles()) do
-        if p.key == profile_key then profile = p; break end
-    end
-    if not profile then return end
-    actions.delete_profile(profile)()
-end
-
 return M

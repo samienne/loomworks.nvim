@@ -983,10 +983,25 @@ function Workspace:get_config_sets()
 end
 
 --- Get tool entries for the configuration sets UI.
+--- Enriches merge results with Profile object references.
 --- @return table<string, loomworks.ToolEntry[]> set_name -> entries
 function Workspace:get_tool_entries()
-    return self._core._deps.merge.get_tool_entries(
+    local raw = self._core._deps.merge.get_tool_entries(
         self.config, self.cache, self._tools_by_type)
+    -- Resolve profile_key strings to Profile object references
+    for _, entries in pairs(raw) do
+        for _, entry in ipairs(entries) do
+            if entry.cached and entry.profile_key then
+                for _, p in pairs(self._profiles) do
+                    if p.key == entry.profile_key then
+                        entry.profile = p
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return raw
 end
 
 --- Get detected tools organized by module type.
