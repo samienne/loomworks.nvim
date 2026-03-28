@@ -18,7 +18,7 @@ local M = {}
 ---   project_key: string
 ---   project_type: string
 ---   available_configs: string[] — new project's configuration names
----   config_sets: table<string, table> — raw config_sets from ws.config
+---   config_sets: table<string, table> — config set name -> raw mappings
 ---   mod: table — module with map_variant
 ---   tools: table[]|nil — detected keyed tools (only when no inherited tool)
 ---   has_keyed_tools: boolean|nil — whether this module has keyed tools

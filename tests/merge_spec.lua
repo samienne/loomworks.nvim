@@ -120,7 +120,7 @@ describe("merge", function()
             local ws = make_ws({
                 configuration_sets = { debug = { App = "development" } },
             })
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.is_not_nil(result)
             assert.is_not_nil(result.projects)
             assert.is_not_nil(result.projects.App)
@@ -128,7 +128,7 @@ describe("merge", function()
 
         it("sets project type from config", function()
             local ws = make_ws()
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.equals("typescript", result.projects.App.type)
         end)
 
@@ -152,7 +152,7 @@ describe("merge", function()
                     },
                 }
             )
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.equals("unconfigured", result.projects.App.status)
         end)
 
@@ -177,7 +177,7 @@ describe("merge", function()
                     },
                 }
             )
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.equals("built", result.projects.App.status)
         end)
 
@@ -201,7 +201,7 @@ describe("merge", function()
                     },
                 }
             )
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.equals("debug", result.name)
         end)
 
@@ -209,7 +209,7 @@ describe("merge", function()
             local ws = make_ws({
                 configuration_sets = { debug = { App = "development" } },
             })
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.is_nil(result.name)
         end)
 
@@ -233,7 +233,7 @@ describe("merge", function()
                     },
                 }
             )
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.equals("development", result.projects.App.configuration)
         end)
 
@@ -252,14 +252,14 @@ describe("merge", function()
                     },
                 }
             )
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.is_not_nil(result.projects.OldProject)
             assert.is_true(result.projects.OldProject.orphaned)
         end)
 
         it("marks existing projects as not orphaned", function()
             local ws = make_ws()
-            local result = merge.merge(ws)
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
             assert.is_false(result.projects.App.orphaned)
         end)
     end)

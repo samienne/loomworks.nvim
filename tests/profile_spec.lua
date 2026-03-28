@@ -316,12 +316,7 @@ describe("Profile", function()
         it("activate writes user.json and remerges", function()
             local saved_user = nil
             local remerged = false
-            local ws = {
-                root = "/root",
-                user = { _meta = { version = 1 }, active_profile = nil },
-            }
-            local p = make_profile(nil, {
-                get_workspace = function() return ws end,
+            local p, mock_ws = make_profile(nil, {
                 remerge = function() remerged = true end,
                 _deps = {
                     clock = function() return 0 end,
@@ -330,7 +325,7 @@ describe("Profile", function()
                 },
             })
             p:activate()
-            assert.equals("debug", ws.user.active_profile)
+            assert.equals("debug", mock_ws._active_profile_key)
             assert.equals("debug", saved_user.active_profile)
             assert.is_true(remerged)
         end)
@@ -345,12 +340,8 @@ describe("Profile", function()
         it("deactivate clears active_profile and remerges", function()
             local saved_user = nil
             local remerged = false
-            local ws = {
-                root = "/root",
-                user = { _meta = { version = 1 }, active_profile = "debug" },
-            }
-            local p = make_profile(nil, {
-                get_workspace = function() return ws end,
+            local p, mock_ws = make_profile(nil, {
+                _active_profile_key = "debug",
                 remerge = function() remerged = true end,
                 _deps = {
                     clock = function() return 0 end,
@@ -359,19 +350,15 @@ describe("Profile", function()
                 },
             })
             p:deactivate()
-            assert.is_nil(ws.user.active_profile)
+            assert.is_nil(mock_ws._active_profile_key)
             assert.is_nil(saved_user.active_profile)
             assert.is_true(remerged)
         end)
 
         it("deactivate is no-op when not active", function()
             local save_called = false
-            local ws = {
-                root = "/root",
-                user = { _meta = { version = 1 }, active_profile = "release" },
-            }
-            local p = make_profile(nil, {
-                get_workspace = function() return ws end,
+            local p, mock_ws = make_profile(nil, {
+                _active_profile_key = "release",
                 _deps = {
                     clock = function() return 0 end,
                     events = { emit = function() end },
@@ -379,7 +366,7 @@ describe("Profile", function()
                 },
             })
             p:deactivate()
-            assert.equals("release", ws.user.active_profile)
+            assert.equals("release", mock_ws._active_profile_key)
             assert.is_false(save_called)
         end)
 

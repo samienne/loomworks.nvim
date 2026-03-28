@@ -419,7 +419,7 @@ describe("multi-config cmake", function()
 
             -- Switch to release profile
             local ws = core:get_workspace()
-            ws.user.active_profile = "release"
+            ws._active_profile_key = "release"
             core:remerge()
 
             -- Build release

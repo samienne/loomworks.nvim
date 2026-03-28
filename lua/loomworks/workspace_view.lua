@@ -458,20 +458,21 @@ end
 --- @param set_name string
 --- @return { set_name: string, mappings: table<string, string|nil>, available_configs: table<string, string[]>, project_keys: string[] }|nil
 function M.compute_edit_config_set_context(ws, set_name)
-    if not ws.config.configuration_sets
-            or not ws.config.configuration_sets[set_name] then
-        return nil
+    -- Find the ConfigurationSet domain object by name
+    local config_set = nil
+    for _, cs in pairs(ws._config_sets) do
+        if cs.name == set_name then config_set = cs; break end
     end
+    if not config_set then return nil end
 
-    local raw_mappings = ws.config.configuration_sets[set_name]
     local projects = {}
     local mappings = {}     -- Project → Configuration|nil
     local available_configs = {} -- Project → Configuration[]
 
     for _, project in pairs(ws._projects) do
         projects[#projects + 1] = project
-        -- Resolve current mapping to Configuration object
-        local variant = raw_mappings[project.key]
+        -- Resolve current mapping to Configuration object from domain CS
+        local variant = config_set.mappings[project]
         mappings[project] = variant
             and project._configurations and project._configurations[variant]
             or nil
@@ -584,10 +585,7 @@ end
 --- @return { profiles: string[], lines: string[], highlights: table[] }|nil
 function M.compute_delete_config_set_context(ws, cs)
     local set_name = cs.name
-    if not ws.config.configuration_sets
-            or not ws.config.configuration_sets[set_name] then
-        return nil
-    end
+    if cs._removed then return nil end
 
     -- Find profiles referencing this set
     local affected_profiles = {}
@@ -880,8 +878,7 @@ end
 function M.prepare_add_project_from_browser(ws, root, abs_path, name, mod_type)
     local key, path = M.derive_key_and_path(root, abs_path, name)
 
-    local raw_config_sets = ws.config and ws.config.configuration_sets or nil
-    local has_config_sets = raw_config_sets and next(raw_config_sets)
+    local has_config_sets = #ws._config_sets > 0
 
     if not has_config_sets then
         return { action = "add_direct", key = key, path = path, mod_type = mod_type }

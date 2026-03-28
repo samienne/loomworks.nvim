@@ -94,8 +94,13 @@ function M.make_mock_workspace(overrides)
         root = overrides.root or "/test",
         name = overrides.name or "test",
         config = overrides.config or { projects = {} },
-        user = overrides.user or { _meta = { version = 1 } },
         cache = nil,  -- cache is nil after remerge; tests use first-class fields or _serialize_cache()
+
+        -- User state (from user data table or direct override)
+        _active_profile_key = overrides._active_profile_key
+            or (overrides.user and overrides.user.active_profile or nil),
+        _default_target_data = overrides._default_target_data
+            or (overrides.user and overrides.user.default_target or nil),
 
         -- Registries
         _tools_by_type = overrides._tools_by_type or {},
@@ -226,8 +231,22 @@ function M.make_mock_workspace(overrides)
     ws.has_queued_operations = core_overrides.has_queued_operations or function() return false end
     ws.is_build_dir_locked = core_overrides.is_build_dir_locked or function() return false, nil end
     ws._save_config = core_overrides._save_config or function() return true end
+    ws._serialize_user = core_overrides._serialize_user or function(self_ws)
+        local data = { _meta = { version = 1 } }
+        if self_ws._active_profile_key then
+            data.active_profile = self_ws._active_profile_key
+        end
+        local targets = {}
+        for _, profile in pairs(self_ws._profiles) do
+            if profile._default_target_descriptor then
+                targets[profile.key] = profile._default_target_descriptor
+            end
+        end
+        if next(targets) then data.default_target = targets end
+        return data
+    end
     ws._save_user = core_overrides._save_user or function(self_ws)
-        self_ws._core._deps.user.save(self_ws.root, self_ws.user)
+        self_ws._core._deps.user.save(self_ws.root, self_ws:_serialize_user())
     end
 
     -- If cache overrides were provided, pre-create ConfigUnits from configurations.
@@ -573,6 +592,17 @@ end
 function M.find_config_set_in(config_sets, name)
     for _, cs in pairs(config_sets) do
         if cs.name == name then return cs end
+    end
+end
+
+--- Get a config set's variant for a project key (test convenience).
+--- @param cs loomworks.ConfigurationSet
+--- @param project_key string
+--- @return string|nil variant
+function M.cs_mapping(cs, project_key)
+    if not cs or not cs.mappings then return nil end
+    for proj, variant in pairs(cs.mappings) do
+        if proj.key == project_key then return variant end
     end
 end
 

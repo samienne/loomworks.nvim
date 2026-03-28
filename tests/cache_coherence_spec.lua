@@ -1634,13 +1634,13 @@ describe("cache coherence", function()
             core:setup({ root = "/root" })
 
             local ws = core:get_workspace()
-            assert.equals("debug", ws.user.active_profile)
+            assert.equals("debug", ws._active_profile_key)
 
             local profile = h.find_profile(core:get_profiles(), "debug")
             local plan = profile:plan_deletion()
             core:execute_deletion(plan, { deactivate_profile = profile })
 
-            assert.is_nil(ws.user.active_profile)
+            assert.is_nil(ws._active_profile_key)
             assert_cache_empty(core, "after active profile deleted")
         end)
 
@@ -1688,14 +1688,14 @@ describe("cache coherence", function()
             core:setup({ root = "/root" })
 
             local ws = core:get_workspace()
-            assert.equals("debug", ws.user.active_profile)
+            assert.equals("debug", ws._active_profile_key)
 
             -- Delete release (not active)
             local release = h.find_profile(core:get_profiles(), "release")
             local plan = release:plan_deletion()
             core:execute_deletion(plan, { deactivate_profile = release })
 
-            assert.equals("debug", ws.user.active_profile)
+            assert.equals("debug", ws._active_profile_key)
             assert_cache_coherent(core, "active profile untouched")
             assert.equals(1, count_cached_configs(core))
         end)

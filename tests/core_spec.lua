@@ -655,8 +655,12 @@ describe("Core", function()
                 configuration_sets = { debug = { App = "development", Lib = "development" } },
             })
             core._workspace:_on_file_changed("/root/loomworks.json", new_config)
-            -- New project should be in workspace
-            assert.is_not_nil(core._workspace.config.projects.Lib)
+            -- New project should be in workspace domain objects
+            local found_lib = false
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "Lib" then found_lib = true; break end
+            end
+            assert.is_true(found_lib)
         end)
 
         it("updates user data when user file changes", function()
@@ -668,7 +672,7 @@ describe("Core", function()
 
             local new_user = h.make_user_json({ active_profile = "debug" })
             core._workspace:_on_file_changed("/root/.nvim/loomworks.user.json", new_user)
-            assert.equals("debug", core._workspace.user.active_profile)
+            assert.equals("debug", core._workspace._active_profile_key)
         end)
 
         it("updates cache data when cache file changes", function()
@@ -819,7 +823,11 @@ describe("Core", function()
             core._workspace:_on_file_changed("/root/loomworks.json", "not valid json {{{")
 
             -- Original project should still be there (no remerge on invalid JSON)
-            assert.is_not_nil(core._workspace.config.projects.App)
+            local found_app = false
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then found_app = true; break end
+            end
+            assert.is_true(found_app)
         end)
 
         it("emits active_set_changed when user file changes", function()
@@ -878,12 +886,12 @@ describe("Core", function()
                 configuration_sets = { debug = { App = "development" } },
             }, { active_profile = "debug" })
             core:setup({ root = "/root" })
-            assert.equals("debug", core._workspace.user.active_profile)
+            assert.equals("debug", core._workspace._active_profile_key)
 
             -- Simulate user file being deleted (nil content)
             core._workspace:_on_file_changed("/root/.nvim/loomworks.user.json", nil)
 
-            assert.is_nil(core._workspace.user.active_profile)
+            assert.is_nil(core._workspace._active_profile_key)
         end)
 
         it("defaults cache data when cache file content is nil", function()
@@ -946,7 +954,11 @@ describe("Core", function()
                 configuration_sets = { debug = { App = "development" } },
             })
             core:setup({ root = "/root" })
-            assert.is_nil(core._workspace.config.configuration_sets.release)
+            local found_release = false
+            for _, cs in pairs(core._workspace._config_sets) do
+                if cs.name == "release" then found_release = true end
+            end
+            assert.is_false(found_release)
 
             local new_config = h.make_config_json({
                 projects = { App = { typescript = {} } },
@@ -957,8 +969,18 @@ describe("Core", function()
             })
             core._workspace:_on_file_changed("/root/loomworks.json", new_config)
 
-            assert.is_not_nil(core._workspace.config.configuration_sets.release)
-            assert.equals("production", core._workspace.config.configuration_sets.release.App)
+            found_release = false
+            local release_app_variant = nil
+            for _, cs in pairs(core._workspace._config_sets) do
+                if cs.name == "release" then
+                    found_release = true
+                    for proj, variant in pairs(cs.mappings) do
+                        if proj.key == "App" then release_app_variant = variant end
+                    end
+                end
+            end
+            assert.is_true(found_release)
+            assert.equals("production", release_app_variant)
         end)
     end)
 

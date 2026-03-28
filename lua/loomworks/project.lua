@@ -417,13 +417,9 @@ function Project:rename_configuration(old_name, new_name, config_data)
     self.type_config.configurations[old_name] = nil
     self.type_config.configurations[new_name] = clean
 
-    -- Step 3: Update configuration_set domain objects + raw config
+    -- Step 3: Update configuration_set domain objects
     for cs in pairs(old_cs_mappings) do
         cs.mappings[self] = new_name
-        -- Keep raw config in sync for serialization
-        if ws.config.configuration_sets and ws.config.configuration_sets[cs.name] then
-            ws.config.configuration_sets[cs.name][self.key] = new_name
-        end
     end
 
     -- Save config to disk
@@ -439,9 +435,6 @@ function Project:rename_configuration(old_name, new_name, config_data)
         end
         for cs, old_val in pairs(old_cs_mappings) do
             cs.mappings[self] = old_val
-            if ws.config.configuration_sets and ws.config.configuration_sets[cs.name] then
-                ws.config.configuration_sets[cs.name][self.key] = old_val
-            end
         end
         return false, err
     end
@@ -527,8 +520,8 @@ function Project:rename_configuration(old_name, new_name, config_data)
                 end
             end
             -- Update active_profile if it was the old key
-            if ws.user.active_profile == old_pk then
-                ws.user.active_profile = new_pk
+            if ws._active_profile_key == old_pk then
+                ws._active_profile_key = new_pk
                 ws:_save_user()
             end
         end

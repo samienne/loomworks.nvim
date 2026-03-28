@@ -222,10 +222,12 @@ local function edit_project_configuration(project, config_name)
             if new_name == config_name or new_name == "" then return nil end
             local effects = {}
             -- Config sets that reference this variant
-            if ws.config.configuration_sets then
-                for set_name, mappings in pairs(ws.config.configuration_sets) do
-                    if mappings[project_key] == config_name then
-                        effects[#effects + 1] = "Config set '" .. set_name .. "' mapping → " .. new_name
+            for _, cs_obj in pairs(ws._config_sets) do
+                if cs_obj.mappings then
+                    for proj, variant in pairs(cs_obj.mappings) do
+                        if proj.key == project_key and variant == config_name then
+                            effects[#effects + 1] = "Config set '" .. cs_obj.name .. "' mapping → " .. new_name
+                        end
                     end
                 end
             end

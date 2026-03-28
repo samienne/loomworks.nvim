@@ -365,17 +365,19 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Activate this profile.
---- Writes to user.json and remerges directly.
+--- Sets workspace active profile fields and remerges.
 function Profile:activate()
-    self._workspace.user.active_profile = self.key
+    self._workspace._active_profile = self
+    self._workspace._active_profile_key = self.key
     self._workspace:_save_user()
     self._workspace:remerge()
 end
 
 --- Deactivate this profile if it is currently active.
 function Profile:deactivate()
-    if self._workspace.user.active_profile == self.key then
-        self._workspace.user.active_profile = nil
+    if self._workspace._active_profile_key == self.key then
+        self._workspace._active_profile = nil
+        self._workspace._active_profile_key = nil
         self._workspace:_save_user()
         self._workspace:remerge()
     end
@@ -396,18 +398,14 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Get the default LaunchTarget for this profile.
---- Resolves from user.json, falls back to loomworks.json profile definition.
+--- Resolves from the profile's stored descriptor, falls back to loomworks.json definition.
 --- @return loomworks.LaunchTarget|nil
 function Profile:default_target()
-    -- Check user.json first
-    local descriptor = self._workspace.user.default_target
-        and self._workspace.user.default_target[self.key]
+    -- Check profile-owned descriptor first (populated from user.json during sync)
+    local descriptor = self._default_target_descriptor
     -- Fall back to loomworks.json profile definition
-    if not descriptor and self._workspace.config.profiles then
-        local profile_def = self._workspace.config.profiles[self.key]
-        if profile_def then
-            descriptor = profile_def.default_target
-        end
+    if not descriptor and self.explicit_def then
+        descriptor = self.explicit_def.default_target
     end
     if not descriptor or not descriptor.project then
         return nil
@@ -421,25 +419,28 @@ function Profile:default_target()
     return LaunchTarget.new(self._workspace, self, descriptor)
 end
 
+--- Check if this profile has a user-set default target override.
+--- @return boolean
+function Profile:has_default_target_override()
+    return self._default_target_descriptor ~= nil
+end
+
 --- Set the default target for this profile.
 --- @param project loomworks.Project
 --- @param target_id? string opaque target identifier (module targets)
 --- @param launch_name? string launch config name (command launches)
 function Profile:set_default_target(project, target_id, launch_name)
-    self._workspace.user.default_target = self._workspace.user.default_target or {}
     local descriptor = { project = project.key }
     if target_id then descriptor.target = target_id end
     if launch_name then descriptor.launch = launch_name end
-    self._workspace.user.default_target[self.key] = descriptor
+    self._default_target_descriptor = descriptor
     self._workspace:_save_user()
 end
 
 --- Clear the default target for this profile.
 function Profile:clear_default_target()
-    if self._workspace.user.default_target then
-        self._workspace.user.default_target[self.key] = nil
-        self._workspace:_save_user()
-    end
+    self._default_target_descriptor = nil
+    self._workspace:_save_user()
 end
 
 -- ---------------------------------------------------------------------------
@@ -643,7 +644,7 @@ function Profile:plan_deletion()
         return a_key < b_key
     end)
 
-    local defined_in_config = self._workspace.config.profiles and self._workspace.config.profiles[self.key] or false
+    local defined_in_config = self.explicit_def and true or false
 
     return {
         items = items,

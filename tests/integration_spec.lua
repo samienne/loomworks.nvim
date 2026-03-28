@@ -112,8 +112,8 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
     }
 
     local ws = Workspace.new(mock_core, data)
-    ws:_cleanup_orphaned_skeletons()
-    ws:remerge()
+    ws:_cleanup_orphaned_skeletons(data.cache)
+    ws:remerge(data.config, data.cache)
     return ws, events_log
 end
 
@@ -143,9 +143,6 @@ describe("config set lifecycle", function()
             [frontend] = frontend:get_configuration("debug"),
         })
         assert.is_not_nil(cs)
-        assert.is_not_nil(ws.config.configuration_sets["Debug"])
-
-        -- Verify config set object was created
         assert.is_not_nil(h.find_config_set_in(ws:get_config_sets(),"Debug"))
 
         -- 2. Edit: change Frontend mapping
@@ -159,8 +156,9 @@ describe("config set lifecycle", function()
             { [app] = app:get_configuration("Release"), [frontend] = frontend:get_configuration("release") },
             edit_ctx.mappings)
         assert.is_true(ok)
-        assert.equals("Release", ws.config.configuration_sets["Debug"]["App"])
-        assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
+        local debug_cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        assert.equals("Release", h.cs_mapping(debug_cs, "App"))
+        assert.equals("release", h.cs_mapping(debug_cs, "Frontend"))
 
         -- 3. Rename: Debug → Production
         cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
@@ -169,8 +167,8 @@ describe("config set lifecycle", function()
             { [app] = app:get_configuration("Release"), [frontend] = frontend:get_configuration("release") },
             edit_ctx.mappings)
         assert.is_true(ok)
-        assert.is_nil(ws.config.configuration_sets["Debug"])
-        assert.is_not_nil(ws.config.configuration_sets["Production"])
+        assert.is_nil(h.find_config_set_in(ws:get_config_sets(), "Debug"))
+        assert.is_not_nil(h.find_config_set_in(ws:get_config_sets(), "Production"))
 
         -- 4. Delete
         local prod_cs = h.find_config_set_in(ws:get_config_sets(),"Production")
@@ -179,9 +177,8 @@ describe("config set lifecycle", function()
 
         ok = wv.execute_delete_config_set(ws, prod_cs)
         assert.is_true(ok)
-        -- Last set removed → configuration_sets is nil
-        assert.is_true(ws.config.configuration_sets == nil
-            or ws.config.configuration_sets["Production"] == nil)
+        -- Last set removed
+        assert.is_nil(h.find_config_set_in(ws:get_config_sets(), "Production"))
     end)
 
     it("create validates duplicate names", function()
@@ -216,7 +213,8 @@ describe("config set lifecycle", function()
             { [app] = app:get_configuration("Debug") }, -- Frontend removed
             edit_ctx.mappings)
         assert.is_true(ok)
-        assert.is_nil(ws.config.configuration_sets["Debug"]["Frontend"])
+        local debug_cs2 = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        assert.is_nil(h.cs_mapping(debug_cs2, "Frontend"))
     end)
 end)
 
@@ -238,7 +236,7 @@ describe("profile lifecycle", function()
         local profile = wv.execute_create_profile(cs, nil, true)
         assert.is_not_nil(profile)
         assert.equals("Debug", profile.key)
-        assert.equals("Debug", ws.user.active_profile)
+        assert.equals("Debug", ws._active_profile_key)
     end)
 
     it("create profile from config set with tool", function()
@@ -300,7 +298,7 @@ describe("profile lifecycle", function()
         assert.is_not_nil(cs)
         assert.is_nil(err)
         -- Config set was created in workspace
-        assert.is_not_nil(ws.config.configuration_sets["Debug"])
+        assert.is_not_nil(h.find_config_set_in(ws:get_config_sets(), "Debug"))
     end)
 
     it("resolve_config_set_choice passes through existing sets", function()
@@ -337,12 +335,22 @@ describe("project lifecycle", function()
         local ok, err = wv.execute_add_project(ws, "App", "cmake", nil, result, false)
         assert.is_true(ok)
         assert.is_not_nil(h.find_project_in(ws:get_projects(), "App"))
-        assert.equals("Debug", ws.config.configuration_sets["Debug"]["App"])
+        -- Check via domain objects
+        local debug_cs = nil
+        for _, cs in pairs(ws._config_sets) do
+            if cs.name == "Debug" then debug_cs = cs; break end
+        end
+        assert.is_not_nil(debug_cs)
+        local app_variant = nil
+        for proj, variant in pairs(debug_cs.mappings) do
+            if proj.key == "App" then app_variant = variant end
+        end
+        assert.equals("Debug", app_variant)
 
         -- Simulate cached state by injecting cache before remerge
         local ck = cache_mod.config_cache_key("App", "Debug")
-        ws.cache = {
-            _meta = ws._cache_meta or {},
+        local injected_cache = {
+            _meta = {},
             configurations = {
                 [ck] = {
                     project_key = "App", config_key = "Debug",
@@ -351,7 +359,7 @@ describe("project lifecycle", function()
                 },
             },
         }
-        ws:remerge()
+        ws:remerge(nil, injected_cache)
 
         -- Compute removal context
         local app = h.find_project_in(ws:get_projects(), "App")
@@ -487,7 +495,7 @@ describe("profile upgrade and downgrade", function()
         local cache = ws:_serialize_cache()
         assert.is_nil(cache.profiles["Debug"])
         assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"])
-        assert.equals("Debug:ninja-gcc-12", ws.user.active_profile)
+        assert.equals("Debug:ninja-gcc-12", ws._active_profile_key)
 
         -- Skeleton cache entry created for cmake project
         assert.is_not_nil(cache.configurations["App/Debug:ninja-gcc-12"])
@@ -549,7 +557,7 @@ describe("profile upgrade and downgrade", function()
         assert.is_nil(cache.profiles["Debug:ninja-gcc-12"])
         assert.is_not_nil(cache.profiles["Debug"])
         assert.is_nil(cache.profiles["Debug"].tools)
-        assert.equals("Debug", ws.user.active_profile)
+        assert.equals("Debug", ws._active_profile_key)
     end)
 
     it("pinned profiles are not affected by upgrade", function()
@@ -682,8 +690,7 @@ describe("orphan lifecycle", function()
         -- Delete the profile from cache → config becomes orphaned
         local temp_cache = ws:_serialize_cache()
         temp_cache.profiles["Debug"] = nil
-        ws.cache = temp_cache
-        ws:remerge()
+        ws:remerge(nil, temp_cache)
 
         local orphans = ws:get_orphaned_configs()
         assert.equals(1, #orphans)
@@ -736,7 +743,8 @@ describe("orphan lifecycle", function()
             { [frontend] = frontend:get_configuration("release") },
             edit_ctx.mappings)
         assert.is_true(ok)
-        assert.equals("release", ws.config.configuration_sets["Debug"]["Frontend"])
+        local debug_cs3 = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        assert.equals("release", h.cs_mapping(debug_cs3, "Frontend"))
 
         -- Frontend/debug is now orphaned (profile references "release", not "debug")
         local orphans = ws:get_orphaned_configs()
@@ -935,8 +943,8 @@ describe("config set rename", function()
         assert.is_true(ok)
 
         -- Old set gone, new set exists
-        assert.is_nil(ws.config.configuration_sets["debug"])
-        assert.is_not_nil(ws.config.configuration_sets["Debug"])
+        assert.is_nil(h.find_config_set_in(ws:get_config_sets(), "debug"))
+        assert.is_not_nil(h.find_config_set_in(ws:get_config_sets(), "Debug"))
 
         -- Cached profile points to new name
         assert.equals("Debug",
@@ -1028,7 +1036,8 @@ describe("configuration rename propagation", function()
         assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["DebugASAN"])
 
         -- Config set mapping updated
-        assert.equals("DebugASAN", ws.config.configuration_sets.debug.App)
+        local debug_cs_rename = h.find_config_set_in(ws:get_config_sets(), "debug")
+        assert.equals("DebugASAN", h.cs_mapping(debug_cs_rename, "App"))
     end)
 
     it("migrates cache entries and preserves build_dir", function()
@@ -1275,7 +1284,7 @@ describe("configuration rename propagation", function()
             },
         })
 
-        assert.equals("App/Debug-asan:ninja-gcc", ws.user.active_profile)
+        assert.equals("App/Debug-asan:ninja-gcc", ws._active_profile_key)
 
         local project = h.find_project_in(ws:get_projects(), "App")
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
@@ -1284,7 +1293,7 @@ describe("configuration rename propagation", function()
         assert.is_true(ok)
 
         -- Active profile updated to new key
-        assert.equals("App/DebugASAN:ninja-gcc", ws.user.active_profile)
+        assert.equals("App/DebugASAN:ninja-gcc", ws._active_profile_key)
     end)
 
     it("rename updates Configuration domain objects and PP resolves new name", function()
@@ -1581,7 +1590,8 @@ describe("configuration rename propagation", function()
         assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.new_cfg)
 
         -- Config set mapping updated atomically
-        assert.equals("new_cfg", ws.config.configuration_sets.debug.App)
+        local debug_cs_exec = h.find_config_set_in(ws:get_config_sets(), "debug")
+        assert.equals("new_cfg", h.cs_mapping(debug_cs_exec, "App"))
     end)
 end)
 
@@ -1624,7 +1634,7 @@ describe("end-to-end workspace setup", function()
 
         local profile = wv.execute_create_profile(cs, nil, true)
         assert.is_not_nil(profile)
-        assert.equals("Debug", ws.user.active_profile)
+        assert.equals("Debug", ws._active_profile_key)
 
         -- Profile has correct projects
         local pps = profile:projects()

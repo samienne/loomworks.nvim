@@ -64,8 +64,8 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
     }
 
     local ws = Workspace.new(mock_core, data)
-    ws:_cleanup_orphaned_skeletons()
-    ws:remerge()
+    ws:_cleanup_orphaned_skeletons(data.cache)
+    ws:remerge(data.config, data.cache)
     return ws, events_log, notifications
 end
 
@@ -151,8 +151,7 @@ describe("build dir refs", function()
             type = "cmake", variant = "Release", tool_key = "ninja-gcc",
             state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc",
         }
-        ws.cache = temp_cache
-        ws:remerge()
+        ws:remerge(nil, temp_cache)
 
         local refs = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
         assert.equals(2, #refs)

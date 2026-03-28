@@ -186,8 +186,8 @@ function Core:_on_files_read(root, paths, results)
     -- Create Workspace instance with registries
     self._workspace = Workspace.new(self, data)
 
-    self._workspace:_cleanup_orphaned_skeletons()
-    self._workspace:remerge()
+    self._workspace:_cleanup_orphaned_skeletons(data.cache)
+    self._workspace:remerge(data.config, data.cache)
     self._state = "initialized"
     self._deps.events.emit("workspace_changed", self._workspace)
 
@@ -568,9 +568,9 @@ function Core:_build_referenced_set()
 end
 
 --- @see loomworks.Workspace._cleanup_orphaned_skeletons
-function Core:_cleanup_orphaned_skeletons()
+function Core:_cleanup_orphaned_skeletons(raw_cache)
     if not self._workspace then return end
-    self._workspace:_cleanup_orphaned_skeletons()
+    self._workspace:_cleanup_orphaned_skeletons(raw_cache)
 end
 
 return Core

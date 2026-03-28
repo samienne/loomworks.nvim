@@ -87,7 +87,10 @@ function M.open(root)
     local function open_mapping_dialog(type_info, key, path, config_names, keyed_tools)
         local lw = require("loomworks")
         local ws = lw.get_workspace()
-        local raw_config_sets = ws.config.configuration_sets
+        local raw_config_sets = {}
+        for _, cs_obj in pairs(ws._config_sets) do
+            raw_config_sets[cs_obj.name] = cs_obj:raw_mappings()
+        end
         local mod = modules.get(type_info.type)
         local has_keyed = mod and mod.has_keyed_tools or false
 

@@ -76,20 +76,15 @@ end
 --- @return boolean ok, string|nil err
 function ConfigurationSet:update_mapping(project, variant)
     local ws = self._workspace
-    if not ws.config.configuration_sets or not ws.config.configuration_sets[self.name] then
+    if self._removed then
         return false, "configuration set '" .. self.name .. "' not found"
     end
 
-    local project_key = project.key
-    local old = ws.config.configuration_sets[self.name][project_key]
-    ws.config.configuration_sets[self.name][project_key] = variant
-
-    -- Update domain object
+    local old = self.mappings[project]
     self.mappings[project] = variant
 
     local ok, err = ws:_save_config()
     if not ok then
-        ws.config.configuration_sets[self.name][project_key] = old
         self.mappings[project] = old
         return false, err
     end

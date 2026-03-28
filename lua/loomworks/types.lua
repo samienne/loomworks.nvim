@@ -15,10 +15,11 @@
 --- @field root string absolute path to workspace root
 --- @field name string workspace display name
 --- @field config loomworks.Config parsed loomworks.json
---- @field user loomworks.UserData user preferences (.nvim/loomworks.user.json)
 --- @field cache loomworks.CacheData build state (.nvim/loomworks.cache.json)
 --- @field cache_version_mismatch? boolean set during assembly, checked by Core.setup()
 --- @field user_version_mismatch? boolean set during assembly, checked by Core.setup()
+--- @field _active_profile_key? string active profile key (persists across remerge)
+--- @field _default_target_data? table<string, table> profile_key -> descriptor (populated from user.json)
 
 --- @class loomworks.Config
 --- @field name? string workspace name override (falls back to dir name)
