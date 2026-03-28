@@ -113,7 +113,7 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
 
     local ws = Workspace.new(mock_core, data)
     ws:_cleanup_orphaned_skeletons(data.cache)
-    ws:remerge(data.config, data.cache)
+    ws:remerge(data.config, data.cache, data.user)
     return ws, events_log
 end
 
@@ -237,6 +237,104 @@ describe("profile lifecycle", function()
         assert.is_not_nil(profile)
         assert.equals("Debug", profile.key)
         assert.equals("Debug", ws._active_profile_key)
+    end)
+
+    it("materialized profile has projects and config units from config set", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", Frontend = "debug" },
+            },
+        })
+
+        local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        assert.is_not_nil(cs)
+
+        -- Materialize profile (no tools)
+        local profile = wv.execute_create_profile(cs, nil, true)
+        assert.is_not_nil(profile)
+        assert.equals("Debug", profile.key)
+
+        -- Profile must have ProfileProjects for both config set projects
+        local pps = profile:projects()
+        assert.equals(2, #pps)
+
+        -- Each PP must have a resolved project and config unit
+        local found_app, found_frontend = false, false
+        for _, pp in ipairs(pps) do
+            assert.is_not_nil(pp._project, "PP must have resolved project")
+            assert.is_not_nil(pp._config_unit, "PP must have config unit")
+            assert.is_not_nil(pp._config_unit._config_key, "ConfigUnit must have config_key")
+            if pp._project.key == "App" then
+                found_app = true
+                assert.equals("Debug", pp:variant_name())
+            elseif pp._project.key == "Frontend" then
+                found_frontend = true
+                assert.equals("debug", pp:variant_name())
+            end
+        end
+        assert.is_true(found_app, "Profile must include App project")
+        assert.is_true(found_frontend, "Profile must include Frontend project")
+
+        -- Config units must be registered in workspace
+        local app_unit, frontend_unit
+        for _, unit in pairs(ws._config_units) do
+            if unit._init_project_key == "App" then app_unit = unit end
+            if unit._init_project_key == "Frontend" then frontend_unit = unit end
+        end
+        assert.is_not_nil(app_unit, "App ConfigUnit must be registered")
+        assert.is_not_nil(frontend_unit, "Frontend ConfigUnit must be registered")
+
+        -- Cache must contain entries for both
+        local cache = ws:_serialize_cache()
+        local found_configs = 0
+        for _, entry in pairs(cache.configurations) do
+            if entry.project_key == "App" or entry.project_key == "Frontend" then
+                found_configs = found_configs + 1
+            end
+        end
+        assert.equals(2, found_configs, "Cache must have entries for both projects")
+    end)
+
+    it("materialized profile with tool has correct tool-qualified config units", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", Frontend = "debug" },
+            },
+        })
+
+        local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        local tool_entry = {
+            tool_key = "ninja-gcc",
+            tool_data = { generator = "Ninja" },
+            tool_label = "Ninja GCC",
+            tool_mod_type = "cmake",
+        }
+
+        local profile = wv.execute_create_profile(cs, tool_entry, true)
+        assert.is_not_nil(profile)
+
+        local pps = profile:projects()
+        assert.equals(2, #pps)
+
+        -- App (cmake) should have tool-qualified config key
+        -- Frontend (ets) should have bare config key
+        for _, pp in ipairs(pps) do
+            if pp._project.key == "App" then
+                assert.truthy(pp._config_unit:config_key():find("ninja%-gcc"),
+                    "cmake project should have tool-qualified config key")
+            elseif pp._project.key == "Frontend" then
+                assert.equals("debug", pp._config_unit:config_key(),
+                    "ets project should have bare config key")
+            end
+        end
     end)
 
     it("create profile from config set with tool", function()

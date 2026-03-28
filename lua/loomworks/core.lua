@@ -187,7 +187,7 @@ function Core:_on_files_read(root, paths, results)
     self._workspace = Workspace.new(self, data)
 
     self._workspace:_cleanup_orphaned_skeletons(data.cache)
-    self._workspace:remerge(data.config, data.cache)
+    self._workspace:remerge(data.config, data.cache, data.user)
     self._state = "initialized"
     self._deps.events.emit("workspace_changed", self._workspace)
 

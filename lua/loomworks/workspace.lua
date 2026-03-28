@@ -204,14 +204,11 @@ function Workspace.new(core, data)
     self.cache_version_mismatch = data.cache_version_mismatch
     self.user_version_mismatch = data.user_version_mismatch
 
-    -- User state: active profile key (string persists across remerges)
-    -- and default_target map (populated on Profile objects during sync)
-    self._active_profile_key = data.user and data.user.active_profile or nil
-    self._default_target_data = data.user and data.user.default_target or nil
-
-    -- Object registries (moved from Core)
+    -- Object registries
     self._active_set = nil
     self._active_profile = nil
+    self._active_profile_key = nil
+    self._default_target_data = nil
     self._config_units = {}
     self._config_sets = {}
     self._profiles = {}
@@ -348,12 +345,24 @@ end
 --- NOT called after mutations — mutations update objects directly.
 --- @param raw_config? table parsed config data (nil = serialize from domain objects)
 --- @param raw_cache? table parsed cache data (nil = serialize from domain objects)
-function Workspace:remerge(raw_config, raw_cache)
+--- @param raw_user? table parsed user data (nil = use current state)
+function Workspace:remerge(raw_config, raw_cache, raw_user)
     local config = raw_config or self:_config_from_objects()
     local cache = raw_cache or self:_serialize_cache()
 
+    -- Extract user state: if raw user data is provided, use it (even if fields are nil);
+    -- otherwise use current domain state
+    local active_profile_key, default_target_data
+    if raw_user then
+        active_profile_key = raw_user.active_profile
+        default_target_data = raw_user.default_target
+    else
+        active_profile_key = self._active_profile_key
+        default_target_data = self._default_target_data
+    end
+
     local active_set, all_profile_defs = self._core._deps.merge.merge(
-        config, self._active_profile_key, cache, self.root, self._tools_by_type)
+        config, active_profile_key, cache, self.root, self._tools_by_type)
     self._active_set = active_set
 
     local current = {
@@ -369,7 +378,7 @@ function Workspace:remerge(raw_config, raw_cache)
         modules_registry = self._core._deps.modules,
         normalize = self._core._deps.normalize,
         tools_by_type = self._tools_by_type,
-        default_target_data = self._default_target_data,
+        default_target_data = default_target_data,
     })
 
     self._modules = result.modules
@@ -379,8 +388,9 @@ function Workspace:remerge(raw_config, raw_cache)
     self._config_units = result.config_units
     self._profile_projects = result.profile_projects
     self._build_dir_refs = result.build_dir_refs
-
-    self:_resolve_active_profile()
+    self._active_profile = result.active_profile
+    self._active_profile_key = active_profile_key
+    self._default_target_data = default_target_data
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -860,6 +870,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
         configuration_set = set_name,
         tools = tools,
         _cached_configurations = profile_configurations,
+        _config_set_ref = config_set,
     })
     self._profiles[#self._profiles + 1] = profile
 
@@ -2501,11 +2512,8 @@ function Workspace:_on_file_changed(path, content)
                 -- Update workspace data fields in place
                 self.root = data.root
                 self.name = data.name
-                -- Extract user state from assembled data
-                self._active_profile_key = data.user and data.user.active_profile or nil
-                self._default_target_data = data.user and data.user.default_target or nil
                 self:_scan_tools_async()
-                self:remerge(data.config, data.cache)
+                self:remerge(data.config, data.cache, data.user)
                 self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
             else
                 self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
@@ -2515,11 +2523,9 @@ function Workspace:_on_file_changed(path, content)
         end
 
     elseif path == paths.user then
-        -- user.json changed: extract user state and remerge
+        -- user.json changed: pass raw user data through remerge
         local user_data = content and user_mod.parse(content) or user_mod.default()
-        self._active_profile_key = user_data.active_profile
-        self._default_target_data = user_data.default_target
-        self:remerge()
+        self:remerge(nil, nil, user_data)
 
     elseif path == paths.cache then
         -- cache.json changed: update cache data and remerge

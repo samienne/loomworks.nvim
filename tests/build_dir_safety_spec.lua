@@ -65,7 +65,7 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
 
     local ws = Workspace.new(mock_core, data)
     ws:_cleanup_orphaned_skeletons(data.cache)
-    ws:remerge(data.config, data.cache)
+    ws:remerge(data.config, data.cache, data.user)
     return ws, events_log, notifications
 end
 

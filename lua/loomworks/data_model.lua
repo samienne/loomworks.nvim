@@ -513,6 +513,17 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local profile_projects = sync_profile_projects(ctx, workspace)
     local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
 
+    -- Resolve active profile from the active set name
+    local active_profile = nil
+    if active_set and active_set.name then
+        for _, p in pairs(profiles) do
+            if p.key == active_set.name then
+                active_profile = p
+                break
+            end
+        end
+    end
+
     return {
         modules = modules,
         projects = projects,
@@ -521,6 +532,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
         config_units = config_units,
         profile_projects = profile_projects,
         build_dir_refs = build_dir_refs,
+        active_profile = active_profile,
     }
 end
 
