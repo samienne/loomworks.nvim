@@ -173,19 +173,21 @@ end
 --- @field cache_version_mismatch boolean
 --- @field user_version_mismatch boolean
 --- @field _active_profile_key string|nil persisted active profile key
+--- @field _active_profile loomworks.Profile|nil resolved active profile object
 --- @field _default_target_data table|nil raw default_target map from user.json
 --- @field _active_set loomworks.ActiveSet|nil
---- @field _config_units table<string, loomworks.ConfigUnit> "project\0config" -> unit
---- @field _config_sets table<string, loomworks.ConfigurationSet> name -> ConfigurationSet
---- @field _profiles table<string, loomworks.Profile>
---- @field _projects table<string, loomworks.Project>
---- @field _profile_projects table<string, loomworks.ProfileProject> "profile\0project" -> ProfileProject
+--- @field _modules loomworks.Module[] module domain objects
+--- @field _config_units loomworks.ConfigUnit[] all config units
+--- @field _config_sets loomworks.ConfigurationSet[] all configuration sets
+--- @field _profiles loomworks.Profile[] all profiles
+--- @field _projects loomworks.Project[] all projects in active set
+--- @field _profile_projects loomworks.ProfileProject[] all profile-project pairs
 --- @field _operations loomworks.Operation[] active operations
---- @field _tools_by_type table<string, loomworks.DetectedTool[]> tools per module type
+--- @field _tools_by_type table<string, loomworks.DetectedTool[]> detected tools per module type
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"
 --- @field _tool_waiters function[]
 --- @field _delete_waiters function[]
---- @field _build_dir_refs table<string, table<string, true>> normalized_build_dir -> set of cache_keys
+--- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
 local Workspace = {}
 Workspace.__index = Workspace

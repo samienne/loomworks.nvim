@@ -552,18 +552,19 @@ function M.execute_rename_config_set(ws, cs, new_name, mappings)
         if v then clean[k] = v end
     end
 
-    -- Migrate cached profiles that reference old name (before removing old set)
+    local merge_mod = require("loomworks.merge")
+
+    -- Migrate cached profiles that reference old name (before removing old set).
+    -- Update both _configuration_set_name and the profile key.
     local old_name = cs.name
     for _, profile in pairs(ws._profiles) do
         if profile._configuration_set_name == old_name then
+            local old_key = profile.key
             profile._configuration_set_name = new_name
-        end
-    end
-    -- Keep cache in sync during transition
-    if ws.cache and ws.cache.profiles then
-        for _, profile_data in pairs(ws.cache.profiles) do
-            if profile_data.configuration_set == old_name then
-                profile_data.configuration_set = new_name
+            profile.key = merge_mod.profile_key(new_name, profile:tools_data())
+            -- Track active profile rename
+            if ws._active_profile_key == old_key then
+                ws._active_profile_key = profile.key
             end
         end
     end
@@ -575,6 +576,17 @@ function M.execute_rename_config_set(ws, cs, new_name, mappings)
     -- Create new set
     local new_cs, add_err = ws:add_configuration_set(new_name, clean)
     if not new_cs then return false, add_err end
+
+    -- Reconnect profiles to the new ConfigurationSet and rebuild PPs
+    for _, profile in pairs(ws._profiles) do
+        if profile._configuration_set_name == new_name then
+            profile._config_set_ref = new_cs
+            ws:_rebuild_profile_projects_for(profile)
+        end
+    end
+    ws:_resolve_active_profile()
+    ws:_save_cache()
+    ws:_save_user()
 
     return true
 end

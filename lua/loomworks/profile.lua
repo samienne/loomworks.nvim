@@ -5,10 +5,12 @@
 -- ========================== ProfileProject ==========================
 
 --- @class loomworks.ProfileProject
---- @field _configuration loomworks.Configuration|nil resolved Configuration domain object
 --- @field _workspace loomworks.Workspace
---- @field _profile loomworks.Profile direct reference to parent profile
---- @field _project loomworks.Project|nil direct reference to project object
+--- @field _init_project_key string project key for identity and fallback
+--- @field _profile loomworks.Profile parent profile
+--- @field _project loomworks.Project|nil resolved project
+--- @field _configuration loomworks.Configuration|nil resolved configuration
+--- @field _config_unit loomworks.ConfigUnit|nil resolved config unit
 --- @field _removed boolean
 local ProfileProject = {}
 ProfileProject.__index = ProfileProject
@@ -135,20 +137,29 @@ end
 -- ========================== Profile ==========================
 
 --- @class loomworks.Profile
---- @field key string profile key
---- @field _tool_objects? table<loomworks.Module, loomworks.Tool> direct Tool references keyed by Module
---- @field explicit boolean
---- @field explicit_def? table raw definition from loomworks.json (for serialization)
---- @field mappings? table<string, string> project_key -> variant name
---- @field orphaned_set boolean true if configuration_set no longer exists in config
+--- @field key string profile key (e.g. "Debug" or "Debug:ninja-gcc-12")
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
+--- Data fields (set during _apply):
+--- @field _configuration_set_name string|nil set name for set-based profiles
+--- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
+--- @field _cached_configurations string[]|nil cache key array (fallback for orphaned profiles)
+--- @field explicit boolean true if defined in loomworks.json
+--- @field explicit_def table|nil raw definition from loomworks.json
+--- @field _default_target_descriptor table|nil user.json default target for this profile
+--- Resolved references (set during _apply):
+--- @field _tool_objects table<loomworks.Module, loomworks.Tool>|nil
+--- @field _config_set_ref loomworks.ConfigurationSet|nil
+--- Computed fields:
+--- @field mappings table<string, string>|nil project_key -> variant name
+--- @field orphaned_set boolean true if configuration_set no longer in config
+--- @field _valid_variants table<string, boolean> precomputed variant set
+--- Child objects (built during sync/mutation):
 --- @field _projects_list loomworks.ProfileProject[] sorted by dependency order
 --- @field _projects_by_key table<string, loomworks.ProfileProject> project_key -> PP
---- @field _config_set_ref? loomworks.ConfigurationSet direct reference, resolved during _update
---- @field _valid_variants table<string, boolean> precomputed variant set
---- @field _operations loomworks.Operation[] active operations on this profile
---- @field _last_operation? { message: string, success: boolean } last completed operation result
+--- Runtime state:
+--- @field _operations loomworks.Operation[] active operations
+--- @field _last_operation { message: string, success: boolean }|nil
 local Profile = {}
 Profile.__index = Profile
 

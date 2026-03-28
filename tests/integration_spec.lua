@@ -181,6 +181,61 @@ describe("config set lifecycle", function()
         assert.is_nil(h.find_config_set_in(ws:get_config_sets(), "Production"))
     end)
 
+    it("renaming config set updates profile key and survives round-trip", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Frontend = { ets = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", Frontend = "debug" },
+            },
+        })
+
+        local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+
+        -- Materialize a profile for "Debug" config set
+        local profile = wv.execute_create_profile(cs, nil, true)
+        assert.is_not_nil(profile)
+        assert.equals("Debug", profile.key)
+        assert.equals(2, #profile:projects())
+
+        -- Rename config set: Debug → Release
+        cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local frontend = h.find_project_in(ws:get_projects(), "Frontend")
+        local ok = wv.execute_edit_config_set(cs, "Release",
+            { [app] = app:get_configuration("Debug"), [frontend] = frontend:get_configuration("debug") },
+            edit_ctx.mappings)
+        assert.is_true(ok)
+
+        -- Config set should be renamed
+        assert.is_nil(h.find_config_set_in(ws:get_config_sets(), "Debug"))
+        local new_cs = h.find_config_set_in(ws:get_config_sets(), "Release")
+        assert.is_not_nil(new_cs)
+
+        -- Profile key must have updated to match new set name
+        local new_profile = h.find_profile(ws:get_profiles(), "Release")
+        assert.is_not_nil(new_profile, "Profile key should be renamed to 'Release'")
+        assert.is_nil(h.find_profile(ws:get_profiles(), "Debug"),
+            "Old profile key 'Debug' should no longer exist")
+
+        -- Profile must still have its projects
+        assert.equals(2, #new_profile:projects())
+
+        -- Active profile key must track the rename
+        assert.equals("Release", ws._active_profile_key)
+
+        -- Round-trip: serialize cache and simulate reload
+        local cache = ws:_serialize_cache()
+        assert.is_not_nil(cache.profiles["Release"],
+            "Serialized cache should have profile under new key 'Release'")
+        assert.is_nil(cache.profiles["Debug"],
+            "Serialized cache should not have profile under old key 'Debug'")
+        assert.equals("Release", cache.profiles["Release"].configuration_set)
+    end)
+
     it("create validates duplicate names", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
@@ -1044,9 +1099,14 @@ describe("config set rename", function()
         assert.is_nil(h.find_config_set_in(ws:get_config_sets(), "debug"))
         assert.is_not_nil(h.find_config_set_in(ws:get_config_sets(), "Debug"))
 
-        -- Cached profile points to new name
+        -- Profile key must have been renamed alongside the set
+        local cache = ws:_serialize_cache()
+        assert.is_nil(cache.profiles["debug:ninja-gcc-12"],
+            "old profile key should be gone")
+        assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"],
+            "profile key should use new set name")
         assert.equals("Debug",
-            ws:_serialize_cache().profiles["debug:ninja-gcc-12"].configuration_set)
+            cache.profiles["Debug:ninja-gcc-12"].configuration_set)
     end)
 end)
 

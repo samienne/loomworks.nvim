@@ -71,7 +71,11 @@ Before merging ANY branch to master, verify:
 3. **README.md** — user-facing changes are covered
 4. **No discrepancies** — the three documents agree with each other and with
    the code being merged
-5. **Tests pass** — `make test`
+5. **Type annotations** — all LuaCATS `@class`/`@field` annotations affected
+   by the changes are up to date. No stale fields, no missing new fields.
+   Domain object annotations live in the implementation file, not types.lua.
+6. **Comments** — comments near changed lines are still accurate
+7. **Tests pass** — `make test`
 
 **Do not merge if documentation is out of sync.** Fix the docs first, then
 merge. If the user does not ask for this check, remind them before merging.
@@ -188,7 +192,10 @@ These are implementation-specific details not covered by the spec or architectur
   `_config_units`, `_profile_projects` are arrays after refresh. Runtime
   callers iterate with `pairs()` or use `find_*` helpers (`find_project(key)`,
   `find_profile(key)`, `find_config_set(name)`, `find_module(mod_type)`).
-- `types.lua` defines LuaCATS type annotations (data shapes, not runtime code)
+- `types.lua` defines LuaCATS type annotations for serialization data shapes,
+  interfaces, and aliases. Domain object `@class` annotations live in the
+  implementation file (e.g., `loomworks.ConfigUnit` in config_unit.lua).
+  Never duplicate domain object classes in types.lua.
 - init.lua is thin facade; core.lua is infrastructure; status.lua is pure rendering
 - Progress tracking: ninja parser, operation timing, weighted aggregate
 - Atomic writes on Windows: rename can fail if file is open; implement retry with short sleep

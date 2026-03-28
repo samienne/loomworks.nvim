@@ -3,37 +3,37 @@
 --- Owns the running/deleting state and provides a single derived state value.
 --- Multiple profiles may reference the same ConfigUnit.
 
-local cache_mod = require("loomworks.cache")
-
 --- @class loomworks.ConfigUnit
 --- @field id string cache dict key (identity)
---- @field _tool? loomworks.Tool direct reference to Tool domain object
---- @field _configuration? loomworks.Configuration direct reference to Configuration domain object
 --- @field _workspace loomworks.Workspace
+--- @field _init_project_key string|nil hint for project resolution
+--- References (resolved during _apply):
+--- @field _project loomworks.Project|nil
+--- @field _tool loomworks.Tool|nil
+--- @field _configuration loomworks.Configuration|nil
+--- First-class data fields (from cache, mutated at runtime):
+--- @field state_value loomworks.Status|nil
+--- @field build_dir_value string|nil
+--- @field last_configured string|nil ISO 8601 timestamp
+--- @field last_built string|nil ISO 8601 timestamp
+--- @field cmake_info loomworks.CachedCmakeInfo|nil
+--- @field _config_key string|nil opaque cache key
+--- @field _variant string|nil configuration variant name
+--- @field _tool_key string|nil tool identifier
+--- @field _tool_data table|nil module-specific tool data
+--- Runtime state (never touched by _apply):
 --- @field _task_id number|nil current overseer task ID
---- @field _last_task_id number|nil most recent overseer task ID (persists after completion)
---- @field _action string|nil "configure" or "build" while a task is running
+--- @field _last_task_id number|nil most recent overseer task ID
+--- @field _action string|nil "configure" or "build" while running
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
 --- @field _deleting boolean
 --- @field _deleting_reason "deleting"|"cleaning"|nil
 --- @field _listeners function[]
 --- @field _removed boolean
---- @field _project loomworks.Project|nil direct reference to project object
---- @field targets? table<string, loomworks.CachedTarget> runtime-only, from parse_file_api
+--- @field targets table<string, loomworks.Target>|nil runtime-only
 local ConfigUnit = {}
 ConfigUnit.__index = ConfigUnit
-
---- @alias loomworks.ConfigUnitState
---- | "unconfigured"
---- | "configuring"
---- | "configured"
---- | "building"
---- | "built"
---- | "configure_failed"
---- | "build_failed"
---- | "deleting"
---- | "unknown"
 
 --- Create a new ConfigUnit (shell only — call _apply(data) to resolve references).
 --- @param workspace loomworks.Workspace
