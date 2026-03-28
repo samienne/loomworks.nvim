@@ -417,13 +417,9 @@ function Project:rename_configuration(old_name, new_name, config_data)
     self.type_config.configurations[old_name] = nil
     self.type_config.configurations[new_name] = clean
 
-    -- Step 3: Update configuration_set domain objects + raw config
+    -- Step 3: Update configuration_set domain objects
     for cs in pairs(old_cs_mappings) do
         cs.mappings[self] = new_name
-        -- Keep raw config in sync (needed by _refresh_after_cache_change)
-        if ws.config.configuration_sets and ws.config.configuration_sets[cs.name] then
-            ws.config.configuration_sets[cs.name][self.key] = new_name
-        end
     end
 
     -- Save config to disk
@@ -439,67 +435,93 @@ function Project:rename_configuration(old_name, new_name, config_data)
         end
         for cs, old_val in pairs(old_cs_mappings) do
             cs.mappings[self] = old_val
-            if ws.config.configuration_sets and ws.config.configuration_sets[cs.name] then
-                ws.config.configuration_sets[cs.name][self.key] = old_val
-            end
         end
         return false, err
     end
 
-    -- Step 4: Migrate cache entries
+    -- Step 4: Migrate cache entries (ConfigUnit objects + cache)
     local cache_rename_map = {} -- old_cache_key -> new_cache_key
-    if ws.cache.configurations then
-        local to_migrate = {}
-        for cache_key, entry in pairs(ws.cache.configurations) do
-            if entry.project_key == self.key and entry.variant == old_name then
-                to_migrate[#to_migrate + 1] = { cache_key = cache_key, entry = entry }
-            end
+    local to_migrate = {}
+    for _, unit in pairs(ws._config_units) do
+        if unit._project == self and unit._variant
+                and unit._variant == old_name then
+            to_migrate[#to_migrate + 1] = unit
         end
-        for _, item in ipairs(to_migrate) do
-            local entry = item.entry
-            local new_config_key = ws._core._deps.merge.build_config_key(new_name, entry.tool_key)
-            local new_cache_key = ws._core._deps.cache.config_cache_key(self.key, new_config_key)
-            -- Move entry to new key with updated fields
-            entry.variant = new_name
-            entry.config_key = new_config_key
-            ws.cache.configurations[new_cache_key] = entry
-            ws.cache.configurations[item.cache_key] = nil
-            cache_rename_map[item.cache_key] = new_cache_key
+    end
+    for _, unit in ipairs(to_migrate) do
+        local old_config_key = unit._config_key
+        local new_config_key = ws._core._deps.merge.build_config_key(new_name, unit._tool_key)
+        local new_cache_key = ws._core._deps.cache.config_cache_key(self.key, new_config_key)
+        -- Update first-class fields
+        unit._variant = new_name
+        unit._config_key = new_config_key
+        -- Update ConfigUnit identity
+        local old_id = unit.id
+        unit.id = new_cache_key
+        cache_rename_map[old_id] = new_cache_key
+        -- Update Project.cached_configurations (was previously done via shared _cached table mutation)
+        if old_config_key and self.cached_configurations then
+            local entry = self.cached_configurations[old_config_key]
+            if entry then
+                self.cached_configurations[old_config_key] = nil
+                entry.variant = new_name
+                entry.config_key = new_config_key
+                self.cached_configurations[new_config_key] = entry
+            end
         end
     end
 
-    -- Step 5: Update profiles — configurations arrays, pinned mappings, and pinned profile keys.
-    -- Note: pinned_key(project_key, config_key) produces the same string as
-    -- config_cache_key(project_key, config_key) — both are "project_key/config_key".
-    -- So cache_rename_map doubles as the pinned profile rename map.
-    if ws.cache.profiles then
+    -- Step 5: Update profiles — _cached_configurations, pinned mappings, and pinned profile keys.
+    if next(cache_rename_map) then
         local profile_rekeys = {} -- old_profile_key -> new_profile_key
-        for profile_key, profile_data in pairs(ws.cache.profiles) do
-            -- Update configurations arrays (cache key references)
-            if profile_data.configurations and next(cache_rename_map) then
-                for i, ck in ipairs(profile_data.configurations) do
+        for _, profile in pairs(ws._profiles) do
+            -- Update _cached_configurations arrays
+            if profile._cached_configurations then
+                for i, ck in ipairs(profile._cached_configurations) do
                     if cache_rename_map[ck] then
-                        profile_data.configurations[i] = cache_rename_map[ck]
+                        profile._cached_configurations[i] = cache_rename_map[ck]
                     end
                 end
             end
             -- Update pinned profile mappings (variant references)
-            if profile_data.mappings and profile_data.mappings[self.key] == old_name then
-                profile_data.mappings[self.key] = new_name
+            if profile.mappings and profile.mappings[self.key] == old_name then
+                profile.mappings[self.key] = new_name
             end
             -- Rekey pinned profiles (pinned key == cache key format)
-            if cache_rename_map[profile_key] then
-                profile_rekeys[profile_key] = cache_rename_map[profile_key]
+            if cache_rename_map[profile.key] then
+                profile_rekeys[profile.key] = cache_rename_map[profile.key]
             end
         end
-        -- Apply profile rekeys
+        -- Apply profile rekeys (domain objects + cache)
         for old_pk, new_pk in pairs(profile_rekeys) do
-            local data = ws.cache.profiles[old_pk]
-            ws.cache.profiles[old_pk] = nil
-            ws.cache.profiles[new_pk] = data
+            for _, profile in pairs(ws._profiles) do
+                if profile.key == old_pk then
+                    profile.key = new_pk
+                    break
+                end
+            end
+            -- Keep cache in sync during transition
+            if ws.cache and ws.cache.profiles then
+                local data = ws.cache.profiles[old_pk]
+                if data then
+                    ws.cache.profiles[old_pk] = nil
+                    ws.cache.profiles[new_pk] = data
+                    -- Also update cache profile data
+                    if data.configurations and next(cache_rename_map) then
+                        for i, ck in ipairs(data.configurations) do
+                            if cache_rename_map[ck] then
+                                data.configurations[i] = cache_rename_map[ck]
+                            end
+                        end
+                    end
+                    if data.mappings and data.mappings[self.key] == old_name then
+                        data.mappings[self.key] = new_name
+                    end
+                end
+            end
             -- Update active_profile if it was the old key
-            if ws.user.active_profile == old_pk then
-                ws.user.active_profile = new_pk
+            if ws._active_profile_key == old_pk then
+                ws._active_profile_key = new_pk
                 ws:_save_user()
             end
         end
@@ -507,21 +529,13 @@ function Project:rename_configuration(old_name, new_name, config_data)
 
     ws:_save_cache()
 
-    -- Step 6: Rename running ConfigUnits so they follow the new cache keys.
-    -- Without this, a running ConfigUnit keeps the old id, sync creates a
-    -- new (non-running) unit for the new key, and ProfileProjects lose their
-    -- running state reference.
-    if next(cache_rename_map) then
-        for _, unit in pairs(ws._config_units) do
-            local new_id = cache_rename_map[unit.id]
-            if new_id then
-                unit.id = new_id
-            end
-        end
-    end
-
     self:_refresh_configurations()
-    ws:_refresh_after_cache_change()
+    -- Rebuild PPs for all profiles (rename may have changed keys, mappings, and config units)
+    for _, profile in pairs(ws._profiles) do
+        ws:_rebuild_profile_projects_for(profile)
+    end
+    ws:_sync_build_dir_refs()
+    ws:_resolve_active_profile()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true
 end

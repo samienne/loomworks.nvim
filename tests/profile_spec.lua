@@ -30,12 +30,7 @@ describe("Profile", function()
                 configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
             })
         end
-        -- Ensure ConfigUnits exist for cached configurations so ProfileProject resolves them
-        if core.cache and core.cache.configurations then
-            for id, entry in pairs(core.cache.configurations) do
-                h.ensure_config_unit_by_id(core, id, entry.project_key)
-            end
-        end
+        -- ConfigUnits are created via ensure_config_unit_by_id when needed
         local data = vim.tbl_deep_extend("force", {
             configuration_set = "debug",
             tools = nil,
@@ -321,12 +316,7 @@ describe("Profile", function()
         it("activate writes user.json and remerges", function()
             local saved_user = nil
             local remerged = false
-            local ws = {
-                root = "/root",
-                user = { _meta = { version = 1 }, active_profile = nil },
-            }
-            local p = make_profile(nil, {
-                get_workspace = function() return ws end,
+            local p, mock_ws = make_profile(nil, {
                 remerge = function() remerged = true end,
                 _deps = {
                     clock = function() return 0 end,
@@ -335,7 +325,7 @@ describe("Profile", function()
                 },
             })
             p:activate()
-            assert.equals("debug", ws.user.active_profile)
+            assert.equals("debug", mock_ws._active_profile_key)
             assert.equals("debug", saved_user.active_profile)
             assert.is_true(remerged)
         end)
@@ -350,12 +340,8 @@ describe("Profile", function()
         it("deactivate clears active_profile and remerges", function()
             local saved_user = nil
             local remerged = false
-            local ws = {
-                root = "/root",
-                user = { _meta = { version = 1 }, active_profile = "debug" },
-            }
-            local p = make_profile(nil, {
-                get_workspace = function() return ws end,
+            local p, mock_ws = make_profile(nil, {
+                _active_profile_key = "debug",
                 remerge = function() remerged = true end,
                 _deps = {
                     clock = function() return 0 end,
@@ -364,19 +350,15 @@ describe("Profile", function()
                 },
             })
             p:deactivate()
-            assert.is_nil(ws.user.active_profile)
+            assert.is_nil(mock_ws._active_profile_key)
             assert.is_nil(saved_user.active_profile)
             assert.is_true(remerged)
         end)
 
         it("deactivate is no-op when not active", function()
             local save_called = false
-            local ws = {
-                root = "/root",
-                user = { _meta = { version = 1 }, active_profile = "release" },
-            }
-            local p = make_profile(nil, {
-                get_workspace = function() return ws end,
+            local p, mock_ws = make_profile(nil, {
+                _active_profile_key = "release",
                 _deps = {
                     clock = function() return 0 end,
                     events = { emit = function() end },
@@ -384,7 +366,7 @@ describe("Profile", function()
                 },
             })
             p:deactivate()
-            assert.equals("release", ws.user.active_profile)
+            assert.equals("release", mock_ws._active_profile_key)
             assert.is_false(save_called)
         end)
 
@@ -406,24 +388,25 @@ describe("ProfileProject", function()
                     App = { type = "cmake", path = "App", type_config = {} },
                 },
             },
-            cache = { configurations = {} },
         }
         local merged = vim.tbl_deep_extend("force", {
             get_workspace = function() return default_ws end,
         }, core_overrides or {})
         local core = h.make_mock_core(merged)
-        -- Add skeleton cache entry so ProfileProject can resolve config_key
-        core.cache.configurations["App/Debug"] = {
-            project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug",
-        }
         -- Add a Project object so ProfileProject can resolve it
         local Project = require("loomworks.project")
         core._projects["App"] = Project.new(core, "App", {
             type = "cmake", path = "App", status = "unconfigured",
             configurations = {}, cached_configurations = {},
         })
-        -- Ensure ConfigUnit exists so ProfileProject resolves it
-        h.ensure_config_unit_by_id(core, "App/Debug", "App")
+        -- Create ConfigUnit with first-class fields so ProfileProject resolves it
+        local ConfigUnit = require("loomworks.config_unit")
+        local unit = ConfigUnit.new(core, "App/Debug", "App")
+        unit:_apply({
+            cached = { project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug" },
+        })
+        core._config_units[#core._config_units + 1] = unit
+        h.refresh_config_unit(core, unit)
         local tools = tool_key and { cmake = { key = tool_key } } or nil
         local data = {
             configuration_set = "debug",
@@ -550,7 +533,7 @@ describe("ProfileProject", function()
         end)
     end)
 
-    -- cached_state() and build_dir() delegate to ConfigUnit.cached_state() —
-    -- covered by config_unit_spec.lua cached_state tests.
+    -- build_dir() delegates to ConfigUnit —
+    -- covered by config_unit_spec.lua tests.
 
 end)

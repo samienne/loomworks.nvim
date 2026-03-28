@@ -146,14 +146,14 @@ function M.setup()
             local handle = handles[handle_key]
             if handle then
                 local action_label = data.action == "configure" and "configuring" or "building"
-                local pkey = data.unit._project and data.unit._project.key or (data.unit._cached and data.unit._cached.project_key) or "?"
+                local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
                 handle:report({ message = pkey .. " " .. action_label })
             end
         else
             -- Standalone task (from Projects section)
             local title = ACTION_TITLE[data.action] or data.action
-            local pkey = data.unit._project and data.unit._project.key or (data.unit._cached and data.unit._cached.project_key) or "?"
-            local ckey = data.unit._cached and data.unit._cached.config_key or data.unit.id
+            local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
+            local ckey = data.unit:config_key() or data.unit.id
             local message = pkey .. "/" .. ckey
             create_handle("task:" .. data.task_id, title, message)
         end
@@ -168,7 +168,7 @@ function M.setup()
         local p = data.progress
         if p and p.total > 0 then
             local pct = math.floor(p.current / p.total * 100)
-            local pkey = data.unit._project and data.unit._project.key or (data.unit._cached and data.unit._cached.project_key) or "?"
+            local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
             local msg = pkey .. " [" .. p.current .. "/" .. p.total .. "]"
             handle:report({ message = msg, percentage = pct })
         end

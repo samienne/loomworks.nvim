@@ -146,22 +146,25 @@ end
 --- @param tree loomworks.Tree
 --- @param config_status string
 --- @param status_hl string
---- @param cached loomworks.CachedConfig|nil
+--- @param cached loomworks.CachedConfig|nil (deprecated, reads from unit when nil)
 --- @param fold_prefix? string prefix for foldable sub-nodes (e.g. "App:Debug:ninja-gcc-12")
---- @param unit? loomworks.ConfigUnit for runtime-only data (targets)
+--- @param unit? loomworks.ConfigUnit for runtime-only data (targets) and first-class fields
 function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix, unit)
     tree:leaf("Status: " .. config_status, status_hl)
-    if not cached then return end
 
-    if cached.build_dir then
-        tree:leaf("Build dir: " .. cached.build_dir, "Comment")
+    -- Read from cached table if provided, otherwise from ConfigUnit first-class fields
+    local build_dir = cached and cached.build_dir or (unit and unit.build_dir_value)
+    local cmake = cached and cached.cmake or (unit and unit.cmake_info)
+
+    if build_dir then
+        tree:leaf("Build dir: " .. build_dir, "Comment")
     end
-    if cached.cmake then
-        if cached.cmake.generator then
-            tree:leaf("Generator: " .. cached.cmake.generator, "Comment")
+    if cmake then
+        if cmake.generator then
+            tree:leaf("Generator: " .. cmake.generator, "Comment")
         end
-        if cached.cmake.compiler then
-            tree:leaf("Compiler: " .. cached.cmake.compiler, "Comment")
+        if cmake.compiler then
+            tree:leaf("Compiler: " .. cmake.compiler, "Comment")
         end
     end
     -- Targets from ConfigUnit (runtime, not cached)

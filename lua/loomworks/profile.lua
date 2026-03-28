@@ -2,16 +2,15 @@
 --- Profile represents a configuration_set × kit combination.
 --- ProfileProject represents a single project within a profile.
 
-local merge = require("loomworks.merge")
-local cache_mod = require("loomworks.cache")
-
 -- ========================== ProfileProject ==========================
 
 --- @class loomworks.ProfileProject
---- @field _configuration loomworks.Configuration|nil resolved Configuration domain object
 --- @field _workspace loomworks.Workspace
---- @field _profile loomworks.Profile direct reference to parent profile
---- @field _project loomworks.Project|nil direct reference to project object
+--- @field _init_project_key string project key for identity and fallback
+--- @field _profile loomworks.Profile parent profile
+--- @field _project loomworks.Project|nil resolved project
+--- @field _configuration loomworks.Configuration|nil resolved configuration
+--- @field _config_unit loomworks.ConfigUnit|nil resolved config unit
 --- @field _removed boolean
 local ProfileProject = {}
 ProfileProject.__index = ProfileProject
@@ -19,25 +18,24 @@ ProfileProject.__index = ProfileProject
 --- Create a ProfileProject.
 --- @param workspace loomworks.Workspace
 --- @param project_key string used for identity and fallback resolution
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, cached?: loomworks.CachedConfig, config_unit?: loomworks.ConfigUnit }
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit }
 --- @return loomworks.ProfileProject
 function ProfileProject.new(workspace, project_key, data)
     local self = setmetatable({}, ProfileProject)
     self._workspace = workspace
     self._init_project_key = project_key
     self._removed = false
-    if data then self:_update(data) end
+    if data then self:_apply(data) end
     return self
 end
 
 --- Update in place (preserves table identity).
 --- Receives pre-resolved references from _sync_profile_projects.
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, cached?: loomworks.CachedConfig, config_unit?: loomworks.ConfigUnit }
-function ProfileProject:_update(data)
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit }
+function ProfileProject:_apply(data)
     self._profile = data.profile
     self._project = data.project
     self._configuration = data.configuration
-    self._cached = data.cached
     self._config_unit = data.config_unit
 end
 
@@ -111,36 +109,57 @@ function ProfileProject:tool_object()
     return self._profile:tool_object_for(self._project._module)
 end
 
---- Get cached state (direct reference resolved during _update).
---- @return loomworks.CachedConfig|nil
-function ProfileProject:cached_state()
-    return self._cached
-end
-
---- Get the build directory from cache.
+--- Get the build directory.
 --- @return string|nil
 function ProfileProject:build_dir()
-    local cached = self:cached_state()
-    return cached and cached.build_dir
+    if self._config_unit then
+        return self._config_unit.build_dir_value
+    end
+    return nil
+end
+
+--- Get the config key for this project-in-profile.
+--- @return string|nil
+function ProfileProject:config_key()
+    if self._config_unit then
+        return self._config_unit:config_key()
+    end
+    return nil
+end
+
+--- Get the project key for this project-in-profile.
+--- @return string
+function ProfileProject:project_key()
+    if self._project then return self._project.key end
+    return self._init_project_key
 end
 
 -- ========================== Profile ==========================
 
 --- @class loomworks.Profile
---- @field key string profile key
---- @field _tool_objects? table<loomworks.Module, loomworks.Tool> direct Tool references keyed by Module
---- @field explicit boolean
---- @field explicit_def? table raw definition from loomworks.json (for serialization)
---- @field mappings? table<string, string> project_key -> variant name
---- @field orphaned_set boolean true if configuration_set no longer exists in config
+--- @field key string profile key (e.g. "Debug" or "Debug:ninja-gcc-12")
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
+--- Data fields (set during _apply):
+--- @field _configuration_set_name string|nil set name for set-based profiles
+--- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
+--- @field _cached_configurations string[]|nil cache key array (fallback for orphaned profiles)
+--- @field explicit boolean true if defined in loomworks.json
+--- @field explicit_def table|nil raw definition from loomworks.json
+--- @field _default_target_descriptor table|nil user.json default target for this profile
+--- Resolved references (set during _apply):
+--- @field _tool_objects table<loomworks.Module, loomworks.Tool>|nil
+--- @field _config_set_ref loomworks.ConfigurationSet|nil
+--- Computed fields:
+--- @field mappings table<string, string>|nil project_key -> variant name
+--- @field orphaned_set boolean true if configuration_set no longer in config
+--- @field _valid_variants table<string, boolean> precomputed variant set
+--- Child objects (built during sync/mutation):
 --- @field _projects_list loomworks.ProfileProject[] sorted by dependency order
 --- @field _projects_by_key table<string, loomworks.ProfileProject> project_key -> PP
---- @field _config_set_ref? loomworks.ConfigurationSet direct reference, resolved during _update
---- @field _valid_variants table<string, boolean> precomputed variant set
---- @field _operations loomworks.Operation[] active operations on this profile
---- @field _last_operation? { message: string, success: boolean } last completed operation result
+--- Runtime state:
+--- @field _operations loomworks.Operation[] active operations
+--- @field _last_operation { message: string, success: boolean }|nil
 local Profile = {}
 Profile.__index = Profile
 
@@ -166,14 +185,14 @@ function Profile.new(workspace, key, data)
     self._workspace = workspace
     self.key = key
     self._removed = false
-    if data then self:_update(data) end
+    if data then self:_apply(data) end
     return self
 end
 
 --- Update all data fields in place (preserves table identity).
 --- Pre-resolved fields (_tool_objects, _config_set_ref) are set by _sync_profiles.
 --- @param data loomworks.ProfileDef
-function Profile:_update(data)
+function Profile:_apply(data)
     self._configuration_set_name = data.configuration_set
     self._tools_raw = data.tools or nil
     self._cached_configurations = data._cached_configurations
@@ -223,17 +242,11 @@ function Profile:_resolve_mappings(data)
         return data.mappings, orphaned
     end
 
-    -- Tier 3: Fallback from cached profile configuration keys
-    if data._cached_configurations and data._ws_cache then
-        local mappings = {}
-        for _, ck in ipairs(data._cached_configurations) do
-            local cached_config = data._ws_cache.configurations
-                    and data._ws_cache.configurations[ck]
-            if cached_config and cached_config.variant then
-                mappings[cached_config.project_key] = cached_config.variant
-            end
+    -- Tier 3: Fallback from pre-resolved cached configuration mappings
+    if data._resolved_mappings then
+        if next(data._resolved_mappings) then
+            return data._resolved_mappings, data.configuration_set ~= nil
         end
-        if next(mappings) then return mappings, data.configuration_set ~= nil end
     end
 
     return nil, false
@@ -253,10 +266,37 @@ function Profile:config_set()
     return self._config_set_ref
 end
 
+--- Derive tools dict from owned data.
+--- Prefers _tools_raw (updated by mutations), falls back to deriving from
+--- resolved Tool domain objects (populated during sync).
+--- @return table<string, { key: string, data: table, label: string|nil }>|nil
+function Profile:tools_data()
+    -- _tools_raw is authoritative when set (updated by mutation methods)
+    if self._tools_raw then return self._tools_raw end
+    if not self._tool_objects then return nil end
+    local result = {}
+    for mod, tool in pairs(self._tool_objects) do
+        result[mod.id] = {
+            key = tool.key,
+            data = tool.data,
+            label = tool.label,
+        }
+    end
+    return next(result) and result or nil
+end
+
 --- Get the ToolRef for a specific module type from this profile's tools.
+--- Prefers resolved domain objects, falls back to raw tools.
 --- @param mod_type string module type (e.g. "cmake")
 --- @return loomworks.ToolRef|nil
 function Profile:tool_for(mod_type)
+    if self._tool_objects then
+        for mod, tool in pairs(self._tool_objects) do
+            if mod.id == mod_type then
+                return { key = tool.key, data = tool.data, label = tool.label }
+            end
+        end
+    end
     return self._tools_raw and self._tools_raw[mod_type] or nil
 end
 
@@ -273,13 +313,43 @@ end
 --- @param project_type? string module type of the project
 --- @return string
 function Profile:config_key(variant, project_type)
-    if self._tools_raw and project_type then
-        local tool = self._tools_raw[project_type]
-        if tool and tool.key then
-            return variant .. ":" .. tool.key
+    if project_type then
+        local tool_ref = self:tool_for(project_type)
+        if tool_ref and tool_ref.key then
+            return variant .. ":" .. tool_ref.key
         end
     end
     return variant
+end
+
+--- Serialize this profile to a cache entry for persistence.
+--- Builds the entry from owned fields — not from ws.cache.
+--- @return table cache entry suitable for cache.profiles[key]
+function Profile:serialize_cache()
+    local entry = {}
+    if self._configuration_set_name then
+        entry.configuration_set = self._configuration_set_name
+    end
+    local tools = self:tools_data()
+    if tools then
+        entry.tools = tools
+    end
+    if self.mappings and not self._configuration_set_name then
+        entry.mappings = self.mappings
+    end
+    -- Build configurations array from ProfileProject config units
+    local configs = {}
+    for _, pp in ipairs(self:projects()) do
+        if pp._config_unit then
+            configs[#configs + 1] = pp._config_unit.id
+        end
+    end
+    if #configs > 0 then
+        entry.configurations = configs
+    elseif self._cached_configurations then
+        entry.configurations = self._cached_configurations
+    end
+    return entry
 end
 
 -- ---------------------------------------------------------------------------
@@ -306,17 +376,19 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Activate this profile.
---- Writes to user.json and remerges directly.
+--- Sets workspace active profile fields and remerges.
 function Profile:activate()
-    self._workspace.user.active_profile = self.key
+    self._workspace._active_profile = self
+    self._workspace._active_profile_key = self.key
     self._workspace:_save_user()
     self._workspace:remerge()
 end
 
 --- Deactivate this profile if it is currently active.
 function Profile:deactivate()
-    if self._workspace.user.active_profile == self.key then
-        self._workspace.user.active_profile = nil
+    if self._workspace._active_profile_key == self.key then
+        self._workspace._active_profile = nil
+        self._workspace._active_profile_key = nil
         self._workspace:_save_user()
         self._workspace:remerge()
     end
@@ -337,18 +409,14 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Get the default LaunchTarget for this profile.
---- Resolves from user.json, falls back to loomworks.json profile definition.
+--- Resolves from the profile's stored descriptor, falls back to loomworks.json definition.
 --- @return loomworks.LaunchTarget|nil
 function Profile:default_target()
-    -- Check user.json first
-    local descriptor = self._workspace.user.default_target
-        and self._workspace.user.default_target[self.key]
+    -- Check profile-owned descriptor first (populated from user.json during sync)
+    local descriptor = self._default_target_descriptor
     -- Fall back to loomworks.json profile definition
-    if not descriptor and self._workspace.config.profiles then
-        local profile_def = self._workspace.config.profiles[self.key]
-        if profile_def then
-            descriptor = profile_def.default_target
-        end
+    if not descriptor and self.explicit_def then
+        descriptor = self.explicit_def.default_target
     end
     if not descriptor or not descriptor.project then
         return nil
@@ -362,25 +430,28 @@ function Profile:default_target()
     return LaunchTarget.new(self._workspace, self, descriptor)
 end
 
+--- Check if this profile has a user-set default target override.
+--- @return boolean
+function Profile:has_default_target_override()
+    return self._default_target_descriptor ~= nil
+end
+
 --- Set the default target for this profile.
 --- @param project loomworks.Project
 --- @param target_id? string opaque target identifier (module targets)
 --- @param launch_name? string launch config name (command launches)
 function Profile:set_default_target(project, target_id, launch_name)
-    self._workspace.user.default_target = self._workspace.user.default_target or {}
     local descriptor = { project = project.key }
     if target_id then descriptor.target = target_id end
     if launch_name then descriptor.launch = launch_name end
-    self._workspace.user.default_target[self.key] = descriptor
+    self._default_target_descriptor = descriptor
     self._workspace:_save_user()
 end
 
 --- Clear the default target for this profile.
 function Profile:clear_default_target()
-    if self._workspace.user.default_target then
-        self._workspace.user.default_target[self.key] = nil
-        self._workspace:_save_user()
-    end
+    self._default_target_descriptor = nil
+    self._workspace:_save_user()
 end
 
 -- ---------------------------------------------------------------------------
@@ -442,28 +513,16 @@ end
 -- Queries
 -- ---------------------------------------------------------------------------
 
---- Check if this profile has any configured entries in cache.
+--- Check if this profile has any configured entries.
+--- Iterates ProfileProjects and checks each ConfigUnit's state.
 --- @return boolean
 function Profile:is_configured()
-    if not self._workspace.cache then return false end
-
-    -- Look up profile in cache by key
-    local cached_profile = self._workspace.cache.profiles and self._workspace.cache.profiles[self.key]
-    if not cached_profile or not cached_profile.configurations then
-        -- Fallback: value matching for set-based profiles
-        if self._configuration_set_name then
-            cached_profile = merge.find_cached_profile(
-                self._workspace.cache, self._configuration_set_name, self._tools_raw)
-        end
-        if not cached_profile or not cached_profile.configurations then return false end
-    end
-
-    -- Check if any referenced configuration has actual build state
-    for _, ck in ipairs(cached_profile.configurations) do
-        local cached_config = self._workspace.cache.configurations and self._workspace.cache.configurations[ck]
-        if cached_config and cached_config.state
-                and cached_config.state ~= "unconfigured" then
-            return true
+    for _, pp in ipairs(self:projects()) do
+        if pp._config_unit then
+            local state = pp._config_unit:state()
+            if state and state ~= "unconfigured" then
+                return true
+            end
         end
     end
     return false
@@ -596,7 +655,7 @@ function Profile:plan_deletion()
         return a_key < b_key
     end)
 
-    local defined_in_config = self._workspace.config.profiles and self._workspace.config.profiles[self.key] or false
+    local defined_in_config = self.explicit_def and true or false
 
     return {
         items = items,

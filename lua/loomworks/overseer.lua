@@ -15,10 +15,9 @@ local function collect_configuration_tasks(unit)
     local mod = project._module and project._module.impl or nil
     if not mod or not mod.tasks then return nil end
 
-    local cached = unit._cached
-    local variant = cached and cached.variant or nil
+    local variant = unit:variant()
     local tool = unit._tool
-    local tool_data = tool and tool.data or (cached and cached.tool_data) or nil
+    local tool_data = tool and tool.data or unit:tool_data()
 
     -- Get module info
     local abs_path = ws.root .. "/" .. (project.path or project.key)
@@ -30,7 +29,7 @@ local function collect_configuration_tasks(unit)
         path = project.path or project.key,
         type = project.type,
         configuration = variant,
-        configuration_key = cached and cached.config_key or nil,
+        configuration_key = unit:config_key(),
         configurations = mod_info.configurations or {},
         type_config = project.type_config,
         tool_data = tool_data,
@@ -46,8 +45,8 @@ local function collect_configuration_tasks(unit)
     local mod_tasks = mod.tasks(project_ctx, variant)
     local by_action = { configure = {}, build = {} }
 
-    local tool_ref = tool and tool:to_ref() or (cached and cached.tool_key and {
-        key = cached.tool_key, data = cached.tool_data,
+    local tool_ref = tool and tool:to_ref() or (unit:tool_key() and {
+        key = unit:tool_key(), data = unit:tool_data(),
     }) or nil
 
     for _, task_def in ipairs(mod_tasks) do
@@ -95,13 +94,12 @@ local function collect_profile_tasks(profile)
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
-        local pp_cached = pp._cached
         local project_ctx = {
             name = project.key,
             path = project.path or project.key,
             type = project.type,
             configuration = active_config,
-            configuration_key = pp_cached and pp_cached.config_key or nil,
+            configuration_key = pp:config_key(),
             configurations = project.configurations,
             type_config = project.type_config or {},
             tool_data = tool_data,
@@ -151,10 +149,9 @@ local function collect_configuration_clean_tasks(unit)
     local mod = project._module and project._module.impl or nil
     if not mod or not mod.clean_tasks then return nil end
 
-    local cached = unit._cached
-    local variant = cached and cached.variant or nil
+    local variant = unit:variant()
     local tool = unit._tool
-    local tool_data = tool and tool.data or (cached and cached.tool_data) or nil
+    local tool_data = tool and tool.data or unit:tool_data()
 
     local abs_path = ws.root .. "/" .. (project.path or project.key)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
@@ -165,7 +162,7 @@ local function collect_configuration_clean_tasks(unit)
         path = project.path or project.key,
         type = project.type,
         configuration = variant,
-        configuration_key = cached and cached.config_key or nil,
+        configuration_key = unit:config_key(),
         configurations = mod_info.configurations or {},
         tool_data = tool_data,
         type_config = project.type_config,
@@ -204,13 +201,12 @@ local function collect_profile_clean_tasks(profile)
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
-        local pp_cached = pp._cached
         local project_ctx = {
             name = project.key,
             path = project.path or project.key,
             type = project.type,
             configuration = active_config,
-            configuration_key = pp_cached and pp_cached.config_key or nil,
+            configuration_key = pp:config_key(),
             configurations = project.configurations,
             tool_data = tool_data,
             type_config = project.type_config,
@@ -281,8 +277,8 @@ local function start_one_task(overseer, task_def, on_complete)
         task:subscribe("on_start", function()
             -- Crash-safe: persist build_dir to cache before the task creates files
             -- on disk. If we crash mid-configure, the cache still knows about the dir.
-            if lw_meta.build_dir and unit._cached then
-                unit._cached.build_dir = lw_meta.build_dir
+            if lw_meta.build_dir then
+                unit.build_dir_value = lw_meta.build_dir
                 unit._workspace:_save_cache()
             end
             unit:register_task(task.id, lw_meta.action)

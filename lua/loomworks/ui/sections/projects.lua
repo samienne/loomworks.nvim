@@ -60,13 +60,13 @@ local function collect_tool_entries(proj, variant, tools_by_type)
     -- 1. ConfigUnits for this configuration (from project scan)
     local cfg = proj:get_configuration(variant)
     for _, unit in ipairs(cfg and proj:config_units_for_configuration(cfg) or {}) do
-        local tk = unit._cached and unit._cached.tool_key
+        local tk = unit:tool_key()
         if tk then
             entries[#entries + 1] = {
                 unit = unit,
                 tool_key = tk,
                 display_label = get_tool_display(tools_by_type, proj.type, tk),
-                cached = unit:cached_state(),
+                has_cache = unit._config_key ~= nil,
             }
             seen_tool_keys[tk] = true
         end
@@ -222,19 +222,19 @@ local function edit_project_configuration(project, config_name)
             if new_name == config_name or new_name == "" then return nil end
             local effects = {}
             -- Config sets that reference this variant
-            if ws.config.configuration_sets then
-                for set_name, mappings in pairs(ws.config.configuration_sets) do
-                    if mappings[project_key] == config_name then
-                        effects[#effects + 1] = "Config set '" .. set_name .. "' mapping → " .. new_name
+            for _, cs_obj in pairs(ws._config_sets) do
+                if cs_obj.mappings then
+                    for proj, variant in pairs(cs_obj.mappings) do
+                        if proj.key == project_key and variant == config_name then
+                            effects[#effects + 1] = "Config set '" .. cs_obj.name .. "' mapping → " .. new_name
+                        end
                     end
                 end
             end
             -- Pinned profiles that reference this variant
-            if ws.cache.profiles then
-                for pk, pd in pairs(ws.cache.profiles) do
-                    if pd.mappings and pd.mappings[project_key] == config_name then
-                        effects[#effects + 1] = "Profile '" .. pk .. "' → rename"
-                    end
+            for _, profile in pairs(ws._profiles) do
+                if profile.mappings and profile.mappings[project_key] == config_name then
+                    effects[#effects + 1] = "Profile '" .. profile.key .. "' → rename"
                 end
             end
             -- Sibling configs that inherit from this name
@@ -507,9 +507,8 @@ return function(tree, ctx)
                                 require("loomworks.overseer").run_configuration_action(unit, "configure")
                             end) or nil,
                             on_pin = not is_abstract and with_tool_picker("Pin", function(unit)
-                                local cached = unit._cached
-                                local pkey = unit._project and unit._project.key or (cached and cached.project_key) or "?"
-                                local ckey = cached and cached.config_key or unit.id
+                                local pkey = unit._project and unit._project.key or unit._init_project_key or "?"
+                                local ckey = unit:config_key() or unit.id
                                 if #unit:referencing_profiles() > 0 then
                                     vim.notify("loomworks: already pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
                                     return
@@ -519,7 +518,7 @@ return function(tree, ctx)
                             end) or nil,
                             on_options = not is_abstract and with_tool_picker("Options", function(unit)
                                 actions.show_options(unit)()
-                            end, function(entry) return entry.cached ~= nil end) or nil,
+                            end, function(entry) return entry.has_cache end) or nil,
                         }, function()
                             if is_abstract then
                                 tree:leaf("Abstract mixin — not directly buildable", "Comment")
@@ -547,7 +546,7 @@ return function(tree, ctx)
                             if has_tool_entries then
                                 local cached_count = 0
                                 for _, entry in ipairs(tool_entries) do
-                                    if entry.cached then cached_count = cached_count + 1 end
+                                    if entry.has_cache then cached_count = cached_count + 1 end
                                 end
                                 if cached_count > 0 then
                                     tree:leaf(cached_count .. " tool(s) configured", "Comment")

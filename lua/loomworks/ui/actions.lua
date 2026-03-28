@@ -10,9 +10,8 @@ local M = {}
 --- @param unit loomworks.ConfigUnit
 --- @return string project_key, string config_key
 local function unit_display_keys(unit)
-    local cached = unit._cached
-    local pkey = unit._project and unit._project.key or (cached and cached.project_key) or "?"
-    local ckey = cached and cached.config_key or unit.id
+    local pkey = unit._project and unit._project.key or unit._init_project_key or "?"
+    local ckey = unit:config_key() or unit.id
     return pkey, ckey
 end
 
@@ -416,7 +415,7 @@ function M.show_options(unit)
                 height = 0.8,
                 zindex = 60,
                 backdrop = 60,
-                title = " " .. (unit._project and unit._project.key or (unit._cached and unit._cached.project_key) or "?") .. " — Options ",
+                title = " " .. (unit._project and unit._project.key or unit._init_project_key or "?") .. " — Options ",
                 title_pos = "center",
             },
             keymaps = {

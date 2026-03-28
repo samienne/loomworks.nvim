@@ -71,7 +71,11 @@ Before merging ANY branch to master, verify:
 3. **README.md** — user-facing changes are covered
 4. **No discrepancies** — the three documents agree with each other and with
    the code being merged
-5. **Tests pass** — `make test`
+5. **Type annotations** — all LuaCATS `@class`/`@field` annotations affected
+   by the changes are up to date. No stale fields, no missing new fields.
+   Domain object annotations live in the implementation file, not types.lua.
+6. **Comments** — comments near changed lines are still accurate
+7. **Tests pass** — `make test`
 
 **Do not merge if documentation is out of sync.** Fix the docs first, then
 merge. If the user does not ask for this check, remind them before merging.
@@ -167,23 +171,31 @@ These are implementation-specific details not covered by the spec or architectur
 - **Bootstrap**: `create_workspace_config()` is a static function on the
   workspace module for creating a new `loomworks.json` on disk (no Workspace
   instance needed).
-- All objects identity-preserving across remerges via `_update()`; `_removed` flag for dead references
-- **Deserialization context (ctx)**: temporary dict created by `_build_ctx()`
-  at start of remerge for O(1) identity matching during sync. Each `_sync_*`
-  uses ctx for lookups, then writes plain array to Workspace. Discarded after
-  remerge. `_refresh_after_cache_change` builds its own ctx.
+- All objects identity-preserving across refreshes via `_apply(data, ctx)`;
+  `_removed` flag for dead references.
+- **`_apply(data, ctx)`**: unified constructor/update method. Receives a data
+  table and deserialization context. Resolves keys to references via ctx. Sets
+  data fields. Never touches runtime fields. Returns `true` or `nil, error`.
+  Same code path for new objects (constructor calls `_apply`) and updates.
+- **First-class fields**: ConfigUnit stores `state_value`, `build_dir_value`,
+  `last_configured`, `last_built`, `cmake_info`, `_variant`, `_tool_key`,
+  `_tool_data` as individual fields. `serialize()` produces cache-shaped table
+  on demand. No `_cached` bag.
+- **DataModel** (`data_model.lua`): deserialization orchestrator. Receives raw
+  file data + current domain object arrays (never accesses Workspace directly).
+  Builds deserialization context with resolver methods (`ctx:project(key)`,
+  `ctx:tool(mod_type, key)`, etc.). Returns new arrays or error.
+- **Refresh vs mutation**: `refresh()` is only for external file changes
+  (FileTracker → DataModel → swap arrays). Mutation methods update domain
+  objects in place and call `_save_cache()` to persist. No round-trip.
 - **Workspace arrays**: `_modules`, `_projects`, `_config_sets`, `_profiles`,
-  `_config_units`, `_profile_projects` are arrays after sync. Runtime callers
-  iterate with `pairs()` or use `find_*` helpers (`find_project(key)`,
-  `find_profile(key)`, `find_config_set(name)`, `find_config_unit_for_cached(entry)`,
-  `find_module(mod_type)`).
-- **Pre-resolved `_update()`**: all `_update()` methods receive pre-resolved
-  object references from the `_sync_*` caller. No registry lookups inside
-  `_update()`. This includes `_module`, `_tool`, `_depends_on` for Project;
-  `_tool_objects`, `_config_set_ref` for Profile; resolved Project→variant
-  mappings for ConfigurationSet; `cached`, `project`, `tool`, `configuration`
-  for ConfigUnit; and full resolved data tables for ProfileProject.
-- `types.lua` defines LuaCATS type annotations (data shapes, not runtime code)
+  `_config_units`, `_profile_projects` are arrays after refresh. Runtime
+  callers iterate with `pairs()` or use `find_*` helpers (`find_project(key)`,
+  `find_profile(key)`, `find_config_set(name)`, `find_module(mod_type)`).
+- `types.lua` defines LuaCATS type annotations for serialization data shapes,
+  interfaces, and aliases. Domain object `@class` annotations live in the
+  implementation file (e.g., `loomworks.ConfigUnit` in config_unit.lua).
+  Never duplicate domain object classes in types.lua.
 - init.lua is thin facade; core.lua is infrastructure; status.lua is pure rendering
 - Progress tracking: ninja parser, operation timing, weighted aggregate
 - Atomic writes on Windows: rename can fail if file is open; implement retry with short sleep
@@ -228,10 +240,10 @@ These are implementation-specific details not covered by the spec or architectur
   enriches `_configurations` from `cached_configurations` so that every variant
   in cache always has a Configuration object. Source-missing configs get
   `_source_missing = true`; the flag clears when the source reappears.
-- **Domain object references coexist with string fields**: ConfigUnit carries
-  both `_tool`/`_configuration` (domain object refs) and `tool`/`variant`
-  (string/table fields from cache). String fields are backward-compatible
-  aliases — new code should use accessor methods.
+- **Error handling**: on deserialization error (structurally invalid data),
+  Workspace cancels all tasks, enters error state, status page shows nuke
+  option. Orphaned objects (project removed from config but cache still
+  references it) are NOT errors — they are handled gracefully.
 
 ## v1 Scope
 

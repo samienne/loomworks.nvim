@@ -1,6 +1,14 @@
 --- loomworks/types.lua — LuaCATS type definitions for LSP support.
 --- This file is never required at runtime. LuaLS picks up the annotations
 --- automatically because it lives in the workspace.
+---
+--- Domain object annotations (@class loomworks.Workspace, .ConfigUnit,
+--- .Profile, .ProfileProject, .Project, .ConfigurationSet, .Configuration,
+--- .Tool, .Module, .Target, .LaunchTarget, .Operation) live in their
+--- respective implementation files. This file defines ONLY:
+---   - Serialization data shapes (file formats)
+---   - Interface/contract types (merge results, module interfaces, etc.)
+---   - Shared aliases
 
 --- @alias loomworks.Status
 --- | "unconfigured"
@@ -9,53 +17,71 @@
 --- | "failed_configure"
 --- | "failed_build"
 
--- ========================== Three-File Model ==========================
+--- @alias loomworks.ConfigUnitState
+--- | "unconfigured"
+--- | "configuring"
+--- | "configured"
+--- | "building"
+--- | "built"
+--- | "configure_failed"
+--- | "build_failed"
+--- | "deleting"
+--- | "unknown"
 
---- @class loomworks.Workspace
---- @field root string absolute path to workspace root
---- @field name string workspace display name
---- @field config loomworks.Config parsed loomworks.json
---- @field user loomworks.UserData user preferences (.nvim/loomworks.user.json)
---- @field cache loomworks.CacheData build state (.nvim/loomworks.cache.json)
---- @field cache_version_mismatch? boolean set during assembly, checked by Core.setup()
---- @field user_version_mismatch? boolean set during assembly, checked by Core.setup()
+--- @alias loomworks.DeletionDisposition "clean"|"reset"|"keep"
 
+-- ========================== Serialization Data Shapes ==========================
+-- These describe the JSON file formats (loomworks.json, cache.json, user.json).
+-- At runtime, domain objects own all state. These shapes are only used at
+-- the serialization boundary (parse on load, serialize on save).
+
+--- Parsed loomworks.json structure.
 --- @class loomworks.Config
 --- @field name? string workspace name override (falls back to dir name)
 --- @field projects table<string, loomworks.ConfigProject>
 --- @field configuration_sets? table<string, table<string, string>> set_name -> { project_key -> variant }
 --- @field profiles? table<string, loomworks.ConfigProfileDef>
 
+--- Project entry in loomworks.json.
 --- @class loomworks.ConfigProject
 --- @field path string relative path from workspace root
 --- @field type string module type ("cmake", "ets", "typescript")
 --- @field type_config table module-specific configuration from loomworks.json
 --- @field depends_on? string[]
 
+--- Explicit profile definition in loomworks.json.
 --- @class loomworks.ConfigProfileDef
 --- @field configuration_set string
 --- @field cmake? table
+--- @field default_target? table
 
+--- Parsed loomworks.user.json structure.
 --- @class loomworks.UserData
 --- @field _meta { version: number }
 --- @field active_profile? string
+--- @field default_target? table<string, table> profile_key -> descriptor
 
+--- Parsed loomworks.cache.json structure.
 --- @class loomworks.CacheData
 --- @field _meta loomworks.CacheMeta
 --- @field configurations table<string, loomworks.CachedConfig> flat dict keyed by "project_key/config_key"
 --- @field profiles? table<string, loomworks.CachedProfile>
 
+--- Cache metadata.
+--- @class loomworks.CacheMeta
+--- @field version number
+--- @field loomworks_hash string
+--- @field cached_at string ISO 8601 timestamp
+
+--- Cached profile entry in cache.json.
 --- @class loomworks.CachedProfile
 --- @field configuration_set? string nil for pinned profiles
 --- @field mappings? table<string, string> project_key -> variant (stored for pinned, re-derived for set-based)
 --- @field tools? table<string, { key: string, data?: table, label?: string }> tools dict keyed by module type
 --- @field configurations? string[] array of cache keys ("project_key/config_key")
 
---- @class loomworks.CacheMeta
---- @field version number
---- @field loomworks_hash string
---- @field cached_at string ISO 8601 timestamp
-
+--- Cached configuration entry in cache.json.
+--- Also the shape returned by ConfigUnit:serialize().
 --- @class loomworks.CachedConfig
 --- @field project_key string
 --- @field config_key string
@@ -69,93 +95,50 @@
 --- @field last_built? string ISO 8601 timestamp
 --- @field cmake? loomworks.CachedCmakeInfo
 
+--- CMake-specific cached info.
 --- @class loomworks.CachedCmakeInfo
 --- @field generator? string cmake -G value used
 --- @field compiler? string compiler identifier
 --- @field multi_config? boolean
 --- @field source_dir? string
 
---- @class loomworks.CachedTarget
---- Runtime-only (stored on ConfigUnit.targets, not persisted in cache).
---- @field type string "executable"|"static_library"|"shared_library"|"module_library"|"object_library"|"interface_library"
---- @field dependencies? string[] project-owned targets this target links against
---- @field artifact? string primary output file path (relative to build directory)
-
--- ========================== Configuration Domain Object ==========================
-
---- @class loomworks.Configuration
---- @field name string configuration name (e.g., "Debug", "Debug-asan")
---- @field variant string|nil CMAKE_BUILD_TYPE or equivalent (nil for abstract)
---- @field _project loomworks.Project back-reference
---- @field _inherits loomworks.Configuration[] resolved base configs
---- @field inherits_names string[] raw base config names
---- @field options table<string, string>|nil generic options
---- @field module_config table opaque module-specific data
---- @field is_default boolean from module detection
---- @field is_user boolean from user override
---- @field from_preset boolean from CMakePresets.json
---- @field role string|nil special role
---- @field _removed boolean
-
--- ========================== Tool Domain Object ==========================
-
---- @class loomworks.Tool
---- @field key string|nil opaque identifier (nil for default tools)
---- @field data table module-specific data
---- @field label string|nil display label
---- @field mod_type string module type that owns this tool
---- @field _removed boolean
-
 -- ========================== Tool References ==========================
 
 --- Bundled tool reference used in cache data and module contexts.
---- Domain objects use Tool references instead; ToolRef is for serialization/matching.
+--- Domain objects use Tool object references instead; ToolRef is for serialization/matching.
 --- @class loomworks.ToolRef
 --- @field key? string cache key suffix (e.g. "ninja-gcc-12")
 --- @field data? table opaque module-specific tool data
 --- @field label? string display label (e.g. "Ninja + GCC 12")
 --- @field mod_type? string which module type owns this tool (e.g. "cmake")
 
--- ========================== Detected Tools ==========================
-
+--- Detected tool from async tool scanning.
 --- @class loomworks.DetectedTool
 --- @field tool_data table opaque module-specific tool data
 --- @field tool_key? string unique key for cache (nil for single-tool modules)
 --- @field tool_label? string display label (nil for single-tool modules)
 
---- @class loomworks.BufStatus
---- @field profile_key? string full active profile key (e.g. "debug:ninja-gcc-12")
---- @field set_name? string configuration set name parsed from profile key
---- @field tool_key? string project-specific tool key (e.g. "ninja-gcc-12" for cmake)
---- @field project string project key for the buffer
---- @field configuration? string active configuration name (e.g. "Debug")
---- @field status? loomworks.ConfigUnitState current ConfigUnit state
+-- ========================== Merge Results ==========================
 
--- ========================== ConfigurationSet ==========================
-
---- @class loomworks.ConfigurationSet
---- @field name string configuration set name
---- @field mappings table<loomworks.Project, string> project -> variant
---- @field _core loomworks.Core
---- @field _removed boolean
-
--- ========================== Merge Result ==========================
-
+--- Result of merge.merge(): the resolved active configuration set.
 --- @class loomworks.ActiveSet
 --- @field name string|nil active profile key
 --- @field tool_key? string cache key suffix from active profile
 --- @field projects table<string, loomworks.MergedProjectData>
 
+--- Profile definition from merge.get_all_profiles().
 --- @class loomworks.ProfileDef
 --- @field configuration_set? string nil for pinned profiles
---- @field mappings? table<string, string> project_key -> variant (stored for pinned, re-derived for set-based)
---- @field tool_key? string cache key suffix from the keyed module
---- @field tool_data? table opaque module-specific tool data
---- @field tool_label? string display label for the tool
---- @field tool_mod_type? string which module type owns this tool
+--- @field mappings? table<string, string> project_key -> variant
+--- @field tools? table<string, { key: string, data?: table, label?: string }>
 --- @field explicit? boolean
---- @field _cached_configurations? string[] array of cache keys from cached profile, used for orphaned profile fallback
+--- @field explicit_def? table raw definition from loomworks.json
+--- @field _cached_configurations? string[] cache keys from cached profile
+--- @field _resolved_mappings? table<string, string> pre-resolved Tier 3 mappings
+--- @field _tool_objects? table<loomworks.Module, loomworks.Tool> pre-resolved tools
+--- @field _config_set_ref? loomworks.ConfigurationSet pre-resolved reference
 
+--- Tool entry for configuration sets UI.
 --- @class loomworks.ToolEntry
 --- @field profile_key string the profile key this tool would create
 --- @field tool_key string
@@ -163,10 +146,13 @@
 --- @field tool_label? string
 --- @field tool_mod_type? string
 --- @field cached boolean whether a materialized profile exists
+--- @field profile? loomworks.Profile resolved profile object (if cached)
 
+--- Merged project data from merge.merge().
 --- @class loomworks.MergedProjectData
 --- @field type string module type
 --- @field path? string relative path
+--- @field type_config? table module-specific configuration
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
 --- @field tool_key? string cache key suffix
@@ -181,7 +167,10 @@
 --- @field cached? loomworks.CachedConfig active configuration's cached state
 --- @field cached_configurations table<string, loomworks.CachedConfig>
 --- @field cmake? loomworks.ProjectCmakeInfo
+--- @field depends_on? string[]
+--- @field launch? table<string, table>
 
+--- Configuration info from module.info().
 --- @class loomworks.ConfigurationInfo
 --- @field generator? string cmake -G value
 --- @field binary_dir? string preset binaryDir
@@ -190,12 +179,14 @@
 --- @field from_preset? boolean derived from CMakePresets.json
 --- @field role? string e.g. "compile_commands"
 
+--- CMake project-level info from merge.
 --- @class loomworks.ProjectCmakeInfo
 --- @field compile_commands_from? string configuration to source compile_commands.json from
---- @field clangd? string project-level clangd binary override (from loomworks.json, supports ${ENV_VAR})
+--- @field clangd? string project-level clangd binary override (supports ${ENV_VAR})
 
 -- ========================== Module Interface ==========================
 
+--- Context passed to module task generators.
 --- @class loomworks.ModuleContext
 --- @field name string project key
 --- @field path string relative path from workspace root
@@ -207,15 +198,18 @@
 --- @field workspace_root string absolute path
 --- @field env table<string, string>
 
+--- Module info() return value.
 --- @class loomworks.ModuleInfo
 --- @field configurations table<string, loomworks.ConfigurationInfo>
 --- @field compile_commands_from? string
 --- @field clangd? string
 
+--- Module validation result.
 --- @class loomworks.ModuleValidation
 --- @field valid boolean
 --- @field warnings string[]
 
+--- Module inspection result.
 --- @class loomworks.ModuleInspection
 --- @field needs_refresh boolean
 --- @field reasons string[]
@@ -223,7 +217,9 @@
 
 -- ========================== Task Tracking ==========================
 
+--- Result recorded after an overseer task completes.
 --- @class loomworks.TaskResult
+--- @field unit? loomworks.ConfigUnit the config unit that ran the task
 --- @field project_key string
 --- @field action string "configure" or "build"
 --- @field configuration_key string
@@ -233,6 +229,7 @@
 --- @field cmake? loomworks.CachedCmakeInfo
 --- @field success boolean
 
+--- Running task info for deletion conflict detection.
 --- @class loomworks.RunningTaskInfo
 --- @field project_key string
 --- @field action string "configure" or "build"
@@ -240,67 +237,74 @@
 
 -- ========================== Deletion ==========================
 
+--- Plan for deleting a profile's cached configs.
 --- @class loomworks.DeletionPlan
 --- @field items loomworks.DeletionItem[]
---- @field profile loomworks.Profile|nil profile being deleted
+--- @field profile? loomworks.Profile profile being deleted
 --- @field defined_in_config boolean
 
---- @alias loomworks.DeletionDisposition "clean"|"reset"|"keep"
-
+--- Single item in a deletion plan.
 --- @class loomworks.DeletionItem
---- @field unit loomworks.ConfigUnit|nil the config unit (nil for unmaterialized combos)
+--- @field unit? loomworks.ConfigUnit the config unit (nil for unmaterialized combos)
 --- @field build_dir? string
---- @field disposition loomworks.DeletionDisposition "clean" removes entry, "reset" clears state (keeps skeleton), "keep" untouched
+--- @field disposition loomworks.DeletionDisposition "clean" removes entry, "reset" clears state, "keep" untouched
 
--- ========================== File Tracking ==========================
+-- ========================== Orphaned Configs ==========================
 
---- @class loomworks.Operation
---- @field action? string "configure", "build", or "configure+build" (while running)
---- @field started_at? number hrtime seconds (while running)
---- @field message? string result message like "built in 2m10s" (after completion)
---- @field success? boolean (after completion)
+--- Orphaned config returned by Workspace:get_orphaned_configs().
+--- @class loomworks.OrphanedConfig
+--- @field project_key string
+--- @field config_key string
+--- @field unit loomworks.ConfigUnit the config unit with state
 
---- @class loomworks.FileTrackerOpts
---- @field callback fun(path: string, content: string|nil)
---- @field interval? number poll interval in ms (default 2000)
---- @field read_file? fun(path: string): string|nil, string|nil
---- @field schedule? fun(fn: function)
+-- ========================== UI Data ==========================
+
+--- Buffer status info for statusline/LSP integration.
+--- @class loomworks.BufStatus
+--- @field profile_key? string full active profile key
+--- @field set_name? string configuration set name
+--- @field tool_key? string project-specific tool key
+--- @field project string project key for the buffer
+--- @field configuration? string active configuration name
+--- @field status? loomworks.ConfigUnitState current state
+
+--- Cached target info from module file-api parsing. Runtime-only.
+--- @class loomworks.CachedTarget
+--- @field type string "executable"|"static_library"|"shared_library" etc.
+--- @field dependencies? string[] project-owned targets this links against
+--- @field artifact? string primary output file path
 
 -- ========================== Project Options ==========================
 
+--- Option group in CMakeCache.
 --- @class loomworks.OptionGroup
 --- @field label string group display name
 --- @field children (loomworks.OptionGroup | loomworks.Option)[]
 
+--- Single option in CMakeCache.
 --- @class loomworks.Option
 --- @field key string variable name (e.g. "CORE3D_BUILD_ENGINE")
 --- @field value string current value
 --- @field value_type string "bool"|"string"|"path"|"filepath"
 --- @field helpstring? string description from the build system
---- @field choices? string[] allowed values (e.g. cmake STRINGS property)
+--- @field choices? string[] allowed values
 
 -- ========================== Progress ==========================
 
+--- Progress update from ninja/build output parsing.
 --- @class loomworks.ProgressUpdate
 --- @field current number
 --- @field total number
 
--- ========================== Orphaned Configs ==========================
+-- ========================== Assembly ==========================
 
---- @class loomworks.OrphanedConfig
---- @field project_key string
---- @field config_key string
---- @field cached loomworks.CachedConfig the cached state
-
--- ========================== ConfigUnit ==========================
-
---- @alias loomworks.ConfigUnitState
---- | "unconfigured"
---- | "configuring"
---- | "configured"
---- | "building"
---- | "built"
---- | "configure_failed"
---- | "build_failed"
---- | "deleting"
---- | "unknown"
+--- Result of workspace.assemble() — plain data, not a Workspace instance.
+--- @class loomworks.WorkspaceData
+--- @field root string
+--- @field name string
+--- @field config loomworks.Config
+--- @field user loomworks.UserData
+--- @field cache loomworks.CacheData
+--- @field cache_version_mismatch boolean
+--- @field cache_inconsistent boolean
+--- @field user_version_mismatch boolean

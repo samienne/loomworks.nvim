@@ -15,8 +15,9 @@ local function render_profile_details(tree, profile, lw)
         tree:leaf("Set: " .. profile._config_set_ref.name, "Comment")
     end
 
-    if profile._tools_raw then
-        for mod_type, tool in pairs(profile._tools_raw) do
+    local tools_data = profile:tools_data()
+    if tools_data then
+        for mod_type, tool in pairs(tools_data) do
             if tool.label then
                 tree:leaf("Tool: " .. tool.label, "Comment")
             end
@@ -62,9 +63,8 @@ local function render_profile_details(tree, profile, lw)
     if #pps > 0 then
         tree:group({{"Projects:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [t] task output  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
             for _, pp in ipairs(pps) do
-                local cached = pp:cached_state()
                 local config_status, status_hl, progress_str, is_spinning =
-                        helpers.resolve_config_status(pp, cached)
+                        helpers.resolve_config_status(pp, nil)
 
                 local unit = pp._config_unit
                 local type_tag = pp._project and pp._project.type
@@ -88,7 +88,7 @@ local function render_profile_details(tree, profile, lw)
                     on_delete = actions.delete_config(unit),
                     on_options = actions.show_options(unit),
                 }, function()
-                    helpers.render_cached_details(tree, config_status, status_hl, cached, nil, unit)
+                    helpers.render_cached_details(tree, config_status, status_hl, nil, nil, unit)
                 end)
             end
         end)

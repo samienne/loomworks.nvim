@@ -411,22 +411,21 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Merge all three files into the active profile projection.
---- @param workspace loomworks.Workspace
+--- @param config loomworks.Config parsed config
+--- @param active_profile_key_input string|nil active profile key from user state
+--- @param cache loomworks.CacheData parsed cache data
+--- @param root string workspace root path
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
 --- @return loomworks.ActiveSet active_set
 --- @return table<string, loomworks.ProfileDef> all_profiles
-function M.merge(workspace, tools_by_type)
+function M.merge(config, active_profile_key_input, cache, root, tools_by_type)
     tools_by_type = tools_by_type or {}
-
-    local config = workspace.config
-    local user = workspace.user
-    local cache = workspace.cache
 
     -- Get all available profiles
     local all_profiles = M.get_all_profiles(config, cache, tools_by_type)
 
     -- Determine active profile
-    local active_profile_key = user.active_profile
+    local active_profile_key = active_profile_key_input
     local active_profile = nil
 
     if active_profile_key and all_profiles[active_profile_key] then
@@ -450,7 +449,7 @@ function M.merge(workspace, tools_by_type)
     -- Process configured projects
     for key, project in pairs(config.projects) do
         local mod = modules.get(project.type)
-        local abs_path = workspace.root .. "/" .. project.path
+        local abs_path = root .. "/" .. project.path
         local mod_info = mod and mod.info and mod.info(abs_path, project.type_config)
                 or { configurations = {} }
 

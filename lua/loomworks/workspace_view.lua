@@ -16,9 +16,8 @@ local M = {}
 local function item_display_keys(item)
     local unit = item.unit
     if not unit then return "?", "?" end
-    local cached = unit._cached
-    local pkey = unit._project and unit._project.key or (cached and cached.project_key) or "?"
-    local ckey = cached and cached.config_key or unit.id
+    local pkey = unit._project and unit._project.key or unit._init_project_key or "?"
+    local ckey = unit:config_key() or unit.id
     return pkey, ckey
 end
 
@@ -53,21 +52,21 @@ function M.compute_add_project_context(ws, mod_type)
     local inherited_tool = nil
     local no_tool_profiles = {}
 
-    if has_keyed and ws.cache.profiles then
-        for k, data in pairs(ws.cache.profiles) do
-            if data.configuration_set then
-                local tool = data.tools and data.tools[mod_type]
-                if tool then
+    if has_keyed then
+        for _, profile in pairs(ws._profiles) do
+            if profile._configuration_set_name then
+                local tool_ref = profile:tool_for(mod_type)
+                if tool_ref then
                     if not inherited_tool then
                         inherited_tool = {
-                            tool_key = tool.key,
-                            tool_data = tool.data,
-                            tool_label = tool.label,
+                            tool_key = tool_ref.key,
+                            tool_data = tool_ref.data,
+                            tool_label = tool_ref.label,
                             tool_mod_type = mod_type,
                         }
                     end
-                elseif not data.tools or not next(data.tools) then
-                    no_tool_profiles[#no_tool_profiles + 1] = k
+                elseif not profile:tools_data() then
+                    no_tool_profiles[#no_tool_profiles + 1] = profile.key
                 end
             end
         end
@@ -157,14 +156,13 @@ end
 --- @return { config_key: string, state: string|nil, build_dir: string|nil, unit: loomworks.ConfigUnit|nil }[]
 function M.collect_project_configs(ws, project)
     local items = {}
-    if not ws.cache.configurations then return items end
-    for cache_key, cached in pairs(ws.cache.configurations) do
-        if cached.project_key == project.key then
+    for _, unit in pairs(ws._config_units) do
+        if unit._project == project and unit._config_key then
             items[#items + 1] = {
-                config_key = cached.config_key,
-                state = cached.state,
-                build_dir = cached.build_dir,
-                unit = ws:find_config_unit_for_cached(cached),
+                config_key = unit._config_key,
+                state = unit.state_value,
+                build_dir = unit.build_dir_value,
+                unit = unit,
             }
         end
     end
@@ -342,10 +340,14 @@ function M.compute_upgrade_preview(ws, tool_entry, mappings)
         if variant then sets_with_mapping[set_name] = true end
     end
 
+    -- Build profile lookup from domain objects
+    local profiles_by_key = {}
+    for _, p in pairs(ws._profiles) do profiles_by_key[p.key] = p end
+
     local result = {}
     for _, r in ipairs(renames) do
-        local pd = ws.cache.profiles[r.old_key]
-        if pd and sets_with_mapping[pd.configuration_set] then
+        local profile = profiles_by_key[r.old_key]
+        if profile and sets_with_mapping[profile._configuration_set_name] then
             result[#result + 1] = r
         end
     end
@@ -456,20 +458,21 @@ end
 --- @param set_name string
 --- @return { set_name: string, mappings: table<string, string|nil>, available_configs: table<string, string[]>, project_keys: string[] }|nil
 function M.compute_edit_config_set_context(ws, set_name)
-    if not ws.config.configuration_sets
-            or not ws.config.configuration_sets[set_name] then
-        return nil
+    -- Find the ConfigurationSet domain object by name
+    local config_set = nil
+    for _, cs in pairs(ws._config_sets) do
+        if cs.name == set_name then config_set = cs; break end
     end
+    if not config_set then return nil end
 
-    local raw_mappings = ws.config.configuration_sets[set_name]
     local projects = {}
     local mappings = {}     -- Project → Configuration|nil
     local available_configs = {} -- Project → Configuration[]
 
     for _, project in pairs(ws._projects) do
         projects[#projects + 1] = project
-        -- Resolve current mapping to Configuration object
-        local variant = raw_mappings[project.key]
+        -- Resolve current mapping to Configuration object from domain CS
+        local variant = config_set.mappings[project]
         mappings[project] = variant
             and project._configurations and project._configurations[variant]
             or nil
@@ -549,12 +552,19 @@ function M.execute_rename_config_set(ws, cs, new_name, mappings)
         if v then clean[k] = v end
     end
 
-    -- Migrate cached profiles that reference old name (before removing old set)
+    local merge_mod = require("loomworks.merge")
+
+    -- Migrate cached profiles that reference old name (before removing old set).
+    -- Update both _configuration_set_name and the profile key.
     local old_name = cs.name
-    if ws.cache.profiles then
-        for _, profile_data in pairs(ws.cache.profiles) do
-            if profile_data.configuration_set == old_name then
-                profile_data.configuration_set = new_name
+    for _, profile in pairs(ws._profiles) do
+        if profile._configuration_set_name == old_name then
+            local old_key = profile.key
+            profile._configuration_set_name = new_name
+            profile.key = merge_mod.profile_key(new_name, profile:tools_data())
+            -- Track active profile rename
+            if ws._active_profile_key == old_key then
+                ws._active_profile_key = profile.key
             end
         end
     end
@@ -567,6 +577,17 @@ function M.execute_rename_config_set(ws, cs, new_name, mappings)
     local new_cs, add_err = ws:add_configuration_set(new_name, clean)
     if not new_cs then return false, add_err end
 
+    -- Reconnect profiles to the new ConfigurationSet and rebuild PPs
+    for _, profile in pairs(ws._profiles) do
+        if profile._configuration_set_name == new_name then
+            profile._config_set_ref = new_cs
+            ws:_rebuild_profile_projects_for(profile)
+        end
+    end
+    ws:_resolve_active_profile()
+    ws:_save_cache()
+    ws:_save_user()
+
     return true
 end
 
@@ -576,21 +597,16 @@ end
 --- @return { profiles: string[], lines: string[], highlights: table[] }|nil
 function M.compute_delete_config_set_context(ws, cs)
     local set_name = cs.name
-    if not ws.config.configuration_sets
-            or not ws.config.configuration_sets[set_name] then
-        return nil
-    end
+    if cs._removed then return nil end
 
     -- Find profiles referencing this set
     local affected_profiles = {}
-    if ws.cache.profiles then
-        for profile_key, profile_data in pairs(ws.cache.profiles) do
-            if profile_data.configuration_set == set_name then
-                affected_profiles[#affected_profiles + 1] = profile_key
-            end
+    for _, profile in pairs(ws._profiles) do
+        if profile._configuration_set_name == set_name then
+            affected_profiles[#affected_profiles + 1] = profile.key
         end
-        table.sort(affected_profiles)
     end
+    table.sort(affected_profiles)
 
     local lines = {
         "  Delete configuration set: " .. set_name,
@@ -646,13 +662,12 @@ function M.find_stray_build_dirs(ws)
     local build_root = ws.root .. "/.nvim/build"
     local normalize = ws._core._deps.normalize
 
-    -- Collect all normalized build_dirs referenced by cache entries
+    -- Collect all normalized build_dirs referenced by ConfigUnit objects
     local known_dirs = {}
-    if ws.cache.configurations then
-        for _, cached in pairs(ws.cache.configurations) do
-            if cached.build_dir then
-                known_dirs[#known_dirs + 1] = normalize(cached.build_dir)
-            end
+    for _, unit in pairs(ws._config_units) do
+        local bd = unit:build_dir()
+        if bd then
+            known_dirs[#known_dirs + 1] = normalize(bd)
         end
     end
 
@@ -875,8 +890,7 @@ end
 function M.prepare_add_project_from_browser(ws, root, abs_path, name, mod_type)
     local key, path = M.derive_key_and_path(root, abs_path, name)
 
-    local raw_config_sets = ws.config and ws.config.configuration_sets or nil
-    local has_config_sets = raw_config_sets and next(raw_config_sets)
+    local has_config_sets = #ws._config_sets > 0
 
     if not has_config_sets then
         return { action = "add_direct", key = key, path = path, mod_type = mod_type }
@@ -921,10 +935,9 @@ end
 function M.collect_clean_items(profile)
     local items = {}
     for _, pp in ipairs(profile:projects()) do
-        local pp_cached = pp._cached
         items[#items + 1] = {
-            project_key = pp._project and pp._project.key or (pp_cached and pp_cached.project_key),
-            config_key = pp_cached and pp_cached.config_key,
+            project_key = pp:project_key(),
+            config_key = pp:config_key(),
             build_dir = pp:build_dir(),
             unit = pp._config_unit,
         }
@@ -1224,22 +1237,15 @@ function M.compute_edit_configuration_context(project, config_name)
             mod_info.configurations or {}, config_name)
     end
 
-    -- Resolve build dir from cache (first matching entry for this config)
+    -- Resolve build dir from ConfigUnit objects (first matching entry)
     local build_dir = nil
-    if config_name and ws.cache.configurations then
-        local cache_mod = require("loomworks.cache")
-        -- Try direct cache key first (non-keyed modules)
-        local ck = cache_mod.config_cache_key(project_key, config_name)
-        local cc = ws.cache.configurations[ck]
-        if cc and cc.build_dir then
-            build_dir = cc.build_dir
-        else
-            -- For keyed modules, find first cache entry matching this variant
-            for _, cfg in pairs(ws.cache.configurations) do
-                if cfg.project_key == project_key and cfg.variant == config_name and cfg.build_dir then
-                    build_dir = cfg.build_dir
-                    break
-                end
+    if config_name then
+        for _, unit in pairs(ws._config_units) do
+            if unit._project == project
+                    and unit._variant == config_name
+                    and unit.build_dir_value then
+                build_dir = unit.build_dir_value
+                break
             end
         end
     end

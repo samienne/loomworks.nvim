@@ -76,26 +76,32 @@ end
 --- @return boolean ok, string|nil err
 function ConfigurationSet:update_mapping(project, variant)
     local ws = self._workspace
-    if not ws.config.configuration_sets or not ws.config.configuration_sets[self.name] then
+    if self._removed then
         return false, "configuration set '" .. self.name .. "' not found"
     end
 
-    local project_key = project.key
-    local old = ws.config.configuration_sets[self.name][project_key]
-    ws.config.configuration_sets[self.name][project_key] = variant
-
-    -- Update domain object
+    local old = self.mappings[project]
     self.mappings[project] = variant
 
     local ok, err = ws:_save_config()
     if not ok then
-        ws.config.configuration_sets[self.name][project_key] = old
         self.mappings[project] = old
         return false, err
     end
 
-    -- Refresh profiles (mapping change affects profile_projects)
-    ws:_refresh_after_cache_change()
+    -- Rebuild PPs for profiles that reference this config set
+    for _, profile in pairs(ws._profiles) do
+        if profile._config_set_ref == self then
+            -- Re-derive mappings from the updated config set
+            profile.mappings, profile.orphaned_set = profile:_resolve_mappings({
+                configuration_set = profile._configuration_set_name,
+            })
+            ws:_rebuild_profile_projects_for(profile)
+        end
+    end
+    ws:_sync_build_dir_refs()
+    ws:_resolve_active_profile()
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true
 end
 
@@ -108,11 +114,12 @@ function ConfigurationSet:find_profile(tool_entry)
     local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
     for _, profile in pairs(self._workspace._profiles) do
         if profile._configuration_set_name == self.name then
-            if not tool_data and not profile._tools_raw then
+            local profile_tools = profile:tools_data()
+            if not tool_data and not profile_tools then
                 return profile
             end
-            if tool_mod_type and profile._tools_raw then
-                local profile_tool = profile._tools_raw[tool_mod_type]
+            if tool_mod_type and profile_tools then
+                local profile_tool = profile_tools[tool_mod_type]
                 if profile_tool then
                     local mod = self._workspace:find_module(tool_mod_type)
                     local impl = mod and mod.impl or nil

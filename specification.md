@@ -326,6 +326,11 @@ Sparse record of what has actually been configured and built.
 - Flat `configurations` dict keyed by opaque `"project_key/config_key"`.
   Each entry is self-describing (includes project_key, config_key, type,
   tool properties). Profiles reference configurations by cache key.
+- **Purely a serialization format.** At runtime, domain objects (ConfigUnit,
+  Profile) own all mutable state as first-class fields. The cache file is
+  generated from domain objects on save via `serialize()` methods. After
+  deserialization, the cache data is consumed and discarded — no runtime
+  code reads from it.
 - Atomic writes (temp + fsync + rename) with .bak recovery.
 
 ### 2.4 Three-file reconciliation

@@ -64,8 +64,8 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
     }
 
     local ws = Workspace.new(mock_core, data)
-    ws:_cleanup_orphaned_skeletons()
-    ws:remerge()
+    ws:_cleanup_orphaned_skeletons(data.cache)
+    ws:remerge(data.config, data.cache, data.user)
     return ws, events_log, notifications
 end
 
@@ -95,11 +95,11 @@ describe("build dir refs", function()
 
         local refs1 = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
         assert.equals(1, #refs1)
-        assert.equals("Debug:ninja-gcc", refs1[1]._cached.config_key)
+        assert.equals("Debug:ninja-gcc", refs1[1]:config_key())
 
         local refs2 = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc/Release")
         assert.equals(1, #refs2)
-        assert.equals("Release:ninja-gcc", refs2[1]._cached.config_key)
+        assert.equals("Release:ninja-gcc", refs2[1]:config_key())
     end)
 
     it("returns empty table for unknown build dirs", function()
@@ -144,13 +144,14 @@ describe("build dir refs", function()
             },
         })
 
-        -- Add a new cache entry
-        ws.cache.configurations["App/Release:ninja-gcc"] = {
+        -- Add a new cache entry by injecting into cache before remerge
+        local temp_cache = ws:_serialize_cache()
+        temp_cache.configurations["App/Release:ninja-gcc"] = {
             project_key = "App", config_key = "Release:ninja-gcc",
             type = "cmake", variant = "Release", tool_key = "ninja-gcc",
             state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc",
         }
-        ws:remerge()
+        ws:remerge(nil, temp_cache)
 
         local refs = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
         assert.equals(2, #refs)
@@ -240,8 +241,8 @@ describe("deletion safety with shared dirs", function()
         -- Delete both configs — dir should be deleted
         local done = false
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir, unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug:ninja-gcc"]) },
-            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir, unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Release:ninja-gcc"]) },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Debug:ninja-gcc") },
+            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Release:ninja-gcc") },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()
@@ -276,7 +277,7 @@ describe("deletion safety with shared dirs", function()
 
         local done = false
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir, unit = ws:find_config_unit_for_cached(ws.cache.configurations["App/Debug:ninja-gcc"]) },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Debug:ninja-gcc") },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()

@@ -186,10 +186,12 @@ local function edit_config_set(cs)
         mappings = ctx.mappings,
         available_configs = ctx.available_configs,
         validate = function(result)
-            if result.name ~= set_name
-                    and ws.config.configuration_sets
-                    and ws.config.configuration_sets[result.name] then
-                return false, "configuration set '" .. result.name .. "' already exists"
+            if result.name ~= set_name then
+                for _, existing_cs in pairs(ws._config_sets) do
+                    if existing_cs.name == result.name then
+                        return false, "configuration set '" .. result.name .. "' already exists"
+                    end
+                end
             end
             return true
         end,
@@ -258,8 +260,10 @@ local function create_config_set()
         mappings = ctx.mappings,
         available_configs = ctx.available_configs,
         validate = function(result)
-            if ws.config.configuration_sets and ws.config.configuration_sets[result.name] then
-                return false, "configuration set '" .. result.name .. "' already exists"
+            for _, existing_cs in pairs(ws._config_sets) do
+                if existing_cs.name == result.name then
+                    return false, "configuration set '" .. result.name .. "' already exists"
+                end
             end
             return true
         end,

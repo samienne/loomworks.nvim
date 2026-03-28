@@ -470,35 +470,51 @@ Core (singleton via init.lua)
         └── Operation[]         ← active profile actions, cleaned up on completion
 ```
 
-All objects are **identity-preserving** across remerges: the same table is
-updated in-place via `_update()`, never replaced. Construction uses the same
-path (`new` calls `_update`). Removed objects are marked `_removed = true`.
+All objects are **identity-preserving** across refreshes: the same table is
+updated in-place via `_apply(data, ctx)`, never replaced. Construction uses
+the same path (`new` calls `_apply`). Removed objects are marked
+`_removed = true`.
 
-**Pre-resolved `_update()`**: `_update()` methods receive all references
-pre-resolved by the `_sync_*` caller — no registry lookups inside `_update()`.
-Cross-object navigation uses direct references stored during `_update()`.
+**`_apply(data, ctx)`**: unified constructor/update method on each domain
+object. Receives a plain data table and a deserialization context for
+resolving keys to object references. Sets data fields from the input. Never
+touches runtime fields (`_task_id`, `_listeners`, `_deleting`, etc.). Returns
+`true` on success or `nil, "error"` on failure. Cross-object navigation uses
+direct references resolved during `_apply()`.
 
-**Deserialization context (ctx)**: at the start of each remerge,
-`_build_ctx()` creates a temporary dict-based context from existing arrays
-for O(1) identity matching during sync. Each `_sync_*` method uses ctx for
-create/update/remove decisions, then writes the result as an array back to
-Workspace. The ctx is discarded after remerge completes.
+**First-class fields**: domain objects store state as individual fields, not
+cache-shaped bags. ConfigUnit has `state_value`, `build_dir_value`,
+`last_configured`, `last_built`, `cmake_info`, `_variant`, `_tool_key`, etc.
+Each domain object has a `serialize()` method that produces the cache-shaped
+data table on demand, turning references back into keys.
+
+**DataModel** (`data_model.lua`): deserialization orchestrator. Receives raw
+parsed file data + current domain object arrays (never accesses Workspace
+directly). Builds a deserialization context with resolver methods
+(`ctx:project(key)`, `ctx:tool(mod_type, key)`, etc.). For each object type
+in dependency order: identity-matches against existing, calls `_apply` or
+creates new, registers in ctx for downstream objects. Returns new arrays or
+an error.
 
 **Workspace arrays**: `_modules`, `_projects`, `_config_sets`, `_profiles`,
-`_config_units`, `_profile_projects` are plain arrays after sync. Runtime
-callers iterate with `pairs()` or use `find_*` helpers for key lookups
-(`find_project(key)`, `find_profile(key)`, etc.). O(n) scans are fine for
-the small n involved (1–5 projects, < 20 profiles).
+`_config_units`, `_profile_projects` are plain arrays after refresh. Runtime
+callers iterate with `pairs()` or use `find_*` helpers for key lookups.
 
-**Remerge dependency order** (each step depends on the previous):
-0. `_sync_modules(ctx)` — no deps (Module domain objects from config + cache types)
-1. `_sync_tools()` — needs Modules (tools owned by modules)
-2. `_sync_projects(ctx)` — needs Modules (for `_module` reference), creates Configurations
-3. `_sync_config_sets(ctx)` — resolves Project + Configuration references
-4. `_sync_profiles(ctx)` — resolves ConfigurationSet + Tool references
-5. `_sync_config_units(ctx)` — collects pairs from cache, resolves Tool + Configuration
-6. `_sync_profile_projects(ctx)` — resolves Profile + Project + ConfigUnit references
-7. `_sync_build_dir_refs()` — reverse index from ConfigUnit build dirs
+**Refresh vs mutation**: `refresh()` is only for external file changes
+(FileTracker detects change → DataModel produces new arrays → Workspace swaps
+them in). Mutation methods (task results, materialization, deletion) update
+domain objects in place and call `_save_cache()` to persist. No round-trip
+through files.
+
+**Refresh dependency order** (each step depends on the previous):
+0. Modules — no deps
+1. Tools — needs Modules
+2. Projects (+ Configurations) — needs Modules
+3. ConfigSets — resolves Project + Configuration references
+4. Profiles — resolves ConfigurationSet + Tool references
+5. ConfigUnits — resolves Project + Tool + Configuration
+6. ProfileProjects — resolves Profile + Project + ConfigUnit references
+7. BuildDirRefs — reverse index from ConfigUnit build dirs
 
 **Module** (`module.lua`) wraps a stateless module function table (cmake.lua,
 ets.lua, typescript.lua) as a per-workspace domain object. Owns the Tool
@@ -530,10 +546,11 @@ materializes a profile by property matching, never by computing a key.
 
 **ConfigUnit** is the meeting point — Profile, Project, and task_tracker all
 reference the same ConfigUnit for a given (project_key, config_key). State
-changes on a ConfigUnit are immediately visible to all consumers. ConfigUnits
-are synced during remerge (variant/tool refreshed from cache, runtime state
-preserved) and also created lazily via `get_config_unit()` between remerges.
-ConfigUnit carries direct references: `_project`, `_tool`, `_configuration`.
+changes on a ConfigUnit are immediately visible to all consumers. ConfigUnit
+stores first-class fields (`state_value`, `build_dir_value`, `last_configured`,
+`last_built`, `cmake_info`, `_variant`, `_tool_key`, `_tool_data`) instead of
+a cache-shaped bag. `serialize()` produces the cache entry on demand. ConfigUnit
+carries direct references: `_project`, `_tool`, `_configuration`.
 
 **Target** wraps raw module detection data (type, dependencies, artifact)
 into an object with query methods (`is_executable()`, `display_name()`) and
