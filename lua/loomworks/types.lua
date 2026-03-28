@@ -94,6 +94,11 @@
 --- @field last_configured? string ISO 8601 timestamp
 --- @field last_built? string ISO 8601 timestamp
 --- @field cmake? loomworks.CachedCmakeInfo
+--- Configuration snapshot (inline definition data for self-describing entries):
+--- @field options? table user-defined options snapshot
+--- @field module_config? table module-specific config data snapshot
+--- @field is_user? boolean whether this was a user-defined configuration
+--- @field inherits? string|string[] base configuration names
 
 --- CMake-specific cached info.
 --- @class loomworks.CachedCmakeInfo

@@ -113,6 +113,7 @@ end
 
 --- Serialize this ConfigUnit to a cache entry for persistence.
 --- Produces cache-shaped table from first-class fields and references.
+--- Includes a configuration snapshot so cache entries are self-describing.
 --- @return table cache entry suitable for cache.configurations[id]
 function ConfigUnit:serialize()
     local entry = {
@@ -128,6 +129,19 @@ function ConfigUnit:serialize()
         last_built = self.last_built,
     }
     if self.cmake_info then entry.cmake = self.cmake_info end
+    -- Configuration snapshot: inline definition data for self-describing entries
+    if self._configuration and not self._configuration._removed then
+        local cfg = self._configuration
+        if cfg.options then entry.options = cfg.options end
+        if cfg.module_config and next(cfg.module_config) then
+            entry.module_config = cfg.module_config
+        end
+        if cfg.is_user then entry.is_user = true end
+        if cfg.inherits_names and #cfg.inherits_names > 0 then
+            entry.inherits = #cfg.inherits_names == 1
+                and cfg.inherits_names[1] or cfg.inherits_names
+        end
+    end
     return entry
 end
 

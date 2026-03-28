@@ -138,7 +138,8 @@ function Project:_sync_configurations()
     end
 
     -- Enrich from cache: create Configuration for cache-only variants,
-    -- and mark existing ones as source-missing if not in module/preset output
+    -- and mark existing ones as source-missing if not in module/preset output.
+    -- When creating from cache, use inline configuration snapshot data if available.
     for variant_name in pairs(cache_variants) do
         if not seen[variant_name] then
             local existing = existing_by_name[variant_name]
@@ -146,7 +147,24 @@ function Project:_sync_configurations()
                 existing._source_missing = true
                 new_arr[#new_arr + 1] = existing
             else
-                local cfg = Configuration.new(self, variant_name, {})
+                -- Find the best cache entry with snapshot data for this variant
+                local cfg_data = {}
+                for _, cc in pairs(self.cached_configurations) do
+                    if cc.variant == variant_name then
+                        if cc.is_user then cfg_data.is_user = true end
+                        if cc.options then cfg_data.options = cc.options end
+                        if cc.inherits then cfg_data.inherits = cc.inherits end
+                        -- Merge module_config fields into cfg_data (they become
+                        -- module_config inside Configuration._update)
+                        if cc.module_config then
+                            for k, v in pairs(cc.module_config) do
+                                cfg_data[k] = v
+                            end
+                        end
+                        break
+                    end
+                end
+                local cfg = Configuration.new(self, variant_name, cfg_data)
                 cfg._source_missing = true
                 new_arr[#new_arr + 1] = cfg
             end
