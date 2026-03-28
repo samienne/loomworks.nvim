@@ -92,7 +92,7 @@ describe("Operation", function()
             assert.is_false(op.completed)
 
             -- Set cached state to "built" and unregister task
-            unit._cached.state = "built"
+            unit.state_value = "built"
             time.value = 42
             unit:unregister_task(1)
 
@@ -109,7 +109,7 @@ describe("Operation", function()
             local unit = units[1]
             unit:register_task(1, "configure")
 
-            unit._cached.state = "failed_configure"
+            unit.state_value = "failed_configure"
             time.value = 15
             unit:unregister_task(1)
 
@@ -130,12 +130,12 @@ describe("Operation", function()
             lib_unit:register_task(2, "build")
 
             -- App finishes
-            app_unit._cached.state = "built"
+            app_unit.state_value = "built"
             app_unit:unregister_task(1)
             assert.is_false(op.completed)
 
             -- Lib finishes
-            lib_unit._cached.state = "built"
+            lib_unit.state_value = "built"
             time.value = 60
             lib_unit:unregister_task(2)
             assert.is_true(op.completed)
@@ -154,11 +154,11 @@ describe("Operation", function()
             lib_unit:register_task(2, "build")
 
             -- App succeeds
-            app_unit._cached.state = "built"
+            app_unit.state_value = "built"
             app_unit:unregister_task(1)
 
             -- Lib fails
-            lib_unit._cached.state = "failed_build"
+            lib_unit.state_value = "failed_build"
             lib_unit:unregister_task(2)
 
             assert.is_true(op.completed)
@@ -183,7 +183,7 @@ describe("Operation", function()
             local project = ensure_project(core, "App")
             local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
             -- Set unit to target state before creating operation
-            unit._cached.state = "built"
+            unit.state_value = "built"
             local op = Operation.new(core, profile, "build", { unit }, { [unit] = "built" })
 
             -- Operations only complete on state transitions, not initial state
@@ -223,7 +223,7 @@ describe("Operation", function()
 
             -- Complete one unit
             units[1]:register_task(1, "build")
-            units[1]._cached.state = "built"
+            units[1].state_value = "built"
             units[1]:unregister_task(1)
 
             done, total = op:progress_counts()
@@ -260,7 +260,7 @@ describe("Operation", function()
                 { project = "App", config = "Debug", target = "built" },
             })
             units[1]:register_task(1, "build")
-            units[1]._cached.state = "built"
+            units[1].state_value = "built"
             time.value = 42
             units[1]:unregister_task(1)
             assert.equals("built in 42s", op.message)
@@ -271,7 +271,7 @@ describe("Operation", function()
                 { project = "App", config = "Debug", target = "built" },
             })
             units[1]:register_task(1, "build")
-            units[1]._cached.state = "built"
+            units[1].state_value = "built"
             time.value = 150
             units[1]:unregister_task(1)
             assert.equals("built in 2m30s", op.message)
@@ -287,7 +287,7 @@ describe("Operation", function()
 
             -- Configure completes, but immediately a build starts (deferred task)
             -- so the unit goes configuring → building (never visible as "configured")
-            units[1]._cached.state = "built"
+            units[1].state_value = "built"
             time.value = 10
             units[1]:unregister_task(1)
 
@@ -404,7 +404,7 @@ describe("Operation", function()
             assert.is_false(opB.completed, "Operation B should wait for built")
 
             -- Build completes
-            unit._cached.state = "built"
+            unit.state_value = "built"
             time.value = 15
             unit:unregister_task(2)
 
@@ -442,7 +442,7 @@ describe("Operation", function()
             unit:mark_deleting(true, "cleaning")
 
             -- Deletion fails — cache set to unknown, flag clears
-            unit._cached.state = "unknown"
+            unit.state_value = "unknown"
             time.value = 5
             unit:mark_deleting(false)
 

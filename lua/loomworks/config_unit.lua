@@ -35,7 +35,7 @@ ConfigUnit.__index = ConfigUnit
 --- | "deleting"
 --- | "unknown"
 
---- Create a new ConfigUnit (shell only — call _update(data) to resolve references).
+--- Create a new ConfigUnit (shell only — call _apply(data) to resolve references).
 --- @param workspace loomworks.Workspace
 --- @param id string cache dict key (identity)
 --- @param project_key? string hint for initial project resolution (before cache exists)
@@ -45,6 +45,7 @@ function ConfigUnit.new(workspace, id, project_key)
     self._workspace = workspace
     self.id = id
     self._init_project_key = project_key
+    -- Runtime fields (never touched by _apply)
     self._task_id = nil
     self._last_task_id = nil
     self._action = nil
@@ -55,35 +56,114 @@ function ConfigUnit.new(workspace, id, project_key)
     self._listeners = {}
     self._removed = false
     self.targets = nil
-    self._cached = nil
+    -- References (resolved during _apply)
     self._project = nil
     self._tool = nil
     self._configuration = nil
+    -- First-class data fields
+    self.state_value = nil
+    self.build_dir_value = nil
+    self.last_configured = nil
+    self.last_built = nil
+    self.cmake_info = nil
+    self._config_key = nil
+    self._variant = nil
+    self._tool_key = nil
+    self._tool_data = nil
     return self
 end
 
 --- Refresh project, tool, and configuration references from pre-resolved data.
 --- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners, targets).
+--- Populates first-class fields from the cached input data (reads but does not store).
 --- @param data? { cached?: loomworks.CachedConfig, project?: loomworks.Project, tool?: loomworks.Tool, configuration?: loomworks.Configuration }
-function ConfigUnit:_update(data)
+function ConfigUnit:_apply(data)
     if not data then
         self._project = nil
-        self._cached = nil
         self._tool = nil
         self._configuration = nil
+        self.state_value = nil
+        self.build_dir_value = nil
+        self.last_configured = nil
+        self.last_built = nil
+        self.cmake_info = nil
+        self._config_key = nil
+        self._variant = nil
+        self._tool_key = nil
+        self._tool_data = nil
         return
     end
-    self._cached = data.cached
     self._project = data.project
     self._tool = data.tool
     self._configuration = data.configuration
+    -- Populate first-class fields from cached data (read only, not stored)
+    if data.cached then
+        local c = data.cached
+        self.state_value = c.state
+        self.build_dir_value = c.build_dir
+        self.last_configured = c.last_configured
+        self.last_built = c.last_built
+        self.cmake_info = c.cmake
+        self._config_key = c.config_key
+        self._variant = c.variant
+        self._tool_key = c.tool_key
+        self._tool_data = c.tool_data
+    end
+end
+
+--- Serialize this ConfigUnit to a cache entry for persistence.
+--- Produces cache-shaped table from first-class fields and references.
+--- @return table cache entry suitable for cache.configurations[id]
+function ConfigUnit:serialize()
+    local entry = {
+        project_key = self._project and self._project.key or self._init_project_key,
+        config_key = self._config_key,
+        type = self._project and self._project.type or nil,
+        variant = self._variant,
+        tool_key = self._tool_key,
+        tool_data = self._tool_data,
+        state = self.state_value,
+        build_dir = self.build_dir_value,
+        last_configured = self.last_configured,
+        last_built = self.last_built,
+    }
+    if self.cmake_info then entry.cmake = self.cmake_info end
+    return entry
+end
+
+--- Get the variant name for this unit.
+--- Prefers Configuration name, falls back to stored variant.
+--- @return string|nil
+function ConfigUnit:variant()
+    if self._configuration and not self._configuration._removed then
+        return self._configuration.name
+    end
+    return self._variant
+end
+
+--- Get the config key for this unit.
+--- @return string|nil
+function ConfigUnit:config_key()
+    return self._config_key
+end
+
+--- Get the tool key for this unit.
+--- @return string|nil
+function ConfigUnit:tool_key()
+    return self._tool_key
+end
+
+--- Get the tool data for this unit.
+--- @return table|nil
+function ConfigUnit:tool_data()
+    return self._tool_data
 end
 
 function ConfigUnit:__tostring()
     if self._project then
         return "ConfigUnit(" .. self._project.key .. ", " .. self.id .. ")"
-    elseif self._cached then
-        return "ConfigUnit(" .. self._cached.project_key .. ", " .. self.id .. ")"
+    elseif self._init_project_key then
+        return "ConfigUnit(" .. self._init_project_key .. ", " .. self.id .. ")"
     end
     return "ConfigUnit(" .. self.id .. ")"
 end
@@ -93,17 +173,16 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Get the derived state for this unit.
---- Priority: deleting > running > cached.
+--- Priority: deleting > running > first-class field.
 --- @return loomworks.ConfigUnitState
 function ConfigUnit:state()
     if self._deleting then return "deleting" end
     if self._action then
         return self._action == "configure" and "configuring" or "building"
     end
-    local cached = self:cached_state()
-    if not cached or not cached.state then return "unconfigured" end
+    local state = self.state_value
+    if not state then return "unconfigured" end
     -- Map cached status names to ConfigUnitState names
-    local state = cached.state
     if state == "failed_configure" then return "configure_failed" end
     if state == "failed_build" then return "build_failed" end
     if state == "unknown" then return "unknown" end
@@ -128,17 +207,10 @@ function ConfigUnit:is_deleting()
     return self._deleting
 end
 
---- Get cached state (direct reference resolved during _update).
---- @return loomworks.CachedConfig|nil
-function ConfigUnit:cached_state()
-    return self._cached
-end
-
---- Get the build directory from cache.
+--- Get the build directory.
 --- @return string|nil
 function ConfigUnit:build_dir()
-    local cached = self:cached_state()
-    return cached and cached.build_dir
+    return self.build_dir_value
 end
 
 --- Get the Tool domain object for this unit.
@@ -215,7 +287,7 @@ function ConfigUnit:set_targets(raw)
 end
 
 --- Materialize a skeleton cache entry for this configuration.
---- Creates the entry and updates self._cached directly — no remerge needed.
+--- Writes first-class fields directly — no remerge needed.
 --- @param variant? string configuration variant name
 --- @param tool? loomworks.ToolRef tool reference { key, data }
 function ConfigUnit:materialize(variant, tool)
@@ -231,13 +303,13 @@ function ConfigUnit:materialize(variant, tool)
 
     if not self._project then return end
 
-    -- Read variant from params > cached > configuration name
+    -- Read variant from params > first-class field > configuration name
     local mat_variant = variant
-        or (self._cached and self._cached.variant)
+        or self._variant
         or (self._configuration and self._configuration.name)
-    -- Read tool from params > domain object > cached
-    local tool_key = tool and tool.key or (self._tool and self._tool.key) or (self._cached and self._cached.tool_key)
-    local tool_data = tool and tool.data or (self._tool and self._tool.data) or (self._cached and self._cached.tool_data)
+    -- Read tool from params > domain object > first-class field
+    local tool_key = tool and tool.key or (self._tool and self._tool.key) or self._tool_key
+    local tool_data = tool and tool.data or (self._tool and self._tool.data) or self._tool_data
 
     -- Resolve tool_data from detected tools if not already available
     if tool_key and not tool_data then
@@ -247,26 +319,20 @@ function ConfigUnit:materialize(variant, tool)
         end
     end
 
-    -- Read project_key and config_key from domain objects / cache
-    local project_key = self._project.key
-    local config_key = self._cached and self._cached.config_key
+    -- Read project_key and config_key from domain objects / first-class fields
+    local config_key = self._config_key
         or ws._core._deps.merge.build_config_key(mat_variant, tool_key)
 
-    -- Write to owned _cached table (serialized via _serialize_cache)
-    if not self._cached then
-        local entry = {
-            project_key = project_key,
-            config_key = config_key,
-            type = self._project.type,
-            variant = mat_variant,
-            tool_key = tool_key,
-            tool_data = tool_data,
-        }
-        self._cached = entry
+    -- Write first-class fields only
+    if not self._config_key then
+        self._config_key = config_key
+        self._variant = mat_variant
+        self._tool_key = tool_key
+        self._tool_data = tool_data
         ws:_save_cache()
-    elseif self._cached.variant ~= mat_variant and mat_variant then
+    elseif self._variant ~= mat_variant and mat_variant then
         -- Repair stale variant
-        self._cached.variant = mat_variant
+        self._variant = mat_variant
         ws:_save_cache()
     end
 end
@@ -311,18 +377,17 @@ function ConfigUnit:materialize_pinned(variant, tool)
         end
     end
 
-    -- Ensure config skeleton exists (updates self._cached directly)
+    -- Ensure config skeleton exists (writes first-class fields)
     self:materialize(variant, tool)
-    local cached = self._cached
-    if not cached or not cached.config_key then return nil end
+    if not self._config_key then return nil end
 
     local project_key = self._project.key
-    local config_key = cached.config_key
+    local config_key = self._config_key
 
     -- Build tool info for cache entry
     local tool_obj = self._tool
-    local tool_key = tool_obj and tool_obj.key or cached.tool_key
-    local tool_data = tool_obj and tool_obj.data or cached.tool_data
+    local tool_key = tool_obj and tool_obj.key or self._tool_key
+    local tool_data = tool_obj and tool_obj.data or self._tool_data
     local tool_label = tool_obj and tool_obj.label or nil
     local tool_mod_type = tool_obj and tool_obj.mod_type or nil
 
@@ -331,7 +396,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
         tool_mod_type = mt
     end
 
-    local mat_variant = cached.variant or variant
+    local mat_variant = self._variant or variant
 
     local tools_raw = nil
     if tool_key and tool_mod_type then
@@ -372,7 +437,6 @@ function ConfigUnit:materialize_pinned(variant, tool)
         profile = profile,
         project = self._project,
         configuration = self._configuration,
-        cached = cached,
         config_unit = self,
     })
     ws._profile_projects[#ws._profile_projects + 1] = pp

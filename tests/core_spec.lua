@@ -1531,7 +1531,7 @@ describe("Core", function()
             assert.equals(1, #orphans)
             assert.equals("App", orphans[1].project_key)
             assert.equals("production", orphans[1].config_key)
-            assert.equals("configured", orphans[1].cached.state)
+            assert.equals("configured", orphans[1].unit.state_value)
         end)
 
         it("excludes unconfigured skeletons", function()
@@ -1743,7 +1743,7 @@ describe("Core", function()
             assert.equals(1, #orphans)
             assert.equals("App", orphans[1].project_key)
             assert.equals("feature-config", orphans[1].config_key)
-            assert.equals("built", orphans[1].cached.state)
+            assert.equals("built", orphans[1].unit.state_value)
         end)
 
         it("deleting orphan from branch switch cleans up correctly", function()
@@ -2039,7 +2039,7 @@ describe("Core", function()
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
             -- Simulate build completing: cache state = "built", unregister task
-            unit._cached.state = "built"
+            unit.state_value = "built"
             time.value = 190
             unit:unregister_task(1)
 
@@ -2058,7 +2058,7 @@ describe("Core", function()
             core:create_operation(profile, "configure", { unit }, { [unit] = "configured" })
 
             -- Simulate configure failure
-            unit._cached.state = "failed_configure"
+            unit.state_value = "failed_configure"
             time.value = 45
             unit:unregister_task(1)
 
@@ -2073,7 +2073,7 @@ describe("Core", function()
             unit:register_task(1, "build")
             core:create_operation(profile, "configure+build", { unit }, { [unit] = "built" })
 
-            unit._cached.state = "built"
+            unit.state_value = "built"
             time.value = 120
             unit:unregister_task(1)
 
@@ -2087,14 +2087,14 @@ describe("Core", function()
             -- First operation completes
             unit:register_task(1, "build")
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
-            unit._cached.state = "built"
+            unit.state_value = "built"
             time.value = 10
             unit:unregister_task(1)
             assert.is_not_nil(profile:operation().message)
 
             -- Second operation starts
             unit:register_task(2, "build")
-            unit._cached.state = "configured"
+            unit.state_value = "configured"
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
             -- Has active operation, previous result still available until new one completes
             assert.is_true(profile:has_active_operation())
@@ -2112,7 +2112,7 @@ describe("Core", function()
             unit:register_task(1, "build")
             core:create_operation(profile, "build", { unit }, { [unit] = "built" })
 
-            unit._cached.state = "built"
+            unit.state_value = "built"
             time.value = 10
             unit:unregister_task(1)
 

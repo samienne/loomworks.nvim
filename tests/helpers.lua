@@ -95,7 +95,7 @@ function M.make_mock_workspace(overrides)
         name = overrides.name or "test",
         config = overrides.config or { projects = {} },
         user = overrides.user or { _meta = { version = 1 } },
-        cache = nil,  -- cache is nil after remerge; tests use unit._cached or _serialize_cache()
+        cache = nil,  -- cache is nil after remerge; tests use first-class fields or _serialize_cache()
 
         -- Registries
         _tools_by_type = overrides._tools_by_type or {},
@@ -128,11 +128,6 @@ function M.make_mock_workspace(overrides)
         end
         return nil
     end
-    ws.find_config_unit_for_cached = function(self, cached_entry)
-        for _, unit in pairs(self._config_units) do
-            if unit._cached == cached_entry then return unit end
-        end
-    end
     ws.ensure_config_unit = function(self, project, configuration, tool)
         local existing = self:find_config_unit(project, configuration, tool)
         if existing then return existing end
@@ -149,18 +144,25 @@ function M.make_mock_workspace(overrides)
             unit = ConfigUnit.new(self, id, project.key)
             self._config_units[#self._config_units + 1] = unit
         end
-        -- Preserve existing _cached data (e.g. state from cache overrides),
-        -- but ensure base fields are populated
-        local cached_entry = unit._cached or {}
-        cached_entry.project_key = cached_entry.project_key or project.key
-        cached_entry.config_key = cached_entry.config_key or config_key
-        cached_entry.type = cached_entry.type or project.type
-        cached_entry.variant = cached_entry.variant or variant
+        -- Build cache-shaped table for _apply to read from
+        local cached_entry = {
+            project_key = unit._init_project_key or project.key,
+            config_key = unit._config_key or config_key,
+            type = project.type,
+            variant = unit._variant or variant,
+            state = unit.state_value,
+            build_dir = unit.build_dir_value,
+            last_configured = unit.last_configured,
+            last_built = unit.last_built,
+        }
         if tool_key then
-            cached_entry.tool_key = cached_entry.tool_key or tool_key
-            cached_entry.tool_data = cached_entry.tool_data or (tool and tool.data or nil)
+            cached_entry.tool_key = unit._tool_key or tool_key
+            cached_entry.tool_data = unit._tool_data or (tool and tool.data or nil)
         end
-        unit:_update({
+        if unit.cmake_info then
+            cached_entry.cmake = unit.cmake_info
+        end
+        unit:_apply({
             cached = cached_entry,
             project = project,
             tool = tool,
@@ -240,7 +242,7 @@ function M.make_mock_workspace(overrides)
             end
             if not exists then
                 local unit = ConfigUnit.new(ws, id, entry.project_key)
-                unit._cached = entry
+                unit:_apply({ cached = entry })
                 ws._config_units[#ws._config_units + 1] = unit
             end
         end
@@ -266,17 +268,15 @@ function M.register_profile_project(ws, profile, project_key, variant)
     if project and project._configurations then
         configuration = project._configurations[variant]
     end
-    local cached, config_unit = nil, nil
-    -- Find cached entry via config units (cache is nil after remerge)
+    local config_unit = nil
+    -- Find config unit via first-class fields (cache is nil after remerge)
     for _, unit in pairs(ws._config_units) do
-        if unit._cached
-                and unit._cached.project_key == project_key
-                and unit._cached.variant == variant then
+        if unit._init_project_key == project_key
+                and unit._variant == variant then
             -- Resolve references if not yet resolved (e.g. pre-created from cache)
             if not unit._project then
                 M.refresh_config_unit(ws, unit)
             end
-            cached = unit._cached
             config_unit = unit
             break
         end
@@ -285,7 +285,6 @@ function M.register_profile_project(ws, profile, project_key, variant)
         profile = profile,
         project = project,
         configuration = configuration,
-        cached = cached,
         config_unit = config_unit,
     })
     local reg_key = profile.key .. "\0" .. project_key
@@ -326,23 +325,35 @@ end
 --- @param ws table mock workspace
 --- @param unit table ConfigUnit
 function M.refresh_config_unit(ws, unit)
-    local cached = unit._cached
-    local project_key = cached and cached.project_key or unit._init_project_key
+    local project_key = unit._init_project_key
     local project = project_key and M.find_project_in(ws._projects, project_key) or nil
     local tool = nil
-    if cached and cached.tool_key then
+    if unit._tool_key then
         local mod = project and project._module
-            or (cached.type and ws:find_module(cached.type))
+            or ws:find_module("cmake")
         if mod then
-            tool = mod:find_tool(cached.tool_key)
+            tool = mod:find_tool(unit._tool_key)
         end
     end
     local configuration = nil
-    if cached and cached.variant and project and project._configurations then
-        configuration = project._configurations[cached.variant]
+    if unit._variant and project and project._configurations then
+        configuration = project._configurations[unit._variant]
     end
-    unit:_update({
-        cached = cached,
+    -- Build cache-shaped table from first-class fields for _apply
+    local cached_entry = {
+        project_key = project_key,
+        config_key = unit._config_key,
+        variant = unit._variant,
+        state = unit.state_value,
+        build_dir = unit.build_dir_value,
+        last_configured = unit.last_configured,
+        last_built = unit.last_built,
+        tool_key = unit._tool_key,
+        tool_data = unit._tool_data,
+    }
+    if unit.cmake_info then cached_entry.cmake = unit.cmake_info end
+    unit:_apply({
+        cached = cached_entry,
         project = project,
         tool = tool,
         configuration = configuration,

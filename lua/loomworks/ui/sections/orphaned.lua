@@ -95,7 +95,7 @@ return function(tree, ctx)
                 for _, orphan in ipairs(entries) do
                     local unit = orphan.unit
                     local config_status, status_hl, progress_str, is_spinning =
-                            helpers.resolve_config_status_global(unit, orphan.cached)
+                            helpers.resolve_config_status_global(unit, nil)
 
                     tree:node(orphan.config_key .. " (" .. config_status .. ")" .. progress_str, {
                         fold_key = "orphaned:" .. orphan.project_key .. ":" .. orphan.config_key,
@@ -103,7 +103,7 @@ return function(tree, ctx)
                         hl = status_hl,
                         on_delete = actions.delete_orphaned_config(unit),
                     }, function()
-                        helpers.render_cached_details(tree, config_status, status_hl, orphan.cached, nil, unit)
+                        helpers.render_cached_details(tree, config_status, status_hl, nil, nil, unit)
                     end)
                 end
             end)

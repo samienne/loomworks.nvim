@@ -76,10 +76,12 @@ describe("Project", function()
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
             core._projects[#core._projects + 1] = p
             local unit = ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
-            unit._cached = {
-                project_key = "App", config_key = "Debug:ninja-gcc",
-                type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
-            }
+            unit:_apply({
+                cached = {
+                    project_key = "App", config_key = "Debug:ninja-gcc",
+                    type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
+                },
+            })
             core._config_units[#core._config_units + 1] = unit
             h.refresh_config_unit(core, unit)
             unit:mark_deleting(true)
@@ -95,10 +97,12 @@ describe("Project", function()
             local p = make_project({ tool_key = "ninja-gcc" }, nil, core)
             core._projects[#core._projects + 1] = p
             local unit = ConfigUnit.new(core, "App/Debug:ninja-gcc", "App")
-            unit._cached = {
-                project_key = "App", config_key = "Debug:ninja-gcc",
-                type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
-            }
+            unit:_apply({
+                cached = {
+                    project_key = "App", config_key = "Debug:ninja-gcc",
+                    type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
+                },
+            })
             core._config_units[#core._config_units + 1] = unit
             h.refresh_config_unit(core, unit)
             unit:register_task(1, "configure")

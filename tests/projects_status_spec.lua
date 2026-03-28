@@ -137,8 +137,7 @@ local function simulate_projects_section_rendering(core, project_key, variant)
             config_key = entry.config_key,
             tool_key = entry.tool_key,
             state = state,
-            cached_from_collect = entry.cached,
-            cached_from_unit = unit:cached_state(),
+            has_cache = entry.has_cache,
         }
     end
 
@@ -185,8 +184,7 @@ describe("Projects section cmake status", function()
         assert.equals("Debug:ninja-gcc-12", results[1].config_key)
         assert.equals("built", results[1].state,
             "ConfigUnit should return 'built' but got '" .. results[1].state .. "'"
-            .. "\n  cached_from_collect: " .. vim.inspect(results[1].cached_from_collect)
-            .. "\n  cached_from_unit: " .. vim.inspect(results[1].cached_from_unit))
+            .. "\n  has_cache: " .. tostring(results[1].has_cache))
     end)
 
     it("shows built status when no tools detected but cache has keyed entries", function()
@@ -398,9 +396,8 @@ describe("Projects section cmake status", function()
 
         -- Verify ConfigUnit reads from the same workspace
         local unit = h.find_config_unit_by_id(core._workspace._config_units, "App/Debug:ninja-gcc-12")
-        local cached = unit:cached_state()
-        assert.is_not_nil(cached, "ConfigUnit:cached_state() should find the cache entry")
-        assert.equals("built", cached.state)
+        assert.is_not_nil(unit, "ConfigUnit should exist for the cache entry")
+        assert.equals("built", unit.state_value)
     end)
 end)
 
@@ -428,8 +425,8 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
     local tools_by_type = core:get_tools_by_type()
     -- Derive active_tool_key from the active profile object, matching production code
     local active_profile = active_profile_key and h.find_profile(core:get_profiles(), active_profile_key) or nil
-    local active_project_tool = active_profile and active_profile._tools_raw
-            and active_profile._tools_raw[proj.type] or nil
+    local active_tools = active_profile and active_profile:tools_data() or nil
+    local active_project_tool = active_tools and active_tools[proj.type] or nil
     local active_tool_key = active_project_tool and active_project_tool.key or nil
     local is_active_project = proj.configuration ~= nil and not proj.orphaned
     local is_active_variant = is_active_project

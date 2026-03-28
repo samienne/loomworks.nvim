@@ -309,14 +309,14 @@ describe("ConfigUnit", function()
         end)
     end)
 
-    describe("cached_state", function()
-        it("returns nil when no workspace", function()
-            -- Create a bare ConfigUnit without a workspace to test nil case
+    describe("first-class fields", function()
+        it("fields are nil when no data applied", function()
             local unit = ConfigUnit.new(nil, "App/Debug", "App")
-            assert.is_nil(unit:cached_state())
+            assert.is_nil(unit.state_value)
+            assert.is_nil(unit.build_dir_value)
         end)
 
-        it("returns cached config when present", function()
+        it("fields populated from _apply", function()
             local unit = make_unit({
                 get_workspace = function()
                     return {
@@ -335,13 +335,10 @@ describe("ConfigUnit", function()
                     }
                 end,
             })
-            local cached = unit:cached_state()
-            assert.equals("built", cached.state)
-            assert.equals("/build/App/Debug", cached.build_dir)
+            assert.equals("built", unit.state_value)
+            assert.equals("/build/App/Debug", unit.build_dir_value)
         end)
     end)
-
-    -- build_dir() is a trivial accessor over cached_state() — covered by cached_state tests above.
 
     describe("is_deleting", function()
         it("returns false by default", function()
@@ -450,7 +447,7 @@ describe("ConfigUnit", function()
     end)
 
     describe("cache resolution", function()
-        it("resolves cached data from cache entry", function()
+        it("resolves first-class fields from cache entry", function()
             local core = h.make_mock_core({
                 cache = {
                     configurations = {
@@ -464,15 +461,16 @@ describe("ConfigUnit", function()
                 },
             })
             local unit = h.ensure_config_unit_by_id(core, "App/Debug", "App")
-            assert.is_not_nil(unit._cached)
-            assert.equals("Debug", unit._cached.variant)
+            assert.equals("Debug", unit._variant)
+            assert.equals("Debug", unit._config_key)
         end)
 
-        it("_cached is nil when no cache entry exists", function()
+        it("first-class fields are nil when no cache entry exists", function()
             local core = h.make_mock_core()
             -- Create a bare ConfigUnit without a cache entry to test nil case
             local unit = ConfigUnit.new(core, "App/Debug", "App")
-            assert.is_nil(unit._cached)
+            assert.is_nil(unit._variant)
+            assert.is_nil(unit._config_key)
         end)
 
         it("resolves tool domain object from cache entry", function()
@@ -491,9 +489,8 @@ describe("ConfigUnit", function()
                 },
             })
             local unit = h.ensure_config_unit_by_id(core, "App/cfg-1", "App")
-            assert.is_not_nil(unit._cached)
-            assert.equals("Debug", unit._cached.variant)
-            assert.equals("ninja-gcc", unit._cached.tool_key)
+            assert.equals("Debug", unit._variant)
+            assert.equals("ninja-gcc", unit._tool_key)
         end)
     end)
 end)

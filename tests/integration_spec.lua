@@ -886,7 +886,7 @@ describe("collect helpers", function()
         assert.equals(1, #items)
         assert.equals(unit, items[1].unit)
         assert.equals("App", items[1].unit._project.key)
-        assert.equals("Debug", items[1].unit._cached.config_key)
+        assert.equals("Debug", items[1].unit:config_key())
     end)
 end)
 
@@ -2172,11 +2172,11 @@ describe("opaque keys", function()
         assert.is_not_nil(pp_alpha._project)
         assert.equals("proj-alpha", pp_alpha._project.key)
 
-        -- ConfigUnit has cached state with arbitrary key
-        local cached = pp_alpha:cached_state()
-        assert.is_not_nil(cached)
-        assert.equals("built", cached.state)
-        assert.equals("/root/.nvim/build/arbitrary-dir", cached.build_dir)
+        -- ConfigUnit has first-class fields with arbitrary key
+        local unit = pp_alpha._config_unit
+        assert.is_not_nil(unit)
+        assert.equals("built", unit.state_value)
+        assert.equals("/root/.nvim/build/arbitrary-dir", unit.build_dir_value)
     end)
 
     it("ConfigUnit state resolves through arbitrary cache keys", function()
@@ -2197,14 +2197,14 @@ describe("opaque keys", function()
         assert.is_not_nil(cfg)
         local units = proj:config_units_for_configuration(cfg)
         assert.equals(1, #units)
-        assert.equals("cfg-42", units[1]._cached.config_key)
+        assert.equals("cfg-42", units[1]:config_key())
     end)
 
     it("build_dir_refs track arbitrary cache entries", function()
         local ws = make_opaque_ws()
         local refs = ws:get_build_dir_refs("/root/.nvim/build/arbitrary-dir")
         assert.equals(1, #refs)
-        assert.equals("cfg-42", refs[1]._cached.config_key)
+        assert.equals("cfg-42", refs[1]:config_key())
     end)
 
     it("config set mapping updates work with arbitrary project keys", function()

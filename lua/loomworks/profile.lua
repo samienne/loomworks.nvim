@@ -16,25 +16,24 @@ ProfileProject.__index = ProfileProject
 --- Create a ProfileProject.
 --- @param workspace loomworks.Workspace
 --- @param project_key string used for identity and fallback resolution
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, cached?: loomworks.CachedConfig, config_unit?: loomworks.ConfigUnit }
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit }
 --- @return loomworks.ProfileProject
 function ProfileProject.new(workspace, project_key, data)
     local self = setmetatable({}, ProfileProject)
     self._workspace = workspace
     self._init_project_key = project_key
     self._removed = false
-    if data then self:_update(data) end
+    if data then self:_apply(data) end
     return self
 end
 
 --- Update in place (preserves table identity).
 --- Receives pre-resolved references from _sync_profile_projects.
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, cached?: loomworks.CachedConfig, config_unit?: loomworks.ConfigUnit }
-function ProfileProject:_update(data)
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit }
+function ProfileProject:_apply(data)
     self._profile = data.profile
     self._project = data.project
     self._configuration = data.configuration
-    self._cached = data.cached
     self._config_unit = data.config_unit
 end
 
@@ -108,17 +107,29 @@ function ProfileProject:tool_object()
     return self._profile:tool_object_for(self._project._module)
 end
 
---- Get cached state (direct reference resolved during _update).
---- @return loomworks.CachedConfig|nil
-function ProfileProject:cached_state()
-    return self._cached
-end
-
---- Get the build directory from cache.
+--- Get the build directory.
 --- @return string|nil
 function ProfileProject:build_dir()
-    local cached = self:cached_state()
-    return cached and cached.build_dir
+    if self._config_unit then
+        return self._config_unit.build_dir_value
+    end
+    return nil
+end
+
+--- Get the config key for this project-in-profile.
+--- @return string|nil
+function ProfileProject:config_key()
+    if self._config_unit then
+        return self._config_unit:config_key()
+    end
+    return nil
+end
+
+--- Get the project key for this project-in-profile.
+--- @return string
+function ProfileProject:project_key()
+    if self._project then return self._project.key end
+    return self._init_project_key
 end
 
 -- ========================== Profile ==========================
@@ -163,14 +174,14 @@ function Profile.new(workspace, key, data)
     self._workspace = workspace
     self.key = key
     self._removed = false
-    if data then self:_update(data) end
+    if data then self:_apply(data) end
     return self
 end
 
 --- Update all data fields in place (preserves table identity).
 --- Pre-resolved fields (_tool_objects, _config_set_ref) are set by _sync_profiles.
 --- @param data loomworks.ProfileDef
-function Profile:_update(data)
+function Profile:_apply(data)
     self._configuration_set_name = data.configuration_set
     self._tools_raw = data.tools or nil
     self._cached_configurations = data._cached_configurations
@@ -244,10 +255,37 @@ function Profile:config_set()
     return self._config_set_ref
 end
 
+--- Derive tools dict from owned data.
+--- Prefers _tools_raw (updated by mutations), falls back to deriving from
+--- resolved Tool domain objects (populated during sync).
+--- @return table<string, { key: string, data: table, label: string|nil }>|nil
+function Profile:tools_data()
+    -- _tools_raw is authoritative when set (updated by mutation methods)
+    if self._tools_raw then return self._tools_raw end
+    if not self._tool_objects then return nil end
+    local result = {}
+    for mod, tool in pairs(self._tool_objects) do
+        result[mod.id] = {
+            key = tool.key,
+            data = tool.data,
+            label = tool.label,
+        }
+    end
+    return next(result) and result or nil
+end
+
 --- Get the ToolRef for a specific module type from this profile's tools.
+--- Prefers resolved domain objects, falls back to raw tools.
 --- @param mod_type string module type (e.g. "cmake")
 --- @return loomworks.ToolRef|nil
 function Profile:tool_for(mod_type)
+    if self._tool_objects then
+        for mod, tool in pairs(self._tool_objects) do
+            if mod.id == mod_type then
+                return { key = tool.key, data = tool.data, label = tool.label }
+            end
+        end
+    end
     return self._tools_raw and self._tools_raw[mod_type] or nil
 end
 
@@ -264,10 +302,10 @@ end
 --- @param project_type? string module type of the project
 --- @return string
 function Profile:config_key(variant, project_type)
-    if self._tools_raw and project_type then
-        local tool = self._tools_raw[project_type]
-        if tool and tool.key then
-            return variant .. ":" .. tool.key
+    if project_type then
+        local tool_ref = self:tool_for(project_type)
+        if tool_ref and tool_ref.key then
+            return variant .. ":" .. tool_ref.key
         end
     end
     return variant
@@ -281,8 +319,9 @@ function Profile:serialize_cache()
     if self._configuration_set_name then
         entry.configuration_set = self._configuration_set_name
     end
-    if self._tools_raw then
-        entry.tools = self._tools_raw
+    local tools = self:tools_data()
+    if tools then
+        entry.tools = tools
     end
     if self.mappings and not self._configuration_set_name then
         entry.mappings = self.mappings

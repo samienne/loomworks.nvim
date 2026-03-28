@@ -721,7 +721,7 @@ describe("cache coherence", function()
 
             local orphans = core:get_orphaned_configs()
             assert.equals(1, #orphans)
-            assert.equals("failed_configure", orphans[1].cached.state)
+            assert.equals("failed_configure", orphans[1].unit.state_value)
         end)
 
         it("keyed-tool config without profile stays as orphan", function()
@@ -1216,7 +1216,7 @@ describe("cache coherence", function()
             local plan = profile:plan_deletion()
             assert.equals(1, #plan.items)
             assert.is_not_nil(plan.items[1].unit)
-            assert.equals("development", plan.items[1].unit._cached.config_key)
+            assert.equals("development", plan.items[1].unit:config_key())
 
             core:execute_deletion(plan, { deactivate_profile = profile })
             assert_cache_coherent(core, "after delete, orphan survives")

@@ -412,12 +412,12 @@ describe("ProfileProject", function()
             type = "cmake", path = "App", status = "unconfigured",
             configurations = {}, cached_configurations = {},
         })
-        -- Create ConfigUnit with cached entry so ProfileProject resolves it
+        -- Create ConfigUnit with first-class fields so ProfileProject resolves it
         local ConfigUnit = require("loomworks.config_unit")
         local unit = ConfigUnit.new(core, "App/Debug", "App")
-        unit._cached = {
-            project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug",
-        }
+        unit:_apply({
+            cached = { project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug" },
+        })
         core._config_units[#core._config_units + 1] = unit
         h.refresh_config_unit(core, unit)
         local tools = tool_key and { cmake = { key = tool_key } } or nil
@@ -546,7 +546,7 @@ describe("ProfileProject", function()
         end)
     end)
 
-    -- cached_state() and build_dir() delegate to ConfigUnit.cached_state() —
-    -- covered by config_unit_spec.lua cached_state tests.
+    -- build_dir() delegates to ConfigUnit —
+    -- covered by config_unit_spec.lua tests.
 
 end)

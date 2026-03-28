@@ -420,7 +420,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
     -- Step 3: Update configuration_set domain objects + raw config
     for cs in pairs(old_cs_mappings) do
         cs.mappings[self] = new_name
-        -- Keep raw config in sync (needed by _refresh_after_cache_change)
+        -- Keep raw config in sync for serialization
         if ws.config.configuration_sets and ws.config.configuration_sets[cs.name] then
             ws.config.configuration_sets[cs.name][self.key] = new_name
         end
@@ -450,26 +450,31 @@ function Project:rename_configuration(old_name, new_name, config_data)
     local cache_rename_map = {} -- old_cache_key -> new_cache_key
     local to_migrate = {}
     for _, unit in pairs(ws._config_units) do
-        if unit._project == self and unit._cached
-                and unit._cached.variant == old_name then
+        if unit._project == self and unit._variant
+                and unit._variant == old_name then
             to_migrate[#to_migrate + 1] = unit
         end
     end
     for _, unit in ipairs(to_migrate) do
-        local entry = unit._cached
-        local new_config_key = ws._core._deps.merge.build_config_key(new_name, entry.tool_key)
+        local old_config_key = unit._config_key
+        local new_config_key = ws._core._deps.merge.build_config_key(new_name, unit._tool_key)
         local new_cache_key = ws._core._deps.cache.config_cache_key(self.key, new_config_key)
-        -- Update the owned cache entry fields
-        entry.variant = new_name
-        entry.config_key = new_config_key
+        -- Update first-class fields
+        unit._variant = new_name
+        unit._config_key = new_config_key
         -- Update ConfigUnit identity
         local old_id = unit.id
         unit.id = new_cache_key
         cache_rename_map[old_id] = new_cache_key
-        -- Keep cache dict in sync during transition
-        if ws.cache and ws.cache.configurations then
-            ws.cache.configurations[new_cache_key] = entry
-            ws.cache.configurations[old_id] = nil
+        -- Update Project.cached_configurations (was previously done via shared _cached table mutation)
+        if old_config_key and self.cached_configurations then
+            local entry = self.cached_configurations[old_config_key]
+            if entry then
+                self.cached_configurations[old_config_key] = nil
+                entry.variant = new_name
+                entry.config_key = new_config_key
+                self.cached_configurations[new_config_key] = entry
+            end
         end
     end
 
@@ -532,7 +537,12 @@ function Project:rename_configuration(old_name, new_name, config_data)
     ws:_save_cache()
 
     self:_refresh_configurations()
-    ws:_refresh_after_cache_change()
+    -- Rebuild PPs for all profiles (rename may have changed keys, mappings, and config units)
+    for _, profile in pairs(ws._profiles) do
+        ws:_rebuild_profile_projects_for(profile)
+    end
+    ws:_sync_build_dir_refs()
+    ws:_resolve_active_profile()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true
 end

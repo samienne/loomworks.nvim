@@ -367,9 +367,8 @@ describe("record_task_result state protection", function()
             success = true,
         })
 
-        local cached = unit:cached_state()
-        assert.equals("built", cached.state)
-        assert.is_not_nil(cached.last_configured)
+        assert.equals("built", unit.state_value)
+        assert.is_not_nil(unit.last_configured)
     end)
 
     it("sets configured state when previously unconfigured", function()

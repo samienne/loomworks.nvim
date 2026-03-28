@@ -10,6 +10,7 @@ local M = {}
 local config_mod = require("loomworks.config")
 local user_mod = require("loomworks.user")
 local cache_mod = require("loomworks.cache")
+local data_model = require("loomworks.data_model")
 local ConfigUnit = require("loomworks.config_unit")
 local Profile = require("loomworks.profile").Profile
 local ProfileProject = require("loomworks.profile").ProfileProject
@@ -227,41 +228,6 @@ function Workspace.new(core, data)
     return self
 end
 
---- Build a temporary deserialization context from existing arrays.
---- The ctx provides O(1) key->object lookups for identity matching during sync.
---- Discarded after remerge completes.
---- @return table ctx
-function Workspace:_build_ctx()
-    local ctx = {
-        modules = {},
-        projects = {},
-        config_sets = {},
-        profiles = {},
-        config_units = {},
-        profile_projects = {},
-    }
-    for _, mod in pairs(self._modules) do ctx.modules[mod.id] = mod end
-    for _, p in pairs(self._projects) do ctx.projects[p.key] = p end
-    for _, cs in pairs(self._config_sets) do ctx.config_sets[cs.name] = cs end
-    for _, pr in pairs(self._profiles) do ctx.profiles[pr.key] = pr end
-    for _, cu in pairs(self._config_units) do ctx.config_units[cu.id] = cu end
-    for _, pp in pairs(self._profile_projects) do
-        local reg_key = pp._profile.key .. "\0" .. pp._init_project_key
-        ctx.profile_projects[reg_key] = pp
-    end
-    return ctx
-end
-
---- Find the ConfigUnit whose _cached reference points to the given cache entry.
---- Used at cache→domain boundaries when iterating cache.configurations.
---- @param cached_entry table cache entry reference
---- @return loomworks.ConfigUnit|nil
-function Workspace:find_config_unit_for_cached(cached_entry)
-    for _, unit in pairs(self._config_units) do
-        if unit._cached == cached_entry then return unit end
-    end
-end
-
 --- Get or create a ConfigUnit for a (project_key, config_key) pair.
 --- Find an existing ConfigUnit by property match.
 --- @param project loomworks.Project
@@ -308,7 +274,7 @@ function Workspace:ensure_config_unit(project, configuration, tool)
 
     -- Create ConfigUnit and register — pre-resolve references
     local unit = ConfigUnit.new(self, id, project.key)
-    unit:_update({
+    unit:_apply({
         cached = entry,
         project = project,
         tool = tool,
@@ -324,9 +290,7 @@ end
 -- ===========================================================================
 
 --- Serialize workspace state to a cache data structure for persistence.
---- Reads from domain objects (ConfigUnit, Profile) first, then fills in
---- anything from ws.cache that isn't yet represented (e.g. during
---- materialization before _refresh_after_cache_change runs).
+--- Always reads from domain objects (ConfigUnit, Profile).
 --- @return loomworks.CacheData
 function Workspace:_serialize_cache()
     local data = {
@@ -334,56 +298,19 @@ function Workspace:_serialize_cache()
         configurations = {},
     }
 
-    -- Configurations: use ws.cache as authoritative source during transition.
-    -- Cache keys determine which configs exist; domain objects provide data
-    -- where available; cache entries fill in the rest.
-    local cache_configs = self.cache and self.cache.configurations or nil
-    if cache_configs then
-        -- Cache configurations exist: use cache keys as the authoritative set
-        for key, cache_entry in pairs(cache_configs) do
-            local entry = cache_entry
-            -- Prefer ConfigUnit._cached if it's the same table (owned copy)
-            -- Strip runtime-only data (targets) before persisting
+    -- Configurations: always serialize from ConfigUnit objects
+    for _, unit in pairs(self._config_units) do
+        if unit._config_key then
+            local entry = unit:serialize()
             if entry.cmake then entry.cmake.targets = nil end
-            data.configurations[key] = entry
-        end
-    else
-        -- No cache configurations: serialize from ConfigUnit objects
-        for _, unit in pairs(self._config_units) do
-            if unit._cached then
-                local entry = unit._cached
-                if entry.cmake then entry.cmake.targets = nil end
-                data.configurations[unit.id] = entry
-            end
+            data.configurations[unit.id] = entry
         end
     end
 
-    -- Profiles: use ws.cache as authoritative source during transition.
-    -- Domain objects supplement cache (for enriched serialization).
-    -- Cache entries missing from domain objects are included as-is.
-    -- Domain objects not in cache are included only when cache has no
-    -- profiles table at all (pre-materialization state).
+    -- Profiles: always serialize from domain objects
     local profiles = {}
-    if self.cache and self.cache.profiles then
-        -- Cache profiles exist: use cache keys as the authoritative set.
-        -- Serialize from domain objects where available, fall back to cache.
-        local domain_by_key = {}
-        for _, profile in pairs(self._profiles) do
-            domain_by_key[profile.key] = profile
-        end
-        for key, cache_entry in pairs(self.cache.profiles) do
-            local domain = domain_by_key[key]
-            if domain then
-                profiles[key] = domain:serialize_cache()
-            else
-                profiles[key] = cache_entry
-            end
-        end
-    else
-        -- No cache profiles: serialize all domain objects
-        for _, profile in pairs(self._profiles) do
-            profiles[profile.key] = profile:serialize_cache()
-        end
+    for _, profile in pairs(self._profiles) do
+        profiles[profile.key] = profile:serialize_cache()
     end
 
     if next(profiles) then
@@ -423,52 +350,35 @@ function Workspace:remerge()
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         self, self._tools_by_type)
     self._active_set = active_set
-    local ctx = self:_build_ctx()
-    self:_sync_modules(ctx)
-    self:_sync_tools()                       -- uses find_module, may create modules
-    -- Rebuild ctx.modules (new modules may have been created by _sync_tools)
-    ctx.modules = {}
-    for _, mod in pairs(self._modules) do ctx.modules[mod.id] = mod end
-    self:_sync_projects(ctx)
-    self:_sync_config_sets(ctx)
-    self:_sync_profiles(ctx, all_profile_defs)
-    self:_sync_config_units(ctx)
-    self:_sync_profile_projects(ctx)
-    self:_sync_build_dir_refs()
+
+    local current = {
+        modules = self._modules,
+        projects = self._projects,
+        config_sets = self._config_sets,
+        profiles = self._profiles,
+        config_units = self._config_units,
+        profile_projects = self._profile_projects,
+    }
+
+    local result = data_model.refresh(self, self.config, self.cache, active_set, all_profile_defs, current, {
+        modules_registry = self._core._deps.modules,
+        normalize = self._core._deps.normalize,
+        tools_by_type = self._tools_by_type,
+    })
+
+    self._modules = result.modules
+    self._projects = result.projects
+    self._config_sets = result.config_sets
+    self._profiles = result.profiles
+    self._config_units = result.config_units
+    self._profile_projects = result.profile_projects
+    self._build_dir_refs = result.build_dir_refs
+
     self:_resolve_active_profile()
     -- After deserialization: cache is fully represented by domain objects.
     -- Preserve metadata for serialization, then nil the cache.
     self._cache_meta = self.cache and self.cache._meta or self._cache_meta
     self.cache = nil
-    self._core._deps.events.emit("active_set_changed", self._active_set)
-end
-
---- Lightweight refresh after cache changes (task results, deletions, materialization).
---- Re-syncs profiles, profile_projects, config units, and build dir refs
---- without running the full merge pipeline (no merge.merge() call, no
---- re-reading config). Uses get_all_profiles to pick up new cached profiles.
-
-function Workspace:_refresh_after_cache_change()
-    -- Temporarily reconstruct cache from domain objects for merge functions
-    local temp_cache = self:_serialize_cache()
-    local all_profile_defs = self._core._deps.merge.get_all_profiles(
-        self.config, temp_cache, self._tools_by_type)
-    -- Store temporarily so _sync methods can read it during deserialization
-    self.cache = temp_cache
-    local ctx = self:_build_ctx()
-    self:_sync_tools()
-    ctx.modules = {}
-    for _, mod in pairs(self._modules) do ctx.modules[mod.id] = mod end
-    self:_sync_profiles(ctx, all_profile_defs)
-    self:_sync_config_units(ctx)
-    self:_sync_profile_projects(ctx)
-    self:_sync_build_dir_refs()
-    self:_resolve_active_profile()
-    -- Nil cache again after sync
-    if self.cache then
-        self._cache_meta = self.cache._meta
-        self.cache = nil
-    end
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -486,294 +396,100 @@ function Workspace:_resolve_active_profile()
     end
 end
 
---- Sync the profiles registry with current merge data.
---- Creates new Profile objects, updates existing ones in place, removes stale ones.
---- Pre-resolves Tool objects and ConfigurationSet before calling _update.
---- @param ctx table deserialization context with O(1) lookups
---- @param all_defs table<string, loomworks.ProfileDef> profile definitions from merge
-function Workspace:_sync_profiles(ctx, all_defs)
-    for key, profile in pairs(ctx.profiles) do
-        if not all_defs[key] then
-            profile._removed = true
-            ctx.profiles[key] = nil
+
+--- Rebuild ProfileProject objects for a single profile.
+--- Removes existing PPs for this profile from _profile_projects, creates new
+--- ones from the profile's mappings, and populates the profile's _projects_list
+--- and _projects_by_key. Used after mutations that change a profile's structure
+--- without running a full _sync_profile_projects pass.
+--- @param profile loomworks.Profile
+function Workspace:_rebuild_profile_projects_for(profile)
+    -- Build lookup tables
+    local projects_by_key = {}
+    for _, p in pairs(self._projects) do projects_by_key[p.key] = p end
+    local units_by_id = {}
+    for _, u in pairs(self._config_units) do units_by_id[u.id] = u end
+
+    -- Build identity map of existing PPs for this profile (for reuse)
+    local existing_pps = {}
+    for _, pp in pairs(self._profile_projects) do
+        if pp._profile == profile then
+            local reg_key = profile.key .. "\0" .. pp._init_project_key
+            existing_pps[reg_key] = pp
         end
     end
 
-    for key, data in pairs(all_defs) do
-        -- Pre-resolve Tier 3 mappings from cached configurations
-        -- (replaces passing _ws_cache into Profile)
-        data._resolved_mappings = nil
-        if data._cached_configurations and not data.mappings then
-            local mappings = {}
-            local cache_cfgs = self.cache and self.cache.configurations or nil
-            if cache_cfgs then
-                for _, ck in ipairs(data._cached_configurations) do
-                    local cached_config = cache_cfgs[ck]
-                    if cached_config and cached_config.variant then
-                        mappings[cached_config.project_key] = cached_config.variant
-                    end
-                end
-            end
-            if next(mappings) then data._resolved_mappings = mappings end
-        end
-        data._tool_objects = nil
-        if data.tools then
-            local tool_objs = {}
-            for mod_type, tool_ref in pairs(data.tools) do
-                local mod = ctx.modules[mod_type]
-                if mod then
-                    local tool = mod:find_tool(tool_ref.key)
-                    if tool then tool_objs[mod] = tool end
-                end
-            end
-            if next(tool_objs) then data._tool_objects = tool_objs end
-        end
-        data._config_set_ref = nil
-        if data.configuration_set then
-            data._config_set_ref = ctx.config_sets[data.configuration_set]
-        end
-
-        local existing = ctx.profiles[key]
-        if existing then
-            existing:_update(data)
-        else
-            ctx.profiles[key] = Profile.new(self, key, data)
+    -- Remove old PPs for this profile from the registry
+    local kept = {}
+    for _, pp in pairs(self._profile_projects) do
+        if pp._profile ~= profile then
+            kept[#kept + 1] = pp
         end
     end
 
-    local arr = {}
-    for _, p in pairs(ctx.profiles) do arr[#arr + 1] = p end
-    self._profiles = arr
-end
-
---- Sync the projects registry with current active set data.
---- Creates new Project objects, updates existing ones in place, removes stale ones.
---- Pre-resolves Module, Tool, and dependency references before calling _update.
---- @param ctx table deserialization context with O(1) lookups
-function Workspace:_sync_projects(ctx)
-    if not self._active_set then return end
-    local new_data = self._active_set.projects
-
-    for key, project in pairs(ctx.projects) do
-        if not new_data[key] then
-            project._removed = true
-            ctx.projects[key] = nil
-        end
-    end
-
-    for key, data in pairs(new_data) do
-        local mod = data.type and ctx.modules[data.type] or nil
-        data._module = mod
-        data._tool = nil
-        if data.tool_key and mod then
-            data._tool = mod:find_tool(data.tool_key)
-        end
-        data._depends_on = nil
-        if data.depends_on then
-            local deps = {}
-            for _, dep_key in ipairs(data.depends_on) do
-                local dep = ctx.projects[dep_key]
-                if dep then deps[#deps + 1] = dep end
-            end
-            if #deps > 0 then data._depends_on = deps end
-        end
-
-        local existing = ctx.projects[key]
-        if existing then
-            existing:_update(data)
-        else
-            ctx.projects[key] = Project.new(self, key, data)
-        end
-    end
-
-    local arr = {}
-    for _, p in pairs(ctx.projects) do arr[#arr + 1] = p end
-    self._projects = arr
-end
-
---- Sync the config sets registry with current config data.
---- Runs after _sync_projects so Project objects are available.
---- Pre-resolves project_key -> Project before calling _update.
---- @param ctx table deserialization context with O(1) lookups
-function Workspace:_sync_config_sets(ctx)
-    local defs = self.config.configuration_sets or {}
-
-    for name, cs in pairs(ctx.config_sets) do
-        if not defs[name] then
-            cs._removed = true
-            ctx.config_sets[name] = nil
-        end
-    end
-
-    for name, raw_mappings in pairs(defs) do
-        local resolved = {}
-        for project_key, variant in pairs(raw_mappings) do
-            local project = ctx.projects[project_key]
-            if project then resolved[project] = variant end
-        end
-        local existing = ctx.config_sets[name]
-        if existing then
-            existing:_update(resolved)
-        else
-            ctx.config_sets[name] = ConfigurationSet.new(self, name, resolved)
-        end
-    end
-
-    local arr = {}
-    for _, cs in pairs(ctx.config_sets) do arr[#arr + 1] = cs end
-    self._config_sets = arr
-end
-
---- Sync the profile projects registry.
---- Derives data from synced profiles' mappings.
---- Runs after _sync_profiles so Profile objects and their mappings are available.
---- Also builds per-Profile direct lists.
---- @param ctx table deserialization context with O(1) lookups
-function Workspace:_sync_profile_projects(ctx)
-    local expected = {}
-    for _, profile in pairs(ctx.profiles) do
-        if profile.mappings then
-            for project_key, variant in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. project_key
-                local project = ctx.projects[project_key]
-                local configuration = nil
-                if project and project._configurations then
-                    configuration = project._configurations[variant]
-                end
-                local cached, config_unit = nil, nil
-                if profile._cached_configurations then
-                    for _, ck in ipairs(profile._cached_configurations) do
-                        local unit = ctx.config_units[ck]
-                        if unit and unit._cached
-                                and unit._cached.project_key == project_key
-                                and unit._cached.variant == variant then
-                            cached = unit._cached
-                            config_unit = unit
-                            break
-                        end
-                    end
-                end
-                expected[reg_key] = {
-                    project_key = project_key,
-                    profile = profile,
-                    project = project,
-                    configuration = configuration,
-                    cached = cached,
-                    config_unit = config_unit,
-                }
-            end
-        end
-    end
-
-    for reg_key, pp in pairs(ctx.profile_projects) do
-        if not expected[reg_key] then
-            pp._removed = true
-            ctx.profile_projects[reg_key] = nil
-        end
-    end
-
-    for reg_key, data in pairs(expected) do
-        local existing = ctx.profile_projects[reg_key]
-        if existing then
-            existing:_update(data)
-        else
-            ctx.profile_projects[reg_key] = ProfileProject.new(
-                self, data.project_key, data)
-        end
-    end
-
-    local arr = {}
-    for _, pp in pairs(ctx.profile_projects) do arr[#arr + 1] = pp end
-    self._profile_projects = arr
-
-    local dependency = require("loomworks.dependency")
-    for _, profile in pairs(ctx.profiles) do
-        local list = {}
-        local by_key = {}
-        if profile.mappings then
-            for project_key in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. project_key
-                local pp = ctx.profile_projects[reg_key]
-                if pp then
-                    list[#list + 1] = pp
-                    by_key[project_key] = pp
-                end
-            end
-        end
-        profile._projects_list = dependency.toposort(list)
-        profile._projects_by_key = by_key
-    end
-end
-
---- Sync the config units registry.
---- Collects all valid (project_key, config_key) pairs from cache,
---- creates/updates/removes ConfigUnit objects. Preserves runtime state.
---- Pre-resolves project, tool, and configuration references before calling _update.
---- @param ctx table deserialization context with O(1) lookups
-function Workspace:_sync_config_units(ctx)
-    local expected = {}
-
-    if self.cache.configurations then
-        for cache_dict_key, cached_config in pairs(self.cache.configurations) do
-            local project_key = cached_config.project_key
-            local project = project_key and ctx.projects[project_key] or nil
-            local tool = nil
-            if cached_config.tool_key then
-                local mod = project and project._module
-                    or (cached_config.type and ctx.modules[cached_config.type])
-                if mod then tool = mod:find_tool(cached_config.tool_key) end
-            end
+    -- Build new PPs from profile mappings
+    local new_pps = {}
+    if profile.mappings then
+        for project_key, variant in pairs(profile.mappings) do
+            local project = projects_by_key[project_key]
             local configuration = nil
-            local variant = cached_config.variant
-            if variant and project and project._configurations then
+            if project and project._configurations then
                 configuration = project._configurations[variant]
             end
-            expected[cache_dict_key] = {
+            local config_unit = nil
+            if profile._cached_configurations then
+                for _, ck in ipairs(profile._cached_configurations) do
+                    local unit = units_by_id[ck]
+                    if unit and unit._init_project_key == project_key
+                            and unit._variant == variant then
+                        config_unit = unit
+                        break
+                    end
+                end
+            end
+            local reg_key = profile.key .. "\0" .. project_key
+            local data = {
                 project_key = project_key,
-                cached = cached_config,
+                profile = profile,
                 project = project,
-                tool = tool,
                 configuration = configuration,
+                config_unit = config_unit,
             }
+            local existing = existing_pps[reg_key]
+            if existing then
+                existing:_apply(data)
+                new_pps[#new_pps + 1] = existing
+            else
+                new_pps[#new_pps + 1] = ProfileProject.new(
+                    self, project_key, data)
+            end
         end
     end
 
-    for id, unit in pairs(ctx.config_units) do
-        if not expected[id] and not unit:is_running() and not unit:is_deleting() then
-            unit._removed = true
-            ctx.config_units[id] = nil
-        end
+    -- Merge into global registry
+    for _, pp in ipairs(new_pps) do
+        kept[#kept + 1] = pp
     end
+    self._profile_projects = kept
 
-    for id, data in pairs(expected) do
-        local existing = ctx.config_units[id]
-        if existing then
-            existing:_update(data)
-        else
-            local unit = ConfigUnit.new(self, id, data.project_key)
-            unit:_update(data)
-            ctx.config_units[id] = unit
-        end
+    -- Rebuild profile's sorted project list
+    local dependency = require("loomworks.dependency")
+    local list = {}
+    local by_key = {}
+    for _, pp in ipairs(new_pps) do
+        list[#list + 1] = pp
+        by_key[pp._init_project_key] = pp
     end
-
-    local arr = {}
-    for _, unit in pairs(ctx.config_units) do arr[#arr + 1] = unit end
-    self._config_units = arr
+    profile._projects_list = dependency.toposort(list)
+    profile._projects_by_key = by_key
 end
 
+
 --- Rebuild the build dir reverse index from ConfigUnit objects.
---- Maps normalized_build_dir -> array of ConfigUnits that reference it.
+--- Delegates to data_model.sync_build_dir_refs.
 function Workspace:_sync_build_dir_refs()
-    local refs = {}
-    for _, unit in pairs(self._config_units) do
-        local bd = unit:build_dir()
-        if bd then
-            local dir = self._core._deps.normalize(bd)
-            if not refs[dir] then refs[dir] = {} end
-            refs[dir][#refs[dir] + 1] = unit
-        end
-    end
-    self._build_dir_refs = refs
+    self._build_dir_refs = data_model.sync_build_dir_refs(
+        self._config_units, self._core._deps.normalize)
 end
 
 --- Get the ConfigUnits that share a build directory.
@@ -794,47 +510,6 @@ function Workspace:find_module(mod_type)
     for _, mod in pairs(self._modules) do
         if mod.id == mod_type then return mod end
     end
-end
-
---- Sync Module domain objects from config projects and cache.
---- Creates Module objects for every module type referenced in the workspace.
---- @param ctx table deserialization context with O(1) lookups
-function Workspace:_sync_modules(ctx)
-    local needed = {}
-    if self.config and self.config.projects then
-        for _, project in pairs(self.config.projects) do
-            if project.type then needed[project.type] = true end
-        end
-    end
-    if self.cache and self.cache.configurations then
-        for _, cc in pairs(self.cache.configurations) do
-            if cc.type then needed[cc.type] = true end
-        end
-    end
-
-    for id, mod in pairs(ctx.modules) do
-        if not needed[id] then
-            mod._removed = true
-            ctx.modules[id] = nil
-        end
-    end
-
-    for id in pairs(needed) do
-        local impl = self._core._deps.modules.get(id)
-        if impl then
-            local existing = ctx.modules[id]
-            if existing then
-                existing:_update(impl)
-                existing._removed = false
-            else
-                ctx.modules[id] = Module.new(id, impl)
-            end
-        end
-    end
-
-    local arr = {}
-    for _, mod in pairs(ctx.modules) do arr[#arr + 1] = mod end
-    self._modules = arr
 end
 
 -- ===========================================================================
@@ -867,54 +542,6 @@ function Workspace:find_tool(mod_type, tool_key)
     return mod and mod:find_tool(tool_key) or nil
 end
 
---- Sync Tool objects from detected tools (from _tools_by_type) and cache data.
---- Delegates tool creation to Module objects (tools owned by modules).
-function Workspace:_sync_tools()
-    local seen = {}
-
-    -- From detected tools
-    for mod_type, tools in pairs(self._tools_by_type) do
-        for _, dt in ipairs(tools) do
-            local tool = self:get_or_create_tool(
-                mod_type, dt.tool_key, dt.tool_data, dt.tool_label)
-            seen[tool] = true
-        end
-    end
-
-    -- From cache: tool_data stored inline in configurations and profiles
-    if self.cache.configurations then
-        for _, cc in pairs(self.cache.configurations) do
-            if cc.tool_key and cc.type then
-                local tool = self:get_or_create_tool(
-                    cc.type, cc.tool_key, cc.tool_data or {}, nil)
-                seen[tool] = true
-            end
-        end
-    end
-    if self.cache.profiles then
-        for _, cp in pairs(self.cache.profiles) do
-            if cp.tools then
-                for mod_type, t in pairs(cp.tools) do
-                    if t.key then
-                        local tool = self:get_or_create_tool(
-                            mod_type, t.key, t.data or {}, t.label)
-                        seen[tool] = true
-                    end
-                end
-            end
-        end
-    end
-
-    -- Remove tools that are no longer referenced (across all modules)
-    for _, mod in pairs(self._modules) do
-        for rk, tool in pairs(mod._tools) do
-            if not seen[tool] then
-                tool._removed = true
-                mod._tools[rk] = nil
-            end
-        end
-    end
-end
 
 --- Get all Tool objects for a module type.
 --- @param mod_type string
@@ -1209,16 +836,16 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
             tool_data = project_tool_data,
         }
         if existing_unit then
-            -- Re-populate stale unit (e.g. after deletion cleared _cached)
-            if not existing_unit._cached then
-                existing_unit:_update({
+            -- Re-populate stale unit (e.g. after deletion cleared state)
+            if not existing_unit._config_key then
+                existing_unit:_apply({
                     cached = entry,
                     project = project,
                 })
             end
         else
             local unit = ConfigUnit.new(self, cache_key, project.key)
-            unit:_update({
+            unit:_apply({
                 cached = entry,
                 project = project,
             })
@@ -1235,7 +862,10 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
     self._profiles[#self._profiles + 1] = profile
 
     self:_save_cache()
-    self:_refresh_after_cache_change()
+    self:_rebuild_profile_projects_for(profile)
+    self:_sync_build_dir_refs()
+    self:_resolve_active_profile()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
 -- ===========================================================================
@@ -1267,10 +897,10 @@ function Workspace:_build_live_referenced_set()
     local referenced = {}
     for _, profile in pairs(self._profiles) do
         for _, pp in ipairs(profile:projects()) do
-            local pp_cached = pp._cached
-            if pp_cached and pp_cached.config_key then
-                local project_key = pp._project and pp._project.key or pp_cached.project_key
-                local ck = cache_mod.config_cache_key(project_key, pp_cached.config_key)
+            local ck_val = pp:config_key()
+            if ck_val then
+                local project_key = pp:project_key()
+                local ck = cache_mod.config_cache_key(project_key, ck_val)
                 referenced[ck] = true
             end
         end
@@ -1307,7 +937,7 @@ function Workspace:_cleanup_orphaned_skeletons()
         -- Also clean up ConfigUnit if it exists (may not during init)
         for i, unit in ipairs(self._config_units) do
             if unit.id == cache_key then
-                unit._cached = nil
+                unit:_apply(nil)
                 unit._removed = true
                 table.remove(self._config_units, i)
                 break
@@ -1329,15 +959,13 @@ function Workspace:get_orphaned_configs()
 
     local result = {}
     for _, unit in pairs(self._config_units) do
-        local cached = unit._cached
-        if not cached then goto continue end
-        local state = cached.state
+        if not unit._config_key then goto continue end
+        local state = unit.state_value
         if state and state ~= "unconfigured"
                 and not referenced[unit.id] then
             result[#result + 1] = {
-                project_key = cached.project_key,
-                config_key = cached.config_key,
-                cached = cached,
+                project_key = unit._init_project_key or (unit._project and unit._project.key),
+                config_key = unit._config_key,
                 unit = unit,
             }
         end
@@ -1471,11 +1099,10 @@ function Workspace:find_running_tasks_for_items(items)
     for _, item in ipairs(items) do
         local unit = item.unit
         if unit and unit._task_id then
-            local cached = unit._cached
             matches[unit._task_id] = {
-                project_key = unit._project and unit._project.key or (cached and cached.project_key),
+                project_key = unit._project and unit._project.key or unit._init_project_key,
                 action = unit:running_action(),
-                configuration_key = cached and cached.config_key or unit.id,
+                configuration_key = unit:config_key() or unit.id,
             }
         end
     end
@@ -1525,16 +1152,14 @@ function Workspace:record_task_result(result)
     local success = result.success
     local now = self._core._deps.now()
 
-    -- Resolve cache entry: prefer ConfigUnit, fall back to key-based cache write
-    local cached_config, cache_key, project, proj_type
-    if config_unit and config_unit._cached then
-        cached_config = config_unit._cached
-        cache_key = config_unit.id
+    -- Resolve ConfigUnit, creating one if needed for fallback results
+    local project, proj_type
+    if config_unit and config_unit._config_key then
         project = config_unit._project
         proj_type = project and project.type or "unknown"
     elseif result.project_key and result.configuration_key then
         -- Fallback for results without a ConfigUnit (e.g. buggy multi-config tasks)
-        cache_key = self._core._deps.cache.config_cache_key(result.project_key, result.configuration_key)
+        local cache_key = self._core._deps.cache.config_cache_key(result.project_key, result.configuration_key)
         for _, p in pairs(self._projects) do
             if p.key == result.project_key then project = p; break end
         end
@@ -1545,7 +1170,6 @@ function Workspace:record_task_result(result)
             if u.id == cache_key then existing_unit = u; break end
         end
         if existing_unit then
-            cached_config = existing_unit._cached
             config_unit = existing_unit
         else
             local entry = {
@@ -1556,9 +1180,8 @@ function Workspace:record_task_result(result)
                 tool_key = result.tool and result.tool.key or nil,
             }
             local unit = ConfigUnit.new(self, cache_key, result.project_key)
-            unit:_update({ cached = entry, project = project })
+            unit:_apply({ cached = entry, project = project })
             self._config_units[#self._config_units + 1] = unit
-            cached_config = entry
             config_unit = unit
         end
     else
@@ -1568,38 +1191,39 @@ function Workspace:record_task_result(result)
     if action == "configure" then
         if success then
             -- Don't downgrade from built to configured
-            if cached_config.state ~= "built" then
-                cached_config.state = "configured"
+            if config_unit.state_value ~= "built" then
+                config_unit.state_value = "configured"
             end
-            cached_config.last_configured = now
+            config_unit.last_configured = now
         else
-            cached_config.state = "failed_configure"
+            config_unit.state_value = "failed_configure"
         end
     elseif action == "build" then
         if success then
-            cached_config.state = "built"
-            cached_config.last_built = now
+            config_unit.state_value = "built"
+            config_unit.last_built = now
         else
-            cached_config.state = "failed_build"
+            config_unit.state_value = "failed_build"
         end
     end
 
     if result.build_dir then
-        cached_config.build_dir = result.build_dir
+        config_unit.build_dir_value = result.build_dir
     end
     if result.tool and result.tool.data then
-        cached_config.tool_data = result.tool.data
+        config_unit._tool_data = result.tool.data
     end
 
     if result.cmake then
-        cached_config.cmake = cached_config.cmake or {}
+        config_unit.cmake_info = config_unit.cmake_info or {}
         for k, v in pairs(result.cmake) do
-            cached_config.cmake[k] = v
+            config_unit.cmake_info[k] = v
         end
     end
 
     self:_save_cache()
-    self:_refresh_after_cache_change()
+    self:_sync_build_dir_refs()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
 
     -- Parse file-api targets after successful configure (runtime only, not cached)
     if config_unit and action == "configure" and success and result.build_dir then
@@ -1622,10 +1246,16 @@ end
 function Workspace:delete_cached_configs(items)
     for _, item in ipairs(items) do
         if item.unit then
-            if self.cache and self.cache.configurations then
-                self.cache.configurations[item.unit.id] = nil
-            end
-            item.unit._cached = nil
+            -- Clear first-class fields but preserve structural references (_project, _tool, etc.)
+            item.unit.state_value = nil
+            item.unit.build_dir_value = nil
+            item.unit.last_configured = nil
+            item.unit.last_built = nil
+            item.unit.cmake_info = nil
+            item.unit._config_key = nil
+            item.unit._variant = nil
+            item.unit._tool_key = nil
+            item.unit._tool_data = nil
         end
     end
 end
@@ -1636,14 +1266,12 @@ end
 function Workspace:reset_cached_configs(items)
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
-        local cached_config = item.unit._cached
-        if cached_config then
-            cached_config.state = nil
-            cached_config.build_dir = nil
-            cached_config.last_configured = nil
-            cached_config.last_built = nil
-            cached_config.cmake = nil
-        end
+        -- Clear first-class fields
+        item.unit.state_value = nil
+        item.unit.build_dir_value = nil
+        item.unit.last_configured = nil
+        item.unit.last_built = nil
+        item.unit.cmake_info = nil
         ::continue::
     end
 end
@@ -1654,15 +1282,13 @@ end
 function Workspace:mark_cached_configs_cleaned(items)
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
-        local cached_config = item.unit._cached
-        if cached_config then
-            cached_config.state = "configured"
-            cached_config.last_built = nil
-        end
+        -- Update first-class fields
+        item.unit.state_value = "configured"
+        item.unit.last_built = nil
         ::continue::
     end
     self:_save_cache()
-    self:_refresh_after_cache_change()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
 --- Set cache state to "unknown" for items that have build directories.
@@ -1670,9 +1296,8 @@ end
 function Workspace:_mark_cache_unknown(items)
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
-        local cached_config = item.unit._cached
-        if cached_config and cached_config.build_dir then
-            cached_config.state = "unknown"
+        if item.unit.build_dir_value then
+            item.unit.state_value = "unknown"
         end
         ::continue::
     end
@@ -1841,7 +1466,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                 end
 
                 self:_save_cache()
-                self:_refresh_after_cache_change()
+                self:_sync_build_dir_refs()
+                self:_resolve_active_profile()
+                self._core._deps.events.emit("active_set_changed", self._active_set)
 
                 self._core._deps.events.emit("deletion_failed", { items = items, errors = errors })
                 if on_done then on_done() end
@@ -1852,7 +1479,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             work_fn(items)
 
             self:_save_cache()
-            self:_refresh_after_cache_change()
+            self:_sync_build_dir_refs()
+            self:_resolve_active_profile()
+            self._core._deps.events.emit("active_set_changed", self._active_set)
 
             for _, unit in ipairs(units) do
                 unit:mark_deleting(false)
@@ -1888,10 +1517,6 @@ function Workspace:execute_deletion(plan, opts, on_done)
         for i, p in ipairs(self._profiles) do
             if p == profile then table.remove(self._profiles, i); break end
         end
-        -- Keep cache in sync during transition
-        if self.cache and self.cache.profiles and self.cache.profiles[profile.key] then
-            self.cache.profiles[profile.key] = nil
-        end
         self:_save_cache()
     end
 
@@ -1910,7 +1535,9 @@ function Workspace:execute_deletion(plan, opts, on_done)
     end
 
     if #actionable == 0 then
-        self:_refresh_after_cache_change()
+        self:_sync_build_dir_refs()
+        self:_resolve_active_profile()
+        self._core._deps.events.emit("active_set_changed", self._active_set)
         if on_done then on_done() end
         return
     end
@@ -2041,10 +1668,10 @@ function Workspace:_scan_targets_async()
         end
 
         if entry.scan_type == "file_api" then
-            local variant = entry.unit._cached and entry.unit._cached.variant
+            local variant = entry.unit:variant()
             entry.mod.parse_file_api_async(entry.build_dir, variant, on_targets)
         else
-            local variant = entry.unit._cached and entry.unit._cached.variant
+            local variant = entry.unit:variant()
             entry.mod.parse_targets_async(entry.project_path, variant, on_targets)
         end
     end
@@ -2338,8 +1965,22 @@ function Workspace:remove_configuration_set(cs)
     local ok, err = self:_save_config()
     if not ok then return false, err end
 
-    -- Refresh profiles (detect orphaned_set for profiles referencing this set)
-    self:_refresh_after_cache_change()
+    -- Update affected profiles: clear config_set_ref and re-derive mappings
+    for _, profile in pairs(self._profiles) do
+        if profile._configuration_set_name == name then
+            profile._config_set_ref = nil
+            -- Re-derive mappings — will fall through to Tier 2/3 and set orphaned_set
+            profile.mappings, profile.orphaned_set = profile:_resolve_mappings({
+                configuration_set = profile._configuration_set_name,
+                mappings = profile.mappings,
+                _resolved_mappings = nil,
+            })
+            self:_rebuild_profile_projects_for(profile)
+        end
+    end
+    self:_sync_build_dir_refs()
+    self:_resolve_active_profile()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
     return true
 end
 
@@ -2392,7 +2033,7 @@ function Workspace:_extend_cached_profile(profile_data, tools)
                         tool_data = project_tool and project_tool.data or nil,
                     }
                     local unit = ConfigUnit.new(self, ck, project_key)
-                    unit:_update({ cached = entry, project = project })
+                    unit:_apply({ cached = entry, project = project })
                     self._config_units[#self._config_units + 1] = unit
                     units_by_id[ck] = unit
                 end
@@ -2411,7 +2052,7 @@ function Workspace:compute_profile_renames(transform)
     local renames = {}
     for _, profile in pairs(self._profiles) do
         if profile._configuration_set_name then
-            local new_tools = transform(profile._tools_raw)
+            local new_tools = transform(profile:tools_data())
             local new_key = merge_mod.profile_key(profile._configuration_set_name, new_tools)
             if profile.key ~= new_key then
                 renames[#renames + 1] = {
@@ -2441,17 +2082,9 @@ function Workspace:apply_profile_renames(renames, transform)
         local profile = profiles_by_key[r.old_key]
         if profile then
             profile.key = r.new_key
-            profile._tools_raw = transform(profile._tools_raw)
-        end
-
-        -- Keep cache in sync during transition
-        if self.cache and self.cache.profiles then
-            local profile_data = self.cache.profiles[r.old_key]
-            if profile_data then
-                profile_data.tools = transform(profile_data.tools)
-                self.cache.profiles[r.old_key] = nil
-                self.cache.profiles[r.new_key] = profile_data
-            end
+            profile._tools_raw = transform(profile:tools_data())
+            -- Clear resolved tool objects so tools_data() reads from _tools_raw
+            profile._tool_objects = nil
         end
 
         if self.user.active_profile == r.old_key then
@@ -2501,10 +2134,11 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
     local extends = {} -- profiles that already have tools
     for _, profile in pairs(self._profiles) do
         if profile._configuration_set_name then
-            local has_this_tool = profile._tools_raw
-                and profile._tools_raw[tool_entry.tool_mod_type]
+            local profile_tools = profile:tools_data()
+            local has_this_tool = profile_tools
+                and profile_tools[tool_entry.tool_mod_type]
             if not has_this_tool and should_rename(profile) then
-                local new_tools = add_tool(profile._tools_raw)
+                local new_tools = add_tool(profile_tools)
                 local new_key = self._core._deps.merge.profile_key(
                     profile._configuration_set_name, new_tools)
                 renames[#renames + 1] = { old_key = profile.key, new_key = new_key }
@@ -2544,7 +2178,20 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
     if user_changed then
         self:_save_user()
     end
-    self:_refresh_after_cache_change()
+
+    -- Rebuild PPs for affected profiles
+    for _, r in ipairs(renames) do
+        local profile = profiles_by_key[r.new_key]
+        if profile then
+            self:_rebuild_profile_projects_for(profile)
+        end
+    end
+    for _, profile in ipairs(extends) do
+        self:_rebuild_profile_projects_for(profile)
+    end
+    self:_sync_build_dir_refs()
+    self:_resolve_active_profile()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
 --- Compute profile renames that would occur if a project were removed.
@@ -2591,41 +2238,15 @@ function Workspace:downgrade_profiles_from_tool(mod_type)
         return next(t) and t or nil
     end
 
-    -- Clean skeleton entries for the removed module type from each affected profile.
-    -- Uses ConfigUnit objects for the skeleton state check, and updates both
-    -- domain objects and cache during transition.
-    for _, profile in pairs(self._profiles) do
-        if profile._configuration_set_name
-            and profile._tools_raw and profile._tools_raw[mod_type] then
-            -- Update the cache entry during transition
-            local cache_profile = self.cache and self.cache.profiles
-                and self.cache.profiles[profile.key]
-            if cache_profile and cache_profile.configurations then
-                local kept = {}
-                for _, ck in ipairs(cache_profile.configurations) do
-                    -- Find the ConfigUnit for this cache key
-                    local unit = nil
-                    for _, u in pairs(self._config_units) do
-                        if u.id == ck then unit = u; break end
-                    end
-                    local cached_cfg = unit and unit._cached
-                    if not cached_cfg or cached_cfg.type ~= mod_type then
-                        kept[#kept + 1] = ck
-                    else
-                        -- Remove skeleton entries; keep entries with build state
-                        local state = cached_cfg.state
-                        if not state or state == "unconfigured" then
-                            if self.cache and self.cache.configurations then
-                                self.cache.configurations[ck] = nil
-                            end
-                            if unit then
-                                unit._cached = nil
-                                unit._removed = true
-                            end
-                        end
-                    end
-                end
-                cache_profile.configurations = kept
+    -- Clean skeleton ConfigUnit entries for the removed module type.
+    -- Mark unconfigured skeleton units as removed; keep units with build state.
+    for _, unit in pairs(self._config_units) do
+        local unit_type = unit._project and unit._project.type
+        if unit_type == mod_type and unit._config_key then
+            local state = unit.state_value
+            if not state or state == "unconfigured" then
+                unit:_apply(nil)
+                unit._removed = true
             end
         end
     end
@@ -2647,7 +2268,19 @@ function Workspace:downgrade_profiles_from_tool(mod_type)
     if user_changed then
         self:_save_user()
     end
-    self:_refresh_after_cache_change()
+
+    -- Rebuild PPs for affected profiles
+    local profiles_by_key = {}
+    for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
+    for _, r in ipairs(renames) do
+        local profile = profiles_by_key[r.new_key]
+        if profile then
+            self:_rebuild_profile_projects_for(profile)
+        end
+    end
+    self:_sync_build_dir_refs()
+    self:_resolve_active_profile()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
 --- Create (materialize) a profile and optionally activate it.
