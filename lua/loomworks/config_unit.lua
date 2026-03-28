@@ -214,13 +214,6 @@ function ConfigUnit:build_dir()
 end
 
 --- Get the Tool domain object for this unit.
---- Falls back to cache data when no domain object is available.
---- @return loomworks.Tool|nil
-function ConfigUnit:resolve_tool()
-    return self._tool
-end
-
---- Get the Tool domain object for this unit.
 --- @return loomworks.Tool|nil
 function ConfigUnit:tool_object()
     return self._tool

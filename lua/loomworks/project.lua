@@ -459,7 +459,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
         local old_id = unit.id
         unit.id = new_cache_key
         cache_rename_map[old_id] = new_cache_key
-        -- Update Project.cached_configurations (was previously done via shared _cached table mutation)
+        -- Update Project.cached_configurations dict to match ConfigUnit renames
         if old_config_key and self.cached_configurations then
             local entry = self.cached_configurations[old_config_key]
             if entry then
@@ -492,31 +492,12 @@ function Project:rename_configuration(old_name, new_name, config_data)
                 profile_rekeys[profile.key] = cache_rename_map[profile.key]
             end
         end
-        -- Apply profile rekeys (domain objects + cache)
+        -- Apply profile rekeys
         for old_pk, new_pk in pairs(profile_rekeys) do
             for _, profile in pairs(ws._profiles) do
                 if profile.key == old_pk then
                     profile.key = new_pk
                     break
-                end
-            end
-            -- Keep cache in sync during transition
-            if ws.cache and ws.cache.profiles then
-                local data = ws.cache.profiles[old_pk]
-                if data then
-                    ws.cache.profiles[old_pk] = nil
-                    ws.cache.profiles[new_pk] = data
-                    -- Also update cache profile data
-                    if data.configurations and next(cache_rename_map) then
-                        for i, ck in ipairs(data.configurations) do
-                            if cache_rename_map[ck] then
-                                data.configurations[i] = cache_rename_map[ck]
-                            end
-                        end
-                    end
-                    if data.mappings and data.mappings[self.key] == old_name then
-                        data.mappings[self.key] = new_name
-                    end
                 end
             end
             -- Update active_profile if it was the old key
