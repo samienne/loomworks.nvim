@@ -169,10 +169,10 @@ describe("Project _configurations", function()
             Debug = { variant = "Debug", is_default = true },
             Release = { variant = "Release", is_default = true },
         })
-        assert.is_not_nil(project._configurations.Debug)
-        assert.is_not_nil(project._configurations.Release)
-        assert.equals("Debug", project._configurations.Debug.module_config.variant)
-        assert.equals("Release", project._configurations.Release.module_config.variant)
+        assert.is_not_nil(project:get_configuration("Debug"))
+        assert.is_not_nil(project:get_configuration("Release"))
+        assert.equals("Debug", project:get_configuration("Debug").module_config.variant)
+        assert.equals("Release", project:get_configuration("Release").module_config.variant)
     end)
 
     it("get_configuration returns by name", function()
@@ -570,10 +570,10 @@ describe("ProfileProject accessor methods", function()
     end)
 end)
 
-describe("ConfigurationSet _configuration_mappings", function()
+describe("ConfigurationSet mappings store Configuration objects", function()
     local ConfigurationSet = require("loomworks.configuration_set")
 
-    it("resolves Configuration objects from project registries", function()
+    it("stores Configuration objects directly in mappings", function()
         local ws = h.make_mock_workspace()
         local project = Project.new(ws, "App", {
             type = "cmake",
@@ -583,10 +583,11 @@ describe("ConfigurationSet _configuration_mappings", function()
             cached_configurations = {},
         })
         ws._projects["App"] = project
+        local debug_cfg = project:get_configuration("Debug")
 
-        local cs = ConfigurationSet.new(ws, "debug", { [project] = "Debug" })
-        assert.is_not_nil(cs._configuration_mappings[project])
-        assert.equals("Debug", cs._configuration_mappings[project].name)
+        local cs = ConfigurationSet.new(ws, "debug", { [project] = debug_cfg })
+        assert.is_not_nil(cs.mappings[project])
+        assert.equals("Debug", cs.mappings[project].name)
     end)
 
     it("configuration() returns Configuration for project", function()
@@ -599,8 +600,9 @@ describe("ConfigurationSet _configuration_mappings", function()
             cached_configurations = {},
         })
         ws._projects["App"] = project
+        local debug_cfg = project:get_configuration("Debug")
 
-        local cs = ConfigurationSet.new(ws, "debug", { [project] = "Debug" })
+        local cs = ConfigurationSet.new(ws, "debug", { [project] = debug_cfg })
         local cfg = cs:configuration(project)
         assert.is_not_nil(cfg)
         assert.equals("Debug", cfg.name)

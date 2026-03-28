@@ -50,7 +50,7 @@ local function get_unit(core, project_key, config_key)
     local cfg = project:get_configuration(variant)
     if not cfg then
         cfg = Configuration.new(project, variant, {})
-        project._configurations[variant] = cfg
+        project._configurations[#project._configurations + 1] = cfg
     end
     return core._workspace:ensure_config_unit(project, cfg, tool)
 end

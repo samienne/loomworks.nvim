@@ -134,7 +134,9 @@ function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
     for _, cs in pairs(ws._config_sets) do
         local variant = result.mappings[cs.name]
         if variant and project then
-            cs:update_mapping(project, variant)
+            local cfg = project:get_configuration(variant)
+                or project:ensure_configuration(variant)
+            cs:update_mapping(project, cfg)
         end
     end
 
@@ -419,7 +421,7 @@ function M.compute_create_config_set_context(ws)
         projects[#projects + 1] = project
         local configs = {}
         if project._configurations then
-            for _, cfg in pairs(project._configurations) do
+            for _, cfg in ipairs(project._configurations) do
                 configs[#configs + 1] = cfg
             end
             table.sort(configs, function(a, b) return a.name < b.name end)
@@ -471,15 +473,12 @@ function M.compute_edit_config_set_context(ws, set_name)
 
     for _, project in pairs(ws._projects) do
         projects[#projects + 1] = project
-        -- Resolve current mapping to Configuration object from domain CS
-        local variant = config_set.mappings[project]
-        mappings[project] = variant
-            and project._configurations and project._configurations[variant]
-            or nil
+        -- Read Configuration object directly from CS mapping
+        mappings[project] = config_set:configuration(project)
         -- Collect available Configuration objects
         local configs = {}
         if project._configurations then
-            for _, cfg in pairs(project._configurations) do
+            for _, cfg in ipairs(project._configurations) do
                 configs[#configs + 1] = cfg
             end
             table.sort(configs, function(a, b) return a.name < b.name end)
@@ -521,10 +520,8 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     -- Apply mapping changes to existing set
     for project, new_config in pairs(new_mappings) do
         local old_config = old_mappings[project]
-        local new_variant = new_config and new_config.name or nil
-        local old_variant = old_config and old_config.name or nil
-        if new_variant ~= old_variant then
-            local ok, err = cs:update_mapping(project, new_variant)
+        if new_config ~= old_config then
+            local ok, err = cs:update_mapping(project, new_config)
             if not ok then return false, err end
         end
     end
@@ -1184,11 +1181,12 @@ function M.compute_edit_configuration_context(project, config_name)
 
     local impl = project._module and project._module.impl or nil
     local abs_path = ws.root .. "/" .. (project.path or project_key)
+    local tc_for_module = project:_type_config_for_module()
     local defaults = impl and impl.default_configurations
-        and impl.default_configurations(abs_path, type_config) or {}
+        and impl.default_configurations(abs_path, tc_for_module) or {}
 
     -- Build list of available configs for the "inherits" picker
-    local mod_info = impl and impl.info and impl.info(abs_path, type_config)
+    local mod_info = impl and impl.info and impl.info(abs_path, tc_for_module)
         or { configurations = {} }
     local available_configs = {}
     for name in pairs(mod_info.configurations or {}) do
@@ -1196,15 +1194,14 @@ function M.compute_edit_configuration_context(project, config_name)
     end
     table.sort(available_configs)
 
-    -- Get existing config data (from user override or default)
+    -- Get existing config data from Configuration domain object
     local config_data = {}
     local is_default = false
     if config_name then
-        -- Check user overrides first
-        if type_config.configurations and type_config.configurations[config_name] then
-            config_data = type_config.configurations[config_name]
+        local cfg_obj = project:get_configuration(config_name)
+        if cfg_obj and cfg_obj.is_user then
+            config_data = cfg_obj:serialize_user_override() or {}
         end
-        -- Check if it's a default
         if defaults[config_name] then
             is_default = true
         end
@@ -1278,9 +1275,8 @@ end
 function M.execute_save_configuration(project, old_name, new_name, data)
     -- Rename: atomic propagation to config sets, cache entries, and profiles
     if old_name and old_name ~= new_name then
-        local type_config = project.type_config
-        if type_config and type_config.configurations
-                and type_config.configurations[old_name] then
+        local cfg = project:get_configuration(old_name)
+        if cfg and cfg.is_user then
             return project:rename_configuration(old_name, new_name, data)
         end
     end

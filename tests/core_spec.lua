@@ -974,8 +974,8 @@ describe("Core", function()
             for _, cs in pairs(core._workspace._config_sets) do
                 if cs.name == "release" then
                     found_release = true
-                    for proj, variant in pairs(cs.mappings) do
-                        if proj.key == "App" then release_app_variant = variant end
+                    for proj, config in pairs(cs.mappings) do
+                        if proj.key == "App" then release_app_variant = config.name end
                     end
                 end
             end

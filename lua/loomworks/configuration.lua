@@ -76,9 +76,9 @@ end
 --- Must be called after all Configuration objects for the project are created.
 function Configuration:_resolve_inherits()
     self._inherits = {}
-    if not self._project or not self._project._configurations then return end
+    if not self._project then return end
     for _, base_name in ipairs(self.inherits_names) do
-        local base = self._project._configurations[base_name]
+        local base = self._project:get_configuration(base_name)
         if base then
             self._inherits[#self._inherits + 1] = base
         end
@@ -89,6 +89,27 @@ end
 --- @return boolean
 function Configuration:is_abstract()
     return not self.module_config or self.module_config.variant == nil
+end
+
+--- Serialize the user-override portion for loomworks.json.
+--- Returns the entry that would appear under type_config.configurations[name].
+--- Returns nil for non-user configs (defaults, presets, cache-only stubs).
+--- @return table|nil
+function Configuration:serialize_user_override()
+    if not self.is_user then return nil end
+    local entry = {}
+    -- module_config holds module-specific fields (cmake: variant, toolchain, generator)
+    -- excluding generic fields (is_default, is_user, from_preset, role, inherits, options)
+    for k, v in pairs(self.module_config) do
+        entry[k] = v
+    end
+    -- Generic fields stored on the Configuration object directly
+    if self.inherits_names and #self.inherits_names > 0 then
+        entry.inherits = #self.inherits_names == 1 and self.inherits_names[1] or self.inherits_names
+    end
+    if self.options and next(self.options) then entry.options = self.options end
+    if self.role then entry.role = self.role end
+    return entry
 end
 
 function Configuration:__tostring()

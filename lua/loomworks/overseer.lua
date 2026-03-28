@@ -19,9 +19,10 @@ local function collect_configuration_tasks(unit)
     local tool = unit._tool
     local tool_data = tool and tool.data or unit:tool_data()
 
-    -- Get module info
+    -- Get module info (reconstruct type_config with configurations for module)
     local abs_path = ws.root .. "/" .. (project.path or project.key)
-    local mod_info = mod.info and mod.info(abs_path, project.type_config)
+    local tc_for_module = project:_type_config_for_module()
+    local mod_info = mod.info and mod.info(abs_path, tc_for_module)
             or { configurations = {} }
 
     local project_ctx = {
@@ -31,7 +32,7 @@ local function collect_configuration_tasks(unit)
         configuration = variant,
         configuration_key = unit:config_key(),
         configurations = mod_info.configurations or {},
-        type_config = project.type_config,
+        type_config = tc_for_module,
         tool_data = tool_data,
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
@@ -101,7 +102,7 @@ local function collect_profile_tasks(profile)
             configuration = active_config,
             configuration_key = pp:config_key(),
             configurations = project.configurations,
-            type_config = project.type_config or {},
+            type_config = project:_type_config_for_module(),
             tool_data = tool_data,
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},

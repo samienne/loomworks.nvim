@@ -229,8 +229,8 @@ function Profile:_resolve_mappings(data)
         local cs = self._config_set_ref
         if cs then
             local mappings = {}
-            for project, variant in pairs(cs.mappings) do
-                mappings[project.key] = variant
+            for project, config in pairs(cs.mappings) do
+                mappings[project.key] = config.name
             end
             return mappings, false
         end

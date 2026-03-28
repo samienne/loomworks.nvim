@@ -239,7 +239,15 @@ local function sync_config_sets(ctx, workspace, config)
         local resolved = {}
         for project_key, variant in pairs(raw_mappings) do
             local project = ctx.projects[project_key]
-            if project then resolved[project] = variant end
+            if project then
+                local cfg = project:get_configuration(variant)
+                if not cfg then
+                    cfg = project:ensure_configuration(variant)
+                end
+                if cfg then
+                    resolved[project] = cfg
+                end
+            end
         end
         local existing = ctx.config_sets[name]
         if existing then
@@ -347,8 +355,8 @@ local function sync_config_units(ctx, workspace, cache)
             end
             local configuration = nil
             local variant = cached_config.variant
-            if variant and project and project._configurations then
-                configuration = project._configurations[variant]
+            if variant and project then
+                configuration = project:get_configuration(variant)
             end
             expected[cache_dict_key] = {
                 project_key = project_key,
@@ -398,8 +406,8 @@ local function sync_profile_projects(ctx, workspace)
                 local reg_key = profile.key .. "\0" .. project_key
                 local project = ctx.projects[project_key]
                 local configuration = nil
-                if project and project._configurations then
-                    configuration = project._configurations[variant]
+                if project then
+                    configuration = project:get_configuration(variant)
                 end
                 local config_unit = nil
                 if profile._cached_configurations then

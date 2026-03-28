@@ -284,8 +284,8 @@ function M.register_profile_project(ws, profile, project_key, variant)
     -- Pre-resolve references
     local project = M.find_project_in(ws._projects, project_key)
     local configuration = nil
-    if project and project._configurations then
-        configuration = project._configurations[variant]
+    if project then
+        configuration = project:get_configuration(variant)
     end
     local config_unit = nil
     -- Find config unit via first-class fields (cache is nil after remerge)
@@ -335,7 +335,7 @@ function M.get_or_create_config(project, name)
     if cfg then return cfg end
     local Configuration = require("loomworks.configuration")
     cfg = Configuration.new(project, name, {})
-    project._configurations[name] = cfg
+    project._configurations[#project._configurations + 1] = cfg
     return cfg
 end
 
@@ -355,8 +355,8 @@ function M.refresh_config_unit(ws, unit)
         end
     end
     local configuration = nil
-    if unit._variant and project and project._configurations then
-        configuration = project._configurations[unit._variant]
+    if unit._variant and project then
+        configuration = project:get_configuration(unit._variant)
     end
     -- Build cache-shaped table from first-class fields for _apply
     local cached_entry = {
@@ -601,8 +601,8 @@ end
 --- @return string|nil variant
 function M.cs_mapping(cs, project_key)
     if not cs or not cs.mappings then return nil end
-    for proj, variant in pairs(cs.mappings) do
-        if proj.key == project_key then return variant end
+    for proj, config in pairs(cs.mappings) do
+        if proj.key == project_key then return config.name end
     end
 end
 
