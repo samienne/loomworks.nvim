@@ -447,8 +447,8 @@ function Workspace:_rebuild_profile_projects_for(profile)
         for project_key, variant in pairs(profile.mappings) do
             local project = projects_by_key[project_key]
             local configuration = nil
-            if project and project._configurations then
-                configuration = project._configurations[variant]
+            if project then
+                configuration = project:get_configuration(variant)
             end
             local config_unit = nil
             if profile._cached_configurations then
@@ -826,7 +826,8 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
 
     local profile_configurations = {}
 
-    for project, variant in pairs(config_set.mappings) do
+    for project, config in pairs(config_set.mappings) do
+        local variant = config.name
         -- tool_key applies only to projects whose module type matches the tool
         local project_tool_key = tools and tools[project.type]
             and tools[project.type].key or nil
@@ -1740,10 +1741,23 @@ function Workspace:_config_from_objects()
     local projects = {}
     for _, project in pairs(self._projects) do
         if not project.orphaned then
+            -- Reconstruct type_config with configurations from domain objects
+            local tc = project.type_config
+                    and vim.deepcopy(project.type_config) or {}
+            local configs_dict = {}
+            for _, cfg in ipairs(project._configurations) do
+                local override = cfg:serialize_user_override()
+                if override then
+                    configs_dict[cfg.name] = override
+                end
+            end
+            if next(configs_dict) then
+                tc.configurations = configs_dict
+            end
             projects[project.key] = {
                 path = project.path or project.key,
                 type = project.type,
-                type_config = project.type_config or {},
+                type_config = tc,
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
             }
@@ -1787,7 +1801,21 @@ function Workspace:_serialize_config()
     -- Projects from domain objects (skip cache-only orphans)
     for _, project in pairs(self._projects) do
         if not project.orphaned then
-            local entry = { [project.type] = project.type_config or vim.empty_dict() }
+            -- Reconstruct type_config with configurations from domain objects
+            local type_config = project.type_config
+                    and vim.deepcopy(project.type_config) or {}
+            local configs_dict = {}
+            for _, cfg in ipairs(project._configurations) do
+                local override = cfg:serialize_user_override()
+                if override then
+                    configs_dict[cfg.name] = override
+                end
+            end
+            if next(configs_dict) then
+                type_config.configurations = configs_dict
+            end
+            local entry = { [project.type] = next(type_config)
+                    and type_config or vim.empty_dict() }
             if project.path and project.path ~= project.key then
                 entry.path = project.path
             end
@@ -1963,14 +1991,18 @@ function Workspace:add_configuration_set(name, mappings)
         end
     end
 
-    -- Create domain object — resolve projects for _update (deserialization boundary)
+    -- Create domain object — resolve projects and configurations for _update (deserialization boundary)
     local projects_by_key = {}
     for _, p in pairs(self._projects) do projects_by_key[p.key] = p end
     local resolved = {}
     for project_key, variant in pairs(mappings) do
         local project = projects_by_key[project_key]
         if project then
-            resolved[project] = variant
+            local cfg = project:get_configuration(variant)
+                or project:ensure_configuration(variant)
+            if cfg then
+                resolved[project] = cfg
+            end
         end
     end
     local cs = ConfigurationSet.new(self, name, resolved)
@@ -2054,7 +2086,8 @@ function Workspace:_extend_cached_profile(profile_data, tools)
     local units_by_id = {}
     for _, u in pairs(self._config_units) do units_by_id[u.id] = u end
 
-    for project, variant in pairs(config_set.mappings) do
+    for project, config in pairs(config_set.mappings) do
+        local variant = config.name
         local project_key = project.key
         -- Tool key applies only to projects whose module type matches
         local project_tool = tools and tools[project.type] or nil

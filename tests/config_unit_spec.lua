@@ -433,6 +433,111 @@ describe("ConfigUnit", function()
 
 
 
+    describe("serialize", function()
+        it("includes basic fields", function()
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
+            unit.state_value = "configured"
+            unit.build_dir_value = "/build/Debug"
+            local entry = unit:serialize()
+            assert.equals("App", entry.project_key)
+            assert.equals("Debug", entry.config_key)
+            assert.equals("cmake", entry.type)
+            assert.equals("configured", entry.state)
+            assert.equals("/build/Debug", entry.build_dir)
+        end)
+
+        it("includes configuration snapshot when Configuration exists", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            -- Create a Configuration with rich data
+            local cfg = Configuration.new(project, "Debug", {
+                is_user = true,
+                options = { ENABLE_TESTS = "ON" },
+                inherits = "Base",
+                variant = "Debug",
+                generator = "Ninja",
+                toolchain = "/path/to/toolchain.cmake",
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            local entry = unit:serialize()
+            assert.is_true(entry.is_user)
+            assert.same({ ENABLE_TESTS = "ON" }, entry.options)
+            assert.equals("Base", entry.inherits)
+            assert.same({ variant = "Debug", generator = "Ninja", toolchain = "/path/to/toolchain.cmake" }, entry.module_config)
+        end)
+
+        it("omits snapshot fields when Configuration has no extra data", function()
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
+            local entry = unit:serialize()
+            assert.is_nil(entry.is_user)
+            assert.is_nil(entry.options)
+            assert.is_nil(entry.inherits)
+            assert.is_nil(entry.module_config)
+        end)
+
+        it("serializes multiple inherits as array", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug-asan", {
+                inherits = { "Debug", "Sanitize" },
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            local entry = unit:serialize()
+            assert.same({ "Debug", "Sanitize" }, entry.inherits)
+        end)
+
+        it("serializes single inherits as string", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug-asan", {
+                inherits = "Debug",
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            local entry = unit:serialize()
+            assert.equals("Debug", entry.inherits)
+        end)
+
+        it("omits module_config when empty", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                is_user = true,
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            local entry = unit:serialize()
+            assert.is_true(entry.is_user)
+            assert.is_nil(entry.module_config)
+        end)
+
+        it("omits snapshot when Configuration is removed", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                is_user = true,
+                variant = "Debug",
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            cfg._removed = true
+            local entry = unit:serialize()
+            assert.is_nil(entry.is_user)
+            assert.is_nil(entry.module_config)
+        end)
+    end)
+
     describe("shared state across profiles", function()
         it("same unit visible from two profiles", function()
             local core = h.make_mock_core()

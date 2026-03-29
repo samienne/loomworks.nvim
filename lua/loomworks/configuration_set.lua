@@ -4,15 +4,14 @@
 
 --- @class loomworks.ConfigurationSet
 --- @field name string configuration set name
---- @field mappings table<loomworks.Project, string> project -> variant
---- @field _configuration_mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
+--- @field mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
 local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 
 --- Create a new ConfigurationSet.
 --- @param workspace loomworks.Workspace
 --- @param name string
---- @param resolved_mappings table<loomworks.Project, string> project -> variant (pre-resolved)
+--- @param resolved_mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration (pre-resolved)
 --- @return loomworks.ConfigurationSet
 function ConfigurationSet.new(workspace, name, resolved_mappings)
     local self = setmetatable({}, ConfigurationSet)
@@ -24,64 +23,54 @@ function ConfigurationSet.new(workspace, name, resolved_mappings)
 end
 
 --- Update mappings in place (preserves table identity).
---- Receives pre-resolved { Project -> variant } from _sync_config_sets.
---- Also resolves Configuration objects from Project's own registry.
---- @param resolved_mappings table<loomworks.Project, string> project -> variant
+--- Receives pre-resolved { Project -> Configuration } from _sync_config_sets.
+--- @param resolved_mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration
 function ConfigurationSet:_update(resolved_mappings)
-    self.mappings = {}
-    self._configuration_mappings = {}
-    for project, variant in pairs(resolved_mappings) do
-        self.mappings[project] = variant
-        -- Resolve Configuration domain object (within Project's own registry)
-        if project._configurations then
-            local cfg = project._configurations[variant]
-            if cfg then
-                self._configuration_mappings[project] = cfg
-            end
-        end
-    end
+    self.mappings = resolved_mappings or {}
 end
 
 function ConfigurationSet:__tostring()
     return "ConfigurationSet(" .. self.name .. ")"
 end
 
---- Get the variant for a project in this set.
+--- Get the variant name for a project in this set.
 --- @param project loomworks.Project
 --- @return string|nil
 function ConfigurationSet:variant(project)
-    return self.mappings[project]
+    local cfg = self.mappings[project]
+    return cfg and cfg.name or nil
 end
 
 --- Get the Configuration object for a project in this set.
 --- @param project loomworks.Project
 --- @return loomworks.Configuration|nil
 function ConfigurationSet:configuration(project)
-    return self._configuration_mappings and self._configuration_mappings[project] or nil
+    local cfg = self.mappings[project]
+    return cfg and not cfg._removed and cfg or nil
 end
 
 --- Return raw mappings (project_key → variant) for serialization.
 --- @return table<string, string>
 function ConfigurationSet:raw_mappings()
     local raw = {}
-    for project, variant in pairs(self.mappings) do
-        raw[project.key] = variant
+    for project, config in pairs(self.mappings) do
+        raw[project.key] = config.name
     end
     return raw
 end
 
 --- Update a single project mapping in this configuration set.
 --- @param project loomworks.Project
---- @param variant string|nil variant name (nil to remove mapping)
+--- @param configuration loomworks.Configuration|nil Configuration object (nil to remove mapping)
 --- @return boolean ok, string|nil err
-function ConfigurationSet:update_mapping(project, variant)
+function ConfigurationSet:update_mapping(project, configuration)
     local ws = self._workspace
     if self._removed then
         return false, "configuration set '" .. self.name .. "' not found"
     end
 
     local old = self.mappings[project]
-    self.mappings[project] = variant
+    self.mappings[project] = configuration
 
     local ok, err = ws:_save_config()
     if not ok then

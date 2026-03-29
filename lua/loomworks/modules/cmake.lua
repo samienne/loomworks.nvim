@@ -597,9 +597,9 @@ function M.tasks(project, active_config)
     -- User-defined options (project-wide + inherited + config-specific)
     -- Appended after managed flags so user values can override.
     local type_config = project.type_config or {}
-    if type_config.options or (type_config.configurations and
-            type_config.configurations[active_config] and
-            type_config.configurations[active_config].options) then
+    local active_cfg_info = project.configurations
+            and project.configurations[active_config] or nil
+    if type_config.options or (active_cfg_info and active_cfg_info.options) then
         local resolved_opts = M.resolve_options(
             type_config, project.configurations or {}, active_config)
         for k, v in pairs(resolved_opts) do

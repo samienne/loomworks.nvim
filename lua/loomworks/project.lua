@@ -21,7 +21,7 @@ local Configuration = require("loomworks.configuration")
 --- @field cmake? loomworks.ProjectCmakeInfo
 --- @field depends_on? loomworks.Project[] direct references to dependency projects
 --- @field _depends_on_keys? string[] raw keys from merge (resolved to objects in _update)
---- @field _configurations? table<string, loomworks.Configuration> name -> Configuration domain object
+--- @field _configurations? loomworks.Configuration[] Configuration domain objects array
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 local Project = {}
@@ -48,7 +48,18 @@ end
 function Project:_update(data)
     self.type = data.type
     self.path = data.path
-    self.type_config = data.type_config
+    -- Store type_config without .configurations — that data lives on
+    -- Configuration domain objects and is reconstructed for serialization.
+    if data.type_config then
+        local tc = data.type_config
+        if tc.configurations then
+            tc = vim.deepcopy(tc)
+            tc.configurations = nil
+        end
+        self.type_config = tc
+    else
+        self.type_config = data.type_config
+    end
     self.launch = data.launch
     self.configuration = data.configuration
     -- Read pre-resolved Module and Tool domain objects (set by _sync_projects)
@@ -98,39 +109,74 @@ function Project:_sync_configurations()
         end
     end
 
-    -- Mark removed (only if absent from both sources AND cache)
-    for name, cfg in pairs(self._configurations) do
-        if not all_config_data[name] and not cache_variants[name] then
+    -- Build name→existing lookup from current array for identity matching
+    local existing_by_name = {}
+    for _, cfg in ipairs(self._configurations) do
+        existing_by_name[cfg.name] = cfg
+    end
+
+    -- Mark removed (absent from both sources AND cache)
+    for _, cfg in ipairs(self._configurations) do
+        if not all_config_data[cfg.name] and not cache_variants[cfg.name] then
             cfg._removed = true
-            self._configurations[name] = nil
         end
     end
 
-    -- Create or update from module/preset sources
+    -- Build new array: for each source config, find existing or create new
+    local new_arr = {}
+    local seen = {}
     for name, info in pairs(all_config_data) do
-        local existing = self._configurations[name]
-        if existing then
+        local existing = existing_by_name[name]
+        if existing and not existing._removed then
             existing:_update(info)
             existing._source_missing = false
+            new_arr[#new_arr + 1] = existing
         else
-            self._configurations[name] = Configuration.new(self, name, info)
+            new_arr[#new_arr + 1] = Configuration.new(self, name, info)
         end
+        seen[name] = true
     end
 
     -- Enrich from cache: create Configuration for cache-only variants,
-    -- and mark existing ones as source-missing if not in module/preset output
+    -- and mark existing ones as source-missing if not in module/preset output.
+    -- When creating from cache, use inline configuration snapshot data if available.
     for variant_name in pairs(cache_variants) do
-        if not self._configurations[variant_name] then
-            local cfg = Configuration.new(self, variant_name, {})
-            cfg._source_missing = true
-            self._configurations[variant_name] = cfg
-        elseif not all_config_data[variant_name] then
-            self._configurations[variant_name]._source_missing = true
+        if not seen[variant_name] then
+            local existing = existing_by_name[variant_name]
+            if existing and not existing._removed then
+                existing._source_missing = true
+                new_arr[#new_arr + 1] = existing
+            else
+                -- Find the best cache entry with snapshot data for this variant
+                local cfg_data = {}
+                for _, cc in pairs(self.cached_configurations) do
+                    if cc.variant == variant_name then
+                        if cc.is_user then cfg_data.is_user = true end
+                        if cc.options then cfg_data.options = cc.options end
+                        if cc.inherits then cfg_data.inherits = cc.inherits end
+                        -- Merge module_config fields into cfg_data (they become
+                        -- module_config inside Configuration._update)
+                        if cc.module_config then
+                            for k, v in pairs(cc.module_config) do
+                                cfg_data[k] = v
+                            end
+                        end
+                        break
+                    end
+                end
+                local cfg = Configuration.new(self, variant_name, cfg_data)
+                cfg._source_missing = true
+                new_arr[#new_arr + 1] = cfg
+            end
+            seen[variant_name] = true
         end
     end
 
+    -- Replace with new array
+    self._configurations = new_arr
+
     -- Resolve inherits references (all configs exist now)
-    for _, cfg in pairs(self._configurations) do
+    for _, cfg in ipairs(self._configurations) do
         cfg:_resolve_inherits()
     end
 end
@@ -139,11 +185,28 @@ end
 --- @param name string configuration name
 --- @return loomworks.Configuration|nil
 function Project:get_configuration(name)
-    return self._configurations[name]
+    for _, cfg in ipairs(self._configurations) do
+        if cfg.name == name then return cfg end
+    end
+    return nil
+end
+
+--- Get or create a Configuration domain object by name.
+--- If no Configuration exists, creates a source-missing stub.
+--- Used by sync_config_sets to ensure CS mappings always have Configuration objects.
+--- @param name string configuration name
+--- @return loomworks.Configuration
+function Project:ensure_configuration(name)
+    local existing = self:get_configuration(name)
+    if existing then return existing end
+    local cfg = Configuration.new(self, name, {})
+    cfg._source_missing = true
+    self._configurations[#self._configurations + 1] = cfg
+    return cfg
 end
 
 --- Get all Configuration domain objects.
---- @return table<string, loomworks.Configuration>
+--- @return loomworks.Configuration[]
 function Project:get_configurations()
     return self._configurations
 end
@@ -248,6 +311,27 @@ function Project:to_module_context(ws_root)
     }
 end
 
+--- Build a type_config table with .configurations reconstructed from
+--- Configuration domain objects. Used wherever module.info() needs the
+--- user-override data (which is no longer stored on type_config at runtime).
+--- @return table type_config with .configurations populated
+function Project:_type_config_for_module()
+    local tc = vim.deepcopy(self.type_config or {})
+    local configs = {}
+    for _, cfg in ipairs(self._configurations) do
+        local override = cfg:serialize_user_override()
+        if override then
+            configs[cfg.name] = override
+        end
+    end
+    if next(configs) then
+        tc.configurations = configs
+    else
+        tc.configurations = nil
+    end
+    return tc
+end
+
 -- ========================== Mutation methods ==========================
 
 --- Refresh configurations from module info after config changes.
@@ -256,7 +340,8 @@ function Project:_refresh_configurations()
     local mod = self._module and self._module.impl or nil
     if not mod or not mod.info then return end
     local abs_path = self._workspace.root .. "/" .. (self.path or self.key)
-    local mod_info = mod.info(abs_path, self.type_config or {})
+    local tc = self:_type_config_for_module()
+    local mod_info = mod.info(abs_path, tc)
     if mod_info then
         self.configurations = mod_info.configurations or {}
         self.preset_configurations = mod_info.preset_configurations or nil
@@ -274,9 +359,9 @@ function Project:save_configuration(config_name, config_data)
     -- Validate config name for build dir safety
     local validate_path_name = require("loomworks.workspace").validate_path_name
     local existing_names = {}
-    if self.type_config and self.type_config.configurations then
-        for k in pairs(self.type_config.configurations) do
-            existing_names[#existing_names + 1] = k
+    for _, cfg in ipairs(self._configurations) do
+        if cfg.is_user then
+            existing_names[#existing_names + 1] = cfg.name
         end
     end
     local valid, verr = validate_path_name(config_name, existing_names)
@@ -284,14 +369,8 @@ function Project:save_configuration(config_name, config_data)
         return false, "invalid configuration name: " .. verr
     end
 
-    -- Ensure type_config.configurations exists
-    if not self.type_config then self.type_config = {} end
-    if not self.type_config.configurations then
-        self.type_config.configurations = {}
-    end
-
-    -- Omit empty fields
-    local clean = {}
+    -- Build the data table for Configuration._update (user override format)
+    local clean = { is_user = true }
     if config_data.variant then clean.variant = config_data.variant end
     if config_data.inherits then clean.inherits = config_data.inherits end
     if config_data.options and next(config_data.options) then
@@ -300,13 +379,44 @@ function Project:save_configuration(config_name, config_data)
     if config_data.toolchain then clean.toolchain = config_data.toolchain end
     if config_data.generator then clean.generator = config_data.generator end
 
-    self.type_config.configurations[config_name] = clean
+    -- Create or update Configuration domain object
+    local existing = self:get_configuration(config_name)
+    local old_cfg_snapshot = nil
+    if existing then
+        -- Snapshot for rollback
+        old_cfg_snapshot = {
+            is_user = existing.is_user,
+            is_default = existing.is_default,
+            from_preset = existing.from_preset,
+            role = existing.role,
+            options = existing.options,
+            inherits_names = existing.inherits_names,
+            module_config = vim.deepcopy(existing.module_config),
+        }
+        existing:_update(clean)
+        existing:_resolve_inherits()
+    else
+        local cfg = Configuration.new(self, config_name, clean)
+        cfg:_resolve_inherits()
+        self._configurations[#self._configurations + 1] = cfg
+    end
+
+    if not self.type_config then self.type_config = {} end
 
     local ok, err = ws:_save_config()
     if not ok then
-        self.type_config.configurations[config_name] = nil
-        if not next(self.type_config.configurations) then
-            self.type_config.configurations = nil
+        -- Rollback
+        if existing and old_cfg_snapshot then
+            existing:_update(old_cfg_snapshot)
+            existing:_resolve_inherits()
+        else
+            -- Remove the newly added Configuration
+            for i, cfg in ipairs(self._configurations) do
+                if cfg.name == config_name then
+                    table.remove(self._configurations, i)
+                    break
+                end
+            end
         end
         return false, err
     end
@@ -321,24 +431,29 @@ end
 --- @return boolean ok, string|nil err
 function Project:delete_configuration(config_name)
     local ws = self._workspace
-    if not self.type_config or not self.type_config.configurations
-            or not self.type_config.configurations[config_name] then
+
+    -- Find the user-defined Configuration object
+    local cfg = self:get_configuration(config_name)
+    if not cfg or not cfg.is_user then
         return false, "configuration '" .. config_name .. "' not found"
     end
 
-    local old = self.type_config.configurations[config_name]
-    self.type_config.configurations[config_name] = nil
-    if not next(self.type_config.configurations) then
-        self.type_config.configurations = nil
+    -- Remove from array
+    local removed_idx = nil
+    for i, c in ipairs(self._configurations) do
+        if c == cfg then
+            removed_idx = i
+            table.remove(self._configurations, i)
+            break
+        end
     end
 
     local ok, err = ws:_save_config()
     if not ok then
-        if not self.type_config.configurations then
-            self.type_config.configurations = {}
+        -- Rollback: re-insert at original position
+        if removed_idx then
+            table.insert(self._configurations, removed_idx, cfg)
         end
-        proj.type_config.configurations[config_name] = old
-        self.type_config = proj.type_config
         return false, err
     end
 
@@ -347,9 +462,9 @@ function Project:delete_configuration(config_name)
     return true
 end
 
---- Rename a project configuration atomically: updates loomworks.json
---- (type_config, inherits, config_set mappings) and cache (rekeys entries,
---- updates profile configurations arrays). Build dirs are preserved as-is.
+--- Rename a project configuration atomically: updates Configuration objects,
+--- inherits references, config set mappings, cache entries, and profiles.
+--- Build dirs are preserved as-is.
 --- @param old_name string current configuration name
 --- @param new_name string desired new name
 --- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
@@ -357,16 +472,19 @@ end
 function Project:rename_configuration(old_name, new_name, config_data)
     local ws = self._workspace
 
-    if not self.type_config or not self.type_config.configurations
-            or not self.type_config.configurations[old_name] then
+    -- Find the Configuration object being renamed
+    local target_cfg = self:get_configuration(old_name)
+    if not target_cfg or not target_cfg.is_user then
         return false, "configuration '" .. old_name .. "' not found"
     end
 
     -- Validate new name
     local validate_path_name = require("loomworks.workspace").validate_path_name
     local existing_names = {}
-    for k in pairs(self.type_config.configurations) do
-        if k ~= old_name then existing_names[#existing_names + 1] = k end
+    for _, cfg in ipairs(self._configurations) do
+        if cfg.is_user and cfg.name ~= old_name then
+            existing_names[#existing_names + 1] = cfg.name
+        end
     end
     local valid, verr = validate_path_name(new_name, existing_names)
     if not valid then
@@ -374,67 +492,71 @@ function Project:rename_configuration(old_name, new_name, config_data)
     end
 
     -- Snapshot for rollback
-    local old_config_data_snapshot = self.type_config.configurations[old_name]
-    local old_inherits_snapshot = {}
-    for cname, cdata in pairs(self.type_config.configurations) do
-        if cdata.inherits then
-            old_inherits_snapshot[cname] = cdata.inherits
+    local old_cfg_snapshot = {
+        name = target_cfg.name,
+        is_user = target_cfg.is_user,
+        is_default = target_cfg.is_default,
+        from_preset = target_cfg.from_preset,
+        role = target_cfg.role,
+        options = target_cfg.options,
+        inherits_names = vim.deepcopy(target_cfg.inherits_names),
+        module_config = vim.deepcopy(target_cfg.module_config),
+    }
+    local old_sibling_inherits = {} -- cfg -> old inherits_names snapshot
+    for _, cfg in ipairs(self._configurations) do
+        if cfg ~= target_cfg and cfg.inherits_names then
+            for _, base_name in ipairs(cfg.inherits_names) do
+                if base_name == old_name then
+                    old_sibling_inherits[cfg] = vim.deepcopy(cfg.inherits_names)
+                    break
+                end
+            end
         end
     end
-    local old_cs_mappings = {} -- cs -> old_variant (for rollback)
+    local old_cs_configs = {} -- cs -> true (for rollback of name)
     for _, cs in pairs(ws._config_sets) do
-        if cs.mappings[self] == old_name then
-            old_cs_mappings[cs] = old_name
+        local cfg = cs.mappings[self]
+        if cfg and cfg.name == old_name then
+            old_cs_configs[cs] = true
         end
     end
 
-    -- Step 1: Update inherits in sibling configs
-    for _, cdata in pairs(self.type_config.configurations) do
-        if cdata.inherits then
-            if type(cdata.inherits) == "string" then
-                if cdata.inherits == old_name then
-                    cdata.inherits = new_name
-                end
-            elseif type(cdata.inherits) == "table" then
-                for i, base in ipairs(cdata.inherits) do
-                    if base == old_name then
-                        cdata.inherits[i] = new_name
-                    end
+    -- Step 1: Update inherits_names in sibling Configuration objects
+    for _, cfg in ipairs(self._configurations) do
+        if cfg ~= target_cfg and cfg.inherits_names then
+            for i, base_name in ipairs(cfg.inherits_names) do
+                if base_name == old_name then
+                    cfg.inherits_names[i] = new_name
                 end
             end
         end
     end
 
-    -- Step 2: Rename in type_config.configurations
-    local clean = {}
-    if config_data.variant then clean.variant = config_data.variant end
-    if config_data.inherits then clean.inherits = config_data.inherits end
+    -- Step 2: Rename the Configuration object and update its data
+    target_cfg.name = new_name
+    local update_data = { is_user = true }
+    if config_data.variant then update_data.variant = config_data.variant end
+    if config_data.inherits then update_data.inherits = config_data.inherits end
     if config_data.options and next(config_data.options) then
-        clean.options = config_data.options
+        update_data.options = config_data.options
     end
-    if config_data.toolchain then clean.toolchain = config_data.toolchain end
-    if config_data.generator then clean.generator = config_data.generator end
-    self.type_config.configurations[old_name] = nil
-    self.type_config.configurations[new_name] = clean
+    if config_data.toolchain then update_data.toolchain = config_data.toolchain end
+    if config_data.generator then update_data.generator = config_data.generator end
+    target_cfg:_update(update_data)
+    target_cfg:_resolve_inherits()
 
-    -- Step 3: Update configuration_set domain objects
-    for cs in pairs(old_cs_mappings) do
-        cs.mappings[self] = new_name
-    end
+    -- Step 3: CS mappings already hold a ref to target_cfg — the name mutation
+    -- above makes raw_mappings() serialize new_name automatically.
 
     -- Save config to disk
     local ok, err = ws:_save_config()
     if not ok then
-        -- Rollback
-        self.type_config.configurations[new_name] = nil
-        self.type_config.configurations[old_name] = old_config_data_snapshot
-        for cname, inh in pairs(old_inherits_snapshot) do
-            if self.type_config.configurations[cname] then
-                self.type_config.configurations[cname].inherits = inh
-            end
-        end
-        for cs, old_val in pairs(old_cs_mappings) do
-            cs.mappings[self] = old_val
+        -- Rollback: restore name, data, and sibling inherits
+        target_cfg.name = old_cfg_snapshot.name
+        target_cfg:_update(old_cfg_snapshot)
+        target_cfg:_resolve_inherits()
+        for cfg, old_inh in pairs(old_sibling_inherits) do
+            cfg.inherits_names = old_inh
         end
         return false, err
     end

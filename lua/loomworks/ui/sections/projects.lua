@@ -224,8 +224,8 @@ local function edit_project_configuration(project, config_name)
             -- Config sets that reference this variant
             for _, cs_obj in pairs(ws._config_sets) do
                 if cs_obj.mappings then
-                    for proj, variant in pairs(cs_obj.mappings) do
-                        if proj.key == project_key and variant == config_name then
+                    for proj, config in pairs(cs_obj.mappings) do
+                        if proj.key == project_key and config.name == config_name then
                             effects[#effects + 1] = "Config set '" .. cs_obj.name .. "' mapping → " .. new_name
                         end
                     end
@@ -238,17 +238,12 @@ local function edit_project_configuration(project, config_name)
                 end
             end
             -- Sibling configs that inherit from this name
-            local type_config = project.type_config
-            if type_config and type_config.configurations then
-                for cname, cdata in pairs(type_config.configurations) do
-                    if cname ~= config_name and cdata.inherits then
-                        local inh = cdata.inherits
-                        if type(inh) == "string" then inh = { inh } end
-                        for _, base in ipairs(inh) do
-                            if base == config_name then
-                                effects[#effects + 1] = "Config '" .. cname .. "' inherits → " .. new_name
-                                break
-                            end
+            for _, cfg in ipairs(project:get_configurations()) do
+                if cfg.name ~= config_name and cfg.inherits_names then
+                    for _, base in ipairs(cfg.inherits_names) do
+                        if base == config_name then
+                            effects[#effects + 1] = "Config '" .. cfg.name .. "' inherits → " .. new_name
+                            break
                         end
                     end
                 end
@@ -256,11 +251,11 @@ local function edit_project_configuration(project, config_name)
             return #effects > 0 and effects or nil
         end or nil,
         validate = function(result)
-            if result.name ~= (config_name or "")
-                    and project.type_config
-                    and project.type_config.configurations
-                    and project.type_config.configurations[result.name] then
-                return false, "configuration '" .. result.name .. "' already exists"
+            if result.name ~= (config_name or "") then
+                local existing = project:get_configuration(result.name)
+                if existing and existing.is_user then
+                    return false, "configuration '" .. result.name .. "' already exists"
+                end
             end
             return true
         end,
@@ -431,10 +426,9 @@ return function(tree, ctx)
 
                         local project = proj  -- capture for closure
                         local cfg_name = cname
-                        -- Check if config is user-defined (has entry in type_config.configurations)
-                        local has_user_entry = proj.type_config
-                                and proj.type_config.configurations
-                                and proj.type_config.configurations[cname] ~= nil
+                        -- Check if config is user-defined via Configuration domain object
+                        local cfg_obj = proj:get_configuration(cname)
+                        local has_user_entry = cfg_obj and cfg_obj.is_user or false
 
                         -- Build picker-based action closures for keyed-tool modules.
                         -- If only one tool entry, skip picker and act directly.

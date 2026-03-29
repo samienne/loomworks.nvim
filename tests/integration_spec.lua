@@ -495,8 +495,8 @@ describe("project lifecycle", function()
         end
         assert.is_not_nil(debug_cs)
         local app_variant = nil
-        for proj, variant in pairs(debug_cs.mappings) do
-            if proj.key == "App" then app_variant = variant end
+        for proj, config in pairs(debug_cs.mappings) do
+            if proj.key == "App" then app_variant = config.name end
         end
         assert.equals("Debug", app_variant)
 
@@ -1189,9 +1189,12 @@ describe("configuration rename propagation", function()
         })
         assert.is_true(ok)
 
-        -- Config renamed in type_config
-        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-asan"])
-        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["DebugASAN"])
+        -- Config renamed on Configuration domain objects
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_nil(app:get_configuration("Debug-asan"))
+        local renamed_cfg = app:get_configuration("DebugASAN")
+        assert.is_not_nil(renamed_cfg)
+        assert.is_true(renamed_cfg.is_user)
 
         -- Config set mapping updated
         local debug_cs_rename = h.find_config_set_in(ws:get_config_sets(), "debug")
@@ -1273,14 +1276,17 @@ describe("configuration rename propagation", function()
         })
         assert.is_true(ok)
 
-        -- String inherits updated
-        assert.equals("BaseConfig",
-            h.find_project_in(ws:get_projects(), "App").type_config.configurations.child.inherits)
+        -- String inherits updated on Configuration domain objects
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local child_cfg = app:get_configuration("child")
+        assert.is_not_nil(child_cfg)
+        assert.same({ "BaseConfig" }, child_cfg.inherits_names)
 
         -- Array inherits updated
-        local multi_inh = h.find_project_in(ws:get_projects(), "App").type_config.configurations.multi.inherits
-        assert.equals("Debug", multi_inh[1])
-        assert.equals("BaseConfig", multi_inh[2])
+        local multi_cfg = app:get_configuration("multi")
+        assert.is_not_nil(multi_cfg)
+        assert.equals("Debug", multi_cfg.inherits_names[1])
+        assert.equals("BaseConfig", multi_cfg.inherits_names[2])
     end)
 
     it("succeeds with no cache entries", function()
@@ -1301,8 +1307,11 @@ describe("configuration rename propagation", function()
             options = { A = "1" },
         })
         assert.is_true(ok)
-        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.old)
-        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.new)
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_nil(app:get_configuration("old"))
+        local new_cfg = app:get_configuration("new")
+        assert.is_not_nil(new_cfg)
+        assert.is_true(new_cfg.is_user)
     end)
 
     it("updates multiple profiles referencing same variant", function()
@@ -1707,7 +1716,7 @@ describe("configuration rename propagation", function()
 
         -- Update config set to use the new configuration
         local cs = h.find_config_set_in(ws:get_config_sets(),"custom")
-        ok = cs:update_mapping(project, "Debug-ASAN")
+        ok = cs:update_mapping(project, cfg)
         assert.is_true(ok)
 
         -- PP now resolves the new Configuration
@@ -1744,8 +1753,11 @@ describe("configuration rename propagation", function()
         assert.is_true(ok)
 
         -- Config renamed (not delete+create)
-        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.old_cfg)
-        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations.new_cfg)
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_nil(app:get_configuration("old_cfg"))
+        local new_cfg = app:get_configuration("new_cfg")
+        assert.is_not_nil(new_cfg)
+        assert.is_true(new_cfg.is_user)
 
         -- Config set mapping updated atomically
         local debug_cs_exec = h.find_config_set_in(ws:get_config_sets(), "debug")
@@ -1969,10 +1981,12 @@ describe("project configuration lifecycle", function()
             options = { SANITIZE_ADDRESS = "ON" },
         })
         assert.is_true(ok)
-        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config)
-        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-ASAN"])
-        assert.equals("Debug",
-            h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-ASAN"].inherits)
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app.type_config)
+        local cfg = app:get_configuration("Debug-ASAN")
+        assert.is_not_nil(cfg)
+        assert.is_true(cfg.is_user)
+        assert.same({ "Debug" }, cfg.inherits_names)
     end)
 
     it("edits existing configuration options", function()
@@ -1992,10 +2006,11 @@ describe("project configuration lifecycle", function()
             options = { ENABLE_TESTS = "OFF", VERBOSE = "ON" },
         })
         assert.is_true(ok)
-        assert.equals("OFF",
-            h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug"].options.ENABLE_TESTS)
-        assert.equals("ON",
-            h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug"].options.VERBOSE)
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local cfg = app:get_configuration("Debug")
+        assert.is_not_nil(cfg)
+        assert.equals("OFF", cfg.options.ENABLE_TESTS)
+        assert.equals("ON", cfg.options.VERBOSE)
     end)
 
     it("renames custom configuration", function()
@@ -2016,8 +2031,11 @@ describe("project configuration lifecycle", function()
             options = { ASAN = "ON" },
         })
         assert.is_true(ok)
-        assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-ASAN"])
-        assert.is_not_nil(h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-Sanitized"])
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_nil(app:get_configuration("Debug-ASAN"))
+        local renamed = app:get_configuration("Debug-Sanitized")
+        assert.is_not_nil(renamed)
+        assert.is_true(renamed.is_user)
     end)
 
     it("deletes custom configuration", function()
@@ -2035,10 +2053,10 @@ describe("project configuration lifecycle", function()
 
         local ok = wv.execute_delete_configuration(h.find_project_in(ws:get_projects(), "App"), "Debug-ASAN")
         assert.is_true(ok)
-        -- configurations key cleaned up when empty
-        assert.is_true(
-            h.find_project_in(ws:get_projects(), "App").type_config.configurations == nil
-            or h.find_project_in(ws:get_projects(), "App").type_config.configurations["Debug-ASAN"] == nil)
+        -- Configuration domain object removed
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local deleted = app:get_configuration("Debug-ASAN")
+        assert.is_nil(deleted)
     end)
 
     it("saves project-wide options", function()
@@ -2381,10 +2399,12 @@ describe("opaque keys", function()
         assert.is_not_nil(cs)
 
         local proj = h.find_project_in(ws:get_projects(), "proj-alpha")
-        cs:update_mapping(proj, "Release")
+        local release_cfg = proj:get_configuration("Release")
+        assert.is_not_nil(release_cfg)
+        cs:update_mapping(proj, release_cfg)
 
         -- Verify mapping changed
-        assert.equals("Release", cs.mappings[proj])
+        assert.equals("Release", cs.mappings[proj].name)
     end)
 
     it("save_configuration works on project with arbitrary keys", function()
@@ -2395,7 +2415,9 @@ describe("opaque keys", function()
             options = { MY_FLAG = "ON" },
         })
         assert.is_true(ok)
-        assert.is_not_nil(proj.type_config.configurations["custom-cfg"])
+        local cfg = proj:get_configuration("custom-cfg")
+        assert.is_not_nil(cfg)
+        assert.is_true(cfg.is_user)
     end)
 
     it("rename_configuration propagates with arbitrary keys", function()
@@ -2409,8 +2431,10 @@ describe("opaque keys", function()
             options = { X = "1" },
         })
         assert.is_true(ok)
-        assert.is_nil(proj.type_config.configurations["temp-name"])
-        assert.is_not_nil(proj.type_config.configurations["new-name"])
+        assert.is_nil(proj:get_configuration("temp-name"))
+        local new_cfg = proj:get_configuration("new-name")
+        assert.is_not_nil(new_cfg)
+        assert.is_true(new_cfg.is_user)
     end)
 
     it("delete preserves arbitrary build dirs in cache", function()
