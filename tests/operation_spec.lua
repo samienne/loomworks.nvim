@@ -68,7 +68,7 @@ describe("Operation", function()
 
         it("starts as not completed", function()
             local op, core = make_operation("build", {{ project = "App", config = "Debug", target = "built" }})
-            local unit = h.find_config_unit_by_id(core._config_units, "App/Debug")
+            local unit = h.find_config_unit(core._config_units, "App", "Debug")
             unit:register_task(1, "build") -- keep it running
             -- Need to create a new op with the running unit
             local op2 = make_operation("build", {{ project = "App", config = "Debug", target = "built" }})
@@ -196,7 +196,7 @@ describe("Operation", function()
             local op, core = make_operation("build", {
                 { project = "App", config = "Debug", target = "built" },
             })
-            local unit = h.find_config_unit_by_id(core._config_units, "App/Debug")
+            local unit = h.find_config_unit(core._config_units, "App", "Debug")
             assert.is_true(op:has_unit(unit))
         end)
 

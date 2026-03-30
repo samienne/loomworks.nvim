@@ -245,6 +245,39 @@ function Workspace:find_config_unit(project, configuration, tool)
     return nil
 end
 
+--- Compute the expected build directory for a project configuration.
+--- Delegates to the module's resolve_build_dir, then relativizes.
+--- For modules without resolve_build_dir, uses default path formula.
+--- @param project loomworks.Project
+--- @param variant string configuration variant name
+--- @param tool_data? table module-specific tool data (with .id for cmake kits)
+--- @return string relative build_dir key (used as ConfigUnit id and cache key)
+--- @return string absolute build_dir path
+function Workspace:_compute_build_dir(project, variant, tool_data)
+    local mod = project._module and project._module.impl or nil
+    local abs_path
+    if mod and mod.resolve_build_dir then
+        -- Get configuration info from project for binary_dir overrides
+        local config_info = nil
+        local cfg = project:get_configuration(variant)
+        if cfg and cfg.module_config then
+            config_info = cfg.module_config
+        end
+        abs_path = mod.resolve_build_dir(project.key, variant, config_info, self.root, tool_data)
+    else
+        -- Default: {root}/.nvim/build/{project_key}/{variant}
+        -- Include tool id as path segment when present
+        local tool_id = tool_data and tool_data.id or nil
+        if tool_id then
+            abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. tool_id .. "/" .. variant
+        else
+            abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. variant
+        end
+    end
+    local rel_key = cache_mod.relative_build_dir(abs_path, self.root)
+    return rel_key, abs_path
+end
+
 --- Find or create a ConfigUnit for the given project, configuration, and tool.
 --- Searches by properties first. If not found, creates a new cache entry
 --- and ConfigUnit. Key generation is a write-time cache concern only.
@@ -256,11 +289,13 @@ function Workspace:ensure_config_unit(project, configuration, tool)
     local existing = self:find_config_unit(project, configuration, tool)
     if existing then return existing end
 
-    -- Generate cache key (write-time concern — opaque identity for the new entry)
     local variant = configuration.name
     local tool_key = tool and tool.key or nil
+    local tool_data = tool and tool.data or nil
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
-    local id = cache_mod.config_cache_key(project.key, config_key)
+
+    -- Compute build_dir-based identity
+    local rel_key, abs_path = self:_compute_build_dir(project, variant, tool_data)
 
     -- Create cache entry as owned data on the ConfigUnit
     local entry = {
@@ -269,11 +304,12 @@ function Workspace:ensure_config_unit(project, configuration, tool)
         type = project.type,
         variant = variant,
         tool_key = tool_key,
-        tool_data = tool and tool.data or nil,
+        tool_data = tool_data,
+        build_dir = abs_path,
     }
 
     -- Create ConfigUnit and register — pre-resolve references
-    local unit = ConfigUnit.new(self, id, project.key)
+    local unit = ConfigUnit.new(self, rel_key, project.key)
     unit:_apply({
         cached = entry,
         project = project,
@@ -295,19 +331,20 @@ end
 --- @return loomworks.CacheData
 function Workspace:_serialize_cache()
     local data = {
-        configurations = {},
+        build_dirs = {},
     }
 
-    -- Configurations: always serialize from ConfigUnit objects
+    -- Build dirs: serialize from ConfigUnit objects, keyed by relative build_dir
     for _, unit in pairs(self._config_units) do
-        if unit._config_key then
+        if unit._variant then
             local entry = unit:serialize()
             if entry.cmake then entry.cmake.targets = nil end
-            data.configurations[unit.id] = entry
+            -- Key is the unit's id (relative build_dir path)
+            data.build_dirs[unit.id] = entry
         end
     end
 
-    -- Profiles: always serialize from domain objects
+    -- Profiles: always serialize from domain objects (transitional, kept for Phase 5 removal)
     local profiles = {}
     for _, profile in pairs(self._profiles) do
         profiles[profile.key] = profile:serialize_cache()
@@ -834,13 +871,14 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
         local project_tool_data = project_tool_key and tools[project.type].data or nil
         local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
 
-        local cache_key = self._core._deps.cache.config_cache_key(project.key, config_key)
-        profile_configurations[#profile_configurations + 1] = cache_key
+        -- Compute build_dir-based id
+        local rel_key, abs_path = self:_compute_build_dir(project, variant, project_tool_data)
+        profile_configurations[#profile_configurations + 1] = rel_key
 
         -- Ensure skeleton ConfigUnit exists (or reuse stale one from prior deletion)
         local existing_unit = nil
         for _, u in pairs(self._config_units) do
-            if u.id == cache_key then existing_unit = u; break end
+            if u.id == rel_key then existing_unit = u; break end
         end
         local entry = {
             project_key = project.key,
@@ -849,6 +887,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
             variant = variant,
             tool_key = project_tool_key,
             tool_data = project_tool_data,
+            build_dir = abs_path,
         }
         if existing_unit then
             -- Re-populate stale unit (e.g. after deletion cleared state)
@@ -859,7 +898,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
                 })
             end
         else
-            local unit = ConfigUnit.new(self, cache_key, project.key)
+            local unit = ConfigUnit.new(self, rel_key, project.key)
             unit:_apply({
                 cached = entry,
                 project = project,
@@ -913,11 +952,8 @@ function Workspace:_build_live_referenced_set()
     local referenced = {}
     for _, profile in pairs(self._profiles) do
         for _, pp in ipairs(profile:projects()) do
-            local ck_val = pp:config_key()
-            if ck_val then
-                local project_key = pp:project_key()
-                local ck = cache_mod.config_cache_key(project_key, ck_val)
-                referenced[ck] = true
+            if pp._config_unit then
+                referenced[pp._config_unit.id] = true
             end
         end
     end
@@ -933,14 +969,14 @@ end
 --- Mutates raw_cache in place so callers pass the cleaned version to remerge.
 --- @param raw_cache loomworks.CacheData raw cache data
 function Workspace:_cleanup_orphaned_skeletons(raw_cache)
-    if not raw_cache or not raw_cache.configurations then return end
+    if not raw_cache or not raw_cache.build_dirs then return end
 
     local referenced = self:_build_referenced_set()
 
     local changed = false
     local to_drop = {}
 
-    for cache_key, cached_config in pairs(raw_cache.configurations) do
+    for cache_key, cached_config in pairs(raw_cache.build_dirs) do
         if not referenced[cache_key] then
             local state = cached_config.state
             if not state or state == "unconfigured" then
@@ -951,7 +987,7 @@ function Workspace:_cleanup_orphaned_skeletons(raw_cache)
     end
 
     for _, cache_key in ipairs(to_drop) do
-        raw_cache.configurations[cache_key] = nil
+        raw_cache.build_dirs[cache_key] = nil
         -- Also clean up ConfigUnit if it exists (may not during init)
         for i, unit in ipairs(self._config_units) do
             if unit.id == cache_key then
@@ -977,13 +1013,13 @@ function Workspace:get_orphaned_configs()
 
     local result = {}
     for _, unit in pairs(self._config_units) do
-        if not unit._config_key then goto continue end
+        if not unit._variant then goto continue end
         local state = unit.state_value
         if state and state ~= "unconfigured"
                 and not referenced[unit.id] then
             result[#result + 1] = {
                 project_key = unit._init_project_key or (unit._project and unit._project.key),
-                config_key = unit._config_key,
+                config_key = unit._config_key or unit._variant,
                 unit = unit,
             }
         end
@@ -1177,27 +1213,40 @@ function Workspace:record_task_result(result)
         proj_type = project and project.type or "unknown"
     elseif result.project_key and result.configuration_key then
         -- Fallback for results without a ConfigUnit (e.g. buggy multi-config tasks)
-        local cache_key = self._core._deps.cache.config_cache_key(result.project_key, result.configuration_key)
         for _, p in pairs(self._projects) do
             if p.key == result.project_key then project = p; break end
         end
         proj_type = project and project.type or "unknown"
-        -- Find or create ConfigUnit for this cache key
+        -- Compute build_dir-based id
+        local tool_data = result.tool and result.tool.data or nil
+        local rel_key
+        if result.build_dir then
+            rel_key = cache_mod.relative_build_dir(result.build_dir, self.root)
+        elseif project then
+            rel_key = self:_compute_build_dir(project, result.variant or result.configuration_key, tool_data)
+        else
+            -- Last resort: synthetic path
+            rel_key = "build/" .. result.project_key .. "/" .. (result.variant or result.configuration_key)
+        end
+        -- Find or create ConfigUnit for this build_dir key
         local existing_unit = nil
         for _, u in pairs(self._config_units) do
-            if u.id == cache_key then existing_unit = u; break end
+            if u.id == rel_key then existing_unit = u; break end
         end
         if existing_unit then
             config_unit = existing_unit
         else
+            local abs_path = result.build_dir
+                or cache_mod.absolute_build_dir(rel_key, self.root)
             local entry = {
                 project_key = result.project_key,
                 config_key = result.configuration_key,
                 type = proj_type,
                 variant = result.variant,
                 tool_key = result.tool and result.tool.key or nil,
+                build_dir = abs_path,
             }
-            local unit = ConfigUnit.new(self, cache_key, result.project_key)
+            local unit = ConfigUnit.new(self, rel_key, result.project_key)
             unit:_apply({ cached = entry, project = project })
             self._config_units[#self._config_units + 1] = unit
             config_unit = unit
@@ -2092,26 +2141,30 @@ function Workspace:_extend_cached_profile(profile_data, tools)
         -- Tool key applies only to projects whose module type matches
         local project_tool = tools and tools[project.type] or nil
         local project_tool_key = project_tool and project_tool.key or nil
+        local project_tool_data = project_tool and project_tool.data or nil
         local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
-        local ck = self._core._deps.cache.config_cache_key(project_key, config_key)
 
-        if not existing[ck] then
+        -- Compute build_dir-based id
+        local rel_key, abs_path = self:_compute_build_dir(project, variant, project_tool_data)
+
+        if not existing[rel_key] then
             -- Create skeleton ConfigUnit if absent
-            if not units_by_id[ck] then
+            if not units_by_id[rel_key] then
                 local entry = {
                     project_key = project_key,
                     config_key = config_key,
                     type = project.type,
                     variant = variant,
                     tool_key = project_tool_key,
-                    tool_data = project_tool and project_tool.data or nil,
+                    tool_data = project_tool_data,
+                    build_dir = abs_path,
                 }
-                local unit = ConfigUnit.new(self, ck, project_key)
+                local unit = ConfigUnit.new(self, rel_key, project_key)
                 unit:_apply({ cached = entry, project = project })
                 self._config_units[#self._config_units + 1] = unit
-                units_by_id[ck] = unit
+                units_by_id[rel_key] = unit
             end
-            profile_data.configurations[#profile_data.configurations + 1] = ck
+            profile_data.configurations[#profile_data.configurations + 1] = rel_key
         end
     end
 end

@@ -1,10 +1,10 @@
 --- loomworks/config_unit.lua — ConfigUnit: atomic unit of configuration state.
---- Identity is the cache dict key (e.g., "App/Debug:ninja-gcc").
+--- Identity is the relative build_dir path (e.g., "build/App/Debug").
 --- Owns the running/deleting state and provides a single derived state value.
 --- Multiple profiles may reference the same ConfigUnit.
 
 --- @class loomworks.ConfigUnit
---- @field id string cache dict key (identity)
+--- @field id string relative build_dir path (identity, e.g., "build/App/Debug")
 --- @field _workspace loomworks.Workspace
 --- @field _init_project_key string|nil hint for project resolution
 --- References (resolved during _apply):
@@ -114,7 +114,8 @@ end
 --- Serialize this ConfigUnit to a cache entry for persistence.
 --- Produces cache-shaped table from first-class fields and references.
 --- Includes a configuration snapshot so cache entries are self-describing.
---- @return table cache entry suitable for cache.configurations[id]
+--- The entry is written under the build_dir key by the caller (_serialize_cache).
+--- @return table cache entry suitable for cache.build_dirs[id]
 function ConfigUnit:serialize()
     local entry = {
         project_key = self._project and self._project.key or self._init_project_key,
@@ -123,8 +124,8 @@ function ConfigUnit:serialize()
         variant = self._variant,
         tool_key = self._tool_key,
         tool_data = self._tool_data,
-        state = self.state_value,
         build_dir = self.build_dir_value,
+        state = self.state_value,
         last_configured = self.last_configured,
         last_built = self.last_built,
     }
@@ -386,10 +387,12 @@ function ConfigUnit:materialize_pinned(variant, tool)
 
     -- Ensure config skeleton exists (writes first-class fields)
     self:materialize(variant, tool)
-    if not self._config_key then return nil end
+    if not self._variant then return nil end
 
     local project_key = self._project.key
     local config_key = self._config_key
+        or self._workspace._core._deps.merge.build_config_key(
+            self._variant, self._tool_key)
 
     -- Build tool info for cache entry
     local tool_obj = self._tool

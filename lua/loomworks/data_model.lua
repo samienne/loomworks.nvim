@@ -61,8 +61,8 @@ local function sync_modules(ctx, config, cache, modules_registry)
             if project.type then needed[project.type] = true end
         end
     end
-    if cache and cache.configurations then
-        for _, cc in pairs(cache.configurations) do
+    if cache and cache.build_dirs then
+        for _, cc in pairs(cache.build_dirs) do
             if cc.type then needed[cc.type] = true end
         end
     end
@@ -133,9 +133,9 @@ local function sync_tools(ctx, modules_arr, tools_by_type, cache, modules_regist
         end
     end
 
-    -- From cache: tool_data stored inline in configurations and profiles
-    if cache.configurations then
-        for _, cc in pairs(cache.configurations) do
+    -- From cache: tool_data stored inline in build_dirs and profiles
+    if cache.build_dirs then
+        for _, cc in pairs(cache.build_dirs) do
             if cc.tool_key and cc.type then
                 local tool = get_or_create_tool(
                     ctx, modules_arr, modules_registry,
@@ -285,10 +285,10 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
         data._resolved_mappings = nil
         if data._cached_configurations and not data.mappings then
             local mappings = {}
-            local cache_cfgs = cache and cache.configurations or nil
-            if cache_cfgs then
+            local cache_dirs = cache and cache.build_dirs or nil
+            if cache_dirs then
                 for _, ck in ipairs(data._cached_configurations) do
-                    local cached_config = cache_cfgs[ck]
+                    local cached_config = cache_dirs[ck]
                     if cached_config and cached_config.variant then
                         mappings[cached_config.project_key] = cached_config.variant
                     end
@@ -333,7 +333,7 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
 end
 
 --- Sync the config units registry.
---- Collects all valid (project_key, config_key) pairs from cache,
+--- Collects all entries from cache build_dirs,
 --- creates/updates/removes ConfigUnit objects. Preserves runtime state.
 --- Pre-resolves project, tool, and configuration references before calling _apply.
 --- @param ctx table deserialization context with O(1) lookups
@@ -342,9 +342,10 @@ end
 --- @return table[] config_units array
 local function sync_config_units(ctx, workspace, cache)
     local expected = {}
+    local cache_mod = require("loomworks.cache")
 
-    if cache.configurations then
-        for cache_dict_key, cached_config in pairs(cache.configurations) do
+    if cache.build_dirs then
+        for build_dir_key, cached_config in pairs(cache.build_dirs) do
             local project_key = cached_config.project_key
             local project = project_key and ctx.projects[project_key] or nil
             local tool = nil
@@ -358,9 +359,13 @@ local function sync_config_units(ctx, workspace, cache)
             if variant and project then
                 configuration = project:get_configuration(variant)
             end
-            expected[cache_dict_key] = {
+            -- Enrich cached_config with build_dir computed from the key
+            local enriched = vim.tbl_extend("keep", cached_config, {
+                build_dir = cache_mod.absolute_build_dir(build_dir_key, workspace.root),
+            })
+            expected[build_dir_key] = {
                 project_key = project_key,
-                cached = cached_config,
+                cached = enriched,
                 project = project,
                 tool = tool,
                 configuration = configuration,

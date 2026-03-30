@@ -29,21 +29,31 @@ end
 --- @param config_key string
 --- @return loomworks.ConfigUnit
 local function get_unit(core, project_key, config_key)
-    local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = h.find_config_unit_by_id(core._workspace._config_units, id)
-    if unit then return unit end
-    local project = h.find_project_in(core:get_projects(), project_key)
-    assert(project, "project " .. project_key .. " not found in workspace")
-    -- Parse variant and tool from config_key for ensure_config_unit
+    local ws = core._workspace
     local variant = config_key
-    local tool = nil
+    local tool_key_filter = nil
     local colon = config_key:find(":")
     if colon then
         variant = config_key:sub(1, colon - 1)
-        local tool_key = config_key:sub(colon + 1)
-        tool = core._workspace:find_tool(project.type, tool_key)
+        tool_key_filter = config_key:sub(colon + 1)
+    end
+    -- Try property-based lookup first (match project_key + variant + tool_key)
+    for _, unit in pairs(ws._config_units) do
+        if unit._init_project_key == project_key and unit._variant == variant then
+            if tool_key_filter == nil and unit._tool_key == nil then
+                return unit
+            elseif tool_key_filter and unit._tool_key == tool_key_filter then
+                return unit
+            end
+        end
+    end
+    local project = h.find_project_in(core:get_projects(), project_key)
+    assert(project, "project " .. project_key .. " not found in workspace")
+    local tool = nil
+    if colon then
+        tool = ws:find_tool(project.type, tool_key_filter)
         if not tool then
-            tool = core._workspace:get_or_create_tool(project.type, tool_key, {}, nil)
+            tool = ws:get_or_create_tool(project.type, tool_key_filter, {}, nil)
         end
     end
     local Configuration = require("loomworks.configuration")
@@ -52,7 +62,7 @@ local function get_unit(core, project_key, config_key)
         cfg = Configuration.new(project, variant, {})
         project._configurations[#project._configurations + 1] = cfg
     end
-    return core._workspace:ensure_config_unit(project, cfg, tool)
+    return ws:ensure_config_unit(project, cfg, tool)
 end
 
 -- ---------------------------------------------------------------------------
@@ -86,13 +96,15 @@ local function assert_cache_coherent(core, msg)
     local orphans = core:get_orphaned_configs()
     local orphan_set = {}
     for _, o in ipairs(orphans) do
-        local ck = o.project_key .. "/" .. o.config_key
-        orphan_set[ck] = true
+        -- Use the ConfigUnit id (build_dir key) for matching against cache keys
+        if o.unit then
+            orphan_set[o.unit.id] = true
+        end
     end
 
     -- Check every cached config is either referenced or a known orphan
-    if cache.configurations then
-        for cache_key, cached_config in pairs(cache.configurations) do
+    if cache.build_dirs then
+        for cache_key, cached_config in pairs(cache.build_dirs) do
             local state = cached_config.state
             if state and state ~= "unconfigured" then
                 assert(referenced[cache_key] or orphan_set[cache_key],
@@ -119,8 +131,8 @@ local function assert_cache_empty(core, msg)
     assert(ws, prefix .. "workspace should exist")
 
     local cache = ws:_serialize_cache()
-    local has_configs = cache.configurations and next(cache.configurations)
-    assert(not has_configs, prefix .. "cache should have no configurations")
+    local has_configs = cache.build_dirs and next(cache.build_dirs)
+    assert(not has_configs, prefix .. "cache should have no build_dirs")
 
     local has_profiles = cache.profiles and next(cache.profiles)
     assert(not has_profiles, prefix .. "cache should have no profiles")
@@ -131,12 +143,32 @@ local function count_cached_configs(core)
     local ws = core:get_workspace()
     if not ws then return 0 end
     local cache = ws:_serialize_cache()
-    if not cache.configurations then return 0 end
+    if not cache.build_dirs then return 0 end
     local count = 0
-    for _ in pairs(cache.configurations) do
+    for _ in pairs(cache.build_dirs) do
         count = count + 1
     end
     return count
+end
+
+--- Look up a cached config by project_key and variant from serialized cache.
+--- Returns the entry (or nil) from build_dirs.
+--- @param cache table serialized cache
+--- @param project_key string
+--- @param variant string
+--- @return table|nil entry
+local function find_cached(cache, project_key, variant, tool_key)
+    if not cache.build_dirs then return nil end
+    for _, entry in pairs(cache.build_dirs) do
+        if entry.project_key == project_key and entry.variant == variant then
+            if tool_key then
+                if entry.tool_key == tool_key then return entry end
+            else
+                return entry
+            end
+        end
+    end
+    return nil
 end
 
 --- Count profiles in cache.
@@ -333,7 +365,7 @@ describe("cache coherence", function()
             -- Config entry exists with state preserved
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.equals("built", cache.configurations["App/development"].state)
+            assert.equals("built", find_cached(cache, "App", "development").state)
         end)
     end)
 
@@ -348,8 +380,8 @@ describe("cache coherence", function()
                 {
                     tools_by_type = {
                         cmake = {
-                            { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
-                            { tool_key = "ninja-clang", tool_data = { generator = "Ninja", compiler_id = "clang" }, tool_label = "Ninja Clang" },
+                            { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                            { tool_key = "ninja-clang", tool_data = { id = "ninja-clang", generator = "Ninja", compiler_id = "clang" }, tool_label = "Ninja Clang" },
                         },
                     },
                 }
@@ -359,12 +391,12 @@ describe("cache coherence", function()
 
             -- Build with gcc
             get_unit(core, "Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
-            simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
+            simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/ninja-gcc/Debug")
             assert_cache_coherent(core, "after gcc build")
 
             -- Build with clang
             get_unit(core, "Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
-            simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
+            simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/ninja-clang/Debug")
             assert_cache_coherent(core, "after clang build")
             assert.equals(2, count_cached_configs(core))
 
@@ -382,12 +414,12 @@ describe("cache coherence", function()
             assert_cache_coherent(core, "after deleting gcc profile")
             assert.equals(1, count_cached_configs(core))
             assert.equals(1, #rm_calls)
-            assert.truthy(rm_calls[1]:match("Debug%-gcc"))
+            assert.truthy(rm_calls[1]:match("ninja%-gcc"))
 
             -- Clang config should still be there
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_not_nil(cache.configurations["Lib/Debug:ninja-clang"])
+            assert.is_not_nil(find_cached(cache, "Lib", "Debug", "ninja-clang"))
         end)
 
         it("delete all profiles leaves cache empty", function()
@@ -399,7 +431,7 @@ describe("cache coherence", function()
                 {
                     tools_by_type = {
                         cmake = {
-                            { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                            { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
                         },
                     },
                 }
@@ -407,9 +439,9 @@ describe("cache coherence", function()
             setup({ root = "/root" })
 
             get_unit(core, "Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
-            simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug")
+            simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/ninja-gcc/Debug")
             get_unit(core, "Lib", "Release:ninja-gcc"):materialize_pinned("Release", { key = "ninja-gcc" })
-            simulate_build(core, "Lib", "Release:ninja-gcc", "/root/.nvim/build/Lib/Release")
+            simulate_build(core, "Lib", "Release:ninja-gcc", "/root/.nvim/build/Lib/ninja-gcc/Release")
             assert.equals(2, count_cached_configs(core))
             assert_cache_coherent(core, "after two builds")
 
@@ -444,7 +476,7 @@ describe("cache coherence", function()
             }, nil, nil, {
                 tools_by_type = {
                     cmake = {
-                        { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                        { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
                     },
                 },
             })
@@ -452,7 +484,7 @@ describe("cache coherence", function()
 
             -- Materialize the debug:ninja-gcc profile
             get_cs(core, "debug"):activate(tool_entry_for(core, "ninja-gcc"))
-            simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/Debug")
+            simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/ninja-gcc/Debug")
             simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
             assert_cache_coherent(core, "after full build")
             assert.equals(2, count_cached_configs(core))
@@ -484,7 +516,7 @@ describe("cache coherence", function()
             }, nil, nil, {
                 tools_by_type = {
                     cmake = {
-                        { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                        { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
                     },
                 },
             })
@@ -492,7 +524,7 @@ describe("cache coherence", function()
 
             -- Full profile build
             get_cs(core, "debug"):activate(tool_entry_for(core, "ninja-gcc"))
-            simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/Debug")
+            simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/ninja-gcc/Debug")
             simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/dev")
 
             -- Pinned: build Backend with same config (overlapping reference)
@@ -545,7 +577,7 @@ describe("cache coherence", function()
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
             assert.is_not_nil(cache.profiles["App/development"])
-            assert.is_nil(cache.configurations["App/development"].state)
+            assert.is_nil(find_cached(cache, "App", "development").state)
         end)
 
         it("keeps config when set-based profile references it", function()
@@ -573,7 +605,7 @@ describe("cache coherence", function()
             -- Config entry exists but state cleared to unconfigured
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_nil(cache.configurations["App/development"].state)
+            assert.is_nil(find_cached(cache, "App", "development").state)
 
             -- Both profiles still intact
             assert.is_not_nil(cache.profiles.debug)
@@ -586,17 +618,17 @@ describe("cache coherence", function()
             }, nil, nil, {
                 tools_by_type = {
                     cmake = {
-                        { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
-                        { tool_key = "ninja-clang", tool_data = { generator = "Ninja", compiler_id = "clang" }, tool_label = "Ninja Clang" },
+                        { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                        { tool_key = "ninja-clang", tool_data = { id = "ninja-clang", generator = "Ninja", compiler_id = "clang" }, tool_label = "Ninja Clang" },
                     },
                 },
             })
             setup({ root = "/root" })
 
             get_unit(core, "Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
-            simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/Debug-gcc")
+            simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/ninja-gcc/Debug")
             get_unit(core, "Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
-            simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/Debug-clang")
+            simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/ninja-clang/Debug")
             assert.equals(2, count_cached_configs(core))
 
             get_unit(core, "Lib", "Debug:ninja-gcc"):delete()
@@ -608,9 +640,9 @@ describe("cache coherence", function()
             -- GCC config reset, clang config still built
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_nil(cache.configurations["Lib/Debug:ninja-gcc"].state)
-            assert.is_not_nil(cache.configurations["Lib/Debug:ninja-clang"])
-            assert.equals("built", cache.configurations["Lib/Debug:ninja-clang"].state)
+            assert.is_nil(find_cached(cache, "Lib", "Debug", "ninja-gcc").state)
+            assert.is_not_nil(find_cached(cache, "Lib", "Debug", "ninja-clang"))
+            assert.equals("built", find_cached(cache, "Lib", "Debug", "ninja-clang").state)
 
             -- Both pinned profiles still intact
             assert.is_not_nil(cache.profiles["Lib/Debug:ninja-gcc"])
@@ -744,7 +776,7 @@ describe("cache coherence", function()
                 {
                     tools_by_type = {
                         cmake = {
-                            { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                            { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
                         },
                     },
                 }
@@ -798,7 +830,7 @@ describe("cache coherence", function()
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
             assert.is_not_nil(cache.profiles.debug)
-            assert.equals("built", cache.configurations["App/development"].state)
+            assert.equals("built", find_cached(cache, "App", "development").state)
         end)
 
         it("multiple set-based profiles sharing same config stays coherent", function()
@@ -1066,50 +1098,50 @@ describe("cache coherence", function()
                             tools = {
                                 cmake = {
                                     key = "ninja-gcc",
-                                    data = { generator = "Ninja", compiler_id = "gcc" },
+                                    data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" },
                                     label = "Ninja GCC",
                                 },
                             },
-                            configurations = { "Lib/Debug:ninja-gcc" },
+                            configurations = { "build/Lib/ninja-gcc/Debug" },
                         },
                         ["debug:ninja-clang"] = {
                             configuration_set = "debug",
                             tools = {
                                 cmake = {
                                     key = "ninja-clang",
-                                    data = { generator = "Ninja", compiler_id = "clang" },
+                                    data = { id = "ninja-clang", generator = "Ninja", compiler_id = "clang" },
                                     label = "Ninja Clang",
                                 },
                             },
-                            configurations = { "Lib/Debug:ninja-clang" },
+                            configurations = { "build/Lib/ninja-clang/Debug" },
                         },
                     },
-                    configurations = {
-                        ["Lib/Debug:ninja-gcc"] = {
+                    build_dirs = {
+                        ["build/Lib/ninja-gcc/Debug"] = {
                             project_key = "Lib",
                             config_key = "Debug:ninja-gcc", variant = "Debug",
                             type = "cmake",
                             state = "built",
-                            variant = "Debug",
                             tool_key = "ninja-gcc",
-                            build_dir = "/root/.nvim/build/Lib/Debug-gcc",
+                            tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" },
+                            build_dir = "/root/.nvim/build/Lib/ninja-gcc/Debug",
                         },
-                        ["Lib/Debug:ninja-clang"] = {
+                        ["build/Lib/ninja-clang/Debug"] = {
                             project_key = "Lib",
                             config_key = "Debug:ninja-clang", variant = "Debug",
                             type = "cmake",
                             state = "configured",
-                            variant = "Debug",
                             tool_key = "ninja-clang",
-                            build_dir = "/root/.nvim/build/Lib/Debug-clang",
+                            tool_data = { id = "ninja-clang", generator = "Ninja", compiler_id = "clang" },
+                            build_dir = "/root/.nvim/build/Lib/ninja-clang/Debug",
                         },
                     },
                 },
                 {
                     tools_by_type = {
                         cmake = {
-                            { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
-                            { tool_key = "ninja-clang", tool_data = { generator = "Ninja", compiler_id = "clang" }, tool_label = "Ninja Clang" },
+                            { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                            { tool_key = "ninja-clang", tool_data = { id = "ninja-clang", generator = "Ninja", compiler_id = "clang" }, tool_label = "Ninja Clang" },
                         },
                     },
                 }
@@ -1227,7 +1259,7 @@ describe("cache coherence", function()
             -- The orphaned production config should still exist (not auto-deleted)
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_not_nil(cache.configurations["App/production"])
+            assert.is_not_nil(find_cached(cache, "App", "production"))
 
             -- And it's still an orphan
             orphans = core:get_orphaned_configs()
@@ -1275,7 +1307,7 @@ describe("cache coherence", function()
                     -- Current detection only finds gcc — the old compiler is gone
                     tools_by_type = {
                         cmake = {
-                            { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                            { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
                         },
                     },
                 }
@@ -1431,7 +1463,7 @@ describe("cache coherence", function()
             -- Config still has its state
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.equals("built", cache.configurations["App/development"].state)
+            assert.equals("built", find_cached(cache, "App", "development").state)
 
             -- Delete second profile — config now unreferenced, cleaned
             local p2 = h.find_profile(core:get_profiles(), "staging")
@@ -1565,13 +1597,13 @@ describe("cache coherence", function()
             assert.equals(1, count_profiles(core))
             assert.equals(1, count_cached_configs(core))
 
-            -- Config is a skeleton (no state, no build_dir)
+            -- Config is a skeleton (no state, but build_dir is always set in v7)
             local ws = core:get_workspace()
-            local cached = ws:_serialize_cache().configurations["App/development"]
+            local cached = find_cached(ws:_serialize_cache(), "App", "development")
             assert.is_nil(cached.state)
-            assert.is_nil(cached.build_dir)
+            assert.is_not_nil(cached.build_dir)
 
-            -- Delete — skeleton should be cleaned even though there's nothing on disk
+            -- Delete — skeleton cleanup; in v7 skeletons have build_dir
             local profile = h.find_profile(core:get_profiles(), "debug")
             assert.is_not_nil(profile)
             local plan = profile:plan_deletion()
@@ -1579,7 +1611,8 @@ describe("cache coherence", function()
             core:execute_deletion(plan, { deactivate_profile = profile })
 
             assert_cache_empty(core, "after deleting unbuild profile")
-            assert.equals(0, #rm_calls) -- no build dir to delete
+            -- In v7, skeletons have a build_dir so deletion attempts cleanup
+            assert.equals(1, #rm_calls)
         end)
 
         it("pinned materialized but never built, then deleted", function()
@@ -1599,7 +1632,8 @@ describe("cache coherence", function()
             core:execute_deletion(plan, { deactivate_profile = profile })
 
             assert_cache_empty(core, "after deleting unbuilt pinned")
-            assert.equals(0, #rm_calls)
+            -- In v7, skeletons have a build_dir so deletion attempts cleanup
+            assert.equals(1, #rm_calls)
         end)
     end)
 
@@ -1797,7 +1831,7 @@ describe("cache coherence", function()
                 {
                     tools_by_type = {
                         cmake = {
-                            { tool_key = "ninja-gcc", tool_data = { generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
+                            { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" }, tool_label = "Ninja GCC" },
                         },
                     },
                 }
@@ -1817,7 +1851,7 @@ describe("cache coherence", function()
 
             -- Config entry still exists with all fields intact
             local ws = core:get_workspace()
-            local cached = ws:_serialize_cache().configurations["Lib/Debug:ninja-gcc"]
+            local cached = find_cached(ws:_serialize_cache(), "Lib", "Debug", "ninja-gcc")
             assert.is_not_nil(cached, "config entry should still exist after keep")
 
             -- All fields preserved
@@ -1879,7 +1913,7 @@ describe("cache coherence", function()
 
             -- Config still built
             local ws = core:get_workspace()
-            local cached = ws:_serialize_cache().configurations["App/development"]
+            local cached = find_cached(ws:_serialize_cache(), "App", "development")
             assert.equals("built", cached.state)
             assert.equals("/root/.nvim/build/App/development", cached.build_dir)
             assert_cache_coherent(core, "config stays built")
@@ -1984,7 +2018,7 @@ describe("cache coherence", function()
             -- Config reset to unconfigured (skeleton kept for set-based profile)
             local ws = core:get_workspace()
             local scache = ws:_serialize_cache()
-            local cached = scache.configurations["App/development"]
+            local cached = find_cached(scache, "App", "development")
             assert.is_not_nil(cached, "config should survive reset")
             assert.is_nil(cached.state)
             assert.is_nil(cached.build_dir)
@@ -2035,7 +2069,7 @@ describe("cache coherence", function()
             -- Config reset to unconfigured (skeleton kept for pinned profile)
             local ws = core:get_workspace()
             local scache = ws:_serialize_cache()
-            local cached = scache.configurations["App/development"]
+            local cached = find_cached(scache, "App", "development")
             assert.is_not_nil(cached, "config should survive reset")
             assert.is_nil(cached.state)
             assert.is_nil(cached.build_dir)
@@ -2171,12 +2205,12 @@ describe("cache coherence", function()
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
             assert.is_not_nil(cache.profiles["Backend/development"])
-            assert.is_nil(cache.configurations["Backend/development"].state)
+            assert.is_nil(find_cached(cache, "Backend", "development").state)
 
             -- Frontend still fully intact
             assert.is_not_nil(cache.profiles["Frontend/development"])
-            assert.is_not_nil(cache.configurations["Frontend/development"])
-            assert.equals("built", cache.configurations["Frontend/development"].state)
+            assert.is_not_nil(find_cached(cache, "Frontend", "development"))
+            assert.equals("built", find_cached(cache, "Frontend", "development").state)
         end)
 
         it("delete_config removes only target from multi-config profile's reachable set", function()
@@ -2210,12 +2244,12 @@ describe("cache coherence", function()
             -- Backend config reset to unconfigured
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_nil(cache.configurations["Backend/development"].state)
+            assert.is_nil(find_cached(cache, "Backend", "development").state)
 
             -- Both profiles still intact
             assert.is_not_nil(cache.profiles["Backend/development"])
             assert.is_not_nil(cache.profiles.debug)
-            assert.equals("built", cache.configurations["Frontend/development"].state)
+            assert.equals("built", find_cached(cache, "Frontend", "development").state)
         end)
     end)
 end)

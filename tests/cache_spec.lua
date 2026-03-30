@@ -2,36 +2,36 @@ local cache = require("loomworks.cache")
 
 describe("cache", function()
     describe("default", function()
-        it("returns table with version 6 and empty configurations", function()
+        it("returns table with version 7 and empty build_dirs", function()
             local d = cache.default()
-            assert.equals(6, d._meta.version)
-            assert.are.same({}, d.configurations)
+            assert.equals(7, d._meta.version)
+            assert.are.same({}, d.build_dirs)
         end)
     end)
 
     describe("parse", function()
         it("parses valid cache.json", function()
             local json = vim.json.encode({
-                _meta = { version = 6, loomworks_hash = "abc", cached_at = "2025-01-01" },
-                configurations = {
-                    ["App/Debug"] = {
+                _meta = { version = 7, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                build_dirs = {
+                    ["build/App/Debug"] = {
                         project_key = "App",
-                        config_key = "Debug",
                         type = "cmake",
+                        variant = "Debug",
                         state = "built",
                         last_built = "2025-01-01",
                     },
                 },
             })
             local result = cache.parse(json)
-            assert.equals(6, result._meta.version)
-            assert.equals("built", result.configurations["App/Debug"].state)
+            assert.equals(7, result._meta.version)
+            assert.equals("built", result.build_dirs["build/App/Debug"].state)
         end)
 
         it("returns no version mismatch on valid parse", function()
             local json = vim.json.encode({
-                _meta = { version = 6, loomworks_hash = "abc", cached_at = "2025-01-01" },
-                configurations = {},
+                _meta = { version = 7, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                build_dirs = {},
             })
             local _, mismatch = cache.parse(json)
             assert.is_false(mismatch)
@@ -39,24 +39,24 @@ describe("cache", function()
 
         it("returns defaults on invalid JSON without version mismatch", function()
             local result, mismatch = cache.parse("broken {{{")
-            assert.equals(6, result._meta.version)
-            assert.are.same({}, result.configurations)
+            assert.equals(7, result._meta.version)
+            assert.are.same({}, result.build_dirs)
             assert.is_false(mismatch)
         end)
 
         it("returns defaults and version mismatch on wrong version", function()
             local json = vim.json.encode({
                 _meta = { version = 999 },
-                configurations = {},
+                build_dirs = {},
             })
             local result, mismatch = cache.parse(json)
-            assert.are.same({}, result.configurations)
+            assert.are.same({}, result.build_dirs)
             assert.is_true(mismatch)
         end)
 
         it("returns version mismatch on old version", function()
             local json = vim.json.encode({
-                _meta = { version = 2 },
+                _meta = { version = 6 },
                 configurations = {},
             })
             local _, mismatch = cache.parse(json)
@@ -69,16 +69,16 @@ describe("cache", function()
                 projects = {},
             })
             local result, mismatch = cache.parse(json)
-            assert.are.same({}, result.configurations)
+            assert.are.same({}, result.build_dirs)
             assert.is_true(mismatch)
         end)
 
-        it("ensures configurations field exists", function()
+        it("ensures build_dirs field exists", function()
             local json = vim.json.encode({
-                _meta = { version = 6 },
+                _meta = { version = 7 },
             })
             local result = cache.parse(json)
-            assert.are.same({}, result.configurations)
+            assert.are.same({}, result.build_dirs)
         end)
     end)
 
@@ -89,6 +89,35 @@ describe("cache", function()
 
         it("works with tool-qualified config keys", function()
             assert.equals("App/Debug:ninja-gcc-12", cache.config_cache_key("App", "Debug:ninja-gcc-12"))
+        end)
+    end)
+
+    describe("relative_build_dir", function()
+        it("strips root/.nvim/ prefix", function()
+            assert.equals("build/App/Debug",
+                cache.relative_build_dir("/workspace/.nvim/build/App/Debug", "/workspace"))
+        end)
+
+        it("returns path as-is for external dirs", function()
+            assert.equals("/external/build",
+                cache.relative_build_dir("/external/build", "/workspace"))
+        end)
+    end)
+
+    describe("absolute_build_dir", function()
+        it("prepends root/.nvim/ to relative path", function()
+            assert.equals("/workspace/.nvim/build/App/Debug",
+                cache.absolute_build_dir("build/App/Debug", "/workspace"))
+        end)
+
+        it("returns absolute path as-is", function()
+            assert.equals("/external/build",
+                cache.absolute_build_dir("/external/build", "/workspace"))
+        end)
+
+        it("returns Windows absolute path as-is", function()
+            assert.equals("C:/builds/App",
+                cache.absolute_build_dir("C:/builds/App", "/workspace"))
         end)
     end)
 
@@ -112,42 +141,35 @@ describe("cache", function()
 
     describe("validate_consistency", function()
         it("passes for cache without profiles", function()
-            local ok = cache.validate_consistency({ configurations = {} })
+            local ok = cache.validate_consistency({ build_dirs = {} })
             assert.is_true(ok)
         end)
 
-        it("passes when all profile references exist", function()
+        it("passes when all build_dirs entries have required fields", function()
             local data = {
-                configurations = {
-                    ["App/Debug"] = { project_key = "App", variant = "Debug" },
-                },
-                profiles = {
-                    ["debug"] = { configurations = { "App/Debug" } },
+                build_dirs = {
+                    ["build/App/Debug"] = { project_key = "App", variant = "Debug" },
                 },
             }
             local ok = cache.validate_consistency(data)
             assert.is_true(ok)
         end)
 
-        it("fails when profile references missing configuration", function()
+        it("fails when build_dir entry is missing project_key", function()
             local data = {
-                configurations = {},
-                profiles = {
-                    ["debug"] = { configurations = { "App/Debug" } },
+                build_dirs = {
+                    ["build/App/Debug"] = { variant = "Debug" },
                 },
             }
             local ok, err = cache.validate_consistency(data)
             assert.is_false(ok)
-            assert.matches("missing configuration", err)
+            assert.matches("missing project_key", err)
         end)
 
-        it("fails when configuration entry has no variant field", function()
+        it("fails when build_dir entry is missing variant", function()
             local data = {
-                configurations = {
-                    ["App/Debug"] = { project_key = "App" },
-                },
-                profiles = {
-                    ["debug"] = { configurations = { "App/Debug" } },
+                build_dirs = {
+                    ["build/App/Debug"] = { project_key = "App" },
                 },
             }
             local ok, err = cache.validate_consistency(data)
@@ -155,9 +177,34 @@ describe("cache", function()
             assert.matches("missing variant", err)
         end)
 
+        it("passes for profiles referencing existing build_dirs", function()
+            local data = {
+                build_dirs = {
+                    ["build/App/Debug"] = { project_key = "App", variant = "Debug" },
+                },
+                profiles = {
+                    ["debug"] = { configurations = { "build/App/Debug" } },
+                },
+            }
+            local ok = cache.validate_consistency(data)
+            assert.is_true(ok)
+        end)
+
+        it("fails when profile references missing build_dir", function()
+            local data = {
+                build_dirs = {},
+                profiles = {
+                    ["debug"] = { configurations = { "build/App/Debug" } },
+                },
+            }
+            local ok, err = cache.validate_consistency(data)
+            assert.is_false(ok)
+            assert.matches("missing build_dir", err)
+        end)
+
         it("passes for profiles with no configurations array", function()
             local data = {
-                configurations = {},
+                build_dirs = {},
                 profiles = {
                     ["empty"] = {},
                 },

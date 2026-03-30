@@ -53,8 +53,8 @@ local function collect_module_types(config, cache)
             types[project.type] = true
         end
     end
-    if cache and cache.configurations then
-        for _, cached_config in pairs(cache.configurations) do
+    if cache and cache.build_dirs then
+        for _, cached_config in pairs(cache.build_dirs) do
             if cached_config.type then
                 types[cached_config.type] = true
             end
@@ -468,18 +468,26 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type)
         local cached_config_data = nil
         local status = "unconfigured"
 
-        if cache.configurations and cache_config_key then
-            local full_ck = cache_mod.config_cache_key(key, cache_config_key)
-            cached_config_data = cache.configurations[full_ck]
+        -- Find matching cache entry by project_key + variant + tool_key
+        if cache.build_dirs and active_configuration then
+            for _, cc in pairs(cache.build_dirs) do
+                if cc.project_key == key and cc.variant == active_configuration
+                        and (cc.tool_key or nil) == project_tool_key then
+                    cached_config_data = cc
+                    break
+                end
+            end
             status = resolve_status(cached_config_data)
         end
 
         -- Collect all cached configs for this project from the flat dict
         local cached_configurations = {}
-        if cache.configurations then
-            for _, cc in pairs(cache.configurations) do
+        if cache.build_dirs then
+            for _, cc in pairs(cache.build_dirs) do
                 if cc.project_key == key then
-                    cached_configurations[cc.config_key] = cc
+                    -- Build a config_key for backward compat with callers
+                    local ck = M.build_config_key(cc.variant, cc.tool_key)
+                    cached_configurations[ck] = cc
                 end
             end
         end
@@ -526,10 +534,10 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type)
     end
 
     -- Find orphaned projects (in cache but not in config)
-    if cache.configurations then
+    if cache.build_dirs then
         -- Collect unique project_keys from cache that aren't in config
         local orphaned_projects = {} -- project_key -> { type, status }
-        for _, cc in pairs(cache.configurations) do
+        for _, cc in pairs(cache.build_dirs) do
             local pk = cc.project_key
             if pk and not config.projects[pk] and not orphaned_projects[pk] then
                 orphaned_projects[pk] = {

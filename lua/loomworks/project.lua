@@ -562,7 +562,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
     end
 
     -- Step 4: Migrate cache entries (ConfigUnit objects + cache)
-    local cache_rename_map = {} -- old_cache_key -> new_cache_key
+    local cache_rename_map = {} -- old_id -> new_id
     local to_migrate = {}
     for _, unit in pairs(ws._config_units) do
         if unit._project == self and unit._variant
@@ -573,14 +573,19 @@ function Project:rename_configuration(old_name, new_name, config_data)
     for _, unit in ipairs(to_migrate) do
         local old_config_key = unit._config_key
         local new_config_key = ws._core._deps.merge.build_config_key(new_name, unit._tool_key)
-        local new_cache_key = ws._core._deps.cache.config_cache_key(self.key, new_config_key)
+        -- Compute new build_dir-based identity
+        local tool_data = unit._tool_data
+        local new_rel_key = ws:_compute_build_dir(self, new_name, tool_data)
         -- Update first-class fields
         unit._variant = new_name
         unit._config_key = new_config_key
         -- Update ConfigUnit identity
         local old_id = unit.id
-        unit.id = new_cache_key
-        cache_rename_map[old_id] = new_cache_key
+        unit.id = new_rel_key
+        -- Update build_dir_value to reflect the new path
+        local cache_lu = require("loomworks.cache")
+        unit.build_dir_value = cache_lu.absolute_build_dir(new_rel_key, ws.root)
+        cache_rename_map[old_id] = new_rel_key
         -- Update Project.cached_configurations dict to match ConfigUnit renames
         if old_config_key and self.cached_configurations then
             local entry = self.cached_configurations[old_config_key]
@@ -609,9 +614,19 @@ function Project:rename_configuration(old_name, new_name, config_data)
             if profile.mappings and profile.mappings[self.key] == old_name then
                 profile.mappings[self.key] = new_name
             end
-            -- Rekey pinned profiles (pinned key == cache key format)
-            if cache_rename_map[profile.key] then
-                profile_rekeys[profile.key] = cache_rename_map[profile.key]
+            -- Rekey pinned profiles: check if the profile key contains the old variant name.
+            -- Pinned profile keys have format "project/variant:tool" which differs from
+            -- build_dir keys. Compute new key by substituting the variant in the key.
+            if not profile._configuration_set_name and profile.mappings
+                    and profile.mappings[self.key] == new_name then
+                -- This is a pinned profile that was just updated to use new_name
+                -- Check if its key contains the old variant name and substitute
+                local old_key = profile.key
+                local escaped_old = old_name:gsub("([%(%)%.%%%+%-%*%?%[%^%$])", "%%%1")
+                local new_key = old_key:gsub(escaped_old, new_name, 1)
+                if new_key ~= old_key then
+                    profile_rekeys[old_key] = new_key
+                end
             end
         end
         -- Apply profile rekeys

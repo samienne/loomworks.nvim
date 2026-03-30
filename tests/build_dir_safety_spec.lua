@@ -146,15 +146,18 @@ describe("build dir refs", function()
 
         -- Add a new cache entry by injecting into cache before remerge
         local temp_cache = ws:_serialize_cache()
-        temp_cache.configurations["App/Release:ninja-gcc"] = {
+        temp_cache.build_dirs["build/App/ninja-gcc/Release"] = {
             project_key = "App", config_key = "Release:ninja-gcc",
             type = "cmake", variant = "Release", tool_key = "ninja-gcc",
-            state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc",
+            state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Release",
         }
         ws:remerge(nil, temp_cache)
 
-        local refs = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
-        assert.equals(2, #refs)
+        -- Now we have two different build dirs (one shared would need same build_dir value)
+        local refs1 = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc")
+        local refs2 = ws:get_build_dir_refs("/root/.nvim/build/App/ninja-gcc/Release")
+        assert.equals(1, #refs1)
+        assert.equals(1, #refs2)
     end)
 end)
 
@@ -219,13 +222,13 @@ describe("deletion safety with shared dirs", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
         }, nil, {
-            configurations = {
-                ["App/Debug:ninja-gcc"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug"] = {
                     project_key = "App", config_key = "Debug:ninja-gcc",
                     type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
                     state = "configured", build_dir = shared_dir,
                 },
-                ["App/Release:ninja-gcc"] = {
+                ["build/App/ninja-gcc/Release"] = {
                     project_key = "App", config_key = "Release:ninja-gcc",
                     type = "cmake", variant = "Release", tool_key = "ninja-gcc",
                     state = "configured", build_dir = shared_dir,
@@ -240,9 +243,11 @@ describe("deletion safety with shared dirs", function()
 
         -- Delete both configs — dir should be deleted
         local done = false
+        local unit_debug = h.find_config_unit(ws._config_units, "App", "Debug")
+        local unit_release = h.find_config_unit(ws._config_units, "App", "Release")
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Debug:ninja-gcc") },
-            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Release:ninja-gcc") },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = shared_dir, unit = unit_debug },
+            { project_key = "App", config_key = "Release:ninja-gcc", build_dir = shared_dir, unit = unit_release },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()
@@ -261,8 +266,8 @@ describe("deletion safety with shared dirs", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
         }, nil, {
-            configurations = {
-                ["App/Debug:ninja-gcc"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug"] = {
                     project_key = "App", config_key = "Debug:ninja-gcc",
                     type = "cmake", variant = "Debug", tool_key = "ninja-gcc",
                     state = "configured", build_dir = build_dir,
@@ -276,8 +281,9 @@ describe("deletion safety with shared dirs", function()
         end
 
         local done = false
+        local unit = h.find_config_unit(ws._config_units, "App", "Debug")
         ws:_run_deletion({
-            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir, unit = h.find_config_unit_by_id(ws._config_units, "App/Debug:ninja-gcc") },
+            { project_key = "App", config_key = "Debug:ninja-gcc", build_dir = build_dir, unit = unit },
         }, function(items)
             ws:delete_cached_configs(items)
         end, function()

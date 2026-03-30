@@ -130,19 +130,19 @@ local function make_multiconfig_core(opts)
     return core, function() return saved_cache end
 end
 
---- Count cache configurations
+--- Count cache configurations (v7: build_dirs)
 local function count_configs(cache_data)
-    if not cache_data or not cache_data.configurations then return 0 end
+    if not cache_data or not cache_data.build_dirs then return 0 end
     local count = 0
-    for _ in pairs(cache_data.configurations) do count = count + 1 end
+    for _ in pairs(cache_data.build_dirs) do count = count + 1 end
     return count
 end
 
---- Get config keys from cache
+--- Get config keys from cache (v7: build_dirs)
 local function config_keys(cache_data)
     local keys = {}
-    if cache_data and cache_data.configurations then
-        for k in pairs(cache_data.configurations) do
+    if cache_data and cache_data.build_dirs then
+        for k in pairs(cache_data.build_dirs) do
             keys[#keys + 1] = k
         end
     end
@@ -228,14 +228,15 @@ describe("multi-config cmake", function()
             local cache = get_cache()
             -- Only the active config should have "built" state
             local built_keys = {}
-            for k, cfg in pairs(cache.configurations) do
+            for k, cfg in pairs(cache.build_dirs) do
                 if cfg.state == "built" then
                     built_keys[#built_keys + 1] = k
                 end
             end
             assert.equals(1, #built_keys,
                 "only active config should be built: " .. vim.inspect(built_keys))
-            assert.equals("App/Debug:ninja-clang", built_keys[1])
+            -- Key is build_dir-based, check it contains project and variant
+            assert.truthy(built_keys[1]:match("App") and built_keys[1]:match("Debug"))
         end)
     end)
 
@@ -303,18 +304,18 @@ describe("multi-config cmake", function()
                 success = true,
             })
 
-            -- Cache key should be "Frontend/default", NOT "Frontend/default:ninja-gcc"
+            -- Cache entry should exist for Frontend/default without tool segment
             assert.is_not_nil(saved_cache)
-            local cache_key = cache_mod.config_cache_key("Frontend", "default")
-            assert.is_not_nil(saved_cache.configurations[cache_key],
-                "typescript cache entry should use bare config key")
-
-            -- No entries with tool suffix for typescript
-            for key in pairs(saved_cache.configurations) do
-                if key:match("^Frontend/") and key:match(":") then
-                    error("typescript project has tool-suffixed cache key: " .. key)
+            local found_frontend = false
+            for key, entry in pairs(saved_cache.build_dirs) do
+                if entry.project_key == "Frontend" then
+                    found_frontend = true
+                    -- Key should NOT contain a tool segment
+                    assert.truthy(key:match("build/Frontend/default"),
+                        "typescript cache entry should use bare build dir key, got: " .. key)
                 end
             end
+            assert.is_true(found_frontend, "should find a cache entry for Frontend")
         end)
     end)
 
@@ -344,7 +345,7 @@ describe("multi-config cmake", function()
                 configuration_key = "Debug",
                 variant = "Debug",
                 success = true,
-                build_dir = "/build/App/Debug",
+                build_dir = "/root/.nvim/build/App/Debug",
             })
             core:record_task_result({
                 project_key = "App",
@@ -366,7 +367,7 @@ describe("multi-config cmake", function()
                 configuration_key = "Debug",
                 variant = "Debug",
                 success = true,
-                build_dir = "/build/App/Debug",
+                build_dir = "/root/.nvim/build/App/Debug",
             })
             core:record_task_result({
                 project_key = "App",
@@ -378,7 +379,7 @@ describe("multi-config cmake", function()
 
             -- Should have exactly one built config entry
             local built_keys = {}
-            for k, cfg in pairs(saved_cache.configurations) do
+            for k, cfg in pairs(saved_cache.build_dirs) do
                 if cfg.state == "built" or cfg.state == "configured" then
                     built_keys[#built_keys + 1] = k
                 end

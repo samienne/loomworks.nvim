@@ -20,19 +20,26 @@ end
 --- @return loomworks.ConfigUnit
 local function get_unit(core, project_key, config_key)
     local ws = core._workspace
-    local id = cache_mod.config_cache_key(project_key, config_key)
-    local unit = h.find_config_unit_by_id(ws._config_units, id)
+    -- Try to find by project_key + variant match first (property-based)
+    local variant = config_key
+    local colon = config_key:find(":")
+    if colon then variant = config_key:sub(1, colon - 1) end
+    for _, unit in pairs(ws._config_units) do
+        if unit._init_project_key == project_key and unit._variant == variant then
+            return unit
+        end
+    end
+    -- Also try by build_dir key
+    local bd_key = h.build_dir_key(project_key, variant)
+    local unit = h.find_config_unit_by_id(ws._config_units, bd_key)
     if unit then return unit end
     local project = h.find_project_in(core:get_projects(), project_key)
     if not project then
         -- Project not in workspace — create bare ConfigUnit (test-only scenario)
-        return h.ensure_config_unit_by_id(ws, id, project_key)
+        return h.ensure_config_unit_by_id(ws, bd_key, project_key)
     end
-    local variant = config_key
     local tool = nil
-    local colon = config_key:find(":")
     if colon then
-        variant = config_key:sub(1, colon - 1)
         local tool_key = config_key:sub(colon + 1)
         tool = ws:find_tool(project.type, tool_key)
         if not tool then
@@ -246,10 +253,10 @@ describe("Core", function()
                 build_dir = "/root/.nvim/build/App/Debug",
             })
             assert.is_not_nil(saved_cache)
-            local cached = saved_cache.configurations["App/Debug"]
+            local cached = saved_cache.build_dirs["build/App/Debug"]
+            assert.is_not_nil(cached, "expected build_dirs entry for build/App/Debug")
             assert.equals("configured", cached.state)
             assert.is_not_nil(cached.last_configured)
-            assert.equals("/root/.nvim/build/App/Debug", cached.build_dir)
         end)
 
         it("records build failure", function()
@@ -270,7 +277,8 @@ describe("Core", function()
                 success = false,
             })
             assert.is_not_nil(saved_cache)
-            local cached = saved_cache.configurations["App/Debug"]
+            local cached = saved_cache.build_dirs["build/App/Debug"]
+            assert.is_not_nil(cached, "expected build_dirs entry for build/App/Debug")
             assert.equals("failed_build", cached.state)
         end)
     end)
@@ -555,8 +563,8 @@ describe("Core", function()
             assert.equals("debug", saved_cache.profiles.debug.configuration_set)
             assert.is_not_nil(saved_cache.profiles.debug.configurations)
             -- Skeleton config entry in flat cache
-            assert.is_not_nil(saved_cache.configurations["App/development"])
-            assert.equals("development", saved_cache.configurations["App/development"].variant)
+            assert.is_not_nil(saved_cache.build_dirs["build/App/development"])
+            assert.equals("development", saved_cache.build_dirs["build/App/development"].variant)
         end)
 
         it("is idempotent (no-op when already materialized)", function()
@@ -693,7 +701,7 @@ describe("Core", function()
                 },
             })
             core._workspace:_on_file_changed("/root/.nvim/loomworks.cache.json", new_cache)
-            assert.is_not_nil(core._workspace:_serialize_cache().configurations["App/development"])
+            assert.is_not_nil(core._workspace:_serialize_cache().build_dirs["build/App/development"])
         end)
 
         it("does nothing for unrecognized path", function()
@@ -913,13 +921,13 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
-            assert.is_not_nil(core._workspace:_serialize_cache().configurations["App/development"])
+            assert.is_not_nil(core._workspace:_serialize_cache().build_dirs["build/App/development"])
 
             -- Simulate cache file being deleted (nil content)
             core._workspace:_on_file_changed("/root/.nvim/loomworks.cache.json", nil)
 
-            -- Cache should be reset to default (empty configurations)
-            assert.same({}, core._workspace:_serialize_cache().configurations)
+            -- Cache should be reset to default (empty build_dirs)
+            assert.same({}, core._workspace:_serialize_cache().build_dirs)
         end)
 
         it("emits active_set_changed when config file changes", function()
@@ -1137,7 +1145,7 @@ describe("Core", function()
             })
             local ws = core:get_workspace()
             -- Config should be removed from flat cache
-            assert.is_nil(ws:_serialize_cache().configurations["App/development"])
+            assert.is_nil(ws:_serialize_cache().build_dirs["build/App/development"])
         end)
 
         it("refuses to delete build dir outside workspace root", function()
@@ -1337,7 +1345,7 @@ describe("Core", function()
             assert.is_nil(saved_cache.profiles.debug)
             assert.is_not_nil(saved_cache.profiles.release)
             -- Config preserved (no items to delete)
-            assert.is_not_nil(saved_cache.configurations["App/development"])
+            assert.is_not_nil(saved_cache.build_dirs["build/App/development"])
         end)
     end)
 
@@ -1407,7 +1415,7 @@ describe("Core", function()
             core:setup({ root = "/root" })
             assert.is_not_nil(saved_cache)
             -- Config should have been dropped
-            assert.is_nil(saved_cache.configurations["App/development"])
+            assert.is_nil(saved_cache.build_dirs["build/App/development"])
         end)
 
         it("preserves configs with state (leaves them as orphans)", function()
@@ -1434,9 +1442,9 @@ describe("Core", function()
             -- Config should NOT be dropped — it has state
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_not_nil(cache.configurations)
-            assert.is_not_nil(cache.configurations["App/development"])
-            assert.equals("built", cache.configurations["App/development"].state)
+            assert.is_not_nil(cache.build_dirs)
+            assert.is_not_nil(cache.build_dirs["build/App/development"])
+            assert.equals("built", cache.build_dirs["build/App/development"].state)
             -- No pinned profile should be created
             assert.is_nil(cache.profiles)
         end)
@@ -1661,7 +1669,7 @@ describe("Core", function()
             assert.equals(0, #core:get_orphaned_configs())
             -- Cache should no longer have the config
             assert.is_not_nil(saved_cache)
-            assert.is_nil(saved_cache.configurations["App/production"])
+            assert.is_nil(saved_cache.build_dirs["build/App/production"])
         end)
     end)
 
@@ -1828,7 +1836,7 @@ describe("Core", function()
             assert.is_true(found_dir, "build directory should be deleted")
             -- Referenced config should still exist
             local ws = core:get_workspace()
-            assert.is_not_nil(ws:_serialize_cache().configurations["App/development"])
+            assert.is_not_nil(ws:_serialize_cache().build_dirs["build/App/development"])
         end)
 
         it("round-trip: master->feature->master leaves cache intact", function()
@@ -2195,13 +2203,13 @@ describe("Core", function()
                 action = "build",
                 success = true,
             })
-            local state = get_cache().configurations["App/development"]
+            local state = get_cache().build_dirs["build/App/development"]
             assert.equals("built", state.state)
             assert.is_not_nil(state.last_configured)
             assert.is_not_nil(state.last_built)
         end)
 
-        it("records build_dir from result", function()
+        it("records build_dir from result (key is the build_dir)", function()
             local core, get_cache = make_recording_core()
             local unit = get_unit(core, "App", "development")
             core:record_task_result({
@@ -2210,8 +2218,10 @@ describe("Core", function()
                 success = true,
                 build_dir = "/root/.nvim/build/App/development",
             })
-            assert.equals("/root/.nvim/build/App/development",
-                get_cache().configurations["App/development"].build_dir)
+            -- In v7, build_dir is the cache key, not a stored field
+            assert.is_not_nil(get_cache().build_dirs["build/App/development"])
+            -- ConfigUnit still tracks the absolute build_dir
+            assert.equals("/root/.nvim/build/App/development", unit:build_dir())
         end)
 
         it("records cmake data from result", function()
@@ -2224,7 +2234,7 @@ describe("Core", function()
                 cmake = { compile_commands_dir = "/root/.nvim/build/App/development" },
             })
             assert.equals("/root/.nvim/build/App/development",
-                get_cache().configurations["App/development"].cmake.compile_commands_dir)
+                get_cache().build_dirs["build/App/development"].cmake.compile_commands_dir)
         end)
 
         it("records tool_data from result", function()
@@ -2243,7 +2253,7 @@ describe("Core", function()
                 success = true,
                 tool = { key = "ninja-gcc-14.2.0", data = tool_data },
             })
-            local cached_td = get_cache().configurations["App/Debug:ninja-gcc-14.2.0"].tool_data
+            local cached_td = get_cache().build_dirs["build/App/Debug"].tool_data
             assert.is_not_nil(cached_td)
             assert.equals("ninja-gcc-14.2.0", cached_td.id)
             assert.equals("Ninja - GCC 14.2.0", cached_td.display)
@@ -2267,7 +2277,7 @@ describe("Core", function()
                 action = "build",
                 success = true,
             })
-            local cached = get_cache().configurations["App/Debug"]
+            local cached = get_cache().build_dirs["build/App/Debug"]
             assert.equals("built", cached.state)
             assert.equals("ninja-gcc-14.2.0", cached.tool_data.id)
         end)
@@ -2447,7 +2457,7 @@ describe("Core", function()
             assert.equals("/root/.nvim/build/App/Debug", options_args.build_dir)
         end)
 
-        it("returns nil when project has no build_dir", function()
+        it("returns options even for unconfigured unit (build_dir is deterministic)", function()
             local core = make_core(
                 {
                     projects = { App = { cmake = {} } },
@@ -2468,8 +2478,9 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
+            -- In v7, build_dir is always deterministic so options() delegates to module
             local options = get_unit(core, "App", "Debug"):options()
-            assert.is_nil(options)
+            assert.is_not_nil(options)
         end)
 
         it("returns nil when module has no get_options", function()
@@ -2579,12 +2590,12 @@ describe("Core", function()
             local files = {
                 ["loomworks.json"] = h.make_config_json(),
                 ["loomworks.cache.json"] = vim.json.encode({
-                    _meta = { version = 6, loomworks_hash = "", cached_at = "" },
-                    configurations = {},
+                    _meta = { version = 7, loomworks_hash = "", cached_at = "" },
+                    build_dirs = {},
                     profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
-                            configurations = { "App/Debug:ninja-gcc" },
+                            configurations = { "build/App/Debug" },
                         },
                     },
                 }),

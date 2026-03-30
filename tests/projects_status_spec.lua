@@ -119,15 +119,23 @@ local function simulate_projects_section_rendering(core, project_key, variant)
     -- Step 2: Replicate resolve_config_status_global -> ConfigUnit:state()
     local results = {}
     for _, entry in ipairs(entries) do
-        local cache_id = project_key .. "/" .. entry.config_key
-        local unit = h.find_config_unit_by_id(core._workspace._config_units, cache_id)
+        -- Find unit by property match (project_key + variant + tool_key)
+        local cfg_variant = entry.config_key
+        local colon = cfg_variant:find(":")
+        if colon then cfg_variant = cfg_variant:sub(1, colon - 1) end
+        local unit = nil
+        for _, u in pairs(core._workspace._config_units) do
+            if u._init_project_key == project_key
+                    and u._variant == cfg_variant
+                    and (u._tool_key or nil) == (entry.tool_key or nil) then
+                unit = u
+                break
+            end
+        end
         if not unit then
             -- Lazily create for unconfigured entries (detected tools with no cache entry)
             local ws_project = h.find_project_in(core:get_projects(), project_key)
             if ws_project then
-                local cfg_variant = entry.config_key
-                local colon = cfg_variant:find(":")
-                if colon then cfg_variant = cfg_variant:sub(1, colon - 1) end
                 local cfg_obj = h.get_or_create_config(ws_project, cfg_variant)
                 unit = core._workspace:ensure_config_unit(ws_project, cfg_obj, nil)
             end
@@ -233,33 +241,33 @@ describe("Projects section cmake status", function()
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "App/Debug:ninja-gcc-12" },
+                        configurations = { "build/App/ninja-gcc-12/Debug" },
                     },
                 },
-                configurations = {
-                    ["App/Debug:ninja-gcc-12"] = {
+                build_dirs = {
+                    ["build/App/ninja-gcc-12/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
-                        variant = "Debug",
                         tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
                     },
-                    ["App/Debug:msvc-17"] = {
+                    ["build/App/msvc-17/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:msvc-17", variant = "Debug",
                         type = "cmake",
                         state = "configured",
-                        variant = "Debug",
                         tool_key = "msvc-17",
+                        tool_data = { id = "msvc-17" },
                     },
-                    ["App/Release:ninja-gcc-12"] = {
+                    ["build/App/ninja-gcc-12/Release"] = {
                         project_key = "App",
                         config_key = "Release:ninja-gcc-12", variant = "Release",
                         type = "cmake",
                         state = "built",
-                        variant = "Release",
                         tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
                     },
                 },
             },
@@ -363,17 +371,17 @@ describe("Projects section cmake status", function()
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "App/Debug:ninja-gcc-12" },
+                        configurations = { "build/App/ninja-gcc-12/Debug" },
                     },
                 },
-                configurations = {
-                    ["App/Debug:ninja-gcc-12"] = {
+                build_dirs = {
+                    ["build/App/ninja-gcc-12/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
-                        variant = "Debug",
                         tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
                     },
                 },
             },
@@ -389,13 +397,23 @@ describe("Projects section cmake status", function()
         assert.is_not_nil(proj.cached_configurations["Debug:ninja-gcc-12"],
             "Project.cached_configurations should have tool-qualified key")
 
-        -- Verify the workspace cache has the same data
+        -- Verify the workspace cache has the same data (v7 format: build_dirs)
         local ws = core:get_workspace()
-        assert.is_not_nil(ws:_serialize_cache().configurations["App/Debug:ninja-gcc-12"],
-            "serialized cache should have flat config entry")
+        local cache = ws:_serialize_cache()
+        assert.is_not_nil(cache.build_dirs, "serialized cache should have build_dirs")
+        -- Find entry by property match
+        local found = false
+        for _, entry in pairs(cache.build_dirs) do
+            if entry.project_key == "App" and entry.variant == "Debug"
+                    and entry.tool_key == "ninja-gcc-12" then
+                found = true
+                break
+            end
+        end
+        assert.is_true(found, "serialized cache should have the config entry")
 
         -- Verify ConfigUnit reads from the same workspace
-        local unit = h.find_config_unit_by_id(core._workspace._config_units, "App/Debug:ninja-gcc-12")
+        local unit = h.find_config_unit(core._workspace._config_units, "App", "Debug")
         assert.is_not_nil(unit, "ConfigUnit should exist for the cache entry")
         assert.equals("built", unit.state_value)
     end)
@@ -466,14 +484,22 @@ local function simulate_with_highlights(core, project_key, variant, active_profi
     -- Compute state + highlight for each entry
     local results = {}
     for _, entry in ipairs(entries) do
-        local cache_id = project_key .. "/" .. entry.config_key
-        local unit = h.find_config_unit_by_id(core._workspace._config_units, cache_id)
+        -- Find unit by property match (project_key + variant + tool_key)
+        local cfg_variant = entry.config_key
+        local colon = cfg_variant:find(":")
+        if colon then cfg_variant = cfg_variant:sub(1, colon - 1) end
+        local unit = nil
+        for _, u in pairs(core._workspace._config_units) do
+            if u._init_project_key == project_key
+                    and u._variant == cfg_variant
+                    and (u._tool_key or nil) == (entry.tool_key or nil) then
+                unit = u
+                break
+            end
+        end
         if not unit then
             local ws_project = h.find_project_in(core:get_projects(), project_key)
             if ws_project then
-                local cfg_variant = entry.config_key
-                local colon = cfg_variant:find(":")
-                if colon then cfg_variant = cfg_variant:sub(1, colon - 1) end
                 local cfg_obj = h.get_or_create_config(ws_project, cfg_variant)
                 unit = core._workspace:ensure_config_unit(ws_project, cfg_obj, nil)
             end
@@ -559,25 +585,25 @@ describe("Projects section tool entry highlights", function()
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "App/Debug:ninja-gcc-12" },
+                        configurations = { "build/App/ninja-gcc-12/Debug" },
                     },
                 },
-                configurations = {
-                    ["App/Debug:ninja-gcc-12"] = {
+                build_dirs = {
+                    ["build/App/ninja-gcc-12/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
-                        variant = "Debug",
                         tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
                     },
-                    ["App/Debug:msvc-17"] = {
+                    ["build/App/msvc-17/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:msvc-17", variant = "Debug",
                         type = "cmake",
                         state = "built",
-                        variant = "Debug",
                         tool_key = "msvc-17",
+                        tool_data = { id = "msvc-17" },
                     },
                 },
             },
@@ -673,25 +699,25 @@ describe("Projects section tool entry highlights", function()
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "App/Debug:ninja-gcc-12" },
+                        configurations = { "build/App/ninja-gcc-12/Debug" },
                     },
                 },
-                configurations = {
-                    ["App/Debug:ninja-gcc-12"] = {
+                build_dirs = {
+                    ["build/App/ninja-gcc-12/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
-                        variant = "Debug",
                         tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
                     },
-                    ["App/Release:ninja-gcc-12"] = {
+                    ["build/App/ninja-gcc-12/Release"] = {
                         project_key = "App",
                         config_key = "Release:ninja-gcc-12", variant = "Release",
                         type = "cmake",
                         state = "built",
-                        variant = "Release",
                         tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
                     },
                 },
             },
@@ -718,14 +744,14 @@ describe("Projects section tool entry highlights", function()
             },
             nil, -- no active profile
             {
-                configurations = {
-                    ["App/Debug:ninja-gcc-12"] = {
+                build_dirs = {
+                    ["build/App/ninja-gcc-12/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
-                        variant = "Debug",
                         tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
                     },
                 },
             },
@@ -754,25 +780,25 @@ describe("Projects section tool entry highlights", function()
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "App/Debug:ninja-gcc-12" },
+                        configurations = { "build/App/ninja-gcc-12/Debug" },
                     },
                 },
-                configurations = {
-                    ["App/Debug:ninja-gcc-12"] = {
+                build_dirs = {
+                    ["build/App/ninja-gcc-12/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "failed_build",
-                        variant = "Debug",
                         tool_key = "ninja-gcc-12",
+                        tool_data = { id = "ninja-gcc-12" },
                     },
-                    ["App/Debug:msvc-17"] = {
+                    ["build/App/msvc-17/Debug"] = {
                         project_key = "App",
                         config_key = "Debug:msvc-17", variant = "Debug",
                         type = "cmake",
                         state = "failed_configure",
-                        variant = "Debug",
                         tool_key = "msvc-17",
+                        tool_data = { id = "msvc-17" },
                     },
                 },
             },

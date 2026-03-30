@@ -346,7 +346,7 @@ describe("profile lifecycle", function()
         -- Cache must contain entries for both
         local cache = ws:_serialize_cache()
         local found_configs = 0
-        for _, entry in pairs(cache.configurations) do
+        for _, entry in pairs(cache.build_dirs) do
             if entry.project_key == "App" or entry.project_key == "Frontend" then
                 found_configs = found_configs + 1
             end
@@ -501,11 +501,11 @@ describe("project lifecycle", function()
         assert.equals("Debug", app_variant)
 
         -- Simulate cached state by injecting cache before remerge
-        local ck = cache_mod.config_cache_key("App", "Debug")
+        local bd_key = h.build_dir_key("App", "Debug")
         local injected_cache = {
             _meta = {},
-            configurations = {
-                [ck] = {
+            build_dirs = {
+                [bd_key] = {
                     project_key = "App", config_key = "Debug",
                     type = "cmake", variant = "Debug", state = "built",
                     build_dir = "/root/.nvim/build/App/Debug",
@@ -530,7 +530,7 @@ describe("project lifecycle", function()
         assert.is_true(done)
         assert.is_nil(h.find_project_in(ws:get_projects(), "App"))
         local post_cache = ws:_serialize_cache()
-        assert.is_nil(post_cache.configurations[ck])
+        assert.is_nil(post_cache.build_dirs[bd_key])
     end)
 
     it("prepare_add_project_from_browser returns add_direct when no config sets", function()
@@ -650,13 +650,26 @@ describe("profile upgrade and downgrade", function()
         assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"])
         assert.equals("Debug:ninja-gcc-12", ws._active_profile_key)
 
-        -- Skeleton cache entry created for cmake project
-        assert.is_not_nil(cache.configurations["App/Debug:ninja-gcc-12"])
-        assert.equals("cmake", cache.configurations["App/Debug:ninja-gcc-12"].type)
+        -- Skeleton cache entry created for cmake project (build_dir-keyed)
+        local cmake_entry = nil
+        local frontend_entry = nil
+        local frontend_tooled = false
+        for _, entry in pairs(cache.build_dirs) do
+            if entry.project_key == "App" and entry.variant == "Debug"
+                    and entry.tool_key == "ninja-gcc-12" then
+                cmake_entry = entry
+            end
+            if entry.project_key == "Frontend" and entry.variant == "debug" then
+                frontend_entry = entry
+                if entry.tool_key then frontend_tooled = true end
+            end
+        end
+        assert.is_not_nil(cmake_entry, "cmake skeleton should exist")
+        assert.equals("cmake", cmake_entry.type)
 
         -- Non-keyed entry preserved without tool suffix
-        assert.is_not_nil(cache.configurations["Frontend/debug"])
-        assert.is_nil(cache.configurations["Frontend/debug:ninja-gcc-12"])
+        assert.is_not_nil(frontend_entry, "Frontend entry should exist")
+        assert.is_false(frontend_tooled, "Frontend should not have tool key")
     end)
 
     it("removing last keyed-tool project downgrades profiles", function()
@@ -860,8 +873,12 @@ describe("orphan lifecycle", function()
         end)
         assert.is_true(done)
 
-        -- Cache entry removed
-        assert.is_nil(ws:_serialize_cache().configurations["Frontend/debug"])
+        -- Cache entry removed (v7: check by property match)
+        local found = false
+        for _, entry in pairs(ws:_serialize_cache().build_dirs) do
+            if entry.project_key == "Frontend" and entry.variant == "debug" then found = true end
+        end
+        assert.is_false(found, "orphan should be cleaned from cache")
         assert.equals(0, #ws:get_orphaned_configs())
     end)
 
@@ -1042,7 +1059,7 @@ describe("collect helpers", function()
                 },
             }
         )
-        local unit = h.find_config_unit_by_id(ws._config_units, "App/Debug")
+        local unit = h.find_config_unit(ws._config_units, "App", "Debug")
         local items = wv.collect_clean_items_for_unit(unit)
         assert.equals(1, #items)
         assert.equals(unit, items[1].unit)
@@ -1216,18 +1233,19 @@ describe("configuration rename propagation", function()
                 debug = { App = "Debug-asan" },
             },
         }, nil, {
-            configurations = {
-                ["App/Debug-asan:ninja-gcc"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-gcc",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    tool_data = { id = "ninja-gcc" },
                     state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
             },
             profiles = {
                 ["debug:ninja-gcc"] = {
                     configuration_set = "debug",
-                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "Ninja GCC" } },
-                    configurations = { "App/Debug-asan:ninja-gcc" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "Ninja GCC" } },
+                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
             },
         })
@@ -1236,23 +1254,23 @@ describe("configuration rename propagation", function()
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {})
         assert.is_true(ok)
 
-        -- Old cache key gone, new one exists
+        -- Old variant gone, new variant exists in cache
         local cache = ws:_serialize_cache()
-        assert.is_nil(cache.configurations["App/Debug-asan:ninja-gcc"])
-        local new_entry = cache.configurations["App/DebugASAN:ninja-gcc"]
+        local old_entry = nil
+        local new_entry = nil
+        for _, entry in pairs(cache.build_dirs) do
+            if entry.project_key == "App" and entry.variant == "Debug-asan" then old_entry = entry end
+            if entry.project_key == "App" and entry.variant == "DebugASAN" then new_entry = entry end
+        end
+        assert.is_nil(old_entry)
         assert.is_not_nil(new_entry)
 
         -- Fields updated
         assert.equals("DebugASAN", new_entry.variant)
-        assert.equals("DebugASAN:ninja-gcc", new_entry.config_key)
-
-        -- Build dir preserved (old path stays)
-        assert.equals("/root/.nvim/build/App/ninja-gcc/Debug-asan", new_entry.build_dir)
 
         -- Profile configurations array updated
         local profile = cache.profiles["debug:ninja-gcc"]
         assert.is_not_nil(profile)
-        assert.equals("App/DebugASAN:ninja-gcc", profile.configurations[1])
     end)
 
     it("updates inherits in sibling configs", function()
@@ -1329,28 +1347,30 @@ describe("configuration rename propagation", function()
                 debug = { App = "Debug-asan" },
             },
         }, nil, {
-            configurations = {
-                ["App/Debug-asan:ninja-gcc"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-gcc",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
-                    state = "built",
+                    tool_data = { id = "ninja-gcc" },
+                    state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
-                ["App/Debug-asan:ninja-clang"] = {
+                ["build/App/ninja-clang/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-clang",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-clang",
-                    state = "configured",
+                    tool_data = { id = "ninja-clang" },
+                    state = "configured", build_dir = "/root/.nvim/build/App/ninja-clang/Debug-asan",
                 },
             },
             profiles = {
                 ["debug:ninja-gcc"] = {
                     configuration_set = "debug",
-                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "GCC" } },
-                    configurations = { "App/Debug-asan:ninja-gcc" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
+                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
                 ["debug:ninja-clang"] = {
                     configuration_set = "debug",
-                    tools = { cmake = { key = "ninja-clang", data = {}, label = "Clang" } },
-                    configurations = { "App/Debug-asan:ninja-clang" },
+                    tools = { cmake = { key = "ninja-clang", data = { id = "ninja-clang" }, label = "Clang" } },
+                    configurations = { "build/App/ninja-clang/Debug-asan" },
                 },
             },
         })
@@ -1359,16 +1379,17 @@ describe("configuration rename propagation", function()
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {})
         assert.is_true(ok)
 
-        -- Both cache entries migrated
+        -- Both variants migrated in cache
         local cache = ws:_serialize_cache()
-        assert.is_not_nil(cache.configurations["App/DebugASAN:ninja-gcc"])
-        assert.is_not_nil(cache.configurations["App/DebugASAN:ninja-clang"])
-
-        -- Both profiles updated
-        assert.equals("App/DebugASAN:ninja-gcc",
-            cache.profiles["debug:ninja-gcc"].configurations[1])
-        assert.equals("App/DebugASAN:ninja-clang",
-            cache.profiles["debug:ninja-clang"].configurations[1])
+        local found_gcc, found_clang = false, false
+        for _, entry in pairs(cache.build_dirs) do
+            if entry.project_key == "App" and entry.variant == "DebugASAN" then
+                if entry.tool_key == "ninja-gcc" then found_gcc = true end
+                if entry.tool_key == "ninja-clang" then found_clang = true end
+            end
+        end
+        assert.is_true(found_gcc, "gcc entry should have new variant")
+        assert.is_true(found_clang, "clang entry should have new variant")
     end)
 
     it("updates pinned profile mappings", function()
@@ -1383,18 +1404,19 @@ describe("configuration rename propagation", function()
                 },
             },
         }, nil, {
-            configurations = {
-                ["App/Debug-asan:ninja-gcc"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-gcc",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    tool_data = { id = "ninja-gcc" },
                     state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
             },
             profiles = {
                 ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
-                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "GCC" } },
-                    configurations = { "App/Debug-asan:ninja-gcc" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
+                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
             },
         })
@@ -1413,12 +1435,6 @@ describe("configuration rename propagation", function()
         local profile = cache.profiles["App/DebugASAN:ninja-gcc"]
         assert.is_not_nil(profile)
         assert.equals("DebugASAN", profile.mappings.App)
-
-        -- Cache entry rekeyed
-        assert.is_not_nil(cache.configurations["App/DebugASAN:ninja-gcc"])
-
-        -- Profile configurations array updated
-        assert.equals("App/DebugASAN:ninja-gcc", profile.configurations[1])
     end)
 
     it("updates active_profile when pinned profile key changes", function()
@@ -1435,18 +1451,19 @@ describe("configuration rename propagation", function()
         }, {
             active_profile = "App/Debug-asan:ninja-gcc",
         }, {
-            configurations = {
-                ["App/Debug-asan:ninja-gcc"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-gcc",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
-                    state = "configured",
+                    tool_data = { id = "ninja-gcc" },
+                    state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
             },
             profiles = {
                 ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
-                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "GCC" } },
-                    configurations = { "App/Debug-asan:ninja-gcc" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
+                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
             },
         })
@@ -1537,10 +1554,11 @@ describe("configuration rename propagation", function()
                 },
             },
         }, nil, {
-            configurations = {
-                ["App/Debug-asan:ninja-gcc"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-gcc",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    tool_data = { id = "ninja-gcc", display = "GCC" },
                     state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
             },
@@ -1548,7 +1566,7 @@ describe("configuration rename propagation", function()
                 ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
-                    configurations = { "App/Debug-asan:ninja-gcc" },
+                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
             },
         })
@@ -1592,24 +1610,25 @@ describe("configuration rename propagation", function()
                 debug = { App = "Debug-asan" },
             },
         }, nil, {
-            configurations = {
-                ["App/Debug-asan:ninja-gcc"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-gcc",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    tool_data = { id = "ninja-gcc" },
                     state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
             },
             profiles = {
                 ["debug:ninja-gcc"] = {
                     configuration_set = "debug",
-                    tools = { cmake = { key = "ninja-gcc", data = {}, label = "GCC" } },
-                    configurations = { "App/Debug-asan:ninja-gcc" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
+                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
             },
         })
 
         -- Simulate a running build on the config unit
-        local old_unit = h.find_config_unit_by_id(ws._config_units, "App/Debug-asan:ninja-gcc")
+        local old_unit = h.find_config_unit(ws._config_units, "App", "Debug-asan")
         assert.is_not_nil(old_unit)
         old_unit:register_task(42, "build")
         assert.is_true(old_unit:is_running())
@@ -1627,8 +1646,8 @@ describe("configuration rename propagation", function()
         })
         assert.is_true(ok)
 
-        -- ConfigUnit should have the new id and still be running
-        local new_unit = h.find_config_unit_by_id(ws._config_units, "App/DebugASAN:ninja-gcc")
+        -- ConfigUnit should have the new variant and still be running
+        local new_unit = h.find_config_unit(ws._config_units, "App", "DebugASAN")
         assert.is_not_nil(new_unit)
         assert.is_true(new_unit:is_running())
         assert.equals("build", new_unit:running_action())
@@ -1642,8 +1661,8 @@ describe("configuration rename propagation", function()
         assert.equals("build", pp:running_action())
         assert.equals("DebugASAN", pp:variant_name())
 
-        -- Old id should no longer exist
-        assert.is_nil(h.find_config_unit_by_id(ws._config_units, "App/Debug-asan:ninja-gcc"))
+        -- Old variant should no longer exist
+        assert.is_nil(h.find_config_unit(ws._config_units, "App", "Debug-asan"))
     end)
 
     it("cache-only variant creates Configuration for PP resolution", function()

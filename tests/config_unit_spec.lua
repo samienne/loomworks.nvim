@@ -23,9 +23,9 @@ describe("ConfigUnit", function()
     end
 
     describe("identity", function()
-        it("stores id as cache dict key", function()
+        it("stores id as build_dir key", function()
             local unit = make_unit()
-            assert.equals("App/Debug", unit.id)
+            assert.equals("build/App/Debug", unit.id)
         end)
 
     end)
@@ -64,11 +64,11 @@ describe("ConfigUnit", function()
                     return {
                         config = { projects = { App = { type = "cmake" } } },
                         cache = {
-                            configurations = {
-                                ["App/Debug"] = {
+                            build_dirs = {
+                                ["build/App/Debug"] = {
                                     project_key = "App",
-                                    config_key = "Debug",
                                     type = "cmake",
+                                    variant = "Debug",
                                     state = "built",
                                 },
                             },
@@ -85,11 +85,11 @@ describe("ConfigUnit", function()
                     return {
                         config = { projects = { App = { type = "cmake" } } },
                         cache = {
-                            configurations = {
-                                ["App/Debug"] = {
+                            build_dirs = {
+                                ["build/App/Debug"] = {
                                     project_key = "App",
-                                    config_key = "Debug",
                                     type = "cmake",
+                                    variant = "Debug",
                                     state = "failed_configure",
                                 },
                             },
@@ -106,11 +106,11 @@ describe("ConfigUnit", function()
                     return {
                         config = { projects = { App = { type = "cmake" } } },
                         cache = {
-                            configurations = {
-                                ["App/Debug"] = {
+                            build_dirs = {
+                                ["build/App/Debug"] = {
                                     project_key = "App",
-                                    config_key = "Debug",
                                     type = "cmake",
+                                    variant = "Debug",
                                     state = "failed_build",
                                 },
                             },
@@ -139,11 +139,11 @@ describe("ConfigUnit", function()
                     return {
                         config = { projects = { App = { type = "cmake" } } },
                         cache = {
-                            configurations = {
-                                ["App/Debug"] = {
+                            build_dirs = {
+                                ["build/App/Debug"] = {
                                     project_key = "App",
-                                    config_key = "Debug",
                                     type = "cmake",
+                                    variant = "Debug",
                                     state = "configured",
                                 },
                             },
@@ -174,11 +174,11 @@ describe("ConfigUnit", function()
                     return {
                         config = { projects = { App = { type = "cmake" } } },
                         cache = {
-                            configurations = {
-                                ["App/Debug"] = {
+                            build_dirs = {
+                                ["build/App/Debug"] = {
                                     project_key = "App",
-                                    config_key = "Debug",
                                     type = "cmake",
+                                    variant = "Debug",
                                     state = "unknown",
                                 },
                             },
@@ -311,7 +311,7 @@ describe("ConfigUnit", function()
 
     describe("first-class fields", function()
         it("fields are nil when no data applied", function()
-            local unit = ConfigUnit.new(nil, "App/Debug", "App")
+            local unit = ConfigUnit.new(nil, "build/App/Debug", "App")
             assert.is_nil(unit.state_value)
             assert.is_nil(unit.build_dir_value)
         end)
@@ -322,11 +322,11 @@ describe("ConfigUnit", function()
                     return {
                         config = { projects = { App = { type = "cmake" } } },
                         cache = {
-                            configurations = {
-                                ["App/Debug"] = {
+                            build_dirs = {
+                                ["build/App/Debug"] = {
                                     project_key = "App",
-                                    config_key = "Debug",
                                     type = "cmake",
+                                    variant = "Debug",
                                     state = "built",
                                     build_dir = "/build/App/Debug",
                                 },
@@ -442,9 +442,10 @@ describe("ConfigUnit", function()
             unit.build_dir_value = "/build/Debug"
             local entry = unit:serialize()
             assert.equals("App", entry.project_key)
-            assert.equals("Debug", entry.config_key)
             assert.equals("cmake", entry.type)
             assert.equals("configured", entry.state)
+            assert.equals("Debug", entry.config_key)
+            assert.equals("Debug", entry.variant)
             assert.equals("/build/Debug", entry.build_dir)
         end)
 
@@ -555,25 +556,23 @@ describe("ConfigUnit", function()
         it("resolves first-class fields from cache entry", function()
             local core = h.make_mock_core({
                 cache = {
-                    configurations = {
-                        ["App/Debug"] = {
+                    build_dirs = {
+                        ["build/App/Debug"] = {
                             project_key = "App",
-                            config_key = "Debug",
                             type = "cmake",
                             variant = "Debug",
                         },
                     },
                 },
             })
-            local unit = h.ensure_config_unit_by_id(core, "App/Debug", "App")
+            local unit = h.ensure_config_unit_by_id(core, "build/App/Debug", "App")
             assert.equals("Debug", unit._variant)
-            assert.equals("Debug", unit._config_key)
         end)
 
         it("first-class fields are nil when no cache entry exists", function()
             local core = h.make_mock_core()
             -- Create a bare ConfigUnit without a cache entry to test nil case
-            local unit = ConfigUnit.new(core, "App/Debug", "App")
+            local unit = ConfigUnit.new(core, "build/App/Debug", "App")
             assert.is_nil(unit._variant)
             assert.is_nil(unit._config_key)
         end)
@@ -581,10 +580,9 @@ describe("ConfigUnit", function()
         it("resolves tool domain object from cache entry", function()
             local core = h.make_mock_core({
                 cache = {
-                    configurations = {
-                        ["App/cfg-1"] = {
+                    build_dirs = {
+                        ["build/App/Debug"] = {
                             project_key = "App",
-                            config_key = "cfg-1",
                             type = "cmake",
                             variant = "Debug",
                             tool_key = "ninja-gcc",
@@ -593,7 +591,7 @@ describe("ConfigUnit", function()
                     },
                 },
             })
-            local unit = h.ensure_config_unit_by_id(core, "App/cfg-1", "App")
+            local unit = h.ensure_config_unit_by_id(core, "build/App/Debug", "App")
             assert.equals("Debug", unit._variant)
             assert.equals("ninja-gcc", unit._tool_key)
         end)

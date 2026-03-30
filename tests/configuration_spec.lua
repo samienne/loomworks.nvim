@@ -357,8 +357,8 @@ describe("Project _configurations", function()
     it("ConfigUnit._configuration resolves for cache-only variant", function()
         local ws = h.make_mock_workspace({
             cache = {
-                configurations = {
-                    ["App/Release"] = {
+                build_dirs = {
+                    ["build/App/Release"] = {
                         project_key = "App",
                         config_key = "Release",
                         type = "cmake",
@@ -378,7 +378,7 @@ describe("Project _configurations", function()
         })
         ws._projects["App"] = project
 
-        local unit = h.ensure_config_unit_by_id(ws, "App/Release", "App")
+        local unit = h.ensure_config_unit_by_id(ws, "build/App/Release", "App")
         assert.is_not_nil(unit._configuration)
         assert.equals("Release", unit._configuration.name)
         assert.is_true(unit._configuration._source_missing)
@@ -420,8 +420,8 @@ describe("ConfigUnit _configuration resolution", function()
     it("resolves _configuration from project registry", function()
         local ws = h.make_mock_workspace({
             cache = {
-                configurations = {
-                    ["App/Debug"] = {
+                build_dirs = {
+                    ["build/App/Debug"] = {
                         project_key = "App",
                         config_key = "Debug",
                         type = "cmake",
@@ -440,7 +440,7 @@ describe("ConfigUnit _configuration resolution", function()
         })
         ws._projects["App"] = project
 
-        local unit = h.ensure_config_unit_by_id(ws, "App/Debug", "App")
+        local unit = h.ensure_config_unit_by_id(ws, "build/App/Debug", "App")
         assert.is_not_nil(unit._configuration)
         assert.equals("Debug", unit._configuration.name)
         assert.equals("Debug", unit._configuration.module_config.variant)
