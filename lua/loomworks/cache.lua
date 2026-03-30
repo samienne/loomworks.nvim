@@ -97,7 +97,6 @@ end
 
 --- Validate internal consistency of cache data.
 --- Checks that every build_dirs entry has a project_key and variant field.
---- Also validates profile references if profiles section exists (transitional).
 --- @param data loomworks.CacheData
 --- @return boolean ok, string|nil err
 function M.validate_consistency(data)
@@ -108,20 +107,6 @@ function M.validate_consistency(data)
         end
         if not entry.variant then
             return false, "build_dir '" .. dir_key .. "' is missing variant field"
-        end
-    end
-    -- Transitional: validate profile references against build_dirs
-    if data.profiles then
-        for profile_key, profile in pairs(data.profiles) do
-            if profile.configurations then
-                for _, ck in ipairs(profile.configurations) do
-                    local entry = build_dirs[ck]
-                    if not entry then
-                        return false, "profile '" .. profile_key
-                            .. "' references missing build_dir '" .. ck .. "'"
-                    end
-                end
-            end
         end
     end
     return true

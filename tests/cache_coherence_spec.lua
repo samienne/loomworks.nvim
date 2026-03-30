@@ -79,14 +79,12 @@ local function assert_cache_coherent(core, msg)
     local prefix = msg and (msg .. ": ") or ""
     local cache = ws:_serialize_cache()
 
-    -- Build a set of all cache keys referenced by profiles
+    -- Build a set of all cache keys referenced by profiles via ProfileProjects
     local referenced = {}
-    if cache.profiles then
-        for _, profile in pairs(cache.profiles) do
-            if profile.configurations then
-                for _, ck in ipairs(profile.configurations) do
-                    referenced[ck] = true
-                end
+    for _, profile in pairs(ws._profiles) do
+        for _, pp in ipairs(profile:projects()) do
+            if pp._config_unit then
+                referenced[pp._config_unit.id] = true
             end
         end
     end
@@ -134,8 +132,7 @@ local function assert_cache_empty(core, msg)
     local has_configs = cache.build_dirs and next(cache.build_dirs)
     assert(not has_configs, prefix .. "cache should have no build_dirs")
 
-    local has_profiles = cache.profiles and next(cache.profiles)
-    assert(not has_profiles, prefix .. "cache should have no profiles")
+    -- Profiles are runtime-only, not in cache
 end
 
 --- Count cached configs in the flat dict.
@@ -171,17 +168,11 @@ local function find_cached(cache, project_key, variant, tool_key)
     return nil
 end
 
---- Count profiles in cache.
+--- Count profiles in workspace (runtime objects).
 local function count_profiles(core)
     local ws = core:get_workspace()
     if not ws then return 0 end
-    local cache = ws:_serialize_cache()
-    if not cache.profiles then return 0 end
-    local count = 0
-    for _ in pairs(cache.profiles) do
-        count = count + 1
-    end
-    return count
+    return #ws._profiles
 end
 
 --- Simulate a configure+build result for a config.
@@ -576,7 +567,7 @@ describe("cache coherence", function()
             -- Config reset but pinned profile stays
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_not_nil(cache.profiles["App/development"])
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "App/development"))
             assert.is_nil(find_cached(cache, "App", "development").state)
         end)
 
@@ -608,8 +599,8 @@ describe("cache coherence", function()
             assert.is_nil(find_cached(cache, "App", "development").state)
 
             -- Both profiles still intact
-            assert.is_not_nil(cache.profiles.debug)
-            assert.is_not_nil(cache.profiles["App/development"])
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "debug"))
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "App/development"))
         end)
 
         it("keyed tool: deletes specific tool config, keeps other tools", function()
@@ -645,8 +636,8 @@ describe("cache coherence", function()
             assert.equals("built", find_cached(cache, "Lib", "Debug", "ninja-clang").state)
 
             -- Both pinned profiles still intact
-            assert.is_not_nil(cache.profiles["Lib/Debug:ninja-gcc"])
-            assert.is_not_nil(cache.profiles["Lib/Debug:ninja-clang"])
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "Lib/Debug:ninja-gcc"))
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "Lib/Debug:ninja-clang"))
         end)
     end)
 
@@ -706,16 +697,14 @@ describe("cache coherence", function()
         it("configs referenced by profile are not orphaned", function()
             local core = make_tracked_core(
                 { projects = { App = { typescript = {} } } },
-                nil,
                 {
-                    profiles = {
-                        ["App/development"] = {
-                            mappings = { App = "development" },
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        { key = "App/development", mappings = { App = "development" } },
                     },
-                    configurations = {
-                        ["App/development"] = {
+                },
+                {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -727,7 +716,7 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
             assert_cache_coherent(core, "after init")
-            -- Should still have exactly 1 profile (the existing one, no duplicate)
+            -- Should have exactly 1 profile (the pinned one)
             assert.equals(1, count_profiles(core))
         end)
 
@@ -803,14 +792,8 @@ describe("cache coherence", function()
                 },
                 { active_profile = "debug" },
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                    },
-                    configurations = {
-                        ["App/development"] = {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -829,7 +812,8 @@ describe("cache coherence", function()
 
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_not_nil(cache.profiles.debug)
+            -- Profile exists as runtime object, not in cache
+            assert.is_not_nil(h.find_profile(ws._profiles, "debug"))
             assert.equals("built", find_cached(cache, "App", "development").state)
         end)
 
@@ -880,20 +864,14 @@ describe("cache coherence", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                        ["App/development"] = {
-                            mappings = { App = "development" },
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        { key = "App/development", mappings = { App = "development" } },
                     },
-                    configurations = {
-                        ["App/development"] = {
+                },
+                {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -1003,24 +981,17 @@ describe("cache coherence", function()
             assert.equals(3, count_cached_configs(core))
         end)
 
-        it("stale profile with missing config entry refuses to load", function()
-            -- Profile references a config_key but the config entry is missing from cache.
-            -- Cache consistency validation catches this and refuses to load.
+        it("cache without profile section loads fine (profiles are runtime only)", function()
+            -- Profiles are no longer stored in cache, so cache inconsistency
+            -- from stale profile references can't happen.
             local core = make_tracked_core(
                 {
                     projects = { App = { typescript = {} } },
                 },
                 nil,
                 {
-                    profiles = {
-                        ["App/development"] = {
-                            mappings = { App = "development" },
-                            configurations = { "App/development" },
-                        },
-                    },
-                    configurations = {
-                        -- "App/development" is missing! (profile references it but it's gone)
-                        ["App/production"] = {
+                    build_dirs = {
+                        ["build/App/production"] = {
                             project_key = "App",
                             config_key = "production",
                             variant = "production",
@@ -1032,12 +1003,7 @@ describe("cache coherence", function()
                 }
             )
             core:setup({ root = "/root" })
-
-            -- Setup refuses to load due to cache inconsistency
-            assert.equals("uninitialized", core:state())
-            local err = core:get_setup_error()
-            assert.is_not_nil(err)
-            assert.matches("inconsistent", err.message)
+            assert.equals("initialized", core:state())
         end)
 
         it("multiple pinned profiles for same project different configs", function()
@@ -1045,20 +1011,15 @@ describe("cache coherence", function()
                 {
                     projects = { App = { typescript = {} } },
                 },
-                nil,
                 {
-                    profiles = {
-                        ["App/development"] = {
-                            mappings = { App = "development" },
-                            configurations = { "App/development" },
-                        },
-                        ["App/production"] = {
-                            mappings = { App = "production" },
-                            configurations = { "App/production" },
-                        },
+                    pinned_profiles = {
+                        { key = "App/development", mappings = { App = "development" } },
+                        { key = "App/production", mappings = { App = "production" } },
                     },
-                    configurations = {
-                        ["App/development"] = {
+                },
+                {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -1066,7 +1027,7 @@ describe("cache coherence", function()
                             state = "built",
                             build_dir = "/root/.nvim/build/App/development",
                         },
-                        ["App/production"] = {
+                        ["build/App/production"] = {
                             project_key = "App",
                             config_key = "production",
                             variant = "production",
@@ -1154,8 +1115,8 @@ describe("cache coherence", function()
             -- Both profiles should exist (cached + auto-generated overlap is fine)
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_not_nil(cache.profiles["debug:ninja-gcc"])
-            assert.is_not_nil(cache.profiles["debug:ninja-clang"])
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "debug:ninja-gcc"))
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "debug:ninja-clang"))
         end)
 
         it("init then delete all profiles leaves cache clean", function()
@@ -1252,7 +1213,8 @@ describe("cache coherence", function()
 
             core:execute_deletion(plan, { deactivate_profile = profile })
             assert_cache_coherent(core, "after delete, orphan survives")
-            assert.equals(0, count_profiles(core))
+            -- Set-based profiles persist (runtime-derived), so count stays at 1
+            assert.equals(1, count_profiles(core))
             assert.equals(1, count_cached_configs(core))
             assert.equals(1, #rm_calls)
 
@@ -1268,8 +1230,9 @@ describe("cache coherence", function()
         end)
 
         it("init with cache referencing tools no longer detected", function()
-            -- Cache has a profile with a tool that detection no longer returns.
-            -- The cached profile should still be functional since cache stores tool data.
+            -- Cache has build_dir entries with a tool that detection no longer returns.
+            -- With the new model, profiles are derived from config_sets x detected tools.
+            -- The old tool's build entry becomes orphaned (no profile references it).
             local core, _, setup = make_tracked_core(
                 {
                     projects = { Lib = { cmake = {} } },
@@ -1277,29 +1240,15 @@ describe("cache coherence", function()
                 },
                 nil,
                 {
-                    profiles = {
-                        ["debug:ninja-old-compiler"] = {
-                            configuration_set = "debug",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-old-compiler",
-                                    data = { generator = "Ninja", compiler_id = "old-compiler" },
-                                    label = "Ninja Old",
-                                },
-                            },
-                            configurations = { "Lib/Debug:ninja-old-compiler" },
-                        },
-                    },
-                    configurations = {
-                        ["Lib/Debug:ninja-old-compiler"] = {
+                    build_dirs = {
+                        ["build/Lib/old-compiler/Debug"] = {
                             project_key = "Lib",
                             config_key = "Debug:ninja-old-compiler", variant = "Debug",
                             type = "cmake",
                             state = "built",
-                            variant = "Debug",
                             tool_key = "ninja-old-compiler",
                             tool_data = { generator = "Ninja", compiler_id = "old-compiler" },
-                            build_dir = "/root/.nvim/build/Lib/Debug-old",
+                            build_dir = "/root/.nvim/build/Lib/old-compiler/Debug",
                         },
                     },
                 },
@@ -1314,13 +1263,12 @@ describe("cache coherence", function()
             )
             setup({ root = "/root" })
 
-            -- Cache profile references a tool no longer detected, but it's still valid
-            assert_cache_coherent(core, "stale tool in cache")
+            -- Profile "debug:ninja-gcc" is derived from detected tools
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "debug:ninja-gcc"))
+            -- Old build entry is orphaned (no profile for the old tool)
             assert.equals(1, count_cached_configs(core))
-
-            local ws = core:get_workspace()
-            local cache = ws:_serialize_cache()
-            assert.is_not_nil(cache.profiles["debug:ninja-old-compiler"])
+            local orphans = core:get_orphaned_configs()
+            assert.equals(1, #orphans)
         end)
     end)
 
@@ -1421,16 +1369,6 @@ describe("cache coherence", function()
                 },
                 nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                        staging = {
-                            configuration_set = "staging",
-                            configurations = { "App/development" },
-                        },
-                    },
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -1447,41 +1385,53 @@ describe("cache coherence", function()
             assert_cache_coherent(core, "initial")
             assert.equals(2, count_profiles(core))
 
-            -- Delete first profile — config kept (staging still refs it)
+            -- Both set-based profiles share the same config.
+            -- plan_deletion for either profile always shows "keep" because
+            -- the other set-based profile (which is runtime-derived and
+            -- cannot be removed) also references the config.
             local p1 = h.find_profile(core:get_profiles(), "debug")
             assert.is_not_nil(p1)
             local plan1 = p1:plan_deletion()
             assert.equals(1, #plan1.items)
             assert.equals("keep", plan1.items[1].disposition)
-            core:execute_deletion(plan1, { deactivate_profile = p1 })
 
-            assert_cache_coherent(core, "after first delete")
-            assert.equals(1, count_profiles(core))
-            assert.equals(1, count_cached_configs(core))
-            assert.equals(0, #rm_calls) -- "keep" does not touch build dir
-
-            -- Config still has its state
-            local ws = core:get_workspace()
-            local cache = ws:_serialize_cache()
-            assert.equals("built", find_cached(cache, "App", "development").state)
-
-            -- Delete second profile — config now unreferenced, cleaned
             local p2 = h.find_profile(core:get_profiles(), "staging")
             assert.is_not_nil(p2)
             local plan2 = p2:plan_deletion()
             assert.equals(1, #plan2.items)
-            assert.equals("clean", plan2.items[1].disposition)
-            core:execute_deletion(plan2, { deactivate_profile = p2 })
+            assert.equals("keep", plan2.items[1].disposition)
 
-            assert_cache_empty(core, "after deleting both")
-            assert.equals(1, #rm_calls)
-            assert.truthy(rm_calls[1]:match("development"))
+            -- To actually clean shared configs between set-based profiles,
+            -- delete the config sets. After removing "debug" config set,
+            -- its derived profile disappears. Now only "staging" refs the config.
+            local ws = core:get_workspace()
+            local cs_debug = h.find_config_set_in(ws:get_config_sets(), "debug")
+            ws:remove_configuration_set(cs_debug)
+            assert.equals(1, count_profiles(core))
+
+            -- Now staging's plan_deletion shows "clean" (sole reference)
+            p2 = h.find_profile(core:get_profiles(), "staging")
+            assert.is_not_nil(p2)
+            local plan3 = p2:plan_deletion()
+            assert.equals(1, #plan3.items)
+            assert.equals("clean", plan3.items[1].disposition)
+
+            -- Remove staging config set — its derived profile also disappears
+            local cs_staging = h.find_config_set_in(ws:get_config_sets(), "staging")
+            ws:remove_configuration_set(cs_staging)
+            assert.equals(0, count_profiles(core))
+
+            -- Config becomes orphaned, can be cleaned via orphan cleanup
+            local orphans = ws:get_orphaned_configs()
+            assert.equals(1, #orphans)
         end)
 
         it("three-way sharing: A->XY, B->YZ, C->Z — delete B keeps Y (A) and Z (C)", function()
             -- Profile A refs configs X,Y; Profile B refs Y,Z; Profile C refs Z
-            -- Deleting B: Y still held by A, Z still held by C — nothing cleaned
-            local core, rm_calls = make_tracked_core(
+            -- All set-based: plan_deletion always shows "keep" for shared configs.
+            -- Removing config sets eliminates derived profiles, making configs
+            -- orphaned and cleanable.
+            local core, _ = make_tracked_core(
                 {
                     projects = {
                         P1 = { typescript = {} },
@@ -1496,20 +1446,6 @@ describe("cache coherence", function()
                 },
                 nil,
                 {
-                    profiles = {
-                        setA = {
-                            configuration_set = "setA",
-                            configurations = { "P1/dev", "P2/dev" },
-                        },
-                        setB = {
-                            configuration_set = "setB",
-                            configurations = { "P2/dev", "P3/dev" },
-                        },
-                        setC = {
-                            configuration_set = "setC",
-                            configurations = { "P3/dev" },
-                        },
-                    },
                     configurations = {
                         ["P1/dev"] = {
                             project_key = "P1",
@@ -1543,7 +1479,10 @@ describe("cache coherence", function()
             assert.equals(3, count_profiles(core))
             assert.equals(3, count_cached_configs(core))
 
-            -- Delete B — P2/dev held by A (keep), P3/dev held by C (keep)
+            local ws = core:get_workspace()
+
+            -- All profiles are set-based: plan_deletion for B shows "keep"
+            -- because A and C also reference the same configs
             local pB = h.find_profile(core:get_profiles(), "setB")
             assert.is_not_nil(pB)
             local planB = pB:plan_deletion()
@@ -1551,35 +1490,33 @@ describe("cache coherence", function()
             for _, item in ipairs(planB.items) do
                 assert.equals("keep", item.disposition)
             end
-            core:execute_deletion(planB, { deactivate_profile = pB })
 
-            assert_cache_coherent(core, "after B deleted")
+            -- Delete config set B — derived profile B disappears
+            local csB = h.find_config_set_in(ws:get_config_sets(), "setB")
+            ws:remove_configuration_set(csB)
             assert.equals(2, count_profiles(core))
+
+            -- P2/dev still held by A, P3/dev still held by C — all configs remain
             assert.equals(3, count_cached_configs(core))
-            assert.equals(0, #rm_calls) -- "keep" does not touch build dirs
 
-            -- Delete A — P1/dev unreferenced (cleaned), P2/dev unreferenced (cleaned)
-            local pA = h.find_profile(core:get_profiles(), "setA")
-            assert.is_not_nil(pA)
-            local planA = pA:plan_deletion()
-            assert.equals(2, #planA.items)
-            core:execute_deletion(planA, { deactivate_profile = pA })
-
-            assert_cache_coherent(core, "after A deleted")
+            -- Delete config set A — derived profile A disappears
+            -- P1/dev becomes orphaned, P2/dev becomes orphaned
+            local csA = h.find_config_set_in(ws:get_config_sets(), "setA")
+            ws:remove_configuration_set(csA)
             assert.equals(1, count_profiles(core))
-            assert.equals(1, count_cached_configs(core))
-            assert.equals(2, #rm_calls) -- P1 + P2 build dirs cleaned
 
-            -- Delete C — P3/dev unreferenced (cleaned)
-            local pC = h.find_profile(core:get_profiles(), "setC")
-            assert.is_not_nil(pC)
-            local planC = pC:plan_deletion()
-            assert.equals(1, #planC.items)
-            assert.equals("clean", planC.items[1].disposition)
-            core:execute_deletion(planC, { deactivate_profile = pC })
+            -- P3/dev still held by C; P1 and P2 are orphaned
+            local orphans = ws:get_orphaned_configs()
+            assert.equals(2, #orphans)
 
-            assert_cache_empty(core, "after all deleted")
-            assert.equals(3, #rm_calls) -- P1 + P2 + P3
+            -- Delete config set C — last derived profile disappears
+            local csC = h.find_config_set_in(ws:get_config_sets(), "setC")
+            ws:remove_configuration_set(csC)
+            assert.equals(0, count_profiles(core))
+
+            -- All three configs are now orphaned
+            orphans = ws:get_orphaned_configs()
+            assert.equals(3, #orphans)
         end)
     end)
 
@@ -2027,7 +1964,7 @@ describe("cache coherence", function()
             assert.equals(1, #rm_calls)
 
             -- Profile still intact
-            assert.is_not_nil(scache.profiles.debug)
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "debug"))
         end)
 
         it("delete_config with only pinned profile resets config", function()
@@ -2035,16 +1972,14 @@ describe("cache coherence", function()
                 {
                     projects = { App = { typescript = {} } },
                 },
-                nil,
                 {
-                    profiles = {
-                        ["App/development"] = {
-                            mappings = { App = "development" },
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        { key = "App/development", mappings = { App = "development" } },
                     },
-                    configurations = {
-                        ["App/development"] = {
+                },
+                {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -2075,30 +2010,28 @@ describe("cache coherence", function()
             assert.is_nil(cached.build_dir)
 
             -- Pinned profile still intact
-            assert.is_not_nil(scache.profiles["App/development"])
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "App/development"))
         end)
     end)
 
     describe("find_referencing_profiles", function()
 
-        it("only counts cached profiles", function()
-            -- Config sets alone do NOT create profiles. Only cached profiles
-            -- count as references for GC purposes.
+        it("counts both set-based and pinned profiles", function()
+            -- In the new model, config sets DO create profiles (derived at runtime).
+            -- Both set-based and pinned profiles count as references.
             local core = make_tracked_core(
                 {
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
                 {
-                    profiles = {
-                        ["App/development"] = {
-                            mappings = { App = "development" },
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        { key = "App/development", mappings = { App = "development" } },
                     },
-                    configurations = {
-                        ["App/development"] = {
+                },
+                {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -2110,14 +2043,13 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
 
-            -- No "debug" profile exists (config_sets don't auto-generate profiles)
+            -- "debug" profile exists (derived from config_sets)
             local debug_profile = h.find_profile(core:get_profiles(), "debug")
-            assert.is_nil(debug_profile)
+            assert.is_not_nil(debug_profile)
 
-            -- referencing_profiles should only find the cached pinned
+            -- referencing_profiles should find both the set-based and pinned profiles
             local refs = get_unit(core, "App", "development"):referencing_profiles()
-            assert.equals(1, #refs)
-            assert.equals("App/development", refs[1].key)
+            assert.equals(2, #refs)
         end)
 
         it("returns empty when no cached profiles reference config", function()
@@ -2204,11 +2136,11 @@ describe("cache coherence", function()
             -- Backend config reset, pinned profile still exists
             local ws = core:get_workspace()
             local cache = ws:_serialize_cache()
-            assert.is_not_nil(cache.profiles["Backend/development"])
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "Backend/development"))
             assert.is_nil(find_cached(cache, "Backend", "development").state)
 
             -- Frontend still fully intact
-            assert.is_not_nil(cache.profiles["Frontend/development"])
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "Frontend/development"))
             assert.is_not_nil(find_cached(cache, "Frontend", "development"))
             assert.equals("built", find_cached(cache, "Frontend", "development").state)
         end)
@@ -2247,8 +2179,8 @@ describe("cache coherence", function()
             assert.is_nil(find_cached(cache, "Backend", "development").state)
 
             -- Both profiles still intact
-            assert.is_not_nil(cache.profiles["Backend/development"])
-            assert.is_not_nil(cache.profiles.debug)
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "Backend/development"))
+            assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "debug"))
             assert.equals("built", find_cached(cache, "Frontend", "development").state)
         end)
     end)

@@ -177,36 +177,11 @@ describe("cache", function()
             assert.matches("missing variant", err)
         end)
 
-        it("passes for profiles referencing existing build_dirs", function()
-            local data = {
-                build_dirs = {
-                    ["build/App/Debug"] = { project_key = "App", variant = "Debug" },
-                },
-                profiles = {
-                    ["debug"] = { configurations = { "build/App/Debug" } },
-                },
-            }
-            local ok = cache.validate_consistency(data)
-            assert.is_true(ok)
-        end)
-
-        it("fails when profile references missing build_dir", function()
+        it("ignores profiles section in cache (profiles are runtime-only)", function()
             local data = {
                 build_dirs = {},
                 profiles = {
                     ["debug"] = { configurations = { "build/App/Debug" } },
-                },
-            }
-            local ok, err = cache.validate_consistency(data)
-            assert.is_false(ok)
-            assert.matches("missing build_dir", err)
-        end)
-
-        it("passes for profiles with no configurations array", function()
-            local data = {
-                build_dirs = {},
-                profiles = {
-                    ["empty"] = {},
                 },
             }
             local ok = cache.validate_consistency(data)

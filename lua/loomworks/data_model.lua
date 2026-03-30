@@ -133,7 +133,7 @@ local function sync_tools(ctx, modules_arr, tools_by_type, cache, modules_regist
         end
     end
 
-    -- From cache: tool_data stored inline in build_dirs and profiles
+    -- From cache: tool_data stored inline in build_dirs
     if cache.build_dirs then
         for _, cc in pairs(cache.build_dirs) do
             if cc.tool_key and cc.type then
@@ -141,20 +141,6 @@ local function sync_tools(ctx, modules_arr, tools_by_type, cache, modules_regist
                     ctx, modules_arr, modules_registry,
                     cc.type, cc.tool_key, cc.tool_data or {}, nil)
                 seen[tool] = true
-            end
-        end
-    end
-    if cache.profiles then
-        for _, cp in pairs(cache.profiles) do
-            if cp.tools then
-                for mod_type, t in pairs(cp.tools) do
-                    if t.key then
-                        local tool = get_or_create_tool(
-                            ctx, modules_arr, modules_registry,
-                            mod_type, t.key, t.data or {}, t.label)
-                        seen[tool] = true
-                    end
-                end
             end
         end
     end
@@ -280,22 +266,6 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
     end
 
     for key, data in pairs(all_defs) do
-        -- Pre-resolve Tier 3 mappings from cached configurations
-        -- (replaces passing _ws_cache into Profile)
-        data._resolved_mappings = nil
-        if data._cached_configurations and not data.mappings then
-            local mappings = {}
-            local cache_dirs = cache and cache.build_dirs or nil
-            if cache_dirs then
-                for _, ck in ipairs(data._cached_configurations) do
-                    local cached_config = cache_dirs[ck]
-                    if cached_config and cached_config.variant then
-                        mappings[cached_config.project_key] = cached_config.variant
-                    end
-                end
-            end
-            if next(mappings) then data._resolved_mappings = mappings end
-        end
         data._tool_objects = nil
         if data.tools then
             local tool_objs = {}

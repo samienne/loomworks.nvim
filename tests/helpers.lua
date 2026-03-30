@@ -29,7 +29,7 @@ end
 --- @param overrides? table merged into the base
 --- @return string JSON content
 function M.make_user_json(overrides)
-    local base = { _meta = { version = 1 } }
+    local base = { _meta = { version = 2 } }
     if overrides then
         base = vim.tbl_deep_extend("force", base, overrides)
     end
@@ -75,57 +75,6 @@ local function convert_configurations_to_build_dirs(configurations)
     return build_dirs
 end
 
---- Convert profile configurations arrays from v6 keys to v7 build_dir keys.
---- @param profiles table<string, table>
---- @param configurations table<string, table> original v6 configurations dict
---- @return table<string, table>
-local function convert_profile_configurations(profiles, configurations)
-    if not profiles then return nil end
-    -- Build a mapping from old keys to new keys using the same logic
-    local key_map = {}
-    if configurations then
-        local converted = convert_configurations_to_build_dirs(configurations)
-        -- Build old_key -> new_key by matching entries
-        local old_keys = {}
-        for k in pairs(configurations) do old_keys[#old_keys + 1] = k end
-        local new_keys = {}
-        for k in pairs(converted) do new_keys[#new_keys + 1] = k end
-        -- Match by position (both are derived from same iteration order)
-        -- More reliable: match by project_key + variant
-        for old_key, entry in pairs(configurations) do
-            local variant = entry.variant
-            if not variant and entry.config_key then
-                local ck = entry.config_key
-                local colon = ck:find(":")
-                variant = colon and ck:sub(1, colon - 1) or ck
-            end
-            local tool_id = entry.tool_data and (entry.tool_data.id or entry.tool_data.compiler_id) or nil
-            if entry.project_key and variant then
-                if tool_id then
-                    key_map[old_key] = "build/" .. entry.project_key .. "/" .. tool_id .. "/" .. variant
-                else
-                    key_map[old_key] = "build/" .. entry.project_key .. "/" .. variant
-                end
-            else
-                key_map[old_key] = "build/" .. old_key
-            end
-        end
-    end
-    local result = {}
-    for pk, profile in pairs(profiles) do
-        local new_profile = vim.tbl_extend("force", {}, profile)
-        if profile.configurations then
-            local new_configs = {}
-            for _, old_key in ipairs(profile.configurations) do
-                new_configs[#new_configs + 1] = key_map[old_key] or ("build/" .. old_key)
-            end
-            new_profile.configurations = new_configs
-        end
-        result[pk] = new_profile
-    end
-    return result
-end
-
 --- Migrate cache data from v6 format (configurations) to v7 format (build_dirs).
 --- Used by test helpers that receive cache overrides.
 --- @param cache_data table
@@ -142,10 +91,6 @@ function M.migrate_cache_v6_to_v7(cache_data)
         end
     end
     result.build_dirs = convert_configurations_to_build_dirs(cache_data.configurations)
-    -- Convert profile configuration references too
-    if cache_data.profiles then
-        result.profiles = convert_profile_configurations(cache_data.profiles, cache_data.configurations)
-    end
     return result
 end
 
@@ -313,7 +258,15 @@ function M.make_mock_workspace(overrides)
         local existing = self:find_module(mod_type)
         if existing then return existing end
         -- Create a minimal mock impl
-        local impl = { id = mod_type, has_keyed_tools = (mod_type == "cmake") }
+        local impl = {
+            id = mod_type,
+            has_keyed_tools = (mod_type == "cmake"),
+            tools_match = function(a, b)
+                if a == nil and b == nil then return true end
+                if a == nil or b == nil then return false end
+                return vim.deep_equal(a, b)
+            end,
+        }
         local mod = ModuleClass.new(mod_type, impl)
         self._modules[#self._modules + 1] = mod
         return mod
@@ -394,7 +347,7 @@ function M.make_mock_workspace(overrides)
         return entry
     end
     ws._serialize_user = core_overrides._serialize_user or function(self_ws)
-        local data = { _meta = { version = 1 } }
+        local data = { _meta = { version = 2 } }
         if self_ws._active_profile_key then
             data.active_profile = self_ws._active_profile_key
         end
@@ -405,6 +358,26 @@ function M.make_mock_workspace(overrides)
             end
         end
         if next(targets) then data.default_target = targets end
+        -- Serialize pinned profiles
+        local pinned = {}
+        for _, profile in pairs(self_ws._profiles) do
+            if profile._pinned then
+                local entry = { key = profile.key }
+                if profile._configuration_set_name then
+                    entry.configuration_set = profile._configuration_set_name
+                end
+                local tools = profile.tools_data and profile:tools_data() or nil
+                if tools then entry.tools = tools end
+                if profile.mappings and not profile._configuration_set_name then
+                    entry.mappings = profile.mappings
+                end
+                pinned[#pinned + 1] = entry
+            end
+        end
+        if #pinned > 0 then
+            table.sort(pinned, function(a, b) return a.key < b.key end)
+            data.pinned_profiles = pinned
+        end
         -- Include user-sourced projects
         local user_projects = {}
         for _, project in pairs(self_ws._projects) do
@@ -707,7 +680,18 @@ function M.make_test_deps(files, opts)
         },
         detect_tools_async = function(config, cache, callback) callback({}) end,
         modules = {
-            get = function() return nil end,
+            get = function(mod_type)
+                if not mod_type then return nil end
+                return {
+                    id = mod_type,
+                    has_keyed_tools = (mod_type == "cmake"),
+                    tools_match = function(a, b)
+                        if a == nil and b == nil then return true end
+                        if a == nil or b == nil then return false end
+                        return vim.deep_equal(a, b)
+                    end,
+                }
+            end,
         },
         FileTracker = {
             new = function(tracker_opts)

@@ -536,7 +536,7 @@ describe("Core", function()
     end)
 
     describe("_materialize_from_data", function()
-        it("writes profile and skeleton configs to cache", function()
+        it("creates skeleton config units in cache", function()
             local saved_cache = nil
             local core = make_core(
                 {
@@ -557,17 +557,14 @@ describe("Core", function()
             core:_materialize_from_data(get_cs(core, "debug"))
 
             assert.is_not_nil(saved_cache)
-            -- Profile entry
-            assert.is_not_nil(saved_cache.profiles)
-            assert.is_not_nil(saved_cache.profiles.debug)
-            assert.equals("debug", saved_cache.profiles.debug.configuration_set)
-            assert.is_not_nil(saved_cache.profiles.debug.configurations)
+            -- No profiles in cache (profiles are runtime-only)
+            assert.is_nil(saved_cache.profiles)
             -- Skeleton config entry in flat cache
             assert.is_not_nil(saved_cache.build_dirs["build/App/development"])
             assert.equals("development", saved_cache.build_dirs["build/App/development"].variant)
         end)
 
-        it("is idempotent (no-op when already materialized)", function()
+        it("is idempotent (second call still saves but creates no new units)", function()
             local save_count = 0
             local core = make_core(
                 {
@@ -585,10 +582,11 @@ describe("Core", function()
                 }
             )
             core:setup({ root = "/root" })
+            local ws = core._workspace
             core:_materialize_from_data(get_cs(core, "debug"))
-            local count_after_first = save_count
+            local units_after_first = #ws._config_units
             core:_materialize_from_data(get_cs(core, "debug"))
-            assert.equals(count_after_first, save_count) -- no additional save
+            assert.equals(units_after_first, #ws._config_units) -- no additional config units
         end)
 
         it("is safe without workspace", function()
@@ -599,7 +597,7 @@ describe("Core", function()
             core:_materialize_from_data(dummy_cs) -- should not error
         end)
 
-        it("stores tool data when tool_entry provided", function()
+        it("stores tool data in config unit when tool_entry provided", function()
             local saved_cache = nil
             local core = make_core(
                 {
@@ -625,11 +623,13 @@ describe("Core", function()
             })
 
             assert.is_not_nil(saved_cache)
-            local profile = saved_cache.profiles["debug:ninja-gcc"]
-            assert.is_not_nil(profile)
-            assert.equals("debug", profile.configuration_set)
-            assert.equals("ninja-gcc", profile.tools.cmake.key)
-            assert.equals("Ninja GCC", profile.tools.cmake.label)
+            -- No profiles in cache
+            assert.is_nil(saved_cache.profiles)
+            -- Config unit has tool data (no tool id in default path since tool_data has no .id)
+            local bd = saved_cache.build_dirs["build/Lib/Debug"]
+            assert.is_not_nil(bd)
+            assert.equals("Debug", bd.variant)
+            assert.equals("ninja-gcc", bd.tool_key)
         end)
 
     end)
@@ -1026,16 +1026,14 @@ describe("Core", function()
                 {
                     projects = { App = { typescript = {} } },
                 },
-                nil,
                 {
-                    profiles = {
-                        ["App/development"] = {
-                            mappings = { App = "development" },
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        { key = "App/development", mappings = { App = "development" } },
                     },
-                    configurations = {
-                        ["App/development"] = {
+                },
+                {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -1237,7 +1235,7 @@ describe("Core", function()
             assert.is_false(get_unit(core, "App", "dev"):is_deleting())
         end)
 
-        it("removes profile from cache.profiles on profile deletion", function()
+        it("deletes profile config entries on profile deletion", function()
             local saved_cache = nil
             local core = make_core(
                 {
@@ -1246,14 +1244,8 @@ describe("Core", function()
                 },
                 nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                    },
-                    configurations = {
-                        ["App/development"] = {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -1287,31 +1279,24 @@ describe("Core", function()
             core:execute_deletion(plan, nil, function() done = true end)
             assert.is_true(done)
             assert.is_not_nil(saved_cache)
-            -- profiles section should be cleaned up
-            assert.is_true(saved_cache.profiles == nil or saved_cache.profiles.debug == nil)
+            -- No profiles in cache (profiles are runtime-only)
+            assert.is_nil(saved_cache.profiles)
         end)
 
-        it("removes profile with no unreferenced configs (empty items)", function()
+        it("empty items deletion preserves config entries", function()
             local saved_cache = nil
             local core = make_core(
                 {
                     projects = { App = { typescript = {} } },
-                    configuration_sets = { debug = { App = "development" } },
+                    configuration_sets = {
+                        debug = { App = "development" },
+                        release = { App = "development" },
+                    },
                 },
                 nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                        release = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                    },
-                    configurations = {
-                        ["App/development"] = {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -1331,7 +1316,6 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
 
-            -- Empty items = no unreferenced configs, but profile should still be removed
             local debug_profile = h.find_profile(core:get_profiles(), "debug")
             local plan = {
                 profile = debug_profile,
@@ -1341,10 +1325,8 @@ describe("Core", function()
             local done = false
             core:execute_deletion(plan, { deactivate_profile = debug_profile }, function() done = true end)
             assert.is_true(done)
-            assert.is_not_nil(saved_cache)
-            assert.is_nil(saved_cache.profiles.debug)
-            assert.is_not_nil(saved_cache.profiles.release)
             -- Config preserved (no items to delete)
+            assert.is_not_nil(saved_cache)
             assert.is_not_nil(saved_cache.build_dirs["build/App/development"])
         end)
     end)
@@ -1355,16 +1337,14 @@ describe("Core", function()
                 {
                     projects = { App = { typescript = {} } },
                 },
-                nil,
                 {
-                    profiles = {
-                        ["App/development"] = {
-                            mappings = { App = "development" },
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        { key = "App/development", mappings = { App = "development" } },
                     },
-                    configurations = {
-                        ["App/development"] = {
+                },
+                {
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development",
                             variant = "development",
@@ -1675,11 +1655,11 @@ describe("Core", function()
 
     describe("branch switching", function()
         it("configs built on feature branch become orphaned on master", function()
-            -- Simulate: master has config_set "debug" with App=Debug
-            -- Feature branch added config_set "feature" and user built it
-            -- Cache has profile "feature" from the feature branch
+            -- Simulate: master has config_set "debug" with App=development
+            -- Feature branch had config_set "feature" and user built App/staging
             -- After switching to master, "feature" set no longer in config
-            -- The profile becomes stale (orphaned_set) but config is still referenced
+            -- Since profiles are derived from config_sets, no "feature" profile exists
+            -- The "staging" config entry becomes orphaned
 
             local core = make_core(
                 {
@@ -1689,45 +1669,31 @@ describe("Core", function()
                 },
                 nil,
                 {
-                    -- Cache from feature branch: has both profiles
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                        feature = {
-                            configuration_set = "feature",
-                            configurations = { "App/staging" },
-                        },
-                    },
-                    configurations = {
-                        ["App/development"] = {
+                    -- Cache from feature branch: has configs for both
+                    build_dirs = {
+                        ["build/App/development"] = {
                             project_key = "App",
                             config_key = "development", variant = "development",
                             type = "typescript",
                             state = "built",
-                            variant = "development",
                         },
-                        ["App/staging"] = {
+                        ["build/App/staging"] = {
                             project_key = "App",
                             config_key = "staging", variant = "staging",
                             type = "typescript",
                             state = "built",
-                            variant = "staging",
                         },
                     },
                 }
             )
             core:setup({ root = "/root" })
 
-            -- "staging" is still referenced by the cached "feature" profile
-            -- so it should NOT be orphaned
-            assert.same({}, core:get_orphaned_configs())
-
-            -- The "feature" profile should still exist but with orphaned_set=true
-            local profile = h.find_profile(core:get_profiles(), "feature")
-            assert.is_not_nil(profile)
-            assert.is_true(profile.orphaned_set)
+            -- "staging" is NOT referenced by any profile (no "feature" config set)
+            -- so it IS orphaned
+            local orphans = core:get_orphaned_configs()
+            assert.equals(1, #orphans)
+            assert.equals("App", orphans[1].project_key)
+            assert.equals("staging", orphans[1].config_key)
         end)
 
         it("unreferenced configs from branch switching are orphaned", function()
@@ -2586,17 +2552,13 @@ describe("Core", function()
 
     describe("cache inconsistency", function()
         local function make_inconsistent_core(dep_overrides)
-            -- Profile references a configuration that doesn't exist
+            -- Build dir entry missing project_key
             local files = {
                 ["loomworks.json"] = h.make_config_json(),
                 ["loomworks.cache.json"] = vim.json.encode({
                     _meta = { version = 7, loomworks_hash = "", cached_at = "" },
-                    build_dirs = {},
-                    profiles = {
-                        ["debug:ninja-gcc"] = {
-                            configuration_set = "debug",
-                            configurations = { "build/App/Debug" },
-                        },
+                    build_dirs = {
+                        ["build/App/Debug"] = { variant = "Debug" },  -- missing project_key
                     },
                 }),
             }

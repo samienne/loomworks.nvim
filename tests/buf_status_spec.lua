@@ -102,44 +102,49 @@ describe("buf_status", function()
     end)
 
     it("includes tool_key when profile has one", function()
+        local detected_tools = {
+            cmake = {
+                { tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
+                    tool_key = "ninja-gcc-12", tool_label = "Ninja + GCC 12" },
+            },
+        }
         local core = make_core({
             configuration_sets = { debug = { App = "Debug" } },
         }, { active_profile = "debug:ninja-gcc-12" }, {
-            profiles = {
-                ["debug:ninja-gcc-12"] = {
-                    configuration_set = "debug",
-                    tools = {
-                        cmake = {
-                            key = "ninja-gcc-12",
-                            data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
-                            label = "Ninja + GCC 12",
-                        },
-                    },
-                    configurations = { "App/Debug:ninja-gcc-12" },
-                },
-            },
-            configurations = {
-                ["App/Debug:ninja-gcc-12"] = {
+            build_dirs = {
+                ["build/App/ninja-gcc-12/Debug"] = {
                     project_key = "App",
                     config_key = "Debug:ninja-gcc-12",
                     variant = "Debug",
                     type = "cmake",
+                    tool_key = "ninja-gcc-12",
+                    tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
                 },
             },
         }, {
             buf_name = function() return "/root/App/src/main.cpp" end,
+            -- Provide detected tools via async detection so derived profile exists
+            detect_tools_async = function(_, _, callback)
+                callback(detected_tools)
+            end,
             modules = {
                 get = function(mod_type)
                     if mod_type ~= "cmake" then return nil end
                     return {
+                        id = "cmake",
+                        has_keyed_tools = true,
                         validate = function() return { valid = true, warnings = {} } end,
                         info = function() return { configurations = {} } end,
-                        detect_tools = function() return {
-                            { tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
-                                tool_key = "ninja-gcc-12", tool_label = "Ninja + GCC 12" },
-                        } end,
+                        detect_tools_async = function(callback) callback({
+                            { tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" } },
+                        }) end,
                         tool_key = function(td) return td.id end,
                         tool_label = function(td) return td.display or td.id end,
+                        tools_match = function(a, b)
+                            if a == nil and b == nil then return true end
+                            if a == nil or b == nil then return false end
+                            return vim.deep_equal(a, b)
+                        end,
                     }
                 end,
             },

@@ -51,7 +51,7 @@ describe("workspace", function()
             local ws = workspace.assemble("/root", config_json, nil, nil)
             assert.is_not_nil(ws.user)
             assert.is_not_nil(ws.cache)
-            assert.equals(1, ws.user._meta.version)
+            assert.equals(2, ws.user._meta.version)
             assert.equals(7, ws.cache._meta.version)
         end)
 

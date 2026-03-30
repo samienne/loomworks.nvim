@@ -143,7 +143,7 @@ end
 --- Data fields (set during _apply):
 --- @field _configuration_set_name string|nil set name for set-based profiles
 --- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
---- @field _cached_configurations string[]|nil cache key array (fallback for orphaned profiles)
+--- @field _pinned boolean true if stored in user.json pinned_profiles
 --- @field explicit boolean true if defined in loomworks.json
 --- @field explicit_def table|nil raw definition from loomworks.json
 --- @field _default_target_descriptor table|nil user.json default target for this profile
@@ -195,7 +195,7 @@ end
 function Profile:_apply(data)
     self._configuration_set_name = data.configuration_set
     self._tools_raw = data.tools or nil
-    self._cached_configurations = data._cached_configurations
+    self._pinned = data._pinned or false
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
 
@@ -218,8 +218,7 @@ function Profile:_apply(data)
 end
 
 --- Resolve mappings for this profile from pre-resolved references.
---- Three tiers: (1) reactive from ConfigurationSet, (2) stored mappings,
---- (3) fallback from cached profile project data.
+--- Two tiers: (1) reactive from ConfigurationSet, (2) stored mappings (pinned profiles).
 --- @param data loomworks.ProfileDef
 --- @return table<string, string>|nil mappings
 --- @return boolean orphaned
@@ -236,17 +235,10 @@ function Profile:_resolve_mappings(data)
         end
     end
 
-    -- Tier 2: Pinned profiles or set-based with stored mappings
+    -- Tier 2: Pinned profiles with stored mappings
     if data.mappings then
         local orphaned = data.configuration_set ~= nil
         return data.mappings, orphaned
-    end
-
-    -- Tier 3: Fallback from pre-resolved cached configuration mappings
-    if data._resolved_mappings then
-        if next(data._resolved_mappings) then
-            return data._resolved_mappings, data.configuration_set ~= nil
-        end
     end
 
     return nil, false
@@ -320,36 +312,6 @@ function Profile:config_key(variant, project_type)
         end
     end
     return variant
-end
-
---- Serialize this profile to a cache entry for persistence.
---- Builds the entry from owned fields — not from ws.cache.
---- @return table cache entry suitable for cache.profiles[key]
-function Profile:serialize_cache()
-    local entry = {}
-    if self._configuration_set_name then
-        entry.configuration_set = self._configuration_set_name
-    end
-    local tools = self:tools_data()
-    if tools then
-        entry.tools = tools
-    end
-    if self.mappings and not self._configuration_set_name then
-        entry.mappings = self.mappings
-    end
-    -- Build configurations array from ProfileProject config units
-    local configs = {}
-    for _, pp in ipairs(self:projects()) do
-        if pp._config_unit then
-            configs[#configs + 1] = pp._config_unit.id
-        end
-    end
-    if #configs > 0 then
-        entry.configurations = configs
-    elseif self._cached_configurations then
-        entry.configurations = self._cached_configurations
-    end
-    return entry
 end
 
 -- ---------------------------------------------------------------------------

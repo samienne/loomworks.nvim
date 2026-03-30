@@ -52,54 +52,56 @@ describe("merge", function()
     -- parse_profile_key was removed (zero runtime callers)
 
     describe("get_all_profiles", function()
-        it("returns cached profiles", function()
-            local ws = make_ws(
-                { configuration_sets = { debug = { App = "development" } } },
-                nil,
-                {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                        release = {
-                            configuration_set = "release",
-                            configurations = { "App/production" },
-                        },
-                    },
-                    configurations = {
-                        ["App/development"] = {
-                            project_key = "App",
-                            config_key = "development",
-                            type = "typescript",
-                        },
-                        ["App/production"] = {
-                            project_key = "App",
-                            config_key = "production",
-                            type = "typescript",
-                        },
-                    },
-                }
-            )
-            local profiles = merge.get_all_profiles(ws.config, ws.cache)
+        it("derives profiles from configuration_sets (no keyed tools)", function()
+            local ws = make_ws({
+                configuration_sets = {
+                    debug = { App = "development" },
+                    release = { App = "production" },
+                },
+            })
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, {})
             assert.is_not_nil(profiles.debug)
             assert.is_not_nil(profiles.release)
             assert.equals("debug", profiles.debug.configuration_set)
             assert.equals("release", profiles.release.configuration_set)
         end)
 
-        it("returns empty when no cached or explicit profiles", function()
+        it("returns empty when no configuration_sets or explicit profiles", function()
             local ws = make_ws()
-            local profiles = merge.get_all_profiles(ws.config)
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, {})
             assert.are.same({}, profiles)
         end)
 
-        it("does not auto-generate profiles from configuration_sets", function()
+        it("derives tool-qualified profiles from configuration_sets x tools", function()
+            local ws = make_ws({
+                projects = { App = { cmake = {} } },
+                configuration_sets = { debug = { App = "Debug" } },
+            })
+            local tools_by_type = {
+                cmake = {
+                    { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc" }, tool_label = "Ninja GCC" },
+                },
+            }
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, tools_by_type)
+            assert.is_not_nil(profiles["debug:ninja-gcc"])
+            assert.equals("debug", profiles["debug:ninja-gcc"].configuration_set)
+            assert.is_not_nil(profiles["debug:ninja-gcc"].tools)
+            assert.is_not_nil(profiles["debug:ninja-gcc"].tools.cmake)
+        end)
+
+        it("includes pinned profiles from user_data", function()
             local ws = make_ws({
                 configuration_sets = { debug = { App = "development" } },
             })
-            local profiles = merge.get_all_profiles(ws.config)
-            assert.are.same({}, profiles)
+            local user_data = {
+                _meta = { version = 2 },
+                pinned_profiles = {
+                    { key = "App/development", mappings = { App = "development" } },
+                },
+            }
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, {}, user_data)
+            assert.is_not_nil(profiles["App/development"])
+            assert.is_true(profiles["App/development"]._pinned)
         end)
 
         it("explicit profiles from config", function()
@@ -109,7 +111,7 @@ describe("merge", function()
                     debug = { configuration_set = "debug", kit_id = "custom" },
                 },
             })
-            local profiles = merge.get_all_profiles(ws.config)
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, {})
             assert.is_true(profiles.debug.explicit)
             assert.equals("debug", profiles.debug.configuration_set)
         end)

@@ -600,18 +600,10 @@ function Project:rename_configuration(old_name, new_name, config_data)
         end
     end
 
-    -- Step 5: Update profiles — _cached_configurations, pinned mappings, and pinned profile keys.
+    -- Step 5: Update profiles — pinned mappings and pinned profile keys.
     if next(cache_rename_map) then
         local profile_rekeys = {} -- old_profile_key -> new_profile_key
         for _, profile in pairs(ws._profiles) do
-            -- Update _cached_configurations arrays
-            if profile._cached_configurations then
-                for i, ck in ipairs(profile._cached_configurations) do
-                    if cache_rename_map[ck] then
-                        profile._cached_configurations[i] = cache_rename_map[ck]
-                    end
-                end
-            end
             -- Update pinned profile mappings (variant references)
             if profile.mappings and profile.mappings[self.key] == old_name then
                 profile.mappings[self.key] = new_name

@@ -18,6 +18,11 @@ local mock_modules = {
         id = "cmake",
         has_keyed_tools = true,
         has_options = true,
+        tools_match = function(a, b)
+            if a == nil and b == nil then return true end
+            if a == nil or b == nil then return false end
+            return vim.deep_equal(a, b)
+        end,
         default_configurations = function()
             return { Debug = { variant = "Debug" }, Release = { variant = "Release" }, RelWithDebInfo = { variant = "RelWithDebInfo" } }
         end,
@@ -72,12 +77,30 @@ local mock_modules = {
     },
 }
 
+--- Common detected tool entries for tests that need tool-qualified profiles.
+--- Format matches what merge.get_all_profiles expects in _tools_by_type.
+local function make_detected_tools(entries)
+    local result = {}
+    for _, e in ipairs(entries) do
+        local mod_type = e.mod_type or "cmake"
+        result[mod_type] = result[mod_type] or {}
+        result[mod_type][#result[mod_type] + 1] = {
+            tool_key = e.tool_key,
+            tool_data = e.tool_data or { id = e.tool_key },
+            tool_label = e.tool_label or e.tool_key,
+        }
+    end
+    return result
+end
+
 --- Create a real Workspace instance with mock deps for testing.
 --- @param config_overrides? table
 --- @param user_overrides? table
 --- @param cache_overrides? table
+--- @param opts? { detected_tools?: table<string, table[]> }
 --- @return loomworks.Workspace, table events_log
-local function make_ws(config_overrides, user_overrides, cache_overrides)
+local function make_ws(config_overrides, user_overrides, cache_overrides, opts)
+    opts = opts or {}
     local config_json = h.make_config_json(config_overrides)
     local user_json = user_overrides and h.make_user_json(user_overrides) or nil
     local cache_json = cache_overrides and h.make_cache_json(cache_overrides) or nil
@@ -112,6 +135,9 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
     }
 
     local ws = Workspace.new(mock_core, data)
+    if opts.detected_tools then
+        ws._tools_by_type = opts.detected_tools
+    end
     ws:_cleanup_orphaned_skeletons(data.cache)
     ws:remerge(data.config, data.cache, data.user)
     return ws, events_log
@@ -229,11 +255,13 @@ describe("config set lifecycle", function()
 
         -- Round-trip: serialize cache and simulate reload
         local cache = ws:_serialize_cache()
-        assert.is_not_nil(cache.profiles["Release"],
+        assert.is_not_nil(h.find_profile(ws._profiles, "Release"),
             "Serialized cache should have profile under new key 'Release'")
-        assert.is_nil(cache.profiles["Debug"],
+        assert.is_nil(h.find_profile(ws._profiles, "Debug"),
             "Serialized cache should not have profile under old key 'Debug'")
-        assert.equals("Release", cache.profiles["Release"].configuration_set)
+        local release_profile = h.find_profile(ws._profiles, "Release")
+        assert.is_not_nil(release_profile)
+        assert.equals("Release", release_profile._configuration_set_name)
     end)
 
     it("create validates duplicate names", function()
@@ -363,6 +391,10 @@ describe("profile lifecycle", function()
             configuration_sets = {
                 Debug = { App = "Debug", Frontend = "debug" },
             },
+        }, nil, nil, {
+            detected_tools = make_detected_tools({
+                { tool_key = "ninja-gcc", tool_data = { generator = "Ninja" } },
+            }),
         })
 
         local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
@@ -405,18 +437,17 @@ describe("profile lifecycle", function()
             },
             nil,
             {
-                profiles = {
-                    Debug = {
-                        configuration_set = "Debug",
-                        configurations = { "Frontend/debug" },
-                    },
-                },
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
                         type = "ets", variant = "debug",
                     },
                 },
+            },
+            {
+                detected_tools = make_detected_tools({
+                    { tool_key = "ninja-gcc-12", tool_data = { id = "ninja-gcc-12", display = "Ninja - GCC 12" } },
+                }),
             }
         )
 
@@ -646,8 +677,8 @@ describe("profile upgrade and downgrade", function()
 
         -- Profile upgraded: Debug → Debug:ninja-gcc-12
         local cache = ws:_serialize_cache()
-        assert.is_nil(cache.profiles["Debug"])
-        assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"])
+        assert.is_nil(h.find_profile(ws._profiles, "Debug"))
+        assert.is_not_nil(h.find_profile(ws._profiles, "Debug:ninja-gcc-12"))
         assert.equals("Debug:ninja-gcc-12", ws._active_profile_key)
 
         -- Skeleton cache entry created for cmake project (build_dir-keyed)
@@ -685,15 +716,6 @@ describe("profile upgrade and downgrade", function()
             },
             { active_profile = "Debug:ninja-gcc-12" },
             {
-                profiles = {
-                    ["Debug:ninja-gcc-12"] = {
-                        configuration_set = "Debug",
-                        tools = {
-                            cmake = { key = "ninja-gcc-12", data = {}, label = "Ninja - GCC 12" },
-                        },
-                        configurations = { "Frontend/debug", "App/Debug:ninja-gcc-12" },
-                    },
-                },
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
@@ -704,6 +726,11 @@ describe("profile upgrade and downgrade", function()
                         type = "cmake", variant = "Debug",
                     },
                 },
+            },
+            {
+                detected_tools = make_detected_tools({
+                    { tool_key = "ninja-gcc-12", tool_data = { id = "ninja-gcc-12", generator = "Ninja", compiler_id = "GNU" } },
+                }),
             }
         )
 
@@ -720,9 +747,9 @@ describe("profile upgrade and downgrade", function()
 
         -- Profile downgraded: Debug:ninja-gcc-12 → Debug
         local cache = ws:_serialize_cache()
-        assert.is_nil(cache.profiles["Debug:ninja-gcc-12"])
-        assert.is_not_nil(cache.profiles["Debug"])
-        assert.is_nil(cache.profiles["Debug"].tools)
+        assert.is_nil(h.find_profile(ws._profiles, "Debug:ninja-gcc-12"))
+        assert.is_not_nil(h.find_profile(ws._profiles, "Debug"))
+        assert.is_nil(h.find_profile(ws._profiles, "Debug").tools)
         assert.equals("Debug", ws._active_profile_key)
     end)
 
@@ -735,19 +762,12 @@ describe("profile upgrade and downgrade", function()
                 },
                 configuration_sets = { Debug = { Frontend = "debug", App = "Debug" } },
             },
-            nil,
             {
-                profiles = {
-                    -- Pinned profile (no configuration_set)
-                    ["App/Debug"] = {
-                        configurations = { "App/Debug" },
-                    },
-                    -- Set-based profile
-                    Debug = {
-                        configuration_set = "Debug",
-                        configurations = { "Frontend/debug" },
-                    },
+                pinned_profiles = {
+                    { key = "App/Debug", mappings = { App = "Debug" } },
                 },
+            },
+            {
                 configurations = {
                     ["App/Debug"] = {
                         project_key = "App", config_key = "Debug",
@@ -765,12 +785,12 @@ describe("profile upgrade and downgrade", function()
 
         -- Set-based profile upgraded
         local cache = ws:_serialize_cache()
-        assert.is_nil(cache.profiles["Debug"])
-        assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"])
+        assert.is_nil(h.find_profile(ws._profiles, "Debug"))
+        assert.is_not_nil(h.find_profile(ws._profiles, "Debug:ninja-gcc-12"))
 
         -- Pinned profile unchanged
-        assert.is_not_nil(cache.profiles["App/Debug"])
-        assert.is_nil(cache.profiles["App/Debug"].tools)
+        assert.is_not_nil(h.find_profile(ws._profiles, "App/Debug"))
+        assert.is_nil(h.find_profile(ws._profiles, "App/Debug").tools)
     end)
 
     it("downgrade is no-op when other keyed-module projects remain", function()
@@ -784,17 +804,15 @@ describe("profile upgrade and downgrade", function()
             },
             nil,
             {
-                profiles = {
-                    ["Debug:ninja-gcc-12"] = {
-                        configuration_set = "Debug",
-                        tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "App/Debug:ninja-gcc-12", "Lib/Debug:ninja-gcc-12" },
-                    },
-                },
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = { project_key = "App", config_key = "Debug:ninja-gcc-12", variant = "Debug", type = "cmake" },
                     ["Lib/Debug:ninja-gcc-12"] = { project_key = "Lib", config_key = "Debug:ninja-gcc-12", variant = "Debug", type = "cmake" },
                 },
+            },
+            {
+                detected_tools = make_detected_tools({
+                    { tool_key = "ninja-gcc-12", tool_data = { id = "ninja-gcc-12", generator = "Ninja", compiler_id = "GNU" } },
+                }),
             }
         )
 
@@ -802,8 +820,8 @@ describe("profile upgrade and downgrade", function()
 
         -- Profile unchanged — Lib still uses cmake
         local cache = ws:_serialize_cache()
-        assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"])
-        assert.is_nil(cache.profiles["Debug"])
+        assert.is_not_nil(h.find_profile(ws._profiles, "Debug:ninja-gcc-12"))
+        assert.is_nil(h.find_profile(ws._profiles, "Debug"))
     end)
 end)
 
@@ -812,7 +830,7 @@ end)
 -- =========================================================================
 
 describe("orphan lifecycle", function()
-    it("deleting config set then profile orphans configs, cleanup removes them", function()
+    it("deleting config set orphans configs, cleanup removes them", function()
         local ws = make_ws(
             {
                 projects = { Frontend = { ets = {} } },
@@ -820,12 +838,6 @@ describe("orphan lifecycle", function()
             },
             { active_profile = "Debug" },
             {
-                profiles = {
-                    Debug = {
-                        configuration_set = "Debug",
-                        configurations = { "Frontend/debug" },
-                    },
-                },
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
@@ -836,28 +848,18 @@ describe("orphan lifecycle", function()
             }
         )
 
-        -- Initially no orphans
+        -- Initially no orphans (config referenced by derived profile "Debug")
         assert.equals(0, #ws:get_orphaned_configs())
 
-        -- Delete config set — profile becomes orphaned_set but still
-        -- references the config via cached configurations
+        -- Delete config set — derived profile "Debug" disappears, config becomes orphaned
         local ok = wv.execute_delete_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"Debug"))
         assert.is_true(ok)
 
-        -- Profile is orphaned_set
-        local profiles = ws:get_config_sets()
-        local profile = h.find_profile(ws:get_profiles(), "Debug")
-        assert.is_not_nil(profile)
-        assert.is_true(profile.orphaned_set)
+        -- Config set gone, derived profile gone
+        assert.is_nil(h.find_config_set_in(ws:get_config_sets(), "Debug"))
+        assert.is_nil(h.find_profile(ws:get_profiles(), "Debug"))
 
-        -- Config still referenced by orphaned profile → not orphaned yet
-        assert.equals(0, #ws:get_orphaned_configs())
-
-        -- Delete the profile from cache → config becomes orphaned
-        local temp_cache = ws:_serialize_cache()
-        temp_cache.profiles["Debug"] = nil
-        ws:remerge(nil, temp_cache)
-
+        -- Config is now orphaned (no profile references it)
         local orphans = ws:get_orphaned_configs()
         assert.equals(1, #orphans)
         assert.equals("Frontend", orphans[1].project_key)
@@ -1086,15 +1088,6 @@ describe("config set rename", function()
             },
             nil,
             {
-                profiles = {
-                    ["debug:ninja-gcc-12"] = {
-                        configuration_set = "debug",
-                        tools = {
-                            cmake = { key = "ninja-gcc-12", data = {}, label = "Ninja - GCC 12" },
-                        },
-                        configurations = { "App/Debug:ninja-gcc-12", "Frontend/debug" },
-                    },
-                },
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App", config_key = "Debug:ninja-gcc-12",
@@ -1105,6 +1098,11 @@ describe("config set rename", function()
                         type = "ets", variant = "debug",
                     },
                 },
+            },
+            {
+                detected_tools = make_detected_tools({
+                    { tool_key = "ninja-gcc-12", tool_data = { id = "ninja-gcc-12" } },
+                }),
             }
         )
 
@@ -1118,12 +1116,13 @@ describe("config set rename", function()
 
         -- Profile key must have been renamed alongside the set
         local cache = ws:_serialize_cache()
-        assert.is_nil(cache.profiles["debug:ninja-gcc-12"],
+        assert.is_nil(h.find_profile(ws._profiles, "debug:ninja-gcc-12"),
             "old profile key should be gone")
-        assert.is_not_nil(cache.profiles["Debug:ninja-gcc-12"],
+        assert.is_not_nil(h.find_profile(ws._profiles, "Debug:ninja-gcc-12"),
             "profile key should use new set name")
-        assert.equals("Debug",
-            cache.profiles["Debug:ninja-gcc-12"].configuration_set)
+        local renamed_profile = h.find_profile(ws._profiles, "Debug:ninja-gcc-12")
+        assert.is_not_nil(renamed_profile)
+        assert.equals("Debug", renamed_profile._configuration_set_name)
     end)
 end)
 
@@ -1241,13 +1240,10 @@ describe("configuration rename propagation", function()
                     state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
             },
-            profiles = {
-                ["debug:ninja-gcc"] = {
-                    configuration_set = "debug",
-                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "Ninja GCC" } },
-                    configurations = { "build/App/ninja-gcc/Debug-asan" },
-                },
-            },
+        }, {
+            detected_tools = make_detected_tools({
+                { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc" } },
+            }),
         })
 
         local project = h.find_project_in(ws:get_projects(), "App")
@@ -1268,8 +1264,8 @@ describe("configuration rename propagation", function()
         -- Fields updated
         assert.equals("DebugASAN", new_entry.variant)
 
-        -- Profile configurations array updated
-        local profile = cache.profiles["debug:ninja-gcc"]
+        -- Profile still exists as runtime object
+        local profile = h.find_profile(ws._profiles, "debug:ninja-gcc")
         assert.is_not_nil(profile)
     end)
 
@@ -1403,20 +1399,21 @@ describe("configuration rename propagation", function()
                     },
                 },
             },
-        }, nil, {
+        }, {
+            pinned_profiles = {
+                {
+                    key = "App/Debug-asan:ninja-gcc",
+                    mappings = { App = "Debug-asan" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
+                },
+            },
+        }, {
             build_dirs = {
                 ["build/App/ninja-gcc/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-gcc",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
                     tool_data = { id = "ninja-gcc" },
                     state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
-                },
-            },
-            profiles = {
-                ["App/Debug-asan:ninja-gcc"] = {
-                    mappings = { App = "Debug-asan" },
-                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
-                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
             },
         })
@@ -1429,10 +1426,10 @@ describe("configuration rename propagation", function()
 
         -- Old pinned profile key gone
         local cache = ws:_serialize_cache()
-        assert.is_nil(cache.profiles["App/Debug-asan:ninja-gcc"])
+        assert.is_nil(h.find_profile(ws._profiles, "App/Debug-asan:ninja-gcc"))
 
         -- New pinned profile key exists with updated mapping
-        local profile = cache.profiles["App/DebugASAN:ninja-gcc"]
+        local profile = h.find_profile(ws._profiles, "App/DebugASAN:ninja-gcc")
         assert.is_not_nil(profile)
         assert.equals("DebugASAN", profile.mappings.App)
     end)
@@ -1450,6 +1447,13 @@ describe("configuration rename propagation", function()
             },
         }, {
             active_profile = "App/Debug-asan:ninja-gcc",
+            pinned_profiles = {
+                {
+                    key = "App/Debug-asan:ninja-gcc",
+                    mappings = { App = "Debug-asan" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
+                },
+            },
         }, {
             build_dirs = {
                 ["build/App/ninja-gcc/Debug-asan"] = {
@@ -1457,13 +1461,6 @@ describe("configuration rename propagation", function()
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
                     tool_data = { id = "ninja-gcc" },
                     state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
-                },
-            },
-            profiles = {
-                ["App/Debug-asan:ninja-gcc"] = {
-                    mappings = { App = "Debug-asan" },
-                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
-                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
             },
         })
@@ -1504,13 +1501,10 @@ describe("configuration rename propagation", function()
                     state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
             },
-            profiles = {
-                ["asan:ninja-gcc"] = {
-                    configuration_set = "asan",
-                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
-                    configurations = { "App/Debug-asan:ninja-gcc" },
-                },
-            },
+        }, {
+            detected_tools = make_detected_tools({
+                { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", display = "GCC" } },
+            }),
         })
 
         -- Before rename: PP resolves correctly
@@ -1553,20 +1547,21 @@ describe("configuration rename propagation", function()
                     },
                 },
             },
-        }, nil, {
+        }, {
+            pinned_profiles = {
+                {
+                    key = "App/Debug-asan:ninja-gcc",
+                    mappings = { App = "Debug-asan" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
+                },
+            },
+        }, {
             build_dirs = {
                 ["build/App/ninja-gcc/Debug-asan"] = {
                     project_key = "App", config_key = "Debug-asan:ninja-gcc",
                     type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
                     tool_data = { id = "ninja-gcc", display = "GCC" },
                     state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
-                },
-            },
-            profiles = {
-                ["App/Debug-asan:ninja-gcc"] = {
-                    mappings = { App = "Debug-asan" },
-                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
-                    configurations = { "build/App/ninja-gcc/Debug-asan" },
                 },
             },
         })
@@ -1618,13 +1613,10 @@ describe("configuration rename propagation", function()
                     state = "configured", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
                 },
             },
-            profiles = {
-                ["debug:ninja-gcc"] = {
-                    configuration_set = "debug",
-                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
-                    configurations = { "build/App/ninja-gcc/Debug-asan" },
-                },
-            },
+        }, {
+            detected_tools = make_detected_tools({
+                { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc" } },
+            }),
         })
 
         -- Simulate a running build on the config unit
@@ -1683,13 +1675,10 @@ describe("configuration rename propagation", function()
                     state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/CustomBuild",
                 },
             },
-            profiles = {
-                ["custom:ninja-gcc"] = {
-                    configuration_set = "custom",
-                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
-                    configurations = { "App/CustomBuild:ninja-gcc" },
-                },
-            },
+        }, {
+            detected_tools = make_detected_tools({
+                { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", display = "GCC" } },
+            }),
         })
 
         -- "CustomBuild" is not in cmake defaults or user configs,
@@ -1816,6 +1805,9 @@ describe("end-to-end workspace setup", function()
         assert.equals(2, #edit_ctx.projects)
         assert.equals("Debug", edit_ctx.mappings[app].name)
         assert.equals("debug", edit_ctx.mappings[frontend].name)
+
+        -- Remerge to derive profiles from the new config set
+        ws:remerge()
 
         -- Create profile from config set
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
@@ -2293,10 +2285,16 @@ end)
 -- =========================================================================
 
 describe("opaque keys", function()
-    -- All keys are arbitrary strings with no pattern.
-    -- Proves the system doesn't depend on key format for runtime navigation.
+    -- Arbitrary project keys, config set names, tool keys, and variant names.
+    -- Proves the system doesn't depend on naming conventions for runtime navigation.
+    -- Profile keys are derived from config_set × tools; build_dir keys are
+    -- computed from project/tool/variant — both are determined at runtime.
 
     local function make_opaque_ws()
+        -- Derived profile key: "set-x:tool-7" (from set_name + cmake tool key)
+        local detected = make_detected_tools({
+            { tool_key = "tool-7", tool_data = { id = "tool-7", display = "Tool Seven", generator = "Ninja" }, tool_label = "Tool Seven" },
+        })
         return make_ws({
             projects = {
                 ["proj-alpha"] = { cmake = {} },
@@ -2306,35 +2304,24 @@ describe("opaque keys", function()
                 ["set-x"] = { ["proj-alpha"] = "Debug", ["proj-beta"] = "debug" },
             },
         }, {
-            active_profile = "profile-z",
+            active_profile = "set-x:tool-7",
         }, {
-            configurations = {
-                -- Dict keys follow cache format (project_key/config_key),
-                -- but config_key itself is arbitrary (not "variant:tool")
-                ["proj-alpha/cfg-42"] = {
-                    project_key = "proj-alpha", config_key = "cfg-42",
+            -- v7 build_dirs: keys match _compute_build_dir output
+            build_dirs = {
+                ["build/proj-alpha/tool-7/Debug"] = {
+                    project_key = "proj-alpha", config_key = "Debug:tool-7",
                     type = "cmake", variant = "Debug", tool_key = "tool-7",
                     state = "built",
-                    build_dir = "/root/.nvim/build/arbitrary-dir",
                     tool_data = { id = "tool-7", display = "Tool Seven", generator = "Ninja" },
                 },
-                ["proj-beta/cfg-99"] = {
-                    project_key = "proj-beta", config_key = "cfg-99",
+                ["build/proj-beta/debug"] = {
+                    project_key = "proj-beta", config_key = "debug",
                     type = "ets", variant = "debug",
                     state = "configured",
-                    build_dir = "/root/.nvim/build/another-dir",
                 },
             },
-            profiles = {
-                -- Arbitrary profile key
-                ["profile-z"] = {
-                    configuration_set = "set-x",
-                    tools = {
-                        cmake = { key = "tool-7", data = { id = "tool-7", display = "Tool Seven", generator = "Ninja" }, label = "Tool Seven" },
-                    },
-                    configurations = { "proj-alpha/cfg-42", "proj-beta/cfg-99" },
-                },
-            },
+        }, {
+            detected_tools = detected,
         })
     end
 
@@ -2353,7 +2340,7 @@ describe("opaque keys", function()
         local ws = make_opaque_ws()
         local profile = ws:get_active_profile()
         assert.is_not_nil(profile)
-        assert.equals("profile-z", profile.key)
+        assert.equals("set-x:tool-7", profile.key)
 
         local pps = profile:projects()
         assert.equals(2, #pps)
@@ -2381,7 +2368,7 @@ describe("opaque keys", function()
         local unit = pp_alpha._config_unit
         assert.is_not_nil(unit)
         assert.equals("built", unit.state_value)
-        assert.equals("/root/.nvim/build/arbitrary-dir", unit.build_dir_value)
+        assert.equals("/root/.nvim/build/proj-alpha/tool-7/Debug", unit.build_dir_value)
     end)
 
     it("ConfigUnit state resolves through arbitrary cache keys", function()
@@ -2402,14 +2389,14 @@ describe("opaque keys", function()
         assert.is_not_nil(cfg)
         local units = proj:config_units_for_configuration(cfg)
         assert.equals(1, #units)
-        assert.equals("cfg-42", units[1]:config_key())
+        assert.equals("Debug:tool-7", units[1]:config_key())
     end)
 
     it("build_dir_refs track arbitrary cache entries", function()
         local ws = make_opaque_ws()
-        local refs = ws:get_build_dir_refs("/root/.nvim/build/arbitrary-dir")
+        local refs = ws:get_build_dir_refs("/root/.nvim/build/proj-alpha/tool-7/Debug")
         assert.equals(1, #refs)
-        assert.equals("cfg-42", refs[1]:config_key())
+        assert.equals("Debug:tool-7", refs[1]:config_key())
     end)
 
     it("config set mapping updates work with arbitrary project keys", function()

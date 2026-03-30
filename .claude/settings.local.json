@@ -49,7 +49,11 @@
       "Bash(grep -v \" 0$\")",
       "Bash(grep -v \"0\t$\")",
       "Bash(echo \"EXIT CODE: $?\")",
-      "Bash(echo \"EXITCODE=$?\")"
+      "Bash(echo \"EXITCODE=$?\")",
+      "Bash(nvim --headless -u tests/minimal_init.lua -c \"lua:*)",
+      "Bash(grep -v \"^--$\")",
+      "Bash(grep -v \"0 $\")",
+      "Bash(nvim --headless -c \"lua:*)"
     ]
   }
 }

@@ -137,10 +137,8 @@ function ConfigurationSet:ensure_profile(tool_entry)
         return nil
     end
 
-    local profile = self:find_profile(tool_entry)
-    if profile then return profile end
-
-    -- Materialize from structured data
+    -- Always materialize (ensures skeleton ConfigUnits exist)
+    -- since profiles are now runtime objects that may exist without config units
     self._workspace:_materialize_from_data(self, tool_entry)
 
     return self:find_profile(tool_entry)

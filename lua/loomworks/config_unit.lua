@@ -437,7 +437,7 @@ function ConfigUnit:materialize_pinned(variant, tool)
     local profile = Profile.new(ws, ak, {
         tools = tools_raw,
         mappings = { [project_key] = mat_variant },
-        _cached_configurations = { self.id },
+        _pinned = true,
         _tool_objects = tool_objects,
     })
     ws._profiles[#ws._profiles + 1] = profile
@@ -452,6 +452,9 @@ function ConfigUnit:materialize_pinned(variant, tool)
     ws._profile_projects[#ws._profile_projects + 1] = pp
     profile._projects_list = { pp }
     profile._projects_by_key = { [project_key] = pp }
+
+    -- Save pinned profile to user.json
+    ws:_save_user()
 
     return profile
 end
