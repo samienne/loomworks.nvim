@@ -486,7 +486,8 @@ describe("ProfileProject accessor methods", function()
         })
         ws._projects["App"] = project
 
-        local profile = Profile.new(ws, "debug", {
+        local profile = Profile.new(ws, {
+            _key = "debug",
             mappings = { App = "Debug" },
         })
         local pp = ProfileProject.new(ws, "App", {
@@ -510,7 +511,8 @@ describe("ProfileProject accessor methods", function()
         })
         ws._projects["App"] = project
 
-        local profile = Profile.new(ws, "debug", {
+        local profile = Profile.new(ws, {
+            _key = "debug",
             mappings = { App = "Release" },
         })
         local pp = ProfileProject.new(ws, "App", {
@@ -534,7 +536,8 @@ describe("ProfileProject accessor methods", function()
         })
         ws._projects["App"] = project
 
-        local profile = Profile.new(ws, "debug:ninja-gcc", {
+        local profile = Profile.new(ws, {
+            _key = "debug:ninja-gcc",
             tools = { cmake = { key = "ninja-gcc", data = { gen = "Ninja" }, label = "label" } },
             _tool_objects = { [cmake_mod] = tool },
             mappings = { App = "Debug" },
@@ -558,7 +561,8 @@ describe("ProfileProject accessor methods", function()
         })
         ws._projects["App"] = project
 
-        local profile = Profile.new(ws, "debug", {
+        local profile = Profile.new(ws, {
+            _key = "debug",
             mappings = { App = "Debug" },
         })
         local pp = ProfileProject.new(ws, "App", {

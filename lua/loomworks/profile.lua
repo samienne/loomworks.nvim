@@ -137,9 +137,10 @@ end
 -- ========================== Profile ==========================
 
 --- @class loomworks.Profile
---- @field key string profile key (e.g. "Debug" or "Debug:ninja-gcc-12")
+--- @field key string profile key — derived from data, never set externally
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
+--- @field _stored_key string|nil externally-defined key (pinned/explicit profiles)
 --- Data fields (set during _apply):
 --- @field _configuration_set_name string|nil set name for set-based profiles
 --- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
@@ -177,13 +178,11 @@ local STATUS_HL = {
 
 --- Create a new Profile object.
 --- @param workspace loomworks.Workspace
---- @param key string profile key
---- @param data? { configuration_set?: string, tools?: table<string, { key: string, data: table, label: string }>, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
+--- @param data? { _key?: string, configuration_set?: string, tools?: table<string, { key: string, data: table, label: string }>, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
 --- @return loomworks.Profile
-function Profile.new(workspace, key, data)
+function Profile.new(workspace, data)
     local self = setmetatable({}, Profile)
     self._workspace = workspace
-    self.key = key
     self._removed = false
     if data then self:_apply(data) end
     return self
@@ -198,6 +197,9 @@ function Profile:_apply(data)
     self._pinned = data._pinned or false
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
+
+    -- Store key for profiles whose key is externally defined (not derivable)
+    if data._key then self._stored_key = data._key end
 
     -- Read pre-resolved Tool domain objects (set by _sync_profiles)
     self._tool_objects = data._tool_objects
@@ -214,6 +216,21 @@ function Profile:_apply(data)
         for _, variant in pairs(self.mappings) do
             self._valid_variants[variant] = true
         end
+    end
+
+    -- Derive key from profile data (must be last — depends on fields set above)
+    self:_derive_key()
+end
+
+--- Compute and set self.key from the profile's data fields.
+--- Set-based profiles derive from configuration_set_name + tools.
+--- Pinned and explicit profiles use their stored key.
+function Profile:_derive_key()
+    if self._configuration_set_name and not self._stored_key then
+        local merge_mod = require("loomworks.merge")
+        self.key = merge_mod.profile_key(self._configuration_set_name, self:tools_data())
+    else
+        self.key = self._stored_key or "unnamed"
     end
 end
 

@@ -2393,6 +2393,7 @@ end
 
 --- Apply profile renames to domain objects, cache, and user state.
 --- Updates the tools dict on each renamed profile via the transform function.
+--- The profile key is re-derived automatically from the updated tools.
 --- @param renames { old_key: string, new_key: string }[]
 --- @param transform fun(tools: table|nil): table|nil
 --- @return boolean user_changed whether active_profile was updated
@@ -2403,13 +2404,13 @@ function Workspace:apply_profile_renames(renames, transform)
 
     local user_changed = false
     for _, r in ipairs(renames) do
-        -- Update domain object
+        -- Update domain object — key re-derives from updated tools
         local profile = profiles_by_key[r.old_key]
         if profile then
-            profile.key = r.new_key
             profile._tools_raw = transform(profile:tools_data())
             -- Clear resolved tool objects so tools_data() reads from _tools_raw
             profile._tool_objects = nil
+            profile:_derive_key()
         end
 
         if self._active_profile_key == r.old_key then

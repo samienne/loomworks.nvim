@@ -29,7 +29,7 @@ describe("Operation", function()
         })
 
         local Profile = require("loomworks.profile").Profile
-        local profile = Profile.new(core, "debug", {
+        local profile = Profile.new(core, {
             configuration_set = "debug",
             mappings = { App = "Debug", Lib = "Debug" },
         })
@@ -175,7 +175,7 @@ describe("Operation", function()
             })
 
             local Profile = require("loomworks.profile").Profile
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })
@@ -333,7 +333,7 @@ describe("Operation", function()
             })
 
             local Profile = require("loomworks.profile").Profile
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })
@@ -359,11 +359,13 @@ describe("Operation", function()
             })
 
             local Profile = require("loomworks.profile").Profile
-            local profileA = Profile.new(core, "debug:tool-a", {
+            local profileA = Profile.new(core, {
+                _key = "debug:tool-a",
                 configuration_set = "debug",
                 mappings = { TS = "default" },
             })
-            local profileB = Profile.new(core, "debug:tool-b", {
+            local profileB = Profile.new(core, {
+                _key = "debug:tool-b",
                 configuration_set = "debug",
                 mappings = { TS = "default" },
             })
@@ -521,7 +523,7 @@ describe("Operation", function()
             })
 
             local Profile = require("loomworks.profile").Profile
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })

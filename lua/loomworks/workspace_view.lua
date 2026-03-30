@@ -552,13 +552,13 @@ function M.execute_rename_config_set(ws, cs, new_name, mappings)
     local merge_mod = require("loomworks.merge")
 
     -- Migrate cached profiles that reference old name (before removing old set).
-    -- Update both _configuration_set_name and the profile key.
+    -- Update _configuration_set_name — key re-derives automatically.
     local old_name = cs.name
     for _, profile in pairs(ws._profiles) do
         if profile._configuration_set_name == old_name then
             local old_key = profile.key
             profile._configuration_set_name = new_name
-            profile.key = merge_mod.profile_key(new_name, profile:tools_data())
+            profile:_derive_key()
             -- Track active profile rename
             if ws._active_profile_key == old_key then
                 ws._active_profile_key = profile.key

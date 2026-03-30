@@ -283,11 +283,17 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
             data._config_set_ref = ctx.config_sets[data.configuration_set]
         end
 
+        -- Pass the key for pinned/explicit profiles (stored, not derived)
+        if data._pinned or data.explicit then
+            data._key = key
+        end
+
         local existing = ctx.profiles[key]
         if existing then
             existing:_apply(data)
         else
-            ctx.profiles[key] = Profile.new(workspace, key, data)
+            local profile = Profile.new(workspace, data)
+            ctx.profiles[profile.key] = profile
         end
     end
 

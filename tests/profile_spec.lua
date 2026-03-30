@@ -38,7 +38,7 @@ describe("Profile", function()
             mappings = { App = "Debug", Lib = "Debug" },
             _cached_configurations = { "App/Debug", "Lib/Debug" },
         }, overrides or {})
-        local profile = Profile.new(core, "debug", data)
+        local profile = Profile.new(core, data)
         -- Populate profile_projects registry and Profile's direct lists
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
@@ -90,7 +90,7 @@ describe("Profile", function()
 
         it("returns empty when no mappings", function()
             local core = h.make_mock_core()
-            local p = Profile.new(core, "empty", {
+            local p = Profile.new(core, {
                 configuration_set = "debug",
             })
             assert.are.same({}, p:projects())
@@ -201,7 +201,7 @@ describe("Profile", function()
     describe("status (aggregate)", function()
         it("returns empty for profile with no mappings", function()
             local core = h.make_mock_core()
-            local p = Profile.new(core, "empty", { configuration_set = "debug" })
+            local p = Profile.new(core, { configuration_set = "debug" })
             local label, hl = p:status()
             assert.equals("empty", label)
             assert.equals("Comment", hl)
@@ -290,7 +290,7 @@ describe("Profile", function()
     describe("plan_deletion", function()
         it("returns empty when no mappings", function()
             local core = h.make_mock_core()
-            local p = Profile.new(core, "empty", { configuration_set = "debug" })
+            local p = Profile.new(core, { configuration_set = "debug" })
             local plan = p:plan_deletion()
             assert.are.same({}, plan.items)
         end)
@@ -413,7 +413,7 @@ describe("ProfileProject", function()
             tools = tools,
             mappings = { App = "Debug" },
         }
-        local profile = Profile.new(core, "debug", data)
+        local profile = Profile.new(core, data)
         -- Populate profile_projects registry and Profile's direct lists
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
@@ -488,11 +488,13 @@ describe("ProfileProject", function()
             -- Ensure ConfigUnit exists before ProfileProject construction
             h.ensure_config_unit_by_id(core, "build/App/Debug", "App")
             local Profile = require("loomworks.profile").Profile
-            local p1 = Profile.new(core, "debug:ninja-gcc", {
+            local p1 = Profile.new(core, {
+                _key = "debug:ninja-gcc",
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })
-            local p2 = Profile.new(core, "debug:ninja-clang", {
+            local p2 = Profile.new(core, {
+                _key = "debug:ninja-clang",
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })

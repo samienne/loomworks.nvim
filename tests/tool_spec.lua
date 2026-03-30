@@ -299,7 +299,7 @@ describe("Profile _tool_objects resolution", function()
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", { gen = "Ninja" }, "label")
         local cmake_mod = ws:find_module("cmake")
 
-        local profile = Profile.new(ws, "debug:ninja-gcc", {
+        local profile = Profile.new(ws, {
             configuration_set = "debug",
             tools = { cmake = { key = "ninja-gcc", data = { gen = "Ninja" }, label = "label" } },
             _tool_objects = { [cmake_mod] = tool },
@@ -313,7 +313,8 @@ describe("Profile _tool_objects resolution", function()
         local tool = ws:get_or_create_tool("cmake", "ninja-gcc", {}, "label")
         local cmake_mod = ws:find_module("cmake")
 
-        local profile = Profile.new(ws, "debug:ninja-gcc", {
+        local profile = Profile.new(ws, {
+            _key = "debug:ninja-gcc",
             tools = { cmake = { key = "ninja-gcc", data = {}, label = "label" } },
             _tool_objects = { [cmake_mod] = tool },
         })
@@ -324,7 +325,7 @@ describe("Profile _tool_objects resolution", function()
 
     it("tool_object_for returns nil for missing module", function()
         local ws = h.make_mock_workspace()
-        local profile = Profile.new(ws, "debug", {})
+        local profile = Profile.new(ws, { _key = "debug" })
         local cmake_mod = ws:get_or_create_module("cmake")
         assert.is_nil(profile:tool_object_for(cmake_mod))
     end)

@@ -24,7 +24,7 @@ describe("dependency", function()
             local pC = make_project(core, "Core", nil)
             core._projects = { App = pA, Backend = pB, Core = pC }
 
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug", Backend = "Debug", Core = "Debug" },
             })
@@ -48,7 +48,7 @@ describe("dependency", function()
             -- App depends on Core
             pApp.depends_on = { pCore }
 
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug", Core = "Debug" },
             })
@@ -74,7 +74,7 @@ describe("dependency", function()
             pRight.depends_on = { pBase }
             pTop.depends_on = { pLeft, pRight }
 
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { Base = "Debug", Left = "Debug", Right = "Debug", Top = "Debug" },
             })
@@ -102,7 +102,7 @@ describe("dependency", function()
             pA.depends_on = { pB }
             pB.depends_on = { pA }
 
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { A = "Debug", B = "Debug" },
             })
@@ -124,7 +124,7 @@ describe("dependency", function()
             pApp.depends_on = { pExternal }
 
             -- Only App is in the profile, not External
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })

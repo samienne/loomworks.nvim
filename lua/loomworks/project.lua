@@ -602,39 +602,26 @@ function Project:rename_configuration(old_name, new_name, config_data)
 
     -- Step 5: Update profiles — pinned mappings and pinned profile keys.
     if next(cache_rename_map) then
-        local profile_rekeys = {} -- old_profile_key -> new_profile_key
         for _, profile in pairs(ws._profiles) do
             -- Update pinned profile mappings (variant references)
             if profile.mappings and profile.mappings[self.key] == old_name then
                 profile.mappings[self.key] = new_name
             end
-            -- Rekey pinned profiles: check if the profile key contains the old variant name.
-            -- Pinned profile keys have format "project/variant:tool" which differs from
-            -- build_dir keys. Compute new key by substituting the variant in the key.
-            if not profile._configuration_set_name and profile.mappings
-                    and profile.mappings[self.key] == new_name then
-                -- This is a pinned profile that was just updated to use new_name
-                -- Check if its key contains the old variant name and substitute
+            -- Rekey pinned profiles: update _stored_key and re-derive.
+            if not profile._configuration_set_name and profile._stored_key
+                    and profile.mappings and profile.mappings[self.key] == new_name then
                 local old_key = profile.key
                 local escaped_old = old_name:gsub("([%(%)%.%%%+%-%*%?%[%^%$])", "%%%1")
-                local new_key = old_key:gsub(escaped_old, new_name, 1)
-                if new_key ~= old_key then
-                    profile_rekeys[old_key] = new_key
+                local new_stored = profile._stored_key:gsub(escaped_old, new_name, 1)
+                if new_stored ~= profile._stored_key then
+                    profile._stored_key = new_stored
+                    profile:_derive_key()
+                    -- Update active_profile if it was the old key
+                    if ws._active_profile_key == old_key then
+                        ws._active_profile_key = profile.key
+                        ws:_save_user()
+                    end
                 end
-            end
-        end
-        -- Apply profile rekeys
-        for old_pk, new_pk in pairs(profile_rekeys) do
-            for _, profile in pairs(ws._profiles) do
-                if profile.key == old_pk then
-                    profile.key = new_pk
-                    break
-                end
-            end
-            -- Update active_profile if it was the old key
-            if ws._active_profile_key == old_pk then
-                ws._active_profile_key = new_pk
-                ws:_save_user()
             end
         end
     end

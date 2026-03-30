@@ -434,7 +434,8 @@ function ConfigUnit:materialize_pinned(variant, tool)
         tool_objects = { [self._project._module] = tool_obj }
     end
 
-    local profile = Profile.new(ws, ak, {
+    local profile = Profile.new(ws, {
+        _key = ak,
         tools = tools_raw,
         mappings = { [project_key] = mat_variant },
         _pinned = true,
