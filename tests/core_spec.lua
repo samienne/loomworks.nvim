@@ -1028,7 +1028,7 @@ describe("Core", function()
                 },
                 {
                     pinned_profiles = {
-                        { key = "App/development", mappings = { App = "development" } },
+                        ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
                 {
@@ -1339,7 +1339,7 @@ describe("Core", function()
                 },
                 {
                     pinned_profiles = {
-                        { key = "App/development", mappings = { App = "development" } },
+                        ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
                 {

@@ -285,15 +285,9 @@ function M.get_all_profiles(config, cache, tools_by_type, user_data)
         end
     end
 
-    -- Pinned profiles from user.json (override derived profiles with _pinned flag)
+    -- Pinned profiles from user.json (dict keyed by profile key)
     if user_data and user_data.pinned_profiles then
-        for _, pin in ipairs(user_data.pinned_profiles) do
-            local pkey = pin.key
-            if not pkey then
-                -- Derive key from structure
-                pkey = M.profile_key(pin.configuration_set, pin.tools)
-                    or M.pinned_key(pin.project_key or "?", pin.variant or "?")
-            end
+        for pkey, pin in pairs(user_data.pinned_profiles) do
             local existing = profiles[pkey]
             if existing then
                 -- Merge pinned flag into existing derived profile

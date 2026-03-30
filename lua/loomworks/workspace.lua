@@ -2088,11 +2088,11 @@ function Workspace:_serialize_user()
     end
     if next(targets) then data.default_target = targets end
 
-    -- Serialize pinned profiles
+    -- Serialize pinned profiles as dict keyed by profile key
     local pinned = {}
     for _, profile in pairs(self._profiles) do
         if profile._pinned then
-            local entry = { key = profile.key }
+            local entry = {}
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
@@ -2101,12 +2101,10 @@ function Workspace:_serialize_user()
             if profile.mappings and not profile._configuration_set_name then
                 entry.mappings = profile.mappings
             end
-            pinned[#pinned + 1] = entry
+            pinned[profile.key] = entry
         end
     end
-    if #pinned > 0 then
-        -- Sort for deterministic output
-        table.sort(pinned, function(a, b) return a.key < b.key end)
+    if next(pinned) then
         data.pinned_profiles = pinned
     end
 

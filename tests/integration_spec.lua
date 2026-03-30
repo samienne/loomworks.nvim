@@ -764,7 +764,7 @@ describe("profile upgrade and downgrade", function()
             },
             {
                 pinned_profiles = {
-                    { key = "App/Debug", mappings = { App = "Debug" } },
+                    ["App/Debug"] = { mappings = { App = "Debug" } },
                 },
             },
             {
@@ -1407,8 +1407,7 @@ describe("configuration rename propagation", function()
             },
         }, {
             pinned_profiles = {
-                {
-                    key = "App/Debug-asan:ninja-gcc",
+                ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
                 },
@@ -1455,8 +1454,7 @@ describe("configuration rename propagation", function()
         }, {
             active_profile = "App/Debug-asan:ninja-gcc",
             pinned_profiles = {
-                {
-                    key = "App/Debug-asan:ninja-gcc",
+                ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
                 },
@@ -1560,8 +1558,7 @@ describe("configuration rename propagation", function()
             },
         }, {
             pinned_profiles = {
-                {
-                    key = "App/Debug-asan:ninja-gcc",
+                ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
                 },

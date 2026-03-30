@@ -699,7 +699,7 @@ describe("cache coherence", function()
                 { projects = { App = { typescript = {} } } },
                 {
                     pinned_profiles = {
-                        { key = "App/development", mappings = { App = "development" } },
+                        ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
                 {
@@ -866,7 +866,7 @@ describe("cache coherence", function()
                 },
                 {
                     pinned_profiles = {
-                        { key = "App/development", mappings = { App = "development" } },
+                        ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
                 {
@@ -1013,8 +1013,8 @@ describe("cache coherence", function()
                 },
                 {
                     pinned_profiles = {
-                        { key = "App/development", mappings = { App = "development" } },
-                        { key = "App/production", mappings = { App = "production" } },
+                        ["App/development"] = { mappings = { App = "development" } },
+                        ["App/production"] = { mappings = { App = "production" } },
                     },
                 },
                 {
@@ -1974,7 +1974,7 @@ describe("cache coherence", function()
                 },
                 {
                     pinned_profiles = {
-                        { key = "App/development", mappings = { App = "development" } },
+                        ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
                 {
@@ -2026,7 +2026,7 @@ describe("cache coherence", function()
                 },
                 {
                     pinned_profiles = {
-                        { key = "App/development", mappings = { App = "development" } },
+                        ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
                 {

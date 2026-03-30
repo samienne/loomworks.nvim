@@ -96,7 +96,7 @@ describe("merge", function()
             local user_data = {
                 _meta = { version = 2 },
                 pinned_profiles = {
-                    { key = "App/development", mappings = { App = "development" } },
+                    ["App/development"] = { mappings = { App = "development" } },
                 },
             }
             local profiles = merge.get_all_profiles(ws.config, ws.cache, {}, user_data)

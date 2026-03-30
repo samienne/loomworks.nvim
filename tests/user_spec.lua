@@ -81,14 +81,14 @@ describe("user", function()
                 _meta = { version = 2 },
                 active_profile = "debug",
                 pinned_profiles = {
-                    { key = "App/Debug", mappings = { App = "Debug" } },
+                    ["App/Debug"] = { mappings = { App = "Debug" } },
                 },
             })
             local result = user.parse(json)
             assert.equals("debug", result.active_profile)
             assert.is_not_nil(result.pinned_profiles)
-            assert.equals(1, #result.pinned_profiles)
-            assert.equals("App/Debug", result.pinned_profiles[1].key)
+            assert.is_not_nil(result.pinned_profiles["App/Debug"])
+            assert.same({ App = "Debug" }, result.pinned_profiles["App/Debug"].mappings)
         end)
     end)
 
