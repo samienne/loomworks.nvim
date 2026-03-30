@@ -402,8 +402,9 @@ end
 --- Also builds per-Profile direct lists.
 --- @param ctx table deserialization context with O(1) lookups
 --- @param workspace table workspace reference for domain object constructors
+--- @param deps table { compute_build_dir }
 --- @return table[] profile_projects array
-local function sync_profile_projects(ctx, workspace)
+local function sync_profile_projects(ctx, workspace, deps)
     local expected = {}
     for _, profile in pairs(ctx.profiles) do
         if profile.mappings then
@@ -415,14 +416,16 @@ local function sync_profile_projects(ctx, workspace)
                     configuration = project:get_configuration(variant)
                 end
                 local config_unit = nil
-                if profile._cached_configurations then
-                    for _, ck in ipairs(profile._cached_configurations) do
-                        local unit = ctx.config_units[ck]
-                        if unit and unit._init_project_key == project_key
-                                and unit._variant == variant then
-                            config_unit = unit
-                            break
-                        end
+                if project and deps.compute_build_dir then
+                    -- Compute expected build_dir for this (project, variant, tool)
+                    local tool_data = nil
+                    local tools = profile:tools_data()
+                    if tools and tools[project.type] then
+                        tool_data = tools[project.type].data
+                    end
+                    local expected_id = deps.compute_build_dir(project, variant, tool_data)
+                    if expected_id then
+                        config_unit = ctx.config_units[expected_id]
                     end
                 end
                 expected[reg_key] = {
@@ -523,7 +526,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local config_sets = sync_config_sets(ctx, workspace, config)
     local profiles = sync_profiles(ctx, workspace, all_profile_defs, cache, deps.default_target_data)
     local config_units = sync_config_units(ctx, workspace, cache)
-    local profile_projects = sync_profile_projects(ctx, workspace)
+    local profile_projects = sync_profile_projects(ctx, workspace, deps)
     local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
 
     -- Resolve active profile from the active set name

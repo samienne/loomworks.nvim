@@ -1794,7 +1794,7 @@ describe("cache coherence", function()
                             tools = {
                                 cmake = {
                                     key = "ninja-gcc",
-                                    data = { generator = "Ninja", compiler_id = "gcc" },
+                                    data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" },
                                     label = "Ninja GCC",
                                 },
                             },
@@ -1805,7 +1805,7 @@ describe("cache coherence", function()
                             tools = {
                                 cmake = {
                                     key = "ninja-gcc",
-                                    data = { generator = "Ninja", compiler_id = "gcc" },
+                                    data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" },
                                     label = "Ninja GCC",
                                 },
                             },
@@ -1820,11 +1820,11 @@ describe("cache coherence", function()
                             state = "built",
                             variant = "Debug",
                             tool_key = "ninja-gcc",
-                            tool_data = { generator = "Ninja", compiler_id = "gcc" },
-                            build_dir = "/root/.nvim/build/Lib/Debug-gcc",
+                            tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" },
+                            build_dir = "/root/.nvim/build/Lib/ninja-gcc/Debug",
                             last_configured = "2026-03-01",
                             last_built = "2026-03-01",
-                            cmake = { compile_commands = "/root/.nvim/build/Lib/Debug-gcc/compile_commands.json" },
+                            cmake = { compile_commands = "/root/.nvim/build/Lib/ninja-gcc/Debug/compile_commands.json" },
                         },
                     },
                 },
@@ -1856,7 +1856,7 @@ describe("cache coherence", function()
 
             -- All fields preserved
             assert.equals("built", cached.state)
-            assert.equals("/root/.nvim/build/Lib/Debug-gcc", cached.build_dir)
+            assert.equals("/root/.nvim/build/Lib/ninja-gcc/Debug", cached.build_dir)
             assert.equals("2026-03-01", cached.last_configured)
             assert.equals("2026-03-01", cached.last_built)
             assert.is_not_nil(cached.cmake)

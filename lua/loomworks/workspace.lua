@@ -418,6 +418,9 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         normalize = self._core._deps.normalize,
         tools_by_type = self._tools_by_type,
         default_target_data = default_target_data,
+        compute_build_dir = function(project, variant, tool_data)
+            return self:_compute_build_dir(project, variant, tool_data)
+        end,
     })
 
     self._modules = result.modules
@@ -488,15 +491,14 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 configuration = project:get_configuration(variant)
             end
             local config_unit = nil
-            if profile._cached_configurations then
-                for _, ck in ipairs(profile._cached_configurations) do
-                    local unit = units_by_id[ck]
-                    if unit and unit._init_project_key == project_key
-                            and unit._variant == variant then
-                        config_unit = unit
-                        break
-                    end
+            if project then
+                local tool_data = nil
+                local profile_tools = profile:tools_data()
+                if profile_tools and profile_tools[project.type] then
+                    tool_data = profile_tools[project.type].data
                 end
+                local expected_id = self:_compute_build_dir(project, variant, tool_data)
+                config_unit = units_by_id[expected_id]
             end
             local reg_key = profile.key .. "\0" .. project_key
             local data = {

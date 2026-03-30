@@ -399,9 +399,9 @@ describe("ProfileProject", function()
             type = "cmake", path = "App", status = "unconfigured",
             configurations = {}, cached_configurations = {},
         })
-        -- Create ConfigUnit with first-class fields so ProfileProject resolves it
+        -- Create ConfigUnit with build_dir-based id so ProfileProject resolves it
         local ConfigUnit = require("loomworks.config_unit")
-        local unit = ConfigUnit.new(core, "App/Debug", "App")
+        local unit = ConfigUnit.new(core, "build/App/Debug", "App")
         unit:_apply({
             cached = { project_key = "App", config_key = "Debug", type = "cmake", variant = "Debug" },
         })
@@ -412,7 +412,6 @@ describe("ProfileProject", function()
             configuration_set = "debug",
             tools = tools,
             mappings = { App = "Debug" },
-            _cached_configurations = { "App/Debug" },
         }
         local profile = Profile.new(core, "debug", data)
         -- Populate profile_projects registry and Profile's direct lists
@@ -487,17 +486,15 @@ describe("ProfileProject", function()
                 configurations = {}, cached_configurations = {},
             })
             -- Ensure ConfigUnit exists before ProfileProject construction
-            h.ensure_config_unit_by_id(core, "App/Debug", "App")
+            h.ensure_config_unit_by_id(core, "build/App/Debug", "App")
             local Profile = require("loomworks.profile").Profile
             local p1 = Profile.new(core, "debug:ninja-gcc", {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
-                _cached_configurations = { "App/Debug" },
             })
             local p2 = Profile.new(core, "debug:ninja-clang", {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
-                _cached_configurations = { "App/Debug" },
             })
             -- Populate profile_projects registry and Profile's direct lists
             for _, p in ipairs({ p1, p2 }) do

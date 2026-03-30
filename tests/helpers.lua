@@ -433,16 +433,25 @@ function M.register_profile_project(ws, profile, project_key, variant)
         configuration = project:get_configuration(variant)
     end
     local config_unit = nil
-    -- Find config unit via first-class fields (cache is nil after remerge)
-    for _, unit in pairs(ws._config_units) do
-        if unit._init_project_key == project_key
-                and unit._variant == variant then
-            -- Resolve references if not yet resolved (e.g. pre-created from cache)
-            if not unit._project then
-                M.refresh_config_unit(ws, unit)
+    -- Compute expected build_dir and look up ConfigUnit by id
+    if project then
+        local tool_data = nil
+        local profile_tools = profile.tools_data and profile:tools_data() or nil
+        if profile_tools and project.type and profile_tools[project.type] then
+            tool_data = profile_tools[project.type].data
+        end
+        local expected_id = ws:_compute_build_dir(project, variant, tool_data)
+        if expected_id then
+            for _, unit in pairs(ws._config_units) do
+                if unit.id == expected_id then
+                    -- Resolve references if not yet resolved (e.g. pre-created from cache)
+                    if not unit._project then
+                        M.refresh_config_unit(ws, unit)
+                    end
+                    config_unit = unit
+                    break
+                end
             end
-            config_unit = unit
-            break
         end
     end
     local pp = ProfileProject.new(ws, project_key, {

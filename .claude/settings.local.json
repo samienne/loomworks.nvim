@@ -43,7 +43,8 @@
       "Bash(bc)",
       "Bash(python3 -c \"import sys; print\\(eval\\(sys.stdin.read\\(\\)\\)\\)\")",
       "Bash(nvim --headless -u tests/minimal_init.lua -c \"lua do:*)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "Bash(grep -B 5 \"Failed.*1$\")"
     ]
   }
 }
