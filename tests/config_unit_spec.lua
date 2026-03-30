@@ -552,6 +552,117 @@ describe("ConfigUnit", function()
         end)
     end)
 
+    describe("is_stale", function()
+        it("returns false when no cached snapshot exists", function()
+            local unit = make_unit()
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("returns false when options match", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                options = { ENABLE_TESTS = "ON" },
+                variant = "Debug",
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Simulate _apply with matching cached options
+            unit._cached_options = { ENABLE_TESTS = "ON" }
+            unit._cached_module_config = { variant = "Debug" }
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("returns true when options differ", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                options = { ENABLE_TESTS = "ON", NEW_FLAG = "YES" },
+                variant = "Debug",
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Cached had different options
+            unit._cached_options = { ENABLE_TESTS = "ON" }
+            unit._cached_module_config = { variant = "Debug" }
+            assert.is_true(unit:is_stale())
+        end)
+
+        it("returns true when module_config differs", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                variant = "Debug",
+                generator = "Ninja",
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Cached had a different generator
+            unit._cached_options = nil
+            unit._cached_module_config = { variant = "Debug", generator = "Unix Makefiles" }
+            assert.is_true(unit:is_stale())
+        end)
+
+        it("returns false when configuration is removed", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                options = { CHANGED = "YES" },
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            unit._cached_options = { OLD = "val" }
+            cfg._removed = true
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("returns false when configuration is nil", function()
+            local unit = make_unit()
+            unit._configuration = nil
+            unit._cached_options = { A = "1" }
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("cached options populated from _apply", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", { variant = "Debug" })
+            project._configurations[#project._configurations + 1] = cfg
+
+            local ConfigUnit = require("loomworks.config_unit")
+            local unit = ConfigUnit.new(core, "build/App/Debug", "App")
+            unit:_apply({
+                cached = {
+                    project_key = "App",
+                    config_key = "Debug",
+                    variant = "Debug",
+                    state = "configured",
+                    options = { MY_OPT = "ON" },
+                    module_config = { variant = "Debug", generator = "Ninja" },
+                },
+                project = project,
+                configuration = cfg,
+            })
+            assert.same({ MY_OPT = "ON" }, unit._cached_options)
+            assert.same({ variant = "Debug", generator = "Ninja" }, unit._cached_module_config)
+        end)
+
+        it("cached options cleared on nil _apply", function()
+            local ConfigUnit = require("loomworks.config_unit")
+            local unit = ConfigUnit.new(nil, "build/App/Debug", "App")
+            unit._cached_options = { A = "1" }
+            unit._cached_module_config = { variant = "Debug" }
+            unit:_apply(nil)
+            assert.is_nil(unit._cached_options)
+            assert.is_nil(unit._cached_module_config)
+        end)
+    end)
+
     describe("cache resolution", function()
         it("resolves first-class fields from cache entry", function()
             local core = h.make_mock_core({

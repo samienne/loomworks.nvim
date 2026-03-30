@@ -464,9 +464,9 @@ function Project:delete_configuration(config_name)
     return true
 end
 
---- Rename a project configuration atomically: updates Configuration objects,
---- inherits references, config set mappings, cache entries, and profiles.
---- Build dirs are preserved as-is.
+--- Rename a project configuration: updates Configuration object,
+--- inherits references, and config set mappings. Old ConfigUnits with the
+--- old build_dir become orphaned naturally (new configures get new build_dirs).
 --- @param old_name string current configuration name
 --- @param new_name string desired new name
 --- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
@@ -515,13 +515,6 @@ function Project:rename_configuration(old_name, new_name, config_data)
             end
         end
     end
-    local old_cs_configs = {} -- cs -> true (for rollback of name)
-    for _, cs in pairs(ws._config_sets) do
-        local cfg = cs.mappings[self]
-        if cfg and cfg.name == old_name then
-            old_cs_configs[cs] = true
-        end
-    end
 
     -- Step 1: Update inherits_names in sibling Configuration objects
     for _, cfg in ipairs(self._configurations) do
@@ -550,7 +543,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
     -- Step 3: CS mappings already hold a ref to target_cfg — the name mutation
     -- above makes raw_mappings() serialize new_name automatically.
 
-    -- Save config to disk
+    -- Save config + cache to disk
     local ok, err = ws:_save_config()
     if not ok then
         -- Rollback: restore name, data, and sibling inherits
@@ -562,79 +555,9 @@ function Project:rename_configuration(old_name, new_name, config_data)
         end
         return false, err
     end
-
-    -- Step 4: Migrate cache entries (ConfigUnit objects + cache)
-    local cache_rename_map = {} -- old_id -> new_id
-    local to_migrate = {}
-    for _, unit in pairs(ws._config_units) do
-        if unit._project == self and unit._variant
-                and unit._variant == old_name then
-            to_migrate[#to_migrate + 1] = unit
-        end
-    end
-    for _, unit in ipairs(to_migrate) do
-        local old_config_key = unit._config_key
-        local new_config_key = ws._core._deps.merge.build_config_key(new_name, unit._tool_key)
-        -- Compute new build_dir-based identity
-        local tool_data = unit._tool_data
-        local new_rel_key = ws:_compute_build_dir(self, new_name, tool_data)
-        -- Update first-class fields
-        unit._variant = new_name
-        unit._config_key = new_config_key
-        -- Update ConfigUnit identity
-        local old_id = unit.id
-        unit.id = new_rel_key
-        -- Update build_dir_value to reflect the new path
-        local cache_lu = require("loomworks.cache")
-        unit.build_dir_value = cache_lu.absolute_build_dir(new_rel_key, ws.root)
-        cache_rename_map[old_id] = new_rel_key
-        -- Update Project.cached_configurations dict to match ConfigUnit renames
-        if old_config_key and self.cached_configurations then
-            local entry = self.cached_configurations[old_config_key]
-            if entry then
-                self.cached_configurations[old_config_key] = nil
-                entry.variant = new_name
-                entry.config_key = new_config_key
-                self.cached_configurations[new_config_key] = entry
-            end
-        end
-    end
-
-    -- Step 5: Update profiles — pinned mappings and pinned profile keys.
-    if next(cache_rename_map) then
-        for _, profile in pairs(ws._profiles) do
-            -- Update pinned profile mappings (variant references)
-            if profile.mappings and profile.mappings[self.key] == old_name then
-                profile.mappings[self.key] = new_name
-            end
-            -- Rekey pinned profiles: update _stored_key and re-derive.
-            if not profile._configuration_set_name and profile._stored_key
-                    and profile.mappings and profile.mappings[self.key] == new_name then
-                local old_key = profile.key
-                local escaped_old = old_name:gsub("([%(%)%.%%%+%-%*%?%[%^%$])", "%%%1")
-                local new_stored = profile._stored_key:gsub(escaped_old, new_name, 1)
-                if new_stored ~= profile._stored_key then
-                    profile._stored_key = new_stored
-                    profile:_derive_key()
-                    -- Update active_profile if it was the old key
-                    if ws._active_profile_key == old_key then
-                        ws._active_profile_key = profile.key
-                        ws:_save_user()
-                    end
-                end
-            end
-        end
-    end
-
     ws:_save_cache()
 
     self:_refresh_configurations()
-    -- Rebuild PPs for all profiles (rename may have changed keys, mappings, and config units)
-    for _, profile in pairs(ws._profiles) do
-        ws:_rebuild_profile_projects_for(profile)
-    end
-    ws:_sync_build_dir_refs()
-    ws:_resolve_active_profile()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true
 end

@@ -468,6 +468,8 @@ local function filter_launchable_tasks(task_defs)
 end
 
 --- Filter configure tasks to only those whose ConfigUnit needs configuring.
+--- Includes units that are unconfigured, configure_failed, or stale
+--- (configuration options changed since last configure).
 --- @param all_tasks table { configure: table[], build: table[] }
 --- @return table[] configure tasks that actually need running
 local function filter_unconfigured_tasks(all_tasks)
@@ -476,8 +478,9 @@ local function filter_unconfigured_tasks(all_tasks)
         local lw_meta = task_def.loomworks
         if not lw_meta then goto next end
 
-        local state = lw_meta.unit:state()
-        if state == "unconfigured" or state == "configure_failed" then
+        local unit = lw_meta.unit
+        local state = unit:state()
+        if state == "unconfigured" or state == "configure_failed" or unit:is_stale() then
             needs_configure[#needs_configure + 1] = task_def
         end
 

@@ -21,6 +21,9 @@
 --- @field _variant string|nil configuration variant name
 --- @field _tool_key string|nil tool identifier
 --- @field _tool_data table|nil module-specific tool data
+--- Cached configuration snapshot (for stale detection):
+--- @field _cached_options table|nil options snapshot from last configure
+--- @field _cached_module_config table|nil module_config snapshot from last configure
 --- Runtime state (never touched by _apply):
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID
@@ -70,6 +73,8 @@ function ConfigUnit.new(workspace, id, project_key)
     self._variant = nil
     self._tool_key = nil
     self._tool_data = nil
+    self._cached_options = nil
+    self._cached_module_config = nil
     return self
 end
 
@@ -91,6 +96,8 @@ function ConfigUnit:_apply(data)
         self._variant = nil
         self._tool_key = nil
         self._tool_data = nil
+        self._cached_options = nil
+        self._cached_module_config = nil
         return
     end
     self._project = data.project
@@ -108,6 +115,8 @@ function ConfigUnit:_apply(data)
         self._variant = c.variant
         self._tool_key = c.tool_key
         self._tool_data = c.tool_data
+        self._cached_options = c.options
+        self._cached_module_config = c.module_config
     end
 end
 
@@ -238,6 +247,23 @@ end
 --- @return loomworks.Configuration|nil
 function ConfigUnit:configuration()
     return self._configuration
+end
+
+--- Check if this unit is stale: the Configuration's options or module_config
+--- have changed since the last configure. Returns false when the unit has
+--- never been configured (no cached snapshot to compare against).
+--- @return boolean
+function ConfigUnit:is_stale()
+    if not self._configuration or self._configuration._removed then return false end
+    -- No cached snapshot means never configured — not stale
+    if not self._cached_options and not self._cached_module_config then return false end
+    if not vim.deep_equal(self._cached_options or {}, self._configuration.options or {}) then
+        return true
+    end
+    if not vim.deep_equal(self._cached_module_config or {}, self._configuration.module_config or {}) then
+        return true
+    end
+    return false
 end
 
 --- Get the Project domain object for this unit.

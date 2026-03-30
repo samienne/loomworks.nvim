@@ -1217,7 +1217,7 @@ describe("configuration rename propagation", function()
         assert.equals("DebugASAN", h.cs_mapping(debug_cs_rename, "App"))
     end)
 
-    it("migrates cache entries and preserves build_dir", function()
+    it("old build_dir becomes orphaned after rename", function()
         local ws = make_ws({
             projects = {
                 App = {
@@ -1250,19 +1250,19 @@ describe("configuration rename propagation", function()
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {})
         assert.is_true(ok)
 
-        -- Old variant gone, new variant exists in cache
+        -- Old cache entry stays as-is (orphaned — old build_dir with old variant)
         local cache = ws:_serialize_cache()
         local old_entry = nil
-        local new_entry = nil
         for _, entry in pairs(cache.build_dirs) do
             if entry.project_key == "App" and entry.variant == "Debug-asan" then old_entry = entry end
-            if entry.project_key == "App" and entry.variant == "DebugASAN" then new_entry = entry end
         end
-        assert.is_nil(old_entry)
-        assert.is_not_nil(new_entry)
+        assert.is_not_nil(old_entry)
 
-        -- Fields updated
-        assert.equals("DebugASAN", new_entry.variant)
+        -- Configuration object renamed; old variant reappears as source-missing from cache
+        local old_cfg = project:get_configuration("Debug-asan")
+        assert.is_not_nil(old_cfg)
+        assert.is_true(old_cfg._source_missing)
+        assert.is_not_nil(project:get_configuration("DebugASAN"))
 
         -- Profile still exists as runtime object
         local profile = h.find_profile(ws._profiles, "debug:ninja-gcc")
@@ -1328,7 +1328,7 @@ describe("configuration rename propagation", function()
         assert.is_true(new_cfg.is_user)
     end)
 
-    it("updates multiple profiles referencing same variant", function()
+    it("old cache entries for multiple tools become orphaned after rename", function()
         local ws = make_ws({
             projects = {
                 App = {
@@ -1375,20 +1375,26 @@ describe("configuration rename propagation", function()
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {})
         assert.is_true(ok)
 
-        -- Both variants migrated in cache
+        -- Old cache entries stay with old variant (orphaned)
         local cache = ws:_serialize_cache()
-        local found_gcc, found_clang = false, false
+        local found_old_gcc, found_old_clang = false, false
         for _, entry in pairs(cache.build_dirs) do
-            if entry.project_key == "App" and entry.variant == "DebugASAN" then
-                if entry.tool_key == "ninja-gcc" then found_gcc = true end
-                if entry.tool_key == "ninja-clang" then found_clang = true end
+            if entry.project_key == "App" and entry.variant == "Debug-asan" then
+                if entry.tool_key == "ninja-gcc" then found_old_gcc = true end
+                if entry.tool_key == "ninja-clang" then found_old_clang = true end
             end
         end
-        assert.is_true(found_gcc, "gcc entry should have new variant")
-        assert.is_true(found_clang, "clang entry should have new variant")
+        assert.is_true(found_old_gcc, "gcc old entry should still exist")
+        assert.is_true(found_old_clang, "clang old entry should still exist")
+
+        -- Configuration object renamed; old variant reappears as source-missing from cache
+        local old_cfg = project:get_configuration("Debug-asan")
+        assert.is_not_nil(old_cfg)
+        assert.is_true(old_cfg._source_missing)
+        assert.is_not_nil(project:get_configuration("DebugASAN"))
     end)
 
-    it("updates pinned profile mappings", function()
+    it("pinned profile key unchanged after rename", function()
         local ws = make_ws({
             projects = {
                 App = {
@@ -1424,17 +1430,18 @@ describe("configuration rename propagation", function()
         })
         assert.is_true(ok)
 
-        -- Old pinned profile key gone
-        local cache = ws:_serialize_cache()
-        assert.is_nil(h.find_profile(ws._profiles, "App/Debug-asan:ninja-gcc"))
-
-        -- New pinned profile key exists with updated mapping
-        local profile = h.find_profile(ws._profiles, "App/DebugASAN:ninja-gcc")
+        -- Pinned profile key stays the same (no rekeying)
+        local profile = h.find_profile(ws._profiles, "App/Debug-asan:ninja-gcc")
         assert.is_not_nil(profile)
-        assert.equals("DebugASAN", profile.mappings.App)
+
+        -- Configuration object renamed; old variant reappears as source-missing from cache
+        local old_cfg = project:get_configuration("Debug-asan")
+        assert.is_not_nil(old_cfg)
+        assert.is_true(old_cfg._source_missing)
+        assert.is_not_nil(project:get_configuration("DebugASAN"))
     end)
 
-    it("updates active_profile when pinned profile key changes", function()
+    it("active_profile unchanged after rename", function()
         local ws = make_ws({
             projects = {
                 App = {
@@ -1473,13 +1480,14 @@ describe("configuration rename propagation", function()
         })
         assert.is_true(ok)
 
-        -- Active profile updated to new key
-        assert.equals("App/DebugASAN:ninja-gcc", ws._active_profile_key)
+        -- Active profile key stays the same (no rekeying)
+        assert.equals("App/Debug-asan:ninja-gcc", ws._active_profile_key)
     end)
 
-    it("rename updates Configuration domain objects and PP resolves new name", function()
+    it("rename updates Configuration domain objects; old variant lingers from cache", function()
         -- Simulates: user configures Debug-asan, then renames it to DebugASAN.
-        -- The PP._configuration must resolve to the renamed Configuration.
+        -- The Configuration object is renamed. Old cache entries still have
+        -- the old variant name, so a source-missing Configuration appears.
         local ws = make_ws({
             projects = {
                 App = {
@@ -1524,19 +1532,22 @@ describe("configuration rename propagation", function()
 
         -- Configuration domain object exists under new name
         assert.is_not_nil(project:get_configuration("DebugASAN"))
-        assert.is_nil(project:get_configuration("Debug-asan"))
+        assert.is_true(project:get_configuration("DebugASAN").is_user)
 
-        -- PP resolves the renamed Configuration
-        profile = h.find_profile(ws:get_profiles(), "asan:ninja-gcc")
-        pp = profile:project("App")
-        assert.is_not_nil(pp)
-        assert.equals("DebugASAN", pp:variant_name())
-        assert.is_not_nil(pp:configuration())
-        assert.equals("DebugASAN", pp:configuration().name)
+        -- Old variant still appears as source-missing (from cache)
+        local old_cfg = project:get_configuration("Debug-asan")
+        assert.is_not_nil(old_cfg)
+        assert.is_true(old_cfg._source_missing)
+
+        -- Config set mapping updated to new name (via Configuration reference)
+        local cs = h.find_config_set_in(ws:get_config_sets(), "asan")
+        assert.equals("DebugASAN", h.cs_mapping(cs, "App"))
     end)
 
-    it("rename updates pinned profile PP._configuration", function()
+    it("rename keeps pinned profile key; Configuration object mutated in place", function()
         -- Simulates: pinned profile references Debug-asan, user renames to DebugASAN.
+        -- Profile key stays the same. PP._configuration is the same object
+        -- whose .name was mutated.
         local ws = make_ws({
             projects = {
                 App = {
@@ -1578,19 +1589,17 @@ describe("configuration rename propagation", function()
         })
         assert.is_true(ok)
 
-        -- Pinned profile key changed
-        assert.is_nil(h.find_profile(ws:get_profiles(), "App/Debug-asan:ninja-gcc"))
-        profile = h.find_profile(ws:get_profiles(), "App/DebugASAN:ninja-gcc")
+        -- Pinned profile key stays the same (no rekeying)
+        profile = h.find_profile(ws:get_profiles(), "App/Debug-asan:ninja-gcc")
         assert.is_not_nil(profile)
 
-        -- PP resolves new name
-        pp = profile:project("App")
-        assert.is_not_nil(pp)
-        assert.equals("DebugASAN", pp:variant_name())
-        assert.is_not_nil(pp:configuration())
+        -- Configuration object renamed
+        local project = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(project:get_configuration("DebugASAN"))
+        assert.is_true(project:get_configuration("DebugASAN").is_user)
     end)
 
-    it("rename while building preserves running state on ProfileProject", function()
+    it("rename while building preserves running state on old ConfigUnit", function()
         local ws = make_ws({
             projects = {
                 App = {
@@ -1625,36 +1634,20 @@ describe("configuration rename propagation", function()
         old_unit:register_task(42, "build")
         assert.is_true(old_unit:is_running())
 
-        -- Verify ProfileProject sees the running state before rename
-        local profile = h.find_profile(ws:get_profiles(), "debug:ninja-gcc")
-        assert.is_not_nil(profile)
-        local pp = profile:project("App")
-        assert.is_not_nil(pp)
-        assert.equals("build", pp:running_action())
-
-        -- Rename while building
+        -- Rename while building — ConfigUnit is not migrated
         local ok = h.find_project_in(ws:get_projects(), "App"):rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
         assert.is_true(ok)
 
-        -- ConfigUnit should have the new variant and still be running
-        local new_unit = h.find_config_unit(ws._config_units, "App", "DebugASAN")
-        assert.is_not_nil(new_unit)
-        assert.is_true(new_unit:is_running())
-        assert.equals("build", new_unit:running_action())
-        -- Should be the same object (identity preserved)
-        assert.is_true(rawequal(old_unit, new_unit))
+        -- Old ConfigUnit still exists with old variant and is still running
+        assert.is_true(old_unit:is_running())
+        assert.equals("build", old_unit:running_action())
+        assert.equals("Debug-asan", old_unit._variant)
 
-        -- ProfileProject should still see running state
-        profile = h.find_profile(ws:get_profiles(), "debug:ninja-gcc")
-        pp = profile:project("App")
-        assert.is_not_nil(pp)
-        assert.equals("build", pp:running_action())
-        assert.equals("DebugASAN", pp:variant_name())
-
-        -- Old variant should no longer exist
-        assert.is_nil(h.find_config_unit(ws._config_units, "App", "Debug-asan"))
+        -- Configuration object renamed
+        local project = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(project:get_configuration("DebugASAN"))
     end)
 
     it("cache-only variant creates Configuration for PP resolution", function()
