@@ -30,6 +30,38 @@ function M._extract_type(project_def)
     return found_type, found_config, nil
 end
 
+--- Normalize raw project definitions into internal format.
+--- Extracts type from the inner key (e.g. { cmake = {} } -> type = "cmake").
+--- Does NOT validate path existence on disk.
+--- @param raw_projects table<string, table> raw JSON project definitions
+--- @return table<string, table>|nil projects, string|nil err
+function M.normalize_projects(raw_projects)
+    if type(raw_projects) ~= "table" then
+        return nil, "projects must be a table"
+    end
+    local projects = {}
+    for key, def in pairs(raw_projects) do
+        if type(def) ~= "table" then
+            return nil, "project '" .. key .. "' must be a table"
+        end
+        local ptype, type_config, type_err = M._extract_type(def)
+        if not ptype then
+            return nil, "project '" .. key .. "': " .. type_err
+        end
+        if not KNOWN_TYPES[ptype] then
+            vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
+        end
+        projects[key] = {
+            path = def.path or key,
+            type = ptype,
+            type_config = type_config,
+            depends_on = def.depends_on,
+            launch = def.launch,
+        }
+    end
+    return projects, nil
+end
+
 --- Validate raw decoded JSON and normalize into a config structure.
 --- @param raw table raw decoded JSON
 --- @param root string workspace root for resolving paths

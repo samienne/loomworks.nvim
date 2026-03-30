@@ -5,6 +5,7 @@
 --- @class loomworks.ConfigurationSet
 --- @field name string configuration set name
 --- @field mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
+--- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
 local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 
@@ -18,6 +19,7 @@ function ConfigurationSet.new(workspace, name, resolved_mappings)
     self._workspace = workspace
     self.name = name
     self._removed = false
+    self._source = "shared"
     self:_update(resolved_mappings)
     return self
 end

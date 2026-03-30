@@ -2489,3 +2489,171 @@ describe("opaque keys", function()
         assert.equals("Debug", raw.configuration_sets["set-x"]["proj-alpha"])
     end)
 end)
+
+-- =========================================================================
+-- Two-layer merge: user.json + loomworks.json
+-- =========================================================================
+
+describe("two-layer merge", function()
+    it("shared-only projects have _source = shared", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app)
+        assert.equals("shared", app._source)
+    end)
+
+    it("user project has _source = user", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },  -- shared
+            { projects = { MyLib = { cmake = {} } } }  -- user
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local mylib = h.find_project_in(ws:get_projects(), "MyLib")
+        assert.is_not_nil(app)
+        assert.is_not_nil(mylib)
+        assert.equals("shared", app._source)
+        assert.equals("user", mylib._source)
+    end)
+
+    it("user project overrides shared project with same key", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },  -- shared
+            { projects = { App = { ets = {} } } }  -- user overrides type
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app)
+        assert.equals("ets", app.type)
+        assert.equals("user", app._source)
+    end)
+
+    it("user config_set has _source = user", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { SharedDebug = { App = "Debug" } },
+            },
+            {
+                configuration_sets = { UserDebug = { App = "Release" } },
+            }
+        )
+        local shared_cs = h.find_config_set_in(ws:get_config_sets(), "SharedDebug")
+        local user_cs = h.find_config_set_in(ws:get_config_sets(), "UserDebug")
+        assert.is_not_nil(shared_cs)
+        assert.is_not_nil(user_cs)
+        assert.equals("shared", shared_cs._source)
+        assert.equals("user", user_cs._source)
+    end)
+
+    it("user config_set overrides shared config_set with same name", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "Debug" } },
+            },
+            {
+                configuration_sets = { Debug = { App = "Release" } },
+            }
+        )
+        local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        assert.is_not_nil(cs)
+        assert.equals("user", cs._source)
+        -- The mapping should reflect the user override
+        assert.equals("Release", h.cs_mapping(cs, "App"))
+    end)
+
+    it("serialize_config excludes user-sourced projects", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            { projects = { MyLib = { cmake = {} } } }
+        )
+        local raw = ws:_serialize_config()
+        assert.is_not_nil(raw.projects.App)
+        assert.is_nil(raw.projects.MyLib)
+    end)
+
+    it("serialize_config excludes user-sourced config_sets", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { SharedDebug = { App = "Debug" } },
+            },
+            {
+                configuration_sets = { UserDebug = { App = "Release" } },
+            }
+        )
+        local raw = ws:_serialize_config()
+        assert.is_not_nil(raw.configuration_sets.SharedDebug)
+        assert.is_nil(raw.configuration_sets and raw.configuration_sets.UserDebug)
+    end)
+
+    it("serialize_user includes user-sourced projects", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            { projects = { MyLib = { cmake = {} } } }
+        )
+        local user_data = ws:_serialize_user()
+        assert.is_not_nil(user_data.projects)
+        assert.is_not_nil(user_data.projects.MyLib)
+        assert.is_nil(user_data.projects and user_data.projects.App)
+    end)
+
+    it("serialize_user includes user-sourced config_sets", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { SharedDebug = { App = "Debug" } },
+            },
+            {
+                configuration_sets = { UserDebug = { App = "Release" } },
+            }
+        )
+        local user_data = ws:_serialize_user()
+        assert.is_not_nil(user_data.configuration_sets)
+        assert.is_not_nil(user_data.configuration_sets.UserDebug)
+        assert.is_nil(user_data.configuration_sets and user_data.configuration_sets.SharedDebug)
+    end)
+
+    it("solo dev: all from user.json, no shared projects", function()
+        local ws = make_ws(
+            { projects = {} },  -- empty shared
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "Debug" } },
+            }
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app)
+        assert.equals("user", app._source)
+
+        local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        assert.is_not_nil(cs)
+        assert.equals("user", cs._source)
+
+        -- Shared config should be empty
+        local raw = ws:_serialize_config()
+        assert.is_falsy(next(raw.projects))
+
+        -- User config should contain everything
+        local user_data = ws:_serialize_user()
+        assert.is_not_nil(user_data.projects.App)
+        assert.is_not_nil(user_data.configuration_sets.Debug)
+    end)
+
+    it("remerge after mutation preserves two-layer source", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            { projects = { MyLib = { cmake = {} } } }
+        )
+        -- Remerge without raw config (simulates tool detection callback)
+        ws:remerge()
+
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local mylib = h.find_project_in(ws:get_projects(), "MyLib")
+        assert.is_not_nil(app)
+        assert.is_not_nil(mylib)
+        assert.equals("shared", app._source)
+        assert.equals("user", mylib._source)
+    end)
+end)

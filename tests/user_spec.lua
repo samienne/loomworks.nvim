@@ -45,6 +45,25 @@ describe("user", function()
             local result = user.parse("")
             assert.equals(1, result._meta.version)
         end)
+
+        it("preserves projects and configuration_sets fields", function()
+            local json = vim.json.encode({
+                _meta = { version = 1 },
+                active_profile = "debug",
+                projects = {
+                    MyLib = { cmake = {} },
+                },
+                configuration_sets = {
+                    Debug = { MyLib = "Debug" },
+                },
+            })
+            local result = user.parse(json)
+            assert.equals("debug", result.active_profile)
+            assert.is_not_nil(result.projects)
+            assert.is_not_nil(result.projects.MyLib)
+            assert.is_not_nil(result.configuration_sets)
+            assert.equals("Debug", result.configuration_sets.Debug.MyLib)
+        end)
     end)
 
     describe("filepath", function()

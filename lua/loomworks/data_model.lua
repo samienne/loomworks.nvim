@@ -529,6 +529,16 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local profile_projects = sync_profile_projects(ctx, workspace, deps)
     local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
 
+    -- Set _source flags on projects and config_sets (two-layer merge provenance)
+    local user_project_keys = deps.user_project_keys or {}
+    local user_cs_names = deps.user_cs_names or {}
+    for _, p in pairs(projects) do
+        p._source = user_project_keys[p.key] and "user" or "shared"
+    end
+    for _, cs in pairs(config_sets) do
+        cs._source = user_cs_names[cs.name] and "user" or "shared"
+    end
+
     -- Resolve active profile from the active set name
     local active_profile = nil
     if active_set and active_set.name then

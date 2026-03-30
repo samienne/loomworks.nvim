@@ -238,6 +238,9 @@ function M.make_mock_workspace(overrides)
         _build_dir_refs = overrides._build_dir_refs or {},
         _build_dir_locks = overrides._build_dir_locks or {},
         _modules = overrides._modules or {},
+        _user_config_overlay = overrides._user_config_overlay or nil,
+        _user_project_keys = overrides._user_project_keys or {},
+        _user_cs_names = overrides._user_cs_names or {},
     }
 
     -- Add config unit methods (same logic as Workspace)
@@ -368,6 +371,28 @@ function M.make_mock_workspace(overrides)
     ws.has_queued_operations = core_overrides.has_queued_operations or function() return false end
     ws.is_build_dir_locked = core_overrides.is_build_dir_locked or function() return false, nil end
     ws._save_config = core_overrides._save_config or function() return true end
+    ws._serialize_project = core_overrides._serialize_project or function(_, project)
+        local type_config = project.type_config
+                and vim.deepcopy(project.type_config) or {}
+        local configs_dict = {}
+        for _, cfg in ipairs(project._configurations or {}) do
+            if cfg.serialize_user_override then
+                local override = cfg:serialize_user_override()
+                if override then
+                    configs_dict[cfg.name] = override
+                end
+            end
+        end
+        if next(configs_dict) then type_config.configurations = configs_dict end
+        local entry = { [project.type] = next(type_config)
+                and type_config or vim.empty_dict() }
+        if project.path and project.path ~= project.key then
+            entry.path = project.path
+        end
+        if project._depends_on_keys then entry.depends_on = project._depends_on_keys end
+        if project.launch then entry.launch = project.launch end
+        return entry
+    end
     ws._serialize_user = core_overrides._serialize_user or function(self_ws)
         local data = { _meta = { version = 1 } }
         if self_ws._active_profile_key then
@@ -380,6 +405,22 @@ function M.make_mock_workspace(overrides)
             end
         end
         if next(targets) then data.default_target = targets end
+        -- Include user-sourced projects
+        local user_projects = {}
+        for _, project in pairs(self_ws._projects) do
+            if not project.orphaned and project._source == "user" then
+                user_projects[project.key] = self_ws:_serialize_project(project)
+            end
+        end
+        if next(user_projects) then data.projects = user_projects end
+        -- Include user-sourced configuration_sets
+        local user_sets = {}
+        for _, cs in pairs(self_ws._config_sets) do
+            if cs._source == "user" then
+                user_sets[cs.name] = cs:raw_mappings()
+            end
+        end
+        if next(user_sets) then data.configuration_sets = user_sets end
         return data
     end
     ws._save_user = core_overrides._save_user or function(self_ws)

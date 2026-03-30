@@ -128,5 +128,119 @@ describe("workspace", function()
             -- Cache data should be defaults (empty)
             assert.are.same({}, ws.cache.build_dirs)
         end)
+
+        it("normalizes user projects from raw JSON format", function()
+            local config_json = h.make_config_json()
+            local user_json = h.make_user_json({
+                projects = {
+                    MyLib = { cmake = { configurations = { Custom = { variant = "Custom" } } } },
+                },
+            })
+            local ws = workspace.assemble("/root", config_json, user_json, nil)
+            assert.equals("cmake", ws.user.projects.MyLib.type)
+            assert.equals("MyLib", ws.user.projects.MyLib.path)
+            assert.is_not_nil(ws.user.projects.MyLib.type_config)
+        end)
+
+        it("leaves user data alone when no projects field", function()
+            local config_json = h.make_config_json()
+            local user_json = h.make_user_json({ active_profile = "debug" })
+            local ws = workspace.assemble("/root", config_json, user_json, nil)
+            assert.is_nil(ws.user.projects)
+            assert.equals("debug", ws.user.active_profile)
+        end)
+    end)
+
+    describe("merge_configs", function()
+        it("shared-only projects appear in merged config", function()
+            local shared = {
+                name = "test",
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {} },
+                },
+            }
+            local merged, user_pks, user_csn = workspace.merge_configs(nil, shared)
+            assert.is_not_nil(merged.projects.App)
+            assert.equals("cmake", merged.projects.App.type)
+            assert.is_falsy(next(user_pks))
+            assert.is_falsy(next(user_csn))
+        end)
+
+        it("user project overrides shared project with same key", function()
+            local shared = {
+                projects = {
+                    App = { type = "cmake", path = "shared/App", type_config = {} },
+                },
+            }
+            local user = {
+                projects = {
+                    App = { type = "cmake", path = "user/App", type_config = {} },
+                },
+            }
+            local merged, user_pks = workspace.merge_configs(user, shared)
+            assert.equals("user/App", merged.projects.App.path)
+            assert.is_true(user_pks["App"])
+        end)
+
+        it("user and shared projects combine when keys differ", function()
+            local shared = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {} },
+                },
+            }
+            local user = {
+                projects = {
+                    MyLib = { type = "cmake", path = "MyLib", type_config = {} },
+                },
+            }
+            local merged, user_pks = workspace.merge_configs(user, shared)
+            assert.is_not_nil(merged.projects.App)
+            assert.is_not_nil(merged.projects.MyLib)
+            assert.is_true(user_pks["MyLib"])
+            assert.is_falsy(user_pks["App"])
+        end)
+
+        it("user config_set overrides shared config_set", function()
+            local shared = {
+                configuration_sets = {
+                    Debug = { App = "Debug" },
+                },
+            }
+            local user = {
+                configuration_sets = {
+                    Debug = { App = "Release" },
+                },
+            }
+            local merged, _, user_csn = workspace.merge_configs(user, shared)
+            assert.equals("Release", merged.configuration_sets.Debug.App)
+            assert.is_true(user_csn["Debug"])
+        end)
+
+        it("returns nil configuration_sets when none exist", function()
+            local merged = workspace.merge_configs(nil, { projects = {} })
+            assert.is_nil(merged.configuration_sets)
+        end)
+
+        it("handles nil user and nil shared gracefully", function()
+            local merged = workspace.merge_configs(nil, nil)
+            assert.are.same({}, merged.projects)
+            assert.is_nil(merged.configuration_sets)
+        end)
+
+        it("solo dev: everything from user, no shared config", function()
+            local user = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {} },
+                },
+                configuration_sets = {
+                    Debug = { App = "Debug" },
+                },
+            }
+            local merged, user_pks, user_csn = workspace.merge_configs(user, { projects = {} })
+            assert.is_not_nil(merged.projects.App)
+            assert.is_true(user_pks["App"])
+            assert.equals("Debug", merged.configuration_sets.Debug.App)
+            assert.is_true(user_csn["Debug"])
+        end)
     end)
 end)

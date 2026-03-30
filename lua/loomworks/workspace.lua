@@ -105,6 +105,60 @@ function M.paths(root)
     }
 end
 
+--- Merge user.json and loomworks.json into a single config for merge.merge().
+--- User wins at the project level (entire project definition) and at the
+--- configuration_set level (entire set definition). Shared items fill in
+--- anything the user doesn't override.
+--- @param user_config table|nil parsed user data (may have projects, configuration_sets)
+--- @param shared_config table|nil parsed loomworks.json config
+--- @return table merged config suitable for merge.merge()
+--- @return table<string, boolean> user_project_keys set of project keys from user
+--- @return table<string, boolean> user_cs_names set of config_set names from user
+function M.merge_configs(user_config, shared_config)
+    local merged = {
+        name = shared_config and shared_config.name or nil,
+        projects = {},
+        configuration_sets = {},
+        profiles = shared_config and shared_config.profiles or nil,
+    }
+    local user_project_keys = {}
+    local user_cs_names = {}
+
+    -- Start with shared
+    if shared_config and shared_config.projects then
+        for k, v in pairs(shared_config.projects) do
+            merged.projects[k] = v
+        end
+    end
+    -- User overrides at project level
+    if user_config and user_config.projects then
+        for k, v in pairs(user_config.projects) do
+            merged.projects[k] = v
+            user_project_keys[k] = true
+        end
+    end
+
+    -- Configuration sets: same pattern
+    if shared_config and shared_config.configuration_sets then
+        for k, v in pairs(shared_config.configuration_sets) do
+            merged.configuration_sets[k] = v
+        end
+    end
+    if user_config and user_config.configuration_sets then
+        for k, v in pairs(user_config.configuration_sets) do
+            merged.configuration_sets[k] = v
+            user_cs_names[k] = true
+        end
+    end
+
+    -- Empty tables should be nil for downstream compatibility
+    if not next(merged.configuration_sets) then
+        merged.configuration_sets = nil
+    end
+
+    return merged, user_project_keys, user_cs_names
+end
+
 --- Assemble workspace data from raw file contents.
 --- Pure function: no file I/O, no side effects.
 --- Returns a plain data table (not a Workspace instance).
@@ -129,6 +183,17 @@ function M.assemble(root, config_content, user_content, cache_content)
     else
         user_data = user_mod.default()
         user_version_mismatch = false
+    end
+
+    -- Normalize user projects from raw JSON format to internal format
+    if user_data.projects and next(user_data.projects) then
+        local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
+        if normalized then
+            user_data.projects = normalized
+        else
+            vim.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
+            user_data.projects = nil
+        end
     end
 
     local cache_data, cache_version_mismatch
@@ -189,6 +254,9 @@ end
 --- @field _delete_waiters function[]
 --- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
+--- @field _user_config_overlay table|nil user.json project/configuration_set overlay
+--- @field _user_project_keys table<string, boolean> project keys from user.json
+--- @field _user_cs_names table<string, boolean> config_set names from user.json
 local Workspace = {}
 Workspace.__index = Workspace
 
@@ -219,6 +287,9 @@ function Workspace.new(core, data)
     self._operations = {}
     self._tools_by_type = {}
     self._modules = {} -- id -> Module domain object (tools owned by modules)
+    self._user_config_overlay = nil
+    self._user_project_keys = {}
+    self._user_cs_names = {}
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -382,23 +453,49 @@ end
 --- Full re-merge: reads config + cache from scratch, rebuilds all domain objects.
 --- Called only on deserialization (startup, external file change, tool detection).
 --- NOT called after mutations — mutations update objects directly.
---- @param raw_config? table parsed config data (nil = serialize from domain objects)
+---
+--- Two-layer merge: user.json projects/configuration_sets are combined with
+--- loomworks.json (shared config), with user winning at the project/set level.
+--- @param raw_config? table parsed loomworks.json config (nil = use stored shared config or serialize from objects)
 --- @param raw_cache? table parsed cache data (nil = serialize from domain objects)
 --- @param raw_user? table parsed user data (nil = use current state)
 function Workspace:remerge(raw_config, raw_cache, raw_user)
-    local config = raw_config or self:_config_from_objects()
+    -- Determine the shared config (loomworks.json portion).
+    -- When raw_config is provided (startup, file change), use it directly.
+    -- When nil (after mutations or tool detection), reconstruct from domain
+    -- objects — _shared_config_from_objects() returns only shared-sourced
+    -- items in the internal format merge.merge() expects.
+    local shared_config
+    if raw_config then
+        shared_config = raw_config
+    else
+        shared_config = self:_shared_config_from_objects()
+    end
+
     local cache = raw_cache or self:_serialize_cache()
 
     -- Extract user state: if raw user data is provided, use it (even if fields are nil);
     -- otherwise use current domain state
     local active_profile_key, default_target_data
+    local user_overlay
     if raw_user then
         active_profile_key = raw_user.active_profile
         default_target_data = raw_user.default_target
+        -- Store user overlay (projects/configuration_sets from user.json)
+        user_overlay = {}
+        if raw_user.projects then user_overlay.projects = raw_user.projects end
+        if raw_user.configuration_sets then user_overlay.configuration_sets = raw_user.configuration_sets end
+        self._user_config_overlay = next(user_overlay) and user_overlay or nil
     else
         active_profile_key = self._active_profile_key
         default_target_data = self._default_target_data
+        user_overlay = self._user_config_overlay
     end
+
+    -- Two-layer merge: combine user overlay with shared config
+    local config, user_project_keys, user_cs_names = M.merge_configs(user_overlay, shared_config)
+    self._user_project_keys = user_project_keys
+    self._user_cs_names = user_cs_names
 
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         config, active_profile_key, cache, self.root, self._tools_by_type)
@@ -418,6 +515,8 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         normalize = self._core._deps.normalize,
         tools_by_type = self._tools_by_type,
         default_target_data = default_target_data,
+        user_project_keys = user_project_keys,
+        user_cs_names = user_cs_names,
         compute_build_dir = function(project, variant, tool_data)
             return self:_compute_build_dir(project, variant, tool_data)
         end,
@@ -1839,21 +1938,15 @@ function Workspace:_config_from_objects()
     }
 end
 
---- Serialize workspace state to raw JSON-writable format.
---- Reads from domain objects (Project, ConfigurationSet, Profile).
---- This is the object → disk serialization boundary.
---- @return table raw JSON-compatible table
-function Workspace:_serialize_config()
-    local raw = { projects = {} }
-    if self.name then
-        raw.name = self.name
-    end
-
-    -- Projects from domain objects (skip cache-only orphans)
+--- Reconstruct the shared config (loomworks.json portion) from domain objects.
+--- Same as _config_from_objects() but only includes shared-sourced items.
+--- Used by remerge() as a fallback when no raw_config is provided after mutations.
+--- @return loomworks.Config
+function Workspace:_shared_config_from_objects()
+    local projects = {}
     for _, project in pairs(self._projects) do
-        if not project.orphaned then
-            -- Reconstruct type_config with configurations from domain objects
-            local type_config = project.type_config
+        if not project.orphaned and project._source ~= "user" then
+            local tc = project.type_config
                     and vim.deepcopy(project.type_config) or {}
             local configs_dict = {}
             for _, cfg in ipairs(project._configurations) do
@@ -1863,27 +1956,96 @@ function Workspace:_serialize_config()
                 end
             end
             if next(configs_dict) then
-                type_config.configurations = configs_dict
+                tc.configurations = configs_dict
             end
-            local entry = { [project.type] = next(type_config)
-                    and type_config or vim.empty_dict() }
-            if project.path and project.path ~= project.key then
-                entry.path = project.path
-            end
-            if project._depends_on_keys then
-                entry.depends_on = project._depends_on_keys
-            end
-            if project.launch then
-                entry.launch = project.launch
-            end
-            raw.projects[project.key] = entry
+            projects[project.key] = {
+                path = project.path or project.key,
+                type = project.type,
+                type_config = tc,
+                depends_on = project._depends_on_keys,
+                launch = project.launch,
+            }
         end
     end
 
-    -- Configuration sets from domain objects
+    local configuration_sets = nil
+    for _, cs in pairs(self._config_sets) do
+        if cs._source ~= "user" then
+            if not configuration_sets then configuration_sets = {} end
+            configuration_sets[cs.name] = cs:raw_mappings()
+        end
+    end
+
+    local profiles = nil
+    for _, profile in pairs(self._profiles) do
+        if profile.explicit_def then
+            if not profiles then profiles = {} end
+            profiles[profile.key] = profile.explicit_def
+        end
+    end
+
+    return {
+        name = self.name,
+        projects = projects,
+        configuration_sets = configuration_sets,
+        profiles = profiles,
+    }
+end
+
+--- Serialize a project domain object to the raw JSON format used in config files.
+--- @param project loomworks.Project
+--- @return table entry raw JSON-compatible project entry
+function Workspace:_serialize_project(project)
+    local type_config = project.type_config
+            and vim.deepcopy(project.type_config) or {}
+    local configs_dict = {}
+    for _, cfg in ipairs(project._configurations) do
+        local override = cfg:serialize_user_override()
+        if override then
+            configs_dict[cfg.name] = override
+        end
+    end
+    if next(configs_dict) then
+        type_config.configurations = configs_dict
+    end
+    local entry = { [project.type] = next(type_config)
+            and type_config or vim.empty_dict() }
+    if project.path and project.path ~= project.key then
+        entry.path = project.path
+    end
+    if project._depends_on_keys then
+        entry.depends_on = project._depends_on_keys
+    end
+    if project.launch then
+        entry.launch = project.launch
+    end
+    return entry
+end
+
+--- Serialize workspace state to raw JSON-writable format for loomworks.json.
+--- Only includes shared-sourced items (excludes user-sourced projects/config_sets).
+--- Reads from domain objects (Project, ConfigurationSet, Profile).
+--- This is the object → disk serialization boundary.
+--- @return table raw JSON-compatible table
+function Workspace:_serialize_config()
+    local raw = { projects = {} }
+    if self.name then
+        raw.name = self.name
+    end
+
+    -- Projects from domain objects (skip cache-only orphans and user-sourced)
+    for _, project in pairs(self._projects) do
+        if not project.orphaned and project._source ~= "user" then
+            raw.projects[project.key] = self:_serialize_project(project)
+        end
+    end
+
+    -- Configuration sets from domain objects (skip user-sourced)
     local sets = {}
     for _, cs in pairs(self._config_sets) do
-        sets[cs.name] = cs:raw_mappings()
+        if cs._source ~= "user" then
+            sets[cs.name] = cs:raw_mappings()
+        end
     end
     if next(sets) then raw.configuration_sets = sets end
 
@@ -1913,6 +2075,7 @@ function Workspace:_save_config()
 end
 
 --- Serialize user state from domain objects into a user.json data table.
+--- Includes user-sourced projects and configuration_sets.
 --- @return loomworks.UserData
 function Workspace:_serialize_user()
     local data = { _meta = { version = 1 } }
@@ -1926,6 +2089,25 @@ function Workspace:_serialize_user()
         end
     end
     if next(targets) then data.default_target = targets end
+
+    -- Include user-sourced projects
+    local user_projects = {}
+    for _, project in pairs(self._projects) do
+        if not project.orphaned and project._source == "user" then
+            user_projects[project.key] = self:_serialize_project(project)
+        end
+    end
+    if next(user_projects) then data.projects = user_projects end
+
+    -- Include user-sourced configuration_sets
+    local user_sets = {}
+    for _, cs in pairs(self._config_sets) do
+        if cs._source == "user" then
+            user_sets[cs.name] = cs:raw_mappings()
+        end
+    end
+    if next(user_sets) then data.configuration_sets = user_sets end
+
     return data
 end
 
@@ -2613,8 +2795,17 @@ function Workspace:_on_file_changed(path, content)
         end
 
     elseif path == paths.user then
-        -- user.json changed: pass raw user data through remerge
+        -- user.json changed: normalize user projects and pass through remerge
         local user_data = content and user_mod.parse(content) or user_mod.default()
+        if user_data.projects and next(user_data.projects) then
+            local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
+            if normalized then
+                user_data.projects = normalized
+            else
+                self._core._deps.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
+                user_data.projects = nil
+            end
+        end
         self:remerge(nil, nil, user_data)
 
     elseif path == paths.cache then

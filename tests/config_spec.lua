@@ -222,4 +222,54 @@ describe("config", function()
             assert.is_true(found)
         end)
     end)
+
+    describe("normalize_projects", function()
+        it("extracts type and path from raw JSON format", function()
+            local projects, err = config.normalize_projects({
+                App = { cmake = { configurations = { Debug = { variant = "Debug" } } } },
+            })
+            assert.is_nil(err)
+            assert.equals("cmake", projects.App.type)
+            assert.equals("App", projects.App.path)
+            assert.is_not_nil(projects.App.type_config)
+            assert.is_not_nil(projects.App.type_config.configurations)
+        end)
+
+        it("uses explicit path when provided", function()
+            local projects = config.normalize_projects({
+                App = { path = "src/app", cmake = {} },
+            })
+            assert.equals("src/app", projects.App.path)
+        end)
+
+        it("returns error for invalid project definition", function()
+            local projects, err = config.normalize_projects({
+                Bad = "not a table",
+            })
+            assert.is_nil(projects)
+            assert.matches("must be a table", err)
+        end)
+
+        it("returns error when no type key found", function()
+            local projects, err = config.normalize_projects({
+                Empty = { path = "some/path" },
+            })
+            assert.is_nil(projects)
+            assert.matches("no type key", err)
+        end)
+
+        it("returns error for non-table input", function()
+            local projects, err = config.normalize_projects("not a table")
+            assert.is_nil(projects)
+            assert.matches("must be a table", err)
+        end)
+
+        it("preserves depends_on and launch fields", function()
+            local projects = config.normalize_projects({
+                App = { cmake = {}, depends_on = { "Lib" }, launch = { test = {} } },
+            })
+            assert.are.same({ "Lib" }, projects.App.depends_on)
+            assert.are.same({ test = {} }, projects.App.launch)
+        end)
+    end)
 end)

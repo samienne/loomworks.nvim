@@ -24,6 +24,7 @@ local Configuration = require("loomworks.configuration")
 --- @field _configurations? loomworks.Configuration[] Configuration domain objects array
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
+--- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
 local Project = {}
 Project.__index = Project
 
@@ -37,6 +38,7 @@ function Project.new(workspace, key, data)
     self._workspace = workspace
     self.key = key
     self._removed = false
+    self._source = "shared"
     self._configurations = {}
     if data then self:_update(data) end
     return self
