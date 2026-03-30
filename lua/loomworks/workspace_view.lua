@@ -1159,11 +1159,17 @@ end
 --- @param activate boolean
 --- @return loomworks.Profile|nil
 function M.execute_create_profile(cs, tool_entry, activate)
-    if activate then
-        return cs:activate(tool_entry)
-    else
-        return cs:ensure_profile(tool_entry)
+    -- Creating a profile always pins it (materialize = pin)
+    local profile = cs:ensure_profile(tool_entry)
+    if profile then
+        profile._pinned = true
+        if activate then
+            profile:activate()
+        else
+            profile._workspace:_save_user()
+        end
     end
+    return profile
 end
 
 -- =========================================================================
