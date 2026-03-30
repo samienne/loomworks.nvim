@@ -319,13 +319,8 @@ return function(tree, ctx)
             on_enter = function() edit_config_set(cs) end,
             on_create = function()
                 local all_tool_entries = lw.get_tool_entries()
-                -- Check if any pinned profiles exist (derived don't count)
-                local has_pinned = false
-                for _, p in pairs(all_profiles) do
-                    if p._pinned or p.explicit then has_pinned = true; break end
-                end
-                -- Activate (and pin) if no pinned profiles exist yet
-                actions._create_profile_step2(cs, sname, all_tool_entries, not has_pinned)
+                local is_first = not next(all_profiles)
+                actions._create_profile_step2(cs, sname, all_tool_entries, is_first)
             end,
             on_delete = function() delete_config_set(cs) end,
         }, function()

@@ -73,13 +73,12 @@ describe("buf_status", function()
     it("returns project info for matching buffer", function()
         local core = make_core({
             configuration_sets = { debug = { App = "Debug" } },
-        }, { active_profile = "debug" }, {
-            profiles = {
-                debug = {
-                    configuration_set = "debug",
-                    configurations = { "App/Debug" },
-                },
+        }, {
+            active_profile = "debug",
+            pinned_profiles = {
+                debug = { configuration_set = "debug" },
             },
+        }, {
             configurations = {
                 ["App/Debug"] = {
                     project_key = "App",
@@ -110,23 +109,28 @@ describe("buf_status", function()
         }
         local core = make_core({
             configuration_sets = { debug = { App = "Debug" } },
-        }, { active_profile = "debug:ninja-gcc-12" }, {
+        }, {
+            active_profile = "debug:ninja-gcc-12",
+            pinned_profiles = {
+                ["debug:ninja-gcc-12"] = {
+                    configuration_set = "debug",
+                    tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" } } },
+                },
+            },
+        }, {
             build_dirs = {
                 ["build/App/ninja-gcc-12/Debug"] = {
                     project_key = "App",
                     config_key = "Debug:ninja-gcc-12",
                     variant = "Debug",
                     type = "cmake",
+                    state = "configured",
                     tool_key = "ninja-gcc-12",
                     tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
                 },
             },
         }, {
             buf_name = function() return "/root/App/src/main.cpp" end,
-            -- Provide detected tools via async detection so derived profile exists
-            detect_tools_async = function(_, _, callback)
-                callback(detected_tools)
-            end,
             modules = {
                 get = function(mod_type)
                     if mod_type ~= "cmake" then return nil end
@@ -161,13 +165,12 @@ describe("buf_status", function()
     it("returns status from config unit", function()
         local core = make_core({
             configuration_sets = { debug = { App = "Debug" } },
-        }, { active_profile = "debug" }, {
-            profiles = {
-                debug = {
-                    configuration_set = "debug",
-                    configurations = { "App/Debug" },
-                },
+        }, {
+            active_profile = "debug",
+            pinned_profiles = {
+                debug = { configuration_set = "debug" },
             },
+        }, {
             configurations = {
                 ["App/Debug"] = {
                     project_key = "App",

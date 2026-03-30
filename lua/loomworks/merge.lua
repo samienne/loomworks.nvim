@@ -255,52 +255,15 @@ function M.get_all_profiles(config, cache, tools_by_type, user_data)
     tools_by_type = tools_by_type or {}
     local profiles = {}
 
-    -- Derive set-based profiles from configuration_sets × tools
-    if config.configuration_sets then
-        local keyed_tools, keyed_mod_type = collect_keyed_tools(tools_by_type, config.projects)
-
-        for set_name in pairs(config.configuration_sets) do
-            if #keyed_tools > 0 then
-                -- One profile per keyed tool
-                for _, tool in ipairs(keyed_tools) do
-                    local tools_dict = {
-                        [keyed_mod_type] = {
-                            key = tool.tool_key,
-                            data = tool.tool_data,
-                            label = tool.tool_label,
-                        },
-                    }
-                    local pkey = M.profile_key(set_name, tools_dict)
-                    profiles[pkey] = {
-                        configuration_set = set_name,
-                        tools = tools_dict,
-                    }
-                end
-            else
-                -- No keyed tools: one profile per set
-                profiles[set_name] = {
-                    configuration_set = set_name,
-                }
-            end
-        end
-    end
-
     -- Pinned profiles from user.json (dict keyed by profile key)
     if user_data and user_data.pinned_profiles then
         for pkey, pin in pairs(user_data.pinned_profiles) do
-            local existing = profiles[pkey]
-            if existing then
-                -- Merge pinned flag into existing derived profile
-                existing._pinned = true
-                if pin.mappings then existing.mappings = pin.mappings end
-            else
-                profiles[pkey] = {
-                    configuration_set = pin.configuration_set,
-                    tools = pin.tools,
-                    mappings = pin.mappings,
-                    _pinned = true,
-                }
-            end
+            profiles[pkey] = {
+                configuration_set = pin.configuration_set,
+                tools = pin.tools,
+                mappings = pin.mappings,
+                _pinned = true,
+            }
         end
     end
 

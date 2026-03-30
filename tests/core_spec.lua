@@ -121,31 +121,6 @@ describe("Core", function()
     end)
 
     describe("ConfigurationSet:activate", function()
-        it("materializes and activates a new profile", function()
-            local saved = {}
-            -- Use typescript to avoid cmake kit detection changing profile keys
-            local core = make_core(
-                {
-                    projects = { App = { typescript = {} } },
-                    configuration_sets = { debug = { App = "development" } },
-                },
-                nil, nil,
-                {
-                    user = {
-                        save = function(root, data)
-                            saved.root = root
-                            saved.data = data
-                            return true
-                        end,
-                    },
-                }
-            )
-            core:setup({ root = "/root" })
-            get_cs(core, "debug"):activate()
-            assert.is_not_nil(saved.data)
-            assert.equals("debug", saved.data.active_profile)
-        end)
-
         it("activates existing profile without re-materializing", function()
             local cache_saves = {}
             local core = make_core(
@@ -300,14 +275,12 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -432,14 +405,13 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                { active_profile = "debug" },
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    active_profile = "debug",
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -473,14 +445,14 @@ describe("Core", function()
                         release = { App = "development" },
                     },
                 },
-                { active_profile = "debug" },
                 {
-                    profiles = {
-                        release = {
-                            configuration_set = "release",
-                            configurations = { "App/development" },
-                        },
+                    active_profile = "debug",
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
+                        release = { configuration_set = "release" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -518,7 +490,13 @@ describe("Core", function()
                         release = { App = "production" },
                     },
                 },
-                { active_profile = "debug" },
+                {
+                    active_profile = "debug",
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
+                        release = { configuration_set = "release" },
+                    },
+                },
                 nil,
                 {
                     user = {
@@ -1063,27 +1041,21 @@ describe("Core", function()
             assert.is_false(plan.defined_in_config)
         end)
 
-        it("excludes config when a set-based profile references it", function()
+        it("excludes config when a pinned profile references it", function()
             local core = make_core(
                 {
                     projects = { App = { cmake = {} } },
                     configuration_sets = { debug = { App = "Debug" } },
                 },
-                nil,
                 {
-                    profiles = {
+                    pinned_profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
-                            tools = {
-                                cmake = {
-                                    key = "ninja-gcc",
-                                    data = { generator = "Ninja", compiler_id = "gcc" },
-                                    label = "Ninja GCC",
-                                },
-                            },
-                            configurations = { "App/Debug:ninja-gcc" },
+                            tools = { cmake = { key = "ninja-gcc", data = { generator = "Ninja", compiler_id = "gcc" } } },
                         },
                     },
+                },
+                {
                     configurations = {
                         ["App/Debug:ninja-gcc"] = {
                             project_key = "App",
@@ -1091,7 +1063,6 @@ describe("Core", function()
                             type = "cmake",
                             state = "built",
                             build_dir = "/root/.nvim/build/App/Debug",
-                            variant = "Debug",
                             tool_key = "ninja-gcc",
                         },
                     },
@@ -1106,7 +1077,7 @@ describe("Core", function()
             )
             core:setup({ root = "/root" })
             local plan = get_unit(core, "App", "Debug:ninja-gcc"):plan_deletion()
-            -- Config is referenced by set-based profile — disposition is "reset"
+            -- Config is referenced by pinned profile — disposition is "reset"
             assert.equals(1, #plan.items)
             assert.equals("reset", plan.items[1].disposition)
         end)
@@ -1242,7 +1213,11 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
+                {
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
+                    },
+                },
                 {
                     build_dirs = {
                         ["build/App/development"] = {
@@ -1481,14 +1456,12 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -1510,14 +1483,12 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -1658,7 +1629,6 @@ describe("Core", function()
             -- Simulate: master has config_set "debug" with App=development
             -- Feature branch had config_set "feature" and user built App/staging
             -- After switching to master, "feature" set no longer in config
-            -- Since profiles are derived from config_sets, no "feature" profile exists
             -- The "staging" config entry becomes orphaned
 
             local core = make_core(
@@ -1667,7 +1637,11 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
+                {
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
+                    },
+                },
                 {
                     -- Cache from feature branch: has configs for both
                     build_dirs = {
@@ -1705,14 +1679,12 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -1749,14 +1721,12 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                     configuration_sets = { debug = { App = "development" } },
                 },
-                nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -1818,18 +1788,13 @@ describe("Core", function()
                         release = { App = "production" },
                     },
                 },
-                nil,
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                        release = {
-                            configuration_set = "release",
-                            configurations = { "App/production" },
-                        },
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
+                        release = { configuration_set = "release" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -1982,13 +1947,14 @@ describe("Core", function()
             configuration_sets = { debug = { App = "Debug" } },
         }
 
-        local op_cache = {
-            profiles = {
-                debug = {
-                    configuration_set = "debug",
-                    configurations = { "App/Debug" },
-                },
+        local op_user = {
+            active_profile = "debug",
+            pinned_profiles = {
+                debug = { configuration_set = "debug" },
             },
+        }
+
+        local op_cache = {
             configurations = {
                 ["App/Debug"] = {
                     project_key = "App",
@@ -2004,7 +1970,7 @@ describe("Core", function()
             if not clock_fn then
                 clock_fn = function() return time.value end
             end
-            local core = make_core(op_config, { active_profile = "debug" }, op_cache, {
+            local core = make_core(op_config, op_user, op_cache, {
                 clock = clock_fn,
             })
             core:setup({ root = "/root" })

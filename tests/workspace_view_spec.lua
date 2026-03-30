@@ -81,10 +81,17 @@ end
 
 describe("compute_add_project_context", function()
     it("returns no inherited tool when profiles have no cmake tool", function()
-        local ws = make_ws({
-            projects = { Frontend = { ets = {} } },
-            configuration_sets = { Debug = { Frontend = "debug" } },
-        })
+        local ws = make_ws(
+            {
+                projects = { Frontend = { ets = {} } },
+                configuration_sets = { Debug = { Frontend = "debug" } },
+            },
+            {
+                pinned_profiles = {
+                    Debug = { configuration_set = "Debug" },
+                },
+            }
+        )
 
         local ctx = workspace_view.compute_add_project_context(ws, "cmake")
 
@@ -94,8 +101,6 @@ describe("compute_add_project_context", function()
     end)
 
     it("finds inherited tool from profiles with detected tools", function()
-        -- In the new model, profiles with tools are derived from config_sets × detected tools.
-        -- We simulate this by setting _tools_by_type on the workspace.
         local ws = make_ws(
             {
                 projects = {
@@ -106,7 +111,14 @@ describe("compute_add_project_context", function()
                     Debug = { Frontend = "debug", App = "Debug" },
                 },
             },
-            nil,
+            {
+                pinned_profiles = {
+                    ["Debug:ninja-gcc-12"] = {
+                        configuration_set = "Debug",
+                        tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
+                    },
+                },
+            },
             {
                 build_dirs = {
                     ["build/Frontend/debug"] = { project_key = "Frontend", config_key = "debug", type = "ets", variant = "debug" },
@@ -117,7 +129,6 @@ describe("compute_add_project_context", function()
                 },
             }
         )
-        -- Simulate detected tools so profiles are derived with tools
         ws._tools_by_type = {
             cmake = {
                 { tool_key = "ninja-gcc-12", tool_data = { id = "ninja-gcc-12" }, tool_label = "Ninja - GCC 12" },
@@ -142,18 +153,13 @@ describe("compute_add_project_context", function()
                     Release = { Frontend = "release" },
                 },
             },
-            nil,
             {
-                profiles = {
-                    Debug = {
-                        configuration_set = "Debug",
-                        configurations = { "Frontend/debug" },
-                    },
-                    Release = {
-                        configuration_set = "Release",
-                        configurations = { "Frontend/release" },
-                    },
+                pinned_profiles = {
+                    Debug = { configuration_set = "Debug" },
+                    Release = { configuration_set = "Release" },
                 },
+            },
+            {
                 configurations = {
                     ["Frontend/debug"] = { project_key = "Frontend", config_key = "debug", type = "ets", variant = "debug" },
                     ["Frontend/release"] = { project_key = "Frontend", config_key = "release", type = "ets", variant = "release" },

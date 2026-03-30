@@ -247,7 +247,7 @@ local function edit_project_configuration(project, config_name)
         validate = function(result)
             if result.name ~= (config_name or "") then
                 local existing = project:get_configuration(result.name)
-                if existing and existing.is_user then
+                if existing and existing.is_user and not existing._source_missing then
                     return false, "configuration '" .. result.name .. "' already exists"
                 end
             end

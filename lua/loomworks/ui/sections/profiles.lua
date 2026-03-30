@@ -102,12 +102,10 @@ return function(tree, ctx)
     local lw = ctx.lw
     local all_profiles = ctx.all_profiles
 
-    -- Only pinned/explicit/orphaned profiles shown (active is always pinned)
+    -- All profiles are shown (only pinned/explicit/orphaned exist now)
     local profiles = {}
     for _, profile in pairs(all_profiles) do
-        if profile._pinned or profile.explicit or profile.orphaned_set then
-            profiles[#profiles + 1] = profile
-        end
+        profiles[#profiles + 1] = profile
     end
     table.sort(profiles, function(a, b) return a.key < b.key end)
 

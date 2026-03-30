@@ -558,6 +558,24 @@ function Project:rename_configuration(old_name, new_name, config_data)
     ws:_save_cache()
 
     self:_refresh_configurations()
+    -- Re-derive profile mappings from ConfigurationSet (the Configuration
+    -- object's name changed, so mappings need to reflect the new name)
+    -- then rebuild ProfileProjects so they match the new expected build_dir
+    for _, profile in pairs(ws._profiles) do
+        if profile._config_set_ref then
+            -- Re-derive mappings from the live ConfigurationSet
+            local mappings = {}
+            for project, config in pairs(profile._config_set_ref.mappings) do
+                mappings[project.key] = config.name
+            end
+            profile.mappings = mappings
+        end
+        if profile.mappings and profile.mappings[self.key] then
+            ws:_rebuild_profile_projects_for(profile)
+        end
+    end
+    ws:_sync_build_dir_refs()
+    ws:_resolve_active_profile()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true
 end

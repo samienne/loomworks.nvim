@@ -53,7 +53,9 @@
       "Bash(nvim --headless -u tests/minimal_init.lua -c \"lua:*)",
       "Bash(grep -v \"^--$\")",
       "Bash(grep -v \"0 $\")",
-      "Bash(nvim --headless -c \"lua:*)"
+      "Bash(nvim --headless -c \"lua:*)",
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }

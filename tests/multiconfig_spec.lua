@@ -253,21 +253,25 @@ describe("multi-config cmake", function()
                             debug = { App = "Debug", Frontend = "default" },
                         },
                     }),
+                    ["loomworks.user.json"] = h.make_user_json({
+                        active_profile = "debug",
+                        pinned_profiles = {
+                            debug = { configuration_set = "debug" },
+                        },
+                    }),
                 }
             ))
             core:setup({ root = "/root" })
 
-            -- Activate the debug config set to materialize a profile
-            local cs = h.find_config_set_in(core:get_config_sets(), "debug")
-            assert.is_not_nil(cs, "debug config set should exist")
-            local profile = cs:activate()
+            local profile = h.find_profile(core:get_profiles(), "debug")
             assert.is_not_nil(profile, "profile should be materialized")
 
             local pps = profile:projects()
             for _, pp in ipairs(pps) do
                 if pp._project and pp._project.key == "Frontend" then
                     -- TypeScript project should NOT have a tool suffix
-                    assert.equals("default", pp:config_key(),
+                    -- variant_name() reads from mapping (no config_unit needed)
+                    assert.equals("default", pp:variant_name(),
                         "typescript project should not have cmake tool suffix")
                 end
             end

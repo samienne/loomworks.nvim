@@ -540,22 +540,22 @@ describe("Projects section tool entry highlights", function()
                 projects = { App = { cmake = {} } },
                 configuration_sets = { debug = { App = "Debug" } },
             },
-            { active_profile = "debug:ninja-gcc-12" },
             {
-                profiles = {
+                active_profile = "debug:ninja-gcc-12",
+                pinned_profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "App/Debug:ninja-gcc-12" },
+                        tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
                     },
                 },
+            },
+            {
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
                         config_key = "Debug:ninja-gcc-12", variant = "Debug",
                         type = "cmake",
                         state = "built",
-                        variant = "Debug",
                         tool_key = "ninja-gcc-12",
                     },
                 },
@@ -579,15 +579,16 @@ describe("Projects section tool entry highlights", function()
                 projects = { App = { cmake = {} } },
                 configuration_sets = { debug = { App = "Debug" } },
             },
-            { active_profile = "debug:ninja-gcc-12" },
             {
-                profiles = {
+                active_profile = "debug:ninja-gcc-12",
+                pinned_profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "build/App/ninja-gcc-12/Debug" },
+                        tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
                     },
                 },
+            },
+            {
                 build_dirs = {
                     ["build/App/ninja-gcc-12/Debug"] = {
                         project_key = "App",
@@ -631,15 +632,16 @@ describe("Projects section tool entry highlights", function()
                 projects = { App = { cmake = {} } },
                 configuration_sets = { debug = { App = "Debug" } },
             },
-            { active_profile = "debug:ninja-gcc-12" },
             {
-                profiles = {
+                active_profile = "debug:ninja-gcc-12",
+                pinned_profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "App/Debug:ninja-gcc-12" },
+                        tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
                     },
                 },
+            },
+            {
                 configurations = {
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App",
@@ -774,15 +776,16 @@ describe("Projects section tool entry highlights", function()
                 projects = { App = { cmake = {} } },
                 configuration_sets = { debug = { App = "Debug" } },
             },
-            { active_profile = "debug:ninja-gcc-12" },
             {
-                profiles = {
+                active_profile = "debug:ninja-gcc-12",
+                pinned_profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
-                        tools = { cmake = { key = "ninja-gcc-12" } },
-                        configurations = { "build/App/ninja-gcc-12/Debug" },
+                        tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
                     },
                 },
+            },
+            {
                 build_dirs = {
                     ["build/App/ninja-gcc-12/Debug"] = {
                         project_key = "App",
