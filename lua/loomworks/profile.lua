@@ -226,11 +226,16 @@ end
 --- Set-based profiles derive from configuration_set_name + tools.
 --- Pinned and explicit profiles use their stored key.
 function Profile:_derive_key()
-    if self._configuration_set_name and not self._stored_key then
+    if self._configuration_set_name then
+        -- Set-based profiles always derive key from set name + tools
+        -- (even when pinned — the key tracks the set name)
         local merge_mod = require("loomworks.merge")
         self.key = merge_mod.profile_key(self._configuration_set_name, self:tools_data())
+    elseif self._stored_key then
+        -- Non-set-based profiles (pinned single-configs, explicit) use stored key
+        self.key = self._stored_key
     else
-        self.key = self._stored_key or "unnamed"
+        self.key = "unnamed"
     end
 end
 
@@ -355,8 +360,9 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Activate this profile.
---- Sets workspace active profile fields and remerges.
+--- Pins the profile (if not already pinned) and sets it as active.
 function Profile:activate()
+    self._pinned = true
     self._workspace._active_profile = self
     self._workspace._active_profile_key = self.key
     self._workspace:_save_user()

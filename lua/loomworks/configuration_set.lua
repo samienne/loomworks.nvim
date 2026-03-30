@@ -137,11 +137,17 @@ function ConfigurationSet:ensure_profile(tool_entry)
         return nil
     end
 
-    -- Always materialize (ensures skeleton ConfigUnits exist)
-    -- since profiles are now runtime objects that may exist without config units
+    -- Materialize: ensures skeleton ConfigUnits exist
     self._workspace:_materialize_from_data(self, tool_entry)
 
-    return self:find_profile(tool_entry)
+    -- Find matching profile — if not found (e.g. after deletion removed
+    -- the derived profile), trigger remerge to recreate derived profiles
+    local profile = self:find_profile(tool_entry)
+    if not profile then
+        self._workspace:remerge()
+        profile = self:find_profile(tool_entry)
+    end
+    return profile
 end
 
 --- Activate this configuration set, optionally with a tool.
