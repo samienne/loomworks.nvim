@@ -636,10 +636,22 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 end
                 local expected_id = self:_compute_build_dir(project, variant, tool_data)
                 config_unit = units_by_id[expected_id]
-                -- Create unconfigured skeleton if no ConfigUnit exists
+                -- Create ConfigUnit if no existing one found. Link cache entry if available.
                 if not config_unit and expected_id then
                     config_unit = self:ensure_config_unit(
                         project, configuration, variant, tool_key, tool_data)
+                    -- Check cache for existing build state (e.g. rename-back scenario)
+                    local cache_entry = self._last_raw_cache
+                        and self._last_raw_cache.build_dirs
+                        and self._last_raw_cache.build_dirs[expected_id]
+                    if cache_entry and cache_entry.state then
+                        config_unit:_apply({
+                            cached = cache_entry,
+                            project = project,
+                            tool = config_unit._tool,
+                            configuration = configuration,
+                        })
+                    end
                     units_by_id[config_unit.id] = config_unit
                 end
             end
@@ -1454,8 +1466,9 @@ function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
 
         -- Delete build dir from disk if it exists
         if entry and entry.build_dir then
-            local abs_dir = entry.build_dir
-            if self:_validate_build_dir(abs_dir) then
+            local abs_dir = self._core._deps.normalize(entry.build_dir)
+            local safe_prefix = self._core._deps.normalize(self.root)
+            if self:_validate_build_dir(abs_dir, safe_prefix) then
                 self:_delete_build_dirs_async({ abs_dir }, function()
                     self:_save_cache()
                     self._core._deps.events.emit("active_set_changed", self._active_set)
