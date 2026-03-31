@@ -508,8 +508,6 @@ function Project:rename_configuration(old_name, new_name, config_data)
         end
         return false, err
     end
-    ws:_save_cache()
-
     self:_refresh_configurations()
     -- Update profile mappings: re-derive from ConfigurationSet for set-based,
     -- and update stored mappings for pinned profiles that reference this project
