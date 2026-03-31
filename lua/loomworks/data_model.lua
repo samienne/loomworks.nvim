@@ -5,6 +5,7 @@
 
 local M = {}
 
+local BuildDir = require("loomworks.build_dir")
 local ConfigUnit = require("loomworks.config_unit")
 local Profile = require("loomworks.profile").Profile
 local ProfileProject = require("loomworks.profile").ProfileProject
@@ -20,7 +21,7 @@ local Module = require("loomworks.module")
 --- Build a temporary deserialization context from existing arrays.
 --- The ctx provides O(1) key->object lookups for identity matching during sync.
 --- Discarded after refresh completes.
---- @param current table { modules, projects, config_sets, profiles, config_units, profile_projects }
+--- @param current table { modules, projects, config_sets, profiles, config_units, profile_projects, build_dirs }
 --- @return table ctx
 local function build_ctx(current)
     local ctx = {
@@ -30,6 +31,7 @@ local function build_ctx(current)
         profiles = {},
         config_units = {},
         profile_projects = {},
+        build_dirs = {},  -- rel_path → BuildDir
     }
     for _, mod in pairs(current.modules or {}) do ctx.modules[mod.id] = mod end
     for _, p in pairs(current.projects or {}) do ctx.projects[p.key] = p end
@@ -40,6 +42,7 @@ local function build_ctx(current)
         local reg_key = pp._profile.key .. "\0" .. pp._init_project_key
         ctx.profile_projects[reg_key] = pp
     end
+    for _, bd in pairs(current.build_dirs or {}) do ctx.build_dirs[bd.rel_path] = bd end
     return ctx
 end
 
@@ -303,6 +306,67 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
     return arr
 end
 
+--- Sync BuildDir domain objects from cache entries.
+--- Every cache.build_dirs entry with state becomes a BuildDir object.
+--- Existing BuildDirs are preserved (identity stable); new ones created as needed.
+--- BuildDirs whose cache entry disappears are marked _removed.
+--- @param ctx table deserialization context
+--- @param workspace table workspace reference
+--- @param cache table parsed cache data
+--- @return table[] build_dirs array of all BuildDir objects
+local function sync_build_dirs(ctx, workspace, cache)
+    local cache_mod = require("loomworks.cache")
+    local seen = {}
+
+    -- Create/update BuildDirs from cache entries
+    if cache and cache.build_dirs then
+        for rel_path, entry in pairs(cache.build_dirs) do
+            if entry.state and entry.state ~= "unconfigured" then
+                local existing = ctx.build_dirs[rel_path]
+                if existing then
+                    -- Update existing BuildDir with fresh cache data
+                    existing.state = entry.state
+                    existing.last_configured = entry.last_configured
+                    existing.last_built = entry.last_built
+                    existing.cmake_info = entry.cmake
+                    existing.options_snapshot = entry.options
+                    existing.module_config_snapshot = entry.module_config
+                    if entry.tool_key then
+                        existing.tool_snapshot = { key = entry.tool_key, data = entry.tool_data }
+                    end
+                    existing.project_key = entry.project_key
+                    existing.variant = entry.variant
+                    existing.config_key = entry.config_key
+                    existing.mod_type = entry.type
+                    existing._removed = false
+                else
+                    local abs_path = entry.build_dir
+                        or cache_mod.absolute_build_dir(rel_path, workspace.root)
+                    local bd = BuildDir.new(rel_path, abs_path, entry)
+                    ctx.build_dirs[rel_path] = bd
+                end
+                seen[rel_path] = true
+            end
+        end
+    end
+
+    -- Mark removed BuildDirs (cache entry disappeared)
+    for rel_path, bd in pairs(ctx.build_dirs) do
+        if not seen[rel_path] then
+            bd._removed = true
+        end
+    end
+
+    -- Build result array (exclude removed)
+    local arr = {}
+    for _, bd in pairs(ctx.build_dirs) do
+        if not bd._removed then
+            arr[#arr + 1] = bd
+        end
+    end
+    return arr
+end
+
 --- Sync profile projects and config units together.
 --- ConfigUnits are created from profile resolution (what profiles need),
 --- NOT from cache entries. Cache entries are linked afterward by build_dir match.
@@ -365,12 +429,16 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                             })
                         end
 
+                        -- Link to BuildDir domain object if one exists
+                        local build_dir_obj = ctx.build_dirs[build_dir_id]
+
                         expected_units[build_dir_id] = {
                             project_key = project_key,
                             cached = enriched,
                             project = project,
                             tool = tool,
                             configuration = configuration,
+                            build_dir = build_dir_obj,
                             build_dir_value = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
                         }
                     end
@@ -505,6 +573,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local projects = sync_projects(ctx, workspace, active_set)
     local config_sets = sync_config_sets(ctx, workspace, config)
     local profiles = sync_profiles(ctx, workspace, all_profile_defs, cache, deps.default_target_data)
+    local build_dirs = sync_build_dirs(ctx, workspace, cache)
     local config_units, profile_projects = sync_profile_projects_and_config_units(
         ctx, workspace, cache, deps)
     local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
@@ -534,6 +603,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
         modules = modules,
         projects = projects,
         config_sets = config_sets,
+        build_dirs = build_dirs,
         profiles = profiles,
         config_units = config_units,
         profile_projects = profile_projects,

@@ -151,14 +151,12 @@ option generation is available.
 
 ---
 
-## Rename-back shows entry in both profiles and orphaned sections
+## ~~Rename-back shows entry in both profiles and orphaned sections~~
 
-After renaming a pinned single-config "Debug" → "Development" (orphan
-appears correctly), then renaming back "Development" → "Debug", the
-entry appears in both the profiles section (configured) and the
-orphaned section (configured). The cache entry linking during PP
-rebuild works (state restored), but orphan detection still sees the
-entry. Likely a `_last_raw_cache` staleness issue or a mismatch
-between ConfigUnit.id and the cache entry key. Investigate after the
-two-layer-config refactor stabilizes.
+**Fixed** (fix/rename-orphan-accumulation). Root cause: rename used
+`_rebuild_profile_projects_for` which destroyed and recreated domain
+objects, and called `ensure_config_unit` with wrong args (variant string
+passed as Tool object). Fix: pure in-place mutation — Configuration,
+Profile, ConfigUnit all updated without creating new objects. Old
+build_dir orphaned via `_last_raw_cache`; rename-back reclaims it.
 
