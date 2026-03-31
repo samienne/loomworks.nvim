@@ -558,22 +558,37 @@ function Project:rename_configuration(old_name, new_name, config_data)
     ws:_save_cache()
 
     self:_refresh_configurations()
-    -- Re-derive profile mappings from ConfigurationSet (the Configuration
-    -- object's name changed, so mappings need to reflect the new name)
-    -- then rebuild ProfileProjects so they match the new expected build_dir
+    -- Update profile mappings: re-derive from ConfigurationSet for set-based,
+    -- and update stored mappings for pinned profiles that reference this project
     for _, profile in pairs(ws._profiles) do
         if profile._config_set_ref then
-            -- Re-derive mappings from the live ConfigurationSet
+            -- Set-based: re-derive from the live ConfigurationSet
             local mappings = {}
             for project, config in pairs(profile._config_set_ref.mappings) do
                 mappings[project.key] = config.name
             end
             profile.mappings = mappings
+        elseif profile.mappings and profile.mappings[self.key] == old_name then
+            -- Pinned: update the stored variant reference and re-derive key
+            profile.mappings[self.key] = new_name
+            if profile._stored_key then
+                -- Recompute stored key with new variant
+                local merge_mod = require("loomworks.merge")
+                local tool_key = nil
+                local profile_tools = profile:tools_data()
+                if profile_tools and profile_tools[self.type] then
+                    tool_key = profile_tools[self.type].key
+                end
+                local new_config_key = merge_mod.build_config_key(new_name, tool_key)
+                profile._stored_key = merge_mod.pinned_key(self.key, new_config_key)
+                profile:_derive_key()
+            end
         end
         if profile.mappings and profile.mappings[self.key] then
             ws:_rebuild_profile_projects_for(profile)
         end
     end
+    ws:_save_user()
     ws:_sync_build_dir_refs()
     ws:_resolve_active_profile()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)

@@ -1395,6 +1395,77 @@ describe("configuration rename propagation", function()
         assert.is_true(new_cfg.is_user)
     end)
 
+    it("pinned single-config profile updates name and variant on rename", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = { configurations = { Debug = { variant = "Debug" } } } },
+            },
+        }, {
+            pinned_profiles = {
+                ["App/Debug:ninja-gcc"] = {
+                    mappings = { App = "Debug" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" } } },
+                },
+            },
+        }, {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug"] = {
+                    project_key = "App", type = "cmake", variant = "Debug",
+                    tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc" },
+                    state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug",
+                },
+            },
+        }, {
+            detected_tools = make_detected_tools({
+                { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc" } },
+            }),
+        })
+
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local debug_cfg = project:get_configuration("Debug")
+        assert.is_not_nil(debug_cfg)
+        debug_cfg.is_user = true
+
+        -- Verify pinned profile exists with old name
+        local old_profile = h.find_profile(ws:get_profiles(), "App/Debug:ninja-gcc")
+        assert.is_not_nil(old_profile, "Pinned profile should exist before rename")
+        assert.equals("Debug", old_profile.mappings["App"])
+        assert.equals(1, #old_profile:projects())
+        assert.equals("built", old_profile:projects()[1]._config_unit.state_value)
+
+        -- Rename "Debug" → "Development"
+        local ok, err = project:rename_configuration("Debug", "Development", { variant = "Development" })
+        assert.is_true(ok, "rename failed: " .. tostring(err))
+
+        -- Pinned profile should update: new derived key, new variant mapping
+        -- Old key "App/Debug:ninja-gcc" should be gone
+        assert.is_nil(h.find_profile(ws:get_profiles(), "App/Debug:ninja-gcc"),
+            "Old profile key should not exist after rename")
+
+        -- New derived key based on new variant
+        local new_profile = h.find_profile(ws:get_profiles(), "App/Development:ninja-gcc")
+        assert.is_not_nil(new_profile, "Profile should have new derived key")
+        assert.equals("Development", new_profile.mappings["App"])
+
+        -- New profile should have unconfigured ConfigUnit (new build_dir)
+        local pps = new_profile:projects()
+        assert.equals(1, #pps)
+        assert.is_not_nil(pps[1]._config_unit, "PP should have ConfigUnit")
+        assert.is_nil(pps[1]._config_unit.state_value, "New ConfigUnit should be unconfigured")
+
+        -- Old build_dir should be orphaned
+        local orphans = ws:get_orphaned_configs()
+        assert.equals(1, #orphans, "Old build_dir should be orphaned")
+        assert.equals("built", orphans[1].unit.state_value)
+
+        -- Serialized user.json should have the updated pinned profile
+        local user_data = ws:_serialize_user()
+        assert.is_nil(user_data.pinned_profiles["App/Debug:ninja-gcc"],
+            "Old key should not be in serialized user data")
+        assert.is_not_nil(user_data.pinned_profiles["App/Development:ninja-gcc"],
+            "New key should be in serialized user data")
+    end)
+
     it("pinned profile shows unconfigured after rename, old build_dir orphaned", function()
         local ws = make_ws({
             projects = {
@@ -1517,7 +1588,7 @@ describe("configuration rename propagation", function()
         assert.is_not_nil(project:get_configuration("DebugASAN"))
     end)
 
-    it("pinned profile key unchanged after rename", function()
+    it("pinned profile key updates to new variant on rename", function()
         local ws = make_ws({
             projects = {
                 App = {
@@ -1547,14 +1618,18 @@ describe("configuration rename propagation", function()
         })
 
         local project = h.find_project_in(ws:get_projects(), "App")
+        local cfg = project:get_configuration("Debug-asan")
+        cfg.is_user = true
         local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
         assert.is_true(ok)
 
-        -- Pinned profile key stays the same (no rekeying)
-        local profile = h.find_profile(ws._profiles, "App/Debug-asan:ninja-gcc")
+        -- Pinned profile key updated to reflect new variant
+        assert.is_nil(h.find_profile(ws._profiles, "App/Debug-asan:ninja-gcc"))
+        local profile = h.find_profile(ws._profiles, "App/DebugASAN:ninja-gcc")
         assert.is_not_nil(profile)
+        assert.equals("DebugASAN", profile.mappings["App"])
 
         -- Configuration object renamed; old variant reappears as source-missing from cache
         local old_cfg = project:get_configuration("Debug-asan")
@@ -1672,10 +1747,7 @@ describe("configuration rename propagation", function()
         assert.equals("DebugASAN", h.cs_mapping(cs, "App"))
     end)
 
-    it("rename keeps pinned profile key; Configuration object mutated in place", function()
-        -- Simulates: pinned profile references Debug-asan, user renames to DebugASAN.
-        -- Profile key stays the same. PP._configuration is the same object
-        -- whose .name was mutated.
+    it("rename updates pinned profile key and variant; Configuration mutated in place", function()
         local ws = make_ws({
             projects = {
                 App = {
@@ -1711,19 +1783,22 @@ describe("configuration rename propagation", function()
         assert.equals("Debug-asan", pp:variant_name())
 
         -- Rename
-        local ok = h.find_project_in(ws:get_projects(), "App"):rename_configuration("Debug-asan", "DebugASAN", {
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local cfg = project:get_configuration("Debug-asan")
+        cfg.is_user = true
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
             inherits = "Debug",
         })
         assert.is_true(ok)
 
-        -- Pinned profile key stays the same (no rekeying)
-        profile = h.find_profile(ws:get_profiles(), "App/Debug-asan:ninja-gcc")
+        -- Pinned profile key updated to new variant
+        assert.is_nil(h.find_profile(ws:get_profiles(), "App/Debug-asan:ninja-gcc"))
+        profile = h.find_profile(ws:get_profiles(), "App/DebugASAN:ninja-gcc")
         assert.is_not_nil(profile)
+        assert.equals("DebugASAN", profile.mappings["App"])
 
         -- Configuration object renamed
-        local project = h.find_project_in(ws:get_projects(), "App")
         assert.is_not_nil(project:get_configuration("DebugASAN"))
-        assert.is_true(project:get_configuration("DebugASAN").is_user)
     end)
 
     it("rename while building preserves running state on old ConfigUnit", function()
