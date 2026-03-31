@@ -11,6 +11,7 @@
 --- @field _project loomworks.Project|nil
 --- @field _tool loomworks.Tool|nil
 --- @field _configuration loomworks.Configuration|nil
+--- @field _build_dir loomworks.BuildDir|nil
 --- First-class data fields (from cache, mutated at runtime):
 --- @field state_value loomworks.Status|nil
 --- @field build_dir_value string|nil
@@ -63,6 +64,7 @@ function ConfigUnit.new(workspace, id, project_key)
     self._project = nil
     self._tool = nil
     self._configuration = nil
+    self._build_dir = nil
     -- First-class data fields
     self.state_value = nil
     self.build_dir_value = nil
@@ -81,12 +83,13 @@ end
 --- Refresh project, tool, and configuration references from pre-resolved data.
 --- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners, targets).
 --- Populates first-class fields from the cached input data (reads but does not store).
---- @param data? { cached?: loomworks.CachedConfig, project?: loomworks.Project, tool?: loomworks.Tool, configuration?: loomworks.Configuration }
+--- @param data? { cached?: loomworks.CachedConfig, project?: loomworks.Project, tool?: loomworks.Tool, configuration?: loomworks.Configuration, build_dir?: loomworks.BuildDir }
 function ConfigUnit:_apply(data)
     if not data then
         self._project = nil
         self._tool = nil
         self._configuration = nil
+        self._build_dir = nil
         self.state_value = nil
         self.build_dir_value = nil
         self.last_configured = nil
@@ -103,6 +106,7 @@ function ConfigUnit:_apply(data)
     self._project = data.project
     self._tool = data.tool
     self._configuration = data.configuration
+    if data.build_dir ~= nil then self._build_dir = data.build_dir end
     -- Populate first-class fields from cached data when available
     if data.cached then
         local c = data.cached

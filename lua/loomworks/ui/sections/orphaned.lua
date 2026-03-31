@@ -1,10 +1,9 @@
---- loomworks/ui/sections/orphaned.lua — Orphaned items section.
+--- loomworks/ui/sections/orphaned.lua — Orphaned build dirs section.
 ---
---- Shows orphaned cached configs (not referenced by any profile) and
---- stray build directories (on disk but not in cache).
---- Actions: delete individual items, or clean all orphans at once.
+--- Shows leftover build directories not referenced by any profile.
+--- Flat list of paths — no project grouping, no status labels.
+--- Actions: delete individual dirs, or clean all at once.
 
-local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
 
 --- Show the orphan cleanup dialog and execute cleanup on confirm.
@@ -23,7 +22,7 @@ local function clean_all_orphans()
 
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
-        title = "Clean Orphaned Items",
+        title = "Clean Orphaned Build Dirs",
         lines = ctx.lines,
         highlights = ctx.highlights,
         max_height = 30,
@@ -33,7 +32,7 @@ local function clean_all_orphans()
                 self:close()
                 workspace_view.execute_orphan_cleanup(
                     ws, ctx.orphaned_configs, ctx.stray_dirs, function()
-                    vim.notify("loomworks: orphaned items cleaned",
+                    vim.notify("loomworks: orphaned build dirs cleaned",
                         vim.log.levels.INFO)
                 end)
             end,
@@ -56,8 +55,8 @@ local function rel_display(ws_root, abs)
     return abs
 end
 
---- Render the orphaned items section.
---- Shown when orphaned configs or stray build dirs exist.
+--- Render the orphaned build dirs section.
+--- Flat list of paths — orphaned cache entries and stray dirs merged together.
 --- @param tree loomworks.Tree
 --- @param ctx table { lw }
 return function(tree, ctx)
@@ -70,59 +69,42 @@ return function(tree, ctx)
 
     if #orphans == 0 and #stray_dirs == 0 then return end
 
-    tree:leaf({{"Orphaned Items  ", "Title"}, {"[D] delete", "Comment"}})
+    tree:leaf({{"Orphaned Build Dirs  ", "Title"}, {"[D] delete", "Comment"}})
     tree:blank()
 
-    -- Orphaned cached configs grouped by project
-    if #orphans > 0 then
-        local by_project = {}
-        local project_order = {}
-        for _, orphan in ipairs(orphans) do
-            if not by_project[orphan.project_key] then
-                by_project[orphan.project_key] = {}
-                project_order[#project_order + 1] = orphan.project_key
-            end
-            by_project[orphan.project_key][#by_project[orphan.project_key] + 1] = orphan
-        end
+    -- Collect all paths into a single flat list.
+    -- Track which paths come from orphaned cache entries (so delete uses the right action).
+    -- Use lowercased paths for dedup (Windows has case-insensitive filesystems).
+    local seen_paths = {}
+    local is_win = vim.fn.has("win32") == 1
 
-        for _, project_key in ipairs(project_order) do
-            local entries = by_project[project_key]
+    local function norm_path(p)
+        local n = vim.fs.normalize(p)
+        return is_win and n:lower() or n
+    end
 
-            tree:node(project_key, {
-                fold_key = "orphaned_project:" .. project_key,
-                hl = "LoomworksUnconfigured",
-            }, function()
-                for _, orphan in ipairs(entries) do
-                    -- Orphaned entries are cache data, not ConfigUnit objects.
-                    -- Read status directly from the cached entry.
-                    local entry = orphan.cached_entry or {}
-                    local config_status = entry.state or "unknown"
-                    local status_hl = helpers.STATUS_HL[config_status] or "Comment"
-
-                    tree:node(orphan.config_key .. " (" .. config_status .. ")", {
-                        fold_key = "orphaned:" .. orphan.project_key .. ":" .. orphan.config_key,
-                        hl = status_hl,
-                        on_delete = actions.delete_orphaned_config(orphan),
-                    }, function()
-                        if orphan.build_dir_key then
-                            tree:leaf("Build dir: " .. orphan.build_dir_key, "Comment")
-                        end
-                        if entry.tool_key then
-                            tree:leaf("Tool: " .. entry.tool_key, "Comment")
-                        end
-                    end)
-                end
-            end)
+    -- Orphaned cache entries (BuildDir objects with state but no ConfigUnit)
+    local ws_root = ws and ws.root or ""
+    for _, orphan in ipairs(orphans) do
+        -- Show as relative to workspace root (e.g. .nvim/build/App/Debug)
+        local display = ".nvim/" .. (orphan.build_dir_key or orphan.config_key)
+        tree:item(display, {
+            hl = "Comment",
+            on_delete = actions.delete_orphaned_config(orphan),
+        })
+        -- Track the absolute path to avoid duplicating with stray dirs
+        local entry = orphan.cached_entry or {}
+        if entry.build_dir then
+            seen_paths[norm_path(entry.build_dir)] = true
         end
     end
 
-    -- Stray build directories
-    if #stray_dirs > 0 then
-        local ws_root = ws and ws.root or ""
-        for _, dir in ipairs(stray_dirs) do
+    -- Stray build directories (on disk but not in cache) — skip if already shown
+    for _, dir in ipairs(stray_dirs) do
+        if not seen_paths[norm_path(dir)] then
             local display = rel_display(ws_root, dir)
-            tree:item(display .. " (stray)", {
-                hl = "LoomworksUnconfigured",
+            tree:item(display, {
+                hl = "Comment",
                 on_delete = actions.delete_stray_dir(dir),
             })
         end

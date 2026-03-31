@@ -1941,6 +1941,324 @@ describe("configuration rename propagation", function()
         end
     end)
 
+    it("rename preserves all domain object identities", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug", options = { ASAN = "ON" } },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "Debug-asan" },
+            },
+        }, {
+            pinned_profiles = {
+                ["App/Debug-asan"] = {
+                    mappings = { App = "Debug-asan" },
+                },
+            },
+        }, {
+            build_dirs = {
+                ["build/App/Debug-asan"] = {
+                    project_key = "App", config_key = "Debug-asan",
+                    type = "cmake", variant = "Debug-asan",
+                    state = "built", build_dir = "/root/.nvim/build/App/Debug-asan",
+                },
+            },
+        })
+
+        -- Capture object identities before rename
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local cfg_before = project:get_configuration("Debug-asan")
+        assert.is_not_nil(cfg_before)
+        cfg_before.is_user = true
+
+        local cs_before = h.find_config_set_in(ws:get_config_sets(), "debug")
+        local profile_before = h.find_profile(ws:get_profiles(), "App/Debug-asan")
+        assert.is_not_nil(profile_before, "pinned profile should exist")
+        local pp_before = profile_before:projects()[1]
+        assert.is_not_nil(pp_before, "PP should exist")
+        local unit_before = pp_before._config_unit
+        assert.is_not_nil(unit_before, "ConfigUnit should exist")
+        assert.equals("built", unit_before.state_value)
+
+        -- Rename
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
+            inherits = "Debug", options = { ASAN = "ON" },
+        })
+        assert.is_true(ok)
+
+        -- Same Configuration object (table identity)
+        local cfg_after = project:get_configuration("DebugASAN")
+        assert.equals(cfg_before, cfg_after) -- same table
+        assert.is_nil(project:get_configuration("Debug-asan"))
+
+        -- Same ConfigurationSet object
+        local cs_after = h.find_config_set_in(ws:get_config_sets(), "debug")
+        assert.equals(cs_before, cs_after)
+        assert.equals("DebugASAN", h.cs_mapping(cs_after, "App"))
+
+        -- Same Profile object (key re-derived)
+        local profile_after = h.find_profile(ws:get_profiles(), "App/DebugASAN")
+        assert.is_not_nil(profile_after, "profile should exist with new key")
+        assert.equals(profile_before, profile_after) -- same table
+        assert.equals("DebugASAN", profile_after.mappings["App"])
+
+        -- Same ProfileProject object
+        local pp_after = profile_after:projects()[1]
+        assert.equals(pp_before, pp_after)
+        assert.equals("DebugASAN", pp_after:variant_name())
+
+        -- Same ConfigUnit object (table identity), updated fields
+        local unit_after = pp_after._config_unit
+        assert.equals(unit_before, unit_after) -- same table
+        assert.equals("DebugASAN", unit_after._variant)
+        assert.is_nil(unit_after.state_value) -- new build dir, unconfigured
+        assert.equals("build/App/DebugASAN", unit_after.id)
+
+        -- Old BuildDir orphaned, new BuildDir created
+        assert.is_not_nil(unit_after._build_dir)
+        assert.equals("build/App/DebugASAN", unit_after._build_dir.rel_path)
+        local orphans = ws:get_orphaned_configs()
+        assert.equals(1, #orphans)
+        assert.equals("build/App/Debug-asan", orphans[1].build_dir_key)
+        assert.equals("built", orphans[1].cached_entry.state)
+    end)
+
+    it("rename-back round trip: old build_dir restored from cache, zero orphans", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug", options = { ASAN = "ON" } },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "Debug-asan" },
+            },
+        }, {
+            pinned_profiles = {
+                ["App/Debug-asan"] = {
+                    mappings = { App = "Debug-asan" },
+                },
+            },
+        }, {
+            build_dirs = {
+                ["build/App/Debug-asan"] = {
+                    project_key = "App", config_key = "Debug-asan",
+                    type = "cmake", variant = "Debug-asan",
+                    state = "built", build_dir = "/root/.nvim/build/App/Debug-asan",
+                },
+            },
+        })
+
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local cfg = project:get_configuration("Debug-asan")
+        cfg.is_user = true
+        local unit = h.find_config_unit(ws._config_units, "App", "Debug-asan")
+        assert.is_not_nil(unit, "ConfigUnit should exist")
+        assert.equals("built", unit.state_value)
+
+        -- Rename forward: Debug-asan → DebugASAN
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
+            inherits = "Debug", options = { ASAN = "ON" },
+        })
+        assert.is_true(ok)
+        assert.is_nil(unit.state_value) -- state reset
+        assert.equals("build/App/DebugASAN", unit.id)
+
+        -- One orphan: the old build dir with "built" state
+        local orphans = ws:get_orphaned_configs()
+        assert.equals(1, #orphans)
+        assert.equals("build/App/Debug-asan", orphans[1].build_dir_key)
+        assert.equals("built", orphans[1].cached_entry.state)
+
+        -- Rename back: DebugASAN → Debug-asan
+        ok = project:rename_configuration("DebugASAN", "Debug-asan", {
+            inherits = "Debug", options = { ASAN = "ON" },
+        })
+        assert.is_true(ok)
+        assert.equals("build/App/Debug-asan", unit.id)
+
+        -- State restored from orphaned cache entry
+        assert.equals("built", unit.state_value)
+
+        -- Zero orphans after round trip
+        orphans = ws:get_orphaned_configs()
+        assert.equals(0, #orphans)
+    end)
+
+    it("rename-back with tools: no orphan accumulation", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug" },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "Debug-asan" },
+            },
+        }, {
+            pinned_profiles = {
+                ["App/Debug-asan:ninja-gcc"] = {
+                    mappings = { App = "Debug-asan" },
+                    tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
+                },
+            },
+        }, {
+            build_dirs = {
+                ["build/App/ninja-gcc/Debug-asan"] = {
+                    project_key = "App", config_key = "Debug-asan:ninja-gcc",
+                    type = "cmake", variant = "Debug-asan", tool_key = "ninja-gcc",
+                    tool_data = { id = "ninja-gcc" },
+                    state = "built", build_dir = "/root/.nvim/build/App/ninja-gcc/Debug-asan",
+                },
+            },
+        }, {
+            detected_tools = make_detected_tools({
+                { tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc" } },
+            }),
+        })
+
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local cfg = project:get_configuration("Debug-asan")
+        assert.is_not_nil(cfg)
+        cfg.is_user = true
+
+        local unit = h.find_config_unit(ws._config_units, "App", "Debug-asan")
+        assert.is_not_nil(unit, "ConfigUnit should exist")
+        assert.equals("built", unit.state_value)
+        assert.equals("build/App/ninja-gcc/Debug-asan", unit.id)
+
+        -- Rename forward
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
+            inherits = "Debug",
+        })
+        assert.is_true(ok)
+        assert.equals("build/App/ninja-gcc/DebugASAN", unit.id)
+        assert.equals("ninja-gcc", unit._tool_key)
+        assert.is_nil(unit.state_value)
+
+        -- One orphan at the old tool-qualified path
+        local orphans = ws:get_orphaned_configs()
+        assert.equals(1, #orphans)
+        assert.equals("build/App/ninja-gcc/Debug-asan", orphans[1].build_dir_key)
+
+        -- Rename back
+        ok = project:rename_configuration("DebugASAN", "Debug-asan", {
+            inherits = "Debug",
+        })
+        assert.is_true(ok)
+        assert.equals("build/App/ninja-gcc/Debug-asan", unit.id)
+        assert.equals("built", unit.state_value) -- restored
+
+        -- Zero orphans
+        orphans = ws:get_orphaned_configs()
+        assert.equals(0, #orphans)
+
+        -- Multiple cycles: no accumulation
+        for _ = 1, 3 do
+            ok = project:rename_configuration("Debug-asan", "DebugASAN", {
+                inherits = "Debug",
+            })
+            assert.is_true(ok)
+            ok = project:rename_configuration("DebugASAN", "Debug-asan", {
+                inherits = "Debug",
+            })
+            assert.is_true(ok)
+        end
+        orphans = ws:get_orphaned_configs()
+        assert.equals(0, #orphans)
+    end)
+
+    it("configure via task result then rename-back: BuildDir adopted, state restored", function()
+        -- Fresh workspace, no cache — simulates: user creates profile, configures, renames
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug", options = { ASAN = "ON" } },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                debug = { App = "Debug-asan" },
+            },
+        }, {
+            pinned_profiles = {
+                ["App/Debug-asan"] = {
+                    mappings = { App = "Debug-asan" },
+                },
+            },
+        })
+
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local cfg = project:get_configuration("Debug-asan")
+        assert.is_not_nil(cfg)
+        cfg.is_user = true
+
+        local unit = h.find_config_unit(ws._config_units, "App", "Debug-asan")
+        assert.is_not_nil(unit, "ConfigUnit should exist from profile")
+
+        -- Simulate a successful configure via task result
+        ws:record_task_result({
+            unit = unit,
+            action = "configure",
+            success = true,
+        })
+        assert.equals("configured", unit.state_value)
+        assert.is_not_nil(unit._build_dir, "BuildDir should be created by task handler")
+        assert.equals("configured", unit._build_dir.state)
+        assert.equals(1, #ws._build_dirs)
+
+        -- Rename: Debug-asan → DebugASAN
+        local ok = project:rename_configuration("Debug-asan", "DebugASAN", {
+            inherits = "Debug", options = { ASAN = "ON" },
+        })
+        assert.is_true(ok)
+        assert.is_nil(unit.state_value, "should be unconfigured at new build dir")
+        assert.is_not_nil(unit._build_dir, "new BuildDir created")
+        assert.equals("build/App/DebugASAN", unit._build_dir.rel_path)
+
+        -- Old BuildDir orphaned
+        local orphans = ws:get_orphaned_configs()
+        assert.equals(1, #orphans, "old build dir should be orphaned")
+
+        -- Rename back: DebugASAN → Debug-asan
+        ok = project:rename_configuration("DebugASAN", "Debug-asan", {
+            inherits = "Debug", options = { ASAN = "ON" },
+        })
+        assert.is_true(ok)
+
+        -- State restored from orphaned BuildDir
+        assert.equals("configured", unit.state_value, "state should be restored")
+        assert.is_not_nil(unit._build_dir, "BuildDir should be adopted")
+        assert.equals("configured", unit._build_dir.state)
+
+        -- Zero orphans
+        orphans = ws:get_orphaned_configs()
+        assert.equals(0, #orphans, "adopted BuildDir should not be orphaned")
+
+        -- Serialized cache should reflect adoption
+        local cache = ws:_serialize_cache()
+        local entry = cache.build_dirs["build/App/Debug-asan"]
+        assert.is_not_nil(entry, "adopted BuildDir should be in serialized cache")
+        assert.equals("configured", entry.state)
+    end)
+
     it("execute_save_configuration uses rename for name change", function()
         local ws = make_ws({
             projects = {

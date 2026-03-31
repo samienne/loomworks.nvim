@@ -417,9 +417,9 @@ function Project:delete_configuration(config_name)
     return true
 end
 
---- Rename a project configuration: updates Configuration object,
---- inherits references, and config set mappings. Old ConfigUnits with the
---- old build_dir become orphaned naturally (new configures get new build_dirs).
+--- Rename a project configuration: mutates all domain objects in place.
+--- Configuration name, Profile mappings, ConfigUnit fields all updated without
+--- creating new objects. Old build_dir is preserved as an orphaned cache entry.
 --- @param old_name string current configuration name
 --- @param new_name string desired new name
 --- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
@@ -496,6 +496,12 @@ function Project:rename_configuration(old_name, new_name, config_data)
     -- Step 3: CS mappings already hold a ref to target_cfg — the name mutation
     -- above makes raw_mappings() serialize new_name automatically.
 
+    -- Step 4: Update the raw configurations dict (used by UI projects section).
+    if self.configurations and self.configurations[old_name] then
+        self.configurations[new_name] = self.configurations[old_name]
+        self.configurations[old_name] = nil
+    end
+
     -- Save config + cache to disk
     local ok, err = ws:_save_config()
     if not ok then
@@ -508,9 +514,10 @@ function Project:rename_configuration(old_name, new_name, config_data)
         end
         return false, err
     end
-    self:_refresh_configurations()
     -- Update profile mappings: re-derive from ConfigurationSet for set-based,
-    -- and update stored mappings for pinned profiles that reference this project
+    -- and update stored mappings for pinned profiles that reference this project.
+    -- No rebuild needed — PP._configuration is an object ref that already sees
+    -- the new name, and ConfigUnits are updated in place below.
     for _, profile in pairs(ws._profiles) do
         if profile._config_set_ref then
             -- Set-based: re-derive from the live ConfigurationSet
@@ -524,28 +531,59 @@ function Project:rename_configuration(old_name, new_name, config_data)
             profile.mappings[self.key] = new_name
             profile:_derive_key()
         end
-        if profile.mappings and profile.mappings[self.key] then
-            ws:_rebuild_profile_projects_for(profile)
-        end
     end
-    -- Clean up ConfigUnits no longer referenced by any ProfileProject.
-    -- Unreferenced units with build state become orphaned cache entries.
-    local referenced_units = {}
-    for _, pp in pairs(ws._profile_projects) do
-        if pp._config_unit then referenced_units[pp._config_unit] = true end
-    end
-    local kept_units = {}
+
+    -- Update ConfigUnits in place. Build dir changes on rename (path encodes
+    -- variant). Old BuildDir is orphaned; ConfigUnit gets a new build dir.
+    -- All other domain objects (Configuration, Profile, PP) keep identity.
+    local merge_mod = require("loomworks.merge")
+    local BuildDir = require("loomworks.build_dir")
     for _, unit in pairs(ws._config_units) do
-        if referenced_units[unit] then
-            kept_units[#kept_units + 1] = unit
-        elseif unit:is_running() or unit:is_deleting() then
-            -- Keep running/deleting units (they'll clean up on completion)
-            kept_units[#kept_units + 1] = unit
+        if unit._configuration == target_cfg then
+            -- Skip running/deleting units — task is using the old build_dir.
+            if unit:is_running() or unit:is_deleting() then
+                -- noop: Configuration ref auto-sees new name
+            else
+                -- Detach old BuildDir (stays in _build_dirs as orphaned)
+                unit._build_dir = nil
+
+                -- Update serialization fields
+                unit._variant = new_name
+                unit._config_key = merge_mod.build_config_key(new_name, unit._tool_key)
+
+                -- Compute new build_dir path from new variant name
+                local new_rel, new_abs = ws:_compute_build_dir(self, new_name, unit._tool_data)
+                unit.id = new_rel
+                unit.build_dir_value = new_abs
+
+                -- Search _build_dirs for existing BuildDir at new path
+                -- (rename-back scenario: adopt orphaned BuildDir, restore state)
+                local bd = ws:find_build_dir(new_rel)
+                if bd and bd:has_state() then
+                    unit._build_dir = bd
+                    unit.state_value = bd.state
+                    unit.last_configured = bd.last_configured
+                    unit.last_built = bd.last_built
+                    unit.cmake_info = bd.cmake_info
+                    unit._cached_options = bd.options_snapshot
+                    unit._cached_module_config = bd.module_config_snapshot
+                else
+                    -- Create fresh BuildDir at new path (unconfigured)
+                    if not bd then
+                        bd = BuildDir.new(new_rel, new_abs)
+                        ws._build_dirs[#ws._build_dirs + 1] = bd
+                    end
+                    unit._build_dir = bd
+                    unit.state_value = nil
+                    unit.last_configured = nil
+                    unit.last_built = nil
+                    unit.cmake_info = nil
+                    unit._cached_options = nil
+                    unit._cached_module_config = nil
+                end
+            end
         end
-        -- Unreferenced units with state are preserved in _last_raw_cache
-        -- by _save_cache() and will appear as orphaned build dirs
     end
-    ws._config_units = kept_units
 
     ws:_save_user()
     ws:_save_cache()

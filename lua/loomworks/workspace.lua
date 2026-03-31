@@ -293,6 +293,7 @@ function Workspace.new(core, data)
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
+    self._build_dirs = {}  -- BuildDir domain objects (all, including orphaned)
     self._build_dir_refs = {}
     self._build_dir_locks = {}
 
@@ -312,6 +313,16 @@ function Workspace:find_config_unit(project, configuration, tool)
                 and unit._tool == tool then
             return unit
         end
+    end
+    return nil
+end
+
+--- Find a BuildDir by its relative path.
+--- @param rel_path string relative build dir path (cache key)
+--- @return loomworks.BuildDir|nil
+function Workspace:find_build_dir(rel_path)
+    for _, bd in pairs(self._build_dirs) do
+        if bd.rel_path == rel_path then return bd end
     end
     return nil
 end
@@ -397,35 +408,55 @@ end
 -- ===========================================================================
 
 --- Serialize workspace state to a cache data structure for persistence.
---- Always reads from domain objects (ConfigUnit).
+--- Serializes from BuildDir domain objects (both live and orphaned).
+--- Also includes ConfigUnit-linked state for live entries (enriches with
+--- configuration snapshot from the live Configuration object).
 --- Does not include _meta — that is added by cache.save() and _save_cache().
---- Profiles are NOT in cache — they are derived at runtime from config_sets × tools.
 --- @return loomworks.CacheData
 function Workspace:_serialize_cache()
     local data = {
         build_dirs = {},
     }
 
-    -- Build dirs: serialize from ConfigUnit objects, keyed by relative build_dir.
-    -- Only serialize units that have actual build state (have been configured).
-    -- Unconfigured units that have never been built are not persisted.
+    -- Build a lookup: rel_path → ConfigUnit for enrichment
+    local unit_for_bd = {}
     for _, unit in pairs(self._config_units) do
-        if unit._variant and unit.state_value then
-            local entry = unit:serialize()
-            if entry.cmake then entry.cmake.targets = nil end
-            -- Key is the unit's id (relative build_dir path)
-            data.build_dirs[unit.id] = entry
+        if unit._build_dir then
+            unit_for_bd[unit._build_dir] = unit
         end
     end
 
-    -- Preserve orphaned cache entries (entries from disk not covered by any
-    -- ConfigUnit). These are entries whose build_dir doesn't match any
-    -- profile-resolved ConfigUnit but still have build state.
-    if self._last_raw_cache and self._last_raw_cache.build_dirs then
-        for key, entry in pairs(self._last_raw_cache.build_dirs) do
-            if not data.build_dirs[key] and entry.state and entry.state ~= "unconfigured" then
-                data.build_dirs[key] = entry
+    -- Serialize all BuildDir objects with state
+    for _, bd in pairs(self._build_dirs) do
+        if bd:has_state() then
+            local entry = bd:serialize()
+            if entry.cmake then entry.cmake.targets = nil end
+            -- Enrich with live Configuration snapshot if a ConfigUnit references this BD
+            local unit = unit_for_bd[bd]
+            if unit and unit._configuration and not unit._configuration._removed then
+                local cfg = unit._configuration
+                if cfg.options then entry.options = cfg.options end
+                if cfg.module_config and next(cfg.module_config) then
+                    entry.module_config = cfg.module_config
+                end
+                if cfg.is_user then entry.is_user = true end
+                if cfg.inherits_names and #cfg.inherits_names > 0 then
+                    entry.inherits = #cfg.inherits_names == 1
+                        and cfg.inherits_names[1] or cfg.inherits_names
+                end
             end
+            data.build_dirs[bd.rel_path] = entry
+        end
+    end
+
+    -- Also serialize ConfigUnit build state that hasn't been captured in a
+    -- BuildDir yet (e.g., units whose state was set directly before a BD was
+    -- created — transitional compatibility).
+    for _, unit in pairs(self._config_units) do
+        if unit._variant and unit.state_value and not unit._build_dir then
+            local entry = unit:serialize()
+            if entry.cmake then entry.cmake.targets = nil end
+            data.build_dirs[unit.id] = entry
         end
     end
 
@@ -445,8 +476,6 @@ function Workspace:_save_cache()
         self._core._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
     end
     if ok then
-        -- Update raw cache reference to stay in sync with disk
-        self._last_raw_cache = cache
         if self._tracker then
             self._tracker:mark_written(self._core._deps.cache.filepath(self.root))
         end
@@ -481,8 +510,8 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     end
 
     local cache = raw_cache or self:_serialize_cache()
-    -- Store raw cache for orphan detection (entries not covered by ConfigUnits)
-    self._last_raw_cache = cache
+    -- BuildDir objects are created during data_model.refresh() from cache entries.
+    -- No raw cache retention needed — _build_dirs replaces _last_raw_cache.
 
     -- Extract user state: if raw user data is provided, use it (even if fields are nil);
     -- otherwise use current domain state
@@ -522,6 +551,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         profiles = self._profiles,
         config_units = self._config_units,
         profile_projects = self._profile_projects,
+        build_dirs = self._build_dirs,
     }
 
     local result = data_model.refresh(self, config, cache, active_set, all_profile_defs, current, {
@@ -542,6 +572,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     self._profiles = result.profiles
     self._config_units = result.config_units
     self._profile_projects = result.profile_projects
+    self._build_dirs = result.build_dirs
     self._build_dir_refs = result.build_dir_refs
     self._active_profile = result.active_profile
     self._active_profile_key = active_profile_key
@@ -636,21 +667,22 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 end
                 local expected_id = self:_compute_build_dir(project, variant, tool_data)
                 config_unit = units_by_id[expected_id]
-                -- Create ConfigUnit if no existing one found. Link cache entry if available.
-                if not config_unit and expected_id then
-                    config_unit = self:ensure_config_unit(
-                        project, configuration, variant, tool_key, tool_data)
-                    -- Check cache for existing build state (e.g. rename-back scenario)
-                    local cache_entry = self._last_raw_cache
-                        and self._last_raw_cache.build_dirs
-                        and self._last_raw_cache.build_dirs[expected_id]
-                    if cache_entry and cache_entry.state then
-                        config_unit:_apply({
-                            cached = cache_entry,
-                            project = project,
-                            tool = config_unit._tool,
-                            configuration = configuration,
-                        })
+                -- Create ConfigUnit if no existing one found. Link BuildDir if available.
+                if not config_unit and expected_id and configuration then
+                    local tool = project._module and project._module:find_tool(tool_key) or nil
+                    config_unit = self:ensure_config_unit(project, configuration, tool)
+                    -- Link to existing BuildDir at the expected path
+                    local bd = self:find_build_dir(expected_id)
+                    if bd then
+                        config_unit._build_dir = bd
+                        -- Sync ConfigUnit fields from BuildDir for backward compat
+                        config_unit.state_value = bd.state
+                        config_unit.build_dir_value = bd.path
+                        config_unit.last_configured = bd.last_configured
+                        config_unit.last_built = bd.last_built
+                        config_unit.cmake_info = bd.cmake_info
+                        config_unit._cached_options = bd.options_snapshot
+                        config_unit._cached_module_config = bd.module_config_snapshot
                     end
                     units_by_id[config_unit.id] = config_unit
                 end
@@ -1137,36 +1169,28 @@ function Workspace:_cleanup_orphaned_skeletons(raw_cache)
     end
 end
 
---- Get orphaned cached configs: cache entries with state not referenced by
+--- Get orphaned BuildDirs: build directories with state not referenced by
 --- any ConfigUnit (and therefore not referenced by any profile).
---- Orphaned entries are NOT ConfigUnit objects — they exist only in cache.
+--- Orphaned BuildDirs are domain objects, not raw cache entries.
 --- @return loomworks.OrphanedConfig[]
 function Workspace:get_orphaned_configs()
-    -- Build set of build_dir keys that are live (have ConfigUnit objects)
-    local live_ids = {}
+    -- Build set of BuildDirs that are live (referenced by a ConfigUnit)
+    local live_bds = {}
     for _, unit in pairs(self._config_units) do
-        live_ids[unit.id] = true
+        if unit._build_dir then live_bds[unit._build_dir] = true end
     end
 
-    -- Scan cache for entries not covered by any ConfigUnit
-    local cache = self:_serialize_cache()
+    -- Find BuildDirs not referenced by any ConfigUnit
     local result = {}
-    -- Also check the raw cache on disk for entries that weren't serialized
-    -- (since _serialize_cache only includes units with state)
-    local raw_cache = self._last_raw_cache
-    local build_dirs = raw_cache and raw_cache.build_dirs or cache.build_dirs or {}
-
-    for dir_key, entry in pairs(build_dirs) do
-        if not live_ids[dir_key] then
-            local state = entry.state
-            if state and state ~= "unconfigured" then
-                result[#result + 1] = {
-                    project_key = entry.project_key,
-                    config_key = entry.config_key or entry.variant,
-                    build_dir_key = dir_key,
-                    cached_entry = entry,
-                }
-            end
+    for _, bd in pairs(self._build_dirs) do
+        if not live_bds[bd] and bd:has_state() then
+            result[#result + 1] = {
+                project_key = bd.project_key,
+                config_key = bd.config_key or bd.variant,
+                build_dir_key = bd.rel_path,
+                cached_entry = bd:serialize(),
+                build_dir_obj = bd,
+            }
         end
     end
 
@@ -1432,6 +1456,44 @@ function Workspace:record_task_result(result)
         end
     end
 
+    -- Sync state to BuildDir domain object (create if needed)
+    local BuildDir = require("loomworks.build_dir")
+    local bd = config_unit._build_dir
+    if not bd then
+        bd = self:find_build_dir(config_unit.id)
+        if not bd then
+            local abs_path = config_unit.build_dir_value
+                or cache_mod.absolute_build_dir(config_unit.id, self.root)
+            bd = BuildDir.new(config_unit.id, abs_path)
+            self._build_dirs[#self._build_dirs + 1] = bd
+        end
+        config_unit._build_dir = bd
+    end
+    bd:update({
+        state = config_unit.state_value,
+        last_configured = config_unit.last_configured,
+        last_built = config_unit.last_built,
+        cmake_info = config_unit.cmake_info,
+        project_key = config_unit._project and config_unit._project.key or config_unit._init_project_key,
+        variant = config_unit._variant,
+        config_key = config_unit._config_key,
+        mod_type = config_unit._project and config_unit._project.type or nil,
+    })
+    -- Snapshot current configuration options for stale detection
+    if config_unit._configuration and not config_unit._configuration._removed then
+        bd.options_snapshot = config_unit._configuration.options
+        bd.module_config_snapshot = config_unit._configuration.module_config
+        config_unit._cached_options = bd.options_snapshot
+        config_unit._cached_module_config = bd.module_config_snapshot
+    end
+    if result.tool and result.tool.key then
+        bd.tool_snapshot = { key = result.tool.key, data = result.tool.data }
+    elseif config_unit._tool then
+        bd.tool_snapshot = { key = config_unit._tool.key, data = config_unit._tool.data }
+    elseif config_unit._tool_key then
+        bd.tool_snapshot = { key = config_unit._tool_key, data = config_unit._tool_data }
+    end
+
     self:_save_cache()
     self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
@@ -1459,14 +1521,20 @@ end
 --- @param build_dir_key string relative build dir key
 --- @param on_done? function callback after deletion
 function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
-    -- Remove from raw cache
-    if self._last_raw_cache and self._last_raw_cache.build_dirs then
-        local entry = self._last_raw_cache.build_dirs[build_dir_key]
-        self._last_raw_cache.build_dirs[build_dir_key] = nil
+    -- Find and remove the BuildDir domain object
+    local bd = self:find_build_dir(build_dir_key)
+    if bd then
+        -- Remove from _build_dirs array
+        for i, b in ipairs(self._build_dirs) do
+            if b == bd then
+                table.remove(self._build_dirs, i)
+                break
+            end
+        end
 
         -- Delete build dir from disk if it exists
-        if entry and entry.build_dir then
-            local abs_dir = self._core._deps.normalize(entry.build_dir)
+        if bd.path then
+            local abs_dir = self._core._deps.normalize(bd.path)
             local safe_prefix = self._core._deps.normalize(self.root)
             if self:_validate_build_dir(abs_dir, safe_prefix) then
                 self:_delete_build_dirs_async({ abs_dir }, function()
@@ -1487,6 +1555,9 @@ end
 function Workspace:delete_cached_configs(items)
     for _, item in ipairs(items) do
         if item.unit then
+            -- Clear BuildDir state (by reference or by path lookup)
+            local bd = item.unit._build_dir or self:find_build_dir(item.unit.id)
+            if bd then bd:clear_state() end
             -- Clear first-class fields but preserve structural references (_project, _tool, etc.)
             item.unit.state_value = nil
             item.unit.build_dir_value = nil
@@ -1497,10 +1568,6 @@ function Workspace:delete_cached_configs(items)
             item.unit._variant = nil
             item.unit._tool_key = nil
             item.unit._tool_data = nil
-            -- Also remove from raw cache so orphan detection is correct
-            if self._last_raw_cache and self._last_raw_cache.build_dirs then
-                self._last_raw_cache.build_dirs[item.unit.id] = nil
-            end
         end
     end
 end
@@ -1511,16 +1578,15 @@ end
 function Workspace:reset_cached_configs(items)
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
+        -- Clear BuildDir state (by reference or by path lookup)
+        local bd = item.unit._build_dir or self:find_build_dir(item.unit.id)
+        if bd then bd:clear_state() end
         -- Clear first-class fields
         item.unit.state_value = nil
         item.unit.build_dir_value = nil
         item.unit.last_configured = nil
         item.unit.last_built = nil
         item.unit.cmake_info = nil
-        -- Also clear from raw cache
-        if self._last_raw_cache and self._last_raw_cache.build_dirs then
-            self._last_raw_cache.build_dirs[item.unit.id] = nil
-        end
         ::continue::
     end
 end
