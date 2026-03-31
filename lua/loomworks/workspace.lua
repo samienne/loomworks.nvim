@@ -1442,6 +1442,35 @@ end
 
 --- Remove cache entries entirely (cache-only, no filesystem operations).
 --- @param items loomworks.DeletionItem[]
+--- Delete an orphaned build directory (cache-only, no ConfigUnit).
+--- Removes the entry from cache and optionally deletes the build dir from disk.
+--- @param build_dir_key string relative build dir key
+--- @param on_done? function callback after deletion
+function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
+    -- Remove from raw cache
+    if self._last_raw_cache and self._last_raw_cache.build_dirs then
+        local entry = self._last_raw_cache.build_dirs[build_dir_key]
+        self._last_raw_cache.build_dirs[build_dir_key] = nil
+
+        -- Delete build dir from disk if it exists
+        if entry and entry.build_dir then
+            local abs_dir = entry.build_dir
+            if self:_validate_build_dir(abs_dir) then
+                self:_delete_build_dirs_async({ abs_dir }, function()
+                    self:_save_cache()
+                    self._core._deps.events.emit("active_set_changed", self._active_set)
+                    if on_done then on_done() end
+                end)
+                return
+            end
+        end
+    end
+
+    self:_save_cache()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    if on_done then on_done() end
+end
+
 function Workspace:delete_cached_configs(items)
     for _, item in ipairs(items) do
         if item.unit then

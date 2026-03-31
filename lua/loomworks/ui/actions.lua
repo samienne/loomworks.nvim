@@ -169,24 +169,23 @@ function M.delete_config(unit)
 end
 
 --- @param unit loomworks.ConfigUnit
-function M.delete_orphaned_config(unit)
+function M.delete_orphaned_config(orphan)
     return function()
-        local wv = require("loomworks.workspace_view")
         local ws = require("loomworks").get_workspace()
-        local pkey, ckey = unit_display_keys(unit)
-        local orphan_plan = {
-            items = { {
-                unit = unit,
-                disposition = "clean",
-            } },
-            defined_in_config = false,
-        }
-        local ctx = wv.compute_delete_confirmation_context(ws,
-            "Delete orphaned: " .. pkey .. " / " .. ckey, orphan_plan)
-        M._show_confirmation(ctx, function()
-            unit:delete(function()
-                vim.notify("loomworks: orphaned configuration removed", vim.log.levels.INFO)
-            end)
+        if not ws then return end
+        local pkey = orphan.project_key or "?"
+        local ckey = orphan.config_key or "?"
+        local build_dir_key = orphan.build_dir_key
+        vim.ui.select({ "Yes", "No" }, {
+            prompt = "Delete orphaned build dir: " .. pkey .. "/" .. ckey .. "?",
+        }, function(choice)
+            if choice ~= "Yes" then return end
+            -- Delete the build dir from cache and optionally from disk
+            if build_dir_key then
+                ws:delete_orphaned_build_dir(build_dir_key, function()
+                    vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
+                end)
+            end
         end)
     end
 end
