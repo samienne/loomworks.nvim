@@ -689,6 +689,15 @@ function M.make_test_deps(files, opts)
                         if a == nil or b == nil then return false end
                         return vim.deep_equal(a, b)
                     end,
+                    info = function(_, type_config)
+                        local configs = {}
+                        if type_config and type_config.configurations then
+                            for name, data in pairs(type_config.configurations) do
+                                configs[name] = vim.tbl_extend("force", { is_user = true }, data)
+                            end
+                        end
+                        return { configurations = configs }
+                    end,
                 }
             end,
         },

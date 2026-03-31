@@ -609,12 +609,20 @@ function Workspace:_rebuild_profile_projects_for(profile)
             local config_unit = nil
             if project then
                 local tool_data = nil
+                local tool_key = nil
                 local profile_tools = profile:tools_data()
                 if profile_tools and profile_tools[project.type] then
                     tool_data = profile_tools[project.type].data
+                    tool_key = profile_tools[project.type].key
                 end
                 local expected_id = self:_compute_build_dir(project, variant, tool_data)
                 config_unit = units_by_id[expected_id]
+                -- Create unconfigured skeleton if no ConfigUnit exists
+                if not config_unit and expected_id then
+                    config_unit = self:ensure_config_unit(
+                        project, configuration, variant, tool_key, tool_data)
+                    units_by_id[config_unit.id] = config_unit
+                end
             end
             local reg_key = profile.key .. "\0" .. project_key
             local data = {

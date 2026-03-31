@@ -1395,6 +1395,62 @@ describe("configuration rename propagation", function()
         assert.is_true(new_cfg.is_user)
     end)
 
+    it("pinned profile shows unconfigured after rename, old build_dir orphaned", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = { configurations = { Debug = { variant = "Debug" } } } },
+            },
+            configuration_sets = {
+                debug = { App = "Debug" },
+            },
+        }, {
+            active_profile = "debug",
+            pinned_profiles = {
+                ["debug"] = { configuration_set = "debug" },
+            },
+        }, {
+            build_dirs = {
+                ["build/App/Debug"] = {
+                    project_key = "App", type = "cmake", variant = "Debug",
+                    state = "built", build_dir = "/root/.nvim/build/App/Debug",
+                },
+            },
+        })
+
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local profile = h.find_profile(ws:get_profiles(), "debug")
+        assert.is_not_nil(profile)
+
+        -- Profile should have App with "built" state
+        local pps = profile:projects()
+        assert.equals(1, #pps)
+        assert.is_not_nil(pps[1]._config_unit)
+        assert.equals("built", pps[1]._config_unit.state_value)
+
+        -- Mark Debug as user-defined (in real usage, module.info() merges user configs)
+        local debug_cfg = project:get_configuration("Debug")
+        assert.is_not_nil(debug_cfg, "Debug config should exist")
+        debug_cfg.is_user = true
+
+        -- Rename "Debug" → "Development"
+        local ok, err = project:rename_configuration("Debug", "Development", { variant = "Development" })
+        assert.is_true(ok, "rename failed: " .. tostring(err))
+
+        -- Profile should now have App with unconfigured state (new build_dir)
+        profile = h.find_profile(ws:get_profiles(), "debug")
+        assert.is_not_nil(profile, "Profile should still exist after rename")
+        pps = profile:projects()
+        assert.equals(1, #pps)
+        assert.is_not_nil(pps[1]._config_unit, "PP should have a ConfigUnit for new build_dir")
+        assert.is_nil(pps[1]._config_unit.state_value, "New ConfigUnit should be unconfigured")
+        assert.equals("Development", pps[1]:variant_name())
+
+        -- Old build_dir should be orphaned
+        local orphans = ws:get_orphaned_configs()
+        assert.equals(1, #orphans, "Old build_dir should be orphaned")
+        assert.equals("built", orphans[1].unit.state_value)
+    end)
+
     it("old cache entries for multiple tools become orphaned after rename", function()
         local ws = make_ws({
             projects = {
