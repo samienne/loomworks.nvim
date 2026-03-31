@@ -541,7 +541,27 @@ function Project:rename_configuration(old_name, new_name, config_data)
             ws:_rebuild_profile_projects_for(profile)
         end
     end
+    -- Clean up ConfigUnits no longer referenced by any ProfileProject.
+    -- Unreferenced units with build state become orphaned cache entries.
+    local referenced_units = {}
+    for _, pp in pairs(ws._profile_projects) do
+        if pp._config_unit then referenced_units[pp._config_unit] = true end
+    end
+    local kept_units = {}
+    for _, unit in pairs(ws._config_units) do
+        if referenced_units[unit] then
+            kept_units[#kept_units + 1] = unit
+        elseif unit:is_running() or unit:is_deleting() then
+            -- Keep running/deleting units (they'll clean up on completion)
+            kept_units[#kept_units + 1] = unit
+        end
+        -- Unreferenced units with state are preserved in _last_raw_cache
+        -- by _save_cache() and will appear as orphaned build dirs
+    end
+    ws._config_units = kept_units
+
     ws:_save_user()
+    ws:_save_cache()
     ws:_sync_build_dir_refs()
     ws:_resolve_active_profile()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
