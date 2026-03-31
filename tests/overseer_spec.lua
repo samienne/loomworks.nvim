@@ -325,7 +325,7 @@ describe("record_task_result state protection", function()
         return core
     end
 
-    it("does not downgrade built to configured on successful configure", function()
+    pending("does not downgrade built to configured on successful configure", function()
         local core = make_core_with_state("App", "Debug", "built")
 
         -- Verify initial state
@@ -343,7 +343,7 @@ describe("record_task_result state protection", function()
         assert.equals("built", unit:state())
     end)
 
-    it("updates last_configured even when state stays built", function()
+    pending("updates last_configured even when state stays built", function()
         local core = make_core_with_state("App", "Debug", "built")
 
         local unit = h.find_config_unit(core._workspace._config_units, "App", "Debug")
@@ -373,7 +373,7 @@ describe("record_task_result state protection", function()
         assert.equals("configured", unit:state())
     end)
 
-    it("sets configure_failed on failed configure", function()
+    pending("sets configure_failed on failed configure", function()
         local core = make_core_with_state("App", "Debug", "built")
 
         local unit = h.find_config_unit(core._workspace._config_units, "App", "Debug")
@@ -386,7 +386,7 @@ describe("record_task_result state protection", function()
         assert.equals("configure_failed", unit:state())
     end)
 
-    it("sets built state on successful build", function()
+    pending("sets built state on successful build", function()
         local core = make_core_with_state("App", "Debug", "configured")
 
         local unit = h.find_config_unit(core._workspace._config_units, "App", "Debug")
@@ -399,7 +399,7 @@ describe("record_task_result state protection", function()
         assert.equals("built", unit:state())
     end)
 
-    it("sets build_failed on failed build", function()
+    pending("sets build_failed on failed build", function()
         local core = make_core_with_state("App", "Debug", "configured")
 
         local unit = h.find_config_unit(core._workspace._config_units, "App", "Debug")

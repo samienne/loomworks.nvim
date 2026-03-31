@@ -406,13 +406,26 @@ function Workspace:_serialize_cache()
         build_dirs = {},
     }
 
-    -- Build dirs: serialize from ConfigUnit objects, keyed by relative build_dir
+    -- Build dirs: serialize from ConfigUnit objects, keyed by relative build_dir.
+    -- Only serialize units that have actual build state (have been configured).
+    -- Unconfigured units that have never been built are not persisted.
     for _, unit in pairs(self._config_units) do
-        if unit._variant then
+        if unit._variant and unit.state_value then
             local entry = unit:serialize()
             if entry.cmake then entry.cmake.targets = nil end
             -- Key is the unit's id (relative build_dir path)
             data.build_dirs[unit.id] = entry
+        end
+    end
+
+    -- Preserve orphaned cache entries (entries from disk not covered by any
+    -- ConfigUnit). These are entries whose build_dir doesn't match any
+    -- profile-resolved ConfigUnit but still have build state.
+    if self._last_raw_cache and self._last_raw_cache.build_dirs then
+        for key, entry in pairs(self._last_raw_cache.build_dirs) do
+            if not data.build_dirs[key] and entry.state and entry.state ~= "unconfigured" then
+                data.build_dirs[key] = entry
+            end
         end
     end
 
@@ -431,8 +444,12 @@ function Workspace:_save_cache()
     if not ok then
         self._core._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
     end
-    if ok and self._tracker then
-        self._tracker:mark_written(self._core._deps.cache.filepath(self.root))
+    if ok then
+        -- Update raw cache reference to stay in sync with disk
+        self._last_raw_cache = cache
+        if self._tracker then
+            self._tracker:mark_written(self._core._deps.cache.filepath(self.root))
+        end
     end
     return ok
 end
@@ -464,6 +481,8 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     end
 
     local cache = raw_cache or self:_serialize_cache()
+    -- Store raw cache for orphan detection (entries not covered by ConfigUnits)
+    self._last_raw_cache = cache
 
     -- Extract user state: if raw user data is provided, use it (even if fields are nil);
     -- otherwise use current domain state
@@ -993,47 +1012,45 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
         local project_tool_key = tools and tools[project.type]
             and tools[project.type].key or nil
         local project_tool_data = project_tool_key and tools[project.type].data or nil
-        local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
 
         -- Compute build_dir-based id
         local rel_key, abs_path = self:_compute_build_dir(project, variant, project_tool_data)
 
-        -- Ensure skeleton ConfigUnit exists (or reuse stale one from prior deletion)
+        -- Ensure ConfigUnit exists (or reuse stale one from prior deletion)
         local existing_unit = nil
         for _, u in pairs(self._config_units) do
             if u.id == rel_key then existing_unit = u; break end
         end
-        local entry = {
-            project_key = project.key,
-            config_key = config_key,
-            type = project.type,
-            variant = variant,
-            tool_key = project_tool_key,
-            tool_data = project_tool_data,
-            build_dir = abs_path,
-        }
+
+        -- Resolve tool domain object
+        local tool_obj = nil
+        if project_tool_key then
+            local mod = project._module
+            if mod then tool_obj = mod:find_tool(project_tool_key) end
+        end
+
         if existing_unit then
             -- Re-populate stale unit (e.g. after deletion cleared state)
-            if not existing_unit._config_key then
+            if not existing_unit._configuration then
                 existing_unit:_apply({
-                    cached = entry,
                     project = project,
+                    tool = tool_obj,
+                    configuration = config,
+                    build_dir_value = abs_path,
                 })
                 changed = true
             end
         else
             local unit = ConfigUnit.new(self, rel_key, project.key)
             unit:_apply({
-                cached = entry,
                 project = project,
+                tool = tool_obj,
+                configuration = config,
+                build_dir_value = abs_path,
             })
             self._config_units[#self._config_units + 1] = unit
             changed = true
         end
-    end
-
-    if changed then
-        self:_save_cache()
     end
     if profile then
         self:_rebuild_profile_projects_for(profile)
@@ -1108,26 +1125,37 @@ function Workspace:_cleanup_orphaned_skeletons(raw_cache)
     end
 end
 
---- Get orphaned cached configs: configs with state not referenced by any profile.
+--- Get orphaned cached configs: cache entries with state not referenced by
+--- any ConfigUnit (and therefore not referenced by any profile).
+--- Orphaned entries are NOT ConfigUnit objects — they exist only in cache.
 --- @return loomworks.OrphanedConfig[]
 function Workspace:get_orphaned_configs()
-    -- Use live referenced set: stale cache refs to removed projects are
-    -- excluded, so their configs correctly appear as orphaned.
-    local referenced = self:_build_live_referenced_set()
-
-    local result = {}
+    -- Build set of build_dir keys that are live (have ConfigUnit objects)
+    local live_ids = {}
     for _, unit in pairs(self._config_units) do
-        if not unit._variant then goto continue end
-        local state = unit.state_value
-        if state and state ~= "unconfigured"
-                and not referenced[unit.id] then
-            result[#result + 1] = {
-                project_key = unit._init_project_key or (unit._project and unit._project.key),
-                config_key = unit._config_key or unit._variant,
-                unit = unit,
-            }
+        live_ids[unit.id] = true
+    end
+
+    -- Scan cache for entries not covered by any ConfigUnit
+    local cache = self:_serialize_cache()
+    local result = {}
+    -- Also check the raw cache on disk for entries that weren't serialized
+    -- (since _serialize_cache only includes units with state)
+    local raw_cache = self._last_raw_cache
+    local build_dirs = raw_cache and raw_cache.build_dirs or cache.build_dirs or {}
+
+    for dir_key, entry in pairs(build_dirs) do
+        if not live_ids[dir_key] then
+            local state = entry.state
+            if state and state ~= "unconfigured" then
+                result[#result + 1] = {
+                    project_key = entry.project_key,
+                    config_key = entry.config_key or entry.variant,
+                    build_dir_key = dir_key,
+                    cached_entry = entry,
+                }
+            end
         end
-        ::continue::
     end
 
     -- Sort for deterministic UI order
@@ -1427,6 +1455,10 @@ function Workspace:delete_cached_configs(items)
             item.unit._variant = nil
             item.unit._tool_key = nil
             item.unit._tool_data = nil
+            -- Also remove from raw cache so orphan detection is correct
+            if self._last_raw_cache and self._last_raw_cache.build_dirs then
+                self._last_raw_cache.build_dirs[item.unit.id] = nil
+            end
         end
     end
 end
@@ -1443,6 +1475,10 @@ function Workspace:reset_cached_configs(items)
         item.unit.last_configured = nil
         item.unit.last_built = nil
         item.unit.cmake_info = nil
+        -- Also clear from raw cache
+        if self._last_raw_cache and self._last_raw_cache.build_dirs then
+            self._last_raw_cache.build_dirs[item.unit.id] = nil
+        end
         ::continue::
     end
 end

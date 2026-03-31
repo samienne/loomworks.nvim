@@ -103,7 +103,7 @@ function ConfigUnit:_apply(data)
     self._project = data.project
     self._tool = data.tool
     self._configuration = data.configuration
-    -- Populate first-class fields from cached data (read only, not stored)
+    -- Populate first-class fields from cached data when available
     if data.cached then
         local c = data.cached
         self.state_value = c.state
@@ -117,6 +117,28 @@ function ConfigUnit:_apply(data)
         self._tool_data = c.tool_data
         self._cached_options = c.options
         self._cached_module_config = c.module_config
+    else
+        -- Profile-resolved but no cache entry: unconfigured with known build_dir
+        self.state_value = nil
+        self.build_dir_value = data.build_dir_value
+        self.last_configured = nil
+        self.last_built = nil
+        self.cmake_info = nil
+        -- Derive fields from references if not previously set
+        if not self._variant then
+            self._variant = data.configuration and data.configuration.name or nil
+        end
+        if not self._tool_key then
+            self._tool_key = data.tool and data.tool.key or nil
+            self._tool_data = data.tool and data.tool.data or nil
+        end
+        -- Derive _config_key if not previously set
+        if not self._config_key and self._variant then
+            local merge_mod = require("loomworks.merge")
+            self._config_key = merge_mod.build_config_key(self._variant, self._tool_key)
+        end
+        self._cached_options = nil
+        self._cached_module_config = nil
     end
 end
 

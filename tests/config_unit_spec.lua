@@ -59,65 +59,21 @@ describe("ConfigUnit", function()
         end)
 
         it("returns cached state when present", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            build_dirs = {
-                                ["build/App/Debug"] = {
-                                    project_key = "App",
-                                    type = "cmake",
-                                    variant = "Debug",
-                                    state = "built",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            -- Simulate cache data being applied
+            unit.state_value = "built"
             assert.equals("built", unit:state())
         end)
 
         it("maps failed_configure to configure_failed", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            build_dirs = {
-                                ["build/App/Debug"] = {
-                                    project_key = "App",
-                                    type = "cmake",
-                                    variant = "Debug",
-                                    state = "failed_configure",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            unit.state_value = "failed_configure"
             assert.equals("configure_failed", unit:state())
         end)
 
         it("maps failed_build to build_failed", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            build_dirs = {
-                                ["build/App/Debug"] = {
-                                    project_key = "App",
-                                    type = "cmake",
-                                    variant = "Debug",
-                                    state = "failed_build",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            unit.state_value = "failed_build"
             assert.equals("build_failed", unit:state())
         end)
 
@@ -134,23 +90,8 @@ describe("ConfigUnit", function()
         end)
 
         it("running state takes priority over cached state", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            build_dirs = {
-                                ["build/App/Debug"] = {
-                                    project_key = "App",
-                                    type = "cmake",
-                                    variant = "Debug",
-                                    state = "configured",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            unit.state_value = "configured"
             unit:register_task(1, "build")
             assert.equals("building", unit:state())
         end)
@@ -169,23 +110,8 @@ describe("ConfigUnit", function()
         end)
 
         it("returns unknown when cached state is unknown", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            build_dirs = {
-                                ["build/App/Debug"] = {
-                                    project_key = "App",
-                                    type = "cmake",
-                                    variant = "Debug",
-                                    state = "unknown",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            unit.state_value = "unknown"
             assert.equals("unknown", unit:state())
         end)
     end)
@@ -316,24 +242,19 @@ describe("ConfigUnit", function()
             assert.is_nil(unit.build_dir_value)
         end)
 
-        it("fields populated from _apply", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            build_dirs = {
-                                ["build/App/Debug"] = {
-                                    project_key = "App",
-                                    type = "cmake",
-                                    variant = "Debug",
-                                    state = "built",
-                                    build_dir = "/build/App/Debug",
-                                },
-                            },
-                        },
-                    }
-                end,
+        it("fields populated from _apply with cache data", function()
+            local unit = make_unit()
+            -- Apply cache data directly to simulate cache link
+            unit:_apply({
+                cached = {
+                    project_key = "App",
+                    config_key = "Debug",
+                    variant = "Debug",
+                    state = "built",
+                    build_dir = "/build/App/Debug",
+                },
+                project = unit._project,
+                configuration = unit._configuration,
             })
             assert.equals("built", unit.state_value)
             assert.equals("/build/App/Debug", unit.build_dir_value)
@@ -664,20 +585,24 @@ describe("ConfigUnit", function()
     end)
 
     describe("cache resolution", function()
-        it("resolves first-class fields from cache entry", function()
-            local core = h.make_mock_core({
-                cache = {
-                    build_dirs = {
-                        ["build/App/Debug"] = {
-                            project_key = "App",
-                            type = "cmake",
-                            variant = "Debug",
-                        },
-                    },
+        it("resolves first-class fields from cache entry via _apply", function()
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = h.get_or_create_config(project, "Debug")
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Apply cache data
+            unit:_apply({
+                cached = {
+                    project_key = "App",
+                    config_key = "Debug",
+                    variant = "Debug",
+                    state = "configured",
                 },
+                project = project,
+                configuration = cfg,
             })
-            local unit = h.ensure_config_unit_by_id(core, "build/App/Debug", "App")
             assert.equals("Debug", unit._variant)
+            assert.equals("configured", unit.state_value)
         end)
 
         it("first-class fields are nil when no cache entry exists", function()
@@ -688,21 +613,23 @@ describe("ConfigUnit", function()
             assert.is_nil(unit._config_key)
         end)
 
-        it("resolves tool domain object from cache entry", function()
-            local core = h.make_mock_core({
-                cache = {
-                    build_dirs = {
-                        ["build/App/Debug"] = {
-                            project_key = "App",
-                            type = "cmake",
-                            variant = "Debug",
-                            tool_key = "ninja-gcc",
-                            tool_data = { id = "ninja-gcc" },
-                        },
-                    },
+        it("resolves tool fields when applied with cache entry", function()
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = h.get_or_create_config(project, "Debug")
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Apply cache data with tool info
+            unit:_apply({
+                cached = {
+                    project_key = "App",
+                    config_key = "Debug",
+                    variant = "Debug",
+                    tool_key = "ninja-gcc",
+                    tool_data = { id = "ninja-gcc" },
                 },
+                project = project,
+                configuration = cfg,
             })
-            local unit = h.ensure_config_unit_by_id(core, "build/App/Debug", "App")
             assert.equals("Debug", unit._variant)
             assert.equals("ninja-gcc", unit._tool_key)
         end)

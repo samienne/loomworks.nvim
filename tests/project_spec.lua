@@ -180,8 +180,8 @@ describe("Project", function()
         end)
     end)
 
-    describe("cache enrichment in _sync_configurations", function()
-        it("creates source-missing Configuration with snapshot data from cache", function()
+    describe("configurations only from config sources", function()
+        it("does not create Configuration for cache-only variant", function()
             local p = make_project({
                 configurations = {}, -- no live configurations
                 cached_configurations = {
@@ -190,63 +190,14 @@ describe("Project", function()
                         config_key = "CachedOnly:ninja-gcc",
                         type = "cmake",
                         variant = "CachedOnly",
-                        tool_key = "ninja-gcc",
-                        is_user = true,
-                        options = { ENABLE_FOO = "ON" },
-                        module_config = { variant = "CachedOnly", generator = "Ninja" },
-                        inherits = "Base",
                     },
                 },
             })
-            local cfg = p:get_configuration("CachedOnly")
-            assert.is_not_nil(cfg)
-            assert.is_true(cfg._source_missing)
-            assert.is_true(cfg.is_user)
-            assert.same({ ENABLE_FOO = "ON" }, cfg.options)
-            assert.equals("CachedOnly", cfg.module_config.variant)
-            assert.equals("Ninja", cfg.module_config.generator)
-            assert.same({ "Base" }, cfg.inherits_names)
+            -- Cache-only variants no longer create Configuration objects
+            assert.is_nil(p:get_configuration("CachedOnly"))
         end)
 
-        it("creates minimal Configuration when cache has no snapshot data", function()
-            local p = make_project({
-                configurations = {},
-                cached_configurations = {
-                    ["Bare"] = {
-                        project_key = "App",
-                        config_key = "Bare",
-                        type = "cmake",
-                        variant = "Bare",
-                    },
-                },
-            })
-            local cfg = p:get_configuration("Bare")
-            assert.is_not_nil(cfg)
-            assert.is_true(cfg._source_missing)
-            assert.is_false(cfg.is_user)
-            assert.is_nil(cfg.options)
-            assert.same({}, cfg.inherits_names)
-        end)
-
-        it("creates Configuration with multiple inherits from cache", function()
-            local p = make_project({
-                configurations = {},
-                cached_configurations = {
-                    ["Multi:ninja-gcc"] = {
-                        project_key = "App",
-                        config_key = "Multi:ninja-gcc",
-                        type = "cmake",
-                        variant = "Multi",
-                        inherits = { "Debug", "Sanitize" },
-                    },
-                },
-            })
-            local cfg = p:get_configuration("Multi")
-            assert.is_not_nil(cfg)
-            assert.same({ "Debug", "Sanitize" }, cfg.inherits_names)
-        end)
-
-        it("prefers live source config over cache snapshot data", function()
+        it("creates Configuration from live config sources only", function()
             local p = make_project({
                 configurations = {
                     Debug = { generator = "Ninja", variant = "Debug" },
@@ -257,16 +208,32 @@ describe("Project", function()
                         config_key = "Debug:ninja-gcc",
                         type = "cmake",
                         variant = "Debug",
-                        is_user = true,
-                        module_config = { variant = "Debug", generator = "Unix Makefiles" },
                     },
                 },
             })
             local cfg = p:get_configuration("Debug")
             assert.is_not_nil(cfg)
-            assert.is_false(cfg._source_missing)
-            -- Should use live source data, not cache snapshot
             assert.equals("Ninja", cfg.module_config.generator)
+        end)
+
+        it("removes Configuration when absent from config sources", function()
+            local p = make_project({
+                configurations = {
+                    Debug = { variant = "Debug" },
+                    Release = { variant = "Release" },
+                },
+                cached_configurations = {},
+            })
+            assert.is_not_nil(p:get_configuration("Release"))
+
+            p:_update({
+                type = "cmake",
+                path = "App",
+                status = "unconfigured",
+                configurations = { Debug = { variant = "Debug" } },
+                cached_configurations = {},
+            })
+            assert.is_nil(p:get_configuration("Release"))
         end)
     end)
 

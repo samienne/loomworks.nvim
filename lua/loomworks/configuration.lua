@@ -28,7 +28,6 @@ function Configuration.new(project, name, data)
     self._project = project
     self.name = name
     self._removed = false
-    self._source_missing = false
     self:_update(data)
     return self
 end
@@ -97,7 +96,6 @@ end
 --- @return table|nil
 function Configuration:serialize_user_override()
     if not self.is_user then return nil end
-    if self._source_missing then return nil end
     local entry = {}
     -- module_config holds module-specific fields (cmake: variant, toolchain, generator)
     -- excluding generic fields (is_default, is_user, from_preset, role, inherits, options)

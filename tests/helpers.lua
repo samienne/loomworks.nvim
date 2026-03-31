@@ -211,7 +211,7 @@ function M.make_mock_workspace(overrides)
         local config_key = merge_h.build_config_key(variant, tool_key)
         -- Compute build_dir-based id (same logic as Workspace:_compute_build_dir)
         local id, abs_path = self:_compute_build_dir(project, variant, tool_data_val)
-        -- Check if a unit with this id already exists (pre-created from cache data)
+        -- Check if a unit with this id already exists
         local unit = nil
         for _, u in pairs(self._config_units) do
             if u.id == id then unit = u; break end
@@ -220,30 +220,59 @@ function M.make_mock_workspace(overrides)
             unit = ConfigUnit.new(self, id, project.key)
             self._config_units[#self._config_units + 1] = unit
         end
-        -- Build cache-shaped table for _apply to read from
-        local cached_entry = {
-            project_key = unit._init_project_key or project.key,
-            config_key = unit._config_key or config_key,
-            type = project.type,
-            variant = unit._variant or variant,
-            state = unit.state_value,
-            build_dir = unit.build_dir_value or abs_path,
-            last_configured = unit.last_configured,
-            last_built = unit.last_built,
-        }
-        if tool_key then
-            cached_entry.tool_key = unit._tool_key or tool_key
-            cached_entry.tool_data = unit._tool_data or tool_data_val
+        -- Look up cache entry from _test_cache if available
+        local test_cache = self._test_cache
+        if test_cache and test_cache.configurations and not test_cache.build_dirs then
+            test_cache = M.migrate_cache_v6_to_v7(test_cache)
         end
-        if unit.cmake_info then
-            cached_entry.cmake = unit.cmake_info
+        local cache_entry = test_cache and test_cache.build_dirs
+            and test_cache.build_dirs[id] or nil
+        if cache_entry then
+            -- Enrich with absolute build_dir
+            local enriched = vim.tbl_extend("keep", cache_entry, {
+                build_dir = abs_path,
+            })
+            unit:_apply({
+                cached = enriched,
+                project = project,
+                tool = tool,
+                configuration = configuration,
+            })
+        else
+            -- No cache entry: profile-resolved but unconfigured
+            -- Build a minimal cache-shaped table from existing first-class fields
+            -- (handles case where unit was previously populated by materialize, etc.)
+            if unit.state_value or unit._config_key then
+                local cached_entry = {
+                    project_key = unit._init_project_key or project.key,
+                    config_key = unit._config_key or config_key,
+                    type = project.type,
+                    variant = unit._variant or variant,
+                    state = unit.state_value,
+                    build_dir = unit.build_dir_value or abs_path,
+                    last_configured = unit.last_configured,
+                    last_built = unit.last_built,
+                }
+                if tool_key then
+                    cached_entry.tool_key = unit._tool_key or tool_key
+                    cached_entry.tool_data = unit._tool_data or tool_data_val
+                end
+                if unit.cmake_info then cached_entry.cmake = unit.cmake_info end
+                unit:_apply({
+                    cached = cached_entry,
+                    project = project,
+                    tool = tool,
+                    configuration = configuration,
+                })
+            else
+                unit:_apply({
+                    project = project,
+                    tool = tool,
+                    configuration = configuration,
+                    build_dir_value = abs_path,
+                })
+            end
         end
-        unit:_apply({
-            cached = cached_entry,
-            project = project,
-            tool = tool,
-            configuration = configuration,
-        })
         return unit
     end
 
@@ -399,31 +428,11 @@ function M.make_mock_workspace(overrides)
         self_ws._core._deps.user.save(self_ws.root, self_ws:_serialize_user())
     end
 
-    -- If cache overrides were provided, pre-create ConfigUnits from build_dirs.
-    -- This replaces the old pattern of storing cache data on ws.cache.
-    local cache_data = overrides.cache
-    -- Auto-migrate v6 configurations to v7 build_dirs
-    if cache_data and cache_data.configurations and not cache_data.build_dirs then
-        cache_data = M.migrate_cache_v6_to_v7(cache_data)
-    end
-    if cache_data and cache_data.build_dirs then
-        for id, entry in pairs(cache_data.build_dirs) do
-            -- Skip if a unit already exists for this id
-            local exists = false
-            for _, u in pairs(ws._config_units) do
-                if u.id == id then exists = true; break end
-            end
-            if not exists then
-                -- Enrich entry with absolute build_dir computed from key
-                local enriched = vim.tbl_extend("keep", entry, {
-                    build_dir = cache_mod_h.absolute_build_dir(id, ws.root),
-                })
-                local unit = ConfigUnit.new(ws, id, entry.project_key)
-                unit:_apply({ cached = enriched })
-                ws._config_units[#ws._config_units + 1] = unit
-            end
-        end
-    end
+    -- Store cache data for tests that need to access it directly.
+    -- ConfigUnits are NO LONGER auto-created from cache — they come from
+    -- profile resolution. Tests that need ConfigUnits should set up profiles
+    -- or use ensure_config_unit / ensure_config_unit_by_id.
+    ws._test_cache = overrides.cache
 
     return ws
 end
@@ -446,24 +455,35 @@ function M.register_profile_project(ws, profile, project_key, variant)
         configuration = project:get_configuration(variant)
     end
     local config_unit = nil
-    -- Compute expected build_dir and look up ConfigUnit by id
+    -- Compute expected build_dir and look up or create ConfigUnit
     if project then
         local tool_data = nil
+        local tool_key = nil
         local profile_tools = profile.tools_data and profile:tools_data() or nil
         if profile_tools and project.type and profile_tools[project.type] then
             tool_data = profile_tools[project.type].data
+            tool_key = profile_tools[project.type].key
         end
         local expected_id = ws:_compute_build_dir(project, variant, tool_data)
         if expected_id then
             for _, unit in pairs(ws._config_units) do
                 if unit.id == expected_id then
-                    -- Resolve references if not yet resolved (e.g. pre-created from cache)
+                    -- Resolve references if not yet resolved
                     if not unit._project then
                         M.refresh_config_unit(ws, unit)
                     end
                     config_unit = unit
                     break
                 end
+            end
+            -- Create ConfigUnit if not found (profile resolution creates them)
+            if not config_unit and configuration then
+                local tool = nil
+                if tool_key then
+                    local mod = project._module or ws:find_module(project.type)
+                    if mod then tool = mod:find_tool(tool_key) end
+                end
+                config_unit = ws:ensure_config_unit(project, configuration, tool)
             end
         end
     end

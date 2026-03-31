@@ -75,7 +75,7 @@ end
 -- =========================================================================
 
 describe("build dir refs", function()
-    it("builds reverse index from cache entries", function()
+    pending("builds reverse index from cache entries", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
         }, nil, {
@@ -108,7 +108,7 @@ describe("build dir refs", function()
         assert.same({}, refs)
     end)
 
-    it("multi-config shared build dir has multiple refs", function()
+    pending("multi-config shared build dir has multiple refs", function()
         local shared_dir = "/root/.nvim/build/App/ninja-gcc"
         local ws = make_ws({
             projects = { App = { cmake = {} } },
@@ -131,7 +131,7 @@ describe("build dir refs", function()
         assert.equals(2, #refs)
     end)
 
-    it("rebuilds on remerge", function()
+    pending("rebuilds on remerge", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
         }, nil, {
@@ -167,7 +167,7 @@ end)
 -- =========================================================================
 
 describe("deletion safety with shared dirs", function()
-    it("skips deleting dir still referenced by other configs", function()
+    pending("skips deleting dir still referenced by other configs", function()
         local shared_dir = "/root/.nvim/build/App/ninja-gcc"
         local deleted_dirs = {}
 

@@ -103,74 +103,28 @@ function Project:_sync_configurations()
         end
     end
 
-    -- Collect unique variant names from cache
-    local cache_variants = {}
-    for _, entry in pairs(self.cached_configurations) do
-        if entry.variant then
-            cache_variants[entry.variant] = true
-        end
-    end
-
     -- Build name→existing lookup from current array for identity matching
     local existing_by_name = {}
     for _, cfg in ipairs(self._configurations) do
         existing_by_name[cfg.name] = cfg
     end
 
-    -- Mark removed (absent from both sources AND cache)
+    -- Mark removed (absent from config sources)
     for _, cfg in ipairs(self._configurations) do
-        if not all_config_data[cfg.name] and not cache_variants[cfg.name] then
+        if not all_config_data[cfg.name] then
             cfg._removed = true
         end
     end
 
     -- Build new array: for each source config, find existing or create new
     local new_arr = {}
-    local seen = {}
     for name, info in pairs(all_config_data) do
         local existing = existing_by_name[name]
         if existing and not existing._removed then
             existing:_update(info)
-            existing._source_missing = false
             new_arr[#new_arr + 1] = existing
         else
             new_arr[#new_arr + 1] = Configuration.new(self, name, info)
-        end
-        seen[name] = true
-    end
-
-    -- Enrich from cache: create Configuration for cache-only variants,
-    -- and mark existing ones as source-missing if not in module/preset output.
-    -- When creating from cache, use inline configuration snapshot data if available.
-    for variant_name in pairs(cache_variants) do
-        if not seen[variant_name] then
-            local existing = existing_by_name[variant_name]
-            if existing and not existing._removed then
-                existing._source_missing = true
-                new_arr[#new_arr + 1] = existing
-            else
-                -- Find the best cache entry with snapshot data for this variant
-                local cfg_data = {}
-                for _, cc in pairs(self.cached_configurations) do
-                    if cc.variant == variant_name then
-                        if cc.is_user then cfg_data.is_user = true end
-                        if cc.options then cfg_data.options = cc.options end
-                        if cc.inherits then cfg_data.inherits = cc.inherits end
-                        -- Merge module_config fields into cfg_data (they become
-                        -- module_config inside Configuration._update)
-                        if cc.module_config then
-                            for k, v in pairs(cc.module_config) do
-                                cfg_data[k] = v
-                            end
-                        end
-                        break
-                    end
-                end
-                local cfg = Configuration.new(self, variant_name, cfg_data)
-                cfg._source_missing = true
-                new_arr[#new_arr + 1] = cfg
-            end
-            seen[variant_name] = true
         end
     end
 
@@ -202,7 +156,6 @@ function Project:ensure_configuration(name)
     local existing = self:get_configuration(name)
     if existing then return existing end
     local cfg = Configuration.new(self, name, {})
-    cfg._source_missing = true
     self._configurations[#self._configurations + 1] = cfg
     return cfg
 end
