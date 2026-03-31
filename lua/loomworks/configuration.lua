@@ -97,6 +97,7 @@ end
 --- @return table|nil
 function Configuration:serialize_user_override()
     if not self.is_user then return nil end
+    if self._source_missing then return nil end
     local entry = {}
     -- module_config holds module-specific fields (cmake: variant, toolchain, generator)
     -- excluding generic fields (is_default, is_user, from_preset, role, inherits, options)
