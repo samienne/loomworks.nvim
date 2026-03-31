@@ -2158,14 +2158,53 @@ function Workspace:_save_config()
     return ok, err
 end
 
+--- Serialize a project partially — only configurations in needed_config_names.
+--- Used by _serialize_user() to emit only pin-reachable configurations.
+--- @param project loomworks.Project
+--- @param needed_config_names table<string, boolean> set of config names to include
+--- @return table entry raw JSON-compatible project entry
+function Workspace:_serialize_project_partial(project, needed_config_names)
+    local type_config = project.type_config
+            and vim.deepcopy(project.type_config) or {}
+    local configs_dict = {}
+    for _, cfg in ipairs(project._configurations) do
+        if needed_config_names[cfg.name] then
+            local override = cfg:serialize_user_override()
+            if override then
+                configs_dict[cfg.name] = override
+            end
+        end
+    end
+    if next(configs_dict) then
+        type_config.configurations = configs_dict
+    end
+    local entry = { [project.type] = next(type_config)
+            and type_config or vim.empty_dict() }
+    if project.path and project.path ~= project.key then
+        entry.path = project.path
+    end
+    if project._depends_on_keys then
+        entry.depends_on = project._depends_on_keys
+    end
+    if project.launch then
+        entry.launch = project.launch
+    end
+    return entry
+end
+
 --- Serialize user state from domain objects into a user.json data table.
---- Includes pinned profiles, user-sourced projects and configuration_sets.
+--- Walks pin roots to compute transitive closure — only reachable objects
+--- are serialized (serialization-as-GC).
 --- @return loomworks.UserData
 function Workspace:_serialize_user()
     local data = { _meta = { version = 2 } }
+
+    -- Active selection
     if self._active_profile_key then
         data.active_profile = self._active_profile_key
     end
+
+    -- Default targets (all profiles, not just pinned)
     local targets = {}
     for _, profile in pairs(self._profiles) do
         if profile._default_target_descriptor then
@@ -2174,13 +2213,18 @@ function Workspace:_serialize_user()
     end
     if next(targets) then data.default_target = targets end
 
-    -- Serialize pinned profiles as dict keyed by profile key
+    -- Walk pin roots to compute transitive closure
+    local needed_projects = {}   -- project_key → set of config names needed
+    local needed_config_sets = {} -- set_name → true
+
+    -- Serialize pinned profiles and collect their deps
     local pinned = {}
     for _, profile in pairs(self._profiles) do
         if profile._pinned then
             local entry = {}
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
+                needed_config_sets[profile._configuration_set_name] = true
             end
             local tools = profile:tools_data()
             if tools then entry.tools = tools end
@@ -2188,29 +2232,80 @@ function Workspace:_serialize_user()
                 entry.mappings = profile.mappings
             end
             pinned[profile.key] = entry
+
+            -- Collect project/config dependencies from profile mappings
+            if profile.mappings then
+                for project_key, variant in pairs(profile.mappings) do
+                    if not needed_projects[project_key] then
+                        needed_projects[project_key] = {}
+                    end
+                    needed_projects[project_key][variant] = true
+                end
+            end
         end
     end
     if next(pinned) then
         data.pinned_profiles = pinned
     end
 
-    -- Include user-sourced projects
-    local user_projects = {}
-    for _, project in pairs(self._projects) do
-        if not project.orphaned and project._source == "user" then
-            user_projects[project.key] = self:_serialize_project(project)
-        end
-    end
-    if next(user_projects) then data.projects = user_projects end
-
-    -- Include user-sourced configuration_sets
-    local user_sets = {}
+    -- Collect deps from needed config sets (they map projects to configs)
     for _, cs in pairs(self._config_sets) do
-        if cs._source == "user" then
-            user_sets[cs.name] = cs:raw_mappings()
+        if needed_config_sets[cs.name] then
+            for project, config in pairs(cs.mappings) do
+                if not needed_projects[project.key] then
+                    needed_projects[project.key] = {}
+                end
+                needed_projects[project.key][config.name] = true
+            end
         end
     end
-    if next(user_sets) then data.configuration_sets = user_sets end
+
+    -- Expand inherits chains for each needed config
+    for project_key, config_names in pairs(needed_projects) do
+        local project = nil
+        for _, p in pairs(self._projects) do
+            if p.key == project_key then project = p; break end
+        end
+        if project then
+            local expanded = {}
+            local function expand(name)
+                if expanded[name] then return end
+                expanded[name] = true
+                local cfg = project:get_configuration(name)
+                if cfg and cfg.inherits_names then
+                    for _, base in ipairs(cfg.inherits_names) do
+                        expand(base)
+                    end
+                end
+            end
+            for name in pairs(config_names) do
+                expand(name)
+            end
+            needed_projects[project_key] = expanded
+        end
+    end
+
+    -- Serialize needed config sets (user-sourced only)
+    local config_sets = {}
+    for _, cs in pairs(self._config_sets) do
+        if needed_config_sets[cs.name] and cs._source == "user" then
+            config_sets[cs.name] = cs:raw_mappings()
+        end
+    end
+    if next(config_sets) then data.configuration_sets = config_sets end
+
+    -- Serialize needed projects (partial — only needed configs, user-sourced only)
+    local projects = {}
+    for project_key, config_names in pairs(needed_projects) do
+        local project = nil
+        for _, p in pairs(self._projects) do
+            if p.key == project_key then project = p; break end
+        end
+        if project and not project.orphaned and project._source == "user" then
+            projects[project_key] = self:_serialize_project_partial(project, config_names)
+        end
+    end
+    if next(projects) then data.projects = projects end
 
     return data
 end

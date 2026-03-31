@@ -2783,10 +2783,14 @@ describe("two-layer merge", function()
         assert.is_nil(raw.configuration_sets and raw.configuration_sets.UserDebug)
     end)
 
-    it("serialize_user includes user-sourced projects", function()
+    it("serialize_user includes pin-reachable user-sourced projects", function()
         local ws = make_ws(
             { projects = { App = { cmake = {} } } },
-            { projects = { MyLib = { cmake = {} } } }
+            {
+                projects = { MyLib = { cmake = {} } },
+                configuration_sets = { dev = { MyLib = "Debug" } },
+                pinned_profiles = { dev = { configuration_set = "dev" } },
+            }
         )
         local user_data = ws:_serialize_user()
         assert.is_not_nil(user_data.projects)
@@ -2794,7 +2798,17 @@ describe("two-layer merge", function()
         assert.is_nil(user_data.projects and user_data.projects.App)
     end)
 
-    it("serialize_user includes user-sourced config_sets", function()
+    it("serialize_user excludes unreachable user-sourced projects", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            { projects = { MyLib = { cmake = {} } } }
+        )
+        -- No pins → nothing reachable
+        local user_data = ws:_serialize_user()
+        assert.is_nil(user_data.projects)
+    end)
+
+    it("serialize_user includes pin-reachable user-sourced config_sets", function()
         local ws = make_ws(
             {
                 projects = { App = { cmake = {} } },
@@ -2802,6 +2816,7 @@ describe("two-layer merge", function()
             },
             {
                 configuration_sets = { UserDebug = { App = "Release" } },
+                pinned_profiles = { ["UserDebug"] = { configuration_set = "UserDebug" } },
             }
         )
         local user_data = ws:_serialize_user()
@@ -2810,12 +2825,13 @@ describe("two-layer merge", function()
         assert.is_nil(user_data.configuration_sets and user_data.configuration_sets.SharedDebug)
     end)
 
-    it("solo dev: all from user.json, no shared projects", function()
+    it("solo dev: pinned items from user.json serialized, no shared projects", function()
         local ws = make_ws(
             { projects = {} },  -- empty shared
             {
                 projects = { App = { cmake = {} } },
                 configuration_sets = { Debug = { App = "Debug" } },
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
             }
         )
         local app = h.find_project_in(ws:get_projects(), "App")
@@ -2830,7 +2846,7 @@ describe("two-layer merge", function()
         local raw = ws:_serialize_config()
         assert.is_falsy(next(raw.projects))
 
-        -- User config should contain everything
+        -- User config should contain pin-reachable items
         local user_data = ws:_serialize_user()
         assert.is_not_nil(user_data.projects.App)
         assert.is_not_nil(user_data.configuration_sets.Debug)
