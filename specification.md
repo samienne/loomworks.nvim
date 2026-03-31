@@ -316,6 +316,13 @@ Sparse record of what has actually been configured and built.
       "tool_mod_type": "cmake",
       "configurations": ["App/Debug:ninja-gcc-12"]
     }
+  },
+  "deploy_state": {
+    "/workspace/App/Debug/native.node": {
+      "source_build_dir": "build/NativeLib/Debug:ninja-gcc-12",
+      "source_rel_path": "native_lib.node",
+      "source_mtime": "2026-03-31T10:00:00Z"
+    }
   }
 }
 ```
@@ -326,6 +333,9 @@ Sparse record of what has actually been configured and built.
 - Flat `configurations` dict keyed by opaque `"project_key/config_key"`.
   Each entry is self-describing (includes project_key, config_key, type,
   tool properties). Profiles reference configurations by cache key.
+- `deploy_state` dict keyed by normalized absolute destination path. Tracks
+  which source config unit's artifact was last deployed to each destination.
+  Cleaned when source config units are deleted/cleaned.
 - **Purely a serialization format.** At runtime, domain objects (ConfigUnit,
   Profile) own all mutable state as first-class fields. The cache file is
   generated from domain objects on save via `serialize()` methods. After
@@ -1892,7 +1902,7 @@ defines how to run the project after building. Two types:
 artifact path from the build directory and runs it via overseer.
 
 **Command-type launches** (loomworks.json `launch` section): Named launch
-configurations per project with command, args, env, working_dir.
+configurations per project with command, args, env, working_dir, deploy.
 
 ```json
 "ScenePluginTest": {
@@ -1910,18 +1920,20 @@ configurations per project with command, args, env, working_dir.
 }
 ```
 
-**Variable expansion** in args, env values, working_dir:
+**Variable expansion** in args, env values, working_dir, deploy destinations:
 - `${workspace_root}` — absolute workspace root path
+- `${build_dir}` — config unit's absolute build directory path
 - `${config_set}` — active configuration set name
 - `${variant}` — project's variant in the active config set
 - `${project_path}` — project's relative path
 
 **Launch flow** (`launch_target()` API):
 1. Get active profile's default target (LaunchTarget)
-2. If buildable: build first, launch on success
-3. Auto-configure before build if unconfigured
-4. Open overseer window for launch output
-5. Track launched process for `stop_target()`
+2. If buildable: build first (auto-configure if unconfigured)
+3. Resolve and execute deploy steps (section 9.8) — block on failure
+4. Launch on success
+5. Open overseer window for launch output
+6. Track launched process for `stop_target()`
 
 **Default target storage** in user.json per profile:
 ```json
@@ -1932,6 +1944,191 @@ configurations per project with command, args, env, working_dir.
     }
 }
 ```
+
+### 9.8 Deploy Steps
+
+Deploy steps ensure build artifacts from one config unit are copied to the
+correct location before a launch target runs. They guarantee that the
+launched process sees up-to-date files regardless of which configuration was
+most recently built.
+
+**Definition**: A deploy step is a declarative intent — "ensure artifact X
+from source config unit Y is at destination Z, up to date, before launch."
+Deploy steps are defined in `loomworks.json` on launch configurations.
+
+#### 9.8.1 Syntax
+
+Deploy steps are a dict keyed by destination path, with source descriptors
+as values:
+
+```json
+"App": {
+    "typescript": {},
+    "launch": {
+        "debug": {
+            "command": "node",
+            "args": ["app.js"],
+            "deploy": {
+                "${build_dir}/native.node": {
+                    "project": "NativeLib",
+                    "target": "native_lib"
+                },
+                "${workspace_root}/shared/lib/": {
+                    "project": "ConfigLib",
+                    "configuration": "Release",
+                    "path": "bin/config.dll"
+                }
+            }
+        }
+    }
+}
+```
+
+**Destination key** (left side): path where the file should end up. Variable
+expansion uses the **launch target's project context** (same variables as
+launch config expansion, plus `${build_dir}`):
+
+- `${workspace_root}` — absolute workspace root path
+- `${build_dir}` — launch target's config unit's build directory
+- `${project_path}` — launch target's project path (relative to root)
+- `${variant}` — launch target's project variant in the active profile
+- `${config_set}` — active configuration set name
+
+If the destination ends with `/`, it is a directory — the source filename is
+preserved. Otherwise the destination is a full file path (rename). Parent
+directories are created automatically if they do not exist.
+
+Path safety: `..` and `.` segments are rejected at parse time.
+
+**Source descriptor** (right side): identifies which file to copy.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `project` | yes | Source project key |
+| `target` | one of target/path | cmake target name — resolved to artifact path |
+| `path` | one of target/path | file path relative to source build dir |
+| `configuration` | no | Pin to a specific configuration; defaults to profile resolution |
+
+Source fields use **no variable expansion** — `target` is a cmake target
+name resolved via the module, `path` is a literal relative path from the
+source config unit's build directory.
+
+#### 9.8.2 Source resolution
+
+At launch time, each deploy step resolves its source within the active
+profile's context:
+
+1. Look up the source project by key
+2. Determine the configuration:
+   - If `configuration` is specified → use that variant name
+   - If omitted → use the profile's configuration set mapping for the
+     source project
+3. Find the config unit for (source project, resolved configuration) in
+   the active profile. The profile's tool mapping provides the tool.
+4. Resolve the source file path:
+   - `target` → look up the target in the config unit's targets dict →
+     use `target.artifact` relative to the config unit's build directory
+   - `path` → use as-is relative to the config unit's build directory
+5. If any step fails (project not in profile, configuration not found,
+   target not found, build dir is nil), the deploy step is **unresolvable**
+
+**Unresolvable deploy steps block the launch.** The user is notified with
+a specific error (e.g., "Deploy: NativeLib not in profile", "Deploy:
+target native_lib not found"). The launch does not proceed.
+
+#### 9.8.3 Freshness tracking
+
+The system tracks which source was last copied to each destination. This is
+necessary because mtime alone is insufficient — building Release after Debug
+makes Release's artifact newer, but switching back to a Debug launch must
+still copy the Debug artifact.
+
+**Deploy record** (stored in cache.json `deploy_state` section):
+
+```json
+"deploy_state": {
+    "C:/workspace/App/Debug/native.node": {
+        "source_build_dir": "build/NativeLib/Debug:ninja-gcc-12",
+        "source_rel_path": "native_lib.node",
+        "source_mtime": "2026-03-31T10:00:00Z"
+    }
+}
+```
+
+Keyed by **normalized absolute destination path**. Each record tracks:
+- `source_build_dir` — config unit id (relative build dir path) from which
+  the file was last copied
+- `source_rel_path` — relative path within that build dir
+- `source_mtime` — mtime of the source file at the time of the last copy
+
+**Freshness check** for each deploy step:
+
+1. Resolve source → `(build_dir, rel_path)` → absolute source path
+2. Look up deploy record for the expanded destination path
+3. Copy is needed if ANY of:
+   - No deploy record exists (never copied)
+   - Destination file does not exist on disk
+   - `source_build_dir` differs (configuration or tool changed)
+   - `source_rel_path` differs (target artifact path changed)
+   - Source file mtime is newer than recorded `source_mtime`
+4. After successful copy, update the deploy record
+
+Deploy records are domain state — deserialized from cache.json into
+workspace-owned objects during remerge, serialized back on save. No raw
+cache data is retained.
+
+#### 9.8.4 Launch flow with deploy
+
+The launch flow (section 9.7) is extended:
+
+1. Get active profile's default target (LaunchTarget)
+2. If buildable: build dependencies, then build self
+3. **Resolve deploy steps** from launch config
+4. **Execute deploy steps**: for each step, check freshness, copy if needed
+5. If any deploy step fails (unresolvable, copy error) → **block launch**,
+   notify user with error
+6. Launch the target
+7. Open overseer window for launch output
+
+Deploy steps execute sequentially (order of dict keys). All deploy steps
+must succeed before the launch proceeds.
+
+#### 9.8.5 Cleanup on deletion/clean
+
+When a config unit is deleted or cleaned (sections 4.6, 4.7):
+
+1. Scan deploy records for entries where `source_build_dir` matches the
+   affected config unit's build dir id
+2. Delete the destination files (if they exist on disk)
+3. Remove the deploy records from cache
+4. Save cache
+
+This ensures deployed artifacts do not outlive their source build
+directories.
+
+#### 9.8.6 Design for extension (not in v1)
+
+The deploy system is designed for future extension:
+
+**Cascade levels**: Deploy steps can be defined at multiple levels, with
+more specific levels overriding less specific ones per destination key:
+
+```
+Project.deploy          → applies to all configs/launches of this project
+  Configuration.deploy  → overrides project-level for this configuration
+    Launch.deploy       → overrides config-level for this launch
+```
+
+A `null` value at a more specific level suppresses a parent-level deploy
+step. v1 implements launch-level only.
+
+**Action types**: The `deploy` dict currently implies a "copy" action.
+Future actions (symlink, script execution) could be specified via an
+explicit action field in the source descriptor.
+
+**user.json deploy**: Deploy steps in user.json follow the same
+replication rules as other pinned data — when a profile is pinned,
+its launch config's deploy steps are replicated to user.json.
 
 ---
 

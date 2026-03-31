@@ -37,11 +37,12 @@ TypeScript configure (npm install) is per-ConfigUnit but npm install is
 project-level (shared node_modules). Could deduplicate by making configure
 project-level rather than configuration-level.
 
-## Post-build file copy support
+## ~~Post-build file copy support~~
 
-Some projects need files copied after build (e.g., cmake-built native
-libraries copied to TypeScript project's Debug/Release folder). Need a
-post-build step or copy-file mechanism in loomworks.json.
+**Addressed** (feature/deploy-steps). Implemented as deploy steps on launch
+configurations — declarative copy steps that ensure build artifacts are
+deployed before launch, with freshness tracking. See specification.md
+section 9.8.
 
 ## TypeScript LSP integration (tsconfig switching)
 
