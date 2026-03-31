@@ -325,7 +325,7 @@ describe("Profile _tool_objects resolution", function()
 
     it("tool_object_for returns nil for missing module", function()
         local ws = h.make_mock_workspace()
-        local profile = Profile.new(ws, { _key = "debug" })
+        local profile = Profile.new(ws, { mappings = { App = "Debug" } })
         local cmake_mod = ws:get_or_create_module("cmake")
         assert.is_nil(profile:tool_object_for(cmake_mod))
     end)

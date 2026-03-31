@@ -489,13 +489,13 @@ describe("ProfileProject", function()
             h.ensure_config_unit_by_id(core, "build/App/Debug", "App")
             local Profile = require("loomworks.profile").Profile
             local p1 = Profile.new(core, {
-                _key = "debug:ninja-gcc",
                 configuration_set = "debug",
+                tools = { cmake = { key = "ninja-gcc" } },
                 mappings = { App = "Debug" },
             })
             local p2 = Profile.new(core, {
-                _key = "debug:ninja-clang",
                 configuration_set = "debug",
+                tools = { cmake = { key = "ninja-clang" } },
                 mappings = { App = "Debug" },
             })
             -- Populate profile_projects registry and Profile's direct lists

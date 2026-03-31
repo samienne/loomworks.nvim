@@ -140,7 +140,6 @@ end
 --- @field key string profile key — derived from data, never set externally
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
---- @field _stored_key string|nil externally-defined key (pinned/explicit profiles)
 --- Data fields (set during _apply):
 --- @field _configuration_set_name string|nil set name for set-based profiles
 --- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
@@ -178,7 +177,7 @@ local STATUS_HL = {
 
 --- Create a new Profile object.
 --- @param workspace loomworks.Workspace
---- @param data? { _key?: string, configuration_set?: string, tools?: table<string, { key: string, data: table, label: string }>, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
+--- @param data? { configuration_set?: string, tools?: table<string, { key: string, data: table, label: string }>, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
 --- @return loomworks.Profile
 function Profile.new(workspace, data)
     local self = setmetatable({}, Profile)
@@ -197,9 +196,6 @@ function Profile:_apply(data)
     self._pinned = data._pinned or false
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
-
-    -- Store key for profiles whose key is externally defined (not derivable)
-    if data._key then self._stored_key = data._key end
 
     -- Read pre-resolved Tool domain objects (set by _sync_profiles)
     self._tool_objects = data._tool_objects
@@ -224,16 +220,30 @@ end
 
 --- Compute and set self.key from the profile's data fields.
 --- Set-based profiles derive from configuration_set_name + tools.
---- Pinned and explicit profiles use their stored key.
+--- Single-config (pinned) profiles derive from project/config_key.
 function Profile:_derive_key()
     if self._configuration_set_name then
         -- Set-based profiles always derive key from set name + tools
         -- (even when pinned — the key tracks the set name)
         local merge_mod = require("loomworks.merge")
         self.key = merge_mod.profile_key(self._configuration_set_name, self:tools_data())
-    elseif self._stored_key then
-        -- Non-set-based profiles (pinned single-configs, explicit) use stored key
-        self.key = self._stored_key
+    elseif self.mappings then
+        -- Single-config profile: derive from project/variant:tool
+        local merge_mod = require("loomworks.merge")
+        for project_key, variant in pairs(self.mappings) do
+            local tools = self:tools_data()
+            local tool_key = nil
+            if tools then
+                for _, tool_ref in pairs(tools) do
+                    tool_key = tool_ref.key
+                    break
+                end
+            end
+            local config_key = merge_mod.build_config_key(variant, tool_key)
+            self.key = merge_mod.pinned_key(project_key, config_key)
+            return  -- single-config: one mapping only
+        end
+        self.key = "unnamed"
     else
         self.key = "unnamed"
     end

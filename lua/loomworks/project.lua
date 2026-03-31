@@ -522,18 +522,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
         elseif profile.mappings and profile.mappings[self.key] == old_name then
             -- Pinned: update the stored variant reference and re-derive key
             profile.mappings[self.key] = new_name
-            if profile._stored_key then
-                -- Recompute stored key with new variant
-                local merge_mod = require("loomworks.merge")
-                local tool_key = nil
-                local profile_tools = profile:tools_data()
-                if profile_tools and profile_tools[self.type] then
-                    tool_key = profile_tools[self.type].key
-                end
-                local new_config_key = merge_mod.build_config_key(new_name, tool_key)
-                profile._stored_key = merge_mod.pinned_key(self.key, new_config_key)
-                profile:_derive_key()
-            end
+            profile:_derive_key()
         end
         if profile.mappings and profile.mappings[self.key] then
             ws:_rebuild_profile_projects_for(profile)

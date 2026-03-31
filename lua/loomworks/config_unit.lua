@@ -438,9 +438,6 @@ function ConfigUnit:materialize_pinned(variant, tool)
     if not self._variant then return nil end
 
     local project_key = self._project.key
-    local config_key = self._config_key
-        or self._workspace._core._deps.merge.build_config_key(
-            self._variant, self._tool_key)
 
     -- Build tool info for cache entry
     local tool_obj = self._tool
@@ -467,12 +464,6 @@ function ConfigUnit:materialize_pinned(variant, tool)
         }
     end
 
-    -- Generate collision-safe key using domain objects
-    local base_key = ws._core._deps.merge.pinned_key(project_key, config_key)
-    local existing_keys = {}
-    for _, p in pairs(ws._profiles) do existing_keys[p.key] = true end
-    local ak = ws._core._deps.cache.next_available_key(base_key, existing_keys)
-
     -- Create Profile object directly with pre-resolved references
     local Profile = require("loomworks.profile").Profile
     local ProfileProject = require("loomworks.profile").ProfileProject
@@ -483,7 +474,6 @@ function ConfigUnit:materialize_pinned(variant, tool)
     end
 
     local profile = Profile.new(ws, {
-        _key = ak,
         tools = tools_raw,
         mappings = { [project_key] = mat_variant },
         _pinned = true,

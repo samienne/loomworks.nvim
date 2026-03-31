@@ -145,7 +145,6 @@ function ConfigurationSet:ensure_profile(tool_entry)
     if not profile then
         -- Create a new pinned profile for this config set + tool combination
         local Profile = require("loomworks.profile").Profile
-        local merge_mod = require("loomworks.merge")
 
         -- Build tools dict from tool_entry
         local tools = nil
@@ -164,7 +163,6 @@ function ConfigurationSet:ensure_profile(tool_entry)
             configuration_set = self.name,
             tools = tools,
             _pinned = true,
-            _key = merge_mod.profile_key(self.name, tools),
         }
 
         -- Resolve references for _apply
