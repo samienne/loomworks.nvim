@@ -105,6 +105,60 @@ function M.paths(root)
     }
 end
 
+--- Merge user.json and loomworks.json into a single config for merge.merge().
+--- User wins at the project level (entire project definition) and at the
+--- configuration_set level (entire set definition). Shared items fill in
+--- anything the user doesn't override.
+--- @param user_config table|nil parsed user data (may have projects, configuration_sets)
+--- @param shared_config table|nil parsed loomworks.json config
+--- @return table merged config suitable for merge.merge()
+--- @return table<string, boolean> user_project_keys set of project keys from user
+--- @return table<string, boolean> user_cs_names set of config_set names from user
+function M.merge_configs(user_config, shared_config)
+    local merged = {
+        name = shared_config and shared_config.name or nil,
+        projects = {},
+        configuration_sets = {},
+        profiles = shared_config and shared_config.profiles or nil,
+    }
+    local user_project_keys = {}
+    local user_cs_names = {}
+
+    -- Start with shared
+    if shared_config and shared_config.projects then
+        for k, v in pairs(shared_config.projects) do
+            merged.projects[k] = v
+        end
+    end
+    -- User overrides at project level
+    if user_config and user_config.projects then
+        for k, v in pairs(user_config.projects) do
+            merged.projects[k] = v
+            user_project_keys[k] = true
+        end
+    end
+
+    -- Configuration sets: same pattern
+    if shared_config and shared_config.configuration_sets then
+        for k, v in pairs(shared_config.configuration_sets) do
+            merged.configuration_sets[k] = v
+        end
+    end
+    if user_config and user_config.configuration_sets then
+        for k, v in pairs(user_config.configuration_sets) do
+            merged.configuration_sets[k] = v
+            user_cs_names[k] = true
+        end
+    end
+
+    -- Empty tables should be nil for downstream compatibility
+    if not next(merged.configuration_sets) then
+        merged.configuration_sets = nil
+    end
+
+    return merged, user_project_keys, user_cs_names
+end
+
 --- Assemble workspace data from raw file contents.
 --- Pure function: no file I/O, no side effects.
 --- Returns a plain data table (not a Workspace instance).
@@ -129,6 +183,17 @@ function M.assemble(root, config_content, user_content, cache_content)
     else
         user_data = user_mod.default()
         user_version_mismatch = false
+    end
+
+    -- Normalize user projects from raw JSON format to internal format
+    if user_data.projects and next(user_data.projects) then
+        local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
+        if normalized then
+            user_data.projects = normalized
+        else
+            vim.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
+            user_data.projects = nil
+        end
     end
 
     local cache_data, cache_version_mismatch
@@ -189,6 +254,9 @@ end
 --- @field _delete_waiters function[]
 --- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
+--- @field _user_config_overlay table|nil user.json project/configuration_set overlay
+--- @field _user_project_keys table<string, boolean> project keys from user.json
+--- @field _user_cs_names table<string, boolean> config_set names from user.json
 local Workspace = {}
 Workspace.__index = Workspace
 
@@ -219,6 +287,9 @@ function Workspace.new(core, data)
     self._operations = {}
     self._tools_by_type = {}
     self._modules = {} -- id -> Module domain object (tools owned by modules)
+    self._user_config_overlay = nil
+    self._user_project_keys = {}
+    self._user_cs_names = {}
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -245,6 +316,39 @@ function Workspace:find_config_unit(project, configuration, tool)
     return nil
 end
 
+--- Compute the expected build directory for a project configuration.
+--- Delegates to the module's resolve_build_dir, then relativizes.
+--- For modules without resolve_build_dir, uses default path formula.
+--- @param project loomworks.Project
+--- @param variant string configuration variant name
+--- @param tool_data? table module-specific tool data (with .id for cmake kits)
+--- @return string relative build_dir key (used as ConfigUnit id and cache key)
+--- @return string absolute build_dir path
+function Workspace:_compute_build_dir(project, variant, tool_data)
+    local mod = project._module and project._module.impl or nil
+    local abs_path
+    if mod and mod.resolve_build_dir then
+        -- Get configuration info from project for binary_dir overrides
+        local config_info = nil
+        local cfg = project:get_configuration(variant)
+        if cfg and cfg.module_config then
+            config_info = cfg.module_config
+        end
+        abs_path = mod.resolve_build_dir(project.key, variant, config_info, self.root, tool_data)
+    else
+        -- Default: {root}/.nvim/build/{project_key}/{variant}
+        -- Include tool id as path segment when present
+        local tool_id = tool_data and tool_data.id or nil
+        if tool_id then
+            abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. tool_id .. "/" .. variant
+        else
+            abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. variant
+        end
+    end
+    local rel_key = cache_mod.relative_build_dir(abs_path, self.root)
+    return rel_key, abs_path
+end
+
 --- Find or create a ConfigUnit for the given project, configuration, and tool.
 --- Searches by properties first. If not found, creates a new cache entry
 --- and ConfigUnit. Key generation is a write-time cache concern only.
@@ -256,11 +360,13 @@ function Workspace:ensure_config_unit(project, configuration, tool)
     local existing = self:find_config_unit(project, configuration, tool)
     if existing then return existing end
 
-    -- Generate cache key (write-time concern — opaque identity for the new entry)
     local variant = configuration.name
     local tool_key = tool and tool.key or nil
+    local tool_data = tool and tool.data or nil
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
-    local id = cache_mod.config_cache_key(project.key, config_key)
+
+    -- Compute build_dir-based identity
+    local rel_key, abs_path = self:_compute_build_dir(project, variant, tool_data)
 
     -- Create cache entry as owned data on the ConfigUnit
     local entry = {
@@ -269,11 +375,12 @@ function Workspace:ensure_config_unit(project, configuration, tool)
         type = project.type,
         variant = variant,
         tool_key = tool_key,
-        tool_data = tool and tool.data or nil,
+        tool_data = tool_data,
+        build_dir = abs_path,
     }
 
     -- Create ConfigUnit and register — pre-resolve references
-    local unit = ConfigUnit.new(self, id, project.key)
+    local unit = ConfigUnit.new(self, rel_key, project.key)
     unit:_apply({
         cached = entry,
         project = project,
@@ -290,31 +397,36 @@ end
 -- ===========================================================================
 
 --- Serialize workspace state to a cache data structure for persistence.
---- Always reads from domain objects (ConfigUnit, Profile).
+--- Always reads from domain objects (ConfigUnit).
 --- Does not include _meta — that is added by cache.save() and _save_cache().
+--- Profiles are NOT in cache — they are derived at runtime from config_sets × tools.
 --- @return loomworks.CacheData
 function Workspace:_serialize_cache()
     local data = {
-        configurations = {},
+        build_dirs = {},
     }
 
-    -- Configurations: always serialize from ConfigUnit objects
+    -- Build dirs: serialize from ConfigUnit objects, keyed by relative build_dir.
+    -- Only serialize units that have actual build state (have been configured).
+    -- Unconfigured units that have never been built are not persisted.
     for _, unit in pairs(self._config_units) do
-        if unit._config_key then
+        if unit._variant and unit.state_value then
             local entry = unit:serialize()
             if entry.cmake then entry.cmake.targets = nil end
-            data.configurations[unit.id] = entry
+            -- Key is the unit's id (relative build_dir path)
+            data.build_dirs[unit.id] = entry
         end
     end
 
-    -- Profiles: always serialize from domain objects
-    local profiles = {}
-    for _, profile in pairs(self._profiles) do
-        profiles[profile.key] = profile:serialize_cache()
-    end
-
-    if next(profiles) then
-        data.profiles = profiles
+    -- Preserve orphaned cache entries (entries from disk not covered by any
+    -- ConfigUnit). These are entries whose build_dir doesn't match any
+    -- profile-resolved ConfigUnit but still have build state.
+    if self._last_raw_cache and self._last_raw_cache.build_dirs then
+        for key, entry in pairs(self._last_raw_cache.build_dirs) do
+            if not data.build_dirs[key] and entry.state and entry.state ~= "unconfigured" then
+                data.build_dirs[key] = entry
+            end
+        end
     end
 
     return data
@@ -332,8 +444,12 @@ function Workspace:_save_cache()
     if not ok then
         self._core._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
     end
-    if ok and self._tracker then
-        self._tracker:mark_written(self._core._deps.cache.filepath(self.root))
+    if ok then
+        -- Update raw cache reference to stay in sync with disk
+        self._last_raw_cache = cache
+        if self._tracker then
+            self._tracker:mark_written(self._core._deps.cache.filepath(self.root))
+        end
     end
     return ok
 end
@@ -345,26 +461,58 @@ end
 --- Full re-merge: reads config + cache from scratch, rebuilds all domain objects.
 --- Called only on deserialization (startup, external file change, tool detection).
 --- NOT called after mutations — mutations update objects directly.
---- @param raw_config? table parsed config data (nil = serialize from domain objects)
+---
+--- Two-layer merge: user.json projects/configuration_sets are combined with
+--- loomworks.json (shared config), with user winning at the project/set level.
+--- @param raw_config? table parsed loomworks.json config (nil = use stored shared config or serialize from objects)
 --- @param raw_cache? table parsed cache data (nil = serialize from domain objects)
 --- @param raw_user? table parsed user data (nil = use current state)
 function Workspace:remerge(raw_config, raw_cache, raw_user)
-    local config = raw_config or self:_config_from_objects()
+    -- Determine the shared config (loomworks.json portion).
+    -- When raw_config is provided (startup, file change), use it directly.
+    -- When nil (after mutations or tool detection), reconstruct from domain
+    -- objects — _shared_config_from_objects() returns only shared-sourced
+    -- items in the internal format merge.merge() expects.
+    local shared_config
+    if raw_config then
+        shared_config = raw_config
+    else
+        shared_config = self:_shared_config_from_objects()
+    end
+
     local cache = raw_cache or self:_serialize_cache()
+    -- Store raw cache for orphan detection (entries not covered by ConfigUnits)
+    self._last_raw_cache = cache
 
     -- Extract user state: if raw user data is provided, use it (even if fields are nil);
     -- otherwise use current domain state
     local active_profile_key, default_target_data
+    local user_overlay
+    local user_data  -- for merge.merge (includes pinned_profiles)
     if raw_user then
         active_profile_key = raw_user.active_profile
         default_target_data = raw_user.default_target
+        -- Store user overlay (projects/configuration_sets from user.json)
+        user_overlay = {}
+        if raw_user.projects then user_overlay.projects = raw_user.projects end
+        if raw_user.configuration_sets then user_overlay.configuration_sets = raw_user.configuration_sets end
+        self._user_config_overlay = next(user_overlay) and user_overlay or nil
+        user_data = raw_user
     else
         active_profile_key = self._active_profile_key
         default_target_data = self._default_target_data
+        user_overlay = self._user_config_overlay
+        -- Reconstruct user_data from current state for merge (includes pinned profiles)
+        user_data = self:_serialize_user()
     end
 
+    -- Two-layer merge: combine user overlay with shared config
+    local config, user_project_keys, user_cs_names = M.merge_configs(user_overlay, shared_config)
+    self._user_project_keys = user_project_keys
+    self._user_cs_names = user_cs_names
+
     local active_set, all_profile_defs = self._core._deps.merge.merge(
-        config, active_profile_key, cache, self.root, self._tools_by_type)
+        config, active_profile_key, cache, self.root, self._tools_by_type, user_data)
     self._active_set = active_set
 
     local current = {
@@ -381,6 +529,11 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         normalize = self._core._deps.normalize,
         tools_by_type = self._tools_by_type,
         default_target_data = default_target_data,
+        user_project_keys = user_project_keys,
+        user_cs_names = user_cs_names,
+        compute_build_dir = function(project, variant, tool_data)
+            return self:_compute_build_dir(project, variant, tool_data)
+        end,
     })
 
     self._modules = result.modules
@@ -410,6 +563,28 @@ function Workspace:_resolve_active_profile()
     end
 end
 
+
+--- Remove a profile entirely: marks it _removed, drops it from _profiles,
+--- and removes its ProfileProject objects from _profile_projects.
+--- @param profile loomworks.Profile
+function Workspace:_remove_profile(profile)
+    profile._removed = true
+    for i, p in ipairs(self._profiles) do
+        if p == profile then table.remove(self._profiles, i); break end
+    end
+    -- Remove PPs belonging to this profile
+    local kept = {}
+    for _, pp in ipairs(self._profile_projects) do
+        if pp._profile == profile then
+            pp._removed = true
+        else
+            kept[#kept + 1] = pp
+        end
+    end
+    self._profile_projects = kept
+    profile._projects_list = {}
+    profile._projects_by_key = {}
+end
 
 --- Rebuild ProfileProject objects for a single profile.
 --- Removes existing PPs for this profile from _profile_projects, creates new
@@ -451,14 +626,33 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 configuration = project:get_configuration(variant)
             end
             local config_unit = nil
-            if profile._cached_configurations then
-                for _, ck in ipairs(profile._cached_configurations) do
-                    local unit = units_by_id[ck]
-                    if unit and unit._init_project_key == project_key
-                            and unit._variant == variant then
-                        config_unit = unit
-                        break
+            if project then
+                local tool_data = nil
+                local tool_key = nil
+                local profile_tools = profile:tools_data()
+                if profile_tools and profile_tools[project.type] then
+                    tool_data = profile_tools[project.type].data
+                    tool_key = profile_tools[project.type].key
+                end
+                local expected_id = self:_compute_build_dir(project, variant, tool_data)
+                config_unit = units_by_id[expected_id]
+                -- Create ConfigUnit if no existing one found. Link cache entry if available.
+                if not config_unit and expected_id then
+                    config_unit = self:ensure_config_unit(
+                        project, configuration, variant, tool_key, tool_data)
+                    -- Check cache for existing build state (e.g. rename-back scenario)
+                    local cache_entry = self._last_raw_cache
+                        and self._last_raw_cache.build_dirs
+                        and self._last_raw_cache.build_dirs[expected_id]
+                    if cache_entry and cache_entry.state then
+                        config_unit:_apply({
+                            cached = cache_entry,
+                            project = project,
+                            tool = config_unit._tool,
+                            configuration = configuration,
+                        })
                     end
+                    units_by_id[config_unit.id] = config_unit
                 end
             end
             local reg_key = profile.key .. "\0" .. project_key
@@ -764,7 +958,7 @@ function Workspace:get_tool_entries()
                     tool_data = tool.tool_data,
                     tool_label = tool.tool_label,
                     tool_mod_type = keyed_mod_type,
-                    cached = profile ~= nil,
+                    cached = true,  -- all profiles exist as runtime objects
                     profile = profile,
                 }
             end
@@ -785,9 +979,9 @@ end
 -- Profile materialization
 -- ===========================================================================
 
---- Materialize a profile from structured data: write it to cache with full
---- tool and project references. Creates skeleton configuration entries.
---- No-op if the profile is already materialized (by property match).
+--- Materialize a profile: ensure skeleton ConfigUnits exist for all projects
+--- in the configuration set, save cache, and rebuild profile projects.
+--- The profile already exists as a runtime object (derived from config_sets × tools).
 --- @param config_set loomworks.ConfigurationSet
 --- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
 function Workspace:_materialize_from_data(config_set, tool_entry)
@@ -816,70 +1010,66 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
         }
     end
 
-    -- Compute profile key (pure cache identifier)
+    -- Find the profile (should already exist as runtime object)
     local profile_key = self._core._deps.merge.profile_key(set_name, tools)
-
-    -- Already materialized? Check domain objects
+    local profile = nil
     for _, p in pairs(self._profiles) do
-        if p.key == profile_key then return end
+        if p.key == profile_key then profile = p; break end
     end
 
-    local profile_configurations = {}
-
+    local changed = false
     for project, config in pairs(config_set.mappings) do
         local variant = config.name
         -- tool_key applies only to projects whose module type matches the tool
         local project_tool_key = tools and tools[project.type]
             and tools[project.type].key or nil
         local project_tool_data = project_tool_key and tools[project.type].data or nil
-        local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
 
-        local cache_key = self._core._deps.cache.config_cache_key(project.key, config_key)
-        profile_configurations[#profile_configurations + 1] = cache_key
+        -- Compute build_dir-based id
+        local rel_key, abs_path = self:_compute_build_dir(project, variant, project_tool_data)
 
-        -- Ensure skeleton ConfigUnit exists (or reuse stale one from prior deletion)
+        -- Ensure ConfigUnit exists (or reuse stale one from prior deletion)
         local existing_unit = nil
         for _, u in pairs(self._config_units) do
-            if u.id == cache_key then existing_unit = u; break end
+            if u.id == rel_key then existing_unit = u; break end
         end
-        local entry = {
-            project_key = project.key,
-            config_key = config_key,
-            type = project.type,
-            variant = variant,
-            tool_key = project_tool_key,
-            tool_data = project_tool_data,
-        }
+
+        -- Resolve tool domain object
+        local tool_obj = nil
+        if project_tool_key then
+            local mod = project._module
+            if mod then tool_obj = mod:find_tool(project_tool_key) end
+        end
+
         if existing_unit then
             -- Re-populate stale unit (e.g. after deletion cleared state)
-            if not existing_unit._config_key then
+            if not existing_unit._configuration then
                 existing_unit:_apply({
-                    cached = entry,
                     project = project,
+                    tool = tool_obj,
+                    configuration = config,
+                    build_dir_value = abs_path,
                 })
+                changed = true
             end
         else
-            local unit = ConfigUnit.new(self, cache_key, project.key)
+            local unit = ConfigUnit.new(self, rel_key, project.key)
             unit:_apply({
-                cached = entry,
                 project = project,
+                tool = tool_obj,
+                configuration = config,
+                build_dir_value = abs_path,
             })
             self._config_units[#self._config_units + 1] = unit
+            changed = true
         end
     end
-
-    -- Create Profile domain object directly
-    local profile = Profile.new(self, profile_key, {
-        configuration_set = set_name,
-        tools = tools,
-        _cached_configurations = profile_configurations,
-        _config_set_ref = config_set,
-    })
-    self._profiles[#self._profiles + 1] = profile
-
-    self:_save_cache()
-    self:_rebuild_profile_projects_for(profile)
-    self:_sync_build_dir_refs()
+    if profile then
+        self:_rebuild_profile_projects_for(profile)
+    end
+    if changed then
+        self:_sync_build_dir_refs()
+    end
     self:_resolve_active_profile()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -888,36 +1078,15 @@ end
 -- Cache migration and cleanup
 -- ===========================================================================
 
---- Build a set of all cache keys referenced by profiles.
---- Uses domain Profile objects (includes all cached configurations, even
---- stale refs to removed projects).
---- @return table<string, boolean> referenced set keyed by cache key ("project_key/config_key")
-function Workspace:_build_referenced_set()
-    local referenced = {}
-    for _, profile in pairs(self._profiles) do
-        if profile._cached_configurations then
-            for _, ck in ipairs(profile._cached_configurations) do
-                referenced[ck] = true
-            end
-        end
-    end
-    return referenced
-end
-
---- Build referenced set from runtime Profile objects (post-remerge).
---- Unlike _build_referenced_set which uses raw cache data, this reflects
---- the authoritative mappings from live ConfigurationSets. Stale cache
---- references to removed projects are excluded.
+--- Build referenced set from runtime Profile objects.
+--- Reflects the authoritative mappings from live ConfigurationSets.
 --- @return table<string, boolean>
 function Workspace:_build_live_referenced_set()
     local referenced = {}
     for _, profile in pairs(self._profiles) do
         for _, pp in ipairs(profile:projects()) do
-            local ck_val = pp:config_key()
-            if ck_val then
-                local project_key = pp:project_key()
-                local ck = cache_mod.config_cache_key(project_key, ck_val)
-                referenced[ck] = true
+            if pp._config_unit then
+                referenced[pp._config_unit.id] = true
             end
         end
     end
@@ -933,14 +1102,14 @@ end
 --- Mutates raw_cache in place so callers pass the cleaned version to remerge.
 --- @param raw_cache loomworks.CacheData raw cache data
 function Workspace:_cleanup_orphaned_skeletons(raw_cache)
-    if not raw_cache or not raw_cache.configurations then return end
+    if not raw_cache or not raw_cache.build_dirs then return end
 
-    local referenced = self:_build_referenced_set()
+    local referenced = self:_build_live_referenced_set()
 
     local changed = false
     local to_drop = {}
 
-    for cache_key, cached_config in pairs(raw_cache.configurations) do
+    for cache_key, cached_config in pairs(raw_cache.build_dirs) do
         if not referenced[cache_key] then
             local state = cached_config.state
             if not state or state == "unconfigured" then
@@ -951,7 +1120,7 @@ function Workspace:_cleanup_orphaned_skeletons(raw_cache)
     end
 
     for _, cache_key in ipairs(to_drop) do
-        raw_cache.configurations[cache_key] = nil
+        raw_cache.build_dirs[cache_key] = nil
         -- Also clean up ConfigUnit if it exists (may not during init)
         for i, unit in ipairs(self._config_units) do
             if unit.id == cache_key then
@@ -968,26 +1137,37 @@ function Workspace:_cleanup_orphaned_skeletons(raw_cache)
     end
 end
 
---- Get orphaned cached configs: configs with state not referenced by any profile.
+--- Get orphaned cached configs: cache entries with state not referenced by
+--- any ConfigUnit (and therefore not referenced by any profile).
+--- Orphaned entries are NOT ConfigUnit objects — they exist only in cache.
 --- @return loomworks.OrphanedConfig[]
 function Workspace:get_orphaned_configs()
-    -- Use live referenced set: stale cache refs to removed projects are
-    -- excluded, so their configs correctly appear as orphaned.
-    local referenced = self:_build_live_referenced_set()
-
-    local result = {}
+    -- Build set of build_dir keys that are live (have ConfigUnit objects)
+    local live_ids = {}
     for _, unit in pairs(self._config_units) do
-        if not unit._config_key then goto continue end
-        local state = unit.state_value
-        if state and state ~= "unconfigured"
-                and not referenced[unit.id] then
-            result[#result + 1] = {
-                project_key = unit._init_project_key or (unit._project and unit._project.key),
-                config_key = unit._config_key,
-                unit = unit,
-            }
+        live_ids[unit.id] = true
+    end
+
+    -- Scan cache for entries not covered by any ConfigUnit
+    local cache = self:_serialize_cache()
+    local result = {}
+    -- Also check the raw cache on disk for entries that weren't serialized
+    -- (since _serialize_cache only includes units with state)
+    local raw_cache = self._last_raw_cache
+    local build_dirs = raw_cache and raw_cache.build_dirs or cache.build_dirs or {}
+
+    for dir_key, entry in pairs(build_dirs) do
+        if not live_ids[dir_key] then
+            local state = entry.state
+            if state and state ~= "unconfigured" then
+                result[#result + 1] = {
+                    project_key = entry.project_key,
+                    config_key = entry.config_key or entry.variant,
+                    build_dir_key = dir_key,
+                    cached_entry = entry,
+                }
+            end
         end
-        ::continue::
     end
 
     -- Sort for deterministic UI order
@@ -1177,27 +1357,40 @@ function Workspace:record_task_result(result)
         proj_type = project and project.type or "unknown"
     elseif result.project_key and result.configuration_key then
         -- Fallback for results without a ConfigUnit (e.g. buggy multi-config tasks)
-        local cache_key = self._core._deps.cache.config_cache_key(result.project_key, result.configuration_key)
         for _, p in pairs(self._projects) do
             if p.key == result.project_key then project = p; break end
         end
         proj_type = project and project.type or "unknown"
-        -- Find or create ConfigUnit for this cache key
+        -- Compute build_dir-based id
+        local tool_data = result.tool and result.tool.data or nil
+        local rel_key
+        if result.build_dir then
+            rel_key = cache_mod.relative_build_dir(result.build_dir, self.root)
+        elseif project then
+            rel_key = self:_compute_build_dir(project, result.variant or result.configuration_key, tool_data)
+        else
+            -- Last resort: synthetic path
+            rel_key = "build/" .. result.project_key .. "/" .. (result.variant or result.configuration_key)
+        end
+        -- Find or create ConfigUnit for this build_dir key
         local existing_unit = nil
         for _, u in pairs(self._config_units) do
-            if u.id == cache_key then existing_unit = u; break end
+            if u.id == rel_key then existing_unit = u; break end
         end
         if existing_unit then
             config_unit = existing_unit
         else
+            local abs_path = result.build_dir
+                or cache_mod.absolute_build_dir(rel_key, self.root)
             local entry = {
                 project_key = result.project_key,
                 config_key = result.configuration_key,
                 type = proj_type,
                 variant = result.variant,
                 tool_key = result.tool and result.tool.key or nil,
+                build_dir = abs_path,
             }
-            local unit = ConfigUnit.new(self, cache_key, result.project_key)
+            local unit = ConfigUnit.new(self, rel_key, result.project_key)
             unit:_apply({ cached = entry, project = project })
             self._config_units[#self._config_units + 1] = unit
             config_unit = unit
@@ -1261,6 +1454,36 @@ end
 
 --- Remove cache entries entirely (cache-only, no filesystem operations).
 --- @param items loomworks.DeletionItem[]
+--- Delete an orphaned build directory (cache-only, no ConfigUnit).
+--- Removes the entry from cache and optionally deletes the build dir from disk.
+--- @param build_dir_key string relative build dir key
+--- @param on_done? function callback after deletion
+function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
+    -- Remove from raw cache
+    if self._last_raw_cache and self._last_raw_cache.build_dirs then
+        local entry = self._last_raw_cache.build_dirs[build_dir_key]
+        self._last_raw_cache.build_dirs[build_dir_key] = nil
+
+        -- Delete build dir from disk if it exists
+        if entry and entry.build_dir then
+            local abs_dir = self._core._deps.normalize(entry.build_dir)
+            local safe_prefix = self._core._deps.normalize(self.root)
+            if self:_validate_build_dir(abs_dir, safe_prefix) then
+                self:_delete_build_dirs_async({ abs_dir }, function()
+                    self:_save_cache()
+                    self._core._deps.events.emit("active_set_changed", self._active_set)
+                    if on_done then on_done() end
+                end)
+                return
+            end
+        end
+    end
+
+    self:_save_cache()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    if on_done then on_done() end
+end
+
 function Workspace:delete_cached_configs(items)
     for _, item in ipairs(items) do
         if item.unit then
@@ -1274,6 +1497,10 @@ function Workspace:delete_cached_configs(items)
             item.unit._variant = nil
             item.unit._tool_key = nil
             item.unit._tool_data = nil
+            -- Also remove from raw cache so orphan detection is correct
+            if self._last_raw_cache and self._last_raw_cache.build_dirs then
+                self._last_raw_cache.build_dirs[item.unit.id] = nil
+            end
         end
     end
 end
@@ -1290,6 +1517,10 @@ function Workspace:reset_cached_configs(items)
         item.unit.last_configured = nil
         item.unit.last_built = nil
         item.unit.cmake_info = nil
+        -- Also clear from raw cache
+        if self._last_raw_cache and self._last_raw_cache.build_dirs then
+            self._last_raw_cache.build_dirs[item.unit.id] = nil
+        end
         ::continue::
     end
 end
@@ -1528,15 +1759,18 @@ function Workspace:execute_deletion(plan, opts, on_done)
         opts.deactivate_profile:deactivate()
     end
 
-    -- Remove profile from domain objects and cache (before async work)
-    if plan.profile then
+    -- Remove pinned profiles from domain objects (before async work).
+    -- Set-based profiles are runtime-derived and should not be removed.
+    if plan.profile and plan.profile._pinned then
         local profile = plan.profile
         profile._removed = true
+        profile._pinned = false
         for i, p in ipairs(self._profiles) do
             if p == profile then table.remove(self._profiles, i); break end
         end
-        self:_save_cache()
+        self:_save_user()
     end
+    self:_save_cache()
 
     -- Split items by disposition
     local actionable = {}
@@ -1788,21 +2022,15 @@ function Workspace:_config_from_objects()
     }
 end
 
---- Serialize workspace state to raw JSON-writable format.
---- Reads from domain objects (Project, ConfigurationSet, Profile).
---- This is the object → disk serialization boundary.
---- @return table raw JSON-compatible table
-function Workspace:_serialize_config()
-    local raw = { projects = {} }
-    if self.name then
-        raw.name = self.name
-    end
-
-    -- Projects from domain objects (skip cache-only orphans)
+--- Reconstruct the shared config (loomworks.json portion) from domain objects.
+--- Same as _config_from_objects() but only includes shared-sourced items.
+--- Used by remerge() as a fallback when no raw_config is provided after mutations.
+--- @return loomworks.Config
+function Workspace:_shared_config_from_objects()
+    local projects = {}
     for _, project in pairs(self._projects) do
-        if not project.orphaned then
-            -- Reconstruct type_config with configurations from domain objects
-            local type_config = project.type_config
+        if not project.orphaned and project._source ~= "user" then
+            local tc = project.type_config
                     and vim.deepcopy(project.type_config) or {}
             local configs_dict = {}
             for _, cfg in ipairs(project._configurations) do
@@ -1812,27 +2040,96 @@ function Workspace:_serialize_config()
                 end
             end
             if next(configs_dict) then
-                type_config.configurations = configs_dict
+                tc.configurations = configs_dict
             end
-            local entry = { [project.type] = next(type_config)
-                    and type_config or vim.empty_dict() }
-            if project.path and project.path ~= project.key then
-                entry.path = project.path
-            end
-            if project._depends_on_keys then
-                entry.depends_on = project._depends_on_keys
-            end
-            if project.launch then
-                entry.launch = project.launch
-            end
-            raw.projects[project.key] = entry
+            projects[project.key] = {
+                path = project.path or project.key,
+                type = project.type,
+                type_config = tc,
+                depends_on = project._depends_on_keys,
+                launch = project.launch,
+            }
         end
     end
 
-    -- Configuration sets from domain objects
+    local configuration_sets = nil
+    for _, cs in pairs(self._config_sets) do
+        if cs._source ~= "user" then
+            if not configuration_sets then configuration_sets = {} end
+            configuration_sets[cs.name] = cs:raw_mappings()
+        end
+    end
+
+    local profiles = nil
+    for _, profile in pairs(self._profiles) do
+        if profile.explicit_def then
+            if not profiles then profiles = {} end
+            profiles[profile.key] = profile.explicit_def
+        end
+    end
+
+    return {
+        name = self.name,
+        projects = projects,
+        configuration_sets = configuration_sets,
+        profiles = profiles,
+    }
+end
+
+--- Serialize a project domain object to the raw JSON format used in config files.
+--- @param project loomworks.Project
+--- @return table entry raw JSON-compatible project entry
+function Workspace:_serialize_project(project)
+    local type_config = project.type_config
+            and vim.deepcopy(project.type_config) or {}
+    local configs_dict = {}
+    for _, cfg in ipairs(project._configurations) do
+        local override = cfg:serialize_user_override()
+        if override then
+            configs_dict[cfg.name] = override
+        end
+    end
+    if next(configs_dict) then
+        type_config.configurations = configs_dict
+    end
+    local entry = { [project.type] = next(type_config)
+            and type_config or vim.empty_dict() }
+    if project.path and project.path ~= project.key then
+        entry.path = project.path
+    end
+    if project._depends_on_keys then
+        entry.depends_on = project._depends_on_keys
+    end
+    if project.launch then
+        entry.launch = project.launch
+    end
+    return entry
+end
+
+--- Serialize workspace state to raw JSON-writable format for loomworks.json.
+--- Only includes shared-sourced items (excludes user-sourced projects/config_sets).
+--- Reads from domain objects (Project, ConfigurationSet, Profile).
+--- This is the object → disk serialization boundary.
+--- @return table raw JSON-compatible table
+function Workspace:_serialize_config()
+    local raw = { projects = {} }
+    if self.name then
+        raw.name = self.name
+    end
+
+    -- Projects from domain objects (skip cache-only orphans and user-sourced)
+    for _, project in pairs(self._projects) do
+        if not project.orphaned and project._source ~= "user" then
+            raw.projects[project.key] = self:_serialize_project(project)
+        end
+    end
+
+    -- Configuration sets from domain objects (skip user-sourced)
     local sets = {}
     for _, cs in pairs(self._config_sets) do
-        sets[cs.name] = cs:raw_mappings()
+        if cs._source ~= "user" then
+            sets[cs.name] = cs:raw_mappings()
+        end
     end
     if next(sets) then raw.configuration_sets = sets end
 
@@ -1861,13 +2158,53 @@ function Workspace:_save_config()
     return ok, err
 end
 
+--- Serialize a project partially — only configurations in needed_config_names.
+--- Used by _serialize_user() to emit only pin-reachable configurations.
+--- @param project loomworks.Project
+--- @param needed_config_names table<string, boolean> set of config names to include
+--- @return table entry raw JSON-compatible project entry
+function Workspace:_serialize_project_partial(project, needed_config_names)
+    local type_config = project.type_config
+            and vim.deepcopy(project.type_config) or {}
+    local configs_dict = {}
+    for _, cfg in ipairs(project._configurations) do
+        if needed_config_names[cfg.name] then
+            local override = cfg:serialize_user_override()
+            if override then
+                configs_dict[cfg.name] = override
+            end
+        end
+    end
+    if next(configs_dict) then
+        type_config.configurations = configs_dict
+    end
+    local entry = { [project.type] = next(type_config)
+            and type_config or vim.empty_dict() }
+    if project.path and project.path ~= project.key then
+        entry.path = project.path
+    end
+    if project._depends_on_keys then
+        entry.depends_on = project._depends_on_keys
+    end
+    if project.launch then
+        entry.launch = project.launch
+    end
+    return entry
+end
+
 --- Serialize user state from domain objects into a user.json data table.
+--- Walks pin roots to compute transitive closure — only reachable objects
+--- are serialized (serialization-as-GC).
 --- @return loomworks.UserData
 function Workspace:_serialize_user()
-    local data = { _meta = { version = 1 } }
+    local data = { _meta = { version = 2 } }
+
+    -- Active selection
     if self._active_profile_key then
         data.active_profile = self._active_profile_key
     end
+
+    -- Default targets (all profiles, not just pinned)
     local targets = {}
     for _, profile in pairs(self._profiles) do
         if profile._default_target_descriptor then
@@ -1875,6 +2212,101 @@ function Workspace:_serialize_user()
         end
     end
     if next(targets) then data.default_target = targets end
+
+    -- Walk pin roots to compute transitive closure
+    local needed_projects = {}   -- project_key → set of config names needed
+    local needed_config_sets = {} -- set_name → true
+
+    -- Serialize pinned profiles and collect their deps
+    local pinned = {}
+    for _, profile in pairs(self._profiles) do
+        if profile._pinned then
+            local entry = {}
+            if profile._configuration_set_name then
+                entry.configuration_set = profile._configuration_set_name
+                needed_config_sets[profile._configuration_set_name] = true
+            end
+            local tools = profile:tools_data()
+            if tools then entry.tools = tools end
+            if profile.mappings and not profile._configuration_set_name then
+                entry.mappings = profile.mappings
+            end
+            pinned[profile.key] = entry
+
+            -- Collect project/config dependencies from profile mappings
+            if profile.mappings then
+                for project_key, variant in pairs(profile.mappings) do
+                    if not needed_projects[project_key] then
+                        needed_projects[project_key] = {}
+                    end
+                    needed_projects[project_key][variant] = true
+                end
+            end
+        end
+    end
+    if next(pinned) then
+        data.pinned_profiles = pinned
+    end
+
+    -- Collect deps from needed config sets (they map projects to configs)
+    for _, cs in pairs(self._config_sets) do
+        if needed_config_sets[cs.name] then
+            for project, config in pairs(cs.mappings) do
+                if not needed_projects[project.key] then
+                    needed_projects[project.key] = {}
+                end
+                needed_projects[project.key][config.name] = true
+            end
+        end
+    end
+
+    -- Expand inherits chains for each needed config
+    for project_key, config_names in pairs(needed_projects) do
+        local project = nil
+        for _, p in pairs(self._projects) do
+            if p.key == project_key then project = p; break end
+        end
+        if project then
+            local expanded = {}
+            local function expand(name)
+                if expanded[name] then return end
+                expanded[name] = true
+                local cfg = project:get_configuration(name)
+                if cfg and cfg.inherits_names then
+                    for _, base in ipairs(cfg.inherits_names) do
+                        expand(base)
+                    end
+                end
+            end
+            for name in pairs(config_names) do
+                expand(name)
+            end
+            needed_projects[project_key] = expanded
+        end
+    end
+
+    -- Serialize needed config sets (user-sourced only)
+    local config_sets = {}
+    for _, cs in pairs(self._config_sets) do
+        if needed_config_sets[cs.name] and cs._source == "user" then
+            config_sets[cs.name] = cs:raw_mappings()
+        end
+    end
+    if next(config_sets) then data.configuration_sets = config_sets end
+
+    -- Serialize needed projects (partial — only needed configs, user-sourced only)
+    local projects = {}
+    for project_key, config_names in pairs(needed_projects) do
+        local project = nil
+        for _, p in pairs(self._projects) do
+            if p.key == project_key then project = p; break end
+        end
+        if project and not project.orphaned and project._source == "user" then
+            projects[project_key] = self:_serialize_project_partial(project, config_names)
+        end
+    end
+    if next(projects) then data.projects = projects end
+
     return data
 end
 
@@ -2038,18 +2470,29 @@ function Workspace:remove_configuration_set(cs)
     local ok, err = self:_save_config()
     if not ok then return false, err end
 
-    -- Update affected profiles: clear config_set_ref and re-derive mappings
+    -- Update affected profiles:
+    -- Non-pinned derived profiles are removed entirely (they only existed
+    -- because this config set existed). Pinned profiles are kept with
+    -- orphaned_set = true so the user can decide what to do.
+    local profiles_to_remove = {}
     for _, profile in pairs(self._profiles) do
         if profile._configuration_set_name == cs.name then
-            profile._config_set_ref = nil
-            -- Re-derive mappings — will fall through to Tier 2/3 and set orphaned_set
-            profile.mappings, profile.orphaned_set = profile:_resolve_mappings({
-                configuration_set = profile._configuration_set_name,
-                mappings = profile.mappings,
-                _resolved_mappings = nil,
-            })
-            self:_rebuild_profile_projects_for(profile)
+            if profile._pinned then
+                profile._config_set_ref = nil
+                -- Re-derive mappings — will fall through to Tier 2/3 and set orphaned_set
+                profile.mappings, profile.orphaned_set = profile:_resolve_mappings({
+                    configuration_set = profile._configuration_set_name,
+                    mappings = profile.mappings,
+                    _resolved_mappings = nil,
+                })
+                self:_rebuild_profile_projects_for(profile)
+            else
+                profiles_to_remove[#profiles_to_remove + 1] = profile
+            end
         end
+    end
+    for _, profile in ipairs(profiles_to_remove) do
+        self:_remove_profile(profile)
     end
     self:_sync_build_dir_refs()
     self:_resolve_active_profile()
@@ -2058,29 +2501,16 @@ function Workspace:remove_configuration_set(cs)
 end
 
 
---- Extend a cached profile's configurations array with missing entries
---- for projects in its configuration set. Creates skeleton cache entries
---- for projects not yet represented. Used by upgrade_profiles_for_tool.
---- @param profile_data table cached profile data from cache.profiles
---- @param tools table<string, { key: string, data: table }>|nil tools dict
-function Workspace:_extend_cached_profile(profile_data, tools)
-    local set_name = profile_data.configuration_set
-    if not set_name then return end
+--- Ensure skeleton ConfigUnits exist for all projects in a profile's config set.
+--- Creates ConfigUnits for projects not yet represented in cache.
+--- @param profile loomworks.Profile
+function Workspace:_ensure_profile_config_units(profile)
+    if not profile._configuration_set_name then return end
 
-    -- Find the ConfigurationSet domain object by name
-    local config_set = nil
-    for _, cs in pairs(self._config_sets) do
-        if cs.name == set_name then config_set = cs; break end
-    end
+    local config_set = profile._config_set_ref
     if not config_set then return end
 
-    -- Build lookup of existing cache keys for fast membership check
-    local existing = {}
-    for _, ck in ipairs(profile_data.configurations or {}) do
-        existing[ck] = true
-    end
-
-    profile_data.configurations = profile_data.configurations or {}
+    local tools = profile:tools_data()
 
     -- Build unit lookup
     local units_by_id = {}
@@ -2092,26 +2522,27 @@ function Workspace:_extend_cached_profile(profile_data, tools)
         -- Tool key applies only to projects whose module type matches
         local project_tool = tools and tools[project.type] or nil
         local project_tool_key = project_tool and project_tool.key or nil
+        local project_tool_data = project_tool and project_tool.data or nil
         local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
-        local ck = self._core._deps.cache.config_cache_key(project_key, config_key)
 
-        if not existing[ck] then
-            -- Create skeleton ConfigUnit if absent
-            if not units_by_id[ck] then
-                local entry = {
-                    project_key = project_key,
-                    config_key = config_key,
-                    type = project.type,
-                    variant = variant,
-                    tool_key = project_tool_key,
-                    tool_data = project_tool and project_tool.data or nil,
-                }
-                local unit = ConfigUnit.new(self, ck, project_key)
-                unit:_apply({ cached = entry, project = project })
-                self._config_units[#self._config_units + 1] = unit
-                units_by_id[ck] = unit
-            end
-            profile_data.configurations[#profile_data.configurations + 1] = ck
+        -- Compute build_dir-based id
+        local rel_key, abs_path = self:_compute_build_dir(project, variant, project_tool_data)
+
+        -- Create skeleton ConfigUnit if absent
+        if not units_by_id[rel_key] then
+            local entry = {
+                project_key = project_key,
+                config_key = config_key,
+                type = project.type,
+                variant = variant,
+                tool_key = project_tool_key,
+                tool_data = project_tool_data,
+                build_dir = abs_path,
+            }
+            local unit = ConfigUnit.new(self, rel_key, project_key)
+            unit:_apply({ cached = entry, project = project })
+            self._config_units[#self._config_units + 1] = unit
+            units_by_id[rel_key] = unit
         end
     end
 end
@@ -2141,6 +2572,7 @@ end
 
 --- Apply profile renames to domain objects, cache, and user state.
 --- Updates the tools dict on each renamed profile via the transform function.
+--- The profile key is re-derived automatically from the updated tools.
 --- @param renames { old_key: string, new_key: string }[]
 --- @param transform fun(tools: table|nil): table|nil
 --- @return boolean user_changed whether active_profile was updated
@@ -2151,13 +2583,13 @@ function Workspace:apply_profile_renames(renames, transform)
 
     local user_changed = false
     for _, r in ipairs(renames) do
-        -- Update domain object
+        -- Update domain object — key re-derives from updated tools
         local profile = profiles_by_key[r.old_key]
         if profile then
-            profile.key = r.new_key
             profile._tools_raw = transform(profile:tools_data())
             -- Clear resolved tool objects so tools_data() reads from _tools_raw
             profile._tool_objects = nil
+            profile:_derive_key()
         end
 
         if self._active_profile_key == r.old_key then
@@ -2168,7 +2600,7 @@ function Workspace:apply_profile_renames(renames, transform)
     return user_changed
 end
 
---- Upgrade cached profiles when a keyed-module project is added.
+--- Upgrade profiles when a keyed-module project is added.
 --- Profiles without this tool type get it added; profiles already with
 --- tools get extended with skeleton entries for the new project.
 ---
@@ -2228,23 +2660,17 @@ function Workspace:upgrade_profiles_for_tool(tool_entry)
     local profiles_by_key = {}
     for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
 
-    -- Extend renamed profiles with skeleton entries
+    -- Ensure skeleton ConfigUnits for renamed profiles
     for _, r in ipairs(renames) do
         local profile = profiles_by_key[r.new_key]
         if profile then
-            local cache_profile = profile:serialize_cache()
-            self:_extend_cached_profile(cache_profile, cache_profile.tools)
-            -- Update profile's cached_configurations from extended data
-            profile._cached_configurations = cache_profile.configurations
+            self:_ensure_profile_config_units(profile)
         end
     end
 
-    -- Extend existing keyed profiles with new project entries
+    -- Ensure skeleton ConfigUnits for existing keyed profiles (new project)
     for _, profile in ipairs(extends) do
-        local cache_profile = profile:serialize_cache()
-        self:_extend_cached_profile(cache_profile, cache_profile.tools)
-        -- Update profile's cached_configurations from extended data
-        profile._cached_configurations = cache_profile.configurations
+        self:_ensure_profile_config_units(profile)
     end
 
     self:_save_cache()
@@ -2558,8 +2984,17 @@ function Workspace:_on_file_changed(path, content)
         end
 
     elseif path == paths.user then
-        -- user.json changed: pass raw user data through remerge
+        -- user.json changed: normalize user projects and pass through remerge
         local user_data = content and user_mod.parse(content) or user_mod.default()
+        if user_data.projects and next(user_data.projects) then
+            local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
+            if normalized then
+                user_data.projects = normalized
+            else
+                self._core._deps.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
+                user_data.projects = nil
+            end
+        end
         self:remerge(nil, nil, user_data)
 
     elseif path == paths.cache then

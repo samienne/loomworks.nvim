@@ -29,7 +29,7 @@ describe("Operation", function()
         })
 
         local Profile = require("loomworks.profile").Profile
-        local profile = Profile.new(core, "debug", {
+        local profile = Profile.new(core, {
             configuration_set = "debug",
             mappings = { App = "Debug", Lib = "Debug" },
         })
@@ -68,7 +68,7 @@ describe("Operation", function()
 
         it("starts as not completed", function()
             local op, core = make_operation("build", {{ project = "App", config = "Debug", target = "built" }})
-            local unit = h.find_config_unit_by_id(core._config_units, "App/Debug")
+            local unit = h.find_config_unit(core._config_units, "App", "Debug")
             unit:register_task(1, "build") -- keep it running
             -- Need to create a new op with the running unit
             local op2 = make_operation("build", {{ project = "App", config = "Debug", target = "built" }})
@@ -175,7 +175,7 @@ describe("Operation", function()
             })
 
             local Profile = require("loomworks.profile").Profile
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })
@@ -196,7 +196,7 @@ describe("Operation", function()
             local op, core = make_operation("build", {
                 { project = "App", config = "Debug", target = "built" },
             })
-            local unit = h.find_config_unit_by_id(core._config_units, "App/Debug")
+            local unit = h.find_config_unit(core._config_units, "App", "Debug")
             assert.is_true(op:has_unit(unit))
         end)
 
@@ -333,7 +333,7 @@ describe("Operation", function()
             })
 
             local Profile = require("loomworks.profile").Profile
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })
@@ -359,11 +359,13 @@ describe("Operation", function()
             })
 
             local Profile = require("loomworks.profile").Profile
-            local profileA = Profile.new(core, "debug:tool-a", {
+            local profileA = Profile.new(core, {
+                _key = "debug:tool-a",
                 configuration_set = "debug",
                 mappings = { TS = "default" },
             })
-            local profileB = Profile.new(core, "debug:tool-b", {
+            local profileB = Profile.new(core, {
+                _key = "debug:tool-b",
                 configuration_set = "debug",
                 mappings = { TS = "default" },
             })
@@ -521,7 +523,7 @@ describe("Operation", function()
             })
 
             local Profile = require("loomworks.profile").Profile
-            local profile = Profile.new(core, "debug", {
+            local profile = Profile.new(core, {
                 configuration_set = "debug",
                 mappings = { App = "Debug" },
             })

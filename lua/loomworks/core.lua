@@ -561,12 +561,6 @@ function Core:rescan_tools()
     self._workspace:rescan_tools()
 end
 
---- @see loomworks.Workspace._build_referenced_set
-function Core:_build_referenced_set()
-    if not self._workspace then return {} end
-    return self._workspace:_build_referenced_set()
-end
-
 --- @see loomworks.Workspace._cleanup_orphaned_skeletons
 function Core:_cleanup_orphaned_skeletons(raw_cache)
     if not self._workspace then return end

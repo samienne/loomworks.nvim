@@ -231,12 +231,6 @@ local function edit_project_configuration(project, config_name)
                     end
                 end
             end
-            -- Pinned profiles that reference this variant
-            for _, profile in pairs(ws._profiles) do
-                if profile.mappings and profile.mappings[project_key] == config_name then
-                    effects[#effects + 1] = "Profile '" .. profile.key .. "' → rename"
-                end
-            end
             -- Sibling configs that inherit from this name
             for _, cfg in ipairs(project:get_configurations()) do
                 if cfg.name ~= config_name and cfg.inherits_names then

@@ -102,7 +102,7 @@ return function(tree, ctx)
     local lw = ctx.lw
     local all_profiles = ctx.all_profiles
 
-    -- Collect and sort all profiles alphabetically
+    -- All profiles are shown (only pinned/explicit/orphaned exist now)
     local profiles = {}
     for _, profile in pairs(all_profiles) do
         profiles[#profiles + 1] = profile

@@ -5,6 +5,7 @@
 --- @class loomworks.ConfigurationSet
 --- @field name string configuration set name
 --- @field mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
+--- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
 local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 
@@ -18,6 +19,7 @@ function ConfigurationSet.new(workspace, name, resolved_mappings)
     self._workspace = workspace
     self.name = name
     self._removed = false
+    self._source = "shared"
     self:_update(resolved_mappings)
     return self
 end
@@ -135,13 +137,53 @@ function ConfigurationSet:ensure_profile(tool_entry)
         return nil
     end
 
-    local profile = self:find_profile(tool_entry)
-    if profile then return profile end
-
-    -- Materialize from structured data
+    -- Materialize: ensures skeleton ConfigUnits exist
     self._workspace:_materialize_from_data(self, tool_entry)
 
-    return self:find_profile(tool_entry)
+    -- Find matching profile
+    local profile = self:find_profile(tool_entry)
+    if not profile then
+        -- Create a new pinned profile for this config set + tool combination
+        local Profile = require("loomworks.profile").Profile
+
+        -- Build tools dict from tool_entry
+        local tools = nil
+        if tool_entry and tool_entry.tool_key then
+            local mod_type = tool_entry.tool_mod_type
+            tools = {
+                [mod_type] = {
+                    key = tool_entry.tool_key,
+                    data = tool_entry.tool_data,
+                    label = tool_entry.tool_label,
+                },
+            }
+        end
+
+        local data = {
+            configuration_set = self.name,
+            tools = tools,
+            _pinned = true,
+        }
+
+        -- Resolve references for _apply
+        data._config_set_ref = self
+        if tools then
+            local tool_objs = {}
+            for mod_type, tool_ref in pairs(tools) do
+                local mod = self._workspace:find_module(mod_type)
+                if mod then
+                    local tool = mod:find_tool(tool_ref.key)
+                    if tool then tool_objs[mod] = tool end
+                end
+            end
+            if next(tool_objs) then data._tool_objects = tool_objs end
+        end
+
+        profile = Profile.new(self._workspace, data)
+        self._workspace._profiles[#self._workspace._profiles + 1] = profile
+        self._workspace:_rebuild_profile_projects_for(profile)
+    end
+    return profile
 end
 
 --- Activate this configuration set, optionally with a tool.

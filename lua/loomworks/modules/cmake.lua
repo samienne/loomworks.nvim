@@ -511,6 +511,22 @@ local function resolve_build_dir(project_name, config_name, config_info, workspa
     return base .. "/" .. config_part
 end
 
+--- Compute the expected build directory for a project configuration.
+--- Public interface for external code (ConfigUnit build_dir resolution).
+--- @param project_name string project key
+--- @param config_name string|nil configuration name
+--- @param config_info loomworks.ConfigurationInfo|nil
+--- @param workspace_root string absolute workspace root path
+--- @param tool_data table|nil module-specific tool data (cmake kit)
+--- @return string absolute build directory path
+function M.resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data)
+    local generator = (config_info and config_info.generator)
+            or (tool_data and tool_data.generator)
+            or nil
+    local multi_config = is_multi_config(generator)
+    return resolve_build_dir(project_name, config_name, config_info, workspace_root, multi_config, tool_data)
+end
+
 --- Return overseer task templates for a project.
 --- @param project loomworks.ModuleContext
 --- @param active_config string active configuration name

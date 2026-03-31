@@ -61,8 +61,8 @@ local function sync_modules(ctx, config, cache, modules_registry)
             if project.type then needed[project.type] = true end
         end
     end
-    if cache and cache.configurations then
-        for _, cc in pairs(cache.configurations) do
+    if cache and cache.build_dirs then
+        for _, cc in pairs(cache.build_dirs) do
             if cc.type then needed[cc.type] = true end
         end
     end
@@ -133,28 +133,14 @@ local function sync_tools(ctx, modules_arr, tools_by_type, cache, modules_regist
         end
     end
 
-    -- From cache: tool_data stored inline in configurations and profiles
-    if cache.configurations then
-        for _, cc in pairs(cache.configurations) do
+    -- From cache: tool_data stored inline in build_dirs
+    if cache.build_dirs then
+        for _, cc in pairs(cache.build_dirs) do
             if cc.tool_key and cc.type then
                 local tool = get_or_create_tool(
                     ctx, modules_arr, modules_registry,
                     cc.type, cc.tool_key, cc.tool_data or {}, nil)
                 seen[tool] = true
-            end
-        end
-    end
-    if cache.profiles then
-        for _, cp in pairs(cache.profiles) do
-            if cp.tools then
-                for mod_type, t in pairs(cp.tools) do
-                    if t.key then
-                        local tool = get_or_create_tool(
-                            ctx, modules_arr, modules_registry,
-                            mod_type, t.key, t.data or {}, t.label)
-                        seen[tool] = true
-                    end
-                end
             end
         end
     end
@@ -280,22 +266,6 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
     end
 
     for key, data in pairs(all_defs) do
-        -- Pre-resolve Tier 3 mappings from cached configurations
-        -- (replaces passing _ws_cache into Profile)
-        data._resolved_mappings = nil
-        if data._cached_configurations and not data.mappings then
-            local mappings = {}
-            local cache_cfgs = cache and cache.configurations or nil
-            if cache_cfgs then
-                for _, ck in ipairs(data._cached_configurations) do
-                    local cached_config = cache_cfgs[ck]
-                    if cached_config and cached_config.variant then
-                        mappings[cached_config.project_key] = cached_config.variant
-                    end
-                end
-            end
-            if next(mappings) then data._resolved_mappings = mappings end
-        end
         data._tool_objects = nil
         if data.tools then
             local tool_objs = {}
@@ -317,7 +287,8 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
         if existing then
             existing:_apply(data)
         else
-            ctx.profiles[key] = Profile.new(workspace, key, data)
+            local profile = Profile.new(workspace, data)
+            ctx.profiles[profile.key] = profile
         end
     end
 
@@ -332,53 +303,106 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
     return arr
 end
 
---- Sync the config units registry.
---- Collects all valid (project_key, config_key) pairs from cache,
---- creates/updates/removes ConfigUnit objects. Preserves runtime state.
---- Pre-resolves project, tool, and configuration references before calling _apply.
+--- Sync profile projects and config units together.
+--- ConfigUnits are created from profile resolution (what profiles need),
+--- NOT from cache entries. Cache entries are linked afterward by build_dir match.
+--- This replaces the old sync_config_units + sync_profile_projects pair.
 --- @param ctx table deserialization context with O(1) lookups
 --- @param workspace table workspace reference for domain object constructors
 --- @param cache table parsed cache data
+--- @param deps table { compute_build_dir }
 --- @return table[] config_units array
-local function sync_config_units(ctx, workspace, cache)
-    local expected = {}
+--- @return table[] profile_projects array
+local function sync_profile_projects_and_config_units(ctx, workspace, cache, deps)
+    local cache_mod = require("loomworks.cache")
+    local expected_units = {}  -- build_dir_id → apply_data
+    local expected_pps = {}    -- reg_key → pp_data
 
-    if cache.configurations then
-        for cache_dict_key, cached_config in pairs(cache.configurations) do
-            local project_key = cached_config.project_key
-            local project = project_key and ctx.projects[project_key] or nil
-            local tool = nil
-            if cached_config.tool_key then
-                local mod = project and project._module
-                    or (cached_config.type and ctx.modules[cached_config.type])
-                if mod then tool = mod:find_tool(cached_config.tool_key) end
+    -- Build config_units from profile resolution
+    for _, profile in pairs(ctx.profiles) do
+        if profile.mappings then
+            for project_key, variant in pairs(profile.mappings) do
+                local project = ctx.projects[project_key]
+                local configuration = nil
+                if project then
+                    configuration = project:get_configuration(variant)
+                end
+
+                -- Resolve tool for this project from profile
+                local tool_data = nil
+                local tool_key = nil
+                local tools = profile:tools_data()
+                if tools and project and tools[project.type] then
+                    tool_data = tools[project.type].data
+                    tool_key = tools[project.type].key
+                end
+
+                -- Compute expected build_dir
+                local build_dir_id = nil
+                local abs_path = nil
+                if project and deps.compute_build_dir then
+                    build_dir_id, abs_path = deps.compute_build_dir(project, variant, tool_data)
+                end
+
+                -- Accumulate ConfigUnit data (dedup by build_dir_id)
+                local config_unit_ref = nil
+                if build_dir_id then
+                    if not expected_units[build_dir_id] then
+                        -- Resolve tool domain object
+                        local tool = nil
+                        if tool_key then
+                            local mod = project and project._module or nil
+                            if mod then tool = mod:find_tool(tool_key) end
+                        end
+
+                        -- Look up cache entry by build_dir key
+                        local cache_entry = cache and cache.build_dirs
+                            and cache.build_dirs[build_dir_id] or nil
+                        local enriched = nil
+                        if cache_entry then
+                            enriched = vim.tbl_extend("keep", cache_entry, {
+                                build_dir = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
+                            })
+                        end
+
+                        expected_units[build_dir_id] = {
+                            project_key = project_key,
+                            cached = enriched,
+                            project = project,
+                            tool = tool,
+                            configuration = configuration,
+                            build_dir_value = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
+                        }
+                    end
+                    config_unit_ref = build_dir_id
+                end
+
+                -- Accumulate ProfileProject data
+                local reg_key = profile.key .. "\0" .. project_key
+                expected_pps[reg_key] = {
+                    project_key = project_key,
+                    profile = profile,
+                    project = project,
+                    configuration = configuration,
+                    config_unit_ref = config_unit_ref,  -- resolved after unit creation
+                }
             end
-            local configuration = nil
-            local variant = cached_config.variant
-            if variant and project then
-                configuration = project:get_configuration(variant)
-            end
-            expected[cache_dict_key] = {
-                project_key = project_key,
-                cached = cached_config,
-                project = project,
-                tool = tool,
-                configuration = configuration,
-            }
         end
     end
 
+    -- Create/update/remove ConfigUnit objects
     for id, unit in pairs(ctx.config_units) do
-        if not expected[id] and not unit:is_running() and not unit:is_deleting() then
+        if not expected_units[id] and not unit:is_running() and not unit:is_deleting() then
             unit._removed = true
             ctx.config_units[id] = nil
         end
     end
 
-    for id, data in pairs(expected) do
+    for id, data in pairs(expected_units) do
         local existing = ctx.config_units[id]
         if existing then
             existing:_apply(data)
+            existing._removed = false
         else
             local unit = ConfigUnit.new(workspace, id, data.project_key)
             unit:_apply(data)
@@ -386,59 +410,22 @@ local function sync_config_units(ctx, workspace, cache)
         end
     end
 
-    local arr = {}
-    for _, unit in pairs(ctx.config_units) do arr[#arr + 1] = unit end
-    return arr
-end
+    local config_units_arr = {}
+    for _, unit in pairs(ctx.config_units) do config_units_arr[#config_units_arr + 1] = unit end
 
---- Sync the profile projects registry.
---- Derives data from synced profiles' mappings.
---- Runs after sync_profiles so Profile objects and their mappings are available.
---- Also builds per-Profile direct lists.
---- @param ctx table deserialization context with O(1) lookups
---- @param workspace table workspace reference for domain object constructors
---- @return table[] profile_projects array
-local function sync_profile_projects(ctx, workspace)
-    local expected = {}
-    for _, profile in pairs(ctx.profiles) do
-        if profile.mappings then
-            for project_key, variant in pairs(profile.mappings) do
-                local reg_key = profile.key .. "\0" .. project_key
-                local project = ctx.projects[project_key]
-                local configuration = nil
-                if project then
-                    configuration = project:get_configuration(variant)
-                end
-                local config_unit = nil
-                if profile._cached_configurations then
-                    for _, ck in ipairs(profile._cached_configurations) do
-                        local unit = ctx.config_units[ck]
-                        if unit and unit._init_project_key == project_key
-                                and unit._variant == variant then
-                            config_unit = unit
-                            break
-                        end
-                    end
-                end
-                expected[reg_key] = {
-                    project_key = project_key,
-                    profile = profile,
-                    project = project,
-                    configuration = configuration,
-                    config_unit = config_unit,
-                }
-            end
-        end
-    end
-
+    -- Create/update/remove ProfileProject objects
     for reg_key, pp in pairs(ctx.profile_projects) do
-        if not expected[reg_key] then
+        if not expected_pps[reg_key] then
             pp._removed = true
             ctx.profile_projects[reg_key] = nil
         end
     end
 
-    for reg_key, data in pairs(expected) do
+    for reg_key, data in pairs(expected_pps) do
+        -- Resolve config_unit reference
+        data.config_unit = data.config_unit_ref and ctx.config_units[data.config_unit_ref] or nil
+        data.config_unit_ref = nil
+
         local existing = ctx.profile_projects[reg_key]
         if existing then
             existing:_apply(data)
@@ -448,9 +435,10 @@ local function sync_profile_projects(ctx, workspace)
         end
     end
 
-    local arr = {}
-    for _, pp in pairs(ctx.profile_projects) do arr[#arr + 1] = pp end
+    local profile_projects_arr = {}
+    for _, pp in pairs(ctx.profile_projects) do profile_projects_arr[#profile_projects_arr + 1] = pp end
 
+    -- Build per-Profile direct lists
     local dependency = require("loomworks.dependency")
     for _, profile in pairs(ctx.profiles) do
         local list = {}
@@ -469,7 +457,7 @@ local function sync_profile_projects(ctx, workspace)
         profile._projects_by_key = by_key
     end
 
-    return arr
+    return config_units_arr, profile_projects_arr
 end
 
 --- Rebuild the build dir reverse index from ConfigUnit objects.
@@ -517,9 +505,19 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local projects = sync_projects(ctx, workspace, active_set)
     local config_sets = sync_config_sets(ctx, workspace, config)
     local profiles = sync_profiles(ctx, workspace, all_profile_defs, cache, deps.default_target_data)
-    local config_units = sync_config_units(ctx, workspace, cache)
-    local profile_projects = sync_profile_projects(ctx, workspace)
+    local config_units, profile_projects = sync_profile_projects_and_config_units(
+        ctx, workspace, cache, deps)
     local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
+
+    -- Set _source flags on projects and config_sets (two-layer merge provenance)
+    local user_project_keys = deps.user_project_keys or {}
+    local user_cs_names = deps.user_cs_names or {}
+    for _, p in pairs(projects) do
+        p._source = user_project_keys[p.key] and "user" or "shared"
+    end
+    for _, cs in pairs(config_sets) do
+        cs._source = user_cs_names[cs.name] and "user" or "shared"
+    end
 
     -- Resolve active profile from the active set name
     local active_profile = nil

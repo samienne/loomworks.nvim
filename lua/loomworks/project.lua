@@ -24,6 +24,7 @@ local Configuration = require("loomworks.configuration")
 --- @field _configurations? loomworks.Configuration[] Configuration domain objects array
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
+--- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
 local Project = {}
 Project.__index = Project
 
@@ -37,6 +38,7 @@ function Project.new(workspace, key, data)
     self._workspace = workspace
     self.key = key
     self._removed = false
+    self._source = "shared"
     self._configurations = {}
     if data then self:_update(data) end
     return self
@@ -101,74 +103,28 @@ function Project:_sync_configurations()
         end
     end
 
-    -- Collect unique variant names from cache
-    local cache_variants = {}
-    for _, entry in pairs(self.cached_configurations) do
-        if entry.variant then
-            cache_variants[entry.variant] = true
-        end
-    end
-
     -- Build name→existing lookup from current array for identity matching
     local existing_by_name = {}
     for _, cfg in ipairs(self._configurations) do
         existing_by_name[cfg.name] = cfg
     end
 
-    -- Mark removed (absent from both sources AND cache)
+    -- Mark removed (absent from config sources)
     for _, cfg in ipairs(self._configurations) do
-        if not all_config_data[cfg.name] and not cache_variants[cfg.name] then
+        if not all_config_data[cfg.name] then
             cfg._removed = true
         end
     end
 
     -- Build new array: for each source config, find existing or create new
     local new_arr = {}
-    local seen = {}
     for name, info in pairs(all_config_data) do
         local existing = existing_by_name[name]
         if existing and not existing._removed then
             existing:_update(info)
-            existing._source_missing = false
             new_arr[#new_arr + 1] = existing
         else
             new_arr[#new_arr + 1] = Configuration.new(self, name, info)
-        end
-        seen[name] = true
-    end
-
-    -- Enrich from cache: create Configuration for cache-only variants,
-    -- and mark existing ones as source-missing if not in module/preset output.
-    -- When creating from cache, use inline configuration snapshot data if available.
-    for variant_name in pairs(cache_variants) do
-        if not seen[variant_name] then
-            local existing = existing_by_name[variant_name]
-            if existing and not existing._removed then
-                existing._source_missing = true
-                new_arr[#new_arr + 1] = existing
-            else
-                -- Find the best cache entry with snapshot data for this variant
-                local cfg_data = {}
-                for _, cc in pairs(self.cached_configurations) do
-                    if cc.variant == variant_name then
-                        if cc.is_user then cfg_data.is_user = true end
-                        if cc.options then cfg_data.options = cc.options end
-                        if cc.inherits then cfg_data.inherits = cc.inherits end
-                        -- Merge module_config fields into cfg_data (they become
-                        -- module_config inside Configuration._update)
-                        if cc.module_config then
-                            for k, v in pairs(cc.module_config) do
-                                cfg_data[k] = v
-                            end
-                        end
-                        break
-                    end
-                end
-                local cfg = Configuration.new(self, variant_name, cfg_data)
-                cfg._source_missing = true
-                new_arr[#new_arr + 1] = cfg
-            end
-            seen[variant_name] = true
         end
     end
 
@@ -200,7 +156,6 @@ function Project:ensure_configuration(name)
     local existing = self:get_configuration(name)
     if existing then return existing end
     local cfg = Configuration.new(self, name, {})
-    cfg._source_missing = true
     self._configurations[#self._configurations + 1] = cfg
     return cfg
 end
@@ -462,9 +417,9 @@ function Project:delete_configuration(config_name)
     return true
 end
 
---- Rename a project configuration atomically: updates Configuration objects,
---- inherits references, config set mappings, cache entries, and profiles.
---- Build dirs are preserved as-is.
+--- Rename a project configuration: updates Configuration object,
+--- inherits references, and config set mappings. Old ConfigUnits with the
+--- old build_dir become orphaned naturally (new configures get new build_dirs).
 --- @param old_name string current configuration name
 --- @param new_name string desired new name
 --- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
@@ -513,13 +468,6 @@ function Project:rename_configuration(old_name, new_name, config_data)
             end
         end
     end
-    local old_cs_configs = {} -- cs -> true (for rollback of name)
-    for _, cs in pairs(ws._config_sets) do
-        local cfg = cs.mappings[self]
-        if cfg and cfg.name == old_name then
-            old_cs_configs[cs] = true
-        end
-    end
 
     -- Step 1: Update inherits_names in sibling Configuration objects
     for _, cfg in ipairs(self._configurations) do
@@ -548,7 +496,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
     -- Step 3: CS mappings already hold a ref to target_cfg — the name mutation
     -- above makes raw_mappings() serialize new_name automatically.
 
-    -- Save config to disk
+    -- Save config + cache to disk
     local ok, err = ws:_save_config()
     if not ok then
         -- Rollback: restore name, data, and sibling inherits
@@ -560,83 +508,47 @@ function Project:rename_configuration(old_name, new_name, config_data)
         end
         return false, err
     end
-
-    -- Step 4: Migrate cache entries (ConfigUnit objects + cache)
-    local cache_rename_map = {} -- old_cache_key -> new_cache_key
-    local to_migrate = {}
-    for _, unit in pairs(ws._config_units) do
-        if unit._project == self and unit._variant
-                and unit._variant == old_name then
-            to_migrate[#to_migrate + 1] = unit
-        end
-    end
-    for _, unit in ipairs(to_migrate) do
-        local old_config_key = unit._config_key
-        local new_config_key = ws._core._deps.merge.build_config_key(new_name, unit._tool_key)
-        local new_cache_key = ws._core._deps.cache.config_cache_key(self.key, new_config_key)
-        -- Update first-class fields
-        unit._variant = new_name
-        unit._config_key = new_config_key
-        -- Update ConfigUnit identity
-        local old_id = unit.id
-        unit.id = new_cache_key
-        cache_rename_map[old_id] = new_cache_key
-        -- Update Project.cached_configurations dict to match ConfigUnit renames
-        if old_config_key and self.cached_configurations then
-            local entry = self.cached_configurations[old_config_key]
-            if entry then
-                self.cached_configurations[old_config_key] = nil
-                entry.variant = new_name
-                entry.config_key = new_config_key
-                self.cached_configurations[new_config_key] = entry
-            end
-        end
-    end
-
-    -- Step 5: Update profiles — _cached_configurations, pinned mappings, and pinned profile keys.
-    if next(cache_rename_map) then
-        local profile_rekeys = {} -- old_profile_key -> new_profile_key
-        for _, profile in pairs(ws._profiles) do
-            -- Update _cached_configurations arrays
-            if profile._cached_configurations then
-                for i, ck in ipairs(profile._cached_configurations) do
-                    if cache_rename_map[ck] then
-                        profile._cached_configurations[i] = cache_rename_map[ck]
-                    end
-                end
-            end
-            -- Update pinned profile mappings (variant references)
-            if profile.mappings and profile.mappings[self.key] == old_name then
-                profile.mappings[self.key] = new_name
-            end
-            -- Rekey pinned profiles (pinned key == cache key format)
-            if cache_rename_map[profile.key] then
-                profile_rekeys[profile.key] = cache_rename_map[profile.key]
-            end
-        end
-        -- Apply profile rekeys
-        for old_pk, new_pk in pairs(profile_rekeys) do
-            for _, profile in pairs(ws._profiles) do
-                if profile.key == old_pk then
-                    profile.key = new_pk
-                    break
-                end
-            end
-            -- Update active_profile if it was the old key
-            if ws._active_profile_key == old_pk then
-                ws._active_profile_key = new_pk
-                ws:_save_user()
-            end
-        end
-    end
-
-    ws:_save_cache()
-
     self:_refresh_configurations()
-    -- Rebuild PPs for all profiles (rename may have changed keys, mappings, and config units)
+    -- Update profile mappings: re-derive from ConfigurationSet for set-based,
+    -- and update stored mappings for pinned profiles that reference this project
     for _, profile in pairs(ws._profiles) do
-        ws:_rebuild_profile_projects_for(profile)
+        if profile._config_set_ref then
+            -- Set-based: re-derive from the live ConfigurationSet
+            local mappings = {}
+            for project, config in pairs(profile._config_set_ref.mappings) do
+                mappings[project.key] = config.name
+            end
+            profile.mappings = mappings
+        elseif profile.mappings and profile.mappings[self.key] == old_name then
+            -- Pinned: update the stored variant reference and re-derive key
+            profile.mappings[self.key] = new_name
+            profile:_derive_key()
+        end
+        if profile.mappings and profile.mappings[self.key] then
+            ws:_rebuild_profile_projects_for(profile)
+        end
     end
+    -- Clean up ConfigUnits no longer referenced by any ProfileProject.
+    -- Unreferenced units with build state become orphaned cache entries.
+    local referenced_units = {}
+    for _, pp in pairs(ws._profile_projects) do
+        if pp._config_unit then referenced_units[pp._config_unit] = true end
+    end
+    local kept_units = {}
+    for _, unit in pairs(ws._config_units) do
+        if referenced_units[unit] then
+            kept_units[#kept_units + 1] = unit
+        elseif unit:is_running() or unit:is_deleting() then
+            -- Keep running/deleting units (they'll clean up on completion)
+            kept_units[#kept_units + 1] = unit
+        end
+        -- Unreferenced units with state are preserved in _last_raw_cache
+        -- by _save_cache() and will appear as orphaned build dirs
+    end
+    ws._config_units = kept_units
+
+    ws:_save_user()
+    ws:_save_cache()
     ws:_sync_build_dir_refs()
     ws:_resolve_active_profile()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)

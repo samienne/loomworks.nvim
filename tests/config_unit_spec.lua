@@ -23,9 +23,9 @@ describe("ConfigUnit", function()
     end
 
     describe("identity", function()
-        it("stores id as cache dict key", function()
+        it("stores id as build_dir key", function()
             local unit = make_unit()
-            assert.equals("App/Debug", unit.id)
+            assert.equals("build/App/Debug", unit.id)
         end)
 
     end)
@@ -59,65 +59,21 @@ describe("ConfigUnit", function()
         end)
 
         it("returns cached state when present", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            configurations = {
-                                ["App/Debug"] = {
-                                    project_key = "App",
-                                    config_key = "Debug",
-                                    type = "cmake",
-                                    state = "built",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            -- Simulate cache data being applied
+            unit.state_value = "built"
             assert.equals("built", unit:state())
         end)
 
         it("maps failed_configure to configure_failed", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            configurations = {
-                                ["App/Debug"] = {
-                                    project_key = "App",
-                                    config_key = "Debug",
-                                    type = "cmake",
-                                    state = "failed_configure",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            unit.state_value = "failed_configure"
             assert.equals("configure_failed", unit:state())
         end)
 
         it("maps failed_build to build_failed", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            configurations = {
-                                ["App/Debug"] = {
-                                    project_key = "App",
-                                    config_key = "Debug",
-                                    type = "cmake",
-                                    state = "failed_build",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            unit.state_value = "failed_build"
             assert.equals("build_failed", unit:state())
         end)
 
@@ -134,23 +90,8 @@ describe("ConfigUnit", function()
         end)
 
         it("running state takes priority over cached state", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            configurations = {
-                                ["App/Debug"] = {
-                                    project_key = "App",
-                                    config_key = "Debug",
-                                    type = "cmake",
-                                    state = "configured",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            unit.state_value = "configured"
             unit:register_task(1, "build")
             assert.equals("building", unit:state())
         end)
@@ -169,23 +110,8 @@ describe("ConfigUnit", function()
         end)
 
         it("returns unknown when cached state is unknown", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            configurations = {
-                                ["App/Debug"] = {
-                                    project_key = "App",
-                                    config_key = "Debug",
-                                    type = "cmake",
-                                    state = "unknown",
-                                },
-                            },
-                        },
-                    }
-                end,
-            })
+            local unit = make_unit()
+            unit.state_value = "unknown"
             assert.equals("unknown", unit:state())
         end)
     end)
@@ -311,29 +237,24 @@ describe("ConfigUnit", function()
 
     describe("first-class fields", function()
         it("fields are nil when no data applied", function()
-            local unit = ConfigUnit.new(nil, "App/Debug", "App")
+            local unit = ConfigUnit.new(nil, "build/App/Debug", "App")
             assert.is_nil(unit.state_value)
             assert.is_nil(unit.build_dir_value)
         end)
 
-        it("fields populated from _apply", function()
-            local unit = make_unit({
-                get_workspace = function()
-                    return {
-                        config = { projects = { App = { type = "cmake" } } },
-                        cache = {
-                            configurations = {
-                                ["App/Debug"] = {
-                                    project_key = "App",
-                                    config_key = "Debug",
-                                    type = "cmake",
-                                    state = "built",
-                                    build_dir = "/build/App/Debug",
-                                },
-                            },
-                        },
-                    }
-                end,
+        it("fields populated from _apply with cache data", function()
+            local unit = make_unit()
+            -- Apply cache data directly to simulate cache link
+            unit:_apply({
+                cached = {
+                    project_key = "App",
+                    config_key = "Debug",
+                    variant = "Debug",
+                    state = "built",
+                    build_dir = "/build/App/Debug",
+                },
+                project = unit._project,
+                configuration = unit._configuration,
             })
             assert.equals("built", unit.state_value)
             assert.equals("/build/App/Debug", unit.build_dir_value)
@@ -442,9 +363,10 @@ describe("ConfigUnit", function()
             unit.build_dir_value = "/build/Debug"
             local entry = unit:serialize()
             assert.equals("App", entry.project_key)
-            assert.equals("Debug", entry.config_key)
             assert.equals("cmake", entry.type)
             assert.equals("configured", entry.state)
+            assert.equals("Debug", entry.config_key)
+            assert.equals("Debug", entry.variant)
             assert.equals("/build/Debug", entry.build_dir)
         end)
 
@@ -551,49 +473,163 @@ describe("ConfigUnit", function()
         end)
     end)
 
-    describe("cache resolution", function()
-        it("resolves first-class fields from cache entry", function()
-            local core = h.make_mock_core({
-                cache = {
-                    configurations = {
-                        ["App/Debug"] = {
-                            project_key = "App",
-                            config_key = "Debug",
-                            type = "cmake",
-                            variant = "Debug",
-                        },
-                    },
-                },
+    describe("is_stale", function()
+        it("returns false when no cached snapshot exists", function()
+            local unit = make_unit()
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("returns false when options match", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                options = { ENABLE_TESTS = "ON" },
+                variant = "Debug",
             })
-            local unit = h.ensure_config_unit_by_id(core, "App/Debug", "App")
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Simulate _apply with matching cached options
+            unit._cached_options = { ENABLE_TESTS = "ON" }
+            unit._cached_module_config = { variant = "Debug" }
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("returns true when options differ", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                options = { ENABLE_TESTS = "ON", NEW_FLAG = "YES" },
+                variant = "Debug",
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Cached had different options
+            unit._cached_options = { ENABLE_TESTS = "ON" }
+            unit._cached_module_config = { variant = "Debug" }
+            assert.is_true(unit:is_stale())
+        end)
+
+        it("returns true when module_config differs", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                variant = "Debug",
+                generator = "Ninja",
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Cached had a different generator
+            unit._cached_options = nil
+            unit._cached_module_config = { variant = "Debug", generator = "Unix Makefiles" }
+            assert.is_true(unit:is_stale())
+        end)
+
+        it("returns false when configuration is removed", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", {
+                options = { CHANGED = "YES" },
+            })
+            project._configurations[#project._configurations + 1] = cfg
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            unit._cached_options = { OLD = "val" }
+            cfg._removed = true
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("returns false when configuration is nil", function()
+            local unit = make_unit()
+            unit._configuration = nil
+            unit._cached_options = { A = "1" }
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("cached options populated from _apply", function()
+            local Configuration = require("loomworks.configuration")
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = Configuration.new(project, "Debug", { variant = "Debug" })
+            project._configurations[#project._configurations + 1] = cfg
+
+            local ConfigUnit = require("loomworks.config_unit")
+            local unit = ConfigUnit.new(core, "build/App/Debug", "App")
+            unit:_apply({
+                cached = {
+                    project_key = "App",
+                    config_key = "Debug",
+                    variant = "Debug",
+                    state = "configured",
+                    options = { MY_OPT = "ON" },
+                    module_config = { variant = "Debug", generator = "Ninja" },
+                },
+                project = project,
+                configuration = cfg,
+            })
+            assert.same({ MY_OPT = "ON" }, unit._cached_options)
+            assert.same({ variant = "Debug", generator = "Ninja" }, unit._cached_module_config)
+        end)
+
+        it("cached options cleared on nil _apply", function()
+            local ConfigUnit = require("loomworks.config_unit")
+            local unit = ConfigUnit.new(nil, "build/App/Debug", "App")
+            unit._cached_options = { A = "1" }
+            unit._cached_module_config = { variant = "Debug" }
+            unit:_apply(nil)
+            assert.is_nil(unit._cached_options)
+            assert.is_nil(unit._cached_module_config)
+        end)
+    end)
+
+    describe("cache resolution", function()
+        it("resolves first-class fields from cache entry via _apply", function()
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = h.get_or_create_config(project, "Debug")
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Apply cache data
+            unit:_apply({
+                cached = {
+                    project_key = "App",
+                    config_key = "Debug",
+                    variant = "Debug",
+                    state = "configured",
+                },
+                project = project,
+                configuration = cfg,
+            })
             assert.equals("Debug", unit._variant)
-            assert.equals("Debug", unit._config_key)
+            assert.equals("configured", unit.state_value)
         end)
 
         it("first-class fields are nil when no cache entry exists", function()
             local core = h.make_mock_core()
             -- Create a bare ConfigUnit without a cache entry to test nil case
-            local unit = ConfigUnit.new(core, "App/Debug", "App")
+            local unit = ConfigUnit.new(core, "build/App/Debug", "App")
             assert.is_nil(unit._variant)
             assert.is_nil(unit._config_key)
         end)
 
-        it("resolves tool domain object from cache entry", function()
-            local core = h.make_mock_core({
-                cache = {
-                    configurations = {
-                        ["App/cfg-1"] = {
-                            project_key = "App",
-                            config_key = "cfg-1",
-                            type = "cmake",
-                            variant = "Debug",
-                            tool_key = "ninja-gcc",
-                            tool_data = { id = "ninja-gcc" },
-                        },
-                    },
+        it("resolves tool fields when applied with cache entry", function()
+            local core = h.make_mock_core()
+            local project = ensure_project(core, "App")
+            local cfg = h.get_or_create_config(project, "Debug")
+            local unit = core:ensure_config_unit(project, cfg, nil)
+            -- Apply cache data with tool info
+            unit:_apply({
+                cached = {
+                    project_key = "App",
+                    config_key = "Debug",
+                    variant = "Debug",
+                    tool_key = "ninja-gcc",
+                    tool_data = { id = "ninja-gcc" },
                 },
+                project = project,
+                configuration = cfg,
             })
-            local unit = h.ensure_config_unit_by_id(core, "App/cfg-1", "App")
             assert.equals("Debug", unit._variant)
             assert.equals("ninja-gcc", unit._tool_key)
         end)

@@ -28,7 +28,6 @@ function Configuration.new(project, name, data)
     self._project = project
     self.name = name
     self._removed = false
-    self._source_missing = false
     self:_update(data)
     return self
 end

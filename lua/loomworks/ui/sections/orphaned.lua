@@ -93,17 +93,23 @@ return function(tree, ctx)
                 hl = "LoomworksUnconfigured",
             }, function()
                 for _, orphan in ipairs(entries) do
-                    local unit = orphan.unit
-                    local config_status, status_hl, progress_str, is_spinning =
-                            helpers.resolve_config_status_global(unit, nil)
+                    -- Orphaned entries are cache data, not ConfigUnit objects.
+                    -- Read status directly from the cached entry.
+                    local entry = orphan.cached_entry or {}
+                    local config_status = entry.state or "unknown"
+                    local status_hl = helpers.STATUS_HL[config_status] or "Comment"
 
-                    tree:node(orphan.config_key .. " (" .. config_status .. ")" .. progress_str, {
+                    tree:node(orphan.config_key .. " (" .. config_status .. ")", {
                         fold_key = "orphaned:" .. orphan.project_key .. ":" .. orphan.config_key,
-                        spinning = is_spinning,
                         hl = status_hl,
-                        on_delete = actions.delete_orphaned_config(unit),
+                        on_delete = actions.delete_orphaned_config(orphan),
                     }, function()
-                        helpers.render_cached_details(tree, config_status, status_hl, nil, nil, unit)
+                        if orphan.build_dir_key then
+                            tree:leaf("Build dir: " .. orphan.build_dir_key, "Comment")
+                        end
+                        if entry.tool_key then
+                            tree:leaf("Tool: " .. entry.tool_key, "Comment")
+                        end
                     end)
                 end
             end)

@@ -2,7 +2,7 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local CURRENT_VERSION = 6
+local CURRENT_VERSION = 7
 
 --- Return the file path for a workspace root.
 --- @param root string
@@ -21,6 +21,7 @@ end
 
 --- Build the cache key for a configuration entry.
 --- Opaque identifier — never parse this to extract parts.
+--- @deprecated v6 compat — will be removed once all callers migrate to build_dir keys
 --- @param project_key string
 --- @param config_key string
 --- @return string
@@ -42,12 +43,38 @@ function M.next_available_key(base_key, existing)
     return base_key .. "-" .. n
 end
 
+--- Compute relative build_dir key from absolute path.
+--- Strips {root}/.nvim/ prefix. Returns path relative to .nvim/.
+--- @param abs_path string absolute build dir path
+--- @param root string workspace root path
+--- @return string relative key (e.g., "build/App/Debug")
+function M.relative_build_dir(abs_path, root)
+    local prefix = root .. "/.nvim/"
+    if abs_path:sub(1, #prefix) == prefix then
+        return abs_path:sub(#prefix + 1)
+    end
+    return abs_path  -- fallback: use as-is (external build dirs)
+end
+
+--- Compute absolute build_dir from relative key.
+--- Prepends {root}/.nvim/ prefix.
+--- @param rel_key string relative build dir key (e.g., "build/App/Debug")
+--- @param root string workspace root path
+--- @return string absolute path
+function M.absolute_build_dir(rel_key, root)
+    -- If already absolute, return as-is
+    if rel_key:sub(1, 1) == "/" or rel_key:match("^%a:") then
+        return rel_key
+    end
+    return root .. "/.nvim/" .. rel_key
+end
+
 --- Return a default (empty) CacheData structure.
 --- @return loomworks.CacheData
 function M.default()
     return {
         _meta = { version = CURRENT_VERSION, loomworks_hash = "", cached_at = "" },
-        configurations = {},
+        build_dirs = {},
     }
 end
 
@@ -64,31 +91,22 @@ function M.parse(content)
     if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
         return M.default(), true
     end
-    raw.configurations = raw.configurations or {}
+    raw.build_dirs = raw.build_dirs or {}
     return raw, false
 end
 
 --- Validate internal consistency of cache data.
---- Checks that every configuration referenced by a profile exists in the
---- configurations dict and has a variant field.
+--- Checks that every build_dirs entry has a project_key and variant field.
 --- @param data loomworks.CacheData
 --- @return boolean ok, string|nil err
 function M.validate_consistency(data)
-    if not data.profiles then return true end
-    local configs = data.configurations or {}
-    for profile_key, profile in pairs(data.profiles) do
-        if profile.configurations then
-            for _, ck in ipairs(profile.configurations) do
-                local entry = configs[ck]
-                if not entry then
-                    return false, "profile '" .. profile_key
-                        .. "' references missing configuration '" .. ck .. "'"
-                end
-                if not entry.variant then
-                    return false, "configuration '" .. ck
-                        .. "' is missing variant field"
-                end
-            end
+    local build_dirs = data.build_dirs or {}
+    for dir_key, entry in pairs(build_dirs) do
+        if not entry.project_key then
+            return false, "build_dir '" .. dir_key .. "' is missing project_key"
+        end
+        if not entry.variant then
+            return false, "build_dir '" .. dir_key .. "' is missing variant field"
         end
     end
     return true
@@ -109,7 +127,7 @@ function M.load(root)
         return M.default()
     end
 
-    data.configurations = data.configurations or {}
+    data.build_dirs = data.build_dirs or {}
 
     return data
 end

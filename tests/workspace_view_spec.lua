@@ -80,19 +80,27 @@ end
 -- =========================================================================
 
 describe("compute_add_project_context", function()
-    it("returns empty context when no cached profiles", function()
-        local ws = make_ws({
-            projects = { Frontend = { ets = {} } },
-            configuration_sets = { Debug = { Frontend = "debug" } },
-        })
+    it("returns no inherited tool when profiles have no cmake tool", function()
+        local ws = make_ws(
+            {
+                projects = { Frontend = { ets = {} } },
+                configuration_sets = { Debug = { Frontend = "debug" } },
+            },
+            {
+                pinned_profiles = {
+                    Debug = { configuration_set = "Debug" },
+                },
+            }
+        )
 
         local ctx = workspace_view.compute_add_project_context(ws, "cmake")
 
         assert.is_nil(ctx.inherited_tool)
-        assert.equals(0, #ctx.no_tool_profiles)
+        -- The "Debug" profile exists but has no cmake tool
+        assert.equals(1, #ctx.no_tool_profiles)
     end)
 
-    it("finds inherited tool from cached profiles", function()
+    it("finds inherited tool from profiles with detected tools", function()
         local ws = make_ws(
             {
                 projects = {
@@ -103,27 +111,30 @@ describe("compute_add_project_context", function()
                     Debug = { Frontend = "debug", App = "Debug" },
                 },
             },
-            nil,
             {
-                profiles = {
+                pinned_profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
-                        tools = {
-                            cmake = {
-                                key = "ninja-gcc-12",
-                                data = { id = "ninja-gcc-12" },
-                                label = "Ninja - GCC 12",
-                            },
-                        },
-                        configurations = { "Frontend/debug", "App/Debug:ninja-gcc-12" },
+                        tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
                     },
                 },
-                configurations = {
-                    ["Frontend/debug"] = { project_key = "Frontend", config_key = "debug", type = "ets", variant = "debug" },
-                    ["App/Debug:ninja-gcc-12"] = { project_key = "App", config_key = "Debug:ninja-gcc-12", type = "cmake", variant = "Debug" },
+            },
+            {
+                build_dirs = {
+                    ["build/Frontend/debug"] = { project_key = "Frontend", config_key = "debug", type = "ets", variant = "debug" },
+                    ["build/App/ninja-gcc-12/Debug"] = {
+                        project_key = "App", config_key = "Debug:ninja-gcc-12", type = "cmake", variant = "Debug",
+                        tool_key = "ninja-gcc-12", tool_data = { id = "ninja-gcc-12" },
+                    },
                 },
             }
         )
+        ws._tools_by_type = {
+            cmake = {
+                { tool_key = "ninja-gcc-12", tool_data = { id = "ninja-gcc-12" }, tool_label = "Ninja - GCC 12" },
+            },
+        }
+        ws:remerge()
 
         local ctx = workspace_view.compute_add_project_context(ws, "cmake")
 
@@ -131,8 +142,6 @@ describe("compute_add_project_context", function()
         assert.equals("ninja-gcc-12", ctx.inherited_tool.tool_key)
         assert.equals("Ninja - GCC 12", ctx.inherited_tool.tool_label)
         assert.equals("cmake", ctx.inherited_tool.tool_mod_type)
-        -- keyed_tools should be empty when tool is inherited
-        assert.equals(0, #ctx.keyed_tools)
     end)
 
     it("collects no-tool profiles when no inherited tool", function()
@@ -144,18 +153,13 @@ describe("compute_add_project_context", function()
                     Release = { Frontend = "release" },
                 },
             },
-            nil,
             {
-                profiles = {
-                    Debug = {
-                        configuration_set = "Debug",
-                        configurations = { "Frontend/debug" },
-                    },
-                    Release = {
-                        configuration_set = "Release",
-                        configurations = { "Frontend/release" },
-                    },
+                pinned_profiles = {
+                    Debug = { configuration_set = "Debug" },
+                    Release = { configuration_set = "Release" },
                 },
+            },
+            {
                 configurations = {
                     ["Frontend/debug"] = { project_key = "Frontend", config_key = "debug", type = "ets", variant = "debug" },
                     ["Frontend/release"] = { project_key = "Frontend", config_key = "release", type = "ets", variant = "release" },

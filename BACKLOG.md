@@ -149,3 +149,16 @@ cmake, sanitizer flags are compiler-specific (`-fsanitize=` for gcc/clang,
 correct options. Defer cmake sanitizer templates until compiler-aware
 option generation is available.
 
+---
+
+## Rename-back shows entry in both profiles and orphaned sections
+
+After renaming a pinned single-config "Debug" → "Development" (orphan
+appears correctly), then renaming back "Development" → "Debug", the
+entry appears in both the profiles section (configured) and the
+orphaned section (configured). The cache entry linking during PP
+rebuild works (state restored), but orphan detection still sees the
+entry. Likely a `_last_raw_cache` staleness issue or a mismatch
+between ConfigUnit.id and the cache entry key. Investigate after the
+two-layer-config refactor stabilizes.
+

@@ -1,10 +1,10 @@
 --- loomworks/config_unit.lua — ConfigUnit: atomic unit of configuration state.
---- Identity is the cache dict key (e.g., "App/Debug:ninja-gcc").
+--- Identity is the relative build_dir path (e.g., "build/App/Debug").
 --- Owns the running/deleting state and provides a single derived state value.
 --- Multiple profiles may reference the same ConfigUnit.
 
 --- @class loomworks.ConfigUnit
---- @field id string cache dict key (identity)
+--- @field id string relative build_dir path (identity, e.g., "build/App/Debug")
 --- @field _workspace loomworks.Workspace
 --- @field _init_project_key string|nil hint for project resolution
 --- References (resolved during _apply):
@@ -21,6 +21,9 @@
 --- @field _variant string|nil configuration variant name
 --- @field _tool_key string|nil tool identifier
 --- @field _tool_data table|nil module-specific tool data
+--- Cached configuration snapshot (for stale detection):
+--- @field _cached_options table|nil options snapshot from last configure
+--- @field _cached_module_config table|nil module_config snapshot from last configure
 --- Runtime state (never touched by _apply):
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID
@@ -70,6 +73,8 @@ function ConfigUnit.new(workspace, id, project_key)
     self._variant = nil
     self._tool_key = nil
     self._tool_data = nil
+    self._cached_options = nil
+    self._cached_module_config = nil
     return self
 end
 
@@ -91,12 +96,14 @@ function ConfigUnit:_apply(data)
         self._variant = nil
         self._tool_key = nil
         self._tool_data = nil
+        self._cached_options = nil
+        self._cached_module_config = nil
         return
     end
     self._project = data.project
     self._tool = data.tool
     self._configuration = data.configuration
-    -- Populate first-class fields from cached data (read only, not stored)
+    -- Populate first-class fields from cached data when available
     if data.cached then
         local c = data.cached
         self.state_value = c.state
@@ -108,13 +115,38 @@ function ConfigUnit:_apply(data)
         self._variant = c.variant
         self._tool_key = c.tool_key
         self._tool_data = c.tool_data
+        self._cached_options = c.options
+        self._cached_module_config = c.module_config
+    else
+        -- Profile-resolved but no cache entry: unconfigured with known build_dir
+        self.state_value = nil
+        self.build_dir_value = data.build_dir_value
+        self.last_configured = nil
+        self.last_built = nil
+        self.cmake_info = nil
+        -- Derive fields from references if not previously set
+        if not self._variant then
+            self._variant = data.configuration and data.configuration.name or nil
+        end
+        if not self._tool_key then
+            self._tool_key = data.tool and data.tool.key or nil
+            self._tool_data = data.tool and data.tool.data or nil
+        end
+        -- Derive _config_key if not previously set
+        if not self._config_key and self._variant then
+            local merge_mod = require("loomworks.merge")
+            self._config_key = merge_mod.build_config_key(self._variant, self._tool_key)
+        end
+        self._cached_options = nil
+        self._cached_module_config = nil
     end
 end
 
 --- Serialize this ConfigUnit to a cache entry for persistence.
 --- Produces cache-shaped table from first-class fields and references.
 --- Includes a configuration snapshot so cache entries are self-describing.
---- @return table cache entry suitable for cache.configurations[id]
+--- The entry is written under the build_dir key by the caller (_serialize_cache).
+--- @return table cache entry suitable for cache.build_dirs[id]
 function ConfigUnit:serialize()
     local entry = {
         project_key = self._project and self._project.key or self._init_project_key,
@@ -123,8 +155,8 @@ function ConfigUnit:serialize()
         variant = self._variant,
         tool_key = self._tool_key,
         tool_data = self._tool_data,
-        state = self.state_value,
         build_dir = self.build_dir_value,
+        state = self.state_value,
         last_configured = self.last_configured,
         last_built = self.last_built,
     }
@@ -237,6 +269,23 @@ end
 --- @return loomworks.Configuration|nil
 function ConfigUnit:configuration()
     return self._configuration
+end
+
+--- Check if this unit is stale: the Configuration's options or module_config
+--- have changed since the last configure. Returns false when the unit has
+--- never been configured (no cached snapshot to compare against).
+--- @return boolean
+function ConfigUnit:is_stale()
+    if not self._configuration or self._configuration._removed then return false end
+    -- No cached snapshot means never configured — not stale
+    if not self._cached_options and not self._cached_module_config then return false end
+    if not vim.deep_equal(self._cached_options or {}, self._configuration.options or {}) then
+        return true
+    end
+    if not vim.deep_equal(self._cached_module_config or {}, self._configuration.module_config or {}) then
+        return true
+    end
+    return false
 end
 
 --- Get the Project domain object for this unit.
@@ -386,10 +435,9 @@ function ConfigUnit:materialize_pinned(variant, tool)
 
     -- Ensure config skeleton exists (writes first-class fields)
     self:materialize(variant, tool)
-    if not self._config_key then return nil end
+    if not self._variant then return nil end
 
     local project_key = self._project.key
-    local config_key = self._config_key
 
     -- Build tool info for cache entry
     local tool_obj = self._tool
@@ -416,12 +464,6 @@ function ConfigUnit:materialize_pinned(variant, tool)
         }
     end
 
-    -- Generate collision-safe key using domain objects
-    local base_key = ws._core._deps.merge.pinned_key(project_key, config_key)
-    local existing_keys = {}
-    for _, p in pairs(ws._profiles) do existing_keys[p.key] = true end
-    local ak = ws._core._deps.cache.next_available_key(base_key, existing_keys)
-
     -- Create Profile object directly with pre-resolved references
     local Profile = require("loomworks.profile").Profile
     local ProfileProject = require("loomworks.profile").ProfileProject
@@ -431,10 +473,10 @@ function ConfigUnit:materialize_pinned(variant, tool)
         tool_objects = { [self._project._module] = tool_obj }
     end
 
-    local profile = Profile.new(ws, ak, {
+    local profile = Profile.new(ws, {
         tools = tools_raw,
         mappings = { [project_key] = mat_variant },
-        _cached_configurations = { self.id },
+        _pinned = true,
         _tool_objects = tool_objects,
     })
     ws._profiles[#ws._profiles + 1] = profile
@@ -449,6 +491,9 @@ function ConfigUnit:materialize_pinned(variant, tool)
     ws._profile_projects[#ws._profile_projects + 1] = pp
     profile._projects_list = { pp }
     profile._projects_by_key = { [project_key] = pp }
+
+    -- Save pinned profile to user.json
+    ws:_save_user()
 
     return profile
 end

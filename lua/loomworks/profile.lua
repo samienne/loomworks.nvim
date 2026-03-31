@@ -137,13 +137,13 @@ end
 -- ========================== Profile ==========================
 
 --- @class loomworks.Profile
---- @field key string profile key (e.g. "Debug" or "Debug:ninja-gcc-12")
+--- @field key string profile key — derived from data, never set externally
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 --- Data fields (set during _apply):
 --- @field _configuration_set_name string|nil set name for set-based profiles
 --- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
---- @field _cached_configurations string[]|nil cache key array (fallback for orphaned profiles)
+--- @field _pinned boolean true if stored in user.json pinned_profiles
 --- @field explicit boolean true if defined in loomworks.json
 --- @field explicit_def table|nil raw definition from loomworks.json
 --- @field _default_target_descriptor table|nil user.json default target for this profile
@@ -177,13 +177,11 @@ local STATUS_HL = {
 
 --- Create a new Profile object.
 --- @param workspace loomworks.Workspace
---- @param key string profile key
 --- @param data? { configuration_set?: string, tools?: table<string, { key: string, data: table, label: string }>, explicit?: boolean, mappings?: table<string, string>, orphaned_set?: boolean }
 --- @return loomworks.Profile
-function Profile.new(workspace, key, data)
+function Profile.new(workspace, data)
     local self = setmetatable({}, Profile)
     self._workspace = workspace
-    self.key = key
     self._removed = false
     if data then self:_apply(data) end
     return self
@@ -195,7 +193,7 @@ end
 function Profile:_apply(data)
     self._configuration_set_name = data.configuration_set
     self._tools_raw = data.tools or nil
-    self._cached_configurations = data._cached_configurations
+    self._pinned = data._pinned or false
     self.explicit = data.explicit or false
     self.explicit_def = data.explicit_def or nil
 
@@ -215,11 +213,44 @@ function Profile:_apply(data)
             self._valid_variants[variant] = true
         end
     end
+
+    -- Derive key from profile data (must be last — depends on fields set above)
+    self:_derive_key()
+end
+
+--- Compute and set self.key from the profile's data fields.
+--- Set-based profiles derive from configuration_set_name + tools.
+--- Single-config (pinned) profiles derive from project/config_key.
+function Profile:_derive_key()
+    if self._configuration_set_name then
+        -- Set-based profiles always derive key from set name + tools
+        -- (even when pinned — the key tracks the set name)
+        local merge_mod = require("loomworks.merge")
+        self.key = merge_mod.profile_key(self._configuration_set_name, self:tools_data())
+    elseif self.mappings then
+        -- Single-config profile: derive from project/variant:tool
+        local merge_mod = require("loomworks.merge")
+        for project_key, variant in pairs(self.mappings) do
+            local tools = self:tools_data()
+            local tool_key = nil
+            if tools then
+                for _, tool_ref in pairs(tools) do
+                    tool_key = tool_ref.key
+                    break
+                end
+            end
+            local config_key = merge_mod.build_config_key(variant, tool_key)
+            self.key = merge_mod.pinned_key(project_key, config_key)
+            return  -- single-config: one mapping only
+        end
+        self.key = "unnamed"
+    else
+        self.key = "unnamed"
+    end
 end
 
 --- Resolve mappings for this profile from pre-resolved references.
---- Three tiers: (1) reactive from ConfigurationSet, (2) stored mappings,
---- (3) fallback from cached profile project data.
+--- Two tiers: (1) reactive from ConfigurationSet, (2) stored mappings (pinned profiles).
 --- @param data loomworks.ProfileDef
 --- @return table<string, string>|nil mappings
 --- @return boolean orphaned
@@ -236,17 +267,10 @@ function Profile:_resolve_mappings(data)
         end
     end
 
-    -- Tier 2: Pinned profiles or set-based with stored mappings
+    -- Tier 2: Pinned profiles with stored mappings
     if data.mappings then
         local orphaned = data.configuration_set ~= nil
         return data.mappings, orphaned
-    end
-
-    -- Tier 3: Fallback from pre-resolved cached configuration mappings
-    if data._resolved_mappings then
-        if next(data._resolved_mappings) then
-            return data._resolved_mappings, data.configuration_set ~= nil
-        end
     end
 
     return nil, false
@@ -322,36 +346,6 @@ function Profile:config_key(variant, project_type)
     return variant
 end
 
---- Serialize this profile to a cache entry for persistence.
---- Builds the entry from owned fields — not from ws.cache.
---- @return table cache entry suitable for cache.profiles[key]
-function Profile:serialize_cache()
-    local entry = {}
-    if self._configuration_set_name then
-        entry.configuration_set = self._configuration_set_name
-    end
-    local tools = self:tools_data()
-    if tools then
-        entry.tools = tools
-    end
-    if self.mappings and not self._configuration_set_name then
-        entry.mappings = self.mappings
-    end
-    -- Build configurations array from ProfileProject config units
-    local configs = {}
-    for _, pp in ipairs(self:projects()) do
-        if pp._config_unit then
-            configs[#configs + 1] = pp._config_unit.id
-        end
-    end
-    if #configs > 0 then
-        entry.configurations = configs
-    elseif self._cached_configurations then
-        entry.configurations = self._cached_configurations
-    end
-    return entry
-end
-
 -- ---------------------------------------------------------------------------
 -- Child access
 -- ---------------------------------------------------------------------------
@@ -376,8 +370,9 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Activate this profile.
---- Sets workspace active profile fields and remerges.
+--- Pins the profile (if not already pinned) and sets it as active.
 function Profile:activate()
+    self._pinned = true
     self._workspace._active_profile = self
     self._workspace._active_profile_key = self.key
     self._workspace:_save_user()

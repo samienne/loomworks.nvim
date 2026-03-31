@@ -52,54 +52,25 @@ describe("merge", function()
     -- parse_profile_key was removed (zero runtime callers)
 
     describe("get_all_profiles", function()
-        it("returns cached profiles", function()
-            local ws = make_ws(
-                { configuration_sets = { debug = { App = "development" } } },
-                nil,
-                {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
-                        release = {
-                            configuration_set = "release",
-                            configurations = { "App/production" },
-                        },
-                    },
-                    configurations = {
-                        ["App/development"] = {
-                            project_key = "App",
-                            config_key = "development",
-                            type = "typescript",
-                        },
-                        ["App/production"] = {
-                            project_key = "App",
-                            config_key = "production",
-                            type = "typescript",
-                        },
-                    },
-                }
-            )
-            local profiles = merge.get_all_profiles(ws.config, ws.cache)
-            assert.is_not_nil(profiles.debug)
-            assert.is_not_nil(profiles.release)
-            assert.equals("debug", profiles.debug.configuration_set)
-            assert.equals("release", profiles.release.configuration_set)
-        end)
-
-        it("returns empty when no cached or explicit profiles", function()
+        it("returns empty when no pinned or explicit profiles", function()
             local ws = make_ws()
-            local profiles = merge.get_all_profiles(ws.config)
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, {})
             assert.are.same({}, profiles)
         end)
 
-        it("does not auto-generate profiles from configuration_sets", function()
+        it("includes pinned profiles from user_data", function()
             local ws = make_ws({
                 configuration_sets = { debug = { App = "development" } },
             })
-            local profiles = merge.get_all_profiles(ws.config)
-            assert.are.same({}, profiles)
+            local user_data = {
+                _meta = { version = 2 },
+                pinned_profiles = {
+                    ["App/development"] = { mappings = { App = "development" } },
+                },
+            }
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, {}, user_data)
+            assert.is_not_nil(profiles["App/development"])
+            assert.is_true(profiles["App/development"]._pinned)
         end)
 
         it("explicit profiles from config", function()
@@ -109,7 +80,7 @@ describe("merge", function()
                     debug = { configuration_set = "debug", kit_id = "custom" },
                 },
             })
-            local profiles = merge.get_all_profiles(ws.config)
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, {})
             assert.is_true(profiles.debug.explicit)
             assert.equals("debug", profiles.debug.configuration_set)
         end)
@@ -159,14 +130,13 @@ describe("merge", function()
         it("reads status from cache", function()
             local ws = make_ws(
                 { configuration_sets = { debug = { App = "development" } } },
-                { active_profile = "debug" },
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    active_profile = "debug",
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -177,21 +147,21 @@ describe("merge", function()
                     },
                 }
             )
-            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root",
+                nil, ws.user)
             assert.equals("built", result.projects.App.status)
         end)
 
         it("resolves active profile from user preferences", function()
             local ws = make_ws(
                 { configuration_sets = { debug = { App = "development" } } },
-                { active_profile = "debug" },
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    active_profile = "debug",
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -201,7 +171,8 @@ describe("merge", function()
                     },
                 }
             )
-            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root",
+                nil, ws.user)
             assert.equals("debug", result.name)
         end)
 
@@ -216,14 +187,13 @@ describe("merge", function()
         it("resolves configuration from active set", function()
             local ws = make_ws(
                 { configuration_sets = { debug = { App = "development" } } },
-                { active_profile = "debug" },
                 {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            configurations = { "App/development" },
-                        },
+                    active_profile = "debug",
+                    pinned_profiles = {
+                        debug = { configuration_set = "debug" },
                     },
+                },
+                {
                     configurations = {
                         ["App/development"] = {
                             project_key = "App",
@@ -233,7 +203,8 @@ describe("merge", function()
                     },
                 }
             )
-            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root")
+            local result = merge.merge(ws.config, ws.user and ws.user.active_profile, ws.cache, "/root",
+                nil, ws.user)
             assert.equals("development", result.projects.App.configuration)
         end)
 

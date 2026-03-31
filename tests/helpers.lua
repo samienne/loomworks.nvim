@@ -29,22 +29,86 @@ end
 --- @param overrides? table merged into the base
 --- @return string JSON content
 function M.make_user_json(overrides)
-    local base = { _meta = { version = 1 } }
+    local base = { _meta = { version = 2 } }
     if overrides then
         base = vim.tbl_deep_extend("force", base, overrides)
     end
     return vim.json.encode(base)
 end
 
+--- Convert v6-style configurations dict to v7-style build_dirs dict.
+--- Transforms keys like "App/Debug" to "build/App/Debug" and removes config_key field.
+--- @param configurations table<string, table>
+--- @return table<string, table>
+local function convert_configurations_to_build_dirs(configurations)
+    local build_dirs = {}
+    for old_key, entry in pairs(configurations) do
+        -- Derive build_dir key from project_key + variant + optional tool_id
+        local project_key = entry.project_key
+        local variant = entry.variant
+        if not variant and entry.config_key then
+            local ck = entry.config_key
+            local colon = ck:find(":")
+            variant = colon and ck:sub(1, colon - 1) or ck
+        end
+        -- Check for tool_data.id or compiler_id to include tool suffix in path
+        local tool_id = entry.tool_data and (entry.tool_data.id or entry.tool_data.compiler_id) or nil
+        local new_key
+        if project_key and variant then
+            if tool_id then
+                new_key = "build/" .. project_key .. "/" .. tool_id .. "/" .. variant
+            else
+                new_key = "build/" .. project_key .. "/" .. variant
+            end
+        else
+            -- Fallback: prefix with build/
+            new_key = "build/" .. old_key
+        end
+        -- Copy entry
+        local new_entry = vim.tbl_extend("force", {}, entry)
+        -- Ensure variant is set
+        if not new_entry.variant then
+            new_entry.variant = variant
+        end
+        build_dirs[new_key] = new_entry
+    end
+    return build_dirs
+end
+
+--- Migrate cache data from v6 format (configurations) to v7 format (build_dirs).
+--- Used by test helpers that receive cache overrides.
+--- @param cache_data table
+--- @return table migrated cache data
+function M.migrate_cache_v6_to_v7(cache_data)
+    if not cache_data then return cache_data end
+    if cache_data.build_dirs then return cache_data end -- Already v7
+    if not cache_data.configurations then return cache_data end
+
+    local result = {}
+    for k, v in pairs(cache_data) do
+        if k ~= "configurations" then
+            result[k] = v
+        end
+    end
+    result.build_dirs = convert_configurations_to_build_dirs(cache_data.configurations)
+    return result
+end
+
 --- Build a valid cache.json content string.
+--- Accepts both v6 (configurations) and v7 (build_dirs) format.
+--- v6 format is auto-migrated to v7.
 --- @param overrides? table merged into the base
 --- @return string JSON content
 function M.make_cache_json(overrides)
     local base = {
-        _meta = { version = 6, loomworks_hash = "", cached_at = "" },
-        configurations = {},
+        _meta = { version = 7, loomworks_hash = "", cached_at = "" },
+        build_dirs = {},
     }
     if overrides then
+        -- Auto-migrate v6 configurations to v7 build_dirs
+        if overrides.configurations and not overrides.build_dirs then
+            overrides = M.migrate_cache_v6_to_v7(overrides)
+        end
         base = vim.tbl_deep_extend("force", base, overrides)
     end
     return vim.json.encode(base)
@@ -70,6 +134,8 @@ function M.make_mock_workspace(overrides)
             cache = {
                 config_cache_key = function(pk, ck) return pk .. "/" .. ck end,
                 next_available_key = require("loomworks.cache").next_available_key,
+                relative_build_dir = require("loomworks.cache").relative_build_dir,
+                absolute_build_dir = require("loomworks.cache").absolute_build_dir,
             },
             modules = { get = function() return nil end },
             get_overseer_task = function() return nil end,
@@ -117,6 +183,9 @@ function M.make_mock_workspace(overrides)
         _build_dir_refs = overrides._build_dir_refs or {},
         _build_dir_locks = overrides._build_dir_locks or {},
         _modules = overrides._modules or {},
+        _user_config_overlay = overrides._user_config_overlay or nil,
+        _user_project_keys = overrides._user_project_keys or {},
+        _user_cs_names = overrides._user_cs_names or {},
     }
 
     -- Add config unit methods (same logic as Workspace)
@@ -138,9 +207,11 @@ function M.make_mock_workspace(overrides)
         if existing then return existing end
         local variant = configuration.name
         local tool_key = tool and tool.key or nil
+        local tool_data_val = tool and tool.data or nil
         local config_key = merge_h.build_config_key(variant, tool_key)
-        local id = cache_mod_h.config_cache_key(project.key, config_key)
-        -- Check if a unit with this id already exists (pre-created from cache data)
+        -- Compute build_dir-based id (same logic as Workspace:_compute_build_dir)
+        local id, abs_path = self:_compute_build_dir(project, variant, tool_data_val)
+        -- Check if a unit with this id already exists
         local unit = nil
         for _, u in pairs(self._config_units) do
             if u.id == id then unit = u; break end
@@ -149,30 +220,59 @@ function M.make_mock_workspace(overrides)
             unit = ConfigUnit.new(self, id, project.key)
             self._config_units[#self._config_units + 1] = unit
         end
-        -- Build cache-shaped table for _apply to read from
-        local cached_entry = {
-            project_key = unit._init_project_key or project.key,
-            config_key = unit._config_key or config_key,
-            type = project.type,
-            variant = unit._variant or variant,
-            state = unit.state_value,
-            build_dir = unit.build_dir_value,
-            last_configured = unit.last_configured,
-            last_built = unit.last_built,
-        }
-        if tool_key then
-            cached_entry.tool_key = unit._tool_key or tool_key
-            cached_entry.tool_data = unit._tool_data or (tool and tool.data or nil)
+        -- Look up cache entry from _test_cache if available
+        local test_cache = self._test_cache
+        if test_cache and test_cache.configurations and not test_cache.build_dirs then
+            test_cache = M.migrate_cache_v6_to_v7(test_cache)
         end
-        if unit.cmake_info then
-            cached_entry.cmake = unit.cmake_info
+        local cache_entry = test_cache and test_cache.build_dirs
+            and test_cache.build_dirs[id] or nil
+        if cache_entry then
+            -- Enrich with absolute build_dir
+            local enriched = vim.tbl_extend("keep", cache_entry, {
+                build_dir = abs_path,
+            })
+            unit:_apply({
+                cached = enriched,
+                project = project,
+                tool = tool,
+                configuration = configuration,
+            })
+        else
+            -- No cache entry: profile-resolved but unconfigured
+            -- Build a minimal cache-shaped table from existing first-class fields
+            -- (handles case where unit was previously populated by materialize, etc.)
+            if unit.state_value or unit._config_key then
+                local cached_entry = {
+                    project_key = unit._init_project_key or project.key,
+                    config_key = unit._config_key or config_key,
+                    type = project.type,
+                    variant = unit._variant or variant,
+                    state = unit.state_value,
+                    build_dir = unit.build_dir_value or abs_path,
+                    last_configured = unit.last_configured,
+                    last_built = unit.last_built,
+                }
+                if tool_key then
+                    cached_entry.tool_key = unit._tool_key or tool_key
+                    cached_entry.tool_data = unit._tool_data or tool_data_val
+                end
+                if unit.cmake_info then cached_entry.cmake = unit.cmake_info end
+                unit:_apply({
+                    cached = cached_entry,
+                    project = project,
+                    tool = tool,
+                    configuration = configuration,
+                })
+            else
+                unit:_apply({
+                    project = project,
+                    tool = tool,
+                    configuration = configuration,
+                    build_dir_value = abs_path,
+                })
+            end
         end
-        unit:_apply({
-            cached = cached_entry,
-            project = project,
-            tool = tool,
-            configuration = configuration,
-        })
         return unit
     end
 
@@ -187,7 +287,15 @@ function M.make_mock_workspace(overrides)
         local existing = self:find_module(mod_type)
         if existing then return existing end
         -- Create a minimal mock impl
-        local impl = { id = mod_type, has_keyed_tools = (mod_type == "cmake") }
+        local impl = {
+            id = mod_type,
+            has_keyed_tools = (mod_type == "cmake"),
+            tools_match = function(a, b)
+                if a == nil and b == nil then return true end
+                if a == nil or b == nil then return false end
+                return vim.deep_equal(a, b)
+            end,
+        }
         local mod = ModuleClass.new(mod_type, impl)
         self._modules[#self._modules + 1] = mod
         return mod
@@ -202,6 +310,20 @@ function M.make_mock_workspace(overrides)
     ws.get_or_create_tool = function(self, mod_type, tool_key, tool_data, tool_label)
         local mod = self:get_or_create_module(mod_type)
         return mod:get_or_create_tool(tool_key, tool_data, tool_label)
+    end
+
+    -- Build dir computation for tests.
+    -- Includes tool suffix when tool_data has an id (simulates cmake single-config).
+    ws._compute_build_dir = core_overrides._compute_build_dir or function(self_ws, project, variant, tool_data)
+        local tool_id = tool_data and (tool_data.id or tool_data.compiler_id) or nil
+        local abs_path
+        if tool_id then
+            abs_path = self_ws.root .. "/.nvim/build/" .. project.key .. "/" .. tool_id .. "/" .. variant
+        else
+            abs_path = self_ws.root .. "/.nvim/build/" .. project.key .. "/" .. variant
+        end
+        local rel_key = cache_mod_h.relative_build_dir(abs_path, self_ws.root)
+        return rel_key, abs_path
     end
 
     -- Business logic methods now live on workspace.
@@ -231,8 +353,54 @@ function M.make_mock_workspace(overrides)
     ws.has_queued_operations = core_overrides.has_queued_operations or function() return false end
     ws.is_build_dir_locked = core_overrides.is_build_dir_locked or function() return false, nil end
     ws._save_config = core_overrides._save_config or function() return true end
+    ws._serialize_project = core_overrides._serialize_project or function(_, project)
+        local type_config = project.type_config
+                and vim.deepcopy(project.type_config) or {}
+        local configs_dict = {}
+        for _, cfg in ipairs(project._configurations or {}) do
+            if cfg.serialize_user_override then
+                local override = cfg:serialize_user_override()
+                if override then
+                    configs_dict[cfg.name] = override
+                end
+            end
+        end
+        if next(configs_dict) then type_config.configurations = configs_dict end
+        local entry = { [project.type] = next(type_config)
+                and type_config or vim.empty_dict() }
+        if project.path and project.path ~= project.key then
+            entry.path = project.path
+        end
+        if project._depends_on_keys then entry.depends_on = project._depends_on_keys end
+        if project.launch then entry.launch = project.launch end
+        return entry
+    end
+    ws._serialize_project_partial = core_overrides._serialize_project_partial or function(self_ws, project, needed_config_names)
+        local type_config = project.type_config
+                and vim.deepcopy(project.type_config) or {}
+        local configs_dict = {}
+        for _, cfg in ipairs(project._configurations or {}) do
+            if needed_config_names[cfg.name] then
+                if cfg.serialize_user_override then
+                    local override = cfg:serialize_user_override()
+                    if override then
+                        configs_dict[cfg.name] = override
+                    end
+                end
+            end
+        end
+        if next(configs_dict) then type_config.configurations = configs_dict end
+        local entry = { [project.type] = next(type_config)
+                and type_config or vim.empty_dict() }
+        if project.path and project.path ~= project.key then
+            entry.path = project.path
+        end
+        if project._depends_on_keys then entry.depends_on = project._depends_on_keys end
+        if project.launch then entry.launch = project.launch end
+        return entry
+    end
     ws._serialize_user = core_overrides._serialize_user or function(self_ws)
-        local data = { _meta = { version = 1 } }
+        local data = { _meta = { version = 2 } }
         if self_ws._active_profile_key then
             data.active_profile = self_ws._active_profile_key
         end
@@ -243,29 +411,112 @@ function M.make_mock_workspace(overrides)
             end
         end
         if next(targets) then data.default_target = targets end
+
+        -- Walk pin roots to compute transitive closure
+        local needed_projects = {}
+        local needed_config_sets = {}
+
+        -- Serialize pinned profiles and collect their deps
+        local pinned = {}
+        for _, profile in pairs(self_ws._profiles) do
+            if profile._pinned then
+                local entry = {}
+                if profile._configuration_set_name then
+                    entry.configuration_set = profile._configuration_set_name
+                    needed_config_sets[profile._configuration_set_name] = true
+                end
+                local tools = profile.tools_data and profile:tools_data() or nil
+                if tools then entry.tools = tools end
+                if profile.mappings and not profile._configuration_set_name then
+                    entry.mappings = profile.mappings
+                end
+                pinned[profile.key] = entry
+
+                -- Collect project/config dependencies from profile mappings
+                if profile.mappings then
+                    for project_key, variant in pairs(profile.mappings) do
+                        if not needed_projects[project_key] then
+                            needed_projects[project_key] = {}
+                        end
+                        needed_projects[project_key][variant] = true
+                    end
+                end
+            end
+        end
+        if next(pinned) then
+            data.pinned_profiles = pinned
+        end
+
+        -- Collect deps from needed config sets
+        for _, cs in pairs(self_ws._config_sets) do
+            if needed_config_sets[cs.name] then
+                for project, config in pairs(cs.mappings) do
+                    if not needed_projects[project.key] then
+                        needed_projects[project.key] = {}
+                    end
+                    needed_projects[project.key][config.name] = true
+                end
+            end
+        end
+
+        -- Expand inherits chains
+        for project_key, config_names in pairs(needed_projects) do
+            local project = nil
+            for _, p in pairs(self_ws._projects) do
+                if p.key == project_key then project = p; break end
+            end
+            if project then
+                local expanded = {}
+                local function expand(name)
+                    if expanded[name] then return end
+                    expanded[name] = true
+                    local cfg = project:get_configuration(name)
+                    if cfg and cfg.inherits_names then
+                        for _, base in ipairs(cfg.inherits_names) do
+                            expand(base)
+                        end
+                    end
+                end
+                for name in pairs(config_names) do
+                    expand(name)
+                end
+                needed_projects[project_key] = expanded
+            end
+        end
+
+        -- Serialize needed config sets (user-sourced only)
+        local config_sets = {}
+        for _, cs in pairs(self_ws._config_sets) do
+            if needed_config_sets[cs.name] and cs._source == "user" then
+                config_sets[cs.name] = cs:raw_mappings()
+            end
+        end
+        if next(config_sets) then data.configuration_sets = config_sets end
+
+        -- Serialize needed projects (partial, user-sourced only)
+        local projects = {}
+        for project_key, config_names in pairs(needed_projects) do
+            local project = nil
+            for _, p in pairs(self_ws._projects) do
+                if p.key == project_key then project = p; break end
+            end
+            if project and not project.orphaned and project._source == "user" then
+                projects[project_key] = self_ws:_serialize_project_partial(project, config_names)
+            end
+        end
+        if next(projects) then data.projects = projects end
+
         return data
     end
     ws._save_user = core_overrides._save_user or function(self_ws)
         self_ws._core._deps.user.save(self_ws.root, self_ws:_serialize_user())
     end
 
-    -- If cache overrides were provided, pre-create ConfigUnits from configurations.
-    -- This replaces the old pattern of storing cache data on ws.cache.
-    local cache_data = overrides.cache
-    if cache_data and cache_data.configurations then
-        for id, entry in pairs(cache_data.configurations) do
-            -- Skip if a unit already exists for this id
-            local exists = false
-            for _, u in pairs(ws._config_units) do
-                if u.id == id then exists = true; break end
-            end
-            if not exists then
-                local unit = ConfigUnit.new(ws, id, entry.project_key)
-                unit:_apply({ cached = entry })
-                ws._config_units[#ws._config_units + 1] = unit
-            end
-        end
-    end
+    -- Store cache data for tests that need to access it directly.
+    -- ConfigUnits are NO LONGER auto-created from cache — they come from
+    -- profile resolution. Tests that need ConfigUnits should set up profiles
+    -- or use ensure_config_unit / ensure_config_unit_by_id.
+    ws._test_cache = overrides.cache
 
     return ws
 end
@@ -288,16 +539,36 @@ function M.register_profile_project(ws, profile, project_key, variant)
         configuration = project:get_configuration(variant)
     end
     local config_unit = nil
-    -- Find config unit via first-class fields (cache is nil after remerge)
-    for _, unit in pairs(ws._config_units) do
-        if unit._init_project_key == project_key
-                and unit._variant == variant then
-            -- Resolve references if not yet resolved (e.g. pre-created from cache)
-            if not unit._project then
-                M.refresh_config_unit(ws, unit)
+    -- Compute expected build_dir and look up or create ConfigUnit
+    if project then
+        local tool_data = nil
+        local tool_key = nil
+        local profile_tools = profile.tools_data and profile:tools_data() or nil
+        if profile_tools and project.type and profile_tools[project.type] then
+            tool_data = profile_tools[project.type].data
+            tool_key = profile_tools[project.type].key
+        end
+        local expected_id = ws:_compute_build_dir(project, variant, tool_data)
+        if expected_id then
+            for _, unit in pairs(ws._config_units) do
+                if unit.id == expected_id then
+                    -- Resolve references if not yet resolved
+                    if not unit._project then
+                        M.refresh_config_unit(ws, unit)
+                    end
+                    config_unit = unit
+                    break
+                end
             end
-            config_unit = unit
-            break
+            -- Create ConfigUnit if not found (profile resolution creates them)
+            if not config_unit and configuration then
+                local tool = nil
+                if tool_key then
+                    local mod = project._module or ws:find_module(project.type)
+                    if mod then tool = mod:find_tool(tool_key) end
+                end
+                config_unit = ws:ensure_config_unit(project, configuration, tool)
+            end
         end
     end
     local pp = ProfileProject.new(ws, project_key, {
@@ -506,11 +777,33 @@ function M.make_test_deps(files, opts)
             compute_hash = real_cache.compute_hash,
             config_cache_key = real_cache.config_cache_key,
             next_available_key = real_cache.next_available_key,
+            relative_build_dir = real_cache.relative_build_dir,
+            absolute_build_dir = real_cache.absolute_build_dir,
             save = function() return true end,
         },
         detect_tools_async = function(config, cache, callback) callback({}) end,
         modules = {
-            get = function() return nil end,
+            get = function(mod_type)
+                if not mod_type then return nil end
+                return {
+                    id = mod_type,
+                    has_keyed_tools = (mod_type == "cmake"),
+                    tools_match = function(a, b)
+                        if a == nil and b == nil then return true end
+                        if a == nil or b == nil then return false end
+                        return vim.deep_equal(a, b)
+                    end,
+                    info = function(_, type_config)
+                        local configs = {}
+                        if type_config and type_config.configurations then
+                            for name, data in pairs(type_config.configurations) do
+                                configs[name] = vim.tbl_extend("force", { is_user = true }, data)
+                            end
+                        end
+                        return { configurations = configs }
+                    end,
+                }
+            end,
         },
         FileTracker = {
             new = function(tracker_opts)
@@ -575,13 +868,40 @@ function M.find_project_in(projects, key)
     end
 end
 
---- Find a ConfigUnit by id (cache dict key) in a config_units array.
+--- Find a ConfigUnit by id (build_dir key) in a config_units array.
 --- @param config_units loomworks.ConfigUnit[]
 --- @param id string
 --- @return loomworks.ConfigUnit|nil
 function M.find_config_unit_by_id(config_units, id)
     for _, unit in pairs(config_units) do
         if unit.id == id then return unit end
+    end
+end
+
+--- Compute the default build_dir key for test purposes.
+--- Uses the simple default path formula: build/{project_key}/{variant}.
+--- When tool_id is provided, includes it: build/{project_key}/{tool_id}/{variant}.
+--- @param project_key string
+--- @param variant string
+--- @param tool_id? string tool suffix (e.g., "ninja-gcc")
+--- @return string relative build_dir key (e.g., "build/App/Debug")
+function M.build_dir_key(project_key, variant, tool_id)
+    if tool_id then
+        return "build/" .. project_key .. "/" .. tool_id .. "/" .. variant
+    end
+    return "build/" .. project_key .. "/" .. variant
+end
+
+--- Find a ConfigUnit by project_key and variant (property-based lookup).
+--- @param config_units loomworks.ConfigUnit[]
+--- @param project_key string
+--- @param variant string
+--- @return loomworks.ConfigUnit|nil
+function M.find_config_unit(config_units, project_key, variant)
+    for _, unit in pairs(config_units) do
+        if unit._init_project_key == project_key and unit._variant == variant then
+            return unit
+        end
     end
 end
 
