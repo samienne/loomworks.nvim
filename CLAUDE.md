@@ -148,9 +148,9 @@ directory safety before merging:
 These are implementation-specific details not covered by the spec or architecture:
 
 - **Workspace as domain container**: `Workspace` class owns all registries
-  (projects, profiles, config sets, config units, profile projects, tools) and
-  all business logic (sync, merge, cache, operations, deletion, task tracking,
-  tool scanning). Domain objects store a `_workspace` back-reference.
+  (projects, profiles, config sets, config units, profile projects, tools,
+  build dirs) and all business logic (sync, merge, cache, operations, deletion,
+  task tracking, tool scanning). Domain objects store a `_workspace` back-reference.
 - **Core is infrastructure-only**: `Core.new(deps)` with injectable
   dependencies for testing. Owns I/O, modules, events, file tracking, setup.
   Thin delegation wrappers forward to Workspace so init.lua callers continue
@@ -177,10 +177,17 @@ These are implementation-specific details not covered by the spec or architectur
   table and deserialization context. Resolves keys to references via ctx. Sets
   data fields. Never touches runtime fields. Returns `true` or `nil, error`.
   Same code path for new objects (constructor calls `_apply`) and updates.
+- **BuildDir domain object** (`build_dir.lua`): represents a physical build
+  directory with cached state (configured, built, failed). Separate from
+  ConfigUnit (user intent). ConfigUnit references a BuildDir via `_build_dir`.
+  Orphaned BuildDirs have state but no ConfigUnit pointing to them. Created
+  during `sync_build_dirs()` from cache entries. Workspace owns `_build_dirs`
+  array (all BuildDirs including orphaned). No raw cache data retained after
+  deserialization — BuildDir objects ARE the source of truth for build state.
 - **First-class fields**: ConfigUnit stores `state_value`, `build_dir_value`,
   `last_configured`, `last_built`, `cmake_info`, `_variant`, `_tool_key`,
-  `_tool_data` as individual fields. `serialize()` produces cache-shaped table
-  on demand. No `_cached` bag.
+  `_tool_data` as individual fields, plus `_build_dir` (BuildDir reference).
+  `serialize()` produces cache-shaped table on demand. No `_cached` bag.
 - **DataModel** (`data_model.lua`): deserialization orchestrator. Receives raw
   file data + current domain object arrays (never accesses Workspace directly).
   Builds deserialization context with resolver methods (`ctx:project(key)`,
@@ -189,7 +196,7 @@ These are implementation-specific details not covered by the spec or architectur
   (FileTracker → DataModel → swap arrays). Mutation methods update domain
   objects in place and call `_save_cache()` to persist. No round-trip.
 - **Workspace arrays**: `_modules`, `_projects`, `_config_sets`, `_profiles`,
-  `_config_units`, `_profile_projects` are arrays after refresh. Runtime
+  `_config_units`, `_profile_projects`, `_build_dirs` are arrays after refresh. Runtime
   callers iterate with `pairs()` or use `find_*` helpers (`find_project(key)`,
   `find_profile(key)`, `find_config_set(name)`, `find_module(mod_type)`).
 - `types.lua` defines LuaCATS type annotations for serialization data shapes,

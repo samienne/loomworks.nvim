@@ -155,8 +155,7 @@ option generation is available.
 
 **Fixed** (fix/rename-orphan-accumulation). Root cause: rename used
 `_rebuild_profile_projects_for` which destroyed and recreated domain
-objects, and called `ensure_config_unit` with wrong args (variant string
-passed as Tool object). Fix: pure in-place mutation — Configuration,
-Profile, ConfigUnit all updated without creating new objects. Old
-build_dir orphaned via `_last_raw_cache`; rename-back reclaims it.
+objects. Fix: pure in-place mutation — Configuration, Profile, ConfigUnit
+all keep identity. Old BuildDir orphaned as domain object; rename-back
+adopts it. Introduced BuildDir domain object, removed `_last_raw_cache`.
 

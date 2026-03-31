@@ -514,7 +514,8 @@ through files.
 4. Profiles — resolves ConfigurationSet + Tool references
 5. ConfigUnits — resolves Project + Tool + Configuration
 6. ProfileProjects — resolves Profile + Project + ConfigUnit references
-7. BuildDirRefs — reverse index from ConfigUnit build dirs
+7. BuildDirs — domain objects for physical build directories with state
+8. BuildDirRefs — reverse index from BuildDir paths
 
 **Module** (`module.lua`) wraps a stateless module function table (cmake.lua,
 ets.lua, typescript.lua) as a per-workspace domain object. Owns the Tool
@@ -545,12 +546,20 @@ materializes a profile by property matching, never by computing a key.
 `cs:configuration(project)` returns the Configuration object for a project.
 
 **ConfigUnit** is the meeting point — Profile, Project, and task_tracker all
-reference the same ConfigUnit for a given (project_key, config_key). State
-changes on a ConfigUnit are immediately visible to all consumers. ConfigUnit
-stores first-class fields (`state_value`, `build_dir_value`, `last_configured`,
-`last_built`, `cmake_info`, `_variant`, `_tool_key`, `_tool_data`) instead of
-a cache-shaped bag. `serialize()` produces the cache entry on demand. ConfigUnit
-carries direct references: `_project`, `_tool`, `_configuration`.
+reference the same ConfigUnit for a given (project, configuration, tool) triple.
+State changes on a ConfigUnit are immediately visible to all consumers.
+ConfigUnit stores first-class fields (`state_value`, `build_dir_value`,
+`last_configured`, `last_built`, `cmake_info`, `_variant`, `_tool_key`,
+`_tool_data`) and carries direct references: `_project`, `_tool`,
+`_configuration`, `_build_dir` (BuildDir object).
+
+**BuildDir** (`build_dir.lua`) represents a physical build directory with cached
+state (configured, built, failed). Separate from ConfigUnit (user intent).
+ConfigUnit references a BuildDir via `_build_dir`. Orphaned BuildDirs have state
+but no ConfigUnit pointing to them. Created during `sync_build_dirs()` from cache
+entries; task completion handler creates new BuildDirs when needed. Workspace owns
+`_build_dirs` array (all BuildDirs including orphaned). No raw cache data is
+retained after deserialization — BuildDir objects are the source of truth.
 
 **Target** wraps raw module detection data (type, dependencies, artifact)
 into an object with query methods (`is_executable()`, `display_name()`) and
@@ -633,7 +642,8 @@ loomworks.nvim/
 │   │   ├── configuration_set.lua       ConfigurationSet class (owns activation)
 │   │   ├── profile.lua                Profile + ProfileProject classes
 │   │   ├── project.lua                Project class (owns Configuration[])
-│   │   ├── config_unit.lua            Per-config runtime state (synced + lazy)
+│   │   ├── config_unit.lua            ConfigUnit: user intent (project+config+tool)
+│   │   ├── build_dir.lua             BuildDir: cached build artifacts for a directory
 │   │   ├── operation.lua              Operation class (profile action tracking)
 │   │   ├── cmake_kits.lua             CMake tool detection
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
