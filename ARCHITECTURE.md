@@ -268,6 +268,10 @@ may import from its own layer or any layer below it, never above.
 | `profile.lua` | Profile and ProfileProject classes (tools dict keyed by Module object, `tool_object_for(module)` accessor), status aggregation, plan_deletion, activate/deactivate. Profile resolves mappings + ConfigurationSet reference in `_update()`. ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation. References Workspace via `_workspace` | Own state beyond what workspace provides |
 | `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag (with reason: "deleting"/"cleaning"), queued action. Synced during remerge (`_update()` refreshes variant/tool from cache, preserves runtime state) + lazy creation via `get_config_unit()`. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `resolve_tool()`, `referencing_profiles()`. References Workspace via `_workspace` | Persist anything (runtime only) |
+| `launch_target.lua` | LaunchTarget class: resolves profile's default target descriptor into object references (Project, ConfigUnit, Target). `build()` builds deps then self. `deploy()` executes deploy steps (freshness check, copy). `launch()` runs the target via overseer | Own state beyond resolution; do I/O directly |
+| `target.lua` | Target class: wraps module-detected build target (type, dependencies, artifact). `build()` delegates to module. `launch()` runs executable via overseer. Runtime-only, recreated on parse | Persist anything |
+| `deploy.lua` | Deploy step validation, resolution, freshness checking, execution, cleanup. Pure functions — no state. Resolves source config units within profile context, compares mtime + source identity for freshness, copies files | Own state; do I/O beyond file copy |
+| `variables.lua` | Project variable validation and resolution. `resolve(project, configuration)` walks inheritance chain via object references, returns values with provenance (source Configuration object). Reserved name checking | Own state; mutate anything |
 | `operation.lua` | Operation class: tracks a user-initiated profile action. Watches ConfigUnit state changes to determine completion. Multiple Operations can coexist. Created by `Workspace:create_operation()`, cleaned up on completion via callback | Own state beyond what workspace provides; persist anything |
 | `workspace_view.lua` | View-model layer: orchestration logic for UI. Computes add/remove project context, tool detection caching, upgrade/downgrade previews, config set candidates. Config set create/edit/rename/delete context and execution. Orphan cleanup: stray build dir detection (top-down prune of `.nvim/build/`), orphaned config collection, bulk cleanup execution. Calls Workspace atomic mutations in sequence. No UI rendering — pure compute + execute | Render UI; own state; bypass Workspace methods |
 | `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
@@ -301,7 +305,10 @@ may import from its own layer or any layer below it, never above.
 | `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via `ws:add_project()`/`ws:remove_project()`. Opens mapping_dialog when config sets exist | Own persistent state |
 | `ui/mapping_dialog.lua` | Interactive Tree+View dialog for mapping a new project's configurations to existing config sets. Pre-fills via `ws:map_variant()`, accepts/cancels atomically | Own persistent state |
 | `ui/config_set_editor.lua` | Edit dialog for config set mappings (create and edit). Editable name row with inline validation, project→variant picker rows. Used for both new and existing sets | Own persistent state |
-| `ui/config_editor_dialog.lua` | Edit dialog for project configuration properties. Supports name, inherits (multi-base with reordering), options (unified view with inheritance sources), toolchain, generator. Abstract mixin detection. | Own persistent state |
+| `ui/config_editor_dialog.lua` | Edit dialog for project configuration properties. Supports name, inherits (multi-base with reordering), options (unified view with inheritance sources), variables (override/clear with provenance), toolchain, generator. Abstract mixin detection | Own persistent state |
+| `ui/launch_editor.lua` | Edit dialog for launch config properties: name, command, args, working_dir, env, deploy steps. Deploy entries open deploy_editor on enter | Own persistent state |
+| `ui/deploy_editor.lua` | Edit dialog for a single deploy step. Segment-based destination path builder (variable picker + literal text). Source picker for project, configuration, target (from domain objects). Resolved path preview | Own persistent state |
+| `ui/variable_editor.lua` | Edit dialog for a project variable declaration: name, type (string/path), default value | Own persistent state |
 | `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution | Side effects; domain logic |
 | `ui/sections/*.lua` | Pure render functions `(tree, ctx) → void`. Each section is a single function that calls tree methods | Call core directly; do I/O; hold state |
 
@@ -464,9 +471,12 @@ Core (singleton via init.lua)
         │     └── LaunchTarget? ← per-profile default target (from user/config)
         ├── ProfileProject[]    ← registered, one per (profile, project) pair
         ├── Project[]           ← from active set, identity-preserving
-        │     └── Configuration[] ← from module.info() + user overrides
+        │     ├── Configuration[] ← from module.info() + user overrides
+        │     └── variables{}     ← user-defined variable declarations
         ├── ConfigUnit{}        ← synced during remerge + lazy fallback
         │     └── Target{}      ← runtime, from module detection (set_targets)
+        ├── BuildDir[]          ← cache artifacts, may be orphaned
+        ├── _deploy_records{}   ← freshness tracking for deploy steps
         └── Operation[]         ← active profile actions, cleaned up on completion
 ```
 
@@ -570,7 +580,9 @@ parse. Back-references its owning ConfigUnit.
 **LaunchTarget** represents a profile's selected default target. Resolves
 a disk descriptor (`{ project, target }` from user.json/loomworks.json) into
 direct object references (Project, ConfigUnit, Target). Created on demand
-by `Profile:default_target()`.
+by `Profile:default_target()`. `deploy()` method executes deploy steps
+from the launch config's `deploy` dict before launching — resolves sources
+within the profile context, checks freshness, copies files.
 
 ---
 
@@ -644,6 +656,10 @@ loomworks.nvim/
 │   │   ├── project.lua                Project class (owns Configuration[])
 │   │   ├── config_unit.lua            ConfigUnit: user intent (project+config+tool)
 │   │   ├── build_dir.lua             BuildDir: cached build artifacts for a directory
+│   │   ├── launch_target.lua         LaunchTarget: profile's default build/launch target
+│   │   ├── target.lua                Target: module-detected build target (cmake exe, etc.)
+│   │   ├── deploy.lua                Deploy step resolution, freshness, execution
+│   │   ├── variables.lua             Project variable resolution + validation
 │   │   ├── operation.lua              Operation class (profile action tracking)
 │   │   ├── cmake_kits.lua             CMake tool detection
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
@@ -665,6 +681,10 @@ loomworks.nvim/
 │   │       ├── dialog.lua             Snacks.win dialog helper
 │   │       ├── tree.lua               Foldable tree widget
 │   │       ├── actions.lua            Action factories + delete dialog
+│   │       ├── launch_editor.lua     Launch config editor (command, args, env, deploy)
+│   │       ├── deploy_editor.lua     Deploy step editor (segment path + source picker)
+│   │       ├── variable_editor.lua   Variable declaration editor (name, type, default)
+│   │       ├── config_editor_dialog.lua  Configuration editor (inherits, options, variables)
 │   │       ├── project_browser.lua   Directory browser for adding projects
 │   │       ├── helpers.lua            Shared formatting
 │   │       └── sections/
