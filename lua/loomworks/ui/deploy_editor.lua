@@ -2,8 +2,8 @@
 ---
 --- Tree+View dialog for editing a deploy step's destination and source.
 --- Operates on domain objects: projects, configurations, targets are
---- offered as pickers when available. Destination uses a base path picker
---- (workspace root, build dir, etc.) plus a relative path.
+--- offered as pickers when available. Destination is built from segments
+--- (variables or literal text) composed into a path.
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
@@ -11,55 +11,126 @@ local expand = require("loomworks.expand")
 
 local M = {}
 
--- Known base path options: { variable, display_name }
-local BASE_PATHS = {
-    { var = "${workspace_root}", label = "Workspace root" },
-    { var = "${build_dir}",      label = "Build directory" },
-    { var = "${project_path}",   label = "Project path" },
+-- Variable definitions: { var, label, root_only }
+-- root_only = true means the variable expands to an absolute path and
+-- can only appear as the first segment.
+local VARIABLES = {
+    { var = "workspace_root", label = "Workspace root",     root_only = true },
+    { var = "build_dir",      label = "Build directory",    root_only = true },
+    { var = "project_path",   label = "Project path",       root_only = true },
+    { var = "variant",        label = "Variant",            root_only = false },
+    { var = "config_set",     label = "Configuration set",  root_only = false },
 }
 
---- Parse a destination template into base + relative.
---- @param dest string full destination template
---- @return string base_var the ${variable} prefix, or "" for none
---- @return string rel the relative portion after the base
-local function parse_destination(dest)
-    for _, bp in ipairs(BASE_PATHS) do
-        local prefix = bp.var .. "/"
-        if dest == bp.var then
-            return bp.var, ""
-        elseif dest:sub(1, #prefix) == prefix then
-            return bp.var, dest:sub(#prefix + 1)
+--- Find variable definition by var name.
+local function find_var_def(var_name)
+    for _, v in ipairs(VARIABLES) do
+        if v.var == var_name then return v end
+    end
+    return nil
+end
+
+--- Parse a destination template string into segments.
+--- Segments are either { type="var", var="workspace_root" }
+--- or { type="literal", value="some/text" }.
+--- @param dest string e.g. "${workspace_root}/Plugins/${variant}/lib.node"
+--- @return table[] segments
+function M.parse_segments(dest)
+    if not dest or dest == "" then return {} end
+
+    local segments = {}
+    local pos = 1
+    local len = #dest
+
+    while pos <= len do
+        -- Check for variable reference
+        if dest:sub(pos, pos + 1) == "${" then
+            local close = dest:find("}", pos + 2, true)
+            if close then
+                local var_name = dest:sub(pos + 2, close - 1)
+                segments[#segments + 1] = { type = "var", var = var_name }
+                pos = close + 1
+                -- Skip trailing /
+                if pos <= len and dest:sub(pos, pos) == "/" then
+                    pos = pos + 1
+                end
+                goto continue
+            end
+        end
+
+        -- Literal segment: collect until next ${
+        local next_var = dest:find("${", pos, true)
+        local literal
+        if next_var then
+            literal = dest:sub(pos, next_var - 1)
+            pos = next_var
+        else
+            literal = dest:sub(pos)
+            pos = len + 1
+        end
+
+        -- Split literal by / into multiple segments
+        -- e.g. "Plugins/lib.node" → ["Plugins", "lib.node"]
+        for part in literal:gmatch("[^/]+") do
+            segments[#segments + 1] = { type = "literal", value = part }
+        end
+        -- Preserve trailing / only if this is the end of the entire string
+        -- (directory destination marker). Internal trailing slashes before
+        -- the next ${var} are just separators and should not create empty segments.
+        if literal:sub(-1) == "/" and pos > len then
+            segments[#segments + 1] = { type = "literal", value = "" }
+        end
+
+        ::continue::
+    end
+
+    -- Remove empty trailing literal if it's the only artifact of splitting
+    if #segments > 0 and segments[#segments].type == "literal"
+            and segments[#segments].value == "" then
+        -- Keep it — represents trailing / (directory destination)
+    end
+
+    return segments
+end
+
+--- Compose segments back into a destination template string.
+--- @param segments table[]
+--- @return string
+function M.compose_segments(segments)
+    local parts = {}
+    for _, seg in ipairs(segments) do
+        if seg.type == "var" then
+            parts[#parts + 1] = "${" .. seg.var .. "}"
+        elseif seg.value ~= "" then
+            parts[#parts + 1] = seg.value
         end
     end
-    return "", dest
-end
-
---- Combine base + relative into a destination template.
---- @param base_var string the ${variable} or ""
---- @param rel string relative path
---- @return string
-local function combine_destination(base_var, rel)
-    if base_var == "" then return rel end
-    if rel == "" then return base_var end
-    return base_var .. "/" .. rel
-end
-
---- Find the display label for a base variable.
---- @param base_var string
---- @return string
-local function base_label(base_var)
-    if base_var == "" then return "(none)" end
-    for _, bp in ipairs(BASE_PATHS) do
-        if bp.var == base_var then return bp.label end
+    local result = table.concat(parts, "/")
+    -- If last segment was empty literal (trailing /), add it
+    if #segments > 0 and segments[#segments].type == "literal"
+            and segments[#segments].value == "" then
+        if result ~= "" then result = result .. "/" end
     end
-    return base_var
+    return result
+end
+
+--- Get display text for a segment.
+local function segment_display(seg)
+    if seg.type == "var" then
+        local def = find_var_def(seg.var)
+        return def and def.label or seg.var
+    end
+    if seg.value == "" then return "(trailing /)" end
+    return seg.value
+end
+
+--- Get highlight for a segment.
+local function segment_hl(seg)
+    if seg.type == "var" then return "Type" end
+    return "LoomworksActionable"
 end
 
 --- Resolve the config unit for a (project, configuration) pair in a profile.
---- @param profile loomworks.Profile
---- @param project loomworks.Project
---- @param config_name string|nil nil means profile default
---- @return loomworks.ConfigUnit|nil
 local function resolve_config_unit(profile, project, config_name)
     local pp = profile:project(project.key)
     if not pp or not pp._config_unit then return nil end
@@ -73,31 +144,17 @@ local function resolve_config_unit(profile, project, config_name)
 end
 
 --- Build a resolved destination preview string.
---- @param base_var string
---- @param rel string
---- @param ws table|nil workspace
---- @param prof table|nil profile
---- @param launch_project table|nil project
---- @return string|nil
-local function resolve_dest_preview(base_var, rel, ws, prof, launch_project)
+local function resolve_dest_preview(segments, ws, prof, launch_project)
     if not ws or not prof or not launch_project then return nil end
-    local template = combine_destination(base_var, rel)
+    local template = M.compose_segments(segments)
     if template == "" then return nil end
     local ctx = expand.launch_context(ws, prof, launch_project)
     local resolved = expand.expand_string(template, ctx)
-    -- If nothing was expanded (still has ${...}), don't show
     if resolved:find("%${") then return nil end
     return resolved
 end
 
 --- Build a resolved source preview string.
---- @param prof table|nil profile
---- @param project table|nil project
---- @param config_name string
---- @param source_type string
---- @param source_target string
---- @param source_path string
---- @return string|nil
 local function resolve_source_preview(prof, project, config_name, source_type, source_target, source_path)
     if not prof or not project then return nil end
     local unit = resolve_config_unit(prof, project, config_name)
@@ -139,8 +196,8 @@ function M.open(opts)
     local ws = opts.workspace
     local launch_project = opts.launch_project
 
-    -- Parse destination into base + relative
-    local dest_base, dest_rel = parse_destination(opts.destination or "")
+    -- Parse destination into segments
+    local dest_segments = M.parse_segments(opts.destination or "")
 
     local accepted = false
     local tree, view
@@ -164,13 +221,9 @@ function M.open(opts)
         return names
     end
 
-    --- Get targets from all config units for a project (union).
-    --- Different configurations may have different targets parsed; taking
-    --- the union maximizes what's available in the picker.
     local function get_targets(project)
         local seen = {}
         local result = {}
-        -- Walk all config units in the workspace that belong to this project
         local ws_units = ws and ws._config_units or {}
         for _, unit in pairs(ws_units) do
             if unit._project == project and unit.targets then
@@ -201,54 +254,108 @@ function M.open(opts)
         end)
     end
 
+    --- Show the segment picker at a given position.
+    --- @param idx number position to insert/replace (0-based: 0 = first)
+    --- @param is_first boolean whether this will be the first segment
+    --- @param on_done fun(seg: table) callback with the new segment
+    local function pick_segment(is_first, on_done)
+        local choices = {}
+        local choice_map = {}
+
+        -- Variable choices
+        for _, vdef in ipairs(VARIABLES) do
+            if not vdef.root_only or is_first then
+                local label = vdef.label .. "  (${" .. vdef.var .. "})"
+                choices[#choices + 1] = label
+                choice_map[label] = { type = "var", var = vdef.var }
+            end
+        end
+
+        -- Custom text option
+        choices[#choices + 1] = "Custom text..."
+
+        vim.ui.select(choices, { prompt = "Path segment:" }, function(choice)
+            if not choice then return end
+            if choice == "Custom text..." then
+                vim.ui.input({ prompt = "Text: " }, function(text)
+                    if text and text ~= "" then
+                        -- Split by / in case user types "dir/subdir"
+                        local parts = {}
+                        for part in text:gmatch("[^/]+") do
+                            parts[#parts + 1] = { type = "literal", value = part }
+                        end
+                        on_done(parts)
+                    end
+                end)
+            else
+                local seg = choice_map[choice]
+                if seg then
+                    on_done({ seg })
+                end
+            end
+        end)
+    end
+
     local function render_fn(t)
         t._level = 1
 
         t:leaf("Deploy Step", "Title")
         t:blank()
 
-        -- Destination: base path picker
+        -- Destination segments
         t:leaf("Destination:", "Comment")
-        t:item("  Base path      " .. base_label(dest_base) .. " ▸", {
+
+        for i, seg in ipairs(dest_segments) do
+            local captured_i = i
+            local prefix = i == 1 and "  " or "  / "
+            t:item(prefix .. segment_display(seg) .. " ▸", {
+                hl = segment_hl(seg),
+                direct = true,
+                on_enter = function()
+                    if seg.type == "literal" then
+                        edit_string("Text: ", seg.value, function(v)
+                            if v == "" then
+                                table.remove(dest_segments, captured_i)
+                            else
+                                dest_segments[captured_i] = { type = "literal", value = v }
+                            end
+                        end)
+                    else
+                        -- Re-pick variable
+                        pick_segment(captured_i == 1, function(new_segs)
+                            dest_segments[captured_i] = new_segs[1]
+                            -- If custom text was multi-part, insert extras
+                            for j = 2, #new_segs do
+                                table.insert(dest_segments, captured_i + j - 1, new_segs[j])
+                            end
+                            if view then view:refresh() end
+                        end)
+                    end
+                end,
+                on_delete = function()
+                    table.remove(dest_segments, captured_i)
+                    if view then view:refresh() end
+                end,
+            })
+        end
+
+        t:item("  ▸ Add segment", {
             hl = "LoomworksActionable",
             direct = true,
             on_enter = function()
-                local choices = { "(none)" }
-                for _, bp in ipairs(BASE_PATHS) do
-                    choices[#choices + 1] = bp.label
-                end
-                vim.ui.select(choices, { prompt = "Base path:" }, function(choice)
-                    if not choice then return end
-                    if choice == "(none)" then
-                        dest_base = ""
-                    else
-                        for _, bp in ipairs(BASE_PATHS) do
-                            if bp.label == choice then
-                                dest_base = bp.var
-                                break
-                            end
-                        end
+                local is_first = #dest_segments == 0
+                pick_segment(is_first, function(new_segs)
+                    for _, seg in ipairs(new_segs) do
+                        dest_segments[#dest_segments + 1] = seg
                     end
                     if view then view:refresh() end
                 end)
             end,
         })
 
-        -- Destination: relative path
-        local rel_val = dest_rel ~= "" and dest_rel or "(empty)"
-        t:item("  Relative path  " .. rel_val .. " ▸", {
-            hl = dest_rel ~= "" and "LoomworksActionable" or "Comment",
-            direct = true,
-            on_enter = function()
-                edit_string("Relative path: ", dest_rel, function(v)
-                    dest_rel = v
-                end)
-            end,
-        })
-
         -- Destination preview
         local dest_preview = resolve_dest_preview(
-            dest_base, dest_rel, ws, profile, launch_project)
+            dest_segments, ws, profile, launch_project)
         if dest_preview then
             t:leaf("  → " .. dest_preview, "NonText")
         end
@@ -389,7 +496,7 @@ function M.open(opts)
         end
 
         t:blank()
-        t:leaf("[Enter] change  [D] clear config  [y] accept  [q] cancel", "Comment")
+        t:leaf("[Enter] edit  [D] remove segment  [y] accept  [q] cancel", "Comment")
     end
 
     tree = Tree.new(render_fn)
@@ -397,7 +504,7 @@ function M.open(opts)
     local orig_on_key = tree.on_key
     function tree:on_key(action, line)
         if action == "accept" then
-            local destination = combine_destination(dest_base, dest_rel)
+            local destination = M.compose_segments(dest_segments)
             if destination == "" then
                 vim.notify("loomworks: destination cannot be empty", vim.log.levels.ERROR)
                 return {}
@@ -439,7 +546,7 @@ function M.open(opts)
         lock_to_items = true,
         win = {
             width = 80,
-            height = 18,
+            height = 20,
             zindex = 70,
             backdrop = 70,
             title = " Deploy Step ",
@@ -463,9 +570,5 @@ function M.open(opts)
 
     view:open()
 end
-
---- Exported for testing.
-M._parse_destination = parse_destination
-M._combine_destination = combine_destination
 
 return M
