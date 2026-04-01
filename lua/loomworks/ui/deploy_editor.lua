@@ -11,10 +11,10 @@ local expand = require("loomworks.expand")
 
 local M = {}
 
--- Variable definitions: { var, label, root_only }
+-- Built-in variable definitions: { var, label, root_only }
 -- root_only = true means the variable expands to an absolute path and
 -- can only appear as the first segment.
-local VARIABLES = {
+local BUILTIN_VARIABLES = {
     { var = "workspace_root", label = "Workspace root",     root_only = true },
     { var = "build_dir",      label = "Build directory",    root_only = true },
     { var = "project_path",   label = "Project path",       root_only = true },
@@ -22,9 +22,36 @@ local VARIABLES = {
     { var = "config_set",     label = "Configuration set",  root_only = false },
 }
 
---- Find variable definition by var name.
-local function find_var_def(var_name)
-    for _, v in ipairs(VARIABLES) do
+--- Build full variable list including user-defined project variables.
+--- @param project table|nil the launch project with .variables
+--- @return table[] variable definitions
+local function build_variable_list(project)
+    local vars = {}
+    for _, v in ipairs(BUILTIN_VARIABLES) do
+        vars[#vars + 1] = v
+    end
+    if project and project.variables then
+        local names = {}
+        for name in pairs(project.variables) do
+            names[#names + 1] = name
+        end
+        table.sort(names)
+        for _, name in ipairs(names) do
+            local decl = project.variables[name]
+            vars[#vars + 1] = {
+                var = name,
+                label = name,
+                root_only = decl.type == "path",
+                user_defined = true,
+            }
+        end
+    end
+    return vars
+end
+
+--- Find variable definition by var name in a variable list.
+local function find_var_def(var_name, var_list)
+    for _, v in ipairs(var_list) do
         if v.var == var_name then return v end
     end
     return nil
@@ -115,9 +142,11 @@ function M.compose_segments(segments)
 end
 
 --- Get display text for a segment.
-local function segment_display(seg)
+--- @param seg table segment
+--- @param var_list? table[] variable definitions (for label lookup)
+local function segment_display(seg, var_list)
     if seg.type == "var" then
-        local def = find_var_def(seg.var)
+        local def = find_var_def(seg.var, var_list or BUILTIN_VARIABLES)
         return def and def.label or seg.var
     end
     if seg.value == "" then return "(trailing /)" end
@@ -195,6 +224,7 @@ function M.open(opts)
     local profile = opts.profile
     local ws = opts.workspace
     local launch_project = opts.launch_project
+    local all_variables = build_variable_list(launch_project)
 
     -- Parse destination into segments
     local dest_segments = M.parse_segments(opts.destination or "")
@@ -262,8 +292,8 @@ function M.open(opts)
         local choices = {}
         local choice_map = {}
 
-        -- Variable choices
-        for _, vdef in ipairs(VARIABLES) do
+        -- Variable choices (built-in + user-defined)
+        for _, vdef in ipairs(all_variables) do
             if not vdef.root_only or is_first then
                 local label = vdef.label .. "  (${" .. vdef.var .. "})"
                 choices[#choices + 1] = label
@@ -308,7 +338,7 @@ function M.open(opts)
         for i, seg in ipairs(dest_segments) do
             local captured_i = i
             local prefix = i == 1 and "  " or "  / "
-            t:item(prefix .. segment_display(seg) .. " ▸", {
+            t:item(prefix .. segment_display(seg, all_variables) .. " ▸", {
                 hl = segment_hl(seg),
                 direct = true,
                 on_enter = function()

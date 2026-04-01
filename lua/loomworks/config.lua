@@ -3,7 +3,7 @@ local M = {}
 local io_mod = require("loomworks.io")
 
 local KNOWN_TYPES = { cmake = true, ets = true, typescript = true }
-local NON_TYPE_KEYS = { path = true, depends_on = true, launch = true }
+local NON_TYPE_KEYS = { path = true, depends_on = true, launch = true, variables = true }
 
 --- Extract project type from the project definition table.
 --- Type is implicit from the inner key: {"cmake": {}} -> type = "cmake"
@@ -57,6 +57,7 @@ function M.normalize_projects(raw_projects)
             type_config = type_config,
             depends_on = def.depends_on,
             launch = def.launch,
+            variables = def.variables,
         }
     end
     return projects, nil
@@ -107,12 +108,38 @@ function M.validate(raw, root)
             end
         end
 
+        -- Validate project-level variable declarations
+        local project_variables = nil
+        if def.variables then
+            local vars_mod = require("loomworks.variables")
+            local ok, vars_err = vars_mod.validate_declarations(def.variables)
+            if not ok then
+                return nil, "project '" .. key .. "': " .. vars_err
+            end
+            project_variables = def.variables
+
+            -- Validate configuration-level variable overrides
+            if type_config and type_config.configurations then
+                for cfg_name, cfg_def in pairs(type_config.configurations) do
+                    if type(cfg_def) == "table" and cfg_def.variables then
+                        local cok, cerr = vars_mod.validate_overrides(
+                            cfg_def.variables, project_variables)
+                        if not cok then
+                            return nil, "project '" .. key .. "' configuration '"
+                                .. cfg_name .. "': " .. cerr
+                        end
+                    end
+                end
+            end
+        end
+
         projects[key] = {
             path = project_path,
             type = ptype,
             type_config = type_config,
             depends_on = def.depends_on,
             launch = def.launch,
+            variables = project_variables,
         }
     end
 

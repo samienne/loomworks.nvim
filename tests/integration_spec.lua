@@ -43,7 +43,8 @@ local mock_modules = {
             }
             if config and config.configurations then
                 for name, data in pairs(config.configurations) do
-                    configs[name] = vim.tbl_extend("force", { is_user = true }, data)
+                    local base = configs[name] or { is_user = true }
+                    configs[name] = vim.tbl_extend("force", base, data)
                 end
             end
             return { configurations = configs }
@@ -3752,6 +3753,324 @@ describe("deploy steps", function()
 
         it("compose empty segments produces empty string", function()
             assert.equals("", de.compose_segments({}))
+        end)
+    end)
+end)
+
+-- =========================================================================
+-- Project variables
+-- =========================================================================
+
+describe("project variables", function()
+    local variables = require("loomworks.variables")
+
+    describe("validation", function()
+        it("accepts valid declarations", function()
+            local ok = variables.validate_declarations({
+                output_dir = { type = "path", default = "${project_path}/dist" },
+                debug_port = { type = "string", default = "9229" },
+            })
+            assert.is_true(ok)
+        end)
+
+        it("rejects reserved name", function()
+            local ok, err = variables.validate_declarations({
+                workspace_root = { type = "string", default = "bad" },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("reserved"))
+        end)
+
+        it("rejects invalid type", function()
+            local ok, err = variables.validate_declarations({
+                foo = { type = "number", default = "42" },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("invalid type"))
+        end)
+
+        it("rejects non-string default", function()
+            local ok, err = variables.validate_declarations({
+                foo = { type = "string", default = 42 },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("default must be a string"))
+        end)
+
+        it("accepts valid overrides", function()
+            local decl = { output_dir = { type = "path", default = "/dist" } }
+            local ok = variables.validate_overrides({ output_dir = "/dist/debug" }, decl)
+            assert.is_true(ok)
+        end)
+
+        it("rejects override for undeclared variable", function()
+            local decl = { output_dir = { type = "path", default = "/dist" } }
+            local ok, err = variables.validate_overrides({ unknown = "val" }, decl)
+            assert.is_false(ok)
+            assert.truthy(err:find("not declared"))
+        end)
+
+        it("rejects non-string override value", function()
+            local decl = { output_dir = { type = "path", default = "/dist" } }
+            local ok, err = variables.validate_overrides({ output_dir = 42 }, decl)
+            assert.is_false(ok)
+            assert.truthy(err:find("must be a string"))
+        end)
+    end)
+
+    describe("resolution", function()
+        it("resolves to project default when no configuration", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local resolved = variables.resolve(mock_project, nil)
+            assert.equals("/dist", resolved.output_dir.value)
+            assert.is_nil(resolved.output_dir.source_config)
+            assert.equals("path", resolved.output_dir.type)
+        end)
+
+        it("resolves to project default when config has no override", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local mock_config = { variables = nil, _inherits = {} }
+            local resolved = variables.resolve(mock_project, mock_config)
+            assert.equals("/dist", resolved.output_dir.value)
+            assert.is_nil(resolved.output_dir.source_config)
+        end)
+
+        it("resolves to config override", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local mock_config = {
+                name = "Debug",
+                variables = { output_dir = "/dist/debug" },
+                _inherits = {},
+            }
+            local resolved = variables.resolve(mock_project, mock_config)
+            assert.equals("/dist/debug", resolved.output_dir.value)
+            assert.equals(mock_config, resolved.output_dir.source_config)
+        end)
+
+        it("resolves through inheritance chain", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local parent_config = {
+                name = "Base",
+                variables = { output_dir = "/dist/base" },
+                _inherits = {},
+            }
+            local child_config = {
+                name = "Debug",
+                variables = nil,  -- no override
+                _inherits = { parent_config },
+            }
+            local resolved = variables.resolve(mock_project, child_config)
+            assert.equals("/dist/base", resolved.output_dir.value)
+            assert.equals(parent_config, resolved.output_dir.source_config)
+        end)
+
+        it("child override wins over parent", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local parent_config = {
+                name = "Base",
+                variables = { output_dir = "/dist/base" },
+                _inherits = {},
+            }
+            local child_config = {
+                name = "Debug",
+                variables = { output_dir = "/dist/debug" },
+                _inherits = { parent_config },
+            }
+            local resolved = variables.resolve(mock_project, child_config)
+            assert.equals("/dist/debug", resolved.output_dir.value)
+            assert.equals(child_config, resolved.output_dir.source_config)
+        end)
+
+        it("provenance tracks specific config in multi-level chain", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                    debug_port = { type = "string", default = "9229" },
+                },
+            }
+            local grandparent = {
+                name = "Root",
+                variables = { output_dir = "/dist/root", debug_port = "8080" },
+                _inherits = {},
+            }
+            local parent = {
+                name = "Mid",
+                variables = { output_dir = "/dist/mid" },  -- overrides output_dir only
+                _inherits = { grandparent },
+            }
+            local child = {
+                name = "Leaf",
+                variables = nil,
+                _inherits = { parent },
+            }
+            local resolved = variables.resolve(mock_project, child)
+            -- output_dir from Mid (nearest override)
+            assert.equals("/dist/mid", resolved.output_dir.value)
+            assert.equals(parent, resolved.output_dir.source_config)
+            -- debug_port from Root (grandparent)
+            assert.equals("8080", resolved.debug_port.value)
+            assert.equals(grandparent, resolved.debug_port.source_config)
+        end)
+
+        it("returns empty table when project has no variables", function()
+            local resolved = variables.resolve({ variables = nil }, nil)
+            assert.same({}, resolved)
+        end)
+    end)
+
+    describe("config validation", function()
+        it("rejects loomworks.json with reserved variable name", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {},
+                        variables = {
+                            build_dir = { type = "string", default = "bad" },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_nil(config)
+            assert.truthy(err:find("reserved"))
+        end)
+
+        it("rejects config override for undeclared variable", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = { variables = { unknown = "val" } },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/dist" },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_nil(config)
+            assert.truthy(err:find("not declared"))
+        end)
+
+        it("accepts valid variables with config overrides", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = { variables = { output_dir = "/dist/debug" } },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/dist" },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_not_nil(config, err)
+        end)
+    end)
+
+    describe("full stack", function()
+        it("variables stored on project and configuration after remerge", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {
+                                    variables = { output_dir = "${project_path}/dist/debug" },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "${project_path}/dist" },
+                        },
+                    },
+                },
+                configuration_sets = { Debug = { App = "Debug" } },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local app = h.find_project_in(ws:get_projects(), "App")
+            assert.is_not_nil(app.variables)
+            assert.is_not_nil(app.variables.output_dir)
+            assert.equals("path", app.variables.output_dir.type)
+
+            -- Find the Debug configuration
+            local debug_cfg
+            for _, cfg in ipairs(app._configurations) do
+                if cfg.name == "Debug" then debug_cfg = cfg; break end
+            end
+            assert.is_not_nil(debug_cfg)
+            assert.is_not_nil(debug_cfg.variables)
+            assert.equals("${project_path}/dist/debug", debug_cfg.variables.output_dir)
+        end)
+
+        it("variable expansion in launch context", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {
+                                    variables = { output_dir = "${project_path}/dist/debug" },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "${project_path}/dist" },
+                            port = { type = "string", default = "9229" },
+                        },
+                    },
+                },
+                configuration_sets = {
+                    Debug = { App = "Debug" },
+                },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local expand_mod = require("loomworks.expand")
+            local app = h.find_project_in(ws:get_projects(), "App")
+            local profile = ws._active_profile
+            assert.is_not_nil(profile, "active profile must exist")
+
+            local ctx = expand_mod.launch_context(ws, profile, app)
+            -- output_dir should be expanded with Debug override + built-in project_path
+            assert.equals("App/dist/debug", ctx.output_dir)
+            -- port uses project default (no Debug override)
+            assert.equals("9229", ctx.port)
         end)
     end)
 end)

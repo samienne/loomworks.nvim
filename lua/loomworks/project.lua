@@ -9,6 +9,7 @@ local Configuration = require("loomworks.configuration")
 --- @field path? string relative path from workspace root
 --- @field type_config? table module-specific configuration (options, configurations, etc.)
 --- @field launch? table<string, table> launch configurations
+--- @field variables? table<string, { type: string, default: string }> user-defined variable declarations
 --- @field configuration? string active configuration name
 --- @field _tool? loomworks.Tool direct reference to Tool domain object
 --- @field status loomworks.Status
@@ -63,6 +64,7 @@ function Project:_update(data)
         self.type_config = data.type_config
     end
     self.launch = data.launch
+    self.variables = data.variables or nil
     self.configuration = data.configuration
     -- Read pre-resolved Module and Tool domain objects (set by _sync_projects)
     self._module = data._module
