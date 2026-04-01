@@ -111,6 +111,7 @@ function Configuration:serialize_user_override()
         entry.inherits = #self.inherits_names == 1 and self.inherits_names[1] or self.inherits_names
     end
     if self.options and next(self.options) then entry.options = self.options end
+    if self.variables and next(self.variables) then entry.variables = self.variables end
     if self.role then entry.role = self.role end
     return entry
 end

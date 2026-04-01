@@ -4073,4 +4073,148 @@ describe("project variables", function()
             assert.equals("9229", ctx.port)
         end)
     end)
+
+    describe("editor persistence", function()
+        it("save_variable creates declaration on project", function()
+            local ws = make_ws({ projects = { App = { cmake = {} } } })
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local ok, err = app:save_variable("output_dir", {
+                type = "path", default = "${project_path}/dist",
+            })
+            assert.is_true(ok, err)
+            assert.is_not_nil(app.variables)
+            assert.is_not_nil(app.variables.output_dir)
+            assert.equals("path", app.variables.output_dir.type)
+            assert.equals("${project_path}/dist", app.variables.output_dir.default)
+        end)
+
+        it("save_variable rejects reserved name", function()
+            local ws = make_ws({ projects = { App = { cmake = {} } } })
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local ok, err = app:save_variable("build_dir", {
+                type = "string", default = "bad",
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("reserved"))
+        end)
+
+        it("delete_variable removes declaration and config overrides", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {
+                                    variables = { output_dir = "/debug" },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/dist" },
+                        },
+                    },
+                },
+                configuration_sets = { Debug = { App = "Debug" } },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local app = h.find_project_in(ws:get_projects(), "App")
+            assert.is_not_nil(app.variables.output_dir)
+
+            local debug_cfg
+            for _, cfg in ipairs(app._configurations) do
+                if cfg.name == "Debug" then debug_cfg = cfg; break end
+            end
+            assert.is_not_nil(debug_cfg.variables)
+
+            local ok, err = app:delete_variable("output_dir")
+            assert.is_true(ok, err)
+            assert.is_nil(app.variables)
+            assert.is_nil(debug_cfg.variables)
+        end)
+
+        it("workspace_view save/get round-trip", function()
+            local ws = make_ws({ projects = { App = { cmake = {} } } })
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            -- Save via workspace_view
+            local ok = wv.execute_save_variable(app, nil, "port", {
+                type = "string", default = "9229",
+            })
+            assert.is_true(ok)
+
+            local vars = wv.get_variables(app)
+            assert.equals(1, #vars)
+            assert.equals("port", vars[1].name)
+            assert.equals("string", vars[1].type)
+            assert.equals("9229", vars[1].default)
+        end)
+
+        it("workspace_view rename variable", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {},
+                        variables = {
+                            old_name = { type = "string", default = "val" },
+                        },
+                    },
+                },
+            })
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local ok = wv.execute_save_variable(app, "old_name", "new_name", {
+                type = "string", default = "val",
+            })
+            assert.is_true(ok)
+            assert.is_nil(app.variables.old_name)
+            assert.is_not_nil(app.variables.new_name)
+        end)
+
+        it("config editor context includes resolved variables", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {
+                                    variables = { output_dir = "/debug" },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/dist" },
+                            port = { type = "string", default = "9229" },
+                        },
+                    },
+                },
+                configuration_sets = { Debug = { App = "Debug" } },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local app = h.find_project_in(ws:get_projects(), "App")
+            local ctx = wv.compute_edit_configuration_context(app, "Debug")
+
+            -- project_variables has declarations
+            assert.is_not_nil(ctx.project_variables.output_dir)
+            assert.equals("path", ctx.project_variables.output_dir.type)
+
+            -- variables has this config's own overrides
+            assert.equals("/debug", ctx.variables.output_dir)
+            assert.is_nil(ctx.variables.port)  -- not overridden
+
+            -- resolved_variables has full resolution with provenance
+            assert.is_not_nil(ctx.resolved_variables.output_dir)
+            assert.equals("/debug", ctx.resolved_variables.output_dir.value)
+            -- port resolves to project default
+            assert.equals("9229", ctx.resolved_variables.port.value)
+            assert.is_nil(ctx.resolved_variables.port.source_config)
+        end)
+    end)
 end)

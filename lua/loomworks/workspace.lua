@@ -2189,6 +2189,9 @@ function Workspace:_serialize_project(project)
     if project.launch then
         entry.launch = project.launch
     end
+    if project.variables and next(project.variables) then
+        entry.variables = project.variables
+    end
     return entry
 end
 
@@ -2274,6 +2277,9 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     end
     if project.launch then
         entry.launch = project.launch
+    end
+    if project.variables and next(project.variables) then
+        entry.variables = project.variables
     end
     return entry
 end

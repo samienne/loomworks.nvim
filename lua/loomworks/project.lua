@@ -333,6 +333,9 @@ function Project:save_configuration(config_name, config_data)
     if config_data.options and next(config_data.options) then
         clean.options = config_data.options
     end
+    if config_data.variables and next(config_data.variables) then
+        clean.variables = config_data.variables
+    end
     if config_data.toolchain then clean.toolchain = config_data.toolchain end
     if config_data.generator then clean.generator = config_data.generator end
 
@@ -347,6 +350,7 @@ function Project:save_configuration(config_name, config_data)
             from_preset = existing.from_preset,
             role = existing.role,
             options = existing.options,
+            variables = existing.variables,
             inherits_names = existing.inherits_names,
             module_config = vim.deepcopy(existing.module_config),
         }
@@ -612,6 +616,76 @@ function Project:save_options(options)
     end
 
     self:_refresh_configurations()
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Save a project variable declaration (create or update).
+--- @param var_name string variable name
+--- @param declaration { type: string, default: string }
+--- @return boolean ok, string|nil err
+function Project:save_variable(var_name, declaration)
+    local ws = self._workspace
+    if self._removed then
+        return false, "project '" .. self.key .. "' has been removed"
+    end
+
+    local vars_mod = require("loomworks.variables")
+    if vars_mod.RESERVED_NAMES[var_name] then
+        return false, "'" .. var_name .. "' is a reserved variable name"
+    end
+
+    local old_variables = self.variables and vim.deepcopy(self.variables) or nil
+    if not self.variables then
+        self.variables = {}
+    end
+    self.variables[var_name] = declaration
+
+    local ok, err = ws:_save_config()
+    if not ok then
+        self.variables = old_variables
+        return false, err
+    end
+
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Delete a project variable declaration.
+--- Also removes any configuration overrides for this variable.
+--- @param var_name string variable name
+--- @return boolean ok, string|nil err
+function Project:delete_variable(var_name)
+    local ws = self._workspace
+    if not self.variables or not self.variables[var_name] then
+        return false, "variable '" .. var_name .. "' not found"
+    end
+
+    local old_variables = vim.deepcopy(self.variables)
+    self.variables[var_name] = nil
+    if not next(self.variables) then self.variables = nil end
+
+    -- Remove config overrides for this variable
+    local old_config_overrides = {}
+    for _, cfg in ipairs(self._configurations) do
+        if cfg.variables and cfg.variables[var_name] then
+            old_config_overrides[cfg] = cfg.variables[var_name]
+            cfg.variables[var_name] = nil
+            if not next(cfg.variables) then cfg.variables = nil end
+        end
+    end
+
+    local ok, err = ws:_save_config()
+    if not ok then
+        -- Rollback
+        self.variables = old_variables
+        for cfg, val in pairs(old_config_overrides) do
+            if not cfg.variables then cfg.variables = {} end
+            cfg.variables[var_name] = val
+        end
+        return false, err
+    end
+
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true
 end
