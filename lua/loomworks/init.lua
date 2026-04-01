@@ -486,6 +486,19 @@ local _active_launch = nil
 --- Launch the active profile's default target.
 --- Builds first (if buildable), then launches.
 --- Shows picker if no default set or target is stale.
+--- Deploy then launch a target. Runs deploy steps first; on failure,
+--- notifies the user and does not launch.
+--- @param target loomworks.LaunchTarget
+local function deploy_and_launch(target)
+    target:deploy(function(ok, err)
+        if not ok then
+            vim.notify("loomworks: deploy failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+            return
+        end
+        target:launch()
+    end)
+end
+
 function M.launch_target()
     local profile = M.get_active_profile()
     if not profile then
@@ -498,16 +511,16 @@ function M.launch_target()
     if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
         _active_launch = launch_target
         if launch_target:is_buildable() then
-            -- Build first, then launch on success
+            -- Build first, then deploy and launch on success
             launch_target:build(function(success)
                 if success then
-                    launch_target:launch()
+                    deploy_and_launch(launch_target)
                 else
                     vim.notify("loomworks: build failed, not launching", vim.log.levels.ERROR)
                 end
             end)
         else
-            launch_target:launch()
+            deploy_and_launch(launch_target)
         end
         return
     end
@@ -528,7 +541,7 @@ function M.launch_target()
         local new_target = profile:default_target()
         if new_target and new_target:is_launchable() then
             _active_launch = new_target
-            new_target:launch()
+            deploy_and_launch(new_target)
         end
     end)
 end

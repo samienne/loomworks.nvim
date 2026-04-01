@@ -69,6 +69,12 @@ function M.launch_context(ws, profile, project)
         ctx.variant = profile.mappings[project.key]
     end
 
+    -- Build directory for this project in this profile
+    local pp = profile:project(project.key)
+    if pp and pp._config_unit then
+        ctx.build_dir = pp._config_unit.build_dir_value or ""
+    end
+
     return ctx
 end
 

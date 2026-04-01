@@ -115,6 +115,10 @@ local function edit_launch_config(project, launch_name)
 
     local ctx = workspace_view.compute_edit_launch_context(project, launch_name)
 
+    -- Get workspace projects and active profile for deploy editor pickers
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+
     require("loomworks.ui.launch_editor").open({
         title = launch_name
             and ('Edit "' .. launch_name .. '" — ' .. project_key)
@@ -124,6 +128,11 @@ local function edit_launch_config(project, launch_name)
         args = ctx.args,
         working_dir = ctx.working_dir,
         env = ctx.env,
+        deploy = ctx.deploy,
+        projects = ws and ws:get_projects() or {},
+        profile = ws and lw.get_active_profile() or nil,
+        workspace = ws,
+        launch_project = project,
         validate = function(result)
             if result.name ~= (launch_name or "")
                     and project.launch
@@ -139,6 +148,7 @@ local function edit_launch_config(project, launch_name)
                     args = result.args,
                     working_dir = result.working_dir,
                     env = result.env,
+                    deploy = result.deploy,
                 })
             if ok then
                 local verb = launch_name and "updated" or "created"

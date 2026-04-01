@@ -93,6 +93,20 @@ function M.validate(raw, root)
             vim.notify("loomworks: project '" .. key .. "' directory not found: " .. abs_path, vim.log.levels.WARN)
         end
 
+        -- Validate deploy definitions on launch configs
+        if def.launch then
+            local deploy_mod = require("loomworks.deploy")
+            for launch_name, launch_def in pairs(def.launch) do
+                if type(launch_def) == "table" and launch_def.deploy then
+                    local ok, deploy_err = deploy_mod.validate_deploy_definitions(launch_def.deploy)
+                    if not ok then
+                        return nil, "project '" .. key .. "' launch '"
+                            .. launch_name .. "': " .. deploy_err
+                    end
+                end
+            end
+        end
+
         projects[key] = {
             path = project_path,
             type = ptype,

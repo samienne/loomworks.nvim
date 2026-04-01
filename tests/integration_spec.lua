@@ -2458,6 +2458,63 @@ describe("launch config lifecycle", function()
         assert.is_nil(saved.env)
     end)
 
+    it("compute_edit_launch_context includes deploy data", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            deploy = {
+                                ["${build_dir}/native.node"] = {
+                                    project = "NativeLib",
+                                    target = "native_lib",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ctx = wv.compute_edit_launch_context(
+            h.find_project_in(ws:get_projects(), "App"), "debug")
+        assert.is_not_nil(ctx.deploy)
+        assert.is_not_nil(ctx.deploy["${build_dir}/native.node"])
+        assert.equals("NativeLib", ctx.deploy["${build_dir}/native.node"].project)
+        assert.equals("native_lib", ctx.deploy["${build_dir}/native.node"].target)
+    end)
+
+    it("save_launch_config persists deploy and omits when empty", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local app = h.find_project_in(ws:get_projects(), "App")
+
+        -- Save with deploy
+        wv.execute_save_launch_config(app, nil, "debug", {
+            command = "node",
+            deploy = {
+                ["${build_dir}/lib.node"] = {
+                    project = "NativeLib",
+                    path = "lib/output.node",
+                },
+            },
+        })
+
+        local saved = h.find_project_in(ws:get_projects(), "App").launch["debug"]
+        assert.is_not_nil(saved.deploy)
+        assert.is_not_nil(saved.deploy["${build_dir}/lib.node"])
+
+        -- Save without deploy (empty)
+        wv.execute_save_launch_config(app, "debug", "debug", {
+            command = "node",
+            deploy = {},
+        })
+
+        saved = h.find_project_in(ws:get_projects(), "App").launch["debug"]
+        assert.is_nil(saved.deploy)
+    end)
+
     it("returns error for removed project", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
         local app = h.find_project_in(ws:get_projects(), "App")
@@ -3184,5 +3241,487 @@ describe("two-layer merge", function()
         assert.is_not_nil(mylib)
         assert.equals("shared", app._source)
         assert.equals("user", mylib._source)
+    end)
+end)
+
+-- =========================================================================
+-- Deploy steps
+-- =========================================================================
+
+describe("deploy steps", function()
+    local deploy = require("loomworks.deploy")
+
+    -- Helper: create a workspace with two cmake projects and a built config
+    local function make_deploy_ws(launch_deploy, opts)
+        opts = opts or {}
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            args = { "app.js" },
+                            deploy = launch_deploy,
+                        },
+                    },
+                },
+                NativeLib = { cmake = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", NativeLib = "Debug" },
+                Release = { App = "Release", NativeLib = "Release" },
+            },
+        }, {
+            active_profile = "Debug",
+            pinned_profiles = {
+                Debug = { configuration_set = "Debug" },
+                Release = { configuration_set = "Release" },
+            },
+        }, {
+            build_dirs = vim.tbl_extend("force", {
+                [h.build_dir_key("NativeLib", "Debug")] = {
+                    project_key = "NativeLib", config_key = "Debug",
+                    type = "cmake", variant = "Debug", state = "built",
+                    build_dir = "/root/.nvim/build/NativeLib/Debug",
+                },
+                [h.build_dir_key("App", "Debug")] = {
+                    project_key = "App", config_key = "Debug",
+                    type = "cmake", variant = "Debug", state = "built",
+                    build_dir = "/root/.nvim/build/App/Debug",
+                },
+            }, opts.extra_build_dirs or {}),
+            deploy_state = opts.deploy_state or {},
+        })
+        return ws
+    end
+
+    describe("validation", function()
+        it("accepts valid deploy definition with target", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/native.node"] = {
+                    project = "NativeLib",
+                    target = "native_lib",
+                },
+            })
+            assert.is_true(ok)
+            assert.is_nil(err)
+        end)
+
+        it("accepts valid deploy definition with path", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/lib/"] = {
+                    project = "NativeLib",
+                    path = "lib/output.node",
+                },
+            })
+            assert.is_true(ok)
+        end)
+
+        it("accepts deploy with pinned configuration", function()
+            local ok = deploy.validate_deploy_definitions({
+                ["${build_dir}/native.node"] = {
+                    project = "NativeLib",
+                    target = "native_lib",
+                    configuration = "Release",
+                },
+            })
+            assert.is_true(ok)
+        end)
+
+        it("rejects deploy with .. in destination", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/../secret"] = {
+                    project = "NativeLib",
+                    target = "native_lib",
+                },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("%.%."))
+        end)
+
+        it("rejects deploy with . segment in destination", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/./file"] = {
+                    project = "NativeLib",
+                    target = "native_lib",
+                },
+            })
+            assert.is_false(ok)
+        end)
+
+        it("rejects deploy missing project", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/file"] = { target = "native_lib" },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("project"))
+        end)
+
+        it("rejects deploy missing both target and path", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/file"] = { project = "NativeLib" },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("target.*path"))
+        end)
+
+        it("rejects deploy with both target and path", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/file"] = {
+                    project = "NativeLib",
+                    target = "foo",
+                    path = "bar",
+                },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("not both"))
+        end)
+    end)
+
+    describe("resolution", function()
+        it("resolves deploy step using path in profile context", function()
+            local ws = make_deploy_ws({
+                ["${build_dir}/native.node"] = {
+                    project = "NativeLib",
+                    path = "lib/native.node",
+                },
+            })
+
+            local profile = ws._active_profile
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local resolved, err = deploy.resolve_deploy_step(
+                "${build_dir}/native.node",
+                { project = "NativeLib", path = "lib/native.node" },
+                { workspace = ws, profile = profile, launch_project = app })
+
+            assert.is_not_nil(resolved, err)
+            assert.equals("/root/.nvim/build/NativeLib/Debug/lib/native.node",
+                resolved.source_path)
+            -- Destination is App's build dir
+            assert.equals("/root/.nvim/build/App/Debug/native.node",
+                resolved.dest_path)
+            assert.equals("build/NativeLib/Debug", resolved.source_build_dir_id)
+            assert.equals("lib/native.node", resolved.source_rel_path)
+        end)
+
+        it("resolves deploy step with pinned configuration", function()
+            local ws = make_deploy_ws(nil, {
+                extra_build_dirs = {
+                    [h.build_dir_key("NativeLib", "Release")] = {
+                        project_key = "NativeLib", config_key = "Release",
+                        type = "cmake", variant = "Release", state = "built",
+                        build_dir = "/root/.nvim/build/NativeLib/Release",
+                    },
+                },
+            })
+
+            -- Active profile is Debug, but deploy pins to Release
+            -- We need a Release profile for this to work
+            local release_profile
+            for _, p in pairs(ws._profiles) do
+                if p.key == "Release" then
+                    release_profile = p
+                    break
+                end
+            end
+            if not release_profile then
+                -- Skip if Release profile not available
+                return
+            end
+
+            local app = h.find_project_in(ws:get_projects(), "App")
+            local resolved, err = deploy.resolve_deploy_step(
+                "${workspace_root}/shared/native.node",
+                { project = "NativeLib", configuration = "Release", path = "lib/native.node" },
+                { workspace = ws, profile = release_profile, launch_project = app })
+
+            assert.is_not_nil(resolved, err)
+            assert.truthy(resolved.source_path:find("Release"))
+        end)
+
+        it("fails when source project not found", function()
+            local ws = make_deploy_ws(nil)
+            local profile = ws._active_profile
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local resolved, err = deploy.resolve_deploy_step(
+                "${build_dir}/file",
+                { project = "NonExistent", path = "lib.so" },
+                { workspace = ws, profile = profile, launch_project = app })
+
+            assert.is_nil(resolved)
+            assert.truthy(err:find("not found"))
+        end)
+
+        it("fails when source project not in profile", function()
+            -- Create workspace with a project not in any config set
+            local ws = make_ws({
+                projects = {
+                    App = { cmake = {}, launch = { debug = { command = "node" } } },
+                    Orphan = { cmake = {} },
+                },
+                configuration_sets = {
+                    Debug = { App = "Debug" },  -- Orphan not mapped
+                },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local profile = ws._active_profile
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local resolved, err = deploy.resolve_deploy_step(
+                "${build_dir}/file",
+                { project = "Orphan", path = "lib.so" },
+                { workspace = ws, profile = profile, launch_project = app })
+
+            assert.is_nil(resolved)
+            assert.truthy(err:find("not in profile") or err:find("no config"))
+        end)
+
+        it("destination ending with / appends source filename", function()
+            local ws = make_deploy_ws(nil)
+            local profile = ws._active_profile
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local resolved, err = deploy.resolve_deploy_step(
+                "${build_dir}/lib/",
+                { project = "NativeLib", path = "output/native.node" },
+                { workspace = ws, profile = profile, launch_project = app })
+
+            assert.is_not_nil(resolved, err)
+            -- Should append "native.node" (last segment of source path)
+            assert.truthy(resolved.dest_path:find("lib/native%.node$"))
+        end)
+    end)
+
+    describe("freshness", function()
+        it("needs copy when no record exists", function()
+            local needs = deploy.check_freshness({
+                source_path = "/root/.nvim/build/NativeLib/Debug/lib.node",
+                dest_path = "/root/App/Debug/lib.node",
+                source_build_dir_id = "build/NativeLib/Debug",
+                source_rel_path = "lib.node",
+            }, {}, function(p) return p end)
+            assert.is_true(needs)
+        end)
+
+        it("needs copy when source_build_dir changed (config switch)", function()
+            local records = {
+                ["/root/App/Debug/lib.node"] = {
+                    source_build_dir = "build/NativeLib/Debug",
+                    source_rel_path = "lib.node",
+                    source_mtime = 1000,
+                },
+            }
+            -- Switching to Release
+            local needs = deploy.check_freshness({
+                source_path = "/root/.nvim/build/NativeLib/Release/lib.node",
+                dest_path = "/root/App/Debug/lib.node",
+                source_build_dir_id = "build/NativeLib/Release",
+                source_rel_path = "lib.node",
+            }, records, function(p) return p end)
+            assert.is_true(needs)
+        end)
+
+        it("needs copy when source_rel_path changed", function()
+            local records = {
+                ["/root/App/Debug/lib.node"] = {
+                    source_build_dir = "build/NativeLib/Debug",
+                    source_rel_path = "old_lib.node",
+                    source_mtime = 1000,
+                },
+            }
+            local needs = deploy.check_freshness({
+                source_path = "/root/.nvim/build/NativeLib/Debug/lib.node",
+                dest_path = "/root/App/Debug/lib.node",
+                source_build_dir_id = "build/NativeLib/Debug",
+                source_rel_path = "lib.node",
+            }, records, function(p) return p end)
+            assert.is_true(needs)
+        end)
+    end)
+
+    describe("cleanup", function()
+        it("removes deploy records for deleted build dir", function()
+            local records = {
+                ["/root/App/Debug/lib.node"] = {
+                    source_build_dir = "build/NativeLib/Debug",
+                    source_rel_path = "lib.node",
+                    source_mtime = 1000,
+                },
+                ["/root/App/Release/lib.node"] = {
+                    source_build_dir = "build/NativeLib/Release",
+                    source_rel_path = "lib.node",
+                    source_mtime = 2000,
+                },
+                ["/root/App/other.dll"] = {
+                    source_build_dir = "build/NativeLib/Debug",
+                    source_rel_path = "other.dll",
+                    source_mtime = 1500,
+                },
+            }
+
+            local removed = deploy.clean_deploy_records(records, "build/NativeLib/Debug")
+
+            -- Should remove Debug-sourced entries, keep Release
+            assert.equals(2, #removed)
+            assert.is_nil(records["/root/App/Debug/lib.node"])
+            assert.is_nil(records["/root/App/other.dll"])
+            assert.is_not_nil(records["/root/App/Release/lib.node"])
+        end)
+
+        it("deploy records survive serialization round-trip", function()
+            local ws = make_deploy_ws(nil, {
+                deploy_state = {
+                    ["/root/App/Debug/lib.node"] = {
+                        source_build_dir = "build/NativeLib/Debug",
+                        source_rel_path = "lib.node",
+                        source_mtime = 1000,
+                    },
+                },
+            })
+
+            -- Records should be loaded from cache
+            assert.is_not_nil(ws._deploy_records["/root/App/Debug/lib.node"])
+
+            -- Serialize and check
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.deploy_state)
+            assert.is_not_nil(cache.deploy_state["/root/App/Debug/lib.node"])
+            assert.equals("build/NativeLib/Debug",
+                cache.deploy_state["/root/App/Debug/lib.node"].source_build_dir)
+        end)
+    end)
+
+    describe("config validation", function()
+        it("rejects loomworks.json with invalid deploy definitions", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {},
+                        launch = {
+                            debug = {
+                                command = "node",
+                                deploy = {
+                                    ["${build_dir}/../escape"] = {
+                                        project = "NativeLib",
+                                        target = "lib",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_nil(config)
+            assert.truthy(err:find("%.%."))
+        end)
+
+        it("accepts loomworks.json with valid deploy definitions", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {},
+                        launch = {
+                            debug = {
+                                command = "node",
+                                deploy = {
+                                    ["${build_dir}/native.node"] = {
+                                        project = "NativeLib",
+                                        target = "native_lib",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_not_nil(config, err)
+        end)
+    end)
+
+    describe("launch target deploy method", function()
+        it("deploy() calls on_complete(true) when no deploy config", function()
+            local ws = make_deploy_ws(nil)  -- no deploy section
+            local profile = ws._active_profile
+            local lt = profile:default_target()
+
+            -- LaunchTarget may not exist (no default target set), test deploy directly
+            local LaunchTarget = require("loomworks.launch_target")
+            local target = LaunchTarget.new(ws, profile, { project = "App", launch = "debug" })
+
+            local result
+            target:deploy(function(ok, err)
+                result = { ok = ok, err = err }
+            end)
+            assert.is_not_nil(result)
+            assert.is_true(result.ok)
+        end)
+    end)
+
+    describe("destination parsing", function()
+        local de = require("loomworks.ui.deploy_editor")
+
+        it("parses ${workspace_root}/path", function()
+            local base, rel = de._parse_destination("${workspace_root}/lib/native.node")
+            assert.equals("${workspace_root}", base)
+            assert.equals("lib/native.node", rel)
+        end)
+
+        it("parses ${build_dir}/path", function()
+            local base, rel = de._parse_destination("${build_dir}/native.node")
+            assert.equals("${build_dir}", base)
+            assert.equals("native.node", rel)
+        end)
+
+        it("parses ${project_path}/path", function()
+            local base, rel = de._parse_destination("${project_path}/out/")
+            assert.equals("${project_path}", base)
+            assert.equals("out/", rel)
+        end)
+
+        it("parses bare variable with no relative part", function()
+            local base, rel = de._parse_destination("${build_dir}")
+            assert.equals("${build_dir}", base)
+            assert.equals("", rel)
+        end)
+
+        it("parses unknown path as no base", function()
+            local base, rel = de._parse_destination("/absolute/path/file.dll")
+            assert.equals("", base)
+            assert.equals("/absolute/path/file.dll", rel)
+        end)
+
+        it("parses plain relative path as no base", function()
+            local base, rel = de._parse_destination("some/relative/path")
+            assert.equals("", base)
+            assert.equals("some/relative/path", rel)
+        end)
+
+        it("combine round-trips with base", function()
+            local dest = de._combine_destination("${build_dir}", "lib/native.node")
+            assert.equals("${build_dir}/lib/native.node", dest)
+            local base, rel = de._parse_destination(dest)
+            assert.equals("${build_dir}", base)
+            assert.equals("lib/native.node", rel)
+        end)
+
+        it("combine with no base returns relative only", function()
+            local dest = de._combine_destination("", "some/path")
+            assert.equals("some/path", dest)
+        end)
+
+        it("combine with empty relative returns base only", function()
+            local dest = de._combine_destination("${build_dir}", "")
+            assert.equals("${build_dir}", dest)
+        end)
     end)
 end)

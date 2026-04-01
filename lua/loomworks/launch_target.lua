@@ -150,6 +150,39 @@ function LaunchTarget:_build_deps(deps, idx, on_complete)
         end)
 end
 
+--- Execute deploy steps before launching.
+--- Resolves and copies artifacts as defined in the launch config's deploy section.
+--- @param on_complete fun(ok: boolean, err?: string)
+function LaunchTarget:deploy(on_complete)
+    local cfg = self._launch_config
+    if not cfg or not cfg.deploy or not next(cfg.deploy) then
+        on_complete(true)
+        return
+    end
+
+    if not self._project then
+        on_complete(false, "no project for deploy")
+        return
+    end
+
+    local deploy_mod = require("loomworks.deploy")
+    local ws = self._workspace
+    local ctx = {
+        workspace = ws,
+        profile = self._profile,
+        launch_project = self._project,
+    }
+
+    deploy_mod.execute_deploy_steps(
+        cfg.deploy, ctx, ws._deploy_records, ws._core._deps.normalize,
+        function(ok, err)
+            if ok then
+                ws:_save_cache()
+            end
+            on_complete(ok, err)
+        end)
+end
+
 --- Launch this target.
 --- For command-type: constructs and runs overseer task from launch config.
 --- For module targets: delegates to Target:launch().
