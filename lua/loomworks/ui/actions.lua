@@ -255,13 +255,12 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Build the multi-step profile creation picker.
---- @param ctx table { config_sets, tool_entries, lw }
+--- @param ctx table { config_sets, lw }
 --- @return fun() closure
 function M.create_profile(ctx)
     return function()
         local lw = ctx.lw
         local config_sets = ctx.config_sets or {}
-        local tool_entries = ctx.tool_entries or {}
         local ws = lw.get_workspace()
         if not ws then return end
 
@@ -290,19 +289,36 @@ function M.create_profile(ctx)
                 return
             end
             local is_first = not next(lw.get_profiles())
-            M._create_profile_step2(cs, choice.name or choice.real_name, tool_entries, is_first)
+            M._create_profile_step2(cs, choice.name or choice.real_name, is_first)
         end)
     end
 end
 
 --- Step 2: Pick tool, then materialize (+ activate if first profile).
+--- Re-fetches tool entries at call time (not render time) to avoid stale
+--- data from before tool detection completed. Waits for tool detection
+--- if still scanning.
 --- @param cs loomworks.ConfigurationSet
 --- @param set_name string
---- @param tool_entries table<string, loomworks.ToolEntry[]>
 --- @param activate boolean
-function M._create_profile_step2(cs, set_name, tool_entries, activate)
+function M._create_profile_step2(cs, set_name, activate)
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    -- If tools are still scanning, wait and retry
+    if ws._tool_state == "scanning" then
+        vim.notify("loomworks: waiting for tool detection...", vim.log.levels.INFO)
+        ws._tool_waiters[#ws._tool_waiters + 1] = function()
+            M._create_profile_step2(cs, set_name, activate)
+        end
+        return
+    end
+
     local wv = require("loomworks.workspace_view")
 
+    -- Fetch fresh tool entries (not the stale render-time snapshot)
+    local tool_entries = lw.get_tool_entries()
     local entries = tool_entries[set_name] or {}
 
     if #entries <= 1 then
