@@ -66,6 +66,79 @@ abstract mixins — not directly buildable, only usable as bases.
 (Debug, Release, RelWithDebInfo, MinSizeRel). User entries in
 `loomworks.json` extend defaults (add options) rather than replace them.
 
+### 1.3.1 Project Variables
+
+Projects can declare user-defined variables with typed defaults. These
+variables are expanded alongside built-in variables in launch configs
+(command, args, env, working_dir) and deploy destinations.
+
+**Declaration** in `loomworks.json` (project level):
+
+```json
+"App": {
+    "typescript": {},
+    "variables": {
+        "output_dir": { "type": "path", "default": "${project_path}/dist" },
+        "debug_port": { "type": "string", "default": "9229" }
+    }
+}
+```
+
+**Types**: `string` (arbitrary text) and `path` (filesystem path — enables
+path-aware UI such as the segment editor). Types are declared at the
+project level and cannot be changed by configurations.
+
+**Configuration overrides**: Configurations can override variable values
+but cannot add new variables or change types. Overrides follow the
+configuration inheritance chain.
+
+```json
+"cmake": {
+    "configurations": {
+        "Debug": {
+            "variables": { "output_dir": "${project_path}/dist/debug" }
+        },
+        "Release": {
+            "variables": { "output_dir": "${project_path}/dist/release" }
+        }
+    }
+}
+```
+
+**Resolution order** (first match wins, most specific first):
+1. This configuration's override
+2. Parent configuration overrides (inheritance order, depth-first left-to-right)
+3. Project default
+
+**Value expansion**: Variable values can reference built-in variables
+(`${workspace_root}`, `${build_dir}`, `${variant}`, `${config_set}`,
+`${project_path}`) but NOT other user-defined variables. This prevents
+circular references and keeps resolution simple. Cross-variable references
+are deferred to a future version (with loop detection).
+
+**Reserved names**: User variables cannot use built-in variable names
+(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`).
+The system rejects declarations with reserved names at parse time.
+
+**Provenance tracking**: Each resolved variable value tracks its source —
+which specific configuration provided the value, or whether it comes from
+the project default. The editor displays this provenance so the user can
+see where each value originates (e.g., "from Debug", "from project
+default", "overridden here").
+
+**user.json**: Variable overrides in user.json follow the existing
+two-layer config pattern — personal overrides without touching
+loomworks.json. Pinned profiles replicate referenced variable values.
+
+**Design for extension** (not in v1):
+- `${parent:var_name}` — reference the value from the parent scope
+  (parent configuration or project default). Enables appending to
+  inherited values (e.g., `${parent:flags} -DFOO`).
+- `${project:var_name}` — reference the project default directly,
+  skipping the inheritance chain.
+- Cross-variable references with loop detection.
+- Workspace-level variables (shared across projects).
+
 ### 1.4 Configuration Set
 
 A configuration set is a cross-project mapping declared in `loomworks.json`
@@ -1926,6 +1999,8 @@ configurations per project with command, args, env, working_dir, deploy.
 - `${config_set}` — active configuration set name
 - `${variant}` — project's variant in the active config set
 - `${project_path}` — project's relative path
+- User-defined project variables (section 1.3.1) — resolved per
+  configuration with inheritance. Expanded after built-in variables.
 
 **Launch flow** (`launch_target()` API):
 1. Get active profile's default target (LaunchTarget)
