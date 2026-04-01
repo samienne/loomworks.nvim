@@ -115,6 +115,10 @@ local function edit_launch_config(project, launch_name)
 
     local ctx = workspace_view.compute_edit_launch_context(project, launch_name)
 
+    -- Get workspace projects and active profile for deploy editor pickers
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+
     require("loomworks.ui.launch_editor").open({
         title = launch_name
             and ('Edit "' .. launch_name .. '" — ' .. project_key)
@@ -124,6 +128,11 @@ local function edit_launch_config(project, launch_name)
         args = ctx.args,
         working_dir = ctx.working_dir,
         env = ctx.env,
+        deploy = ctx.deploy,
+        projects = ws and ws:get_projects() or {},
+        profile = ws and lw.get_active_profile() or nil,
+        workspace = ws,
+        launch_project = project,
         validate = function(result)
             if result.name ~= (launch_name or "")
                     and project.launch
@@ -139,6 +148,7 @@ local function edit_launch_config(project, launch_name)
                     args = result.args,
                     working_dir = result.working_dir,
                     env = result.env,
+                    deploy = result.deploy,
                 })
             if ok then
                 local verb = launch_name and "updated" or "created"
@@ -190,6 +200,87 @@ local function delete_launch_config(project, launch_name)
     })
 end
 
+--- Open the variable editor for an existing or new variable.
+--- @param project loomworks.Project
+--- @param var_name? string nil for new variable
+local function edit_variable(project, var_name)
+    local ctx = workspace_view.compute_edit_variable_context(project, var_name)
+
+    require("loomworks.ui.variable_editor").open({
+        title = var_name
+            and ('Edit "' .. var_name .. '" — ' .. project.key)
+            or ("New variable — " .. project.key),
+        name = ctx.name,
+        type = ctx.type,
+        default = ctx.default,
+        validate = function(result)
+            if result.name ~= (var_name or "")
+                    and project.variables
+                    and project.variables[result.name] then
+                return false, "variable '" .. result.name .. "' already exists"
+            end
+            local vars_mod = require("loomworks.variables")
+            if vars_mod.RESERVED_NAMES[result.name] then
+                return false, "'" .. result.name .. "' is a reserved name"
+            end
+            return true
+        end,
+        on_accept = function(result)
+            local ok, err = workspace_view.execute_save_variable(
+                project, var_name, result.name, {
+                    type = result.type,
+                    default = result.default,
+                })
+            if ok then
+                local verb = var_name and "updated" or "created"
+                vim.notify("loomworks: variable '" .. result.name .. "' " .. verb,
+                    vim.log.levels.INFO)
+            else
+                vim.notify("loomworks: " .. (err or "failed to save variable"),
+                    vim.log.levels.ERROR)
+            end
+        end,
+        on_cancel = function() end,
+    })
+end
+
+--- Delete a project variable with confirmation.
+--- @param project loomworks.Project
+--- @param var_name string
+local function delete_variable(project, var_name)
+    local dialog = require("loomworks.ui.dialog")
+    dialog.show({
+        title = "Confirm Delete",
+        lines = {
+            "  Delete variable: " .. var_name,
+            "",
+            "  Project: " .. project.key,
+            "  Config overrides for this variable will also be removed.",
+            "",
+            "  Press y to confirm, q to cancel",
+        },
+        highlights = {
+            { line = 1, hl_group = "DiagnosticWarn" },
+            { line = 3, hl_group = "Comment" },
+            { line = 4, hl_group = "Comment" },
+        },
+        keys = {
+            n = "close",
+            y = function(self)
+                self:close()
+                local ok, err = workspace_view.execute_delete_variable(project, var_name)
+                if ok then
+                    vim.notify("loomworks: variable '" .. var_name .. "' deleted",
+                        vim.log.levels.INFO)
+                else
+                    vim.notify("loomworks: " .. (err or "failed to delete"),
+                        vim.log.levels.ERROR)
+                end
+            end,
+        },
+    })
+end
+
 --- Open the configuration editor for a project configuration.
 --- @param project loomworks.Project
 --- @param config_name? string nil for new configuration
@@ -210,6 +301,7 @@ local function edit_project_configuration(project, config_name)
         variant = ctx.variant,
         inherits = ctx.inherits,
         options = ctx.options,
+        variables = ctx.variables,
         toolchain = ctx.toolchain,
         generator = ctx.generator,
         build_dir = ctx.build_dir,
@@ -218,6 +310,8 @@ local function edit_project_configuration(project, config_name)
         available_configs = ctx.available_configs,
         project_options = ctx.project_options,
         inherited_options = ctx.inherited_options,
+        project_variables = ctx.project_variables,
+        resolved_variables = ctx.resolved_variables,
         rename_effects = config_name and function(new_name)
             if new_name == config_name or new_name == "" then return nil end
             local effects = {}
@@ -259,6 +353,7 @@ local function edit_project_configuration(project, config_name)
                     variant = result.variant,
                     inherits = result.inherits,
                     options = result.options,
+                    variables = result.variables,
                     toolchain = result.toolchain,
                     generator = result.generator,
                 })
@@ -596,6 +691,29 @@ return function(tree, ctx)
                         hl = "LoomworksActionable",
                         direct = true,
                         on_enter = function() edit_launch_config(project, nil) end,
+                    })
+                end)
+            end
+
+            -- Project variables
+            local vars = workspace_view.get_variables(proj)
+            if #vars > 0 or not proj.orphaned then
+                local project = proj  -- capture for closure
+                tree:group("Variables:", "Comment", function()
+                    for _, v in ipairs(vars) do
+                        local vname = v.name  -- capture
+                        local display = v.name .. "  (" .. v.type .. ") = " .. v.default
+                        tree:item(display, {
+                            hl = "LoomworksActionable",
+                            enter_label = "Edit variable",
+                            on_enter = function() edit_variable(project, vname) end,
+                            on_delete = function() delete_variable(project, vname) end,
+                        })
+                    end
+                    tree:item("▸ Add variable", {
+                        hl = "LoomworksActionable",
+                        direct = true,
+                        on_enter = function() edit_variable(project, nil) end,
                     })
                 end)
             end

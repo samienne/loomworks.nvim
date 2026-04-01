@@ -455,6 +455,7 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
             cached = cached_config_data,
             cached_configurations = cached_configurations,
             depends_on = project.depends_on,
+            variables = project.variables,
         }
 
         -- Add module-specific info (cmake compile_commands, etc.)

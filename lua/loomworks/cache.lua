@@ -75,6 +75,7 @@ function M.default()
     return {
         _meta = { version = CURRENT_VERSION, loomworks_hash = "", cached_at = "" },
         build_dirs = {},
+        deploy_state = {},
     }
 end
 
@@ -92,6 +93,7 @@ function M.parse(content)
         return M.default(), true
     end
     raw.build_dirs = raw.build_dirs or {}
+    raw.deploy_state = raw.deploy_state or {}
     return raw, false
 end
 
@@ -128,6 +130,7 @@ function M.load(root)
     end
 
     data.build_dirs = data.build_dirs or {}
+    data.deploy_state = data.deploy_state or {}
 
     return data
 end

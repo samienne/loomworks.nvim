@@ -13,6 +13,7 @@
 --- @field is_default boolean from module detection (not user-defined)
 --- @field is_user boolean from loomworks.json user override
 --- @field from_preset boolean from CMakePresets.json
+--- @field variables table<string, string>|nil variable overrides (name → value)
 --- @field role string|nil special role (e.g., "compile_commands")
 --- @field _removed boolean
 local Configuration = {}
@@ -57,11 +58,14 @@ function Configuration:_update(data)
     -- Options (generic, not module-specific)
     self.options = data.options or nil
 
+    -- Variable overrides (generic, not module-specific)
+    self.variables = data.variables or nil
+
     -- Module-specific config: everything except the generic fields above
     local module_config = {}
     local generic = {
         is_default = true, is_user = true, from_preset = true,
-        role = true, inherits = true, options = true,
+        role = true, inherits = true, options = true, variables = true,
     }
     for k, v in pairs(data) do
         if not generic[k] then
@@ -107,6 +111,7 @@ function Configuration:serialize_user_override()
         entry.inherits = #self.inherits_names == 1 and self.inherits_names[1] or self.inherits_names
     end
     if self.options and next(self.options) then entry.options = self.options end
+    if self.variables and next(self.variables) then entry.variables = self.variables end
     if self.role then entry.role = self.role end
     return entry
 end

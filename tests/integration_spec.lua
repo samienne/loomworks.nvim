@@ -43,7 +43,8 @@ local mock_modules = {
             }
             if config and config.configurations then
                 for name, data in pairs(config.configurations) do
-                    configs[name] = vim.tbl_extend("force", { is_user = true }, data)
+                    local base = configs[name] or { is_user = true }
+                    configs[name] = vim.tbl_extend("force", base, data)
                 end
             end
             return { configurations = configs }
@@ -2458,6 +2459,63 @@ describe("launch config lifecycle", function()
         assert.is_nil(saved.env)
     end)
 
+    it("compute_edit_launch_context includes deploy data", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            deploy = {
+                                ["${build_dir}/native.node"] = {
+                                    project = "NativeLib",
+                                    target = "native_lib",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+
+        local ctx = wv.compute_edit_launch_context(
+            h.find_project_in(ws:get_projects(), "App"), "debug")
+        assert.is_not_nil(ctx.deploy)
+        assert.is_not_nil(ctx.deploy["${build_dir}/native.node"])
+        assert.equals("NativeLib", ctx.deploy["${build_dir}/native.node"].project)
+        assert.equals("native_lib", ctx.deploy["${build_dir}/native.node"].target)
+    end)
+
+    it("save_launch_config persists deploy and omits when empty", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local app = h.find_project_in(ws:get_projects(), "App")
+
+        -- Save with deploy
+        wv.execute_save_launch_config(app, nil, "debug", {
+            command = "node",
+            deploy = {
+                ["${build_dir}/lib.node"] = {
+                    project = "NativeLib",
+                    path = "lib/output.node",
+                },
+            },
+        })
+
+        local saved = h.find_project_in(ws:get_projects(), "App").launch["debug"]
+        assert.is_not_nil(saved.deploy)
+        assert.is_not_nil(saved.deploy["${build_dir}/lib.node"])
+
+        -- Save without deploy (empty)
+        wv.execute_save_launch_config(app, "debug", "debug", {
+            command = "node",
+            deploy = {},
+        })
+
+        saved = h.find_project_in(ws:get_projects(), "App").launch["debug"]
+        assert.is_nil(saved.deploy)
+    end)
+
     it("returns error for removed project", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
         local app = h.find_project_in(ws:get_projects(), "App")
@@ -3184,5 +3242,979 @@ describe("two-layer merge", function()
         assert.is_not_nil(mylib)
         assert.equals("shared", app._source)
         assert.equals("user", mylib._source)
+    end)
+end)
+
+-- =========================================================================
+-- Deploy steps
+-- =========================================================================
+
+describe("deploy steps", function()
+    local deploy = require("loomworks.deploy")
+
+    -- Helper: create a workspace with two cmake projects and a built config
+    local function make_deploy_ws(launch_deploy, opts)
+        opts = opts or {}
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            args = { "app.js" },
+                            deploy = launch_deploy,
+                        },
+                    },
+                },
+                NativeLib = { cmake = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", NativeLib = "Debug" },
+                Release = { App = "Release", NativeLib = "Release" },
+            },
+        }, {
+            active_profile = "Debug",
+            pinned_profiles = {
+                Debug = { configuration_set = "Debug" },
+                Release = { configuration_set = "Release" },
+            },
+        }, {
+            build_dirs = vim.tbl_extend("force", {
+                [h.build_dir_key("NativeLib", "Debug")] = {
+                    project_key = "NativeLib", config_key = "Debug",
+                    type = "cmake", variant = "Debug", state = "built",
+                    build_dir = "/root/.nvim/build/NativeLib/Debug",
+                },
+                [h.build_dir_key("App", "Debug")] = {
+                    project_key = "App", config_key = "Debug",
+                    type = "cmake", variant = "Debug", state = "built",
+                    build_dir = "/root/.nvim/build/App/Debug",
+                },
+            }, opts.extra_build_dirs or {}),
+            deploy_state = opts.deploy_state or {},
+        })
+        return ws
+    end
+
+    describe("validation", function()
+        it("accepts valid deploy definition with target", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/native.node"] = {
+                    project = "NativeLib",
+                    target = "native_lib",
+                },
+            })
+            assert.is_true(ok)
+            assert.is_nil(err)
+        end)
+
+        it("accepts valid deploy definition with path", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/lib/"] = {
+                    project = "NativeLib",
+                    path = "lib/output.node",
+                },
+            })
+            assert.is_true(ok)
+        end)
+
+        it("accepts deploy with pinned configuration", function()
+            local ok = deploy.validate_deploy_definitions({
+                ["${build_dir}/native.node"] = {
+                    project = "NativeLib",
+                    target = "native_lib",
+                    configuration = "Release",
+                },
+            })
+            assert.is_true(ok)
+        end)
+
+        it("rejects deploy with .. in destination", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/../secret"] = {
+                    project = "NativeLib",
+                    target = "native_lib",
+                },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("%.%."))
+        end)
+
+        it("rejects deploy with . segment in destination", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/./file"] = {
+                    project = "NativeLib",
+                    target = "native_lib",
+                },
+            })
+            assert.is_false(ok)
+        end)
+
+        it("rejects deploy missing project", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/file"] = { target = "native_lib" },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("project"))
+        end)
+
+        it("rejects deploy missing both target and path", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/file"] = { project = "NativeLib" },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("target.*path"))
+        end)
+
+        it("rejects deploy with both target and path", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/file"] = {
+                    project = "NativeLib",
+                    target = "foo",
+                    path = "bar",
+                },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("not both"))
+        end)
+    end)
+
+    describe("resolution", function()
+        it("resolves deploy step using path in profile context", function()
+            local ws = make_deploy_ws({
+                ["${build_dir}/native.node"] = {
+                    project = "NativeLib",
+                    path = "lib/native.node",
+                },
+            })
+
+            local profile = ws._active_profile
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local resolved, err = deploy.resolve_deploy_step(
+                "${build_dir}/native.node",
+                { project = "NativeLib", path = "lib/native.node" },
+                { workspace = ws, profile = profile, launch_project = app })
+
+            assert.is_not_nil(resolved, err)
+            assert.equals("/root/.nvim/build/NativeLib/Debug/lib/native.node",
+                resolved.source_path)
+            -- Destination is App's build dir
+            assert.equals("/root/.nvim/build/App/Debug/native.node",
+                resolved.dest_path)
+            assert.equals("build/NativeLib/Debug", resolved.source_build_dir_id)
+            assert.equals("lib/native.node", resolved.source_rel_path)
+        end)
+
+        it("resolves deploy step with pinned configuration", function()
+            local ws = make_deploy_ws(nil, {
+                extra_build_dirs = {
+                    [h.build_dir_key("NativeLib", "Release")] = {
+                        project_key = "NativeLib", config_key = "Release",
+                        type = "cmake", variant = "Release", state = "built",
+                        build_dir = "/root/.nvim/build/NativeLib/Release",
+                    },
+                },
+            })
+
+            -- Active profile is Debug, but deploy pins to Release
+            -- We need a Release profile for this to work
+            local release_profile
+            for _, p in pairs(ws._profiles) do
+                if p.key == "Release" then
+                    release_profile = p
+                    break
+                end
+            end
+            if not release_profile then
+                -- Skip if Release profile not available
+                return
+            end
+
+            local app = h.find_project_in(ws:get_projects(), "App")
+            local resolved, err = deploy.resolve_deploy_step(
+                "${workspace_root}/shared/native.node",
+                { project = "NativeLib", configuration = "Release", path = "lib/native.node" },
+                { workspace = ws, profile = release_profile, launch_project = app })
+
+            assert.is_not_nil(resolved, err)
+            assert.truthy(resolved.source_path:find("Release"))
+        end)
+
+        it("fails when source project not found", function()
+            local ws = make_deploy_ws(nil)
+            local profile = ws._active_profile
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local resolved, err = deploy.resolve_deploy_step(
+                "${build_dir}/file",
+                { project = "NonExistent", path = "lib.so" },
+                { workspace = ws, profile = profile, launch_project = app })
+
+            assert.is_nil(resolved)
+            assert.truthy(err:find("not found"))
+        end)
+
+        it("fails when source project not in profile", function()
+            -- Create workspace with a project not in any config set
+            local ws = make_ws({
+                projects = {
+                    App = { cmake = {}, launch = { debug = { command = "node" } } },
+                    Orphan = { cmake = {} },
+                },
+                configuration_sets = {
+                    Debug = { App = "Debug" },  -- Orphan not mapped
+                },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local profile = ws._active_profile
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local resolved, err = deploy.resolve_deploy_step(
+                "${build_dir}/file",
+                { project = "Orphan", path = "lib.so" },
+                { workspace = ws, profile = profile, launch_project = app })
+
+            assert.is_nil(resolved)
+            assert.truthy(err:find("not in profile") or err:find("no config"))
+        end)
+
+        it("destination ending with / appends source filename", function()
+            local ws = make_deploy_ws(nil)
+            local profile = ws._active_profile
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local resolved, err = deploy.resolve_deploy_step(
+                "${build_dir}/lib/",
+                { project = "NativeLib", path = "output/native.node" },
+                { workspace = ws, profile = profile, launch_project = app })
+
+            assert.is_not_nil(resolved, err)
+            -- Should append "native.node" (last segment of source path)
+            assert.truthy(resolved.dest_path:find("lib/native%.node$"))
+        end)
+    end)
+
+    describe("freshness", function()
+        it("needs copy when no record exists", function()
+            local needs = deploy.check_freshness({
+                source_path = "/root/.nvim/build/NativeLib/Debug/lib.node",
+                dest_path = "/root/App/Debug/lib.node",
+                source_build_dir_id = "build/NativeLib/Debug",
+                source_rel_path = "lib.node",
+            }, {}, function(p) return p end)
+            assert.is_true(needs)
+        end)
+
+        it("needs copy when source_build_dir changed (config switch)", function()
+            local records = {
+                ["/root/App/Debug/lib.node"] = {
+                    source_build_dir = "build/NativeLib/Debug",
+                    source_rel_path = "lib.node",
+                    source_mtime = 1000,
+                },
+            }
+            -- Switching to Release
+            local needs = deploy.check_freshness({
+                source_path = "/root/.nvim/build/NativeLib/Release/lib.node",
+                dest_path = "/root/App/Debug/lib.node",
+                source_build_dir_id = "build/NativeLib/Release",
+                source_rel_path = "lib.node",
+            }, records, function(p) return p end)
+            assert.is_true(needs)
+        end)
+
+        it("needs copy when source_rel_path changed", function()
+            local records = {
+                ["/root/App/Debug/lib.node"] = {
+                    source_build_dir = "build/NativeLib/Debug",
+                    source_rel_path = "old_lib.node",
+                    source_mtime = 1000,
+                },
+            }
+            local needs = deploy.check_freshness({
+                source_path = "/root/.nvim/build/NativeLib/Debug/lib.node",
+                dest_path = "/root/App/Debug/lib.node",
+                source_build_dir_id = "build/NativeLib/Debug",
+                source_rel_path = "lib.node",
+            }, records, function(p) return p end)
+            assert.is_true(needs)
+        end)
+    end)
+
+    describe("cleanup", function()
+        it("removes deploy records for deleted build dir", function()
+            local records = {
+                ["/root/App/Debug/lib.node"] = {
+                    source_build_dir = "build/NativeLib/Debug",
+                    source_rel_path = "lib.node",
+                    source_mtime = 1000,
+                },
+                ["/root/App/Release/lib.node"] = {
+                    source_build_dir = "build/NativeLib/Release",
+                    source_rel_path = "lib.node",
+                    source_mtime = 2000,
+                },
+                ["/root/App/other.dll"] = {
+                    source_build_dir = "build/NativeLib/Debug",
+                    source_rel_path = "other.dll",
+                    source_mtime = 1500,
+                },
+            }
+
+            local removed = deploy.clean_deploy_records(records, "build/NativeLib/Debug")
+
+            -- Should remove Debug-sourced entries, keep Release
+            assert.equals(2, #removed)
+            assert.is_nil(records["/root/App/Debug/lib.node"])
+            assert.is_nil(records["/root/App/other.dll"])
+            assert.is_not_nil(records["/root/App/Release/lib.node"])
+        end)
+
+        it("deploy records survive serialization round-trip", function()
+            local ws = make_deploy_ws(nil, {
+                deploy_state = {
+                    ["/root/App/Debug/lib.node"] = {
+                        source_build_dir = "build/NativeLib/Debug",
+                        source_rel_path = "lib.node",
+                        source_mtime = 1000,
+                    },
+                },
+            })
+
+            -- Records should be loaded from cache
+            assert.is_not_nil(ws._deploy_records["/root/App/Debug/lib.node"])
+
+            -- Serialize and check
+            local cache = ws:_serialize_cache()
+            assert.is_not_nil(cache.deploy_state)
+            assert.is_not_nil(cache.deploy_state["/root/App/Debug/lib.node"])
+            assert.equals("build/NativeLib/Debug",
+                cache.deploy_state["/root/App/Debug/lib.node"].source_build_dir)
+        end)
+    end)
+
+    describe("config validation", function()
+        it("rejects loomworks.json with invalid deploy definitions", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {},
+                        launch = {
+                            debug = {
+                                command = "node",
+                                deploy = {
+                                    ["${build_dir}/../escape"] = {
+                                        project = "NativeLib",
+                                        target = "lib",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_nil(config)
+            assert.truthy(err:find("%.%."))
+        end)
+
+        it("accepts loomworks.json with valid deploy definitions", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {},
+                        launch = {
+                            debug = {
+                                command = "node",
+                                deploy = {
+                                    ["${build_dir}/native.node"] = {
+                                        project = "NativeLib",
+                                        target = "native_lib",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_not_nil(config, err)
+        end)
+    end)
+
+    describe("launch target deploy method", function()
+        it("deploy() calls on_complete(true) when no deploy config", function()
+            local ws = make_deploy_ws(nil)  -- no deploy section
+            local profile = ws._active_profile
+            local lt = profile:default_target()
+
+            -- LaunchTarget may not exist (no default target set), test deploy directly
+            local LaunchTarget = require("loomworks.launch_target")
+            local target = LaunchTarget.new(ws, profile, { project = "App", launch = "debug" })
+
+            local result
+            target:deploy(function(ok, err)
+                result = { ok = ok, err = err }
+            end)
+            assert.is_not_nil(result)
+            assert.is_true(result.ok)
+        end)
+    end)
+
+    describe("segment-based path editor", function()
+        local de = require("loomworks.ui.deploy_editor")
+
+        it("parses variable + literal segments", function()
+            local segs = de.parse_segments("${workspace_root}/lib/native.node")
+            assert.equals(3, #segs)
+            assert.equals("var", segs[1].type)
+            assert.equals("workspace_root", segs[1].var)
+            assert.equals("literal", segs[2].type)
+            assert.equals("lib", segs[2].value)
+            assert.equals("literal", segs[3].type)
+            assert.equals("native.node", segs[3].value)
+        end)
+
+        it("parses multiple variables", function()
+            local segs = de.parse_segments("${workspace_root}/Plugins/${variant}")
+            assert.equals(3, #segs)
+            assert.equals("var", segs[1].type)
+            assert.equals("workspace_root", segs[1].var)
+            assert.equals("literal", segs[2].type)
+            assert.equals("Plugins", segs[2].value)
+            assert.equals("var", segs[3].type)
+            assert.equals("variant", segs[3].var)
+        end)
+
+        it("parses bare variable", function()
+            local segs = de.parse_segments("${build_dir}")
+            assert.equals(1, #segs)
+            assert.equals("var", segs[1].type)
+            assert.equals("build_dir", segs[1].var)
+        end)
+
+        it("parses plain literal path", function()
+            local segs = de.parse_segments("some/relative/path")
+            assert.equals(3, #segs)
+            assert.equals("literal", segs[1].type)
+            assert.equals("some", segs[1].value)
+            assert.equals("literal", segs[2].type)
+            assert.equals("relative", segs[2].value)
+            assert.equals("literal", segs[3].type)
+            assert.equals("path", segs[3].value)
+        end)
+
+        it("parses trailing slash as empty segment", function()
+            local segs = de.parse_segments("${build_dir}/lib/")
+            assert.equals(3, #segs)
+            assert.equals("var", segs[1].type)
+            assert.equals("literal", segs[2].type)
+            assert.equals("lib", segs[2].value)
+            assert.equals("literal", segs[3].type)
+            assert.equals("", segs[3].value)
+        end)
+
+        it("parses empty string as no segments", function()
+            local segs = de.parse_segments("")
+            assert.equals(0, #segs)
+        end)
+
+        it("compose round-trips simple path", function()
+            local dest = "${workspace_root}/Plugins/${variant}/lib.node"
+            local segs = de.parse_segments(dest)
+            local result = de.compose_segments(segs)
+            assert.equals(dest, result)
+        end)
+
+        it("compose round-trips variable only", function()
+            local dest = "${build_dir}"
+            local segs = de.parse_segments(dest)
+            assert.equals(dest, de.compose_segments(segs))
+        end)
+
+        it("compose round-trips trailing slash", function()
+            local dest = "${build_dir}/lib/"
+            local segs = de.parse_segments(dest)
+            assert.equals(dest, de.compose_segments(segs))
+        end)
+
+        it("compose round-trips literal only", function()
+            local dest = "some/relative/path"
+            local segs = de.parse_segments(dest)
+            assert.equals(dest, de.compose_segments(segs))
+        end)
+
+        it("compose empty segments produces empty string", function()
+            assert.equals("", de.compose_segments({}))
+        end)
+    end)
+end)
+
+-- =========================================================================
+-- Project variables
+-- =========================================================================
+
+describe("project variables", function()
+    local variables = require("loomworks.variables")
+
+    describe("validation", function()
+        it("accepts valid declarations", function()
+            local ok = variables.validate_declarations({
+                output_dir = { type = "path", default = "${project_path}/dist" },
+                debug_port = { type = "string", default = "9229" },
+            })
+            assert.is_true(ok)
+        end)
+
+        it("rejects reserved name", function()
+            local ok, err = variables.validate_declarations({
+                workspace_root = { type = "string", default = "bad" },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("reserved"))
+        end)
+
+        it("rejects invalid type", function()
+            local ok, err = variables.validate_declarations({
+                foo = { type = "number", default = "42" },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("invalid type"))
+        end)
+
+        it("rejects non-string default", function()
+            local ok, err = variables.validate_declarations({
+                foo = { type = "string", default = 42 },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("default must be a string"))
+        end)
+
+        it("accepts valid overrides", function()
+            local decl = { output_dir = { type = "path", default = "/dist" } }
+            local ok = variables.validate_overrides({ output_dir = "/dist/debug" }, decl)
+            assert.is_true(ok)
+        end)
+
+        it("rejects override for undeclared variable", function()
+            local decl = { output_dir = { type = "path", default = "/dist" } }
+            local ok, err = variables.validate_overrides({ unknown = "val" }, decl)
+            assert.is_false(ok)
+            assert.truthy(err:find("not declared"))
+        end)
+
+        it("rejects non-string override value", function()
+            local decl = { output_dir = { type = "path", default = "/dist" } }
+            local ok, err = variables.validate_overrides({ output_dir = 42 }, decl)
+            assert.is_false(ok)
+            assert.truthy(err:find("must be a string"))
+        end)
+    end)
+
+    describe("resolution", function()
+        it("resolves to project default when no configuration", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local resolved = variables.resolve(mock_project, nil)
+            assert.equals("/dist", resolved.output_dir.value)
+            assert.is_nil(resolved.output_dir.source_config)
+            assert.equals("path", resolved.output_dir.type)
+        end)
+
+        it("resolves to project default when config has no override", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local mock_config = { variables = nil, _inherits = {} }
+            local resolved = variables.resolve(mock_project, mock_config)
+            assert.equals("/dist", resolved.output_dir.value)
+            assert.is_nil(resolved.output_dir.source_config)
+        end)
+
+        it("resolves to config override", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local mock_config = {
+                name = "Debug",
+                variables = { output_dir = "/dist/debug" },
+                _inherits = {},
+            }
+            local resolved = variables.resolve(mock_project, mock_config)
+            assert.equals("/dist/debug", resolved.output_dir.value)
+            assert.equals(mock_config, resolved.output_dir.source_config)
+        end)
+
+        it("resolves through inheritance chain", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local parent_config = {
+                name = "Base",
+                variables = { output_dir = "/dist/base" },
+                _inherits = {},
+            }
+            local child_config = {
+                name = "Debug",
+                variables = nil,  -- no override
+                _inherits = { parent_config },
+            }
+            local resolved = variables.resolve(mock_project, child_config)
+            assert.equals("/dist/base", resolved.output_dir.value)
+            assert.equals(parent_config, resolved.output_dir.source_config)
+        end)
+
+        it("child override wins over parent", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                },
+            }
+            local parent_config = {
+                name = "Base",
+                variables = { output_dir = "/dist/base" },
+                _inherits = {},
+            }
+            local child_config = {
+                name = "Debug",
+                variables = { output_dir = "/dist/debug" },
+                _inherits = { parent_config },
+            }
+            local resolved = variables.resolve(mock_project, child_config)
+            assert.equals("/dist/debug", resolved.output_dir.value)
+            assert.equals(child_config, resolved.output_dir.source_config)
+        end)
+
+        it("provenance tracks specific config in multi-level chain", function()
+            local mock_project = {
+                variables = {
+                    output_dir = { type = "path", default = "/dist" },
+                    debug_port = { type = "string", default = "9229" },
+                },
+            }
+            local grandparent = {
+                name = "Root",
+                variables = { output_dir = "/dist/root", debug_port = "8080" },
+                _inherits = {},
+            }
+            local parent = {
+                name = "Mid",
+                variables = { output_dir = "/dist/mid" },  -- overrides output_dir only
+                _inherits = { grandparent },
+            }
+            local child = {
+                name = "Leaf",
+                variables = nil,
+                _inherits = { parent },
+            }
+            local resolved = variables.resolve(mock_project, child)
+            -- output_dir from Mid (nearest override)
+            assert.equals("/dist/mid", resolved.output_dir.value)
+            assert.equals(parent, resolved.output_dir.source_config)
+            -- debug_port from Root (grandparent)
+            assert.equals("8080", resolved.debug_port.value)
+            assert.equals(grandparent, resolved.debug_port.source_config)
+        end)
+
+        it("returns empty table when project has no variables", function()
+            local resolved = variables.resolve({ variables = nil }, nil)
+            assert.same({}, resolved)
+        end)
+    end)
+
+    describe("config validation", function()
+        it("rejects loomworks.json with reserved variable name", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {},
+                        variables = {
+                            build_dir = { type = "string", default = "bad" },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_nil(config)
+            assert.truthy(err:find("reserved"))
+        end)
+
+        it("rejects config override for undeclared variable", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = { variables = { unknown = "val" } },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/dist" },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_nil(config)
+            assert.truthy(err:find("not declared"))
+        end)
+
+        it("accepts valid variables with config overrides", function()
+            local config_mod = require("loomworks.config")
+            local raw = {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = { variables = { output_dir = "/dist/debug" } },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/dist" },
+                        },
+                    },
+                },
+            }
+            local config, err = config_mod.validate(raw, "/root")
+            assert.is_not_nil(config, err)
+        end)
+    end)
+
+    describe("full stack", function()
+        it("variables stored on project and configuration after remerge", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {
+                                    variables = { output_dir = "${project_path}/dist/debug" },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "${project_path}/dist" },
+                        },
+                    },
+                },
+                configuration_sets = { Debug = { App = "Debug" } },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local app = h.find_project_in(ws:get_projects(), "App")
+            assert.is_not_nil(app.variables)
+            assert.is_not_nil(app.variables.output_dir)
+            assert.equals("path", app.variables.output_dir.type)
+
+            -- Find the Debug configuration
+            local debug_cfg
+            for _, cfg in ipairs(app._configurations) do
+                if cfg.name == "Debug" then debug_cfg = cfg; break end
+            end
+            assert.is_not_nil(debug_cfg)
+            assert.is_not_nil(debug_cfg.variables)
+            assert.equals("${project_path}/dist/debug", debug_cfg.variables.output_dir)
+        end)
+
+        it("variable expansion in launch context", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {
+                                    variables = { output_dir = "${project_path}/dist/debug" },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "${project_path}/dist" },
+                            port = { type = "string", default = "9229" },
+                        },
+                    },
+                },
+                configuration_sets = {
+                    Debug = { App = "Debug" },
+                },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local expand_mod = require("loomworks.expand")
+            local app = h.find_project_in(ws:get_projects(), "App")
+            local profile = ws._active_profile
+            assert.is_not_nil(profile, "active profile must exist")
+
+            local ctx = expand_mod.launch_context(ws, profile, app)
+            -- output_dir should be expanded with Debug override + built-in project_path
+            assert.equals("App/dist/debug", ctx.output_dir)
+            -- port uses project default (no Debug override)
+            assert.equals("9229", ctx.port)
+        end)
+    end)
+
+    describe("editor persistence", function()
+        it("save_variable creates declaration on project", function()
+            local ws = make_ws({ projects = { App = { cmake = {} } } })
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local ok, err = app:save_variable("output_dir", {
+                type = "path", default = "${project_path}/dist",
+            })
+            assert.is_true(ok, err)
+            assert.is_not_nil(app.variables)
+            assert.is_not_nil(app.variables.output_dir)
+            assert.equals("path", app.variables.output_dir.type)
+            assert.equals("${project_path}/dist", app.variables.output_dir.default)
+        end)
+
+        it("save_variable rejects reserved name", function()
+            local ws = make_ws({ projects = { App = { cmake = {} } } })
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local ok, err = app:save_variable("build_dir", {
+                type = "string", default = "bad",
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("reserved"))
+        end)
+
+        it("delete_variable removes declaration and config overrides", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {
+                                    variables = { output_dir = "/debug" },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/dist" },
+                        },
+                    },
+                },
+                configuration_sets = { Debug = { App = "Debug" } },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local app = h.find_project_in(ws:get_projects(), "App")
+            assert.is_not_nil(app.variables.output_dir)
+
+            local debug_cfg
+            for _, cfg in ipairs(app._configurations) do
+                if cfg.name == "Debug" then debug_cfg = cfg; break end
+            end
+            assert.is_not_nil(debug_cfg.variables)
+
+            local ok, err = app:delete_variable("output_dir")
+            assert.is_true(ok, err)
+            assert.is_nil(app.variables)
+            assert.is_nil(debug_cfg.variables)
+        end)
+
+        it("workspace_view save/get round-trip", function()
+            local ws = make_ws({ projects = { App = { cmake = {} } } })
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            -- Save via workspace_view
+            local ok = wv.execute_save_variable(app, nil, "port", {
+                type = "string", default = "9229",
+            })
+            assert.is_true(ok)
+
+            local vars = wv.get_variables(app)
+            assert.equals(1, #vars)
+            assert.equals("port", vars[1].name)
+            assert.equals("string", vars[1].type)
+            assert.equals("9229", vars[1].default)
+        end)
+
+        it("workspace_view rename variable", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {},
+                        variables = {
+                            old_name = { type = "string", default = "val" },
+                        },
+                    },
+                },
+            })
+            local app = h.find_project_in(ws:get_projects(), "App")
+
+            local ok = wv.execute_save_variable(app, "old_name", "new_name", {
+                type = "string", default = "val",
+            })
+            assert.is_true(ok)
+            assert.is_nil(app.variables.old_name)
+            assert.is_not_nil(app.variables.new_name)
+        end)
+
+        it("config editor context includes resolved variables", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {
+                                    variables = { output_dir = "/debug" },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/dist" },
+                            port = { type = "string", default = "9229" },
+                        },
+                    },
+                },
+                configuration_sets = { Debug = { App = "Debug" } },
+            }, {
+                active_profile = "Debug",
+                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            })
+
+            local app = h.find_project_in(ws:get_projects(), "App")
+            local ctx = wv.compute_edit_configuration_context(app, "Debug")
+
+            -- project_variables has declarations
+            assert.is_not_nil(ctx.project_variables.output_dir)
+            assert.equals("path", ctx.project_variables.output_dir.type)
+
+            -- variables has this config's own overrides
+            assert.equals("/debug", ctx.variables.output_dir)
+            assert.is_nil(ctx.variables.port)  -- not overridden
+
+            -- resolved_variables has full resolution with provenance
+            assert.is_not_nil(ctx.resolved_variables.output_dir)
+            assert.equals("/debug", ctx.resolved_variables.output_dir.value)
+            -- port resolves to project default
+            assert.equals("9229", ctx.resolved_variables.port.value)
+            assert.is_nil(ctx.resolved_variables.port.source_config)
+        end)
     end)
 end)

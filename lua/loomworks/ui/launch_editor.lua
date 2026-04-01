@@ -17,7 +17,12 @@ local M = {}
 ---   working_dir: string
 ---   env: table<string, string>
 ---   validate?: fun(result): boolean, string|nil
----   on_accept: fun(result: { name: string, command: string, args: string[], working_dir: string, env: table<string, string> })
+---   deploy: table<string, table>|nil — destination → source descriptor
+---   projects: loomworks.Project[]|nil — workspace projects for deploy editor
+---   profile: loomworks.Profile|nil — active profile for deploy target resolution
+---   workspace: loomworks.Workspace|nil — for deploy destination preview
+---   launch_project: loomworks.Project|nil — the project owning this launch config
+---   on_accept: fun(result: { name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table<string, table>|nil })
 ---   on_cancel: fun()
 function M.open(opts)
     local name = opts.name
@@ -25,6 +30,7 @@ function M.open(opts)
     local args = vim.deepcopy(opts.args or {})
     local working_dir = opts.working_dir or ""
     local env = vim.deepcopy(opts.env or {})
+    local deploy = opts.deploy and vim.deepcopy(opts.deploy) or {}
     local name_error = nil
 
     local function revalidate()
@@ -168,7 +174,80 @@ function M.open(opts)
         })
 
         t:blank()
-        t:leaf("[Enter] change  [D] remove var  [y] accept  [q] cancel", "Comment")
+
+        -- Deploy steps
+        local deploy_keys = {}
+        for k in pairs(deploy) do deploy_keys[#deploy_keys + 1] = k end
+        table.sort(deploy_keys)
+
+        if #deploy_keys > 0 then
+            t:leaf("Deploy:", "Comment")
+            for _, dest in ipairs(deploy_keys) do
+                local src = deploy[dest]
+                local src_display = src.project or "?"
+                if src.target then
+                    src_display = src_display .. " : " .. src.target
+                elseif src.path then
+                    src_display = src_display .. " : " .. src.path
+                end
+                if src.configuration then
+                    src_display = src_display .. " (" .. src.configuration .. ")"
+                end
+                local captured_dest = dest
+                t:item("  " .. dest .. " <- " .. src_display .. " ▸", {
+                    hl = "LoomworksActionable",
+                    direct = true,
+                    on_enter = function()
+                        require("loomworks.ui.deploy_editor").open({
+                            destination = captured_dest,
+                            source = vim.deepcopy(deploy[captured_dest]),
+                            projects = opts.projects or {},
+                            profile = opts.profile,
+                            workspace = opts.workspace,
+                            launch_project = opts.launch_project,
+                            on_accept = function(new_dest, new_source)
+                                -- Remove old key if destination changed
+                                if new_dest ~= captured_dest then
+                                    deploy[captured_dest] = nil
+                                end
+                                deploy[new_dest] = new_source
+                                if view then view:refresh() end
+                            end,
+                            on_cancel = function() end,
+                        })
+                    end,
+                    on_delete = function()
+                        deploy[captured_dest] = nil
+                        if view then view:refresh() end
+                    end,
+                })
+            end
+        else
+            t:leaf("Deploy: (none)", "Comment")
+        end
+
+        t:item("  ▸ Add deploy step", {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = function()
+                require("loomworks.ui.deploy_editor").open({
+                    destination = "",
+                    source = nil,
+                    projects = opts.projects or {},
+                    profile = opts.profile,
+                    workspace = opts.workspace,
+                    launch_project = opts.launch_project,
+                    on_accept = function(new_dest, new_source)
+                        deploy[new_dest] = new_source
+                        if view then view:refresh() end
+                    end,
+                    on_cancel = function() end,
+                })
+            end,
+        })
+
+        t:blank()
+        t:leaf("[Enter] change  [D] remove  [y] accept  [q] cancel", "Comment")
     end
 
     tree = Tree.new(render_fn)
@@ -195,6 +274,7 @@ function M.open(opts)
                 args = args,
                 working_dir = working_dir,
                 env = env,
+                deploy = deploy,
             })
             return {}
         end

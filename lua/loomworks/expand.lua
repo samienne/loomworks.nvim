@@ -69,6 +69,23 @@ function M.launch_context(ws, profile, project)
         ctx.variant = profile.mappings[project.key]
     end
 
+    -- Build directory for this project in this profile
+    local pp = profile:project(project.key)
+    if pp and pp._config_unit then
+        ctx.build_dir = pp._config_unit.build_dir_value or ""
+    end
+
+    -- User-defined project variables (resolved via configuration inheritance)
+    if project.variables and next(project.variables) then
+        local configuration = pp and pp._config_unit and pp._config_unit._configuration or nil
+        local variables = require("loomworks.variables")
+        local resolved = variables.resolve(project, configuration)
+        for name, entry in pairs(resolved) do
+            -- Two-pass: variable values can reference built-in variables
+            ctx[name] = M.expand_string(entry.value, ctx)
+        end
+    end
+
     return ctx
 end
 

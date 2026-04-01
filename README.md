@@ -159,6 +159,77 @@ Map configuration names across projects:
 When combined with detected cmake tools, profiles are auto-generated:
 `Debug:ninja-gcc-14.2.0`, `Debug:msvc-17-2022-enterprise`, etc.
 
+### Launch configurations
+
+Define how to run a project after building:
+
+```json
+{
+  "ScenePluginTest": {
+    "typescript": {},
+    "launch": {
+      "debug": {
+        "command": "node",
+        "args": ["app.js"],
+        "working_dir": "${workspace_root}/ScenePluginTest",
+        "env": { "NODE_PATH": "${workspace_root}/ScenePluginTest/Debug" }
+      }
+    }
+  }
+}
+```
+
+Variables available: `${workspace_root}`, `${build_dir}`, `${variant}`,
+`${config_set}`, `${project_path}`, plus user-defined project variables.
+
+### Deploy steps
+
+Copy build artifacts between projects before launch:
+
+```json
+"launch": {
+  "debug": {
+    "command": "node",
+    "args": ["app.js"],
+    "deploy": {
+      "${build_dir}/native.node": {
+        "project": "NativeLib",
+        "target": "native_lib"
+      }
+    }
+  }
+}
+```
+
+Deploy steps ensure the correct file is present regardless of which
+configuration was last built. Freshness is tracked per destination —
+files are only copied when the source changes or the configuration switches.
+
+### Project variables
+
+Declare typed variables with defaults, override per configuration:
+
+```json
+{
+  "App": {
+    "cmake": {
+      "configurations": {
+        "Debug":   { "variables": { "output_dir": "${project_path}/dist/debug" } },
+        "Release": { "variables": { "output_dir": "${project_path}/dist/release" } }
+      }
+    },
+    "variables": {
+      "output_dir": { "type": "path", "default": "${project_path}/dist" }
+    }
+  }
+}
+```
+
+Types: `string`, `path`. Variables are usable in launch configs and deploy
+destinations as `${output_dir}`. Configuration overrides follow the
+inheritance chain. Editable from the status page (Projects and Configuration
+editors).
+
 ## Concepts
 
 **Configuration set** — a cross-project mapping declared in `loomworks.json`.

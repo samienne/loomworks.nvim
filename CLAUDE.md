@@ -247,6 +247,23 @@ These are implementation-specific details not covered by the spec or architectur
   enriches `_configurations` from `cached_configurations` so that every variant
   in cache always has a Configuration object. Source-missing configs get
   `_source_missing = true`; the flag clears when the source reappears.
+- **Deploy steps** (`deploy.lua`): declarative copy steps on launch configs.
+  `deploy` dict in launch config keyed by destination path template, values
+  are source descriptors `{ project, target|path, configuration? }`. Resolved
+  within active profile context. Freshness tracked in `_deploy_records` dict
+  on Workspace (serialized to `cache.deploy_state`). Copies only when source
+  identity (config unit) or mtime changes. Cleanup on config deletion.
+  LaunchTarget.deploy() executes steps between build and launch.
+- **Project variables** (`variables.lua`): user-defined variables declared
+  at project level `{ name → { type, default } }`, overridden per
+  configuration via inheritance chain. Types: `string`, `path`. Resolution
+  uses Configuration object references (`_inherits` array), not name
+  strings. Provenance tracked as Configuration object reference (`source_config`).
+  Values can reference built-in variables only (no cross-variable refs).
+  Reserved names prevent collision with built-ins. Expanded in
+  `expand.launch_context()` after built-in variables (two-pass: variable
+  value expanded using built-in context). Path-typed variables appear in
+  deploy editor segment picker.
 - **Error handling**: on deserialization error (structurally invalid data),
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still

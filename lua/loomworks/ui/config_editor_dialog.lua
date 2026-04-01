@@ -36,6 +36,7 @@ function M.open(opts)
         inherits = vim.deepcopy(inherits)
     end
     local options = vim.deepcopy(opts.options or {})
+    local variables = vim.deepcopy(opts.variables or {})
     local toolchain = opts.toolchain or ""
     local generator = opts.generator or ""
     local name_error = nil
@@ -319,8 +320,78 @@ function M.open(opts)
             })
         end
 
+        -- Variables section (overrides for project-declared variables)
+        local project_vars = opts.project_variables or {}
+        local resolved_vars = opts.resolved_variables or {}
+        if next(project_vars) then
+            t:blank()
+
+            local var_names = {}
+            for k in pairs(project_vars) do var_names[#var_names + 1] = k end
+            table.sort(var_names)
+
+            t:leaf("Variables:", "Comment")
+            for _, vk in ipairs(var_names) do
+                local evk = vk  -- capture
+                local decl = project_vars[vk]
+                local is_own = variables[vk] ~= nil
+                local resolved = resolved_vars[vk]
+
+                if is_own then
+                    -- Own override (editable)
+                    local source_hint = ""
+                    if resolved and resolved.source_config then
+                        source_hint = "  (overrides " .. resolved.source_config.name .. ")"
+                    else
+                        source_hint = "  (overrides project default)"
+                    end
+                    t:item("  " .. vk .. " = " .. variables[vk]
+                            .. source_hint .. " ▸", {
+                        hl = "LoomworksActionable",
+                        direct = true,
+                        on_enter = function()
+                            edit_string(evk .. " = ", variables[evk], function(v)
+                                if v == "" then
+                                    variables[evk] = nil
+                                else
+                                    variables[evk] = v
+                                end
+                                if view then view:refresh() end
+                            end)
+                        end,
+                        on_delete = function()
+                            variables[evk] = nil
+                            if view then view:refresh() end
+                        end,
+                    })
+                else
+                    -- Inherited or project default (dimmed, Enter to override)
+                    local value = resolved and resolved.value or decl.default
+                    local source
+                    if resolved and resolved.source_config then
+                        source = resolved.source_config.name
+                    else
+                        source = "project default"
+                    end
+                    t:item("  " .. vk .. " = " .. value .. "  ("
+                            .. source .. ", " .. decl.type .. ")", {
+                        hl = "Comment",
+                        direct = true,
+                        on_enter = function()
+                            edit_string(evk .. " = ", value, function(v)
+                                if v and v ~= "" then
+                                    variables[evk] = v
+                                    if view then view:refresh() end
+                                end
+                            end)
+                        end,
+                    })
+                end
+            end
+        end
+
         t:blank()
-        t:leaf("[Enter] change  [D] remove option  [y] accept  [q] cancel", "Comment")
+        t:leaf("[Enter] change  [D] remove override  [y] accept  [q] cancel", "Comment")
     end
 
     tree = Tree.new(render_fn)
@@ -339,6 +410,7 @@ function M.open(opts)
                 name = name,
                 inherits = #inherits > 0 and (#inherits == 1 and inherits[1] or inherits) or nil,
                 options = options,
+                variables = variables,
                 toolchain = toolchain ~= "" and toolchain or nil,
                 generator = generator ~= "" and generator or nil,
             })

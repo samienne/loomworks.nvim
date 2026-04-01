@@ -296,6 +296,7 @@ function Workspace.new(core, data)
     self._build_dirs = {}  -- BuildDir domain objects (all, including orphaned)
     self._build_dir_refs = {}
     self._build_dir_locks = {}
+    self._deploy_records = {}  -- normalized dest path → { source_build_dir, source_rel_path, source_mtime }
 
     return self
 end
@@ -460,6 +461,11 @@ function Workspace:_serialize_cache()
         end
     end
 
+    -- Serialize deploy state (already in the right format)
+    if next(self._deploy_records) then
+        data.deploy_state = self._deploy_records
+    end
+
     return data
 end
 
@@ -577,6 +583,10 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     self._active_profile = result.active_profile
     self._active_profile_key = active_profile_key
     self._default_target_data = default_target_data
+    -- Deploy records: read from cache (no domain object resolution needed)
+    if raw_cache and raw_cache.deploy_state then
+        self._deploy_records = raw_cache.deploy_state
+    end
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
@@ -1553,8 +1563,13 @@ function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
 end
 
 function Workspace:delete_cached_configs(items)
+    local deploy = require("loomworks.deploy")
     for _, item in ipairs(items) do
         if item.unit then
+            -- Clean deploy records sourced from this build dir
+            if item.unit.id then
+                deploy.clean_deploy_records(self._deploy_records, item.unit.id)
+            end
             -- Clear BuildDir state (by reference or by path lookup)
             local bd = item.unit._build_dir or self:find_build_dir(item.unit.id)
             if bd then bd:clear_state() end
@@ -1576,8 +1591,13 @@ end
 --- Keeps the cache entry skeleton (variant, tool_key, tool_data) intact.
 --- @param items loomworks.DeletionItem[]
 function Workspace:reset_cached_configs(items)
+    local deploy = require("loomworks.deploy")
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
+        -- Clean deploy records sourced from this build dir
+        if item.unit.id then
+            deploy.clean_deploy_records(self._deploy_records, item.unit.id)
+        end
         -- Clear BuildDir state (by reference or by path lookup)
         local bd = item.unit._build_dir or self:find_build_dir(item.unit.id)
         if bd then bd:clear_state() end
@@ -2169,6 +2189,9 @@ function Workspace:_serialize_project(project)
     if project.launch then
         entry.launch = project.launch
     end
+    if project.variables and next(project.variables) then
+        entry.variables = project.variables
+    end
     return entry
 end
 
@@ -2254,6 +2277,9 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     end
     if project.launch then
         entry.launch = project.launch
+    end
+    if project.variables and next(project.variables) then
+        entry.variables = project.variables
     end
     return entry
 end

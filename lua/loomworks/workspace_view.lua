@@ -1253,6 +1253,22 @@ function M.compute_edit_configuration_context(project, config_name)
         end
     end
 
+    -- Resolve project variables with provenance for this configuration
+    local project_variables = project.variables or {}
+    local resolved_variables = {}
+    local config_variable_overrides = {}
+    if config_name and next(project_variables) then
+        local cfg_obj = project:get_configuration(config_name)
+        if cfg_obj then
+            local vars_mod = require("loomworks.variables")
+            resolved_variables = vars_mod.resolve(project, cfg_obj)
+            -- Extract this config's own overrides (not inherited)
+            if cfg_obj.variables then
+                config_variable_overrides = vim.deepcopy(cfg_obj.variables)
+            end
+        end
+    end
+
     return {
         project_key = project_key,
         project_type = project.type,
@@ -1261,6 +1277,7 @@ function M.compute_edit_configuration_context(project, config_name)
         variant_source = variant_source,
         inherits = config_data.inherits or "",
         options = config_data.options and vim.deepcopy(config_data.options) or {},
+        variables = config_variable_overrides,
         toolchain = config_data.toolchain or "",
         generator = config_data.generator or "",
         is_default = is_default,
@@ -1268,6 +1285,8 @@ function M.compute_edit_configuration_context(project, config_name)
         available_configs = available_configs,
         project_options = project_options,
         inherited_options = inherited_options,
+        project_variables = project_variables,
+        resolved_variables = resolved_variables,
         build_dir = build_dir,
     }
 end
@@ -1343,6 +1362,7 @@ function M.compute_edit_launch_context(project, launch_name)
         args = config.args or {},
         working_dir = config.working_dir or "",
         env = config.env and vim.deepcopy(config.env) or {},
+        deploy = config.deploy and vim.deepcopy(config.deploy) or {},
     }
 end
 
@@ -1358,6 +1378,7 @@ function M.execute_save_launch_config(project, old_name, new_name, data)
     if data.args and #data.args > 0 then config.args = data.args end
     if data.working_dir and data.working_dir ~= "" then config.working_dir = data.working_dir end
     if data.env and next(data.env) then config.env = data.env end
+    if data.deploy and next(data.deploy) then config.deploy = data.deploy end
 
     -- If renamed, delete old first
     if old_name and old_name ~= new_name then
@@ -1374,6 +1395,62 @@ end
 --- @return boolean ok, string|nil err
 function M.execute_delete_launch_config(project, launch_name)
     return project:delete_launch_config(launch_name)
+end
+
+-- ---------------------------------------------------------------------------
+-- Variable editing
+-- ---------------------------------------------------------------------------
+
+--- Get sorted list of project variable declarations.
+--- @param project loomworks.Project
+--- @return { name: string, type: string, default: string }[]
+function M.get_variables(project)
+    if not project.variables then return {} end
+    local result = {}
+    for name, decl in pairs(project.variables) do
+        result[#result + 1] = { name = name, type = decl.type, default = decl.default }
+    end
+    table.sort(result, function(a, b) return a.name < b.name end)
+    return result
+end
+
+--- Context for editing a variable declaration.
+--- @param project loomworks.Project
+--- @param var_name string|nil nil for new variable
+--- @return { name: string, type: string, default: string }
+function M.compute_edit_variable_context(project, var_name)
+    if var_name and project.variables and project.variables[var_name] then
+        local decl = project.variables[var_name]
+        return {
+            name = var_name,
+            type = decl.type,
+            default = decl.default,
+        }
+    end
+    return { name = "", type = "string", default = "" }
+end
+
+--- Save a variable declaration.
+--- @param project loomworks.Project
+--- @param old_name string|nil nil for new variable
+--- @param new_name string
+--- @param data { type: string, default: string }
+--- @return boolean ok, string|nil err
+function M.execute_save_variable(project, old_name, new_name, data)
+    -- If renamed, delete old first
+    if old_name and old_name ~= new_name then
+        local ok, err = project:delete_variable(old_name)
+        if not ok then return false, err end
+    end
+    return project:save_variable(new_name, { type = data.type, default = data.default })
+end
+
+--- Delete a variable declaration.
+--- @param project loomworks.Project
+--- @param var_name string
+--- @return boolean ok, string|nil err
+function M.execute_delete_variable(project, var_name)
+    return project:delete_variable(var_name)
 end
 
 return M

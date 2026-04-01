@@ -292,6 +292,11 @@ function M.resolve_configurations(defaults, config)
                 cfg.options = override.options
             end
 
+            -- Variable overrides (generic, passed through to Configuration)
+            if override.variables then
+                cfg.variables = override.variables
+            end
+
             -- Mark as user-defined if it's not a default being extended
             if not cfg.is_default then
                 cfg.is_user = true
