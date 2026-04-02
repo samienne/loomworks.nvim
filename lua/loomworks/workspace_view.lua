@@ -740,12 +740,13 @@ function M.compute_orphan_cleanup_context(ws)
     local orphaned_configs = {}
 
     for _, o in ipairs(orphans) do
+        local entry = o.cached_entry or {}
         orphaned_configs[#orphaned_configs + 1] = {
             project_key = o.project_key,
             config_key = o.config_key,
-            state = o.cached and o.cached.state or nil,
-            build_dir = o.cached and o.cached.build_dir or nil,
-            unit = o.unit,
+            state = entry.state or nil,
+            build_dir = entry.build_dir or (o.build_dir_obj and o.build_dir_obj.path) or nil,
+            build_dir_obj = o.build_dir_obj,
         }
     end
 
@@ -830,9 +831,50 @@ function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
     end
 
     if #orphaned_configs > 0 then
-        ws:_run_deletion(orphaned_configs, function()
-            ws:delete_cached_configs(orphaned_configs)
-        end, delete_stray)
+        -- Collect build dirs to delete
+        local dirs = {}
+        local safe_prefix = ws._core._deps.normalize(ws.root)
+        for _, item in ipairs(orphaned_configs) do
+            if item.build_dir then
+                local normalized = ws._core._deps.normalize(item.build_dir)
+                if ws:_validate_build_dir(normalized, safe_prefix) then
+                    dirs[#dirs + 1] = normalized
+                end
+            end
+        end
+
+        local function remove_build_dir_objects()
+            -- Remove BuildDir objects and clear their state
+            local deploy = require("loomworks.deploy")
+            for _, item in ipairs(orphaned_configs) do
+                local bd = item.build_dir_obj
+                if bd then
+                    -- Clean deploy records sourced from this build dir
+                    deploy.clean_deploy_records(ws._deploy_records, bd.rel_path)
+                    bd:clear_state()
+                    -- Remove from _build_dirs array
+                    for i, b in ipairs(ws._build_dirs) do
+                        if b == bd then
+                            table.remove(ws._build_dirs, i)
+                            break
+                        end
+                    end
+                end
+            end
+            ws:_save_cache()
+            ws:_sync_build_dir_refs()
+            ws._core._deps.events.emit("active_set_changed", ws._active_set)
+        end
+
+        if #dirs > 0 then
+            ws:_delete_build_dirs_async(dirs, function()
+                remove_build_dir_objects()
+                delete_stray()
+            end)
+        else
+            remove_build_dir_objects()
+            delete_stray()
+        end
     else
         delete_stray()
     end
