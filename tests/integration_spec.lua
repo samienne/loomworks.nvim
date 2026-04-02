@@ -3378,6 +3378,45 @@ describe("deploy steps", function()
             assert.is_false(ok)
             assert.truthy(err:find("not both"))
         end)
+
+        it("accepts array of sources for a destination", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/lib/"] = {
+                    { project = "NativeLib", target = "native_lib" },
+                    { project = "ConfigLib", path = "lib/config.dll" },
+                },
+            })
+            assert.is_true(ok, err)
+        end)
+
+        it("rejects array with invalid source entry", function()
+            local ok, err = deploy.validate_deploy_definitions({
+                ["${build_dir}/lib/"] = {
+                    { project = "NativeLib", target = "native_lib" },
+                    { project = "" },  -- invalid: empty project
+                },
+            })
+            assert.is_false(ok)
+            assert.truthy(err:find("project"))
+        end)
+    end)
+
+    describe("normalize_sources", function()
+        it("wraps single source in array", function()
+            local sources = deploy.normalize_sources({ project = "A", target = "t" })
+            assert.equals(1, #sources)
+            assert.equals("A", sources[1].project)
+        end)
+
+        it("returns array as-is", function()
+            local sources = deploy.normalize_sources({
+                { project = "A", target = "t1" },
+                { project = "B", path = "lib.so" },
+            })
+            assert.equals(2, #sources)
+            assert.equals("A", sources[1].project)
+            assert.equals("B", sources[2].project)
+        end)
     end)
 
     describe("resolution", function()

@@ -20,43 +20,69 @@ local function has_path_traversal(path)
     return false
 end
 
+--- Validate a single source descriptor.
+--- @param source table source descriptor
+--- @param dest_key string destination key (for error messages)
+--- @return boolean ok, string|nil err
+local function validate_single_source(source, dest_key)
+    if type(source) ~= "table" then
+        return false, "deploy source for '" .. dest_key .. "' must be a table"
+    end
+    if type(source.project) ~= "string" or source.project == "" then
+        return false, "deploy source for '" .. dest_key
+            .. "' must have a 'project' field"
+    end
+    local has_target = type(source.target) == "string" and source.target ~= ""
+    local has_path = type(source.path) == "string" and source.path ~= ""
+    if not has_target and not has_path then
+        return false, "deploy source for '" .. dest_key
+            .. "' must have either 'target' or 'path'"
+    end
+    if has_target and has_path then
+        return false, "deploy source for '" .. dest_key
+            .. "' must have 'target' or 'path', not both"
+    end
+    if source.configuration ~= nil and type(source.configuration) ~= "string" then
+        return false, "deploy source for '" .. dest_key
+            .. "': 'configuration' must be a string"
+    end
+    return true
+end
+
+--- Normalize source value to an array of source descriptors.
+--- Accepts a single descriptor or an array of descriptors.
+--- @param source table single source or array of sources
+--- @return table[] array of source descriptors
+function M.normalize_sources(source)
+    if source[1] then return source end  -- already an array
+    if source.project then return { source } end  -- single descriptor
+    return { source }
+end
+
 --- Validate deploy definitions from a launch config.
---- @param deploy table<string, table> destination → source descriptor
+--- Source can be a single descriptor or an array of descriptors.
+--- @param deploy table<string, table|table[]> destination → source(s)
 --- @return boolean ok, string|nil err
 function M.validate_deploy_definitions(deploy)
     if type(deploy) ~= "table" then
         return false, "deploy must be a table"
     end
-    for dest_key, source in pairs(deploy) do
+    for dest_key, source_val in pairs(deploy) do
         if type(dest_key) ~= "string" or dest_key == "" then
             return false, "deploy destination key must be a non-empty string"
         end
-        -- Check for path traversal in the non-variable parts
         local stripped = dest_key:gsub("%${[^}]+}", "_placeholder_")
         if has_path_traversal(stripped) then
             return false, "deploy destination '" .. dest_key
                 .. "' contains '.' or '..' path segments"
         end
-        if type(source) ~= "table" then
+        if type(source_val) ~= "table" then
             return false, "deploy source for '" .. dest_key .. "' must be a table"
         end
-        if type(source.project) ~= "string" or source.project == "" then
-            return false, "deploy source for '" .. dest_key
-                .. "' must have a 'project' field"
-        end
-        local has_target = type(source.target) == "string" and source.target ~= ""
-        local has_path = type(source.path) == "string" and source.path ~= ""
-        if not has_target and not has_path then
-            return false, "deploy source for '" .. dest_key
-                .. "' must have either 'target' or 'path'"
-        end
-        if has_target and has_path then
-            return false, "deploy source for '" .. dest_key
-                .. "' must have 'target' or 'path', not both"
-        end
-        if source.configuration ~= nil and type(source.configuration) ~= "string" then
-            return false, "deploy source for '" .. dest_key
-                .. "': 'configuration' must be a string"
+        local sources = M.normalize_sources(source_val)
+        for _, source in ipairs(sources) do
+            local ok, err = validate_single_source(source, dest_key)
+            if not ok then return false, err end
         end
     end
     return true
@@ -216,7 +242,8 @@ end
 
 --- Execute all deploy steps for a launch target.
 --- Resolves all steps first (fail-fast), then copies as needed.
---- @param deploy_dict table<string, table> deploy definitions from launch config
+--- Source values can be a single descriptor or an array of descriptors.
+--- @param deploy_dict table<string, table|table[]> deploy definitions from launch config
 --- @param ctx table { workspace, profile, launch_project }
 --- @param deploy_records table<string, table> workspace deploy records (mutated on copy)
 --- @param normalize fun(p: string): string path normalizer
@@ -227,15 +254,18 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
         return
     end
 
-    -- Phase 1: resolve all steps
+    -- Phase 1: resolve all steps (expand arrays into individual steps)
     local resolved_steps = {}
-    for dest_template, source_def in pairs(deploy_dict) do
-        local resolved, err = M.resolve_deploy_step(dest_template, source_def, ctx)
-        if not resolved then
-            on_complete(false, "Deploy: " .. err)
-            return
+    for dest_template, source_val in pairs(deploy_dict) do
+        local sources = M.normalize_sources(source_val)
+        for _, source_def in ipairs(sources) do
+            local resolved, err = M.resolve_deploy_step(dest_template, source_def, ctx)
+            if not resolved then
+                on_complete(false, "Deploy: " .. err)
+                return
+            end
+            resolved_steps[#resolved_steps + 1] = resolved
         end
-        resolved_steps[#resolved_steps + 1] = resolved
     end
 
     -- Phase 2: check freshness and copy

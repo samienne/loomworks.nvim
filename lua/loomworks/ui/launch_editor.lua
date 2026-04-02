@@ -175,52 +175,91 @@ function M.open(opts)
 
         t:blank()
 
-        -- Deploy steps
+        -- Deploy steps (sources can be single or array)
+        local deploy_mod = require("loomworks.deploy")
         local deploy_keys = {}
         for k in pairs(deploy) do deploy_keys[#deploy_keys + 1] = k end
         table.sort(deploy_keys)
 
+        local function format_source(src)
+            local display = src.project or "?"
+            if src.target then display = display .. " : " .. src.target
+            elseif src.path then display = display .. " : " .. src.path end
+            if src.configuration then display = display .. " (" .. src.configuration .. ")" end
+            return display
+        end
+
         if #deploy_keys > 0 then
             t:leaf("Deploy:", "Comment")
             for _, dest in ipairs(deploy_keys) do
-                local src = deploy[dest]
-                local src_display = src.project or "?"
-                if src.target then
-                    src_display = src_display .. " : " .. src.target
-                elseif src.path then
-                    src_display = src_display .. " : " .. src.path
-                end
-                if src.configuration then
-                    src_display = src_display .. " (" .. src.configuration .. ")"
-                end
+                local sources = deploy_mod.normalize_sources(deploy[dest])
                 local captured_dest = dest
-                t:item("  " .. dest .. " <- " .. src_display .. " ▸", {
-                    hl = "LoomworksActionable",
-                    direct = true,
-                    on_enter = function()
-                        require("loomworks.ui.deploy_editor").open({
-                            destination = captured_dest,
-                            source = vim.deepcopy(deploy[captured_dest]),
-                            projects = opts.projects or {},
-                            profile = opts.profile,
-                            workspace = opts.workspace,
-                            launch_project = opts.launch_project,
-                            on_accept = function(new_dest, new_source)
-                                -- Remove old key if destination changed
-                                if new_dest ~= captured_dest then
-                                    deploy[captured_dest] = nil
-                                end
-                                deploy[new_dest] = new_source
-                                if view then view:refresh() end
-                            end,
-                            on_cancel = function() end,
-                        })
-                    end,
-                    on_delete = function()
-                        deploy[captured_dest] = nil
-                        if view then view:refresh() end
-                    end,
-                })
+
+                for si, src in ipairs(sources) do
+                    local captured_si = si
+                    local prefix = si == 1
+                        and ("  " .. dest .. " <- ")
+                        or ("  " .. string.rep(" ", #dest) .. " <- ")
+                    t:item(prefix .. format_source(src) .. " ▸", {
+                        hl = "LoomworksActionable",
+                        direct = true,
+                        on_enter = function()
+                            require("loomworks.ui.deploy_editor").open({
+                                destination = captured_dest,
+                                source = vim.deepcopy(src),
+                                projects = opts.projects or {},
+                                profile = opts.profile,
+                                workspace = opts.workspace,
+                                launch_project = opts.launch_project,
+                                on_accept = function(new_dest, new_source)
+                                    local cur = deploy_mod.normalize_sources(deploy[captured_dest])
+                                    cur[captured_si] = new_source
+                                    if new_dest ~= captured_dest then
+                                        -- Destination changed: remove from old, add to new
+                                        table.remove(cur, captured_si)
+                                        if #cur == 0 then
+                                            deploy[captured_dest] = nil
+                                        elseif #cur == 1 then
+                                            deploy[captured_dest] = cur[1]
+                                        else
+                                            deploy[captured_dest] = cur
+                                        end
+                                        -- Add to new destination
+                                        local new_existing = deploy[new_dest]
+                                        if new_existing then
+                                            local new_arr = deploy_mod.normalize_sources(new_existing)
+                                            new_arr[#new_arr + 1] = new_source
+                                            deploy[new_dest] = new_arr
+                                        else
+                                            deploy[new_dest] = new_source
+                                        end
+                                    else
+                                        -- Same destination: update in place
+                                        if #cur == 1 then
+                                            deploy[captured_dest] = cur[1]
+                                        else
+                                            deploy[captured_dest] = cur
+                                        end
+                                    end
+                                    if view then view:refresh() end
+                                end,
+                                on_cancel = function() end,
+                            })
+                        end,
+                        on_delete = function()
+                            local cur = deploy_mod.normalize_sources(deploy[captured_dest])
+                            table.remove(cur, captured_si)
+                            if #cur == 0 then
+                                deploy[captured_dest] = nil
+                            elseif #cur == 1 then
+                                deploy[captured_dest] = cur[1]
+                            else
+                                deploy[captured_dest] = cur
+                            end
+                            if view then view:refresh() end
+                        end,
+                    })
+                end
             end
         else
             t:leaf("Deploy: (none)", "Comment")
@@ -238,7 +277,15 @@ function M.open(opts)
                     workspace = opts.workspace,
                     launch_project = opts.launch_project,
                     on_accept = function(new_dest, new_source)
-                        deploy[new_dest] = new_source
+                        local existing = deploy[new_dest]
+                        if existing then
+                            -- Append to existing destination
+                            local arr = deploy_mod.normalize_sources(existing)
+                            arr[#arr + 1] = new_source
+                            deploy[new_dest] = arr
+                        else
+                            deploy[new_dest] = new_source
+                        end
                         if view then view:refresh() end
                     end,
                     on_cancel = function() end,
