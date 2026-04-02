@@ -670,13 +670,16 @@ function M.launch_single_task(task_def, unit, on_complete)
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        if on_complete then vim.schedule(function() on_complete(false) end) end
         return
     end
 
     -- Check ConfigUnit state directly (not via check_task_readiness which expects task_def)
     local state = unit:state()
-    if state == "unknown" then return end
-    if state == "building" then return end
+    if state == "unknown" or state == "building" then
+        if on_complete then vim.schedule(function() on_complete(false) end) end
+        return
+    end
 
     -- Ensure lw_meta has unit reference for start_one_task subscriptions
     if task_def.loomworks then

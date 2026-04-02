@@ -58,10 +58,16 @@ end
 --- @param on_complete? fun(success: boolean) called when build finishes
 function Target:build(on_complete)
     local unit = self._config_unit
-    if not unit or not unit._project then return end
+    if not unit or not unit._project then
+        if on_complete then vim.schedule(function() on_complete(false) end) end
+        return
+    end
 
     local mod = unit._project._module and unit._project._module.impl or nil
-    if not mod then return end
+    if not mod then
+        if on_complete then vim.schedule(function() on_complete(false) end) end
+        return
+    end
 
     if mod.build_target_task then
         local ws = unit._workspace
