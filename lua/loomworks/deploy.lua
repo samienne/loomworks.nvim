@@ -179,10 +179,18 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
         source_rel_path = target.artifact
     else
         source_rel_path = source_def.path
-        -- Expand variables in source path using source project's context
+        -- Expand variables in source path using source project's context.
+        -- ${variant} resolves to the module variant (e.g., CMAKE_BUILD_TYPE = "Debug"),
+        -- not the configuration name (e.g., "debug-with-addon").
+        -- ${configuration} resolves to the configuration name from the profile mapping.
+        local module_variant = source_variant
+        if source_unit._configuration and source_unit._configuration.module_config then
+            module_variant = source_unit._configuration.module_config.variant or source_variant
+        end
         local source_ctx = {
             build_dir = build_dir,
-            variant = source_variant,
+            variant = module_variant,
+            configuration = source_variant,
             project_path = source_project.path or source_project.key,
             workspace_root = ws.root,
         }
@@ -190,13 +198,30 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
             source_ctx.config_set = profile._config_set_ref.name
         end
         source_rel_path = expand.expand_string(source_rel_path, source_ctx)
-        -- Strip build_dir prefix if path expanded to absolute
-        local bd_prefix = build_dir .. "/"
-        if source_rel_path:sub(1, #bd_prefix) == bd_prefix then
-            source_rel_path = source_rel_path:sub(#bd_prefix + 1)
+        -- If expansion produced an absolute path, use it directly
+        if source_rel_path:match("^%a:") or source_rel_path:match("^/") then
+            -- Strip build_dir prefix if present (user used ${build_dir} redundantly)
+            local bd_prefix = build_dir:gsub("\\", "/") .. "/"
+            local norm = source_rel_path:gsub("\\", "/")
+            if norm:sub(1, #bd_prefix) == bd_prefix then
+                source_rel_path = norm:sub(#bd_prefix + 1)
+            else
+                -- Truly absolute — use as source_path directly, skip build_dir concat
+                local source_path = source_rel_path
+                local dest_path_final = dest_path
+                if dest_path_final:sub(-1) == "/" then
+                    local filename = source_rel_path:match("[^/\\]+$")
+                    dest_path_final = dest_path_final .. filename
+                end
+                local cache_mod = require("loomworks.cache")
+                return {
+                    source_path = source_path,
+                    dest_path = dest_path_final,
+                    source_build_dir_id = cache_mod.relative_build_dir(build_dir, ws.root),
+                    source_rel_path = source_rel_path,
+                }
+            end
         end
-        -- Strip leading / to prevent double-root concatenation
-        source_rel_path = source_rel_path:gsub("^/+", "")
     end
 
     local source_path = build_dir .. "/" .. source_rel_path
