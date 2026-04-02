@@ -1344,32 +1344,37 @@ end
 --- Stop running overseer tasks and call on_done when all have stopped.
 --- @param task_ids number[] overseer task IDs to stop
 --- @param on_done function called when all tasks have stopped
+--- Stop overseer tasks and return a Future that resolves when all are stopped.
+--- @param task_ids number[]
+--- @param on_done? function legacy callback (deprecated)
+--- @return loomworks.Future
 function Workspace:stop_tasks_then(task_ids, on_done)
+    local future_mod = require("loomworks.future")
     if #task_ids == 0 then
-        on_done()
-        return
+        if on_done then on_done() end
+        return future_mod.resolved(true)
     end
 
-    local remaining = #task_ids
-    local schedule = self._core._deps.schedule
-    local function check_done()
-        remaining = remaining - 1
-        if remaining == 0 then
-            schedule(on_done)
-        end
-    end
-
+    local task_futures = {}
     for _, task_id in ipairs(task_ids) do
+        local tf = future_mod.Future.new()
+        task_futures[#task_futures + 1] = tf
         local task = self._core._deps.get_overseer_task(task_id)
         if task and not task:is_complete() then
             task:subscribe("on_complete", function()
-                check_done()
+                tf:_resolve(true)
             end)
             task:stop()
         else
-            check_done()
+            tf:_resolve(true)
         end
     end
+
+    local f = future_mod.when_all(task_futures):next(function() return true end)
+    if on_done then
+        f:next(function() on_done() end)
+    end
+    return f
 end
 
 -- ===========================================================================
@@ -1530,29 +1535,33 @@ end
 --- Removes the entry from cache and optionally deletes the build dir from disk.
 --- @param build_dir_key string relative build dir key
 --- @param on_done? function callback after deletion
+--- Delete an orphaned build directory. Returns a Future.
+--- @param build_dir_key string
+--- @param on_done? function legacy callback (deprecated)
+--- @return loomworks.Future
 function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
-    -- Find and remove the BuildDir domain object
+    local future_mod = require("loomworks.future")
     local bd = self:find_build_dir(build_dir_key)
     if bd then
-        -- Remove from _build_dirs array
         for i, b in ipairs(self._build_dirs) do
-            if b == bd then
-                table.remove(self._build_dirs, i)
-                break
-            end
+            if b == bd then table.remove(self._build_dirs, i); break end
         end
 
-        -- Delete build dir from disk if it exists
         if bd.path then
             local abs_dir = self._core._deps.normalize(bd.path)
             local safe_prefix = self._core._deps.normalize(self.root)
             if self:_validate_build_dir(abs_dir, safe_prefix) then
-                self:_delete_build_dirs_async({ abs_dir }, function()
-                    self:_save_cache()
-                    self._core._deps.events.emit("active_set_changed", self._active_set)
-                    if on_done then on_done() end
+                local ws = self
+                local f = self:_delete_build_dirs_async({ abs_dir }):next(function()
+                    ws:_save_cache()
+                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                    return true
                 end)
-                return
+                if on_done then
+                    f:next(function() on_done() end)
+                     :catch(function() on_done() end)
+                end
+                return f
             end
         end
     end
@@ -1560,6 +1569,7 @@ function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
     self:_save_cache()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     if on_done then on_done() end
+    return future_mod.resolved(true)
 end
 
 function Workspace:delete_cached_configs(items)
@@ -1680,27 +1690,49 @@ end
 --- After deletion, cleans up empty ancestor directories up to the build root.
 --- @param dirs string[] list of normalized directory paths
 --- @param callback fun(results: {dir: string, ok: boolean, err: string|nil}[])
+--- Delete build directories asynchronously. Returns a Future resolving
+--- with an array of { dir, ok, err } results.
+--- @param dirs string[]
+--- @param callback? function legacy callback (deprecated)
+--- @return loomworks.Future
 function Workspace:_delete_build_dirs_async(dirs, callback)
+    local future_mod = require("loomworks.future")
     if #dirs == 0 then
-        callback({})
-        return
+        if callback then callback({}) end
+        return future_mod.resolved({})
     end
 
     local build_root = self._core._deps.normalize(self.root .. "/.nvim/build")
-    local results = {}
-    local remaining = #dirs
+    local dir_futures = {}
     for _, dir in ipairs(dirs) do
-        self._core._deps.io.rm_rf_async(dir, function(ok, err)
-            results[#results + 1] = { dir = dir, ok = ok, err = err }
-            if ok then
-                self:_cleanup_empty_ancestors(dir, build_root)
-            end
-            remaining = remaining - 1
-            if remaining == 0 then
-                callback(results)
-            end
+        local captured_dir = dir
+        local df = future_mod.create(function(resolve, _, token)
+            self._core._deps.io.rm_rf_async(captured_dir, function(ok, err)
+                if ok then
+                    self:_cleanup_empty_ancestors(captured_dir, build_root)
+                end
+                resolve({ dir = captured_dir, ok = ok, err = err })
+            end)
+            token:on_cancel(function()
+                -- Can't cancel rm -rf mid-flight, but resolve to let chain continue
+                resolve({ dir = captured_dir, ok = false, err = "cancelled" })
+            end)
         end)
+        dir_futures[#dir_futures + 1] = df
     end
+
+    local f = future_mod.when_all(dir_futures):next(function(wrapped)
+        local results = {}
+        for _, r in ipairs(wrapped) do
+            results[#results + 1] = r[1]  -- unwrap from when_all's {values} wrapper
+        end
+        return results
+    end)
+
+    if callback then
+        f:next(function(results) callback(results) end)
+    end
+    return f
 end
 
 --- Common async deletion workflow: cancel conflicting operations, mark items
@@ -1711,18 +1743,22 @@ end
 --- @param work_fn function called after build dirs are successfully deleted (cache mutations)
 --- @param on_done? function called when complete
 --- @param reason? "deleting"|"cleaning" reason for the deletion flag (default "deleting")
+--- Common async deletion workflow. Returns a Future.
+--- @param items table[]
+--- @param work_fn function cache mutations after successful deletion
+--- @param on_done? function legacy callback (deprecated)
+--- @param reason? "deleting"|"cleaning"
+--- @return loomworks.Future
 function Workspace:_run_deletion(items, work_fn, on_done, reason)
+    local future_mod = require("loomworks.future")
     if #items == 0 then
         if on_done then on_done() end
-        return
+        return future_mod.resolved(true)
     end
 
-    -- Cancel any active build/configure Operations on the affected units
     local units = {}
     for _, item in ipairs(items) do
-        if item.unit then
-            units[#units + 1] = item.unit
-        end
+        if item.unit then units[#units + 1] = item.unit end
     end
     self:cancel_conflicting_operations(units)
 
@@ -1737,39 +1773,34 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         task_ids[#task_ids + 1] = task_id
     end
 
-    self:stop_tasks_then(task_ids, function()
-        -- Crash-safe: mark cache as "unknown" before starting async deletion
-        self:_mark_cache_unknown(items)
-        self:_save_cache()
+    local ws = self
+    local f = self:stop_tasks_then(task_ids):next(function()
+        ws:_mark_cache_unknown(items)
+        ws:_save_cache()
 
-        -- Build set of ConfigUnits being deleted in this batch
         local deleting_units = {}
-        for _, unit in ipairs(units) do
-            deleting_units[unit] = true
-        end
+        for _, unit in ipairs(units) do deleting_units[unit] = true end
 
-        -- Collect build directories to delete (skip shared dirs still referenced)
-        local safe_prefix = self._core._deps.normalize(self.root)
+        local safe_prefix = ws._core._deps.normalize(ws.root)
         local dirs = {}
         local seen_dirs = {}
         for _, item in ipairs(items) do
             if item.build_dir then
-                local normalized = self._core._deps.normalize(item.build_dir)
-                if not seen_dirs[normalized] and self:_validate_build_dir(normalized, safe_prefix) then
+                local normalized = ws._core._deps.normalize(item.build_dir)
+                if not seen_dirs[normalized] and ws:_validate_build_dir(normalized, safe_prefix) then
                     seen_dirs[normalized] = true
-                    -- Check if other configs still reference this dir
-                    local ref_units = self._build_dir_refs[normalized]
+                    local ref_units = ws._build_dir_refs[normalized]
                     if ref_units then
-                        local remaining = 0
+                        local remaining_refs = 0
                         for _, ref_unit in ipairs(ref_units) do
                             if not deleting_units[ref_unit] then
-                                remaining = remaining + 1
+                                remaining_refs = remaining_refs + 1
                             end
                         end
-                        if remaining > 0 then
-                            self._core._deps.notify(
+                        if remaining_refs > 0 then
+                            ws._core._deps.notify(
                                 "loomworks: skipped deleting " .. normalized
-                                    .. " — still referenced by " .. remaining .. " config(s)",
+                                    .. " — still referenced by " .. remaining_refs .. " config(s)",
                                 vim.log.levels.INFO)
                             goto skip_dir
                         end
@@ -1780,53 +1811,41 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             end
         end
 
-        -- Delete build directories asynchronously
-        self:_delete_build_dirs_async(dirs, function(results)
-            -- Check for failures
-            local errors = {}
-            for _, r in ipairs(results) do
-                if not r.ok then
-                    errors[#errors + 1] = r
-                end
+        return ws:_delete_build_dirs_async(dirs)
+    end):next(function(results)
+        local errors = {}
+        for _, r in ipairs(results) do
+            if not r.ok then errors[#errors + 1] = r end
+        end
+
+        if #errors > 0 then
+            for _, e in ipairs(errors) do
+                ws._core._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
             end
+            for _, unit in ipairs(units) do unit:mark_deleting(false) end
+            ws:_save_cache()
+            ws:_sync_build_dir_refs()
+            ws:_resolve_active_profile()
+            ws._core._deps.events.emit("active_set_changed", ws._active_set)
+            ws._core._deps.events.emit("deletion_failed", { items = items, errors = errors })
+            return true  -- don't reject — deletion "completed" with errors reported
+        end
 
-            if #errors > 0 then
-                -- Failure: cache already has "unknown" state, notify user
-                for _, e in ipairs(errors) do
-                    self._core._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
-                end
-
-                for _, unit in ipairs(units) do
-                    unit:mark_deleting(false)
-                end
-
-                self:_save_cache()
-                self:_sync_build_dir_refs()
-                self:_resolve_active_profile()
-                self._core._deps.events.emit("active_set_changed", self._active_set)
-
-                self._core._deps.events.emit("deletion_failed", { items = items, errors = errors })
-                if on_done then on_done() end
-                return
-            end
-
-            -- Success: apply cache mutations
-            work_fn(items)
-
-            self:_save_cache()
-            self:_sync_build_dir_refs()
-            self:_resolve_active_profile()
-            self._core._deps.events.emit("active_set_changed", self._active_set)
-
-            for _, unit in ipairs(units) do
-                unit:mark_deleting(false)
-            end
-
-            self._core._deps.events.emit("deletion_completed", items)
-
-            if on_done then on_done() end
-        end)
+        work_fn(items)
+        ws:_save_cache()
+        ws:_sync_build_dir_refs()
+        ws:_resolve_active_profile()
+        ws._core._deps.events.emit("active_set_changed", ws._active_set)
+        for _, unit in ipairs(units) do unit:mark_deleting(false) end
+        ws._core._deps.events.emit("deletion_completed", items)
+        return true
     end)
+
+    if on_done then
+        f:next(function() on_done() end)
+         :catch(function() on_done() end)
+    end
+    return f
 end
 
 --- Execute a deletion plan asynchronously.
@@ -1837,16 +1856,19 @@ end
 --- @param plan loomworks.DeletionPlan
 --- @param opts? { deactivate_profile?: loomworks.Profile }
 --- @param on_done? function called when deletion is complete
+--- Execute a deletion plan asynchronously. Returns a Future.
+--- @param plan loomworks.DeletionPlan
+--- @param opts? { deactivate_profile?: loomworks.Profile }
+--- @param on_done? function legacy callback (deprecated)
+--- @return loomworks.Future
 function Workspace:execute_deletion(plan, opts, on_done)
+    local future_mod = require("loomworks.future")
     opts = opts or {}
 
-    -- Deactivate profile if requested
     if opts.deactivate_profile then
         opts.deactivate_profile:deactivate()
     end
 
-    -- Remove pinned profiles from domain objects (before async work).
-    -- Set-based profiles are runtime-derived and should not be removed.
     if plan.profile and plan.profile._pinned then
         local profile = plan.profile
         profile._removed = true
@@ -1858,17 +1880,14 @@ function Workspace:execute_deletion(plan, opts, on_done)
     end
     self:_save_cache()
 
-    -- Split items by disposition
     local actionable = {}
-    local clean_units = {} -- unit identity set for "clean" disposition
-    local reset_items = {}
+    local clean_units = {}
     for _, item in ipairs(plan.items) do
         if item.disposition == "clean" then
             actionable[#actionable + 1] = item
             if item.unit then clean_units[item.unit] = true end
         elseif item.disposition == "reset" then
             actionable[#actionable + 1] = item
-            reset_items[#reset_items + 1] = item
         end
     end
 
@@ -1877,11 +1896,10 @@ function Workspace:execute_deletion(plan, opts, on_done)
         self:_resolve_active_profile()
         self._core._deps.events.emit("active_set_changed", self._active_set)
         if on_done then on_done() end
-        return
+        return future_mod.resolved(true)
     end
 
-    self:_run_deletion(actionable, function(effective_items)
-        -- Split effective items by their original disposition (unit identity)
+    local f = self:_run_deletion(actionable, function(effective_items)
         local eff_clean = {}
         local eff_reset = {}
         for _, item in ipairs(effective_items) do
@@ -1898,6 +1916,8 @@ function Workspace:execute_deletion(plan, opts, on_done)
             self:reset_cached_configs(eff_reset)
         end
     end, on_done)
+
+    return f
 end
 
 -- ===========================================================================
