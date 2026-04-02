@@ -1445,6 +1445,11 @@ function Workspace:record_task_result(result)
                 config_unit.state_value = "configured"
             end
             config_unit.last_configured = now
+            -- Clear needs_refresh on the project (files no longer stale)
+            if project and project.needs_refresh then
+                project.needs_refresh = false
+                project.refresh_reasons = {}
+            end
         else
             config_unit.state_value = "failed_configure"
         end
