@@ -99,18 +99,150 @@ function M.open(opts)
             end,
         })
 
-        -- Args
-        local args_display = #args > 0 and table.concat(args, " ") or "(none)"
-        t:item("Args       " .. args_display .. " ▸", {
-            hl = #args > 0 and "LoomworksActionable" or "Comment",
+        -- Args (structured list)
+        if #args > 0 then
+            t:leaf("Args:", "Comment")
+            for ai, arg in ipairs(args) do
+                local captured_ai = ai
+                t:item("  " .. arg .. " ▸", {
+                    hl = "LoomworksActionable",
+                    direct = true,
+                    on_enter = function()
+                        local eq_pos = args[captured_ai]:find("=")
+                        if eq_pos then
+                            -- Key=value: offer to edit key, value (text), or value (path)
+                            local key = args[captured_ai]:sub(1, eq_pos - 1)
+                            local val = args[captured_ai]:sub(eq_pos + 1)
+                            vim.ui.select({ "Edit value as text", "Edit value as path", "Edit key", "Edit whole arg" }, {
+                                prompt = key .. "=",
+                            }, function(choice)
+                                if not choice then return end
+                                if choice == "Edit value as text" then
+                                    edit_string(key .. "=", val, function(v)
+                                        args[captured_ai] = key .. "=" .. v
+                                    end)
+                                elseif choice == "Edit value as path" then
+                                    require("loomworks.ui.path_editor").open({
+                                        title = "Argument Value: " .. key,
+                                        path = val,
+                                        project = opts.launch_project,
+                                        workspace = opts.workspace,
+                                        profile = opts.profile,
+                                        on_accept = function(path)
+                                            args[captured_ai] = key .. "=" .. path
+                                            if view then view:refresh() end
+                                        end,
+                                        on_cancel = function() end,
+                                    })
+                                elseif choice == "Edit key" then
+                                    edit_string("Key: ", key, function(k)
+                                        args[captured_ai] = k .. "=" .. val
+                                    end)
+                                else
+                                    edit_string("Arg: ", args[captured_ai], function(v)
+                                        args[captured_ai] = v
+                                    end)
+                                end
+                            end)
+                        else
+                            -- Plain arg: edit as text or path
+                            vim.ui.select({ "Edit as text", "Edit as path" }, {
+                                prompt = "Edit argument:",
+                            }, function(choice)
+                                if not choice then return end
+                                if choice == "Edit as text" then
+                                    edit_string("Arg: ", args[captured_ai], function(v)
+                                        args[captured_ai] = v
+                                    end)
+                                else
+                                    require("loomworks.ui.path_editor").open({
+                                        title = "Argument Path",
+                                        path = args[captured_ai],
+                                        project = opts.launch_project,
+                                        workspace = opts.workspace,
+                                        profile = opts.profile,
+                                        on_accept = function(path)
+                                            args[captured_ai] = path
+                                            if view then view:refresh() end
+                                        end,
+                                        on_cancel = function() end,
+                                    })
+                                end
+                            end)
+                        end
+                    end,
+                    on_delete = function()
+                        table.remove(args, captured_ai)
+                        if view then view:refresh() end
+                    end,
+                })
+            end
+        else
+            t:leaf("Args: (none)", "Comment")
+        end
+
+        t:item("  ▸ Add argument", {
+            hl = "LoomworksActionable",
             direct = true,
             on_enter = function()
-                edit_string("Args (space-separated): ", table.concat(args, " "), function(v)
-                    args = {}
-                    for arg in v:gmatch("%S+") do
-                        args[#args + 1] = arg
+                edit_string("Argument: ", "", function(v)
+                    if v ~= "" then
+                        args[#args + 1] = v
                     end
                 end)
+            end,
+        })
+        t:item("  ▸ Add key=value argument", {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = function()
+                vim.ui.input({ prompt = "Key (e.g., --config): " }, function(key)
+                    if not key or key == "" then return end
+                    vim.ui.select({ "Text value", "Path value" }, {
+                        prompt = "Value type:",
+                    }, function(choice)
+                        if not choice then return end
+                        if choice == "Text value" then
+                            vim.ui.input({ prompt = key .. "=" }, function(val)
+                                if val then
+                                    args[#args + 1] = key .. "=" .. val
+                                    if view then view:refresh() end
+                                end
+                            end)
+                        else
+                            require("loomworks.ui.path_editor").open({
+                                title = "Value for " .. key,
+                                path = "",
+                                project = opts.launch_project,
+                                workspace = opts.workspace,
+                                profile = opts.profile,
+                                on_accept = function(path)
+                                    args[#args + 1] = key .. "=" .. path
+                                    if view then view:refresh() end
+                                end,
+                                on_cancel = function() end,
+                            })
+                        end
+                    end)
+                end)
+            end,
+        })
+        t:item("  ▸ Add path argument", {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = function()
+                require("loomworks.ui.path_editor").open({
+                    title = "Path Argument",
+                    path = "",
+                    project = opts.launch_project,
+                    workspace = opts.workspace,
+                    profile = opts.profile,
+                    on_accept = function(path)
+                        args[#args + 1] = path
+                        if view then view:refresh() end
+                    end,
+                    on_cancel = function() end,
+                })
             end,
         })
 
