@@ -102,8 +102,8 @@ function M.open(opts)
             end
         end
 
-        -- Inherits (for custom configs with options support, not for defaults)
-        if opts.has_options and not opts.is_default and #opts.available_configs > 0 then
+        -- Inherits (for custom configs, not for defaults)
+        if not opts.is_default and #opts.available_configs > 0 then
             local is_abstract = #inherits == 0
             if is_abstract then
                 t:leaf("Type:      abstract (mixin only, not buildable)", "DiagnosticWarn")
