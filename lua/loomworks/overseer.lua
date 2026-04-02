@@ -508,7 +508,9 @@ local function filter_unconfigured_tasks(all_tasks)
 
         local unit = lw_meta.unit
         local state = unit:state()
-        if state == "unconfigured" or state == "configure_failed" or unit:is_stale() then
+        local project_needs_refresh = unit._project and unit._project.needs_refresh
+        if state == "unconfigured" or state == "configure_failed"
+                or unit:is_stale() or project_needs_refresh then
             needs_configure[#needs_configure + 1] = task_def
         end
 
