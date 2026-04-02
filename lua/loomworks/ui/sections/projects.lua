@@ -646,6 +646,32 @@ return function(tree, ctx)
                                     tree:leaf(k .. "=" .. cdata.options[k], "Comment")
                                 end
                             end
+                            -- Show resolved variables for this configuration
+                            if proj.variables and next(proj.variables) then
+                                local vars_mod = require("loomworks.variables")
+                                local cfg_obj = proj:get_configuration(cname)
+                                if cfg_obj then
+                                    local resolved = vars_mod.resolve(proj, cfg_obj)
+                                    local var_names = {}
+                                    for vn in pairs(resolved) do var_names[#var_names + 1] = vn end
+                                    table.sort(var_names)
+                                    for _, vn in ipairs(var_names) do
+                                        local entry = resolved[vn]
+                                        local source_label
+                                        if entry.source_config then
+                                            source_label = entry.source_config.name
+                                        else
+                                            source_label = "project"
+                                        end
+                                        if cfg_obj.variables and cfg_obj.variables[vn] then
+                                            tree:leaf("${" .. vn .. "} = " .. entry.value, "Comment")
+                                        else
+                                            tree:leaf("${" .. vn .. "} = " .. entry.value
+                                                .. "  (" .. source_label .. ")", "NonText")
+                                        end
+                                    end
+                                end
+                            end
                             -- Show cached tool count for keyed-tool modules
                             if has_tool_entries then
                                 local cached_count = 0
