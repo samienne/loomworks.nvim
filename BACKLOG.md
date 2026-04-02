@@ -150,13 +150,28 @@ cmake, sanitizer flags are compiler-specific (`-fsanitize=` for gcc/clang,
 correct options. Defer cmake sanitizer templates until compiler-aware
 option generation is available.
 
-## Profile persistence lost after configure failure
+## Profile/variable persistence lost after task failure
 
-Observed: after creating a profile and triggering a configure that fails
-on some projects, the pinned profile disappears from user.json on a
-subsequent save. Possibly related to the stuck operation / remerge
-interaction. Error logging added to `_save_user` (2026-04-02) to help
-diagnose if it recurs.
+Observed: after creating a profile or adding variables and triggering a
+configure/launch that fails, the data may disappear from user.json or
+loomworks.json on a subsequent save. Possibly related to the stuck
+operation / remerge interaction, or a save triggered by the failure
+path overwriting with stale data. Error logging added to `_save_user`
+(2026-04-02) to help diagnose if it recurs.
+
+## Variable/deploy discoverability and documentation in UI
+
+The variable system and deploy steps lack in-editor documentation.
+Users need help text or descriptions for:
+- Available built-in variables (${workspace_root}, ${build_dir}, etc.)
+  and what they expand to
+- The difference between ${variant} (cmake variant) and ${configuration}
+  (config name from profile mapping)
+- Source path is relative to build dir (for path type)
+- ${project_path} is relative, use ${workspace_root}/${project_path}
+  for absolute
+- Variable type meanings (string vs path — path enables segment editor)
+Could add tooltips, help text in editors, or a help dialog.
 
 ---
 
