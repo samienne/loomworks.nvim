@@ -611,9 +611,17 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Register a running task on this unit.
+--- Disposes the previous completed task if any (keeps overseer list clean).
 --- @param task_id number overseer task ID
 --- @param action string "configure" or "build"
 function ConfigUnit:register_task(task_id, action)
+    -- Dispose previous completed task to avoid accumulation in overseer
+    if self._last_task_id and self._last_task_id ~= task_id then
+        local prev = self._workspace._core._deps.get_overseer_task(self._last_task_id)
+        if prev and prev:is_complete() then
+            prev:dispose()
+        end
+    end
     self._task_id = task_id
     self._last_task_id = task_id
     self._action = action
