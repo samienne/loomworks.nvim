@@ -2075,7 +2075,16 @@ directories are created automatically if they do not exist.
 
 Path safety: `..` and `.` segments are rejected at parse time.
 
-**Source descriptor** (right side): identifies which file to copy.
+**Source descriptor** (right side): identifies which file to copy. Can be
+a single descriptor or an array of descriptors (multiple sources to the
+same destination directory).
+
+```json
+"${build_dir}/lib/": [
+    { "project": "NativeLib", "target": "native_lib" },
+    { "project": "ConfigLib", "path": "bin/config.dll" }
+]
+```
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -2083,6 +2092,11 @@ Path safety: `..` and `.` segments are rejected at parse time.
 | `target` | one of target/path | cmake target name — resolved to artifact path |
 | `path` | one of target/path | file path relative to source build dir |
 | `configuration` | no | Pin to a specific configuration; defaults to profile resolution |
+
+**Duplicate destination keys**: JSON does not allow duplicate keys in an
+object. If `loomworks.json` contains two entries with the same destination
+key, the JSON parser silently keeps only the last one. Use the array
+source format to copy multiple files to the same directory.
 
 Source fields use **no variable expansion** — `target` is a cmake target
 name resolved via the module, `path` is a literal relative path from the

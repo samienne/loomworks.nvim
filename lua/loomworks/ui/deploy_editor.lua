@@ -212,6 +212,8 @@ end
 ---   profile: loomworks.Profile|nil — active profile for resolving config units
 ---   workspace: loomworks.Workspace|nil — for destination preview resolution
 ---   launch_project: loomworks.Project|nil — the project owning this launch config
+---   existing_destinations: string[]|nil — destinations already in use (for duplicate detection)
+---   current_destination: string|nil — the destination being edited (excluded from duplicate check)
 ---   on_accept: fun(dest: string, source: table)
 ---   on_cancel: fun()
 function M.open(opts)
@@ -228,6 +230,33 @@ function M.open(opts)
 
     -- Parse destination into segments
     local dest_segments = M.parse_segments(opts.destination or "")
+    local dest_error = nil
+
+    -- Build set of existing destinations for duplicate detection
+    local existing_set = {}
+    for _, d in ipairs(opts.existing_destinations or {}) do
+        existing_set[d] = true
+    end
+    local current_dest = opts.current_destination
+
+    local function validate_destination()
+        local composed = M.compose_segments(dest_segments)
+        if composed == "" then
+            dest_error = nil  -- empty will be caught on accept
+            return
+        end
+        -- Allow if it's the same destination being edited
+        if current_dest and composed == current_dest then
+            dest_error = nil
+            return
+        end
+        if existing_set[composed] then
+            dest_error = "destination already has sources — this will be added to the group"
+        else
+            dest_error = nil
+        end
+    end
+    validate_destination()
 
     local accepted = false
     local tree, view
@@ -383,11 +412,15 @@ function M.open(opts)
             end,
         })
 
-        -- Destination preview
+        -- Destination preview and validation
+        validate_destination()
         local dest_preview = resolve_dest_preview(
             dest_segments, ws, profile, launch_project)
         if dest_preview then
             t:leaf("  → " .. dest_preview, "NonText")
+        end
+        if dest_error then
+            t:leaf("  " .. dest_error, "DiagnosticWarn")
         end
 
         t:blank()

@@ -211,6 +211,8 @@ function M.open(opts)
                                 profile = opts.profile,
                                 workspace = opts.workspace,
                                 launch_project = opts.launch_project,
+                                existing_destinations = deploy_keys,
+                                current_destination = captured_dest,
                                 on_accept = function(new_dest, new_source)
                                     local cur = deploy_mod.normalize_sources(deploy[captured_dest])
                                     cur[captured_si] = new_source
@@ -276,6 +278,7 @@ function M.open(opts)
                     profile = opts.profile,
                     workspace = opts.workspace,
                     launch_project = opts.launch_project,
+                    existing_destinations = deploy_keys,
                     on_accept = function(new_dest, new_source)
                         local existing = deploy[new_dest]
                         if existing then
