@@ -538,15 +538,29 @@ function M.open(opts)
             })
         else
             local path_val = source_path ~= "" and source_path or "(empty)"
+            local path_warn = nil
+            if source_path:find("^%${") then
+                path_warn = "path is relative to build dir — variables not needed"
+            elseif source_path:find("^/") or source_path:find("^%a:") then
+                path_warn = "path should be relative, not absolute"
+            end
             t:item("  Path           " .. path_val .. " ▸", {
-                hl = source_path ~= "" and "LoomworksActionable" or "Comment",
+                hl = path_warn and "DiagnosticWarn"
+                    or (source_path ~= "" and "LoomworksActionable" or "Comment"),
                 direct = true,
                 on_enter = function()
-                    edit_string("Path (relative to build dir): ", source_path, function(v)
+                    edit_string("Path (relative to build dir, no variables): ",
+                        source_path, function(v)
+                        -- Strip common mistakes
+                        v = v:gsub("^%${build_dir}/", "")
+                        v = v:gsub("^/+", "")
                         source_path = v
                     end)
                 end,
             })
+            if path_warn then
+                t:leaf("  " .. path_warn, "DiagnosticWarn")
+            end
         end
 
         -- Source preview

@@ -179,6 +179,11 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
         source_rel_path = target.artifact
     else
         source_rel_path = source_def.path
+        -- Strip ${build_dir}/ prefix if user accidentally included it
+        -- (source path is always relative to the build directory)
+        source_rel_path = source_rel_path:gsub("^%${build_dir}/", "")
+        -- Strip leading / to prevent absolute path concatenation
+        source_rel_path = source_rel_path:gsub("^/+", "")
     end
 
     local source_path = build_dir .. "/" .. source_rel_path
