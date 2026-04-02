@@ -486,9 +486,19 @@ local _active_launch = nil
 --- Launch the active profile's default target.
 --- Builds first (if buildable), then launches.
 --- Shows picker if no default set or target is stale.
+--- Stop the previous launch if running.
+local function stop_active_launch()
+    if _active_launch and _active_launch:is_running() then
+        _active_launch:stop()
+    end
+end
+
 --- Build, deploy, and launch a target using Future chains.
 --- @param target loomworks.LaunchTarget
 local function build_deploy_launch(target)
+    stop_active_launch()
+    _active_launch = target
+
     local chain
     if target:is_buildable() then
         chain = target:build()
@@ -514,7 +524,6 @@ function M.launch_target()
     local launch_target = profile:default_target()
 
     if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
-        _active_launch = launch_target
         build_deploy_launch(launch_target)
         return
     end
@@ -533,7 +542,6 @@ function M.launch_target()
         end
         local new_target = profile:default_target()
         if new_target and new_target:is_launchable() then
-            _active_launch = new_target
             build_deploy_launch(new_target)
         end
     end)
@@ -543,6 +551,7 @@ end
 function M.stop_target()
     if _active_launch and _active_launch:is_running() then
         _active_launch:stop()
+        _active_launch = nil
         return
     end
     vim.notify("loomworks: no running launch task", vim.log.levels.INFO)
