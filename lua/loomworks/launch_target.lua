@@ -94,9 +94,31 @@ function LaunchTarget:build(on_complete)
         end
     end
 
-    -- Check for dependencies that need building first
-    if self._project and self._project.depends_on then
-        self:_build_deps(self._project.depends_on, 1, function(success)
+    -- Collect ALL dependencies: explicit + deploy source projects
+    local all_deps = {}
+    local seen = {}
+    if self._project then
+        -- Explicit dependencies
+        if self._project.depends_on then
+            for _, dep in ipairs(self._project.depends_on) do
+                if not seen[dep.key] then
+                    seen[dep.key] = true
+                    all_deps[#all_deps + 1] = dep
+                end
+            end
+        end
+        -- Implicit dependencies from deploy steps
+        local deploy_deps = self:_deploy_source_projects()
+        for _, dep in ipairs(deploy_deps) do
+            if not seen[dep.key] then
+                seen[dep.key] = true
+                all_deps[#all_deps + 1] = dep
+            end
+        end
+    end
+
+    if #all_deps > 0 then
+        self:_build_deps(all_deps, 1, function(success)
             if not success then
                 if on_complete then on_complete(false) end
                 return
@@ -130,8 +152,9 @@ function LaunchTarget:_build_deps(deps, idx, on_complete)
     local unit = pp._config_unit
     local state = unit:state()
 
-    -- Already built or configured — skip
-    if state == "built" or state == "configured" then
+    -- Already built — skip (configured is NOT enough for deploy deps,
+    -- but is enough for explicit deps; we build anyway to be safe)
+    if state == "built" then
         self:_build_deps(deps, idx + 1, on_complete)
         return
     end
@@ -180,8 +203,8 @@ function LaunchTarget:_deploy_source_projects()
 end
 
 --- Execute deploy steps before launching.
---- Builds source projects that need building first (implicit dependencies),
---- then resolves and copies artifacts.
+--- Source projects should already be built (build() handles all deps).
+--- This method only resolves and copies artifacts.
 --- @param on_complete fun(ok: boolean, err?: string)
 function LaunchTarget:deploy(on_complete)
     local cfg = self._launch_config
@@ -195,38 +218,22 @@ function LaunchTarget:deploy(on_complete)
         return
     end
 
-    -- Build deploy source projects that aren't built yet
-    local deploy_deps = self:_deploy_source_projects()
-    local function do_deploy()
-        local deploy_mod = require("loomworks.deploy")
-        local ws = self._workspace
-        local ctx = {
-            workspace = ws,
-            profile = self._profile,
-            launch_project = self._project,
-        }
+    local deploy_mod = require("loomworks.deploy")
+    local ws = self._workspace
+    local ctx = {
+        workspace = ws,
+        profile = self._profile,
+        launch_project = self._project,
+    }
 
-        deploy_mod.execute_deploy_steps(
-            cfg.deploy, ctx, ws._deploy_records, ws._core._deps.normalize,
-            function(ok, err)
-                if ok then
-                    ws:_save_cache()
-                end
-                on_complete(ok, err)
-            end)
-    end
-
-    if #deploy_deps > 0 then
-        self:_build_deps(deploy_deps, 1, function(success)
-            if not success then
-                on_complete(false, "deploy dependency build failed")
-                return
+    deploy_mod.execute_deploy_steps(
+        cfg.deploy, ctx, ws._deploy_records, ws._core._deps.normalize,
+        function(ok, err)
+            if ok then
+                ws:_save_cache()
             end
-            do_deploy()
+            on_complete(ok, err)
         end)
-    else
-        do_deploy()
-    end
 end
 
 --- Launch this target.
