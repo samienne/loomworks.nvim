@@ -181,4 +181,44 @@ function M.setup()
     end)
 end
 
+-- ---------------------------------------------------------------------------
+-- Public API for top-level action handles
+-- ---------------------------------------------------------------------------
+
+--- Create a top-level progress handle for a user action.
+--- Returns a handle object with :report(), :finish(), :cancel() or nil
+--- if fidget is not available.
+--- @param title string e.g., "Launching ScenePluginTest: debug"
+--- @return table|nil handle
+function M.start_action(title)
+    if not fidget_progress then return nil end
+    local key = "action:" .. title .. ":" .. tostring(os.clock())
+    return create_handle(key, "", title)
+end
+
+--- Report progress on a handle (nil-safe).
+--- @param handle table|nil fidget handle
+--- @param message string
+function M.report(handle, message)
+    if handle then handle:report({ message = message }) end
+end
+
+--- Finish a handle (nil-safe).
+--- @param handle table|nil fidget handle
+--- @param message? string final message
+function M.finish(handle, message)
+    if not handle then return end
+    if message then handle:report({ message = message }) end
+    handle:finish()
+end
+
+--- Cancel a handle (nil-safe).
+--- @param handle table|nil fidget handle
+--- @param message? string
+function M.fail(handle, message)
+    if not handle then return end
+    if message then handle:report({ message = message }) end
+    handle:cancel()
+end
+
 return M

@@ -390,13 +390,15 @@ function Profile:deactivate()
 end
 
 --- Build all projects in this profile via overseer.
+--- @return loomworks.Future
 function Profile:build()
-    require("loomworks.overseer").run_profile_action(self, "build")
+    return require("loomworks.overseer").run_profile_action(self, "build")
 end
 
 --- Configure all projects in this profile via overseer.
+--- @return loomworks.Future
 function Profile:configure()
-    require("loomworks.overseer").run_profile_action(self, "configure")
+    return require("loomworks.overseer").run_profile_action(self, "configure")
 end
 
 -- ---------------------------------------------------------------------------
@@ -734,10 +736,11 @@ function Profile:clean(on_done)
     return f
 end
 
---- Rebuild: clean then build.
+--- Rebuild: clean then build. Returns a Future.
+--- @return loomworks.Future
 function Profile:rebuild()
-    self:clean():next(function()
-        self:build()
+    return self:clean():next(function()
+        return self:build()
     end)
 end
 

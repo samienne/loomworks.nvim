@@ -37,7 +37,14 @@ end
 --- Build an existing profile.
 --- @param profile loomworks.Profile
 function M.build(profile)
-    return function() profile:build() end
+    return function()
+        local fidget = require("loomworks.fidget")
+        local handle = fidget.start_action("Building " .. profile.key)
+        fidget.report(handle, "building...")
+        profile:build()
+            :next(function() fidget.finish(handle, "built") end)
+            :catch(function(err) fidget.fail(handle, err) end)
+    end
 end
 
 --- Materialize a new profile then build it.
@@ -46,14 +53,27 @@ end
 function M.build_new(config_set, tool_entry)
     return function()
         local profile = config_set:ensure_profile(tool_entry)
-        if profile then profile:build() end
+        if not profile then return end
+        local fidget = require("loomworks.fidget")
+        local handle = fidget.start_action("Building " .. profile.key)
+        fidget.report(handle, "building...")
+        profile:build()
+            :next(function() fidget.finish(handle, "built") end)
+            :catch(function(err) fidget.fail(handle, err) end)
     end
 end
 
 --- Configure an existing profile.
 --- @param profile loomworks.Profile
 function M.configure(profile)
-    return function() profile:configure() end
+    return function()
+        local fidget = require("loomworks.fidget")
+        local handle = fidget.start_action("Configuring " .. profile.key)
+        fidget.report(handle, "configuring...")
+        profile:configure()
+            :next(function() fidget.finish(handle, "configured") end)
+            :catch(function(err) fidget.fail(handle, err) end)
+    end
 end
 
 --- Materialize a new profile then configure it.
@@ -62,7 +82,13 @@ end
 function M.configure_new(config_set, tool_entry)
     return function()
         local profile = config_set:ensure_profile(tool_entry)
-        if profile then profile:configure() end
+        if not profile then return end
+        local fidget = require("loomworks.fidget")
+        local handle = fidget.start_action("Configuring " .. profile.key)
+        fidget.report(handle, "configuring...")
+        profile:configure()
+            :next(function() fidget.finish(handle, "configured") end)
+            :catch(function(err) fidget.fail(handle, err) end)
     end
 end
 
@@ -73,7 +99,18 @@ function M.rebuild(profile)
         local ws = require("loomworks").get_workspace()
         local items = wv.collect_clean_items(profile)
         local ctx = wv.compute_clean_confirmation_context(ws, "Rebuild profile: " .. profile.key, items, { rebuild = true })
-        M._show_confirmation(ctx, function() profile:rebuild() end)
+        M._show_confirmation(ctx, function()
+            local fidget = require("loomworks.fidget")
+            local handle = fidget.start_action("Rebuilding " .. profile.key)
+            fidget.report(handle, "cleaning...")
+            profile:clean()
+                :next(function()
+                    fidget.report(handle, "building...")
+                    return profile:build()
+                end)
+                :next(function() fidget.finish(handle, "rebuilt") end)
+                :catch(function(err) fidget.fail(handle, err) end)
+        end)
     end
 end
 
@@ -84,7 +121,14 @@ function M.clean(profile)
         local ws = require("loomworks").get_workspace()
         local items = wv.collect_clean_items(profile)
         local ctx = wv.compute_clean_confirmation_context(ws, "Clean profile: " .. profile.key, items)
-        M._show_confirmation(ctx, function() profile:clean() end)
+        M._show_confirmation(ctx, function()
+            local fidget = require("loomworks.fidget")
+            local handle = fidget.start_action("Cleaning " .. profile.key)
+            fidget.report(handle, "cleaning...")
+            profile:clean()
+                :next(function() fidget.finish(handle, "cleaned") end)
+                :catch(function(err) fidget.fail(handle, err) end)
+        end)
     end
 end
 
