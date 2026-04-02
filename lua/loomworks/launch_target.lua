@@ -267,6 +267,18 @@ function LaunchTarget:_launch_command()
 
     local env = expand.expand_dict(cfg.env, ctx)
 
+    -- Dispose previous completed launch task
+    if self._launch_task_id then
+        local ok_os, overseer_mod = pcall(require, "overseer")
+        if ok_os then
+            local task_list = require("overseer.task_list")
+            local prev = task_list.get(self._launch_task_id)
+            if prev and prev:is_complete() then
+                prev:dispose()
+            end
+        end
+    end
+
     local task_name = self._project.key .. ": " .. (self._launch_name or "launch")
 
     local overseer = require("loomworks.overseer")

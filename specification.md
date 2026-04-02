@@ -2003,12 +2003,18 @@ configurations per project with command, args, env, working_dir, deploy.
   configuration with inheritance. Expanded after built-in variables.
 
 **Launch flow** (`launch_target()` API):
-1. Get active profile's default target (LaunchTarget)
-2. If buildable: build first (auto-configure if unconfigured)
-3. Resolve and execute deploy steps (section 9.8) — block on failure
-4. Launch on success
-5. Open overseer window for launch output
-6. Track launched process for `stop_target()`
+1. Stop any previously running launch target (single target at a time)
+2. Get active profile's default target (LaunchTarget)
+3. If buildable: build first (auto-configure if unconfigured or stale)
+4. Resolve and execute deploy steps (section 9.8) — block on failure
+5. Launch on success
+6. Open overseer window for launch output
+7. Track launched process for `stop_target()`
+
+**Task cleanup**: When a new build/configure task starts on a ConfigUnit,
+the previous completed overseer task is disposed. Same for launch tasks.
+This prevents accumulation in overseer's task list while keeping running
+tasks and the most recent output available.
 
 **Default target storage** in user.json per profile:
 ```json
