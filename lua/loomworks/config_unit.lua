@@ -620,13 +620,24 @@ function ConfigUnit:register_task(task_id, action)
 end
 
 --- Unregister the running task.
---- @param task_id number overseer task ID (must match current)
+--- If the task ID matches, clears task state and fires listeners.
+--- If the task was never registered (on_start didn't fire), still fires
+--- listeners so that Operations observing this unit can see the state change
+--- from record_task_result.
+--- @param task_id number overseer task ID
 function ConfigUnit:unregister_task(task_id)
-    if self._task_id ~= task_id then return end
-    self._task_id = nil
-    self._action = nil
-    self._progress = nil
-    self._start_time = nil
+    if self._task_id == task_id then
+        self._task_id = nil
+        self._action = nil
+        self._progress = nil
+        self._start_time = nil
+    elseif self._task_id ~= nil then
+        -- Different task is running — don't touch state, don't notify
+        return
+    end
+    -- Notify even if task was never registered (on_start didn't fire).
+    -- record_task_result already updated state_value; listeners need to
+    -- observe the change so Operations can complete.
     self:_notify()
 end
 
