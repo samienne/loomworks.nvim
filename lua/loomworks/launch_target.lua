@@ -267,17 +267,6 @@ function LaunchTarget:_launch_command()
 
     local env = expand.expand_dict(cfg.env, ctx)
 
-    -- Log expanded launch details for debugging
-    local details = { "Launch: " .. (cfg.command or "?") }
-    if #args > 0 then details[#details + 1] = "  args: " .. table.concat(args, " ") end
-    if cwd then details[#details + 1] = "  cwd: " .. cwd end
-    if env then
-        for k, v in pairs(env) do
-            details[#details + 1] = "  env: " .. k .. "=" .. v
-        end
-    end
-    vim.notify(table.concat(details, "\n"), vim.log.levels.INFO)
-
     local task_name = self._project.key .. ": " .. (self._launch_name or "launch")
 
     local overseer = require("loomworks.overseer")
