@@ -309,11 +309,20 @@ function M.build_target()
         return
     end
 
+    local function do_build(target)
+        local fidget = require("loomworks.fidget")
+        local handle = fidget.start_action("Building " .. target:display_name())
+        fidget.report(handle, "building...")
+        target:build()
+            :next(function() fidget.finish(handle, "built") end)
+            :catch(function(err) fidget.fail(handle, err) end)
+    end
+
     local launch_target = profile:default_target()
 
     -- Valid default target: build it
     if launch_target and launch_target:is_valid() then
-        launch_target:build()
+        do_build(launch_target)
         return
     end
 
@@ -329,7 +338,7 @@ function M.build_target()
         if project and target_id then
             profile:set_default_target(project, target_id)
             local new_target = profile:default_target()
-            if new_target then new_target:build() end
+            if new_target then do_build(new_target) end
         end
     end)
 end
@@ -499,17 +508,29 @@ local function build_deploy_launch(target)
     stop_active_launch()
     _active_launch = target
 
+    local fidget = require("loomworks.fidget")
+    local handle = fidget.start_action("Launching " .. target:display_name())
+
     local chain
     if target:is_buildable() then
+        fidget.report(handle, "building...")
         chain = target:build()
     else
         chain = require("loomworks.future").resolved(true)
     end
 
     chain
-        :next(function() return target:deploy() end)
-        :next(function() target:launch() end)
+        :next(function()
+            fidget.report(handle, "deploying...")
+            return target:deploy()
+        end)
+        :next(function()
+            fidget.report(handle, "launching...")
+            target:launch()
+            fidget.finish(handle, "launched")
+        end)
         :catch(function(err)
+            fidget.fail(handle, err)
             vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
         end)
 end
