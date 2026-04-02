@@ -301,11 +301,10 @@ describe("Operation", function()
             })
             units[1]:register_task(1, "configure")
 
-            -- Simulate: configure unregisters, but a deferred build immediately
-            -- registers on the same unit during the listener notify loop.
-            -- The Operation sees "building" rather than "configured".
+            -- Simulate: record_task_result sets state before unregister
+            -- (this is the real order in overseer.lua on_complete)
+            units[1].state_value = "configured"
             units[1]:unregister_task(1)
-            -- State is "unconfigured" momentarily (no cache), but that's fine.
             -- Now simulate the deferred build starting:
             units[1]:register_task(2, "build")
 
@@ -393,8 +392,9 @@ describe("Operation", function()
                 u:register_task(2, "build")
             end)
 
-            -- Configure completes
+            -- Configure completes: record_task_result sets state before unregister
             time.value = 5
+            unit.state_value = "configured"
             unit:unregister_task(1)
 
             -- The deferred listener fired and registered a build task.

@@ -4360,6 +4360,73 @@ describe("operation completion on failure", function()
         assert.is_false(op.success)
         assert.is_true(completed, "callback should fire")
     end)
+
+    it("operation completes when task is canceled (state reverts to unconfigured)", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        }, {
+            active_profile = "Debug",
+            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+        })
+
+        local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
+        assert.is_not_nil(app_unit)
+
+        local completed = false
+        local units = { app_unit }
+        local target_states = {}
+        target_states[app_unit] = "configured"
+
+        local op = Operation.new(ws, ws._active_profile, "configure", units, target_states,
+            function() completed = true end)
+
+        -- Simulate: task starts
+        app_unit:register_task(100, "configure")
+
+        -- Simulate: task canceled (record_task_result NOT called)
+        -- state_value stays nil (unconfigured)
+        app_unit:unregister_task(100)
+
+        -- State is now "unconfigured" — Operation should treat this as failure
+        assert.equals("unconfigured", app_unit:state())
+        assert.is_true(op.completed,
+            "operation should complete when unit reverts to unconfigured (canceled task)")
+        assert.is_false(op.success)
+        assert.is_true(completed)
+    end)
+
+    it("operation completes when record_task_result is skipped (unknown state path)", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        }, {
+            active_profile = "Debug",
+            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+        })
+
+        local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
+        assert.is_not_nil(app_unit)
+
+        local completed = false
+        local units = { app_unit }
+        local target_states = {}
+        target_states[app_unit] = "configured"
+
+        local op = Operation.new(ws, ws._active_profile, "configure", units, target_states,
+            function() completed = true end)
+
+        -- Simulate: task starts
+        app_unit:register_task(100, "configure")
+
+        -- Simulate: something sets state to unknown (crash recovery, etc.)
+        app_unit.state_value = "unknown"
+        app_unit:unregister_task(100)
+
+        assert.equals("unknown", app_unit:state())
+        assert.is_true(op.completed, "operation should complete on unknown state")
+        assert.is_false(op.success)
+    end)
 end)
 
 -- =========================================================================
