@@ -1222,8 +1222,8 @@ function M.compute_edit_configuration_context(project, config_name)
 
     -- Resolve inherited options with accurate sources
     local inherited_options = {}
-    if mod and mod.resolve_options_with_sources and config_name then
-        local all_with_sources = mod.resolve_options_with_sources(
+    if impl and impl.resolve_options_with_sources and config_name then
+        local all_with_sources = impl.resolve_options_with_sources(
             type_config, mod_info.configurations or {}, config_name)
         local own = config_data.options or {}
         for k, info in pairs(all_with_sources) do
