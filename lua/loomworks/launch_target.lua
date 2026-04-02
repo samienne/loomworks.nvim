@@ -148,11 +148,12 @@ function LaunchTarget:_build_deps(deps)
             local pp = self._profile:project(captured_dep.key)
             if not pp or not pp._config_unit then return true end
 
-            local state = pp._config_unit:state()
-            if state == "built" then return true end
+            local unit = pp._config_unit
+            local state = unit:state()
+            if state == "built" and not unit:is_stale() then return true end
 
             vim.notify("loomworks: building dependency " .. captured_dep.key, vim.log.levels.INFO)
-            return overseer.run_configuration_action(pp._config_unit, "build")
+            return overseer.run_configuration_action(unit, "build")
         end)
     end
 
