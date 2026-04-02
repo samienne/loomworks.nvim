@@ -150,6 +150,14 @@ cmake, sanitizer flags are compiler-specific (`-fsanitize=` for gcc/clang,
 correct options. Defer cmake sanitizer templates until compiler-aware
 option generation is available.
 
+## Profile persistence lost after configure failure
+
+Observed: after creating a profile and triggering a configure that fails
+on some projects, the pinned profile disappears from user.json on a
+subsequent save. Possibly related to the stuck operation / remerge
+interaction. Error logging added to `_save_user` (2026-04-02) to help
+diagnose if it recurs.
+
 ---
 
 ## ~~Rename-back shows entry in both profiles and orphaned sections~~

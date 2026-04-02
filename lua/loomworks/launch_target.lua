@@ -150,8 +150,38 @@ function LaunchTarget:_build_deps(deps, idx, on_complete)
         end)
 end
 
+--- Collect unique source projects from deploy steps that need building.
+--- Returns Project[] of deploy source projects not yet built.
+--- @return loomworks.Project[]
+function LaunchTarget:_deploy_source_projects()
+    local cfg = self._launch_config
+    if not cfg or not cfg.deploy or not next(cfg.deploy) then return {} end
+
+    local deploy_mod = require("loomworks.deploy")
+    local seen = {}
+    local result = {}
+
+    for _, source_val in pairs(cfg.deploy) do
+        local sources = deploy_mod.normalize_sources(source_val)
+        for _, src in ipairs(sources) do
+            if src.project and not seen[src.project] then
+                seen[src.project] = true
+                -- Find project domain object
+                for _, p in pairs(self._workspace._projects) do
+                    if p.key == src.project and p ~= self._project then
+                        result[#result + 1] = p
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return result
+end
+
 --- Execute deploy steps before launching.
---- Resolves and copies artifacts as defined in the launch config's deploy section.
+--- Builds source projects that need building first (implicit dependencies),
+--- then resolves and copies artifacts.
 --- @param on_complete fun(ok: boolean, err?: string)
 function LaunchTarget:deploy(on_complete)
     local cfg = self._launch_config
@@ -165,22 +195,38 @@ function LaunchTarget:deploy(on_complete)
         return
     end
 
-    local deploy_mod = require("loomworks.deploy")
-    local ws = self._workspace
-    local ctx = {
-        workspace = ws,
-        profile = self._profile,
-        launch_project = self._project,
-    }
+    -- Build deploy source projects that aren't built yet
+    local deploy_deps = self:_deploy_source_projects()
+    local function do_deploy()
+        local deploy_mod = require("loomworks.deploy")
+        local ws = self._workspace
+        local ctx = {
+            workspace = ws,
+            profile = self._profile,
+            launch_project = self._project,
+        }
 
-    deploy_mod.execute_deploy_steps(
-        cfg.deploy, ctx, ws._deploy_records, ws._core._deps.normalize,
-        function(ok, err)
-            if ok then
-                ws:_save_cache()
+        deploy_mod.execute_deploy_steps(
+            cfg.deploy, ctx, ws._deploy_records, ws._core._deps.normalize,
+            function(ok, err)
+                if ok then
+                    ws:_save_cache()
+                end
+                on_complete(ok, err)
+            end)
+    end
+
+    if #deploy_deps > 0 then
+        self:_build_deps(deploy_deps, 1, function(success)
+            if not success then
+                on_complete(false, "deploy dependency build failed")
+                return
             end
-            on_complete(ok, err)
+            do_deploy()
         end)
+    else
+        do_deploy()
+    end
 end
 
 --- Launch this target.
