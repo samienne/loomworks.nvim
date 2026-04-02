@@ -177,16 +177,87 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
                 .. "' has no artifact path"
         end
         source_rel_path = target.artifact
+        -- Safety: if artifact is absolute (prefix strip failed in parse_file_api),
+        -- strip the build_dir prefix here with case-insensitive comparison
+        if source_rel_path:match("^%a:") or source_rel_path:match("^/") then
+            local bd_norm = build_dir:gsub("\\", "/"):gsub("/?$", "/")
+            local art_norm = source_rel_path:gsub("\\", "/")
+            if art_norm:lower():sub(1, #bd_norm) == bd_norm:lower() then
+                source_rel_path = art_norm:sub(#bd_norm + 1)
+            end
+        end
     else
         source_rel_path = source_def.path
+        -- Expand variables in source path using source project's context.
+        -- ${variant} resolves to the module variant (e.g., CMAKE_BUILD_TYPE = "Debug"),
+        -- not the configuration name (e.g., "debug-with-addon").
+        -- ${configuration} resolves to the configuration name from the profile mapping.
+        local module_variant = source_variant
+        if source_unit._configuration and source_unit._configuration.module_config then
+            module_variant = source_unit._configuration.module_config.variant or source_variant
+        end
+        local source_ctx = {
+            build_dir = build_dir,
+            variant = module_variant,
+            configuration = source_variant,
+            project_path = source_project.path or source_project.key,
+            workspace_root = ws.root,
+        }
+        if profile._config_set_ref then
+            source_ctx.config_set = profile._config_set_ref.name
+        end
+        source_rel_path = expand.expand_string(source_rel_path, source_ctx)
+        -- If expansion produced an absolute path, use it directly
+        if source_rel_path:match("^%a:") or source_rel_path:match("^/") then
+            -- Strip build_dir prefix if present (user used ${build_dir} redundantly)
+            local bd_prefix = build_dir:gsub("\\", "/") .. "/"
+            local norm = source_rel_path:gsub("\\", "/")
+            if norm:sub(1, #bd_prefix) == bd_prefix then
+                source_rel_path = norm:sub(#bd_prefix + 1)
+            else
+                -- Truly absolute — use as source_path directly, skip build_dir concat
+                local source_path = source_rel_path
+                local dest_path_final = dest_path
+                local is_dir_abs = dest_path_final:sub(-1) == "/"
+                if not is_dir_abs then
+                    local stat = (vim.uv or vim.loop).fs_stat(dest_path_final)
+                    if stat and stat.type == "directory" then is_dir_abs = true end
+                end
+                if is_dir_abs then
+                    if dest_path_final:sub(-1) == "/" then
+                        dest_path_final = dest_path_final:sub(1, -2)
+                    end
+                    local filename = source_rel_path:match("[^/\\]+$")
+                    dest_path_final = dest_path_final .. "/" .. filename
+                end
+                local cache_mod = require("loomworks.cache")
+                return {
+                    source_path = source_path,
+                    dest_path = dest_path_final,
+                    source_build_dir_id = cache_mod.relative_build_dir(build_dir, ws.root),
+                    source_rel_path = source_rel_path,
+                }
+            end
+        end
     end
 
     local source_path = build_dir .. "/" .. source_rel_path
 
-    -- If destination ends with /, it's a directory — append source filename
-    if dest_path:sub(-1) == "/" then
+    -- If destination ends with / or is an existing directory, append source filename
+    local is_dir = dest_path:sub(-1) == "/"
+    if not is_dir then
+        local stat = (vim.uv or vim.loop).fs_stat(dest_path)
+        if stat and stat.type == "directory" then
+            is_dir = true
+        end
+    end
+    if is_dir then
+        -- Strip trailing / for consistent path joining
+        if dest_path:sub(-1) == "/" then
+            dest_path = dest_path:sub(1, -2)
+        end
         local filename = source_rel_path:match("[^/\\]+$")
-        dest_path = dest_path .. filename
+        dest_path = dest_path .. "/" .. filename
     end
 
     -- Build dir ID for freshness tracking
@@ -248,10 +319,20 @@ end
 --- @param deploy_records table<string, table> workspace deploy records (mutated on copy)
 --- @param normalize fun(p: string): string path normalizer
 --- @param on_complete fun(ok: boolean, err?: string)
+--- Execute all deploy steps for a launch target. Returns a Future.
+--- Resolves all steps first (fail-fast), then copies as needed.
+--- @param deploy_dict table<string, table|table[]> deploy definitions
+--- @param ctx table { workspace, profile, launch_project }
+--- @param deploy_records table<string, table> workspace deploy records (mutated on copy)
+--- @param normalize fun(p: string): string path normalizer
+--- @param on_complete? fun(ok: boolean, err?: string) legacy callback (deprecated)
+--- @return loomworks.Future
 function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_complete)
+    local future_mod = require("loomworks.future")
+
     if not deploy_dict or not next(deploy_dict) then
-        on_complete(true)
-        return
+        if on_complete then on_complete(true) end
+        return future_mod.resolved(true)
     end
 
     -- Phase 1: resolve all steps (expand arrays into individual steps)
@@ -261,31 +342,28 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
         for _, source_def in ipairs(sources) do
             local resolved, err = M.resolve_deploy_step(dest_template, source_def, ctx)
             if not resolved then
-                on_complete(false, "Deploy: " .. err)
-                return
+                if on_complete then on_complete(false, "Deploy: " .. err) end
+                return future_mod.rejected("Deploy: " .. err)
             end
             resolved_steps[#resolved_steps + 1] = resolved
         end
     end
 
-    -- Phase 2: check freshness and copy
+    -- Phase 2: check freshness and copy (synchronous file ops)
     local uv = vim.uv or vim.loop
     local errors = {}
 
     for _, step in ipairs(resolved_steps) do
         if M.check_freshness(step, deploy_records, normalize) then
-            -- Verify source exists
             local source_stat = uv.fs_stat(step.source_path)
             if not source_stat then
                 errors[#errors + 1] = "source file missing: " .. step.source_path
                 goto continue
             end
 
-            -- Create parent directory
             local dest_dir = vim.fn.fnamemodify(step.dest_path, ":h")
             vim.fn.mkdir(dest_dir, "p")
 
-            -- Copy file
             local ok, copy_err = uv.fs_copyfile(step.source_path, step.dest_path)
             if not ok then
                 errors[#errors + 1] = "copy failed: " .. step.source_path
@@ -293,7 +371,6 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
                 goto continue
             end
 
-            -- Update deploy record
             local source_mtime = source_stat.mtime
             if type(source_mtime) == "table" then
                 source_mtime = source_mtime.sec
@@ -309,10 +386,13 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
     end
 
     if #errors > 0 then
-        on_complete(false, table.concat(errors, "; "))
-    else
-        on_complete(true)
+        local err = table.concat(errors, "; ")
+        if on_complete then on_complete(false, err) end
+        return future_mod.rejected(err)
     end
+
+    if on_complete then on_complete(true) end
+    return future_mod.resolved(true)
 end
 
 --- Clean deploy records sourced from a given build directory.

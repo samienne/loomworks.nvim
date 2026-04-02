@@ -662,10 +662,12 @@ end
 --- Delete this profile (plan + execute, no UI confirmation).
 --- Creates a delete Operation to track progress.
 --- @param on_done? function
+--- Delete this profile. Returns a Future.
+--- @param on_done? function legacy callback (deprecated)
+--- @return loomworks.Future
 function Profile:delete(on_done)
     local plan = self:plan_deletion()
 
-    -- Collect units for the Operation
     local units = {}
     local target_states = {}
     for _, item in ipairs(plan.items) do
@@ -678,18 +680,18 @@ function Profile:delete(on_done)
         self._workspace:create_operation(self, "delete", units, target_states)
     end
 
-    self._workspace:execute_deletion(plan, { deactivate_profile = self }, on_done)
+    return self._workspace:execute_deletion(plan, { deactivate_profile = self }, on_done)
 end
 
---- Clean this profile's configs: run module clean tasks and reset build state.
---- Does NOT remove the profile itself or its build directories.
---- Creates a clean Operation to track progress.
---- @param on_done? function
+--- Clean this profile's configs. Returns a Future.
+--- @param on_done? function legacy callback (deprecated)
+--- @return loomworks.Future
 function Profile:clean(on_done)
+    local future_mod = require("loomworks.future")
     local pps = self:projects()
     if #pps == 0 then
         if on_done then on_done() end
-        return
+        return future_mod.resolved(true)
     end
 
     local items = {}
@@ -701,41 +703,40 @@ function Profile:clean(on_done)
         target_states[pp._config_unit] = "configured"
     end
 
-    -- Cancel conflicting build/configure operations
     self._workspace:cancel_conflicting_operations(units)
 
-    -- Mark units as cleaning and create Operation synchronously so that
-    -- has_pending_deletions() returns true immediately (before async work).
     for _, unit in ipairs(units) do
         unit:mark_deleting(true, "cleaning")
     end
     self._workspace:create_operation(self, "clean", units, target_states)
 
-    -- Crash-safe: set cache to "configured" before async clean tasks.
-    -- If we crash mid-clean, the state is still valid (needs rebuild, not broken).
     self._workspace:mark_cached_configs_cleaned(items)
 
-    -- Stop running tasks, then run module clean tasks
     local running = self._workspace:find_running_tasks_for_items(items)
     local task_ids = {}
     for task_id in pairs(running) do
         task_ids[#task_ids + 1] = task_id
     end
 
-    self._workspace:stop_tasks_then(task_ids, function()
-        require("loomworks.overseer").run_profile_clean(self, function()
-            for _, unit in ipairs(units) do
-                unit:mark_deleting(false)
-            end
-
-            if on_done then on_done() end
-        end)
+    local f = self._workspace:stop_tasks_then(task_ids):next(function()
+        return require("loomworks.overseer").run_profile_clean(self)
+    end):next(function()
+        for _, unit in ipairs(units) do
+            unit:mark_deleting(false)
+        end
+        return true
     end)
+
+    if on_done then
+        f:next(function() on_done() end)
+         :catch(function() on_done() end)
+    end
+    return f
 end
 
 --- Rebuild: clean then build.
 function Profile:rebuild()
-    self:clean(function()
+    self:clean():next(function()
         self:build()
     end)
 end

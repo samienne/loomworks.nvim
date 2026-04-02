@@ -244,108 +244,124 @@ end
 --- @param overseer table overseer module
 --- @param task_def table task definition with .builder and .loomworks
 --- @param on_complete? function called with boolean success when task completes
+--- Start a single overseer task. Returns a Future that resolves with
+--- boolean success when the task completes.
+--- @param overseer table overseer module
+--- @param task_def table task definition
+--- @param on_complete? function legacy callback (deprecated, use Future)
+--- @return loomworks.Future
 local function start_one_task(overseer, task_def, on_complete)
+    local future_mod = require("loomworks.future")
     local lw_meta = task_def.loomworks
     local unit = lw_meta.unit
 
-    local function do_start()
-        local build_result = task_def.builder()
-        build_result.components = build_result.components or { "default" }
-        build_result.name = task_def.name
-        local task = overseer.new_task(build_result)
+    local f = future_mod.create(function(resolve, reject, token)
+        local function do_start()
+            if token:is_cancelled() then
+                reject("cancelled")
+                return
+            end
 
-        -- Progress parser (lazy-loaded on first output)
-        local progress_parser = lw_meta.progress_tool
-            and require("loomworks.progress").get(lw_meta.progress_tool) or nil
+            local build_result = task_def.builder()
+            build_result.components = build_result.components or { "default" }
+            build_result.name = task_def.name
+            local task = overseer.new_task(build_result)
 
-        -- Build dir lock release (idempotent)
-        local lock_released = false
-        local function release_lock()
-            if lock_released or not lw_meta.build_dir then return end
-            lock_released = true
+            -- Register cancel callback to stop the overseer task
+            token:on_cancel(function()
+                if task and not task:is_complete() then
+                    task:stop()
+                end
+            end)
+
+            local progress_parser = lw_meta.progress_tool
+                and require("loomworks.progress").get(lw_meta.progress_tool) or nil
+
+            local lock_released = false
+            local function release_lock()
+                if lock_released or not lw_meta.build_dir then return end
+                lock_released = true
+                local ws = unit._workspace
+                if ws then
+                    local dir = ws._core._deps.normalize(lw_meta.build_dir)
+                    ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                end
+            end
+
+            local function emit(event, data)
+                unit._workspace._core._deps.events.emit(event, data)
+            end
+
+            task:subscribe("on_start", function()
+                if lw_meta.build_dir then
+                    unit.build_dir_value = lw_meta.build_dir
+                    unit._workspace:_save_cache()
+                end
+                unit:register_task(task.id, lw_meta.action)
+                emit("task_started", { task_id = task.id, unit = unit, action = lw_meta.action })
+            end)
+
+            if progress_parser then
+                task:subscribe("on_output_lines", function(_, lines)
+                    for i = #lines, 1, -1 do
+                        local update = progress_parser(lines[i])
+                        if update then
+                            unit:update_progress(task.id, update)
+                            emit("task_progress", { task_id = task.id, unit = unit, progress = update })
+                            return
+                        end
+                    end
+                end)
+            end
+
+            task:subscribe("on_complete", function(_, status)
+                if status ~= "CANCELED" then
+                    unit._workspace:record_task_result({
+                        unit = unit,
+                        action = lw_meta.action,
+                        variant = lw_meta.variant,
+                        tool = lw_meta.tool,
+                        build_dir = lw_meta.build_dir,
+                        cmake = lw_meta.cmake,
+                        success = status == "SUCCESS",
+                    })
+                end
+                unit:unregister_task(task.id)
+                emit("task_stopped", { task_id = task.id, unit = unit })
+                release_lock()
+                if status == "SUCCESS" then resolve(true)
+                else reject(lw_meta.action .. " failed") end
+            end)
+
+            task:subscribe("on_dispose", function()
+                unit:unregister_task(task.id)
+                emit("task_stopped", { task_id = task.id, unit = unit })
+                release_lock()
+            end)
+
+            task:start()
+        end
+
+        -- Acquire build dir lock if task has a build directory
+        if lw_meta.build_dir then
             local ws = unit._workspace
             if ws then
                 local dir = ws._core._deps.normalize(lw_meta.build_dir)
-                ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                ws:acquire_build_dir_lock(dir, lock_type_for_action(lw_meta.action), do_start)
+                return
             end
         end
 
-        local function emit(event, data)
-            unit._workspace._core._deps.events.emit(event, data)
-        end
+        do_start()
+    end)
 
-        -- Lifecycle subscriptions — ConfigUnit captured directly, no key lookups
-        task:subscribe("on_start", function()
-            -- Crash-safe: persist build_dir to cache before the task creates files
-            -- on disk. If we crash mid-configure, the cache still knows about the dir.
-            if lw_meta.build_dir then
-                unit.build_dir_value = lw_meta.build_dir
-                unit._workspace:_save_cache()
-            end
-            unit:register_task(task.id, lw_meta.action)
-            emit("task_started", { task_id = task.id, unit = unit, action = lw_meta.action })
-        end)
-
-        if progress_parser then
-            task:subscribe("on_output_lines", function(_, lines)
-                for i = #lines, 1, -1 do
-                    local update = progress_parser(lines[i])
-                    if update then
-                        unit:update_progress(task.id, update)
-                        emit("task_progress", { task_id = task.id, unit = unit, progress = update })
-                        return
-                    end
-                end
-            end)
-        end
-
-        task:subscribe("on_complete", function(_, status)
-            -- Record result first (updates cache state), then unregister.
-            -- This order ensures that when unregister fires ConfigUnit
-            -- listeners, the cache already reflects the final state.
-            if status ~= "CANCELED" then
-                unit._workspace:record_task_result({
-                    unit = unit,
-                    action = lw_meta.action,
-                    variant = lw_meta.variant,
-                    tool = lw_meta.tool,
-                    build_dir = lw_meta.build_dir,
-                    cmake = lw_meta.cmake,
-                    success = status == "SUCCESS",
-                })
-            end
-            unit:unregister_task(task.id)
-            emit("task_stopped", { task_id = task.id, unit = unit })
-            release_lock()
-        end)
-
-        task:subscribe("on_dispose", function()
-            unit:unregister_task(task.id)
-            emit("task_stopped", { task_id = task.id, unit = unit })
-            release_lock()
-        end)
-
-        if on_complete then
-            task:subscribe("on_complete", function(_, status)
-                on_complete(status == "SUCCESS")
-            end)
-        end
-
-        task:start()
+    -- Legacy callback support
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
     end
 
-    -- Acquire build dir lock if task has a build directory
-    if lw_meta.build_dir then
-        local ws = unit._workspace
-        if ws then
-            local dir = ws._core._deps.normalize(lw_meta.build_dir)
-            ws:acquire_build_dir_lock(dir, lock_type_for_action(lw_meta.action), do_start)
-            return
-        end
-    end
-
-    -- No build dir or no workspace — start immediately
-    do_start()
+    return f
 end
 
 --- Check whether a task should be launched, skipped, or deferred based on ConfigUnit state.
@@ -376,14 +392,15 @@ local function check_task_readiness(task_def)
 end
 
 --- Launch a list of task definitions via overseer.
+--- Returns a Future that resolves with boolean (all succeeded).
 --- Respects ConfigUnit state: skips already-running tasks, defers build tasks
 --- that are waiting for an in-progress configure to finish.
 --- @param overseer table overseer module
 --- @param task_defs table[] task definitions with .builder and .loomworks
---- @param on_all_done? function called when all tasks complete, with boolean all_succeeded
---- @return number launched count of tasks started or deferred
+--- @param on_all_done? function legacy callback (deprecated, use Future)
+--- @return loomworks.Future, number launched
 local function launch_tasks(overseer, task_defs, on_all_done)
-    local lw = require("loomworks")
+    local future_mod = require("loomworks.future")
 
     -- Classify each task
     local to_launch, to_defer = {}, {}
@@ -402,7 +419,6 @@ local function launch_tasks(overseer, task_defs, on_all_done)
                 vim.log.levels.WARN
             )
         end
-        -- "skip" and "block" tasks are dropped
         ::next::
     end
 
@@ -411,43 +427,55 @@ local function launch_tasks(overseer, task_defs, on_all_done)
         if on_all_done then
             vim.schedule(function() on_all_done(true) end)
         end
-        return 0
+        return future_mod.resolved(true), 0
     end
 
-    -- Shared completion tracking across immediate and deferred tasks
-    local remaining = total
-    local all_ok = true
+    -- Collect Futures for all tasks (immediate + deferred)
+    local task_futures = {}
 
-    local function on_one_done(success)
-        if not success then all_ok = false end
-        remaining = remaining - 1
-        if remaining == 0 and on_all_done then
-            vim.schedule(function() on_all_done(all_ok) end)
-        end
-    end
-
-    -- Launch ready tasks immediately
     for _, task_def in ipairs(to_launch) do
-        start_one_task(overseer, task_def, on_all_done and on_one_done or nil)
+        task_futures[#task_futures + 1] = start_one_task(overseer, task_def)
     end
 
-    -- Defer build tasks waiting for an in-progress configure
     for _, task_def in ipairs(to_defer) do
+        local deferred_f = future_mod.Future.new()
+        task_futures[#task_futures + 1] = deferred_f
+
         local unit = task_def.loomworks.unit
         local unsub
         unsub = unit:on_state_change(function(u)
             local new_state = u:state()
-            if new_state == "configuring" then return end -- still going
+            if new_state == "configuring" then return end
             unsub()
             if new_state == "configure_failed" then
-                on_one_done(false)
+                deferred_f:_reject("configure failed")
                 return
             end
-            start_one_task(overseer, task_def, on_all_done and on_one_done or nil)
+            -- Start the deferred task, chain its Future to ours
+            start_one_task(overseer, task_def):next(
+                function(...) deferred_f:_resolve(...) end,
+                function(err) deferred_f:_reject(err) end
+            )
         end)
     end
 
-    return total
+    -- Combine all task Futures — resolve when all complete
+    local result_f = future_mod.when_all_settled(task_futures):next(function(results)
+        local all_ok = true
+        for _, r in ipairs(results) do
+            if not r.ok then all_ok = false; break end
+        end
+        if all_ok then return true
+        else error("one or more tasks failed") end
+    end)
+
+    -- Legacy callback support
+    if on_all_done then
+        result_f:next(function() on_all_done(true) end)
+               :catch(function() on_all_done(false) end)
+    end
+
+    return result_f, total
 end
 
 --- Filter task definitions to only those that will actually launch or defer.
@@ -496,137 +524,189 @@ end
 --- @param unit loomworks.ConfigUnit
 --- @param action string "configure" or "build"
 --- @param on_complete? fun(success: boolean) called when all tasks finish
+--- Run a configure or build action on a single ConfigUnit.
+--- Returns a Future that resolves on success, rejects on failure.
+--- @param unit loomworks.ConfigUnit
+--- @param action "configure"|"build"
+--- @param on_complete? function legacy callback (deprecated)
+--- @return loomworks.Future
 function M.run_configuration_action(unit, action, on_complete)
+    local future_mod = require("loomworks.future")
+
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
         if on_complete then on_complete(false) end
-        return
+        return future_mod.rejected("overseer.nvim not found")
     end
 
     local loomworks = require("loomworks")
+    local f = future_mod.Future.new()
 
     local function do_action()
-        -- Pin config only if not already referenced by a materialized profile
         if #unit:referencing_profiles() == 0 then
             unit:materialize_pinned()
         end
 
         local all_tasks = collect_configuration_tasks(unit)
         if not all_tasks then
-            if on_complete then on_complete(false) end
+            f:_reject("no tasks for " .. action)
             return
         end
 
         if action == "configure" then
-            launch_tasks(overseer, all_tasks.configure, on_complete)
+            launch_tasks(overseer, all_tasks.configure):next(
+                function() f:_resolve(true) end,
+                function(err) f:_reject(err) end
+            )
             return
         end
 
         if action == "build" then
-            -- Check if any projects need configuring first
             local needs_configure = filter_unconfigured_tasks(all_tasks)
             if #needs_configure > 0 then
-                launch_tasks(overseer, needs_configure, function(all_succeeded)
-                    if not all_succeeded then
+                launch_tasks(overseer, needs_configure):next(function()
+                    return launch_tasks(overseer, all_tasks.build)
+                end):next(
+                    function() f:_resolve(true) end,
+                    function(err)
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
-                        if on_complete then on_complete(false) end
-                        return
+                        f:_reject(err)
                     end
-                    launch_tasks(overseer, all_tasks.build, on_complete)
-                end)
+                )
             else
-                launch_tasks(overseer, all_tasks.build, on_complete)
+                launch_tasks(overseer, all_tasks.build):next(
+                    function() f:_resolve(true) end,
+                    function(err) f:_reject(err) end
+                )
             end
             return
         end
 
         vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
-        if on_complete then on_complete(false) end
+        f:_reject("unknown action: " .. action)
     end
 
-    -- Wait for pending deletions before starting
     if loomworks.has_pending_deletions() then
         vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
         loomworks.after_deletions(do_action)
     else
         do_action()
     end
+
+    -- Legacy callback support
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
+    end
+
+    return f
 end
 
---- Run clean tasks for a single configuration.
---- Launches module clean_tasks via overseer (no task_tracker — clean tasks
---- don't update ConfigUnit state; the caller handles cache reset).
+--- Run clean tasks for a single configuration. Returns a Future.
 --- @param unit loomworks.ConfigUnit
---- @param on_complete? fun(success: boolean)
+--- @param on_complete? fun(success: boolean) legacy callback (deprecated)
+--- @return loomworks.Future
 function M.run_configuration_clean(unit, on_complete)
+    local future_mod = require("loomworks.future")
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
         if on_complete then on_complete(false) end
-        return
+        return future_mod.rejected("overseer.nvim not found")
     end
 
     local tasks = collect_configuration_clean_tasks(unit)
     if not tasks or #tasks == 0 then
-        -- No clean tasks for this module — treat as success
         if on_complete then on_complete(true) end
-        return
+        return future_mod.resolved(true)
     end
 
-    local remaining = #tasks
-    local all_ok = true
-
+    local task_futures = {}
     for _, task_def in ipairs(tasks) do
-        local build_result = task_def.builder()
-        build_result.components = build_result.components or { "default" }
-        build_result.name = task_def.name
-        local task = overseer.new_task(build_result)
-        task:subscribe("on_complete", function(_, status)
-            if status ~= "SUCCESS" then all_ok = false end
-            remaining = remaining - 1
-            if remaining == 0 and on_complete then
-                on_complete(all_ok)
-            end
+        local tf = future_mod.create(function(resolve, reject, token)
+            local build_result = task_def.builder()
+            build_result.components = build_result.components or { "default" }
+            build_result.name = task_def.name
+            local task = overseer.new_task(build_result)
+            token:on_cancel(function()
+                if task and not task:is_complete() then task:stop() end
+            end)
+            task:subscribe("on_complete", function(_, status)
+                if status == "SUCCESS" then resolve(true)
+                else reject("clean task failed") end
+            end)
+            task:start()
         end)
-        task:start()
+        task_futures[#task_futures + 1] = tf
     end
+
+    local f = future_mod.when_all_settled(task_futures):next(function(results)
+        local all_ok = true
+        for _, r in ipairs(results) do
+            if not r.ok then all_ok = false; break end
+        end
+        if all_ok then return true else error("clean failed") end
+    end)
+
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
+    end
+    return f
 end
 
---- Run clean tasks for all projects in a profile.
+--- Run clean tasks for all projects in a profile. Returns a Future.
 --- @param profile loomworks.Profile
---- @param on_complete? fun(success: boolean)
+--- @param on_complete? fun(success: boolean) legacy callback (deprecated)
+--- @return loomworks.Future
 function M.run_profile_clean(profile, on_complete)
+    local future_mod = require("loomworks.future")
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
         if on_complete then on_complete(false) end
-        return
+        return future_mod.rejected("overseer.nvim not found")
     end
 
     local tasks = collect_profile_clean_tasks(profile)
     if not tasks or #tasks == 0 then
         if on_complete then on_complete(true) end
-        return
+        return future_mod.resolved(true)
     end
 
-    local remaining = #tasks
-    local all_ok = true
-
+    local task_futures = {}
     for _, task_def in ipairs(tasks) do
-        local build_result = task_def.builder()
-        build_result.components = build_result.components or { "default" }
-        build_result.name = task_def.name
-        local task = overseer.new_task(build_result)
-        task:subscribe("on_complete", function(_, status)
-            if status ~= "SUCCESS" then all_ok = false end
-            remaining = remaining - 1
-            if remaining == 0 and on_complete then
-                on_complete(all_ok)
-            end
+        local tf = future_mod.create(function(resolve, reject, token)
+            local build_result = task_def.builder()
+            build_result.components = build_result.components or { "default" }
+            build_result.name = task_def.name
+            local task = overseer.new_task(build_result)
+            token:on_cancel(function()
+                if task and not task:is_complete() then task:stop() end
+            end)
+            task:subscribe("on_complete", function(_, status)
+                if status == "SUCCESS" then resolve(true)
+                else reject("clean task failed") end
+            end)
+            task:start()
         end)
-        task:start()
+        task_futures[#task_futures + 1] = tf
     end
+
+    local f = future_mod.when_all_settled(task_futures):next(function(results)
+        local all_ok = true
+        for _, r in ipairs(results) do
+            if not r.ok then all_ok = false; break end
+        end
+        if all_ok then return true else error("clean failed") end
+    end)
+
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
+    end
+    return f
 end
 
 --- Launch a run/launch task via overseer.
@@ -666,24 +746,37 @@ end
 --- @param task_def table task definition with .builder and .loomworks
 --- @param unit loomworks.ConfigUnit the configuration unit being built
 --- @param on_complete? function called with boolean success
+--- Launch a single task definition via overseer. Returns a Future.
+--- @param task_def table task definition
+--- @param unit loomworks.ConfigUnit
+--- @param on_complete? function legacy callback (deprecated)
+--- @return loomworks.Future
 function M.launch_single_task(task_def, unit, on_complete)
+    local future_mod = require("loomworks.future")
+
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
-        return
+        if on_complete then vim.schedule(function() on_complete(false) end) end
+        return future_mod.rejected("overseer.nvim not found")
     end
 
-    -- Check ConfigUnit state directly (not via check_task_readiness which expects task_def)
     local state = unit:state()
-    if state == "unknown" then return end
-    if state == "building" then return end
+    if state == "unknown" or state == "building" then
+        if on_complete then vim.schedule(function() on_complete(false) end) end
+        return future_mod.rejected("unit in " .. state .. " state")
+    end
 
-    -- Ensure lw_meta has unit reference for start_one_task subscriptions
     if task_def.loomworks then
         task_def.loomworks.unit = unit
     end
 
-    start_one_task(overseer, task_def, on_complete)
+    local f = start_one_task(overseer, task_def)
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
+    end
+    return f
 end
 
 --- Collect ConfigUnits and their target states from task definitions.
@@ -706,47 +799,50 @@ local function collect_units_from_tasks(task_defs, target_state)
     return units, target_states
 end
 
---- Run all tasks of a given action for a profile.
---- The profile must already be materialized (caller ensures this).
---- If building and some projects are unconfigured, configures them first.
+--- Run all tasks of a given action for a profile. Returns a Future.
 --- Creates an Operation to track progress and completion.
 --- @param profile loomworks.Profile
 --- @param action string "configure" or "build"
+--- @return loomworks.Future
 function M.run_profile_action(profile, action)
+    local future_mod = require("loomworks.future")
+
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
-        return
+        return future_mod.rejected("overseer.nvim not found")
     end
 
     local loomworks = require("loomworks")
+    local f = future_mod.Future.new()
 
     local function do_action()
-        -- Re-collect tasks after potential deletion completed (cache may have changed)
         local all_tasks = collect_profile_tasks(profile)
-        if not all_tasks then return end
+        if not all_tasks then
+            f:_reject("no tasks")
+            return
+        end
 
         if action == "configure" then
-            -- Filter to tasks that will actually launch (skip already-configured)
             local launchable = filter_launchable_tasks(all_tasks.configure)
             local units, target_states = collect_units_from_tasks(launchable, "configured")
             if #units > 0 then
                 loomworks.create_operation(profile, "configure", units, target_states)
             end
-            launch_tasks(overseer, all_tasks.configure)
+            launch_tasks(overseer, all_tasks.configure):next(
+                function() f:_resolve(true) end,
+                function(err) f:_reject(err) end
+            )
             return
         end
 
         if action == "build" then
             local needs_configure = filter_unconfigured_tasks(all_tasks)
-
-            -- Filter build tasks to those that will actually launch
             local launchable_builds = filter_launchable_tasks(all_tasks.build)
             local units, target_states = collect_units_from_tasks(launchable_builds, "built")
 
             if #needs_configure > 0 then
-                -- Also include configure units that aren't already in the build set
-                local configure_units, configure_targets = collect_units_from_tasks(needs_configure, "built")
+                local configure_units = collect_units_from_tasks(needs_configure, "built")
                 for _, u in ipairs(configure_units) do
                     if not target_states[u] then
                         units[#units + 1] = u
@@ -759,37 +855,42 @@ function M.run_profile_action(profile, action)
                     op = loomworks.create_operation(profile, "configure+build", units, target_states)
                 end
 
-                launch_tasks(overseer, needs_configure, function(all_succeeded)
-                    if not all_succeeded then
+                launch_tasks(overseer, needs_configure):next(function()
+                    return launch_tasks(overseer, all_tasks.build)
+                end):next(
+                    function() f:_resolve(true) end,
+                    function(err)
                         vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
-                        -- Cancel the operation — build won't happen, so units
-                        -- targeting "built" would be stuck forever.
                         if op and not op.completed then
                             op:cancel("configure failed")
                         end
-                        return
+                        f:_reject(err)
                     end
-                    launch_tasks(overseer, all_tasks.build)
-                end)
+                )
             else
                 if #units > 0 then
                     loomworks.create_operation(profile, "build", units, target_states)
                 end
-                launch_tasks(overseer, all_tasks.build)
+                launch_tasks(overseer, all_tasks.build):next(
+                    function() f:_resolve(true) end,
+                    function(err) f:_reject(err) end
+                )
             end
             return
         end
 
         vim.notify("loomworks: unknown action '" .. action .. "'", vim.log.levels.ERROR)
+        f:_reject("unknown action: " .. action)
     end
 
-    -- Wait for pending deletions before starting
     if loomworks.has_pending_deletions() then
         vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
         loomworks.after_deletions(do_action)
     else
         do_action()
     end
+
+    return f
 end
 
 return M

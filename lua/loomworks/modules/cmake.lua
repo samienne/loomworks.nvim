@@ -1113,7 +1113,11 @@ function M.parse_file_api(build_dir, config_name)
                 -- cmake may emit absolute or relative paths; normalize to relative
                 local normalized = raw:gsub("\\", "/")
                 local build_prefix = build_dir:gsub("\\", "/"):gsub("/?$", "/")
-                if normalized:sub(1, #build_prefix) == build_prefix then
+                -- Case-insensitive comparison on Windows (cmake may emit
+                -- different casing than the build_dir we computed)
+                local norm_lower = normalized:lower()
+                local prefix_lower = build_prefix:lower()
+                if norm_lower:sub(1, #prefix_lower) == prefix_lower then
                     artifact = normalized:sub(#build_prefix + 1)
                 else
                     artifact = normalized

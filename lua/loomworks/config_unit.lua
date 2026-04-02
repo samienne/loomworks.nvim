@@ -531,10 +531,12 @@ end
 --- Delete this config (plan + execute, no UI confirmation).
 --- Creates a delete Operation to track progress.
 --- @param on_done? function
+--- Delete this config unit. Returns a Future.
+--- @param on_done? function legacy callback (deprecated)
+--- @return loomworks.Future
 function ConfigUnit:delete(on_done)
     local plan = self:plan_deletion()
 
-    -- Create Operation (profile is optional — use first referencing profile if available)
     local units = {}
     local target_states = {}
     for _, item in ipairs(plan.items) do
@@ -549,44 +551,45 @@ function ConfigUnit:delete(on_done)
         self._workspace:create_operation(profile, "delete", units, target_states)
     end
 
-    self._workspace:execute_deletion(plan, nil, on_done)
+    return self._workspace:execute_deletion(plan, nil, on_done)
 end
 
 --- Clean this config: run module clean tasks and reset build state.
---- Does NOT remove the build directory.
---- Creates a clean Operation to track progress.
---- @param on_done? function
+--- Returns a Future.
+--- @param on_done? function legacy callback (deprecated)
+--- @return loomworks.Future
 function ConfigUnit:clean(on_done)
     local ws = self._workspace
-
     local items = { { unit = self } }
 
-    -- Cancel conflicting operations
     ws:cancel_conflicting_operations({ self })
 
-    -- Mark as cleaning and create Operation synchronously so that
-    -- has_pending_deletions() returns true immediately.
     self:mark_deleting(true, "cleaning")
     local refs = self:referencing_profiles()
     local profile = refs[1] or nil
     ws:create_operation(profile, "clean", { self }, { [self] = "configured" })
 
-    -- Crash-safe: set cache to "configured" before async clean tasks.
     ws:mark_cached_configs_cleaned(items)
 
-    -- Stop running tasks, then run module clean tasks
     local running = ws:find_running_tasks_for_items(items)
     local task_ids = {}
     for task_id in pairs(running) do
         task_ids[#task_ids + 1] = task_id
     end
 
-    ws:stop_tasks_then(task_ids, function()
-        require("loomworks.overseer").run_configuration_clean(self, function()
-            self:mark_deleting(false)
-            if on_done then on_done() end
-        end)
+    local unit = self
+    local f = ws:stop_tasks_then(task_ids):next(function()
+        return require("loomworks.overseer").run_configuration_clean(unit)
+    end):next(function()
+        unit:mark_deleting(false)
+        return true
     end)
+
+    if on_done then
+        f:next(function() on_done() end)
+         :catch(function() on_done() end)
+    end
+    return f
 end
 
 --- Get build options by delegating to the module.

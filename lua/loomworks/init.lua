@@ -486,17 +486,22 @@ local _active_launch = nil
 --- Launch the active profile's default target.
 --- Builds first (if buildable), then launches.
 --- Shows picker if no default set or target is stale.
---- Deploy then launch a target. Runs deploy steps first; on failure,
---- notifies the user and does not launch.
+--- Build, deploy, and launch a target using Future chains.
 --- @param target loomworks.LaunchTarget
-local function deploy_and_launch(target)
-    target:deploy(function(ok, err)
-        if not ok then
-            vim.notify("loomworks: deploy failed: " .. (err or "unknown"), vim.log.levels.ERROR)
-            return
-        end
-        target:launch()
-    end)
+local function build_deploy_launch(target)
+    local chain
+    if target:is_buildable() then
+        chain = target:build()
+    else
+        chain = require("loomworks.future").resolved(true)
+    end
+
+    chain
+        :next(function() return target:deploy() end)
+        :next(function() target:launch() end)
+        :catch(function(err)
+            vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
+        end)
 end
 
 function M.launch_target()
@@ -510,18 +515,7 @@ function M.launch_target()
 
     if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
         _active_launch = launch_target
-        if launch_target:is_buildable() then
-            -- Build first, then deploy and launch on success
-            launch_target:build(function(success)
-                if success then
-                    deploy_and_launch(launch_target)
-                else
-                    vim.notify("loomworks: build failed, not launching", vim.log.levels.ERROR)
-                end
-            end)
-        else
-            deploy_and_launch(launch_target)
-        end
+        build_deploy_launch(launch_target)
         return
     end
 
@@ -537,11 +531,10 @@ function M.launch_target()
         if project and target_id then
             profile:set_default_target(project, target_id)
         end
-        -- Re-resolve and launch
         local new_target = profile:default_target()
         if new_target and new_target:is_launchable() then
             _active_launch = new_target
-            deploy_and_launch(new_target)
+            build_deploy_launch(new_target)
         end
     end)
 end
