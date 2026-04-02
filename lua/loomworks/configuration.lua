@@ -96,10 +96,11 @@ end
 
 --- Serialize the user-override portion for loomworks.json.
 --- Returns the entry that would appear under type_config.configurations[name].
---- Returns nil for non-user configs (defaults, presets, cache-only stubs).
+--- Returns nil for configs with no user customization. Includes default
+--- configs that have been extended with options, variables, inherits, etc.
 --- @return table|nil
 function Configuration:serialize_user_override()
-    if not self.is_user then return nil end
+    if self.from_preset then return nil end
     local entry = {}
     -- module_config holds module-specific fields (cmake: variant, toolchain, generator)
     -- excluding generic fields (is_default, is_user, from_preset, role, inherits, options)
@@ -113,6 +114,8 @@ function Configuration:serialize_user_override()
     if self.options and next(self.options) then entry.options = self.options end
     if self.variables and next(self.variables) then entry.variables = self.variables end
     if self.role then entry.role = self.role end
+    -- Only emit if there's something beyond the bare default
+    if not next(entry) then return nil end
     return entry
 end
 
