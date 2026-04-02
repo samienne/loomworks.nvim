@@ -617,7 +617,28 @@ return function(tree, ctx)
                             if cdata.generator then
                                 tree:leaf("Generator: " .. cdata.generator, "Comment")
                             end
-                            if cdata.options and next(cdata.options) then
+                            -- Show all resolved options (own + inherited) with source
+                            local mod_impl = proj._module and proj._module.impl or nil
+                            if mod_impl and mod_impl.resolve_options_with_sources then
+                                local tc = proj:_type_config_for_module()
+                                local all_opts = mod_impl.resolve_options_with_sources(
+                                    tc, proj.configurations or {}, cname)
+                                if next(all_opts) then
+                                    local opt_keys = {}
+                                    for k in pairs(all_opts) do opt_keys[#opt_keys + 1] = k end
+                                    table.sort(opt_keys)
+                                    local own = cdata.options or {}
+                                    for _, k in ipairs(opt_keys) do
+                                        local info = all_opts[k]
+                                        if own[k] then
+                                            tree:leaf(k .. "=" .. info.value, "Comment")
+                                        else
+                                            tree:leaf(k .. "=" .. info.value
+                                                .. "  (" .. info.source .. ")", "NonText")
+                                        end
+                                    end
+                                end
+                            elseif cdata.options and next(cdata.options) then
                                 local opt_keys = {}
                                 for k in pairs(cdata.options) do opt_keys[#opt_keys + 1] = k end
                                 table.sort(opt_keys)

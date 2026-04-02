@@ -4361,3 +4361,111 @@ describe("operation completion on failure", function()
         assert.is_true(completed, "callback should fire")
     end)
 end)
+
+-- =========================================================================
+-- Inherited options through abstract mixins
+-- =========================================================================
+
+describe("inherited options through abstract mixins", function()
+    it("options from abstract mixin flow through to child config", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["enable-test"] = {
+                                options = { TEST_ENABLE = "on" },
+                            },
+                            ["Debug-with-tests"] = {
+                                inherits = { "Debug", "enable-test" },
+                            },
+                        },
+                    },
+                },
+            },
+            configuration_sets = {
+                ["Debug-with-tests"] = { App = "Debug-with-tests" },
+            },
+        }, {
+            active_profile = "Debug-with-tests",
+            pinned_profiles = {
+                ["Debug-with-tests"] = { configuration_set = "Debug-with-tests" },
+            },
+        })
+
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app)
+
+        -- The configurations dict should have the full resolved data
+        local child = app.configurations["Debug-with-tests"]
+        assert.is_not_nil(child, "Debug-with-tests should be in configurations")
+        assert.is_not_nil(child.inherits, "should have inherits")
+
+        local mixin = app.configurations["enable-test"]
+        assert.is_not_nil(mixin, "enable-test should be in configurations")
+        assert.is_not_nil(mixin.options, "enable-test should have options")
+        assert.equals("on", mixin.options.TEST_ENABLE)
+
+        -- resolve_options should find the inherited option
+        local cmake = require("loomworks.modules.cmake")
+        local type_config = app:_type_config_for_module()
+        local resolved = cmake.resolve_options(
+            type_config, app.configurations, "Debug-with-tests")
+        assert.equals("on", resolved.TEST_ENABLE,
+            "inherited option from mixin should flow through")
+    end)
+
+    it("child config's own options override mixin options", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["enable-test"] = {
+                                options = { TEST_ENABLE = "on", TEST_VERBOSE = "off" },
+                            },
+                            ["Debug-verbose-tests"] = {
+                                inherits = { "Debug", "enable-test" },
+                                options = { TEST_VERBOSE = "on" },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local cmake = require("loomworks.modules.cmake")
+        local type_config = app:_type_config_for_module()
+        local resolved = cmake.resolve_options(
+            type_config, app.configurations, "Debug-verbose-tests")
+        assert.equals("on", resolved.TEST_ENABLE, "inherited from mixin")
+        assert.equals("on", resolved.TEST_VERBOSE, "overridden by child")
+    end)
+
+    it("serialization round-trip preserves abstract mixin options", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["enable-test"] = {
+                                options = { TEST_ENABLE = "on" },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+
+        -- Serialize and check that enable-test's options survive
+        local config = ws:_serialize_config()
+        local app_cfg = config.projects.App.cmake
+        assert.is_not_nil(app_cfg.configurations, "should have configurations")
+        assert.is_not_nil(app_cfg.configurations["enable-test"],
+            "enable-test should be serialized")
+        assert.equals("on",
+            app_cfg.configurations["enable-test"].options.TEST_ENABLE,
+            "options should survive serialization")
+    end)
+end)
