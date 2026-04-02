@@ -218,9 +218,17 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
                 -- Truly absolute — use as source_path directly, skip build_dir concat
                 local source_path = source_rel_path
                 local dest_path_final = dest_path
-                if dest_path_final:sub(-1) == "/" then
+                local is_dir_abs = dest_path_final:sub(-1) == "/"
+                if not is_dir_abs then
+                    local stat = (vim.uv or vim.loop).fs_stat(dest_path_final)
+                    if stat and stat.type == "directory" then is_dir_abs = true end
+                end
+                if is_dir_abs then
+                    if dest_path_final:sub(-1) == "/" then
+                        dest_path_final = dest_path_final:sub(1, -2)
+                    end
                     local filename = source_rel_path:match("[^/\\]+$")
-                    dest_path_final = dest_path_final .. filename
+                    dest_path_final = dest_path_final .. "/" .. filename
                 end
                 local cache_mod = require("loomworks.cache")
                 return {
@@ -235,10 +243,21 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
 
     local source_path = build_dir .. "/" .. source_rel_path
 
-    -- If destination ends with /, it's a directory — append source filename
-    if dest_path:sub(-1) == "/" then
+    -- If destination ends with / or is an existing directory, append source filename
+    local is_dir = dest_path:sub(-1) == "/"
+    if not is_dir then
+        local stat = (vim.uv or vim.loop).fs_stat(dest_path)
+        if stat and stat.type == "directory" then
+            is_dir = true
+        end
+    end
+    if is_dir then
+        -- Strip trailing / for consistent path joining
+        if dest_path:sub(-1) == "/" then
+            dest_path = dest_path:sub(1, -2)
+        end
         local filename = source_rel_path:match("[^/\\]+$")
-        dest_path = dest_path .. filename
+        dest_path = dest_path .. "/" .. filename
     end
 
     -- Build dir ID for freshness tracking
