@@ -122,12 +122,21 @@ function Operation:_check_unit(unit)
     local state_rank = STATE_RANK[state]
     local target_rank = STATE_RANK[target]
     if state_rank and target_rank and state_rank >= target_rank then
+        -- Target reached (or surpassed — "building" satisfies "configured")
         self._unit_done[unit] = true
         self._unit_ok[unit] = true
     elseif state == "configure_failed" or state == "build_failed" then
         self._unit_done[unit] = true
         self._unit_ok[unit] = false
+    elseif state == "unconfigured" or state == "unknown" then
+        -- Unit reverted to a non-progress state without reaching the target.
+        -- This happens when a task is canceled, disposed, or record_task_result
+        -- is skipped. Treat as failure so the Operation can complete.
+        self._unit_done[unit] = true
+        self._unit_ok[unit] = false
     end
+    -- "configuring" and "building" are in-progress — do nothing, wait for
+    -- the next state transition.
 end
 
 --- Handle a ConfigUnit state change.
