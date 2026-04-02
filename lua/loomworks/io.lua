@@ -208,16 +208,20 @@ end
 --- Uses rm -rf on Unix, cmd /c rd /s /q on Windows.
 --- @param dir string
 --- @param callback fun(ok: boolean, err: string|nil)
+--- Remove directory/file asynchronously. Returns a Future.
+--- @param dir string
+--- @param callback? fun(ok: boolean, err: string|nil) legacy callback (deprecated)
+--- @return loomworks.Future
 function M.rm_rf_async(dir, callback)
+    local future_mod = require("loomworks.future")
     local stat = uv.fs_stat(dir)
     if not stat then
-        callback(true, nil)
-        return
+        if callback then callback(true, nil) end
+        return future_mod.resolved(true)
     end
 
     local cmd
     if vim.fn.has("win32") == 1 then
-        -- Normalize to backslashes for Windows rd command
         local win_dir = dir:gsub("/", "\\")
         if stat.type == "directory" then
             cmd = { "cmd", "/c", "rd", "/s", "/q", win_dir }
@@ -228,67 +232,90 @@ function M.rm_rf_async(dir, callback)
         cmd = { "rm", "-rf", dir }
     end
 
-    vim.system(cmd, { text = true }, function(result)
-        vim.schedule(function()
-            if result.code == 0 then
-                callback(true, nil)
-            else
-                local err = result.stderr or ""
-                if err == "" then err = "exit code " .. result.code end
-                callback(false, err)
-            end
-        end)
-    end)
-end
-
---- Read a file asynchronously using libuv callbacks.
---- @param path string
---- @param callback fun(content: string|nil, err: string|nil)
-function M.read_file_async(path, callback)
-    uv.fs_open(path, "r", 438, function(err, fd)
-        if not fd then
-            callback(nil, err)
-            return
-        end
-        uv.fs_fstat(fd, function(stat_err, stat)
-            if not stat then
-                uv.fs_close(fd)
-                callback(nil, stat_err)
-                return
-            end
-            uv.fs_read(fd, stat.size, 0, function(read_err, data)
-                uv.fs_close(fd)
-                if not data then
-                    callback(nil, read_err)
-                    return
+    local f = future_mod.create(function(resolve, reject)
+        vim.system(cmd, { text = true }, function(result)
+            vim.schedule(function()
+                if result.code == 0 then
+                    resolve(true)
+                else
+                    local err = result.stderr or ""
+                    if err == "" then err = "exit code " .. result.code end
+                    reject(err)
                 end
-                callback(data, nil)
             end)
         end)
     end)
+
+    if callback then
+        f:next(function() callback(true, nil) end)
+         :catch(function(err) callback(false, err) end)
+    end
+    return f
 end
 
---- Read multiple files in parallel asynchronously.
---- Calls callback(results) when all complete; results is table<string, string|nil> keyed by path.
+--- Read a file asynchronously. Returns a Future.
+--- @param path string
+--- @param callback? fun(content: string|nil, err: string|nil) legacy callback (deprecated)
+--- @return loomworks.Future
+function M.read_file_async(path, callback)
+    local future_mod = require("loomworks.future")
+    local f = future_mod.create(function(resolve, reject)
+        uv.fs_open(path, "r", 438, function(err, fd)
+            if not fd then reject(err or "open failed"); return end
+            uv.fs_fstat(fd, function(stat_err, file_stat)
+                if not file_stat then
+                    uv.fs_close(fd)
+                    reject(stat_err or "stat failed")
+                    return
+                end
+                uv.fs_read(fd, file_stat.size, 0, function(read_err, data)
+                    uv.fs_close(fd)
+                    if not data then reject(read_err or "read failed")
+                    else resolve(data) end
+                end)
+            end)
+        end)
+    end)
+
+    if callback then
+        f:next(function(content) callback(content, nil) end)
+         :catch(function(err) callback(nil, err) end)
+    end
+    return f
+end
+
+--- Read multiple files in parallel. Returns a Future.
 --- @param paths string[]
---- @param callback fun(results: table<string, string|nil>)
+--- @param callback? fun(results: table<string, string|nil>) legacy callback (deprecated)
+--- @return loomworks.Future
 function M.read_files_async(paths, callback)
+    local future_mod = require("loomworks.future")
     if #paths == 0 then
-        callback({})
-        return
+        if callback then callback({}) end
+        return future_mod.resolved({})
     end
 
-    local results = {}
-    local remaining = #paths
+    local file_futures = {}
     for _, path in ipairs(paths) do
-        M.read_file_async(path, function(content)
-            results[path] = content
-            remaining = remaining - 1
-            if remaining == 0 then
-                callback(results)
-            end
-        end)
+        local captured_path = path
+        file_futures[#file_futures + 1] = M.read_file_async(captured_path)
+            :next(function(content) return { path = captured_path, content = content } end)
+            :catch(function() return { path = captured_path, content = nil } end)
     end
+
+    local f = future_mod.when_all(file_futures):next(function(wrapped)
+        local results = {}
+        for _, r in ipairs(wrapped) do
+            local entry = r[1]
+            results[entry.path] = entry.content
+        end
+        return results
+    end)
+
+    if callback then
+        f:next(function(results) callback(results) end)
+    end
+    return f
 end
 
 return M
