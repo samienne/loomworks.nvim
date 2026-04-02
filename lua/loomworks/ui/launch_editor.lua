@@ -114,13 +114,28 @@ function M.open(opts)
             end,
         })
 
-        -- Working directory
+        -- Working directory (opens path editor)
         local wd_val = working_dir ~= "" and working_dir or "(default)"
         t:item("Work dir   " .. wd_val .. " ▸", {
             hl = working_dir ~= "" and "LoomworksActionable" or "Comment",
             direct = true,
             on_enter = function()
-                edit_string("Working directory: ", working_dir, function(v) working_dir = v end)
+                require("loomworks.ui.path_editor").open({
+                    title = "Working Directory",
+                    path = working_dir,
+                    project = opts.launch_project,
+                    workspace = opts.workspace,
+                    profile = opts.profile,
+                    on_accept = function(path)
+                        working_dir = path
+                        if view then view:refresh() end
+                    end,
+                    on_cancel = function() end,
+                })
+            end,
+            on_delete = function()
+                working_dir = ""
+                if view then view:refresh() end
             end,
         })
 
@@ -172,6 +187,33 @@ function M.open(opts)
                 end)
             end,
         })
+
+        -- "Add from project variable" — maps a project variable to an env var
+        local proj = opts.launch_project
+        if proj and proj.variables and next(proj.variables) then
+            t:item("  ▸ Add from project variable", {
+                hl = "LoomworksActionable",
+                direct = true,
+                on_enter = function()
+                    local var_names = {}
+                    for vn in pairs(proj.variables) do
+                        var_names[#var_names + 1] = vn
+                    end
+                    table.sort(var_names)
+                    vim.ui.select(var_names, { prompt = "Project variable:" }, function(var_name)
+                        if not var_name then return end
+                        vim.ui.input({
+                            prompt = "Env variable name: ",
+                            default = var_name:upper(),
+                        }, function(env_key)
+                            if not env_key or env_key == "" then return end
+                            env[env_key] = "${" .. var_name .. "}"
+                            if view then view:refresh() end
+                        end)
+                    end)
+                end,
+            })
+        end
 
         t:blank()
 
