@@ -254,4 +254,104 @@ describe("Future", function()
             assert.is_true(f:is_rejected())
         end)
     end)
+
+    describe("cancellation", function()
+        it("cancel rejects with 'cancelled'", function()
+            local f = Future.new()
+            local got_err
+            f:catch(function(e) got_err = e end)
+            f:cancel()
+            assert.equals("cancelled", got_err)
+            assert.is_true(f:is_cancelled())
+            assert.is_true(f:is_rejected())
+        end)
+
+        it("cancel with custom reason", function()
+            local f = Future.new()
+            local got_err
+            f:catch(function(e) got_err = e end)
+            f:cancel("user stopped")
+            assert.equals("user stopped", got_err)
+        end)
+
+        it("cancel is ignored on resolved Future", function()
+            local f = Future.new()
+            f:_resolve(42)
+            f:cancel()
+            assert.is_true(f:is_resolved())
+        end)
+
+        it("cancel triggers token cleanup callbacks", function()
+            local cleaned = false
+            local f = future_mod.create(function(resolve, reject, token)
+                token:on_cancel(function()
+                    cleaned = true
+                end)
+            end)
+            f:cancel()
+            assert.is_true(cleaned)
+        end)
+
+        it("token:is_cancelled() returns true after cancel", function()
+            local token_ref
+            local f = future_mod.create(function(resolve, reject, token)
+                token_ref = token
+            end)
+            assert.is_false(token_ref:is_cancelled())
+            f:cancel()
+            assert.is_true(token_ref:is_cancelled())
+        end)
+
+        it("resolve is suppressed after cancel", function()
+            local resolve_fn
+            local f = future_mod.create(function(resolve, reject, token)
+                resolve_fn = resolve
+            end)
+            f:cancel()
+            resolve_fn(42)  -- should be no-op
+            assert.is_true(f:is_rejected())
+            assert.equals("cancelled", f._error)
+        end)
+
+        it("cancel propagates upstream through chain", function()
+            local parent = Future.new()
+            local child = parent:next(function(v) return v end)
+
+            child:cancel()
+            assert.is_true(parent:is_rejected())
+        end)
+
+        it("cancel propagates upstream and triggers token", function()
+            local cleaned = false
+            local parent = future_mod.create(function(resolve, reject, token)
+                token:on_cancel(function() cleaned = true end)
+            end)
+            local child = parent:next(function(v) return v end)
+
+            child:cancel()
+            assert.is_true(cleaned)
+        end)
+
+        it("multiple on_cancel callbacks all fire", function()
+            local a, b = false, false
+            local f = future_mod.create(function(resolve, reject, token)
+                token:on_cancel(function() a = true end)
+                token:on_cancel(function() b = true end)
+            end)
+            f:cancel()
+            assert.is_true(a)
+            assert.is_true(b)
+        end)
+
+        it("on_cancel registered after cancellation fires immediately", function()
+            local token_ref
+            local f = future_mod.create(function(resolve, reject, token)
+                token_ref = token
+            end)
+            f:cancel()
+            local late = false
+            token_ref:on_cancel(function() late = true end)
+            assert.is_true(late)
+        end)
+    end)
 end)
