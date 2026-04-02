@@ -682,6 +682,7 @@ loomworks.nvim/
 │   │       ├── tree.lua               Foldable tree widget
 │   │       ├── actions.lua            Action factories + delete dialog
 │   │       ├── launch_editor.lua     Launch config editor (command, args, env, deploy)
+│   │       ├── path_editor.lua        Reusable segment-based path editor dialog
 │   │       ├── deploy_editor.lua     Deploy step editor (segment path + source picker)
 │   │       ├── variable_editor.lua   Variable declaration editor (name, type, default)
 │   │       ├── config_editor_dialog.lua  Configuration editor (inherits, options, variables)
