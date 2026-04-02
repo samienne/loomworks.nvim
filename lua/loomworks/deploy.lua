@@ -179,10 +179,23 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
         source_rel_path = target.artifact
     else
         source_rel_path = source_def.path
-        -- Strip ${build_dir}/ prefix if user accidentally included it
-        -- (source path is always relative to the build directory)
-        source_rel_path = source_rel_path:gsub("^%${build_dir}/", "")
-        -- Strip leading / to prevent absolute path concatenation
+        -- Expand variables in source path using source project's context
+        local source_ctx = {
+            build_dir = build_dir,
+            variant = source_variant,
+            project_path = source_project.path or source_project.key,
+            workspace_root = ws.root,
+        }
+        if profile._config_set_ref then
+            source_ctx.config_set = profile._config_set_ref.name
+        end
+        source_rel_path = expand.expand_string(source_rel_path, source_ctx)
+        -- Strip build_dir prefix if path expanded to absolute
+        local bd_prefix = build_dir .. "/"
+        if source_rel_path:sub(1, #bd_prefix) == bd_prefix then
+            source_rel_path = source_rel_path:sub(#bd_prefix + 1)
+        end
+        -- Strip leading / to prevent double-root concatenation
         source_rel_path = source_rel_path:gsub("^/+", "")
     end
 
