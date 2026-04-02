@@ -619,20 +619,22 @@ function M.tasks(project, active_config)
     -- Appended after managed flags so user values can override.
     -- Option values support ${variable} expansion (same as toolchain paths):
     -- built-in variables (workspace_root, project_path) + environment variables.
+    -- Always resolve — options may come from inherited base configs even if
+    -- the active config and project-wide level have no direct options.
     local type_config = project.type_config or {}
-    local active_cfg_info = project.configurations
-            and project.configurations[active_config] or nil
-    if type_config.options or (active_cfg_info and active_cfg_info.options) then
+    do
         local resolved_opts = M.resolve_options(
             type_config, project.configurations or {}, active_config)
-        local opt_ctx = {
-            workspace_root = project.workspace_root,
-            project_path = project.path or project.name,
-        }
-        local expand = require("loomworks.expand")
-        for k, v in pairs(resolved_opts) do
-            local expanded = expand.expand_string(v, opt_ctx)
-            configure_cmd[#configure_cmd + 1] = "-D" .. k .. "=" .. expanded
+        if next(resolved_opts) then
+            local opt_ctx = {
+                workspace_root = project.workspace_root,
+                project_path = project.path or project.name,
+            }
+            local expand = require("loomworks.expand")
+            for k, v in pairs(resolved_opts) do
+                local expanded = expand.expand_string(v, opt_ctx)
+                configure_cmd[#configure_cmd + 1] = "-D" .. k .. "=" .. expanded
+            end
         end
     end
 
