@@ -4218,3 +4218,146 @@ describe("project variables", function()
         end)
     end)
 end)
+
+-- =========================================================================
+-- Operation completion on failure
+-- =========================================================================
+
+describe("operation completion on failure", function()
+    local Operation = require("loomworks.operation")
+
+    it("operation completes when one unit fails configure", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Lib = { cmake = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug", Lib = "Debug" },
+            },
+        }, {
+            active_profile = "Debug",
+            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+        })
+
+        local profile = ws._active_profile
+        assert.is_not_nil(profile)
+
+        -- Find both config units
+        local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
+        local lib_unit = h.find_config_unit(ws._config_units, "Lib", "Debug")
+        assert.is_not_nil(app_unit, "App/Debug config unit")
+        assert.is_not_nil(lib_unit, "Lib/Debug config unit")
+
+        -- Create operation tracking both units
+        local completed_op = nil
+        local units = { app_unit, lib_unit }
+        local target_states = {}
+        target_states[app_unit] = "configured"
+        target_states[lib_unit] = "configured"
+
+        local op = Operation.new(ws, profile, "configure", units, target_states,
+            function(o) completed_op = o end)
+        profile:add_operation(op)
+
+        assert.is_false(op.completed)
+        assert.is_true(profile:has_active_operation())
+
+        -- Simulate: App configure starts
+        app_unit:register_task(100, "configure")
+        -- Simulate: Lib configure starts
+        lib_unit:register_task(101, "configure")
+
+        assert.is_false(op.completed)  -- still running
+
+        -- Simulate: App configure succeeds
+        app_unit.state_value = "configured"
+        app_unit:unregister_task(100)
+
+        assert.is_false(op.completed)  -- Lib still running
+
+        -- Simulate: Lib configure fails
+        lib_unit.state_value = "failed_configure"
+        lib_unit:unregister_task(101)
+
+        -- Operation should be completed now (both units done)
+        assert.is_true(op.completed, "operation should be completed after both units finish")
+        assert.is_false(op.success, "operation should report failure")
+        assert.is_not_nil(completed_op, "completion callback should have fired")
+
+        -- Profile should have no active operations
+        profile:complete_operation(op)
+        assert.is_false(profile:has_active_operation())
+    end)
+
+    it("operation stuck when task completes without on_start (no register_task)", function()
+        -- Reproduces: if overseer's on_complete fires without on_start
+        -- (e.g., subprocess fails to spawn), unregister_task is a no-op
+        -- because _task_id was never set, so listeners never fire.
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        }, {
+            active_profile = "Debug",
+            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+        })
+
+        local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
+        assert.is_not_nil(app_unit)
+
+        local completed = false
+        local units = { app_unit }
+        local target_states = {}
+        target_states[app_unit] = "configured"
+
+        local op = Operation.new(ws, ws._active_profile, "configure", units, target_states,
+            function() completed = true end)
+
+        -- Simulate: task completes WITHOUT on_start (register_task never called)
+        -- record_task_result updates state, but unregister_task is no-op
+        app_unit.state_value = "failed_configure"
+        app_unit:unregister_task(999)  -- task_id doesn't match (nil ~= 999)
+
+        -- Operation should still complete, but currently it doesn't
+        -- because _notify() never fires
+        assert.is_true(op.completed,
+            "BUG: operation stuck because unregister_task was no-op (task never started)")
+    end)
+
+    it("operation completes when single unit fails configure", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug" },
+            },
+        }, {
+            active_profile = "Debug",
+            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+        })
+
+        local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
+        assert.is_not_nil(app_unit)
+
+        local completed = false
+        local units = { app_unit }
+        local target_states = {}
+        target_states[app_unit] = "configured"
+
+        local op = Operation.new(ws, ws._active_profile, "configure", units, target_states,
+            function() completed = true end)
+
+        -- Simulate: task starts
+        app_unit:register_task(100, "configure")
+        assert.is_false(op.completed)
+
+        -- Simulate: task fails
+        app_unit.state_value = "failed_configure"
+        app_unit:unregister_task(100)
+
+        assert.is_true(op.completed, "operation should complete on failure")
+        assert.is_false(op.success)
+        assert.is_true(completed, "callback should fire")
+    end)
+end)
