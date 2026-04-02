@@ -52,23 +52,26 @@ function Target:display_name()
     return self.id
 end
 
---- Build this target.
+--- Build this target. Returns a Future that resolves on success.
 --- Delegates to the module's build_target_task via overseer.
 --- Falls back to full configuration build if module doesn't support it.
---- @param on_complete? fun(success: boolean) called when build finishes
+--- @param on_complete? fun(success: boolean) legacy callback (deprecated)
+--- @return loomworks.Future
 function Target:build(on_complete)
+    local future_mod = require("loomworks.future")
     local unit = self._config_unit
     if not unit or not unit._project then
         if on_complete then vim.schedule(function() on_complete(false) end) end
-        return
+        return future_mod.rejected("no config unit or project")
     end
 
     local mod = unit._project._module and unit._project._module.impl or nil
     if not mod then
         if on_complete then vim.schedule(function() on_complete(false) end) end
-        return
+        return future_mod.rejected("no module")
     end
 
+    local f
     if mod.build_target_task then
         local ws = unit._workspace
         local project_ctx = unit._project:to_module_context(ws.root)
@@ -79,17 +82,20 @@ function Target:build(on_complete)
 
         local task_def = mod.build_target_task(project_ctx, self.id)
         if task_def then
-            require("loomworks.overseer").launch_single_task(task_def, unit, on_complete)
-            return
+            f = require("loomworks.overseer").launch_single_task(task_def, unit)
         end
     end
 
-    -- Fallback: full build
-    require("loomworks.overseer").run_configuration_action(unit, "build")
-    -- Can't track completion for full build fallback
-    if on_complete then
-        vim.schedule(function() on_complete(true) end)
+    if not f then
+        -- Fallback: full build
+        f = require("loomworks.overseer").run_configuration_action(unit, "build")
     end
+
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
+    end
+    return f
 end
 
 --- Launch this target (run the built artifact).

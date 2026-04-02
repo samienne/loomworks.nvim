@@ -82,15 +82,21 @@ end
 --- Build this target, including dependencies.
 --- Builds dependency projects first (in order), then builds this target.
 --- @param on_complete? fun(success: boolean) called when build finishes
+--- Build this target and all its dependencies. Returns a Future.
+--- Dependencies include explicit (depends_on) and implicit (deploy sources).
+--- @param on_complete? fun(success: boolean) legacy callback (deprecated)
+--- @return loomworks.Future
 function LaunchTarget:build(on_complete)
-    local function build_self(cb)
+    local future_mod = require("loomworks.future")
+    local overseer = require("loomworks.overseer")
+
+    local function build_self()
         if self._target then
-            self._target:build(cb)
+            return self._target:build()
         elseif self._config_unit then
-            require("loomworks.overseer").run_configuration_action(
-                self._config_unit, "build", cb)
-        elseif cb then
-            vim.schedule(function() cb(true) end)
+            return overseer.run_configuration_action(self._config_unit, "build")
+        else
+            return future_mod.resolved(true)
         end
     end
 
@@ -98,7 +104,6 @@ function LaunchTarget:build(on_complete)
     local all_deps = {}
     local seen = {}
     if self._project then
-        -- Explicit dependencies
         if self._project.depends_on then
             for _, dep in ipairs(self._project.depends_on) do
                 if not seen[dep.key] then
@@ -107,7 +112,6 @@ function LaunchTarget:build(on_complete)
                 end
             end
         end
-        -- Implicit dependencies from deploy steps
         local deploy_deps = self:_deploy_source_projects()
         for _, dep in ipairs(deploy_deps) do
             if not seen[dep.key] then
@@ -117,60 +121,42 @@ function LaunchTarget:build(on_complete)
         end
     end
 
-    if #all_deps > 0 then
-        self:_build_deps(all_deps, 1, function(success)
-            if not success then
-                if on_complete then on_complete(false) end
-                return
-            end
-            build_self(on_complete)
-        end)
-    else
-        build_self(on_complete)
+    local f = self:_build_deps(all_deps):next(function()
+        return build_self()
+    end)
+
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
     end
+    return f
 end
 
---- Build dependency projects sequentially.
---- @param deps loomworks.Project[] dependency projects to build
---- @param idx number current index
---- @param on_complete fun(success: boolean)
-function LaunchTarget:_build_deps(deps, idx, on_complete)
-    if idx > #deps then
-        on_complete(true)
-        return
-    end
+--- Build dependency projects sequentially. Returns a Future.
+--- @param deps loomworks.Project[]
+--- @return loomworks.Future
+function LaunchTarget:_build_deps(deps)
+    local future_mod = require("loomworks.future")
+    if #deps == 0 then return future_mod.resolved(true) end
 
-    local dep = deps[idx]
-    -- Find the ConfigUnit for this dependency in the active profile
-    local pp = self._profile:project(dep.key)
-    if not pp then
-        -- Dependency not in this profile, skip
-        self:_build_deps(deps, idx + 1, on_complete)
-        return
-    end
+    local overseer = require("loomworks.overseer")
+    local chain = future_mod.resolved(true)
 
-    local unit = pp._config_unit
-    local state = unit:state()
+    for _, dep in ipairs(deps) do
+        local captured_dep = dep
+        chain = chain:next(function()
+            local pp = self._profile:project(captured_dep.key)
+            if not pp or not pp._config_unit then return true end
 
-    -- Already built — skip (configured is NOT enough for deploy deps,
-    -- but is enough for explicit deps; we build anyway to be safe)
-    if state == "built" then
-        self:_build_deps(deps, idx + 1, on_complete)
-        return
-    end
+            local state = pp._config_unit:state()
+            if state == "built" then return true end
 
-    -- Need to build this dependency
-    vim.notify("loomworks: building dependency " .. dep.key, vim.log.levels.INFO)
-    require("loomworks.overseer").run_configuration_action(unit, "build",
-        function(success)
-            if not success then
-                vim.notify("loomworks: dependency " .. dep.key .. " build failed",
-                    vim.log.levels.ERROR)
-                on_complete(false)
-                return
-            end
-            self:_build_deps(deps, idx + 1, on_complete)
+            vim.notify("loomworks: building dependency " .. captured_dep.key, vim.log.levels.INFO)
+            return overseer.run_configuration_action(pp._config_unit, "build")
         end)
+    end
+
+    return chain
 end
 
 --- Collect unique source projects from deploy steps that need building.
@@ -202,20 +188,21 @@ function LaunchTarget:_deploy_source_projects()
     return result
 end
 
---- Execute deploy steps before launching.
+--- Execute deploy steps before launching. Returns a Future.
 --- Source projects should already be built (build() handles all deps).
---- This method only resolves and copies artifacts.
---- @param on_complete fun(ok: boolean, err?: string)
+--- @param on_complete? fun(ok: boolean, err?: string) legacy callback (deprecated)
+--- @return loomworks.Future
 function LaunchTarget:deploy(on_complete)
+    local future_mod = require("loomworks.future")
     local cfg = self._launch_config
     if not cfg or not cfg.deploy or not next(cfg.deploy) then
-        on_complete(true)
-        return
+        if on_complete then on_complete(true) end
+        return future_mod.resolved(true)
     end
 
     if not self._project then
-        on_complete(false, "no project for deploy")
-        return
+        if on_complete then on_complete(false, "no project for deploy") end
+        return future_mod.rejected("no project for deploy")
     end
 
     local deploy_mod = require("loomworks.deploy")
@@ -226,14 +213,16 @@ function LaunchTarget:deploy(on_complete)
         launch_project = self._project,
     }
 
-    deploy_mod.execute_deploy_steps(
-        cfg.deploy, ctx, ws._deploy_records, ws._core._deps.normalize,
-        function(ok, err)
-            if ok then
-                ws:_save_cache()
-            end
-            on_complete(ok, err)
-        end)
+    local f = deploy_mod.execute_deploy_steps(
+        cfg.deploy, ctx, ws._deploy_records, ws._core._deps.normalize)
+
+    f:next(function() ws:_save_cache() end)
+
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function(err) on_complete(false, err) end)
+    end
+    return f
 end
 
 --- Launch this target.
