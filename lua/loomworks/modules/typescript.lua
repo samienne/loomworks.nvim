@@ -209,6 +209,21 @@ function M.info(path, config)
                 end
             end
         end
+
+        -- Resolve variant from inherits (same as cmake: first base with a variant)
+        for name, cfg in pairs(configurations) do
+            if not cfg.variant and cfg.inherits then
+                local bases = type(cfg.inherits) == "string"
+                    and { cfg.inherits } or cfg.inherits
+                for _, base_name in ipairs(bases) do
+                    local base = configurations[base_name]
+                    if base and base.variant then
+                        cfg.variant = base.variant
+                        break
+                    end
+                end
+            end
+        end
     end
 
     return { configurations = configurations }
