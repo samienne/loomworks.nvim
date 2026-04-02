@@ -177,6 +177,15 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
                 .. "' has no artifact path"
         end
         source_rel_path = target.artifact
+        -- Safety: if artifact is absolute (prefix strip failed in parse_file_api),
+        -- strip the build_dir prefix here with case-insensitive comparison
+        if source_rel_path:match("^%a:") or source_rel_path:match("^/") then
+            local bd_norm = build_dir:gsub("\\", "/"):gsub("/?$", "/")
+            local art_norm = source_rel_path:gsub("\\", "/")
+            if art_norm:lower():sub(1, #bd_norm) == bd_norm:lower() then
+                source_rel_path = art_norm:sub(#bd_norm + 1)
+            end
+        end
     else
         source_rel_path = source_def.path
         -- Expand variables in source path using source project's context.
