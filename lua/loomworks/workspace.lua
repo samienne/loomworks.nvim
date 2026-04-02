@@ -2074,7 +2074,7 @@ end
 
 --- Produce a parsed config structure from domain objects.
 --- Returns the same shape as config.parse() / config.validate(): projects
---- have .type, .path, .type_config, .depends_on, .launch fields.
+--- have .type, .path, .type_config, .depends_on, .launch, .variables fields.
 --- Used by remerge() and tool detection when no raw config is available.
 --- @return loomworks.Config
 function Workspace:_config_from_objects()
@@ -2100,6 +2100,7 @@ function Workspace:_config_from_objects()
                 type_config = tc,
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
+                variables = project.variables,
             }
         end
     end
@@ -2154,6 +2155,7 @@ function Workspace:_shared_config_from_objects()
                 type_config = tc,
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
+                variables = project.variables,
             }
         end
     end
