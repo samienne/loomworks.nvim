@@ -4575,3 +4575,100 @@ describe("inherited options through abstract mixins", function()
             "options should survive serialization")
     end)
 end)
+
+-- =========================================================================
+-- Profile persistence
+-- =========================================================================
+
+describe("profile persistence", function()
+    it("created profile is pinned and serialized in user data", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug" },
+            },
+        })
+
+        -- No profiles initially
+        assert.equals(0, #ws._profiles)
+
+        -- Create a profile via workspace_view
+        local cs
+        for _, c in pairs(ws._config_sets) do
+            if c.name == "Debug" then cs = c; break end
+        end
+        assert.is_not_nil(cs, "Debug config set should exist")
+
+        local profile = wv.execute_create_profile(cs, nil, false)
+        assert.is_not_nil(profile, "profile should be created")
+        assert.is_true(profile._pinned, "profile should be pinned")
+
+        -- Serialize user data and check pinned_profiles
+        local user_data = ws:_serialize_user()
+        assert.is_not_nil(user_data.pinned_profiles, "user data should have pinned_profiles")
+        assert.is_not_nil(user_data.pinned_profiles[profile.key],
+            "profile key should be in pinned_profiles")
+        assert.equals("Debug",
+            user_data.pinned_profiles[profile.key].configuration_set,
+            "pinned profile should reference config set")
+    end)
+
+    it("created profile survives remerge", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug" },
+            },
+        })
+
+        local cs
+        for _, c in pairs(ws._config_sets) do
+            if c.name == "Debug" then cs = c; break end
+        end
+
+        local profile = wv.execute_create_profile(cs, nil, true)
+        assert.is_not_nil(profile)
+        local profile_key = profile.key
+
+        -- Remerge (simulates what happens on file change or mutation)
+        ws:remerge()
+
+        -- Profile should still exist
+        local found = false
+        for _, p in pairs(ws._profiles) do
+            if p.key == profile_key then
+                found = true
+                assert.is_true(p._pinned, "profile should still be pinned after remerge")
+                break
+            end
+        end
+        assert.is_true(found, "profile should survive remerge")
+    end)
+
+    it("activated profile persists active_profile in user data", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "Debug" },
+            },
+        })
+
+        local cs
+        for _, c in pairs(ws._config_sets) do
+            if c.name == "Debug" then cs = c; break end
+        end
+
+        local profile = wv.execute_create_profile(cs, nil, true)
+        assert.is_not_nil(profile)
+
+        local user_data = ws:_serialize_user()
+        assert.equals(profile.key, user_data.active_profile,
+            "active_profile should be set in user data")
+    end)
+end)
