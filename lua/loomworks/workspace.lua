@@ -2405,7 +2405,13 @@ end
 --- Write the current user data to loomworks.user.json.
 --- Updates the file tracker's cached content to suppress self-write detection.
 function Workspace:_save_user()
-    self._core._deps.user.save(self.root, self:_serialize_user())
+    local data = self:_serialize_user()
+    local ok, err = self._core._deps.user.save(self.root, data)
+    if not ok then
+        self._core._deps.notify(
+            "loomworks: failed to save user.json: " .. (err or "unknown"),
+            vim.log.levels.ERROR)
+    end
     if self._tracker then
         self._tracker:mark_written(self._core._deps.user.filepath(self.root))
     end
