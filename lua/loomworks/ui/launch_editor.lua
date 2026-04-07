@@ -102,11 +102,20 @@ function M.open(opts)
         -- Args (structured list)
         if #args > 0 then
             t:leaf("Args:", "Comment")
+            local n_args = #args
             for ai, arg in ipairs(args) do
                 local captured_ai = ai
                 t:item("  " .. arg .. " ▸", {
                     hl = "LoomworksActionable",
                     direct = true,
+                    on_move_up = captured_ai > 1 and function()
+                        args[captured_ai], args[captured_ai - 1] = args[captured_ai - 1], args[captured_ai]
+                        if view then view:refresh() end
+                    end or nil,
+                    on_move_down = captured_ai < n_args and function()
+                        args[captured_ai], args[captured_ai + 1] = args[captured_ai + 1], args[captured_ai]
+                        if view then view:refresh() end
+                    end or nil,
                     on_enter = function()
                         local eq_pos = args[captured_ai]:find("=")
                         if eq_pos then
@@ -471,7 +480,7 @@ function M.open(opts)
         })
 
         t:blank()
-        t:leaf("[Enter] change  [D] remove  [y] accept  [q] cancel", "Comment")
+        t:leaf("[Enter] change  [D] remove  [C-j/C-k] move  [y] accept  [q] cancel", "Comment")
     end
 
     tree = Tree.new(render_fn)
@@ -524,6 +533,8 @@ function M.open(opts)
         keymaps = {
             ["<CR>"]    = "enter",
             ["D"]       = "delete",
+            ["<C-j>"]   = "move_down",
+            ["<C-k>"]   = "move_up",
             ["y"]       = "accept",
         },
         events = {},
