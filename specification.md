@@ -386,9 +386,9 @@ should appear in loomworks.json:
   project. A project can be partly published (some configs shared, others
   personal).
 - **Configuration sets**: `_published` as a whole (atomic unit).
-- **Profiles**: `_published` defaults to `false`. Profiles are personal by
-  default because they bind machine-specific tools. User explicitly opts in
-  to sharing.
+- **Profiles**: not publishable in v1. Profiles bind machine-specific tools
+  and have a complex lifecycle (pinned vs explicit). Profile publishing is
+  deferred until the profile model is simplified.
 
 #### Modified indicator (`+`)
 
