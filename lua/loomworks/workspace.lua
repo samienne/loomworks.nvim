@@ -105,15 +105,125 @@ function M.paths(root)
     }
 end
 
+--- Merge a single project from shared and user at the sub-item level.
+--- User wins per-key within configurations, launch, and variables.
+--- User wins at the project-level fields (path, type, depends_on, module settings).
+--- @param shared table|nil shared project definition
+--- @param user table|nil user project definition
+--- @return table merged project definition
+--- @return table provenance { user_configs, user_launches, user_variables, user_project_fields }
+local function merge_project(shared, user)
+    if not shared then
+        -- User-only project: everything comes from user
+        local prov = { user_project_fields = true }
+        if user.type_config and user.type_config.configurations then
+            prov.user_configs = {}
+            for name in pairs(user.type_config.configurations) do
+                prov.user_configs[name] = true
+            end
+        end
+        if user.launch then
+            prov.user_launches = {}
+            for name in pairs(user.launch) do
+                prov.user_launches[name] = true
+            end
+        end
+        if user.variables then
+            prov.user_variables = {}
+            for name in pairs(user.variables) do
+                prov.user_variables[name] = true
+            end
+        end
+        return user, prov
+    end
+    if not user then
+        -- Shared-only project: nothing from user
+        return shared, {}
+    end
+
+    -- Both exist: merge at sub-item level
+    -- Project-level fields: user wins if present
+    local merged = {
+        path = user.path or shared.path,
+        type = user.type or shared.type,
+        depends_on = user.depends_on or shared.depends_on,
+        launch = nil,
+        variables = nil,
+    }
+    local prov = { user_project_fields = true }
+
+    -- Merge type_config: user's module-level settings win, then merge
+    -- configurations per-key
+    local shared_tc = shared.type_config or {}
+    local user_tc = user.type_config or {}
+    local merged_tc = vim.deepcopy(shared_tc)
+    -- User module-level settings overlay shared (e.g., compile_commands_from)
+    for k, v in pairs(user_tc) do
+        if k ~= "configurations" then
+            merged_tc[k] = v
+        end
+    end
+
+    -- Per-configuration merge: shared fills in, user wins per config name
+    local shared_configs = shared_tc.configurations or {}
+    local user_configs = user_tc.configurations or {}
+    local merged_configs = {}
+    prov.user_configs = {}
+    for name, cfg in pairs(shared_configs) do
+        merged_configs[name] = cfg
+    end
+    for name, cfg in pairs(user_configs) do
+        merged_configs[name] = cfg
+        prov.user_configs[name] = true
+    end
+    if next(merged_configs) then
+        merged_tc.configurations = merged_configs
+    else
+        merged_tc.configurations = nil
+    end
+    -- Preserve empty type_config as {} (not nil) — downstream expects it
+    merged.type_config = merged_tc
+
+    -- Per-launch merge
+    local shared_launch = shared.launch or {}
+    local user_launch = user.launch or {}
+    local merged_launch = {}
+    prov.user_launches = {}
+    for name, cfg in pairs(shared_launch) do
+        merged_launch[name] = cfg
+    end
+    for name, cfg in pairs(user_launch) do
+        merged_launch[name] = cfg
+        prov.user_launches[name] = true
+    end
+    merged.launch = next(merged_launch) and merged_launch or nil
+
+    -- Per-variable merge
+    local shared_vars = shared.variables or {}
+    local user_vars = user.variables or {}
+    local merged_vars = {}
+    prov.user_variables = {}
+    for name, decl in pairs(shared_vars) do
+        merged_vars[name] = decl
+    end
+    for name, decl in pairs(user_vars) do
+        merged_vars[name] = decl
+        prov.user_variables[name] = true
+    end
+    merged.variables = next(merged_vars) and merged_vars or nil
+
+    return merged, prov
+end
+
 --- Merge user.json and loomworks.json into a single config for merge.merge().
---- User wins at the project level (entire project definition) and at the
---- configuration_set level (entire set definition). Shared items fill in
---- anything the user doesn't override.
+--- Per-configuration merge within projects: user wins per-key for configs,
+--- launch configs, and variables. Config sets: user wins at the set level.
 --- @param user_config table|nil parsed user data (may have projects, configuration_sets)
 --- @param shared_config table|nil parsed loomworks.json config
 --- @return table merged config suitable for merge.merge()
 --- @return table<string, boolean> user_project_keys set of project keys from user
 --- @return table<string, boolean> user_cs_names set of config_set names from user
+--- @return table<string, table> user_provenance per-project provenance details
 function M.merge_configs(user_config, shared_config)
     local merged = {
         name = shared_config and shared_config.name or nil,
@@ -123,22 +233,32 @@ function M.merge_configs(user_config, shared_config)
     }
     local user_project_keys = {}
     local user_cs_names = {}
+    local user_provenance = {}
 
-    -- Start with shared
+    -- Collect all project keys from both sources
+    local all_project_keys = {}
     if shared_config and shared_config.projects then
-        for k, v in pairs(shared_config.projects) do
-            merged.projects[k] = v
+        for k in pairs(shared_config.projects) do
+            all_project_keys[k] = true
         end
     end
-    -- User overrides at project level
     if user_config and user_config.projects then
-        for k, v in pairs(user_config.projects) do
-            merged.projects[k] = v
+        for k in pairs(user_config.projects) do
+            all_project_keys[k] = true
             user_project_keys[k] = true
         end
     end
 
-    -- Configuration sets: same pattern
+    -- Merge each project at sub-item level
+    for k in pairs(all_project_keys) do
+        local s = shared_config and shared_config.projects and shared_config.projects[k]
+        local u = user_config and user_config.projects and user_config.projects[k]
+        local mp, prov = merge_project(s, u)
+        merged.projects[k] = mp
+        user_provenance[k] = prov
+    end
+
+    -- Configuration sets: user wins at the set level (atomic)
     if shared_config and shared_config.configuration_sets then
         for k, v in pairs(shared_config.configuration_sets) do
             merged.configuration_sets[k] = v
@@ -156,7 +276,7 @@ function M.merge_configs(user_config, shared_config)
         merged.configuration_sets = nil
     end
 
-    return merged, user_project_keys, user_cs_names
+    return merged, user_project_keys, user_cs_names, user_provenance
 end
 
 --- Assemble workspace data from raw file contents.
@@ -257,6 +377,8 @@ end
 --- @field _user_config_overlay table|nil user.json project/configuration_set overlay
 --- @field _user_project_keys table<string, boolean> project keys from user.json
 --- @field _user_cs_names table<string, boolean> config_set names from user.json
+--- @field _user_provenance table<string, table> per-project sub-item provenance from merge
+--- @field _shared_baseline table|nil raw parsed loomworks.json for modified-state computation
 local Workspace = {}
 Workspace.__index = Workspace
 
@@ -290,6 +412,8 @@ function Workspace.new(core, data)
     self._user_config_overlay = nil
     self._user_project_keys = {}
     self._user_cs_names = {}
+    self._user_provenance = {}
+    self._shared_baseline = nil
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -504,13 +628,15 @@ end
 --- @param raw_user? table parsed user data (nil = use current state)
 function Workspace:remerge(raw_config, raw_cache, raw_user)
     -- Determine the shared config (loomworks.json portion).
-    -- When raw_config is provided (startup, file change), use it directly.
+    -- When raw_config is provided (startup, file change), use it directly
+    -- and update the shared baseline for modified-state computation.
     -- When nil (after mutations or tool detection), reconstruct from domain
     -- objects — _shared_config_from_objects() returns only shared-sourced
     -- items in the internal format merge.merge() expects.
     local shared_config
     if raw_config then
         shared_config = raw_config
+        self._shared_baseline = vim.deepcopy(raw_config)
     else
         shared_config = self:_shared_config_from_objects()
     end
@@ -542,9 +668,11 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     end
 
     -- Two-layer merge: combine user overlay with shared config
-    local config, user_project_keys, user_cs_names = M.merge_configs(user_overlay, shared_config)
+    local config, user_project_keys, user_cs_names, user_provenance =
+        M.merge_configs(user_overlay, shared_config)
     self._user_project_keys = user_project_keys
     self._user_cs_names = user_cs_names
+    self._user_provenance = user_provenance
 
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         config, active_profile_key, cache, self.root, self._tools_by_type, user_data)
@@ -567,6 +695,8 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         default_target_data = default_target_data,
         user_project_keys = user_project_keys,
         user_cs_names = user_cs_names,
+        user_provenance = user_provenance,
+        shared_baseline = self._shared_baseline,
         compute_build_dir = function(project, variant, tool_data)
             return self:_compute_build_dir(project, variant, tool_data)
         end,

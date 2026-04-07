@@ -158,7 +158,9 @@ These are implementation-specific details not covered by the spec or architectur
 - **Workspace mutation methods**: `config_editor.lua` is no longer used at
   runtime — Workspace has its own mutation methods for adding/removing
   projects, configuration sets, etc. `rename_project_configuration` does
-  atomic rename with config set, cache, and profile propagation.
+  atomic rename with config set, cache, and profile propagation. All
+  mutations write to user.json (working copy). `publish()` writes published
+  items to loomworks.json on explicit `:w`.
 - **workspace_view.lua**: View-model layer between UI and Workspace. Owns
   orchestration logic (add/remove project pipelines, tool detection caching,
   upgrade/downgrade previews, config set candidates). UI files call

@@ -581,11 +581,36 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     -- Set _source flags on projects and config_sets (two-layer merge provenance)
     local user_project_keys = deps.user_project_keys or {}
     local user_cs_names = deps.user_cs_names or {}
+    local user_provenance = deps.user_provenance or {}
+    local shared_baseline = deps.shared_baseline
     for _, p in pairs(projects) do
         p._source = user_project_keys[p.key] and "user" or "shared"
+        -- _in_user_json: true if this project has any data from user.json
+        p._in_user_json = user_project_keys[p.key] or false
+        -- _published: true if this project declaration exists in the shared baseline
+        local in_baseline = shared_baseline
+            and shared_baseline.projects
+            and shared_baseline.projects[p.key] ~= nil
+        p._published = in_baseline or false
+        -- Set per-configuration _published and _in_user_json flags
+        local prov = user_provenance[p.key] or {}
+        local baseline_configs = shared_baseline
+            and shared_baseline.projects
+            and shared_baseline.projects[p.key]
+            and shared_baseline.projects[p.key].type_config
+            and shared_baseline.projects[p.key].type_config.configurations
+        for _, cfg in ipairs(p._configurations or {}) do
+            cfg._in_user_json = prov.user_configs and prov.user_configs[cfg.name] or false
+            cfg._published = baseline_configs and baseline_configs[cfg.name] ~= nil or false
+        end
     end
     for _, cs in pairs(config_sets) do
         cs._source = user_cs_names[cs.name] and "user" or "shared"
+        cs._in_user_json = user_cs_names[cs.name] or false
+        local in_baseline = shared_baseline
+            and shared_baseline.configuration_sets
+            and shared_baseline.configuration_sets[cs.name] ~= nil
+        cs._published = in_baseline or false
     end
 
     -- Resolve active profile from the active set name

@@ -3243,6 +3243,172 @@ describe("two-layer merge", function()
         assert.equals("shared", app._source)
         assert.equals("user", mylib._source)
     end)
+
+    -- Published flag tests
+    it("shared project has _published = true", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app)
+        assert.is_true(app._published)
+        assert.is_false(app._in_user_json)
+    end)
+
+    it("user-only project has _published = false", function()
+        local ws = make_ws(
+            { projects = {} },
+            { projects = { MyLib = { cmake = {} } } }
+        )
+        local mylib = h.find_project_in(ws:get_projects(), "MyLib")
+        assert.is_not_nil(mylib)
+        assert.is_false(mylib._published)
+        assert.is_true(mylib._in_user_json)
+    end)
+
+    it("shared baseline is captured from raw config", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        })
+        assert.is_not_nil(ws._shared_baseline)
+        assert.is_not_nil(ws._shared_baseline.projects.App)
+        assert.is_not_nil(ws._shared_baseline.configuration_sets.Debug)
+    end)
+
+    it("shared config set has _published = true", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        })
+        local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        assert.is_not_nil(cs)
+        assert.is_true(cs._published)
+    end)
+
+    it("user-only config set has _published = false", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            { configuration_sets = { UserDebug = { App = "Debug" } } }
+        )
+        local cs = h.find_config_set_in(ws:get_config_sets(), "UserDebug")
+        assert.is_not_nil(cs)
+        assert.is_false(cs._published)
+        assert.is_true(cs._in_user_json)
+    end)
+
+    it("per-config merge: shared and user configs combine", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {},
+                                Release = {},
+                            },
+                        },
+                    },
+                },
+            },
+            {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = { toolchain = "user-tc" },
+                                Asan = { inherits = "Debug" },
+                            },
+                        },
+                    },
+                },
+            }
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app)
+        -- All configs should be present (shared Release + user Debug + user Asan + defaults)
+        local config_names = {}
+        for _, cfg in ipairs(app._configurations) do
+            config_names[cfg.name] = true
+        end
+        assert.is_true(config_names["Debug"])
+        assert.is_true(config_names["Release"])
+        assert.is_true(config_names["Asan"])
+    end)
+
+    it("per-config _published flags set from baseline", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = {},
+                                Release = {},
+                            },
+                        },
+                    },
+                },
+            },
+            {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = {
+                                Debug = { toolchain = "user-tc" },
+                                Asan = { inherits = "Debug" },
+                            },
+                        },
+                    },
+                },
+            }
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app)
+        for _, cfg in ipairs(app._configurations) do
+            if cfg.name == "Debug" or cfg.name == "Release" then
+                -- These are in the shared baseline
+                assert.is_true(cfg._published, cfg.name .. " should be published")
+            end
+            if cfg.name == "Asan" then
+                -- This is user-only
+                assert.is_false(cfg._published, "Asan should not be published")
+            end
+        end
+    end)
+
+    it("per-config _in_user_json flags set from provenance", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = { Release = {} },
+                        },
+                    },
+                },
+            },
+            {
+                projects = {
+                    App = {
+                        cmake = {
+                            configurations = { Debug = { toolchain = "tc" } },
+                        },
+                    },
+                },
+            }
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_not_nil(app)
+        for _, cfg in ipairs(app._configurations) do
+            if cfg.name == "Debug" then
+                assert.is_true(cfg._in_user_json, "Debug should be in user json")
+            end
+            if cfg.name == "Release" then
+                assert.is_false(cfg._in_user_json, "Release should not be in user json")
+            end
+        end
+    end)
 end)
 
 -- =========================================================================
