@@ -2391,6 +2391,184 @@ function Workspace:_serialize_config()
     return raw
 end
 
+-- ===========================================================================
+-- Modified state computation (publish/working-copy model)
+-- ===========================================================================
+
+--- Get the baseline project entry from _shared_baseline.
+--- @param project_key string
+--- @return table|nil baseline project in internal format
+function Workspace:_baseline_project(project_key)
+    if not self._shared_baseline then return nil end
+    local bp = self._shared_baseline.projects
+    return bp and bp[project_key]
+end
+
+--- Get the baseline config set entry from _shared_baseline.
+--- @param cs_name string
+--- @return table|nil baseline config set mappings
+function Workspace:_baseline_config_set(cs_name)
+    if not self._shared_baseline then return nil end
+    local bcs = self._shared_baseline.configuration_sets
+    return bcs and bcs[cs_name]
+end
+
+--- Check if a single configuration is modified (would :w change loomworks.json for it).
+--- Returns true when the published state differs from the shared baseline.
+--- @param project loomworks.Project
+--- @param config loomworks.Configuration
+--- @return boolean
+function Workspace:is_config_modified(project, config)
+    local bp = self:_baseline_project(project.key)
+    local baseline_configs = bp and bp.type_config and bp.type_config.configurations
+    local in_baseline = baseline_configs and baseline_configs[config.name] ~= nil
+
+    if config._published and not in_baseline then return true end  -- will add
+    if not config._published and in_baseline then return true end  -- will remove
+    if not config._published and not in_baseline then return false end  -- no-op
+
+    -- Published and in baseline: if user hasn't touched it, it's not modified
+    if not config._in_user_json then return false end
+
+    -- Both published and in baseline, user has modified: compare content
+    local current = config:serialize_user_override()
+    local baseline_val = baseline_configs[config.name]
+    -- Normalize: serialize_user_override returns nil for bare defaults,
+    -- baseline may have {} for bare defaults
+    if not current and (not baseline_val or not next(baseline_val)) then
+        return false  -- both are "empty"
+    end
+    if not current or not baseline_val then return true end
+    return not vim.deep_equal(current, baseline_val)
+end
+
+--- Check if a project declaration is modified (project-level fields, not configs).
+--- Compares path, type, depends_on, module settings (type_config minus configurations).
+--- @param project loomworks.Project
+--- @return boolean
+function Workspace:is_project_decl_modified(project)
+    local bp = self:_baseline_project(project.key)
+    local in_baseline = bp ~= nil
+
+    if project._published and not in_baseline then return true end
+    if not project._published and in_baseline then return true end
+    if not project._published and not in_baseline then return false end
+
+    -- Published and in baseline: if user hasn't touched project fields, not modified
+    if not project._in_user_json then return false end
+
+    -- Compare project-level fields
+    if (project.path or project.key) ~= (bp.path or project.key) then return true end
+    if project.type ~= bp.type then return true end
+    if not vim.deep_equal(project._depends_on_keys, bp.depends_on) then return true end
+
+    -- Compare module settings (type_config minus configurations)
+    local current_tc = project.type_config and vim.deepcopy(project.type_config) or {}
+    local baseline_tc = bp.type_config and vim.deepcopy(bp.type_config) or {}
+    current_tc.configurations = nil
+    baseline_tc.configurations = nil
+    return not vim.deep_equal(current_tc, baseline_tc)
+end
+
+--- Check if any part of a project is modified (declaration, configs, launch, variables).
+--- This is the "bubble up" check for the project header `+` indicator.
+--- @param project loomworks.Project
+--- @return boolean
+function Workspace:is_project_modified(project)
+    if self:is_project_decl_modified(project) then return true end
+
+    -- Check each configuration
+    for _, cfg in ipairs(project._configurations or {}) do
+        if self:is_config_modified(project, cfg) then return true end
+    end
+
+    -- Check launch configs
+    local bp = self:_baseline_project(project.key)
+    local baseline_launch = bp and bp.launch
+    local current_launch = project.launch
+    -- Published launch configs: compare per-key
+    if current_launch or baseline_launch then
+        -- Collect all launch names
+        local all_names = {}
+        if current_launch then
+            for name in pairs(current_launch) do all_names[name] = true end
+        end
+        if baseline_launch then
+            for name in pairs(baseline_launch) do all_names[name] = true end
+        end
+        for name in pairs(all_names) do
+            local cur = current_launch and current_launch[name]
+            local base = baseline_launch and baseline_launch[name]
+            -- For now, all launch configs from published projects are published
+            if project._published then
+                if not vim.deep_equal(cur, base) then return true end
+            end
+        end
+    end
+
+    -- Check variables
+    local baseline_vars = bp and bp.variables
+    local current_vars = project.variables
+    if project._published then
+        if not vim.deep_equal(current_vars, baseline_vars) then return true end
+    end
+
+    return false
+end
+
+--- Check if a configuration set is modified.
+--- @param cs loomworks.ConfigurationSet
+--- @return boolean
+function Workspace:is_config_set_modified(cs)
+    local baseline = self:_baseline_config_set(cs.name)
+    local in_baseline = baseline ~= nil
+
+    if cs._published and not in_baseline then return true end
+    if not cs._published and in_baseline then return true end
+    if not cs._published and not in_baseline then return false end
+
+    -- Compare mappings
+    local current = cs:raw_mappings()
+    return not vim.deep_equal(current, baseline)
+end
+
+--- Check if a profile is modified.
+--- Profiles default to unpublished, so they are only modified when
+--- explicitly published and differing from baseline.
+--- @param profile loomworks.Profile
+--- @return boolean
+function Workspace:is_profile_modified(profile)
+    local bp = self._shared_baseline and self._shared_baseline.profiles
+    local in_baseline = bp and bp[profile.key] ~= nil
+
+    if profile._published and not in_baseline then return true end
+    if not profile._published and in_baseline then return true end
+    if not profile._published and not in_baseline then return false end
+
+    -- Compare explicit def
+    local current = profile.explicit_def
+    local baseline = bp[profile.key]
+    return not vim.deep_equal(current, baseline)
+end
+
+--- Check if any publishable item in the workspace is modified.
+--- Used to set the buffer [+] indicator.
+--- @return boolean
+function Workspace:has_any_modified()
+    for _, project in pairs(self._projects) do
+        if not project.orphaned and self:is_project_modified(project) then
+            return true
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        if self:is_config_set_modified(cs) then return true end
+    end
+    for _, profile in pairs(self._profiles) do
+        if self:is_profile_modified(profile) then return true end
+    end
+    return false
+end
+
 --- Write the current config to loomworks.json.
 --- Updates the file tracker's cached content to suppress self-write detection.
 --- @return boolean ok, string|nil err

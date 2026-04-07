@@ -3412,6 +3412,149 @@ describe("two-layer merge", function()
 end)
 
 -- =========================================================================
+-- Modified state computation
+-- =========================================================================
+
+describe("modified state", function()
+    it("shared-only project is not modified (synced)", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_false(ws:is_project_modified(app))
+        assert.is_false(ws:has_any_modified())
+    end)
+
+    it("user-only unpublished project is not modified", function()
+        local ws = make_ws(
+            { projects = {} },
+            { projects = { MyLib = { cmake = {} } } }
+        )
+        local mylib = h.find_project_in(ws:get_projects(), "MyLib")
+        -- unpublished + not in baseline = no-op
+        assert.is_false(ws:is_project_modified(mylib))
+    end)
+
+    it("published project not in baseline is modified (will add)", function()
+        local ws = make_ws(
+            { projects = {} },
+            { projects = { MyLib = { cmake = {} } } }
+        )
+        local mylib = h.find_project_in(ws:get_projects(), "MyLib")
+        mylib._published = true
+        assert.is_true(ws:is_project_decl_modified(mylib))
+        assert.is_true(ws:is_project_modified(mylib))
+        assert.is_true(ws:has_any_modified())
+    end)
+
+    it("unpublished project in baseline is modified (will remove)", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+        })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        app._published = false
+        assert.is_true(ws:is_project_decl_modified(app))
+        assert.is_true(ws:has_any_modified())
+    end)
+
+    it("published config not in baseline is modified", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+            },
+            {
+                projects = {
+                    App = { cmake = { configurations = { Asan = { inherits = "Debug" } } } },
+                },
+            }
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        -- Find Asan config
+        local asan
+        for _, cfg in ipairs(app._configurations) do
+            if cfg.name == "Asan" then asan = cfg end
+        end
+        assert.is_not_nil(asan)
+        assert.is_false(asan._published)
+        -- Not published + not in baseline = not modified
+        assert.is_false(ws:is_config_modified(app, asan))
+        -- Mark as published → modified (will add)
+        asan._published = true
+        assert.is_true(ws:is_config_modified(app, asan))
+    end)
+
+    it("published config matching baseline is not modified", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = { configurations = { Debug = {} } } },
+            },
+        })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local debug_cfg
+        for _, cfg in ipairs(app._configurations) do
+            if cfg.name == "Debug" then debug_cfg = cfg end
+        end
+        assert.is_not_nil(debug_cfg)
+        assert.is_true(debug_cfg._published)
+        assert.is_false(ws:is_config_modified(app, debug_cfg))
+    end)
+
+    it("config set matching baseline is not modified", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "Debug" } },
+        })
+        local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
+        assert.is_false(ws:is_config_set_modified(cs))
+    end)
+
+    it("user-only unpublished config set is not modified", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            { configuration_sets = { UserSet = { App = "Debug" } } }
+        )
+        local cs = h.find_config_set_in(ws:get_config_sets(), "UserSet")
+        assert.is_false(ws:is_config_set_modified(cs))
+    end)
+
+    it("published user config set is modified (will add)", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            { configuration_sets = { UserSet = { App = "Debug" } } }
+        )
+        local cs = h.find_config_set_in(ws:get_config_sets(), "UserSet")
+        cs._published = true
+        assert.is_true(ws:is_config_set_modified(cs))
+        assert.is_true(ws:has_any_modified())
+    end)
+
+    it("modified config bubbles up to project", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = { configurations = { Debug = {} } } } },
+            },
+            {
+                projects = {
+                    App = { cmake = { configurations = {
+                        Debug = { toolchain = "changed" },
+                    } } },
+                },
+            }
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        -- Debug is published (in baseline) but content differs → modified
+        local debug_cfg
+        for _, cfg in ipairs(app._configurations) do
+            if cfg.name == "Debug" then debug_cfg = cfg end
+        end
+        assert.is_true(debug_cfg._published)
+        assert.is_true(ws:is_config_modified(app, debug_cfg))
+        -- Bubbles up
+        assert.is_true(ws:is_project_modified(app))
+    end)
+end)
+
+-- =========================================================================
 -- Deploy steps
 -- =========================================================================
 
