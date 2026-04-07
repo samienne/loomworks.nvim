@@ -2270,62 +2270,55 @@ function Workspace:_config_from_objects()
     }
 end
 
---- Reconstruct the shared config (loomworks.json portion) from domain objects.
---- Same as _config_from_objects() but only includes shared-sourced items.
+--- Return the shared config (loomworks.json portion) for merge.
+--- Uses the stored baseline when available (after publish or external load).
+--- Falls back to _serialize_config_internal() when no baseline exists.
 --- Used by remerge() as a fallback when no raw_config is provided after mutations.
 --- @return loomworks.Config
 function Workspace:_shared_config_from_objects()
-    local projects = {}
-    for _, project in pairs(self._projects) do
-        if not project.orphaned and project._source ~= "user" then
-            local tc = project.type_config
-                    and vim.deepcopy(project.type_config) or {}
-            local configs_dict = {}
-            for _, cfg in ipairs(project._configurations) do
-                local override = cfg:serialize_user_override()
-                if override then
-                    configs_dict[cfg.name] = override
-                end
+    if self._shared_baseline then
+        return self._shared_baseline
+    end
+    return self:_serialize_config_internal()
+end
+
+--- Serialize a published project — only includes published configurations.
+--- @param project loomworks.Project
+--- @return table entry raw JSON-compatible project entry
+function Workspace:_serialize_project_published(project)
+    local type_config = project.type_config
+            and vim.deepcopy(project.type_config) or {}
+    local configs_dict = {}
+    for _, cfg in ipairs(project._configurations) do
+        if cfg._published then
+            local override = cfg:serialize_user_override()
+            if override then
+                configs_dict[cfg.name] = override
             end
-            if next(configs_dict) then
-                tc.configurations = configs_dict
-            end
-            projects[project.key] = {
-                path = project.path or project.key,
-                type = project.type,
-                type_config = tc,
-                depends_on = project._depends_on_keys,
-                launch = project.launch,
-                variables = project.variables,
-            }
         end
     end
-
-    local configuration_sets = nil
-    for _, cs in pairs(self._config_sets) do
-        if cs._source ~= "user" then
-            if not configuration_sets then configuration_sets = {} end
-            configuration_sets[cs.name] = cs:raw_mappings()
-        end
+    if next(configs_dict) then
+        type_config.configurations = configs_dict
     end
-
-    local profiles = nil
-    for _, profile in pairs(self._profiles) do
-        if profile.explicit_def then
-            if not profiles then profiles = {} end
-            profiles[profile.key] = profile.explicit_def
-        end
+    local entry = { [project.type] = next(type_config)
+            and type_config or vim.empty_dict() }
+    if project.path and project.path ~= project.key then
+        entry.path = project.path
     end
-
-    return {
-        name = self.name,
-        projects = projects,
-        configuration_sets = configuration_sets,
-        profiles = profiles,
-    }
+    if project._depends_on_keys then
+        entry.depends_on = project._depends_on_keys
+    end
+    if project.launch then
+        entry.launch = project.launch
+    end
+    if project.variables and next(project.variables) then
+        entry.variables = project.variables
+    end
+    return entry
 end
 
 --- Serialize a project domain object to the raw JSON format used in config files.
+--- Includes all configurations regardless of published state.
 --- @param project loomworks.Project
 --- @return table entry raw JSON-compatible project entry
 function Workspace:_serialize_project(project)
@@ -2369,26 +2362,26 @@ function Workspace:_serialize_config()
         raw.name = self.name
     end
 
-    -- Projects from domain objects (skip cache-only orphans and user-sourced)
+    -- Projects: include published projects with published configurations
     for _, project in pairs(self._projects) do
-        if not project.orphaned and project._source ~= "user" then
-            raw.projects[project.key] = self:_serialize_project(project)
+        if not project.orphaned and project._published then
+            raw.projects[project.key] = self:_serialize_project_published(project)
         end
     end
 
-    -- Configuration sets from domain objects (skip user-sourced)
+    -- Configuration sets: include published
     local sets = {}
     for _, cs in pairs(self._config_sets) do
-        if cs._source ~= "user" then
+        if cs._published then
             sets[cs.name] = cs:raw_mappings()
         end
     end
     if next(sets) then raw.configuration_sets = sets end
 
-    -- Explicit profiles from domain objects
+    -- Profiles: include published explicit profiles
     local profiles = {}
     for _, profile in pairs(self._profiles) do
-        if profile.explicit_def then
+        if profile._published and profile.explicit_def then
             profiles[profile.key] = profile.explicit_def
         end
     end

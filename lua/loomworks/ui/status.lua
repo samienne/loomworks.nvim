@@ -111,9 +111,7 @@ local view = View.new({
         local ws = lw.get_workspace()
         if ws then
             local ok, err = ws:publish()
-            if ok then
-                vim.notify("loomworks: published to loomworks.json", vim.log.levels.INFO)
-            else
+            if not ok then
                 vim.notify("loomworks: publish failed: " .. (err or "unknown"), vim.log.levels.ERROR)
             end
         end
