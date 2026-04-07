@@ -419,11 +419,10 @@ function M._pick_target(profile, on_select)
         action = "clear",
     }
 
-    -- "Default" option if loomworks.json defines a default and user has overridden
+    -- "Default" option if the profile's config defines a default and user has overridden
     if ws then
         local user_has_override = profile:has_default_target_override()
-        local config_default = profile.explicit_def
-            and profile.explicit_def.default_target
+        local config_default = nil -- default targets from shared config (not supported after pinned removal)
         if user_has_override and config_default then
             items[#items + 1] = {
                 label = "Default (" .. config_default.project .. ": " .. config_default.target .. ")",

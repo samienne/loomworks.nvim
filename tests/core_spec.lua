@@ -276,7 +276,7 @@ describe("Core", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -407,7 +407,7 @@ describe("Core", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -447,7 +447,7 @@ describe("Core", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         release = { configuration_set = "release" },
                     },
@@ -492,7 +492,7 @@ describe("Core", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         release = { configuration_set = "release" },
                     },
@@ -1005,7 +1005,7 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
@@ -1048,7 +1048,7 @@ describe("Core", function()
                     configuration_sets = { debug = { App = "Debug" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
                             tools = { cmake = { key = "ninja-gcc", data = { generator = "Ninja", compiler_id = "gcc" } } },
@@ -1214,7 +1214,7 @@ describe("Core", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1313,7 +1313,7 @@ describe("Core", function()
                     projects = { App = { typescript = {} } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
@@ -1457,7 +1457,7 @@ describe("Core", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1484,7 +1484,7 @@ describe("Core", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1638,7 +1638,7 @@ describe("Core", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1680,7 +1680,7 @@ describe("Core", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1722,7 +1722,7 @@ describe("Core", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1789,7 +1789,7 @@ describe("Core", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         release = { configuration_set = "release" },
                     },
@@ -1949,7 +1949,7 @@ describe("Core", function()
 
         local op_user = {
             active_profile = "debug",
-            pinned_profiles = {
+            profiles = {
                 debug = { configuration_set = "debug" },
             },
         }

@@ -485,7 +485,7 @@ return function(tree, ctx)
             end
 
             if proj.configurations and next(proj.configurations) then
-                tree:group({{"Configurations:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [p] pin  [o] options  [D] delete", "Comment"}}, function()
+                tree:group({{"Configurations:  ", "LoomworksActionable"}, {"[D] delete", "Comment"}}, function()
                     local config_names = {}
                     for name in pairs(proj.configurations) do
                         config_names[#config_names + 1] = name
@@ -543,61 +543,6 @@ return function(tree, ctx)
                         local cfg_obj = proj:get_configuration(cname)
                         local has_user_entry = cfg_obj and cfg_obj.is_user or false
 
-                        -- Build picker-based action closures for keyed-tool modules.
-                        -- If only one tool entry, skip picker and act directly.
-                        --- Pick a tool entry then invoke action_fn(unit).
-                        --- @param action_name string for picker prompt
-                        --- @param action_fn fun(unit: loomworks.ConfigUnit)
-                        --- @param filter? fun(entry: table): boolean filter tool entries
-                        --- Resolve a ConfigUnit from a tool entry.
-                        --- Uses direct reference if available, otherwise finds/creates via variant scan.
-                        local function resolve_unit_from_entry(entry)
-                            if entry.unit then return entry.unit end
-                            -- No ConfigUnit yet — find or create one for this variant + tool
-                            -- (on-demand creation for uncached detected tools)
-                            local ws = project._workspace
-                            local tool_obj = entry.tool_key and ws:find_tool(project.type, entry.tool_key) or nil
-                            local cfg = project:get_configuration(cfg_name)
-                            return ws:ensure_config_unit(project, cfg, tool_obj)
-                        end
-
-                        local function with_tool_picker(action_name, action_fn, filter)
-                            return function()
-                                if not has_tool_entries then
-                                    -- Non-keyed module: find or create unit for this variant
-                                    local ws = project._workspace
-                                    local cfg = project:get_configuration(cfg_name)
-                                    local unit = ws:ensure_config_unit(project, cfg, nil)
-                                    action_fn(unit)
-                                    return
-                                end
-                                local entries = tool_entries
-                                if filter then
-                                    entries = {}
-                                    for _, e in ipairs(tool_entries) do
-                                        if filter(e) then entries[#entries + 1] = e end
-                                    end
-                                    if #entries == 0 then
-                                        vim.notify("loomworks: no tools available for " .. action_name:lower(),
-                                            vim.log.levels.INFO)
-                                        return
-                                    end
-                                end
-                                if #entries == 1 then
-                                    action_fn(resolve_unit_from_entry(entries[1]))
-                                    return
-                                end
-                                -- Multiple tools — show picker
-                                vim.ui.select(entries, {
-                                    prompt = action_name .. " " .. cfg_name .. " with:",
-                                    format_item = function(item) return item.display_label end,
-                                }, function(choice)
-                                    if not choice then return end
-                                    action_fn(resolve_unit_from_entry(choice))
-                                end)
-                            end
-                        end
-
                         tree:node(cfg_modified_tag .. cname .. cfg_local_tag .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
@@ -617,25 +562,6 @@ return function(tree, ctx)
                             on_delete = has_user_entry
                                     and function() delete_project_configuration(project, cfg_name) end
                                     or nil,
-                            on_build = not is_abstract and with_tool_picker("Build", function(unit)
-                                require("loomworks.overseer").run_configuration_action(unit, "build")
-                            end) or nil,
-                            on_configure = not is_abstract and with_tool_picker("Configure", function(unit)
-                                require("loomworks.overseer").run_configuration_action(unit, "configure")
-                            end) or nil,
-                            on_pin = not is_abstract and with_tool_picker("Pin", function(unit)
-                                local pkey = unit._project and unit._project.key or unit._init_project_key or "?"
-                                local ckey = unit:config_key() or unit.id
-                                if #unit:referencing_profiles() > 0 then
-                                    vim.notify("loomworks: already pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
-                                    return
-                                end
-                                unit:materialize_pinned()
-                                vim.notify("loomworks: pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
-                            end) or nil,
-                            on_options = not is_abstract and with_tool_picker("Options", function(unit)
-                                actions.show_options(unit)()
-                            end, function(entry) return entry.has_cache end) or nil,
                         }, function()
                             if is_abstract then
                                 tree:leaf("Abstract mixin — not directly buildable", "Comment")

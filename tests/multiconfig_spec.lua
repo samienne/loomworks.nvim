@@ -255,7 +255,7 @@ describe("multi-config cmake", function()
                     }),
                     ["loomworks.user.json"] = h.make_user_json({
                         active_profile = "debug",
-                        pinned_profiles = {
+                        profiles = {
                             debug = { configuration_set = "debug" },
                         },
                     }),

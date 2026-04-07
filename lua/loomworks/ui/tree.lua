@@ -18,7 +18,6 @@ local ACTION_ORDER = {
     { action = "build",     label = "Build" },
     { action = "configure", label = "Configure" },
     { action = "task",      label = "Open task output" },
-    { action = "pin",       label = "Pin as profile" },
     { action = "options",   label = "Show build options" },
     { action = "move_up",   label = "Move up  <C-k>" },
     { action = "move_down", label = "Move down  <C-j>" },

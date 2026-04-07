@@ -20,13 +20,6 @@ function M.profile_key(set_name, tools)
 end
 
 
---- Build a pinned profile key from project and config keys.
---- @param project_key string
---- @param config_key string
---- @return string
-function M.pinned_key(project_key, config_key)
-    return project_key .. "/" .. config_key
-end
 
 
 --- Determine project status from cache entry.
@@ -255,33 +248,35 @@ function M.get_all_profiles(config, cache, tools_by_type, user_data)
     tools_by_type = tools_by_type or {}
     local profiles = {}
 
-    -- Pinned profiles from user.json (dict keyed by profile key)
-    if user_data and user_data.pinned_profiles then
-        for pkey, pin in pairs(user_data.pinned_profiles) do
-            profiles[pkey] = {
-                configuration_set = pin.configuration_set,
-                tools = pin.tools,
-                mappings = pin.mappings,
-                _pinned = true,
-            }
-        end
-    end
-
-    -- Explicit profiles from loomworks.json
+    -- Profiles from merged config (includes both shared and user via merge_configs).
+    -- All profiles are set-based: { configuration_set, tools }.
+    -- Legacy kit_id format is converted to tools dict.
     if config.profiles then
-        for name, profile in pairs(config.profiles) do
-            local tk = profile.kit_id or (profile.cmake and profile.cmake.kit_id) or nil
-            local td, tl, tmt = resolve_tool(tools_by_type, cache, tk)
-            local tools = nil
-            if tk and tmt then
-                tools = { [tmt] = { key = tk, data = td, label = tl } }
+        for pkey, profile in pairs(config.profiles) do
+            if profile.tools then
+                -- New format: tools dict already present
+                profiles[pkey] = {
+                    configuration_set = profile.configuration_set,
+                    tools = profile.tools,
+                }
+            elseif profile.kit_id then
+                -- Legacy format: resolve kit_id to tools dict
+                local tk = profile.kit_id
+                local td, tl, tmt = resolve_tool(tools_by_type, cache, tk)
+                local tools = nil
+                if tk and tmt then
+                    tools = { [tmt] = { key = tk, data = td, label = tl } }
+                end
+                profiles[pkey] = {
+                    configuration_set = profile.configuration_set,
+                    tools = tools,
+                }
+            else
+                -- Minimal format: just configuration_set
+                profiles[pkey] = {
+                    configuration_set = profile.configuration_set,
+                }
             end
-            profiles[name] = {
-                configuration_set = profile.configuration_set,
-                tools = tools,
-                explicit = true,
-                explicit_def = profile,
-            }
         end
     end
 

@@ -328,7 +328,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -481,7 +481,7 @@ describe("cache coherence", function()
                     debug = { Backend = "Debug", Frontend = "development" },
                 },
             }, {
-                pinned_profiles = {
+                profiles = {
                     ["debug:ninja-gcc"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -538,7 +538,7 @@ describe("cache coherence", function()
                     debug = { Backend = "Debug", Frontend = "development" },
                 },
             }, {
-                pinned_profiles = {
+                profiles = {
                     ["debug:ninja-gcc"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -629,7 +629,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 }
@@ -755,7 +755,7 @@ describe("cache coherence", function()
             local core = make_tracked_core(
                 { projects = { App = { typescript = {} } } },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
@@ -849,7 +849,7 @@ describe("cache coherence", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -890,7 +890,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -922,7 +922,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         ["App/development"] = { mappings = { App = "development" } },
                     },
@@ -993,7 +993,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1064,7 +1064,7 @@ describe("cache coherence", function()
                     projects = { App = { typescript = {} } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["App/development"] = { mappings = { App = "development" } },
                         ["App/production"] = { mappings = { App = "production" } },
                     },
@@ -1104,7 +1104,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { Lib = "Debug" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
                             tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -1165,7 +1165,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1202,7 +1202,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1274,7 +1274,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { Lib = "Debug" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
                             tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -1305,7 +1305,7 @@ describe("cache coherence", function()
             )
             setup({ root = "/root" })
 
-            -- Profile "debug:ninja-gcc" exists from pinned_profiles
+            -- Profile "debug:ninja-gcc" exists from profiles
             assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "debug:ninja-gcc"))
             -- Old build entry is orphaned (no profile for the old tool)
             assert.equals(1, count_cached_configs(core))
@@ -1353,7 +1353,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1425,7 +1425,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -1491,7 +1491,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         setA = { configuration_set = "setA" },
                         setB = { configuration_set = "setB" },
                         setC = { configuration_set = "setC" },
@@ -1584,7 +1584,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1650,7 +1650,7 @@ describe("cache coherence", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1691,7 +1691,7 @@ describe("cache coherence", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         release = { configuration_set = "release" },
                     },
@@ -1784,7 +1784,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
                             tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -1864,7 +1864,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -1912,7 +1912,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -1959,7 +1959,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -2008,7 +2008,7 @@ describe("cache coherence", function()
                     projects = { App = { typescript = {} } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
@@ -2058,7 +2058,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         ["App/development"] = { mappings = { App = "development" } },
                     },
@@ -2077,7 +2077,7 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
 
-            -- "debug" profile exists (from pinned_profiles)
+            -- "debug" profile exists (from profiles)
             local debug_profile = h.find_profile(core:get_profiles(), "debug")
             assert.is_not_nil(debug_profile)
 
@@ -2108,7 +2108,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -2188,7 +2188,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 }

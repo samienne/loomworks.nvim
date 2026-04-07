@@ -57,6 +57,11 @@ function M.parse(content)
     if raw._meta.version ~= CURRENT_VERSION then
         return M.default(), true
     end
+    -- Migrate pinned_profiles → profiles (transparent, no version bump)
+    if raw.pinned_profiles and not raw.profiles then
+        raw.profiles = raw.pinned_profiles
+        raw.pinned_profiles = nil
+    end
     return raw, false
 end
 

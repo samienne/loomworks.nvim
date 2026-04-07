@@ -167,7 +167,6 @@ function ConfigurationSet:ensure_profile(tool_entry)
         local data = {
             configuration_set = self.name,
             tools = tools,
-            _pinned = true,
         }
 
         -- Resolve references for _apply

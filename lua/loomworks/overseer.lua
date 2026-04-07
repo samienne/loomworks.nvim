@@ -546,10 +546,6 @@ function M.run_configuration_action(unit, action, on_complete)
     local f = future_mod.Future.new()
 
     local function do_action()
-        if #unit:referencing_profiles() == 0 then
-            unit:materialize_pinned()
-        end
-
         local all_tasks = collect_configuration_tasks(unit)
         if not all_tasks then
             f:_reject("no tasks for " .. action)

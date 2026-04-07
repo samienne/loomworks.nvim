@@ -221,7 +221,7 @@ describe("config set lifecycle", function()
             },
             {
                 active_profile = "Debug",
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                 },
             }
@@ -320,7 +320,7 @@ describe("profile lifecycle", function()
             },
             {
                 active_profile = "Debug",
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                 },
             }
@@ -345,7 +345,7 @@ describe("profile lifecycle", function()
             },
             {
                 active_profile = "Debug",
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                 },
             },
@@ -415,7 +415,7 @@ describe("profile lifecycle", function()
             },
             {
                 active_profile = "Debug:ninja-gcc",
-                pinned_profiles = {
+                profiles = {
                     ["Debug:ninja-gcc"] = {
                         configuration_set = "Debug",
                         tools = { cmake = { key = "ninja-gcc", data = { generator = "Ninja" } } },
@@ -470,7 +470,7 @@ describe("profile lifecycle", function()
                 },
             },
             {
-                pinned_profiles = {
+                profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
                         tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12", display = "Ninja - GCC 12" } } },
@@ -683,7 +683,7 @@ describe("profile upgrade and downgrade", function()
             },
             {
                 active_profile = "Debug",
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                 },
             },
@@ -746,7 +746,7 @@ describe("profile upgrade and downgrade", function()
             },
             {
                 active_profile = "Debug:ninja-gcc-12",
-                pinned_profiles = {
+                profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
                         tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12", generator = "Ninja", compiler_id = "GNU" } } },
@@ -801,7 +801,7 @@ describe("profile upgrade and downgrade", function()
                 configuration_sets = { Debug = { Frontend = "debug", App = "Debug" } },
             },
             {
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                     ["App/Debug"] = { mappings = { App = "Debug" } },
                 },
@@ -842,7 +842,7 @@ describe("profile upgrade and downgrade", function()
                 configuration_sets = { Debug = { App = "Debug", Lib = "Debug" } },
             },
             {
-                pinned_profiles = {
+                profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
                         tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12", generator = "Ninja", compiler_id = "GNU" } } },
@@ -887,7 +887,7 @@ describe("orphan lifecycle", function()
             },
             {
                 active_profile = "Debug",
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                 },
             },
@@ -1068,7 +1068,7 @@ describe("collect helpers", function()
                 configuration_sets = { Debug = { Frontend = "debug" } },
             },
             {
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                 },
             },
@@ -1139,7 +1139,7 @@ describe("config set rename", function()
                 },
             },
             {
-                pinned_profiles = {
+                profiles = {
                     ["debug:ninja-gcc-12"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
@@ -1293,7 +1293,7 @@ describe("configuration rename propagation", function()
                 debug = { App = "Debug-asan" },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["debug:ninja-gcc"] = {
                     configuration_set = "debug",
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" } } },
@@ -1402,7 +1402,7 @@ describe("configuration rename propagation", function()
                 App = { cmake = { configurations = { Debug = { variant = "Debug" } } } },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["App/Debug:ninja-gcc"] = {
                     mappings = { App = "Debug" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" } } },
@@ -1461,9 +1461,9 @@ describe("configuration rename propagation", function()
 
         -- Serialized user.json should have the updated pinned profile
         local user_data = ws:_serialize_user()
-        assert.is_nil(user_data.pinned_profiles["App/Debug:ninja-gcc"],
+        assert.is_nil(user_data.profiles["App/Debug:ninja-gcc"],
             "Old key should not be in serialized user data")
-        assert.is_not_nil(user_data.pinned_profiles["App/Development:ninja-gcc"],
+        assert.is_not_nil(user_data.profiles["App/Development:ninja-gcc"],
             "New key should be in serialized user data")
     end)
 
@@ -1477,7 +1477,7 @@ describe("configuration rename propagation", function()
             },
         }, {
             active_profile = "debug",
-            pinned_profiles = {
+            profiles = {
                 ["debug"] = { configuration_set = "debug" },
             },
         }, {
@@ -1601,7 +1601,7 @@ describe("configuration rename propagation", function()
                 },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
@@ -1652,7 +1652,7 @@ describe("configuration rename propagation", function()
             },
         }, {
             active_profile = "App/Debug-asan:ninja-gcc",
-            pinned_profiles = {
+            profiles = {
                 ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
@@ -1699,7 +1699,7 @@ describe("configuration rename propagation", function()
                 asan = { App = "Debug-asan" },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["asan:ninja-gcc"] = {
                     configuration_set = "asan",
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" } } },
@@ -1760,7 +1760,7 @@ describe("configuration rename propagation", function()
                 },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
@@ -1864,7 +1864,7 @@ describe("configuration rename propagation", function()
                 custom = { App = "CustomBuild" },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["custom:ninja-gcc"] = {
                     configuration_set = "custom",
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" } } },
@@ -1957,7 +1957,7 @@ describe("configuration rename propagation", function()
                 debug = { App = "Debug-asan" },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["App/Debug-asan"] = {
                     mappings = { App = "Debug-asan" },
                 },
@@ -2045,7 +2045,7 @@ describe("configuration rename propagation", function()
                 debug = { App = "Debug-asan" },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["App/Debug-asan"] = {
                     mappings = { App = "Debug-asan" },
                 },
@@ -2111,7 +2111,7 @@ describe("configuration rename propagation", function()
                 debug = { App = "Debug-asan" },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["App/Debug-asan:ninja-gcc"] = {
                     mappings = { App = "Debug-asan" },
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
@@ -2199,7 +2199,7 @@ describe("configuration rename propagation", function()
                 debug = { App = "Debug-asan" },
             },
         }, {
-            pinned_profiles = {
+            profiles = {
                 ["App/Debug-asan"] = {
                     mappings = { App = "Debug-asan" },
                 },
@@ -2883,7 +2883,7 @@ describe("opaque keys", function()
             },
         }, {
             active_profile = "set-x:tool-7",
-            pinned_profiles = {
+            profiles = {
                 ["set-x:tool-7"] = {
                     configuration_set = "set-x",
                     tools = { cmake = { key = "tool-7", data = { id = "tool-7", display = "Tool Seven", generator = "Ninja" } } },
@@ -3165,7 +3165,7 @@ describe("two-layer merge", function()
             {
                 projects = { MyLib = { cmake = {} } },
                 configuration_sets = { dev = { MyLib = "Debug" } },
-                pinned_profiles = { dev = { configuration_set = "dev" } },
+                profiles = { dev = { configuration_set = "dev" } },
             }
         )
         local user_data = ws:_serialize_user()
@@ -3195,7 +3195,7 @@ describe("two-layer merge", function()
             },
             {
                 configuration_sets = { UserDebug = { App = "Release" } },
-                pinned_profiles = { ["UserDebug"] = { configuration_set = "UserDebug" } },
+                profiles = { ["UserDebug"] = { configuration_set = "UserDebug" } },
             }
         )
         local user_data = ws:_serialize_user()
@@ -3210,7 +3210,7 @@ describe("two-layer merge", function()
             {
                 projects = { App = { cmake = {} } },
                 configuration_sets = { Debug = { App = "Debug" } },
-                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+                profiles = { Debug = { configuration_set = "Debug" } },
             }
         )
         local app = h.find_project_in(ws:get_projects(), "App")
@@ -3619,7 +3619,7 @@ describe("deploy steps", function()
             },
         }, {
             active_profile = "Debug",
-            pinned_profiles = {
+            profiles = {
                 Debug = { configuration_set = "Debug" },
                 Release = { configuration_set = "Release" },
             },
@@ -3851,7 +3851,7 @@ describe("deploy steps", function()
                 },
             }, {
                 active_profile = "Debug",
-                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+                profiles = { Debug = { configuration_set = "Debug" } },
             })
 
             local profile = ws._active_profile
@@ -4401,7 +4401,7 @@ describe("project variables", function()
                 configuration_sets = { Debug = { App = "Debug" } },
             }, {
                 active_profile = "Debug",
-                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+                profiles = { Debug = { configuration_set = "Debug" } },
             })
 
             local app = h.find_project_in(ws:get_projects(), "App")
@@ -4441,7 +4441,7 @@ describe("project variables", function()
                 },
             }, {
                 active_profile = "Debug",
-                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+                profiles = { Debug = { configuration_set = "Debug" } },
             })
 
             local expand_mod = require("loomworks.expand")
@@ -4502,7 +4502,7 @@ describe("project variables", function()
                 configuration_sets = { Debug = { App = "Debug" } },
             }, {
                 active_profile = "Debug",
-                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+                profiles = { Debug = { configuration_set = "Debug" } },
             })
 
             local app = h.find_project_in(ws:get_projects(), "App")
@@ -4578,7 +4578,7 @@ describe("project variables", function()
                 configuration_sets = { Debug = { App = "Debug" } },
             }, {
                 active_profile = "Debug",
-                pinned_profiles = { Debug = { configuration_set = "Debug" } },
+                profiles = { Debug = { configuration_set = "Debug" } },
             })
 
             local app = h.find_project_in(ws:get_projects(), "App")
@@ -4620,7 +4620,7 @@ describe("operation completion on failure", function()
             },
         }, {
             active_profile = "Debug",
-            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            profiles = { Debug = { configuration_set = "Debug" } },
         })
 
         local profile = ws._active_profile
@@ -4682,7 +4682,7 @@ describe("operation completion on failure", function()
             configuration_sets = { Debug = { App = "Debug" } },
         }, {
             active_profile = "Debug",
-            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            profiles = { Debug = { configuration_set = "Debug" } },
         })
 
         local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
@@ -4717,7 +4717,7 @@ describe("operation completion on failure", function()
             },
         }, {
             active_profile = "Debug",
-            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            profiles = { Debug = { configuration_set = "Debug" } },
         })
 
         local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
@@ -4750,7 +4750,7 @@ describe("operation completion on failure", function()
             configuration_sets = { Debug = { App = "Debug" } },
         }, {
             active_profile = "Debug",
-            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            profiles = { Debug = { configuration_set = "Debug" } },
         })
 
         local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
@@ -4785,7 +4785,7 @@ describe("operation completion on failure", function()
             configuration_sets = { Debug = { App = "Debug" } },
         }, {
             active_profile = "Debug",
-            pinned_profiles = { Debug = { configuration_set = "Debug" } },
+            profiles = { Debug = { configuration_set = "Debug" } },
         })
 
         local app_unit = h.find_config_unit(ws._config_units, "App", "Debug")
@@ -4838,7 +4838,7 @@ describe("inherited options through abstract mixins", function()
             },
         }, {
             active_profile = "Debug-with-tests",
-            pinned_profiles = {
+            profiles = {
                 ["Debug-with-tests"] = { configuration_set = "Debug-with-tests" },
             },
         })
@@ -4949,13 +4949,13 @@ describe("profile persistence", function()
         assert.is_not_nil(profile, "profile should be created")
         assert.is_true(profile._pinned, "profile should be pinned")
 
-        -- Serialize user data and check pinned_profiles
+        -- Serialize user data and check profiles
         local user_data = ws:_serialize_user()
-        assert.is_not_nil(user_data.pinned_profiles, "user data should have pinned_profiles")
-        assert.is_not_nil(user_data.pinned_profiles[profile.key],
-            "profile key should be in pinned_profiles")
+        assert.is_not_nil(user_data.profiles, "user data should have profiles")
+        assert.is_not_nil(user_data.profiles[profile.key],
+            "profile key should be in profiles")
         assert.equals("Debug",
-            user_data.pinned_profiles[profile.key].configuration_set,
+            user_data.profiles[profile.key].configuration_set,
             "pinned profile should reference config set")
     end)
 

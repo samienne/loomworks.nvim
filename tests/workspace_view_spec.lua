@@ -87,7 +87,7 @@ describe("compute_add_project_context", function()
                 configuration_sets = { Debug = { Frontend = "debug" } },
             },
             {
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                 },
             }
@@ -112,7 +112,7 @@ describe("compute_add_project_context", function()
                 },
             },
             {
-                pinned_profiles = {
+                profiles = {
                     ["Debug:ninja-gcc-12"] = {
                         configuration_set = "Debug",
                         tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
@@ -154,7 +154,7 @@ describe("compute_add_project_context", function()
                 },
             },
             {
-                pinned_profiles = {
+                profiles = {
                     Debug = { configuration_set = "Debug" },
                     Release = { configuration_set = "Release" },
                 },

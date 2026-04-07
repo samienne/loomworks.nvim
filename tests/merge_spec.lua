@@ -64,7 +64,7 @@ describe("merge", function()
             })
             local user_data = {
                 _meta = { version = 2 },
-                pinned_profiles = {
+                profiles = {
                     ["App/development"] = { mappings = { App = "development" } },
                 },
             }
@@ -132,7 +132,7 @@ describe("merge", function()
                 { configuration_sets = { debug = { App = "development" } } },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -157,7 +157,7 @@ describe("merge", function()
                 { configuration_sets = { debug = { App = "development" } } },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -189,7 +189,7 @@ describe("merge", function()
                 { configuration_sets = { debug = { App = "development" } } },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
