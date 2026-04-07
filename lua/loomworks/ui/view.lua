@@ -34,6 +34,7 @@ function View.new(opts)
         _win_opts = opts.win or {},
         _on_close = opts.on_close,
         _on_write = opts.on_write,
+        _is_modified = opts.is_modified,
         _lock_to_items = opts.lock_to_items or false,
         _filetype = opts.filetype or "loomworks",
         _timer_interval = opts.timer_interval or 80,
@@ -163,9 +164,10 @@ function View:refresh()
     vim.bo[self._bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(self._bufnr, 0, -1, false, lines)
     vim.bo[self._bufnr].modifiable = false
-    -- For acwrite buffers: always mark modified so :w triggers BufWriteCmd
+    -- For acwrite buffers: mark modified only when there are publishable changes.
+    -- This enables :w when needed but avoids blocking :qa when clean.
     if self._on_write then
-        vim.bo[self._bufnr].modified = true
+        vim.bo[self._bufnr].modified = self._is_modified and self._is_modified() or false
     end
 
     -- Apply highlights

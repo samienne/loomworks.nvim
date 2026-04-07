@@ -106,6 +106,11 @@ local view = View.new({
         ["U"]     = "delete_user_prefs",
         ["?"]     = "help",
     },
+    is_modified = function()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        return ws and ws:has_any_modified() or false
+    end,
     on_write = function()
         local lw = require("loomworks")
         local ws = lw.get_workspace()
