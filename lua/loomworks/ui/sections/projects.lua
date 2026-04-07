@@ -460,15 +460,20 @@ return function(tree, ctx)
         local type_tag = "[" .. proj.type .. "]"
         local orphan_tag = proj.orphaned and " (orphaned)" or ""
         local refresh_tag = proj.needs_refresh and " !" or ""
+        local local_tag = proj._in_user_json and not proj._published and " [local]" or ""
 
-        tree:node(modified_tag .. key .. " " .. type_tag .. orphan_tag .. refresh_tag, {
+        tree:node(modified_tag .. key .. " " .. type_tag .. orphan_tag .. local_tag .. refresh_tag, {
             fold_key = "project:" .. key,
             spinning = proj_running ~= nil,
             hl = proj_hl,
+            publish_label = proj._published and "Unpublish" or "Publish",
             on_publish = function()
                 proj._published = not proj._published
                 proj:_mark_user_owned()
-                if ws then ws:_save_user() end
+                if ws then
+                    ws:_save_user()
+                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                end
             end,
         }, function()
             tree:leaf("Path: " .. (proj.path or key), "Comment")
@@ -528,6 +533,9 @@ return function(tree, ctx)
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
                         local cfg_modified_tag = ws and cname_cfg
                                 and ws:is_config_modified(proj, cname_cfg) and "+" or ""
+                        local cfg_local_tag = cname_cfg
+                                and cname_cfg._in_user_json and not cname_cfg._published
+                                and " [local]" or ""
 
                         local project = proj  -- capture for closure
                         local cfg_name = cname
@@ -590,17 +598,21 @@ return function(tree, ctx)
                             end
                         end
 
-                        tree:node(cfg_modified_tag .. cname .. brief_str, {
+                        tree:node(cfg_modified_tag .. cname .. cfg_local_tag .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
                             hl = config_hl,
                             enter_label = "Edit configuration",
                             on_enter = function() edit_project_configuration(project, cfg_name) end,
+                            publish_label = cname_cfg and (cname_cfg._published and "Unpublish" or "Publish") or nil,
                             on_publish = cname_cfg and function()
                                 cname_cfg._published = not cname_cfg._published
                                 cname_cfg._in_user_json = true
                                 proj:_mark_user_owned()
-                                if ws then ws:_save_user() end
+                                if ws then
+                                    ws:_save_user()
+                                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                                end
                             end or nil,
                             on_delete = has_user_entry
                                     and function() delete_project_configuration(project, cfg_name) end

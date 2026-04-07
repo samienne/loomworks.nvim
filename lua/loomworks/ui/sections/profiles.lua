@@ -135,12 +135,14 @@ return function(tree, ctx)
         local hl
 
         local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
+        local prof_local = not profile._published and " [local]" or ""
         local display = prof_modified .. profile.key
         if profile.orphaned_set then
             display = display .. " [stale]"
         elseif profile.explicit then
             display = display .. " [explicit]"
         end
+        display = display .. prof_local
 
         display = display .. " (" .. status_label .. ")"
         if has_operation then
@@ -180,9 +182,13 @@ return function(tree, ctx)
             hl = hl,
             enter_label = "Activate",
             on_enter = actions.activate(profile),
+            publish_label = profile._published and "Unpublish" or "Publish",
             on_publish = function()
                 profile._published = not profile._published
-                if ws then ws:_save_user() end
+                if ws then
+                    ws:_save_user()
+                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                end
             end,
             on_build = actions.build(profile),
             on_rebuild = actions.rebuild(profile),

@@ -317,16 +317,21 @@ return function(tree, ctx)
                 or "LoomworksActionable"
         local sname = cs.name
         local cs_modified = ws and ws:is_config_set_modified(cs) and "+" or ""
+        local cs_local = cs._in_user_json and not cs._published and " [local]" or ""
 
-        tree:node(cs_modified .. cs.name, {
+        tree:node(cs_modified .. cs.name .. cs_local, {
             fold_key = "set:" .. cs.name,
             hl = set_hl,
             enter_label = "Edit mappings",
             on_enter = function() edit_config_set(cs) end,
+            publish_label = cs._published and "Unpublish" or "Publish",
             on_publish = function()
                 cs._published = not cs._published
                 cs._in_user_json = true
-                if ws then ws:_save_user() end
+                if ws then
+                    ws:_save_user()
+                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                end
             end,
             on_create = function()
                 local all_tool_entries = lw.get_tool_entries()

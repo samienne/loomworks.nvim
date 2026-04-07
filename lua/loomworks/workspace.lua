@@ -2403,9 +2403,11 @@ end
 --- Items that the user had modified (differed from old baseline) are left alone.
 --- @param new_config table new parsed loomworks.json config
 --- @param user_data table parsed user.json data (mutable — updated in place)
+--- @return boolean changed true if any items were synced
 function Workspace:_auto_sync_user_projects(new_config, user_data)
     local old_baseline = self._shared_baseline
-    if not old_baseline then return end
+    if not old_baseline then return false end
+    local changed = false
 
     -- Sync projects
     if user_data.projects then
@@ -2424,6 +2426,10 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
                 if synced_decl and new_projects[pkey] then
                     local new_shared = new_projects[pkey]
                     -- Update project-level fields to match new shared
+                    if user_proj.path ~= new_shared.path
+                            or user_proj.type ~= new_shared.type then
+                        changed = true
+                    end
                     user_proj.path = new_shared.path
                     user_proj.type = new_shared.type
                     user_proj.depends_on = new_shared.depends_on
@@ -2446,6 +2452,7 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
                         if new_configs[cname] then
                             -- Update to match new shared
                             user_configs[cname] = vim.deepcopy(new_configs[cname])
+                            changed = true
                         end
                     end
                 end
@@ -2461,9 +2468,12 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
             local old_set = old_sets[sname]
             if old_set and vim.deep_equal(user_set, old_set) and new_sets[sname] then
                 user_data.configuration_sets[sname] = vim.deepcopy(new_sets[sname])
+                changed = true
             end
         end
     end
+
+    return changed
 end
 
 --- Reconstruct the user config overlay from domain objects.
@@ -3678,14 +3688,19 @@ function Workspace:_on_file_changed(path, content)
                 -- Auto-update synced items: if user.json had items that matched
                 -- the old baseline, update them to match the new shared config
                 -- so they stay synced instead of showing spurious '+'.
-                if self._shared_baseline and data.user and data.user.projects then
-                    self:_auto_sync_user_projects(data.config, data.user)
+                local synced = false
+                if self._shared_baseline and data.user then
+                    synced = self:_auto_sync_user_projects(data.config, data.user)
                 end
                 -- Update workspace data fields in place
                 self.root = data.root
                 self.name = data.name
                 self:_scan_tools_async()
                 self:remerge(data.config, data.cache, data.user)
+                -- Persist synced user data to disk so changes survive restart
+                if synced then
+                    self:_save_user()
+                end
                 self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
             else
                 self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)

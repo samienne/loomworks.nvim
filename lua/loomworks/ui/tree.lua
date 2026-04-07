@@ -22,7 +22,7 @@ local ACTION_ORDER = {
     { action = "options",   label = "Show build options" },
     { action = "move_up",   label = "Move up  <C-k>" },
     { action = "move_down", label = "Move down  <C-j>" },
-    { action = "publish",   label = "Toggle publish  P" },
+    { action = "publish",   label = "Publish  P" },
     { action = "rebuild",   label = "Rebuild (clean + build)" },
     { action = "clean",     label = "Clean" },
     { action = "delete",    label = "Delete  D" },
@@ -142,6 +142,8 @@ function Tree:on_key(action, line)
                 local label = entry.label
                 if entry.action == "enter" and w.enter_label then
                     label = w.enter_label
+                elseif entry.action == "publish" and w.publish_label then
+                    label = w.publish_label
                 end
                 items[#items + 1] = { label = label, callback = cb }
             end
