@@ -61,6 +61,10 @@ function View:open(win_overrides)
     -- Create buffer if needed
     if not self._bufnr or not vim.api.nvim_buf_is_valid(self._bufnr) then
         self._bufnr = vim.api.nvim_create_buf(false, true)
+        -- acwrite buftype requires a buffer name for :w to work
+        if self._on_write then
+            vim.api.nvim_buf_set_name(self._bufnr, "loomworks://status")
+        end
     end
 
     -- Build Snacks.win keys from our keymap table
