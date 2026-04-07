@@ -6,6 +6,8 @@
 --- @field name string configuration set name
 --- @field mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
+--- @field _published boolean whether this set should appear in loomworks.json
+--- @field _in_user_json boolean whether this set is in user.json
 local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 
@@ -20,6 +22,8 @@ function ConfigurationSet.new(workspace, name, resolved_mappings)
     self.name = name
     self._removed = false
     self._source = "shared"
+    self._published = false
+    self._in_user_json = false
     self:_update(resolved_mappings)
     return self
 end
@@ -73,8 +77,9 @@ function ConfigurationSet:update_mapping(project, configuration)
 
     local old = self.mappings[project]
     self.mappings[project] = configuration
+    self._in_user_json = true
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         self.mappings[project] = old
         return false, err

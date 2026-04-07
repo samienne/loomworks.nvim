@@ -26,6 +26,8 @@ local Configuration = require("loomworks.configuration")
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
+--- @field _published boolean whether this project declaration should appear in loomworks.json
+--- @field _in_user_json boolean whether this project is in user.json (working copy)
 local Project = {}
 Project.__index = Project
 
@@ -40,6 +42,8 @@ function Project.new(workspace, key, data)
     self.key = key
     self._removed = false
     self._source = "shared"
+    self._published = false
+    self._in_user_json = false
     self._configurations = {}
     if data then self:_update(data) end
     return self
@@ -84,6 +88,15 @@ function Project:_update(data)
     self.depends_on = data._depends_on
     -- Sync Configuration domain objects from configurations dict
     self:_sync_configurations()
+end
+
+--- Mark this project as in the user.json working copy.
+--- Called when any mutation is about to write to user.json.
+function Project:_mark_user_owned()
+    self._in_user_json = true
+    if self._source == "shared" then
+        self._source = "user"
+    end
 end
 
 --- Sync Configuration domain objects from the configurations dict.
@@ -312,6 +325,7 @@ end
 --- @return boolean ok, string|nil err
 function Project:save_configuration(config_name, config_data)
     local ws = self._workspace
+    self:_mark_user_owned()
 
     -- Validate config name for build dir safety
     local validate_path_name = require("loomworks.workspace").validate_path_name
@@ -364,7 +378,7 @@ function Project:save_configuration(config_name, config_data)
 
     if not self.type_config then self.type_config = {} end
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         -- Rollback
         if existing and old_cfg_snapshot then
@@ -392,6 +406,7 @@ end
 --- @return boolean ok, string|nil err
 function Project:delete_configuration(config_name)
     local ws = self._workspace
+    self:_mark_user_owned()
 
     -- Find the user-defined Configuration object
     local cfg = self:get_configuration(config_name)
@@ -409,7 +424,7 @@ function Project:delete_configuration(config_name)
         end
     end
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         -- Rollback: re-insert at original position
         if removed_idx then
@@ -432,6 +447,7 @@ end
 --- @return boolean ok, string|nil err
 function Project:rename_configuration(old_name, new_name, config_data)
     local ws = self._workspace
+    self:_mark_user_owned()
 
     -- Find the Configuration object being renamed
     local target_cfg = self:get_configuration(old_name)
@@ -509,7 +525,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
     end
 
     -- Save config + cache to disk
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         -- Rollback: restore name, data, and sibling inherits
         target_cfg.name = old_cfg_snapshot.name
@@ -604,12 +620,13 @@ end
 --- @return boolean ok, string|nil err
 function Project:save_options(options)
     local ws = self._workspace
+    self:_mark_user_owned()
 
     if not self.type_config then self.type_config = {} end
     local old = self.type_config.options
     self.type_config.options = next(options) and options or nil
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         self.type_config.options = old
         return false, err
@@ -626,6 +643,7 @@ end
 --- @return boolean ok, string|nil err
 function Project:save_variable(var_name, declaration)
     local ws = self._workspace
+    self:_mark_user_owned()
     if self._removed then
         return false, "project '" .. self.key .. "' has been removed"
     end
@@ -641,7 +659,7 @@ function Project:save_variable(var_name, declaration)
     end
     self.variables[var_name] = declaration
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         self.variables = old_variables
         return false, err
@@ -657,6 +675,7 @@ end
 --- @return boolean ok, string|nil err
 function Project:delete_variable(var_name)
     local ws = self._workspace
+    self:_mark_user_owned()
     if not self.variables or not self.variables[var_name] then
         return false, "variable '" .. var_name .. "' not found"
     end
@@ -675,7 +694,7 @@ function Project:delete_variable(var_name)
         end
     end
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         -- Rollback
         self.variables = old_variables
@@ -696,6 +715,7 @@ end
 --- @return boolean ok, string|nil err
 function Project:save_launch_config(launch_name, config)
     local ws = self._workspace
+    self:_mark_user_owned()
     if self._removed then
         return false, "project '" .. self.key .. "' has been removed"
     end
@@ -705,7 +725,7 @@ function Project:save_launch_config(launch_name, config)
     end
     self.launch[launch_name] = config
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         self.launch[launch_name] = nil
         if not next(self.launch) then self.launch = nil end
@@ -721,6 +741,7 @@ end
 --- @return boolean ok, string|nil err
 function Project:delete_launch_config(launch_name)
     local ws = self._workspace
+    self:_mark_user_owned()
 
     if not self.launch or not self.launch[launch_name] then
         return false, "launch config '" .. launch_name .. "' not found"
@@ -730,7 +751,7 @@ function Project:delete_launch_config(launch_name)
     self.launch[launch_name] = nil
     if not next(self.launch) then self.launch = nil end
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         if not self.launch then self.launch = {} end
         self.launch[launch_name] = old

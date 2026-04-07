@@ -242,5 +242,115 @@ describe("workspace", function()
             assert.equals("Debug", merged.configuration_sets.Debug.App)
             assert.is_true(user_csn["Debug"])
         end)
+
+        -- Per-configuration merge tests
+        it("per-config merge: user configs overlay shared configs", function()
+            local shared = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {
+                        configurations = {
+                            Debug = { variant = "Debug" },
+                            Release = { variant = "Release" },
+                        },
+                    }},
+                },
+            }
+            local user = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {
+                        configurations = {
+                            Debug = { variant = "Debug", toolchain = "my-tc" },
+                            Asan = { inherits = "Debug", options = { USE_ASAN = "ON" } },
+                        },
+                    }},
+                },
+            }
+            local merged, _, _, prov = workspace.merge_configs(user, shared)
+            local configs = merged.projects.App.type_config.configurations
+            -- All three configs present
+            assert.is_not_nil(configs.Debug)
+            assert.is_not_nil(configs.Release)
+            assert.is_not_nil(configs.Asan)
+            -- User's Debug wins (has toolchain)
+            assert.equals("my-tc", configs.Debug.toolchain)
+            -- Shared Release preserved
+            assert.equals("Release", configs.Release.variant)
+            -- Provenance tracks which configs came from user
+            assert.is_true(prov.App.user_configs.Debug)
+            assert.is_true(prov.App.user_configs.Asan)
+            assert.is_falsy(prov.App.user_configs and prov.App.user_configs.Release)
+        end)
+
+        it("per-config merge: user launch configs overlay shared", function()
+            local shared = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {},
+                        launch = { run = { command = "shared-cmd" }, test = { command = "test" } } },
+                },
+            }
+            local user = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {},
+                        launch = { run = { command = "user-cmd" }, debug = { command = "dbg" } } },
+                },
+            }
+            local merged, _, _, prov = workspace.merge_configs(user, shared)
+            assert.equals("user-cmd", merged.projects.App.launch.run.command)
+            assert.equals("test", merged.projects.App.launch.test.command)
+            assert.equals("dbg", merged.projects.App.launch.debug.command)
+            assert.is_true(prov.App.user_launches.run)
+            assert.is_true(prov.App.user_launches.debug)
+            assert.is_falsy(prov.App.user_launches and prov.App.user_launches.test)
+        end)
+
+        it("per-config merge: user variables overlay shared", function()
+            local shared = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {},
+                        variables = { LIB_PATH = { type = "path", default = "/lib" } } },
+                },
+            }
+            local user = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {},
+                        variables = { LIB_PATH = { type = "path", default = "/user/lib" },
+                                      MY_VAR = { type = "string", default = "foo" } } },
+                },
+            }
+            local merged, _, _, prov = workspace.merge_configs(user, shared)
+            assert.equals("/user/lib", merged.projects.App.variables.LIB_PATH.default)
+            assert.equals("foo", merged.projects.App.variables.MY_VAR.default)
+            assert.is_true(prov.App.user_variables.LIB_PATH)
+            assert.is_true(prov.App.user_variables.MY_VAR)
+        end)
+
+        it("per-config merge: user module settings overlay shared", function()
+            local shared = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {
+                        compile_commands_from = "shared-config",
+                    }},
+                },
+            }
+            local user = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {
+                        compile_commands_from = "user-config",
+                    }},
+                },
+            }
+            local merged = workspace.merge_configs(user, shared)
+            assert.equals("user-config", merged.projects.App.type_config.compile_commands_from)
+        end)
+
+        it("per-config merge: shared-only project has empty provenance", function()
+            local shared = {
+                projects = {
+                    App = { type = "cmake", path = "App", type_config = {} },
+                },
+            }
+            local _, _, _, prov = workspace.merge_configs(nil, shared)
+            assert.are.same({}, prov.App)
+        end)
     end)
 end)

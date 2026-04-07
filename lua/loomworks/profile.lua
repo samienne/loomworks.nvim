@@ -160,6 +160,7 @@ end
 --- Runtime state:
 --- @field _operations loomworks.Operation[] active operations
 --- @field _last_operation { message: string, success: boolean }|nil
+--- @field _published boolean whether this profile should appear in loomworks.json (default false)
 local Profile = {}
 Profile.__index = Profile
 
@@ -183,6 +184,7 @@ function Profile.new(workspace, data)
     local self = setmetatable({}, Profile)
     self._workspace = workspace
     self._removed = false
+    self._published = false
     if data then self:_apply(data) end
     return self
 end
@@ -307,6 +309,31 @@ function Profile:tools_data()
         }
     end
     return next(result) and result or nil
+end
+
+--- Generate a definition suitable for loomworks.json.
+--- Used when publishing a profile that doesn't have explicit_def.
+--- @return table definition { configuration_set?, kit_id? }
+function Profile:to_config_def()
+    if self.explicit_def then return self.explicit_def end
+    local def = {}
+    if self._configuration_set_name then
+        def.configuration_set = self._configuration_set_name
+    end
+    -- Extract tool key for the definition (kit_id)
+    local tools = self:tools_data()
+    if tools then
+        for _, tool_ref in pairs(tools) do
+            if tool_ref.key then
+                def.kit_id = tool_ref.key
+                break
+            end
+        end
+    end
+    if self._default_target_descriptor then
+        def.default_target = self._default_target_descriptor
+    end
+    return def
 end
 
 --- Get the ToolRef for a specific module type from this profile's tools.

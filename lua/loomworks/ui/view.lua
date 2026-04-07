@@ -33,6 +33,8 @@ function View.new(opts)
         _events = opts.events or {},
         _win_opts = opts.win or {},
         _on_close = opts.on_close,
+        _on_write = opts.on_write,
+        _is_modified = opts.is_modified,
         _lock_to_items = opts.lock_to_items or false,
         _filetype = opts.filetype or "loomworks",
         _timer_interval = opts.timer_interval or 80,
@@ -59,6 +61,9 @@ function View:open(win_overrides)
     -- Create buffer if needed
     if not self._bufnr or not vim.api.nvim_buf_is_valid(self._bufnr) then
         self._bufnr = vim.api.nvim_create_buf(false, true)
+        if self._on_write then
+            vim.api.nvim_buf_set_name(self._bufnr, "loomworks://status")
+        end
     end
 
     -- Build Snacks.win keys from our keymap table
@@ -89,7 +94,7 @@ function View:open(win_overrides)
     win_config.enter = true
     win_config.keys = keys
     win_config.bo = {
-        buftype = "nofile",
+        buftype = self._on_write and "acwrite" or "nofile",
         bufhidden = "wipe",
         swapfile = false,
         filetype = self._filetype,
@@ -112,6 +117,18 @@ function View:open(win_overrides)
     self:_setup_events()
     if self._lock_to_items then
         self:_setup_cursor_lock()
+    end
+    -- Set up BufWriteCmd for :w support (acwrite buftype)
+    if self._on_write and self._bufnr then
+        local on_write = self._on_write
+        local view = self
+        vim.api.nvim_create_autocmd("BufWriteCmd", {
+            buffer = self._bufnr,
+            callback = function()
+                on_write()
+                view:refresh()
+            end,
+        })
     end
     self:refresh()
 end
@@ -147,6 +164,11 @@ function View:refresh()
     vim.bo[self._bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(self._bufnr, 0, -1, false, lines)
     vim.bo[self._bufnr].modifiable = false
+    -- For acwrite buffers: mark modified only when there are publishable changes.
+    -- This enables :w when needed but avoids blocking :qa when clean.
+    if self._on_write then
+        vim.bo[self._bufnr].modified = self._is_modified and self._is_modified() or false
+    end
 
     -- Apply highlights
     vim.api.nvim_buf_clear_namespace(self._bufnr, self._ns, 0, -1)

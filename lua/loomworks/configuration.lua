@@ -16,6 +16,8 @@
 --- @field variables table<string, string>|nil variable overrides (name → value)
 --- @field role string|nil special role (e.g., "compile_commands")
 --- @field _removed boolean
+--- @field _published boolean whether this config should appear in loomworks.json
+--- @field _in_user_json boolean whether this config is in user.json
 local Configuration = {}
 Configuration.__index = Configuration
 
@@ -29,6 +31,8 @@ function Configuration.new(project, name, data)
     self._project = project
     self.name = name
     self._removed = false
+    self._published = false
+    self._in_user_json = false
     self:_update(data)
     return self
 end

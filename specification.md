@@ -23,14 +23,15 @@ top-level organizational unit.
 ### 1.2 Project
 
 A project is a sub-component of a workspace with a type (cmake, ets,
-typescript, etc.). Projects are declared in `loomworks.json` under `"projects"`.
+typescript, etc.). Projects are declared in `loomworks.json` and/or
+`loomworks.user.json` under `"projects"` (see §2.4 for the merge model).
 
 - Key: the project identifier (typically the directory name).
 - `path`: relative to workspace root, defaults to the key.
 - `type`: determined by the inner key (`"cmake": {}` means type = cmake).
 - A project may be **orphaned**: present in cache but absent from the current
-  `loomworks.json`. Orphaned projects are shown at the end of the Projects
-  section with an "(orphaned)" label.
+  config (both loomworks.json and user.json). Orphaned projects are shown at
+  the end of the Projects section with an "(orphaned)" label.
 
 ### 1.3 Configuration
 
@@ -46,7 +47,7 @@ Invoked via `cmake --preset <name>`. Read-only from loomworks' perspective.
 Shown separately in the UI. Referenced in config set mappings with
 `preset:` prefix (e.g., `"App": "preset:Debug"`).
 
-Loomworks configuration fields in `loomworks.json`:
+Loomworks configuration fields in the workspace config:
 ```
 <type>.options                              — project-wide -D flags
 <type>.configurations.<name>.inherits       — base config(s), string or array
@@ -64,7 +65,7 @@ abstract mixins — not directly buildable, only usable as bases.
 **Default configurations**: always present, auto-generated from
 `CMAKE_CONFIGURATION_TYPES` in CMakeLists.txt or standard cmake defaults
 (Debug, Release, RelWithDebInfo, MinSizeRel). User entries in
-`loomworks.json` extend defaults (add options) rather than replace them.
+the workspace config extend defaults (add options) rather than replace them.
 
 ### 1.3.1 Project Variables
 
@@ -72,7 +73,7 @@ Projects can declare user-defined variables with typed defaults. These
 variables are expanded alongside built-in variables in launch configs
 (command, args, env, working_dir) and deploy destinations.
 
-**Declaration** in `loomworks.json` (project level):
+**Declaration** in the workspace config (project level):
 
 ```json
 "App": {
@@ -126,9 +127,9 @@ the project default. The editor displays this provenance so the user can
 see where each value originates (e.g., "from Debug", "from project
 default", "overridden here").
 
-**user.json**: Variable overrides in user.json follow the existing
-two-layer config pattern — personal overrides without touching
-loomworks.json. Pinned profiles replicate referenced variable values.
+**user.json**: Variable declarations and overrides live in user.json as
+part of the working copy (see §2.4). Published variables are written to
+loomworks.json on `:w`.
 
 **Design for extension** (not in v1):
 - `${parent:var_name}` — reference the value from the parent scope
@@ -141,8 +142,8 @@ loomworks.json. Pinned profiles replicate referenced variable values.
 
 ### 1.4 Configuration Set
 
-A configuration set is a cross-project mapping declared in `loomworks.json`
-under `"configuration_sets"`. It binds one configuration per project.
+A configuration set is a cross-project mapping declared in the workspace
+config under `"configuration_sets"`. It binds one configuration per project.
 
 ```json
 "configuration_sets": {
@@ -192,10 +193,10 @@ There is one Profile class. Profiles differ in two optional properties:
 
 - **`configuration_set`**: if non-nil, the profile is "set-based" — its
   mappings are re-derived from the configuration set on every remerge, so
-  adding/removing projects in `loomworks.json` automatically updates the
-  profile. If nil, the profile is "pinned" — its mappings are stored
-  directly and never re-derived.
-- **`explicit`**: if true, the profile is declared in `loomworks.json`
+  adding/removing projects in the config automatically updates the profile.
+  If nil, the profile is "pinned" — its mappings are stored directly and
+  never re-derived.
+- **`explicit`**: if true, the profile is declared in the workspace config
   under `"profiles"` and always appears in the UI, even before
   materialization.
 
@@ -222,7 +223,7 @@ Key collisions are resolved by appending `-2`, `-3`, etc. via
 2. **Materialized** — written to cache with mappings and skeleton config
    entries. Shown in Profiles section.
 3. **Active** — the user-selected profile. Stored in
-   `loomworks.user.json` as `active_profile`. Determines which
+   `loomworks.user.json` as `active_profile` (see §2.2). Determines which
    configurations the LSP, statusline, and `buf_status()` report.
 4. **Orphaned (stale)** — the profile's configuration set was removed from
    `loomworks.json`. The profile remains functional (builds still work)
@@ -333,30 +334,125 @@ Configuration overrides may include:
 
 ## 2. Three-File Model
 
-### 2.1 loomworks.json — Intent
+### 2.1 loomworks.json — Published Snapshot
 
-Declarative. Describes what projects exist and how they are structured.
+Shared configuration. Contains items the user has explicitly **published**.
+Written only when the user saves from the status page (`:w`).
 
 - Committed or gitignored (user's choice).
-- Changes are detected via file watcher and hot-reloaded.
+- Changes from outside (branch switch, manual edit) are detected via file
+  watcher and hot-reloaded.
 - Paths are relative to workspace root.
 - Absolute paths are **forbidden** (breaks portability).
 - `${ENV_VAR}` expansion for toolchain paths.
+- The system functions without this file — user.json alone is sufficient.
 
-### 2.2 .nvim/loomworks.user.json — User Preferences
+### 2.2 .nvim/loomworks.user.json — Working Copy
 
-Small, stable. Written only on explicit user action.
+The primary working file. All UI mutations land here. Contains the full
+working state: every item the user has interacted with, plus metadata
+(active profile, pinned profiles, published flags).
 
 ```json
 {
-  "_meta": { "version": 1 },
-  "active_profile": "Debug:ninja-gcc-12"
+  "_meta": { "version": 3 },
+  "active_profile": "Debug:ninja-gcc-12",
+  "projects": { ... },
+  "configuration_sets": { ... },
+  "pinned_profiles": { ... },
+  "default_target": { ... }
 }
 ```
 
 - Always gitignored.
-- Contains: active profile selection.
-- Future: named toolchain definitions, default task.
+- Written on every UI mutation (add/edit/remove project, config, profile, etc.).
+- Items carry a `_published` flag indicating whether they should appear in
+  loomworks.json on the next save.
+
+### 2.4 Publish/Working-Copy Model
+
+The two config files follow a **working-copy / published-snapshot** model:
+
+- **user.json** is the live working state. All UI edits go here.
+- **loomworks.json** is a published snapshot. Written only on explicit `:w`.
+
+#### Published flag
+
+Each publishable item has a `_published` boolean controlling whether it
+should appear in loomworks.json:
+
+- **Projects**: `_published` on the project declaration and individually on
+  each configuration, launch config, and variable declaration within the
+  project. A project can be partly published (some configs shared, others
+  personal).
+- **Configuration sets**: `_published` as a whole (atomic unit).
+- **Profiles**: not publishable in v1. Profiles bind machine-specific tools
+  and have a complex lifecycle (pinned vs explicit). Profile publishing is
+  deferred until the profile model is simplified.
+
+#### Modified indicator (`+`)
+
+An item shows `+` when the next `:w` would change loomworks.json for that
+item. This is computed by comparing the current state against a **shared
+baseline** (the last-loaded/written loomworks.json content):
+
+| Published | In shared | Matches | `+` | `:w` action |
+|-----------|-----------|---------|-----|-------------|
+| yes       | no        | —       | `+` | add to shared |
+| yes       | yes       | yes     | —   | no-op |
+| yes       | yes       | no      | `+` | update shared |
+| no        | no        | —       | —   | no-op |
+| no        | yes       | —       | `+` | remove from shared |
+
+The `+` indicator **bubbles up**: if any child of a project is modified, the
+project header also shows `+`.
+
+#### Dimmed items
+
+Items that exist only in loomworks.json (not yet in user.json) are displayed
+with `Comment` highlight (dimmed). This includes:
+- Shared-only projects/configs the user hasn't touched
+- Module-generated default configurations (not in any file)
+
+Dimmed items are usable but read-only from the UI. On first interaction
+(edit, use in a profile), the item is auto-copied to user.json.
+
+#### Per-configuration merge
+
+Projects from loomworks.json and user.json are merged at the **configuration
+level**, not the project level. If shared defines Debug and Release, and user
+defines Debug (modified) and Debug-asan (new), the merged project has all
+three: shared Release, user Debug, user Debug-asan. User wins per-key within:
+- `type_config.configurations` — per config name
+- `launch` — per launch config name
+- `variables` — per variable name
+
+Project-level fields (`path`, `type`, `depends_on`, module settings like
+`compile_commands_from`) come from user.json if present, otherwise from
+shared.
+
+#### Saving (`:w`)
+
+`:w` on the status buffer writes published items to loomworks.json:
+- Published items with changes: written to loomworks.json
+- Items marked for unpublish (published=false but in loomworks.json): removed
+- Unpublished items: skipped
+- After write: shared baseline is updated, `+` indicators clear
+
+#### External changes
+
+When loomworks.json changes on disk (branch switch, git pull, manual edit):
+- The shared baseline is updated from the new file content.
+- Dimmed items (shared-only, not in user.json): auto-update immediately.
+- Items in user.json that were synced with the old baseline: auto-update
+  to match the new shared content (stay synced).
+- Items in user.json that diverge from old baseline: keep user version,
+  `+` is recomputed against the new baseline.
+
+#### Publish toggle (`P`)
+
+The `P` key on the status page toggles the `_published` flag on the item
+under the cursor. Toggling saves to user.json and refreshes the display.
 
 ### 2.3 .nvim/loomworks.cache.json — Reality
 
@@ -791,9 +887,9 @@ remaining cache entries reference it after the current deletion batch.
 When a project configuration is renamed (old_name → new_name) via the
 config editor, all references are updated atomically:
 
-1. **loomworks.json**: rename in `type_config.configurations`, update
-   `inherits` references in sibling configs, update `configuration_sets`
-   mappings for this project
+1. **Config**: rename in `type_config.configurations`, update `inherits`
+   references in sibling configs, update `configuration_sets` mappings for
+   this project (saved to user.json; published to loomworks.json on `:w`)
 2. **Cache entries**: rekey `cache.configurations` entries matching
    `project_key + old variant` → new config_key, update `variant` and
    `config_key` fields. **Build directory is preserved as-is** (the old
@@ -1016,7 +1112,9 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `N`     | create_workspace | Create a new workspace (loomworks.json) from cwd |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
+| `P`     | publish     | Toggle publish flag on nearest publishable item |
 | `U`     | delete_user | Delete user.json and reload (with confirmation) |
+| `:w`    | (write)     | Publish: write published items to loomworks.json |
 | `?`     | help        | Show help dialog |
 | `q`     | (close)     | Close the status page |
 
@@ -1080,7 +1178,7 @@ and the suffix uses `Comment` highlight (via `group` with chunks).
 ### 6.5 Profiles Section
 
 Shows all materialized (cached) and explicit profiles. Profiles only appear
-here when they exist in the cache or are declared in `loomworks.json`.
+here when they exist in the cache or are declared in the config.
 
 **Profile node display** (all profiles use the same rendering):
 ```
@@ -1136,11 +1234,11 @@ After the profile list (or as sole content when empty), an interactive item:
 ```
 Enter opens the profile creation multi-step picker:
 
-1. **Pick configuration set**: Shows existing config sets from
-   loomworks.json, plus auto-detected options from
+1. **Pick configuration set**: Shows existing config sets from the
+   workspace config, plus auto-detected options from
    `generate_default_config_sets()`. Auto-detected options are labeled
    `"Name (auto-detected)"` with a mapping summary. Selecting an
-   auto-detected option writes it to loomworks.json via
+   auto-detected option writes it to user.json via
    `add_configuration_set()` before continuing.
 
 2. **Pick tool** (skipped if module has no keyed tools, or only one tool
@@ -1208,16 +1306,19 @@ then deletes stray build dirs. If nothing to clean, shows a notification.
 
 ### 6.7 Configuration Sets Section
 
-Shows declared configuration sets from `loomworks.json`. Only appears when
-sets are declared.
+Shows configuration sets from the merged config (loomworks.json + user.json).
+Only appears when sets exist.
 
 **Set node display**:
 ```
-{fold_char} {set_name}
+{fold_char} {modified_tag}{set_name}
 ```
 
+Where `{modified_tag}` = "+" if the set is modified (see §2.4), empty
+otherwise. Shared-only sets (not in user.json) are dimmed (`Comment`).
+
 Highlighted with `LoomworksActive` if the active profile belongs to this set,
-otherwise `LoomworksActionable`.
+otherwise `LoomworksActionable` (or `Comment` if shared-only).
 
 **Set node actions**:
 
@@ -1293,12 +1394,19 @@ are sorted alphabetically with orphaned projects at the end.
 
 **Project node display**:
 ```
-{fold_char} {project_key} [{type}] {orphan_tag} {refresh_tag}
+{fold_char} {modified_tag}{project_key} [{type}] {orphan_tag} {refresh_tag}
 ```
 
 Where:
+- `{modified_tag}` = "+" if any child or the project declaration is modified
+  (see §2.4), empty otherwise
 - `{orphan_tag}` = "(orphaned)" if in cache but not in config
 - `{refresh_tag}` = "!" if `needs_refresh` is true
+
+**Shared-only items** (exist only in loomworks.json, not in user.json) are
+displayed with `Comment` highlight (dimmed). Module-generated default
+configurations are also dimmed. Dimmed items become normal on first
+interaction (auto-copied to user.json).
 
 **Project children** (when unfolded):
 - Path
@@ -1381,7 +1489,7 @@ project's active configuration.
 **Launch configurations sub-group**
 
 After the configurations group, each non-orphaned project shows a
-"Launch:" group listing its launch configurations from `loomworks.json`.
+"Launch:" group listing its launch configurations.
 
 Each launch config item shows `{name}  {command} {args}`. Actions:
 
@@ -1503,7 +1611,7 @@ are cached in a browser-local dict. Pending scans show "scanning...".
 | Key     | Action  | Behavior |
 |---------|---------|----------|
 | `<CR>`  | enter   | Picker with Add/Remove by module type (see below) |
-| `d`     | remove  | Remove project from loomworks.json (with confirmation) |
+| `d`     | remove  | Remove project from workspace (with confirmation) |
 | `r`     | refresh | Clear scan cache and re-scan |
 | `q`     | close   | Close the browser |
 
@@ -1598,7 +1706,7 @@ remerges independently. Each intermediate state is valid — if the
 process crashes between steps, no data is lost or corrupted.
 
 1. `ws:add_project(key, type, path)` — adds the project entry to
-   `loomworks.json`. Project shows as unmapped.
+   user.json. Project shows as unmapped.
 2. For each config set with a non-nil mapping:
    `ws:update_config_set_mapping(set, key, variant)` — adds one
    mapping to one config set.
@@ -1623,7 +1731,8 @@ Example dialog (keyed project with cached configs):
 ```
   Remove project: lumets
 
-  This removes the project from loomworks.json.
+  This removes the project from the workspace (user.json and, on next
+  `:w`, from loomworks.json if published).
 
   Will delete cached configurations:
     lumets / Debug:ninja-gcc-12  (built)  .nvim/build/lumets/Debug
@@ -1646,8 +1755,9 @@ After confirmation:
 This is not "auto-clean" — it is an explicit user action with a
 confirmation dialog showing exactly what will be deleted.
 
-**File mutation**: All changes write to `loomworks.json` via Workspace
-mutation methods. Each method saves and remerges independently.
+**File mutation**: All changes write to `loomworks.user.json` via Workspace
+mutation methods. Each method saves and remerges independently. Published
+items are written to `loomworks.json` only on explicit `:w` (see §2.4).
 
 Available Workspace mutation methods:
 - `add_project(key, type, path?)` — add a project entry
@@ -1746,8 +1856,8 @@ subprocess spawning, no deep file parsing.
 **`validate(path, config) → { valid, warnings[] }`**
 
 Check whether the project directory is valid for this module type. `path` is
-the absolute project directory. `config` is the type_config from
-`loomworks.json` (the value of the `"cmake": {}` key).
+the absolute project directory. `config` is the type_config from the
+workspace config (the value of the `"cmake": {}` key).
 
 - Return `{ valid = false, warnings = {...} }` to reject
 - Return `{ valid = true, warnings = {...} }` with non-fatal warnings
@@ -1863,7 +1973,7 @@ Return the user-facing build options as a tree of groups and options.
 `OptionGroup` has `label` and `children` (nested groups or options).
 `Option` has `key`, `value`, `value_type` (`"bool"`, `"string"`, `"path"`,
 `"filepath"`), optional `helpstring`, and optional `choices`. `config` is
-the module's type_config from loomworks.json (e.g., the cmake block).
+the module's type_config from the workspace config (e.g., the cmake block).
 
 Only options meaningful to the user are included — internal/computed
 variables are excluded. Returns nil if the project is not configured or
@@ -1896,8 +2006,8 @@ full preset inheritance:
 - Preset's `toolchainFile` / `CMAKE_TOOLCHAIN_FILE` maps to
   `toolchain_locked = true`
 - Debug/Release/RelWithDebInfo are auto-generated **only if no presets exist
-  and no configurations are declared in loomworks.json**
-- Overrides in `loomworks.json` `configurations` block add to or override
+  and no configurations are declared in the workspace config**
+- Overrides in the `configurations` block add to or override
   preset-derived configurations
 
 ### 9.5 CMake File API integration (cmake module)
@@ -1946,8 +2056,8 @@ that `build_target()` builds instead of the full project.
 
 **Default target storage**:
 - `loomworks.user.json`: `default_target = { "<profile_key>": { "project": "<key>", "target": "<id>" } }`
-- `loomworks.json` profile definitions: `default_target = { "project": "<key>", "target": "<id>" }`
-- User.json overrides loomworks.json.
+- Published profile definitions: `default_target = { "project": "<key>", "target": "<id>" }`
+- User.json overrides published config.
 
 **Resolution**: `Profile:default_target()` returns a `LaunchTarget` object
 that holds direct references to the `Project`, `ConfigUnit`, and `Target`
@@ -1957,7 +2067,7 @@ objects. No key-based lookups at runtime.
 1. Get active profile's default target.
 2. If not set: show `vim.ui.select` picker with executable targets.
    Picker includes "None" to clear and "Default" to revert to
-   loomworks.json setting. On selection, sets default and builds.
+   published config setting. On selection, sets default and builds.
 3. If set but stale (target no longer exists): notify and show picker.
 4. If valid: `Target:build()` delegates to the module's
    `build_target_task()` (e.g., cmake adds `--target <name>`).
@@ -1974,7 +2084,7 @@ defines how to run the project after building. Two types:
 **Module targets** (cmake executables): `Target:launch()` resolves the
 artifact path from the build directory and runs it via overseer.
 
-**Command-type launches** (loomworks.json `launch` section): Named launch
+**Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.
 
 ```json
@@ -2035,7 +2145,7 @@ most recently built.
 
 **Definition**: A deploy step is a declarative intent — "ensure artifact X
 from source config unit Y is at destination Z, up to date, before launch."
-Deploy steps are defined in `loomworks.json` on launch configurations.
+Deploy steps are defined on launch configurations in the workspace config.
 
 #### 9.8.1 Syntax
 
@@ -2221,9 +2331,8 @@ step. v1 implements launch-level only.
 Future actions (symlink, script execution) could be specified via an
 explicit action field in the source descriptor.
 
-**user.json deploy**: Deploy steps in user.json follow the same
-replication rules as other pinned data — when a profile is pinned,
-its launch config's deploy steps are replicated to user.json.
+**user.json deploy**: Deploy steps live in user.json as part of the
+working copy. Published deploy steps are written to loomworks.json on `:w`.
 
 ---
 
@@ -2235,7 +2344,7 @@ its launch config's deploy steps are replicated to user.json.
 lspconfig's `cmd` option. It resolves per-project:
 
 1. **clangd binary**: project-level override (`cmake.clangd` in
-   loomworks.json) > kit auto-detected clangd_path > default from base_cmd
+   workspace config) > kit auto-detected clangd_path > default from base_cmd
 2. **compile_commands_dir**: `--compile-commands-dir=<build_dir>` injected
    based on active configuration's build directory. If
    `compile_commands_from` is set, uses that configuration's build dir

@@ -99,12 +99,30 @@ local view = View.new({
         ["t"]     = "task",
         ["p"]     = "pin",
         ["o"]     = "options",
+        ["P"]     = "publish",
         ["N"]     = "create_workspace",
         ["L"]     = "load",
         ["<C-n>"] = "nuke",
         ["U"]     = "delete_user_prefs",
         ["?"]     = "help",
     },
+    is_modified = function()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        return ws and ws:has_any_modified() or false
+    end,
+    on_write = function()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        if not ws then
+            vim.notify("loomworks: no workspace", vim.log.levels.WARN)
+            return
+        end
+        local ok, err = ws:publish()
+        if not ok then
+            vim.notify("loomworks: publish failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+        end
+    end,
     events = {
         "task_started",
         "task_stopped",

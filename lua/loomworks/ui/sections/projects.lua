@@ -444,22 +444,37 @@ return function(tree, ctx)
     local sorted = sorted_projects(projects)
     local active_tool_key = ctx.active_profile and ctx.active_profile.tool
             and ctx.active_profile.tool.key or nil
+    local ws = lw.get_workspace()
 
     for _, proj in ipairs(sorted) do
         local key = proj.key
         local proj_running = proj:running_action()
         local is_active_project = proj.configuration ~= nil and not proj.orphaned
+        -- Dim shared-only projects (not in user.json)
+        local is_dimmed = not proj._in_user_json and not proj.orphaned
         local proj_hl = proj_running and "LoomworksRunning"
+                or is_dimmed and "Comment"
                 or (is_active_project and "LoomworksActive" or "LoomworksActionable")
 
+        local modified_tag = ws and ws:is_project_modified(proj) and "+" or ""
         local type_tag = "[" .. proj.type .. "]"
         local orphan_tag = proj.orphaned and " (orphaned)" or ""
         local refresh_tag = proj.needs_refresh and " !" or ""
+        local local_tag = proj._in_user_json and not proj._published and " [local]" or ""
 
-        tree:node(key .. " " .. type_tag .. orphan_tag .. refresh_tag, {
+        tree:node(modified_tag .. key .. " " .. type_tag .. orphan_tag .. local_tag .. refresh_tag, {
             fold_key = "project:" .. key,
             spinning = proj_running ~= nil,
             hl = proj_hl,
+            publish_label = proj._published and "Unpublish" or "Publish",
+            on_publish = function()
+                proj._published = not proj._published
+                proj:_mark_user_owned()
+                if ws then
+                    ws:_save_user()
+                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                end
+            end,
         }, function()
             tree:leaf("Path: " .. (proj.path or key), "Comment")
 
@@ -494,7 +509,11 @@ return function(tree, ctx)
 
                         -- Abstract configs have no variant (mixin only)
                         local is_abstract = not cdata.variant
+                        -- Dim shared-only configs (not in user.json, not from presets)
+                        local cfg_dimmed = cname_cfg and not cname_cfg._in_user_json
+                                and not cname_cfg.from_preset and not is_dimmed
                         local config_hl = is_abstract and "Comment"
+                                or cfg_dimmed and "Comment"
                                 or (config_has_running and "LoomworksRunning" or "LoomworksActionable")
 
                         local brief = {}
@@ -512,6 +531,11 @@ return function(tree, ctx)
                         if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
                         local brief_str = #brief > 0
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
+                        local cfg_modified_tag = ws and cname_cfg
+                                and ws:is_config_modified(proj, cname_cfg) and "+" or ""
+                        local cfg_local_tag = cname_cfg
+                                and cname_cfg._in_user_json and not cname_cfg._published
+                                and " [local]" or ""
 
                         local project = proj  -- capture for closure
                         local cfg_name = cname
@@ -574,12 +598,22 @@ return function(tree, ctx)
                             end
                         end
 
-                        tree:node(cname .. brief_str, {
+                        tree:node(cfg_modified_tag .. cname .. cfg_local_tag .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
                             hl = config_hl,
                             enter_label = "Edit configuration",
                             on_enter = function() edit_project_configuration(project, cfg_name) end,
+                            publish_label = cname_cfg and (cname_cfg._published and "Unpublish" or "Publish") or nil,
+                            on_publish = cname_cfg and function()
+                                cname_cfg._published = not cname_cfg._published
+                                cname_cfg._in_user_json = true
+                                proj:_mark_user_owned()
+                                if ws then
+                                    ws:_save_user()
+                                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                                end
+                            end or nil,
                             on_delete = has_user_entry
                                     and function() delete_project_configuration(project, cfg_name) end
                                     or nil,
