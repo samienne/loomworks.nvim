@@ -3555,6 +3555,38 @@ describe("modified state", function()
         -- Bubbles up
         assert.is_true(ws:is_project_modified(app))
     end)
+
+    it("published flags are persisted in user data", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            { projects = { MyLib = { cmake = {} } } }
+        )
+        -- MyLib is user-only, unpublished by default
+        local mylib = h.find_project_in(ws:get_projects(), "MyLib")
+        assert.is_false(mylib._published)
+
+        -- Toggle publish
+        mylib._published = true
+        local user_data = ws:_serialize_user()
+        assert.is_not_nil(user_data.published)
+        assert.is_true(user_data.published.projects.MyLib)
+
+        -- App is shared, published by default — no override stored
+        assert.is_nil(user_data.published.projects.App)
+    end)
+
+    it("published overrides are restored on remerge", function()
+        local ws = make_ws(
+            { projects = { App = { cmake = {} } } },
+            {
+                projects = { MyLib = { cmake = {} } },
+                published = { projects = { MyLib = true } },
+            }
+        )
+        local mylib = h.find_project_in(ws:get_projects(), "MyLib")
+        assert.is_not_nil(mylib)
+        assert.is_true(mylib._published)
+    end)
 end)
 
 -- =========================================================================

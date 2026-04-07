@@ -669,6 +669,9 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         user_data = self:_serialize_user()
     end
 
+    -- Extract published overrides from user data
+    local published_overrides = user_data and user_data.published or nil
+
     -- Two-layer merge: combine user overlay with shared config
     local config, user_project_keys, user_cs_names, user_provenance =
         M.merge_configs(user_overlay, shared_config)
@@ -699,6 +702,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         user_cs_names = user_cs_names,
         user_provenance = user_provenance,
         shared_baseline = self._shared_baseline,
+        published_overrides = published_overrides,
         compute_build_dir = function(project, variant, tool_data)
             return self:_compute_build_dir(project, variant, tool_data)
         end,
@@ -2393,6 +2397,75 @@ function Workspace:_serialize_config()
     return raw
 end
 
+--- Auto-sync user projects/config sets that were synced with the old baseline.
+--- When loomworks.json changes externally, items in user.json that matched the
+--- old baseline should be updated to match the new shared config (stay synced).
+--- Items that the user had modified (differed from old baseline) are left alone.
+--- @param new_config table new parsed loomworks.json config
+--- @param user_data table parsed user.json data (mutable — updated in place)
+function Workspace:_auto_sync_user_projects(new_config, user_data)
+    local old_baseline = self._shared_baseline
+    if not old_baseline then return end
+
+    -- Sync projects
+    if user_data.projects then
+        local old_projects = old_baseline.projects or {}
+        local new_projects = new_config.projects or {}
+        for pkey, user_proj in pairs(user_data.projects) do
+            local old_shared = old_projects[pkey]
+            if old_shared then
+                -- This project existed in old shared. Check if user was synced.
+                -- Compare project-level fields
+                local user_path = user_proj.path or pkey
+                local old_path = old_shared.path or pkey
+                local synced_decl = user_path == old_path
+                        and user_proj.type == old_shared.type
+
+                if synced_decl and new_projects[pkey] then
+                    local new_shared = new_projects[pkey]
+                    -- Update project-level fields to match new shared
+                    user_proj.path = new_shared.path
+                    user_proj.type = new_shared.type
+                    user_proj.depends_on = new_shared.depends_on
+                end
+
+                -- Sync individual configurations
+                local old_configs = old_shared.type_config
+                        and old_shared.type_config.configurations or {}
+                local user_configs = user_proj.type_config
+                        and user_proj.type_config.configurations or {}
+                local new_shared_proj = new_projects[pkey]
+                local new_configs = new_shared_proj
+                        and new_shared_proj.type_config
+                        and new_shared_proj.type_config.configurations or {}
+
+                for cname, user_cfg in pairs(user_configs) do
+                    local old_cfg = old_configs[cname]
+                    if old_cfg and vim.deep_equal(user_cfg, old_cfg) then
+                        -- User config was synced with old baseline
+                        if new_configs[cname] then
+                            -- Update to match new shared
+                            user_configs[cname] = vim.deepcopy(new_configs[cname])
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Sync config sets
+    if user_data.configuration_sets then
+        local old_sets = old_baseline.configuration_sets or {}
+        local new_sets = new_config.configuration_sets or {}
+        for sname, user_set in pairs(user_data.configuration_sets) do
+            local old_set = old_sets[sname]
+            if old_set and vim.deep_equal(user_set, old_set) and new_sets[sname] then
+                user_data.configuration_sets[sname] = vim.deepcopy(new_sets[sname])
+            end
+        end
+    end
+end
+
 --- Reconstruct the user config overlay from domain objects.
 --- Returns items with _in_user_json = true in the internal format.
 --- Used by remerge() when no raw_user is provided (after mutations).
@@ -2879,6 +2952,53 @@ function Workspace:_serialize_user()
         end
     end
     if next(projects) then data.projects = projects end
+
+    -- Persist published flags (only non-default values to keep file small)
+    local pub = {}
+    local pub_projects = {}
+    local pub_configs = {}
+    for _, project in pairs(self._projects) do
+        if not project.orphaned then
+            -- Project declaration: default is published if in baseline
+            local default_pub = self:_baseline_project(project.key) ~= nil
+            if project._published ~= default_pub then
+                pub_projects[project.key] = project._published
+            end
+            -- Per-configuration
+            local bp = self:_baseline_project(project.key)
+            local baseline_configs = bp and bp.type_config
+                    and bp.type_config.configurations
+            for _, cfg in ipairs(project._configurations or {}) do
+                local cfg_default = baseline_configs
+                        and baseline_configs[cfg.name] ~= nil or false
+                if cfg._published ~= cfg_default then
+                    pub_configs[project.key .. "/" .. cfg.name] = cfg._published
+                end
+            end
+        end
+    end
+    if next(pub_projects) then pub.projects = pub_projects end
+    if next(pub_configs) then pub.configurations = pub_configs end
+
+    local pub_sets = {}
+    for _, cs in pairs(self._config_sets) do
+        local default_pub = self:_baseline_config_set(cs.name) ~= nil
+        if cs._published ~= default_pub then
+            pub_sets[cs.name] = cs._published
+        end
+    end
+    if next(pub_sets) then pub.configuration_sets = pub_sets end
+
+    local pub_profiles = {}
+    for _, profile in pairs(self._profiles) do
+        -- Profiles default to unpublished
+        if profile._published then
+            pub_profiles[profile.key] = true
+        end
+    end
+    if next(pub_profiles) then pub.profiles = pub_profiles end
+
+    if next(pub) then data.published = pub end
 
     return data
 end
@@ -3555,6 +3675,12 @@ function Workspace:_on_file_changed(path, content)
         if data then
             local ok, val_err = self._core:_validate_projects(data.config, data.root)
             if ok then
+                -- Auto-update synced items: if user.json had items that matched
+                -- the old baseline, update them to match the new shared config
+                -- so they stay synced instead of showing spurious '+'.
+                if self._shared_baseline and data.user and data.user.projects then
+                    self:_auto_sync_user_projects(data.config, data.user)
+                end
                 -- Update workspace data fields in place
                 self.root = data.root
                 self.name = data.name

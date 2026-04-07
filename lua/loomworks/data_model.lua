@@ -583,15 +583,24 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local user_cs_names = deps.user_cs_names or {}
     local user_provenance = deps.user_provenance or {}
     local shared_baseline = deps.shared_baseline
+    local pub_overrides = deps.published_overrides or {}
+    local pub_projects = pub_overrides.projects or {}
+    local pub_configs = pub_overrides.configurations or {}
+    local pub_sets = pub_overrides.configuration_sets or {}
+    local pub_profiles = pub_overrides.profiles or {}
     for _, p in pairs(projects) do
         p._source = user_project_keys[p.key] and "user" or "shared"
         -- _in_user_json: true if this project has any data from user.json
         p._in_user_json = user_project_keys[p.key] or false
-        -- _published: true if this project declaration exists in the shared baseline
+        -- _published: default from baseline, overridden by persisted flag
         local in_baseline = shared_baseline
             and shared_baseline.projects
             and shared_baseline.projects[p.key] ~= nil
-        p._published = in_baseline or false
+        if pub_projects[p.key] ~= nil then
+            p._published = pub_projects[p.key]
+        else
+            p._published = in_baseline or false
+        end
         -- Set per-configuration _published and _in_user_json flags
         local prov = user_provenance[p.key] or {}
         local baseline_configs = shared_baseline
@@ -601,7 +610,12 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
             and shared_baseline.projects[p.key].type_config.configurations
         for _, cfg in ipairs(p._configurations or {}) do
             cfg._in_user_json = prov.user_configs and prov.user_configs[cfg.name] or false
-            cfg._published = baseline_configs and baseline_configs[cfg.name] ~= nil or false
+            local cfg_key = p.key .. "/" .. cfg.name
+            if pub_configs[cfg_key] ~= nil then
+                cfg._published = pub_configs[cfg_key]
+            else
+                cfg._published = baseline_configs and baseline_configs[cfg.name] ~= nil or false
+            end
         end
     end
     for _, cs in pairs(config_sets) do
@@ -610,7 +624,17 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
         local in_baseline = shared_baseline
             and shared_baseline.configuration_sets
             and shared_baseline.configuration_sets[cs.name] ~= nil
-        cs._published = in_baseline or false
+        if pub_sets[cs.name] ~= nil then
+            cs._published = pub_sets[cs.name]
+        else
+            cs._published = in_baseline or false
+        end
+    end
+    -- Apply published overrides to profiles
+    for _, prof in pairs(profiles) do
+        if pub_profiles[prof.key] then
+            prof._published = true
+        end
     end
 
     -- Resolve active profile from the active set name
