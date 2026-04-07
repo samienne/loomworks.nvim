@@ -109,11 +109,13 @@ local view = View.new({
     on_write = function()
         local lw = require("loomworks")
         local ws = lw.get_workspace()
-        if ws then
-            local ok, err = ws:publish()
-            if not ok then
-                vim.notify("loomworks: publish failed: " .. (err or "unknown"), vim.log.levels.ERROR)
-            end
+        if not ws then
+            vim.notify("loomworks: no workspace", vim.log.levels.WARN)
+            return
+        end
+        local ok, err = ws:publish()
+        if not ok then
+            vim.notify("loomworks: publish failed: " .. (err or "unknown"), vim.log.levels.ERROR)
         end
     end,
     events = {

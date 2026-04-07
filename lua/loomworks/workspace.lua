@@ -2378,11 +2378,11 @@ function Workspace:_serialize_config()
     end
     if next(sets) then raw.configuration_sets = sets end
 
-    -- Profiles: include published explicit profiles
+    -- Profiles: include published profiles
     local profiles = {}
     for _, profile in pairs(self._profiles) do
-        if profile._published and profile.explicit_def then
-            profiles[profile.key] = profile.explicit_def
+        if profile._published then
+            profiles[profile.key] = profile:to_config_def()
         end
     end
     if next(profiles) then raw.profiles = profiles end
@@ -2673,8 +2673,8 @@ function Workspace:is_profile_modified(profile)
     if not profile._published and in_baseline then return true end
     if not profile._published and not in_baseline then return false end
 
-    -- Compare explicit def
-    local current = profile.explicit_def
+    -- Compare definition
+    local current = profile:to_config_def()
     local baseline = bp[profile.key]
     return not vim.deep_equal(current, baseline)
 end
@@ -2715,7 +2715,12 @@ end
 --- @return boolean ok, string|nil err
 function Workspace:publish()
     local ok, err = self:_save_config()
-    if not ok then return false, err end
+    if not ok then
+        self._core._deps.notify(
+            "loomworks: publish write failed: " .. (err or "unknown"),
+            vim.log.levels.ERROR)
+        return false, err
+    end
 
     -- Update baseline to match what we just wrote
     self._shared_baseline = vim.deepcopy(self:_serialize_config_internal())
@@ -2772,9 +2777,9 @@ function Workspace:_serialize_config_internal()
 
     local profiles = nil
     for _, profile in pairs(self._profiles) do
-        if profile._published and profile.explicit_def then
+        if profile._published then
             if not profiles then profiles = {} end
-            profiles[profile.key] = profile.explicit_def
+            profiles[profile.key] = profile:to_config_def()
         end
     end
 

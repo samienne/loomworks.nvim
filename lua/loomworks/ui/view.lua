@@ -44,7 +44,6 @@ function View.new(opts)
         _snapping = false,
         _event_handlers = {},
         _cursor_autocmd = nil,
-        _write_autocmd = nil,
         _ns = vim.api.nvim_create_namespace("loomworks_view"),
     }, View)
 end
@@ -61,10 +60,6 @@ function View:open(win_overrides)
     -- Create buffer if needed
     if not self._bufnr or not vim.api.nvim_buf_is_valid(self._bufnr) then
         self._bufnr = vim.api.nvim_create_buf(false, true)
-        -- acwrite buftype requires a buffer name for :w to work
-        if self._on_write then
-            vim.api.nvim_buf_set_name(self._bufnr, "loomworks://status")
-        end
     end
 
     -- Build Snacks.win keys from our keymap table
@@ -95,7 +90,7 @@ function View:open(win_overrides)
     win_config.enter = true
     win_config.keys = keys
     win_config.bo = {
-        buftype = self._on_write and "acwrite" or "nofile",
+        buftype = "nofile",
         bufhidden = "wipe",
         swapfile = false,
         filetype = self._filetype,
@@ -119,16 +114,20 @@ function View:open(win_overrides)
     if self._lock_to_items then
         self:_setup_cursor_lock()
     end
-    -- Set up BufWriteCmd for :w support (acwrite buftype)
+    -- Map :w to publish via buffer-local user command + abbreviation
     if self._on_write and self._bufnr then
-        self._write_autocmd = vim.api.nvim_create_autocmd("BufWriteCmd", {
-            buffer = self._bufnr,
-            callback = function()
-                self._on_write()
-                -- Clear modified flag after write
-                vim.bo[self._bufnr].modified = false
-            end,
-        })
+        local on_write = self._on_write
+        local view = self
+        vim.api.nvim_buf_create_user_command(self._bufnr, "LoomworksPublish", function()
+            on_write()
+            view:refresh()
+        end, { desc = "Publish to loomworks.json" })
+        -- Redirect :w to our publish command in this buffer
+        vim.api.nvim_buf_call(self._bufnr, function()
+            vim.cmd("cnoreabbrev <buffer> w LoomworksPublish")
+            vim.cmd("cnoreabbrev <buffer> w! LoomworksPublish")
+            vim.cmd("cnoreabbrev <buffer> wq LoomworksPublish<bar>q")
+        end)
     end
     self:refresh()
 end
@@ -293,10 +292,6 @@ function View:_cleanup()
     if self._cursor_autocmd then
         pcall(vim.api.nvim_del_autocmd, self._cursor_autocmd)
         self._cursor_autocmd = nil
-    end
-    if self._write_autocmd then
-        pcall(vim.api.nvim_del_autocmd, self._write_autocmd)
-        self._write_autocmd = nil
     end
     local events = require("loomworks.events")
     for _, entry in ipairs(self._event_handlers) do
