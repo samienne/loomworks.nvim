@@ -662,7 +662,9 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     else
         active_profile_key = self._active_profile_key
         default_target_data = self._default_target_data
-        user_overlay = self._user_config_overlay
+        -- Reconstruct user overlay from domain objects (_in_user_json items)
+        user_overlay = self:_user_config_from_objects()
+        self._user_config_overlay = next(user_overlay) and user_overlay or nil
         -- Reconstruct user_data from current state for merge (includes pinned profiles)
         user_data = self:_serialize_user()
     end
@@ -2391,6 +2393,56 @@ function Workspace:_serialize_config()
     return raw
 end
 
+--- Reconstruct the user config overlay from domain objects.
+--- Returns items with _in_user_json = true in the internal format.
+--- Used by remerge() when no raw_user is provided (after mutations).
+--- @return table user overlay in the same format as parsed user.json
+function Workspace:_user_config_from_objects()
+    local overlay = {}
+
+    local projects = {}
+    for _, project in pairs(self._projects) do
+        if project._in_user_json and not project.orphaned then
+            -- Serialize only user-owned configs within this project
+            local tc = project.type_config
+                    and vim.deepcopy(project.type_config) or {}
+            local configs_dict = {}
+            for _, cfg in ipairs(project._configurations) do
+                if cfg._in_user_json then
+                    local override = cfg:serialize_user_override()
+                    if override then
+                        configs_dict[cfg.name] = override
+                    else
+                        configs_dict[cfg.name] = {}
+                    end
+                end
+            end
+            if next(configs_dict) then
+                tc.configurations = configs_dict
+            end
+            projects[project.key] = {
+                path = project.path or project.key,
+                type = project.type,
+                type_config = tc,
+                depends_on = project._depends_on_keys,
+                launch = project.launch,
+                variables = project.variables,
+            }
+        end
+    end
+    if next(projects) then overlay.projects = projects end
+
+    local config_sets = {}
+    for _, cs in pairs(self._config_sets) do
+        if cs._in_user_json then
+            config_sets[cs.name] = cs:raw_mappings()
+        end
+    end
+    if next(config_sets) then overlay.configuration_sets = config_sets end
+
+    return overlay
+end
+
 -- ===========================================================================
 -- Modified state computation (publish/working-copy model)
 -- ===========================================================================
@@ -2712,24 +2764,42 @@ function Workspace:_serialize_user()
         end
     end
 
-    -- Serialize needed config sets (user-sourced only)
+    -- Serialize config sets: include user-sourced OR _in_user_json
     local config_sets = {}
     for _, cs in pairs(self._config_sets) do
-        if needed_config_sets[cs.name] and cs._source == "user" then
+        if cs._in_user_json or (needed_config_sets[cs.name] and cs._source == "user") then
             config_sets[cs.name] = cs:raw_mappings()
         end
     end
     if next(config_sets) then data.configuration_sets = config_sets end
 
-    -- Serialize needed projects (partial — only needed configs, user-sourced only)
+    -- Serialize projects: include user-sourced OR _in_user_json
+    -- For pin-reachable projects, use partial serialization (only needed configs).
+    -- For _in_user_json projects not in the pin closure, serialize all user configs.
     local projects = {}
     for project_key, config_names in pairs(needed_projects) do
         local project = nil
         for _, p in pairs(self._projects) do
             if p.key == project_key then project = p; break end
         end
-        if project and not project.orphaned and project._source == "user" then
+        if project and not project.orphaned
+                and (project._in_user_json or project._source == "user") then
             projects[project_key] = self:_serialize_project_partial(project, config_names)
+        end
+    end
+    -- Also include _in_user_json projects not in the pin closure
+    for _, project in pairs(self._projects) do
+        if project._in_user_json and not project.orphaned and not projects[project.key] then
+            -- Serialize only user-owned configs
+            local user_configs = {}
+            for _, cfg in ipairs(project._configurations) do
+                if cfg._in_user_json then
+                    user_configs[cfg.name] = true
+                end
+            end
+            if next(user_configs) or project._source == "user" then
+                projects[project.key] = self:_serialize_project_partial(project, user_configs)
+            end
         end
     end
     if next(projects) then data.projects = projects end
@@ -2739,6 +2809,7 @@ end
 
 --- Write the current user data to loomworks.user.json.
 --- Updates the file tracker's cached content to suppress self-write detection.
+--- @return boolean ok, string|nil err
 function Workspace:_save_user()
     local data = self:_serialize_user()
     local ok, err = self._core._deps.user.save(self.root, data)
@@ -2750,6 +2821,7 @@ function Workspace:_save_user()
     if self._tracker then
         self._tracker:mark_written(self._core._deps.user.filepath(self.root))
     end
+    return ok, err
 end
 
 -- ---------------------------------------------------------------------------
@@ -2788,9 +2860,11 @@ function Workspace:add_project(key, type, path)
         configurations = {},
         cached_configurations = {},
     })
+    project._in_user_json = true
+    project._source = "user"
     self._projects[#self._projects + 1] = project
 
-    local ok, err = self:_save_config()
+    local ok, err = self:_save_user()
     if not ok then
         -- Rollback domain object
         for i, p in ipairs(self._projects) do
@@ -2823,7 +2897,7 @@ function Workspace:remove_project(project)
         cs.mappings[project] = nil
     end
 
-    local ok, err = self:_save_config()
+    local ok, err = self:_save_user()
     if not ok then return false, err end
 
     self._core._deps.events.emit("active_set_changed", self._active_set)
@@ -2871,9 +2945,11 @@ function Workspace:add_configuration_set(name, mappings)
         end
     end
     local cs = ConfigurationSet.new(self, name, resolved)
+    cs._in_user_json = true
+    cs._source = "user"
     self._config_sets[#self._config_sets + 1] = cs
 
-    local ok, err = self:_save_config()
+    local ok, err = self:_save_user()
     if not ok then
         -- Rollback domain object
         for i, c in ipairs(self._config_sets) do
@@ -2900,7 +2976,7 @@ function Workspace:remove_configuration_set(cs)
         if c == cs then table.remove(self._config_sets, i); break end
     end
 
-    local ok, err = self:_save_config()
+    local ok, err = self:_save_user()
     if not ok then return false, err end
 
     -- Update affected profiles:

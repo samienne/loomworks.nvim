@@ -3174,14 +3174,17 @@ describe("two-layer merge", function()
         assert.is_nil(user_data.projects and user_data.projects.App)
     end)
 
-    it("serialize_user excludes unreachable user-sourced projects", function()
+    it("serialize_user includes all _in_user_json projects", function()
         local ws = make_ws(
             { projects = { App = { cmake = {} } } },
             { projects = { MyLib = { cmake = {} } } }
         )
-        -- No pins → nothing reachable
+        -- No pins but MyLib is in user.json → still serialized
         local user_data = ws:_serialize_user()
-        assert.is_nil(user_data.projects)
+        assert.is_not_nil(user_data.projects)
+        assert.is_not_nil(user_data.projects.MyLib)
+        -- App is shared-only, not in user.json
+        assert.is_nil(user_data.projects.App)
     end)
 
     it("serialize_user includes pin-reachable user-sourced config_sets", function()

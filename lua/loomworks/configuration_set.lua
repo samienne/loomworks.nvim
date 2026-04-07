@@ -77,8 +77,9 @@ function ConfigurationSet:update_mapping(project, configuration)
 
     local old = self.mappings[project]
     self.mappings[project] = configuration
+    self._in_user_json = true
 
-    local ok, err = ws:_save_config()
+    local ok, err = ws:_save_user()
     if not ok then
         self.mappings[project] = old
         return false, err
