@@ -161,6 +161,17 @@ These are implementation-specific details not covered by the spec or architectur
   atomic rename with config set, cache, and profile propagation. All
   mutations write to user.json (working copy). `publish()` writes published
   items to loomworks.json on explicit `:w`.
+- **Publish/working-copy model** (spec §2.4): user.json is the live working
+  state; loomworks.json is a published snapshot. Each publishable item
+  (project, config, config set, profile) has `_published` (should appear in
+  loomworks.json) and `_in_user_json` (has data from user.json) flags.
+  `_published` defaults from shared baseline presence; non-default values
+  persisted in user.json `published` dict. Modified indicator (`+`) computed
+  by comparing published state against `_shared_baseline`. `:w` on the status
+  buffer calls `Workspace:publish()`. `P` key toggles publish. Per-config
+  merge: projects from both files merge at the configuration/launch/variable
+  level (user wins per-key). External loomworks.json changes auto-sync items
+  that were synced with the old baseline.
 - **workspace_view.lua**: View-model layer between UI and Workspace. Owns
   orchestration logic (add/remove project pipelines, tool detection caching,
   upgrade/downgrade previews, config set candidates). UI files call
