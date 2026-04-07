@@ -99,12 +99,25 @@ local view = View.new({
         ["t"]     = "task",
         ["p"]     = "pin",
         ["o"]     = "options",
+        ["P"]     = "publish",
         ["N"]     = "create_workspace",
         ["L"]     = "load",
         ["<C-n>"] = "nuke",
         ["U"]     = "delete_user_prefs",
         ["?"]     = "help",
     },
+    on_write = function()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        if ws then
+            local ok, err = ws:publish()
+            if ok then
+                vim.notify("loomworks: published to loomworks.json", vim.log.levels.INFO)
+            else
+                vim.notify("loomworks: publish failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+            end
+        end
+    end,
     events = {
         "task_started",
         "task_stopped",

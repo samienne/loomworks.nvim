@@ -465,6 +465,11 @@ return function(tree, ctx)
             fold_key = "project:" .. key,
             spinning = proj_running ~= nil,
             hl = proj_hl,
+            on_publish = function()
+                proj._published = not proj._published
+                proj:_mark_user_owned()
+                if ws then ws:_save_user() end
+            end,
         }, function()
             tree:leaf("Path: " .. (proj.path or key), "Comment")
 
@@ -591,6 +596,12 @@ return function(tree, ctx)
                             hl = config_hl,
                             enter_label = "Edit configuration",
                             on_enter = function() edit_project_configuration(project, cfg_name) end,
+                            on_publish = cname_cfg and function()
+                                cname_cfg._published = not cname_cfg._published
+                                cname_cfg._in_user_json = true
+                                proj:_mark_user_owned()
+                                if ws then ws:_save_user() end
+                            end or nil,
                             on_delete = has_user_entry
                                     and function() delete_project_configuration(project, cfg_name) end
                                     or nil,

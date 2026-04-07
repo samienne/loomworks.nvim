@@ -180,6 +180,10 @@ return function(tree, ctx)
             hl = hl,
             enter_label = "Activate",
             on_enter = actions.activate(profile),
+            on_publish = function()
+                profile._published = not profile._published
+                if ws then ws:_save_user() end
+            end,
             on_build = actions.build(profile),
             on_rebuild = actions.rebuild(profile),
             on_clean = actions.clean(profile),

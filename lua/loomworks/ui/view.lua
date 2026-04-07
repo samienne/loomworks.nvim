@@ -33,6 +33,7 @@ function View.new(opts)
         _events = opts.events or {},
         _win_opts = opts.win or {},
         _on_close = opts.on_close,
+        _on_write = opts.on_write,
         _lock_to_items = opts.lock_to_items or false,
         _filetype = opts.filetype or "loomworks",
         _timer_interval = opts.timer_interval or 80,
@@ -43,6 +44,7 @@ function View.new(opts)
         _snapping = false,
         _event_handlers = {},
         _cursor_autocmd = nil,
+        _write_autocmd = nil,
         _ns = vim.api.nvim_create_namespace("loomworks_view"),
     }, View)
 end
@@ -89,7 +91,7 @@ function View:open(win_overrides)
     win_config.enter = true
     win_config.keys = keys
     win_config.bo = {
-        buftype = "nofile",
+        buftype = self._on_write and "acwrite" or "nofile",
         bufhidden = "wipe",
         swapfile = false,
         filetype = self._filetype,
@@ -112,6 +114,17 @@ function View:open(win_overrides)
     self:_setup_events()
     if self._lock_to_items then
         self:_setup_cursor_lock()
+    end
+    -- Set up BufWriteCmd for :w support (acwrite buftype)
+    if self._on_write and self._bufnr then
+        self._write_autocmd = vim.api.nvim_create_autocmd("BufWriteCmd", {
+            buffer = self._bufnr,
+            callback = function()
+                self._on_write()
+                -- Clear modified flag after write
+                vim.bo[self._bufnr].modified = false
+            end,
+        })
     end
     self:refresh()
 end
@@ -276,6 +289,10 @@ function View:_cleanup()
     if self._cursor_autocmd then
         pcall(vim.api.nvim_del_autocmd, self._cursor_autocmd)
         self._cursor_autocmd = nil
+    end
+    if self._write_autocmd then
+        pcall(vim.api.nvim_del_autocmd, self._write_autocmd)
+        self._write_autocmd = nil
     end
     local events = require("loomworks.events")
     for _, entry in ipairs(self._event_handlers) do

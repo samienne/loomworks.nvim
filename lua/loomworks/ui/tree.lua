@@ -22,6 +22,7 @@ local ACTION_ORDER = {
     { action = "options",   label = "Show build options" },
     { action = "move_up",   label = "Move up  <C-k>" },
     { action = "move_down", label = "Move down  <C-j>" },
+    { action = "publish",   label = "Toggle publish  P" },
     { action = "rebuild",   label = "Rebuild (clean + build)" },
     { action = "clean",     label = "Clean" },
     { action = "delete",    label = "Delete  D" },

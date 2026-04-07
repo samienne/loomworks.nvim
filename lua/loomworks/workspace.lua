@@ -2634,6 +2634,82 @@ function Workspace:_save_config()
     return ok, err
 end
 
+--- Publish: write published items to loomworks.json, update baseline.
+--- Called from the status page :w handler.
+--- @return boolean ok, string|nil err
+function Workspace:publish()
+    local ok, err = self:_save_config()
+    if not ok then return false, err end
+
+    -- Update baseline to match what we just wrote
+    self._shared_baseline = vim.deepcopy(self:_serialize_config_internal())
+
+    -- Save user data too (to persist any flag changes)
+    self:_save_user()
+
+    -- Refresh UI to clear + indicators
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Serialize workspace config to the internal format (matching config.parse output).
+--- Used to update _shared_baseline after publish.
+--- @return table internal-format config
+function Workspace:_serialize_config_internal()
+    local projects = {}
+    for _, project in pairs(self._projects) do
+        if not project.orphaned and project._published then
+            local tc = project.type_config
+                    and vim.deepcopy(project.type_config) or {}
+            local configs_dict = {}
+            for _, cfg in ipairs(project._configurations) do
+                if cfg._published then
+                    local override = cfg:serialize_user_override()
+                    if override then
+                        configs_dict[cfg.name] = override
+                    else
+                        configs_dict[cfg.name] = {}
+                    end
+                end
+            end
+            if next(configs_dict) then
+                tc.configurations = configs_dict
+            end
+            projects[project.key] = {
+                path = project.path or project.key,
+                type = project.type,
+                type_config = tc,
+                depends_on = project._depends_on_keys,
+                launch = project.launch,
+                variables = project.variables,
+            }
+        end
+    end
+
+    local configuration_sets = nil
+    for _, cs in pairs(self._config_sets) do
+        if cs._published then
+            if not configuration_sets then configuration_sets = {} end
+            configuration_sets[cs.name] = cs:raw_mappings()
+        end
+    end
+
+    local profiles = nil
+    for _, profile in pairs(self._profiles) do
+        if profile._published and profile.explicit_def then
+            if not profiles then profiles = {} end
+            profiles[profile.key] = profile.explicit_def
+        end
+    end
+
+    return {
+        name = self.name,
+        projects = projects,
+        configuration_sets = configuration_sets,
+        profiles = profiles,
+    }
+end
+
 --- Serialize a project partially — only configurations in needed_config_names.
 --- Used by _serialize_user() to emit only pin-reachable configurations.
 --- @param project loomworks.Project

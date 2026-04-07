@@ -323,6 +323,11 @@ return function(tree, ctx)
             hl = set_hl,
             enter_label = "Edit mappings",
             on_enter = function() edit_config_set(cs) end,
+            on_publish = function()
+                cs._published = not cs._published
+                cs._in_user_json = true
+                if ws then ws:_save_user() end
+            end,
             on_create = function()
                 local all_tool_entries = lw.get_tool_entries()
                 local is_first = not next(all_profiles)
