@@ -2378,11 +2378,12 @@ function Workspace:_serialize_config()
     end
     if next(sets) then raw.configuration_sets = sets end
 
-    -- Profiles: include published profiles
+    -- Profiles: preserve existing explicit profiles from loomworks.json
+    -- (profile publishing is not supported — profiles are always user-only)
     local profiles = {}
     for _, profile in pairs(self._profiles) do
-        if profile._published then
-            profiles[profile.key] = profile:to_config_def()
+        if profile.explicit_def then
+            profiles[profile.key] = profile.explicit_def
         end
     end
     if next(profiles) then raw.profiles = profiles end
@@ -2691,9 +2692,7 @@ function Workspace:has_any_modified()
     for _, cs in pairs(self._config_sets) do
         if self:is_config_set_modified(cs) then return true end
     end
-    for _, profile in pairs(self._profiles) do
-        if self:is_profile_modified(profile) then return true end
-    end
+    -- Profiles are not publishable (excluded from modified check)
     return false
 end
 
@@ -2775,11 +2774,12 @@ function Workspace:_serialize_config_internal()
         end
     end
 
+    -- Preserve existing explicit profiles (profile publishing not supported)
     local profiles = nil
     for _, profile in pairs(self._profiles) do
-        if profile._published then
+        if profile.explicit_def then
             if not profiles then profiles = {} end
-            profiles[profile.key] = profile:to_config_def()
+            profiles[profile.key] = profile.explicit_def
         end
     end
 
