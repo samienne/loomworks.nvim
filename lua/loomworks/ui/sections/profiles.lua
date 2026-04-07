@@ -123,6 +123,8 @@ return function(tree, ctx)
         end
     end
 
+    local ws = lw.get_workspace()
+
     for _, profile in ipairs(profiles) do
         local is_active = profile == ctx.active_profile
         local profile_running = profile:is_running()
@@ -132,7 +134,8 @@ return function(tree, ctx)
         local marker = helpers.status_marker(status_label)
         local hl
 
-        local display = profile.key
+        local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
+        local display = prof_modified .. profile.key
         if profile.orphaned_set then
             display = display .. " [stale]"
         elseif profile.explicit then

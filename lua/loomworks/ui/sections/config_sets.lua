@@ -306,13 +306,19 @@ return function(tree, ctx)
     end
     table.sort(sorted, function(a, b) return a.name < b.name end)
 
+    local ws = lw.get_workspace()
+
     for _, cs in ipairs(sorted) do
         local is_active_set = active_profile
                 and active_profile._config_set_ref == cs
-        local set_hl = is_active_set and "LoomworksActive" or "LoomworksActionable"
+        local cs_dimmed = not cs._in_user_json
+        local set_hl = is_active_set and "LoomworksActive"
+                or cs_dimmed and "Comment"
+                or "LoomworksActionable"
         local sname = cs.name
+        local cs_modified = ws and ws:is_config_set_modified(cs) and "+" or ""
 
-        tree:node(cs.name, {
+        tree:node(cs_modified .. cs.name, {
             fold_key = "set:" .. cs.name,
             hl = set_hl,
             enter_label = "Edit mappings",
