@@ -290,7 +290,7 @@ function M.render_grouped(tree, items, render_fn)
     end
 
     if #published > 0 then
-        tree:leaf("── Published ──", "NonText")
+        tree:leaf("── Local + Shared ──", "NonText")
         for _, item in ipairs(published) do
             render_fn(tree, item, "published")
         end
