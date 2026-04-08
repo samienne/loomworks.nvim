@@ -1203,7 +1203,7 @@ end
 function M.execute_create_profile(cs, tool_entry, activate)
     local profile = cs:ensure_profile(tool_entry)
     if profile then
-        profile._in_user_json = true
+        profile._intent = "local"
         if activate then
             profile:activate()
         else

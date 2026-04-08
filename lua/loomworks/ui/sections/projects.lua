@@ -459,17 +459,13 @@ return function(tree, ctx)
         local type_tag = "[" .. proj.type .. "]"
         local orphan_tag = proj.orphaned and " (orphaned)" or ""
         local refresh_tag = proj.needs_refresh and " !" or ""
-        local pin_icon = group == "published" and proj._user_pinned and "\u{1f4cc} " or ""
-
-        t:node(modified_tag .. pin_icon .. key .. " " .. type_tag .. orphan_tag .. refresh_tag, {
+        t:node(modified_tag .. key .. " " .. type_tag .. orphan_tag .. refresh_tag, {
             fold_key = "project:" .. key,
             spinning = proj_running ~= nil,
             hl = proj_hl,
-            publish_label = helpers.publish_action_label(proj, ws and ws:_baseline_project(proj.key) ~= nil or false),
+            publish_label = helpers.intent_action_label(proj),
             on_publish = function()
-                local had_user = proj._in_user_json
-                helpers.cycle_publish(proj, ws and ws:_baseline_project(proj.key) ~= nil or false)
-                if proj._in_user_json and not had_user then proj:_mark_user_owned() end
+                helpers.cycle_intent(proj)
                 if ws then
                     ws:_save_user()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
@@ -494,10 +490,7 @@ return function(tree, ctx)
                             name = cname,
                             data = cdata,
                             cfg = cfg_obj,
-                            -- For grouping: use Configuration object flags, fall back to shared
-                            _published = cfg_obj and cfg_obj._published or false,
-                            _in_user_json = cfg_obj and cfg_obj._in_user_json or false,
-                            _user_pinned = cfg_obj and cfg_obj._user_pinned or false,
+                            _intent = cfg_obj and cfg_obj._intent or "shared",
                         }
                     end
                     table.sort(config_list, function(a, b) return a.name < b.name end)
@@ -543,28 +536,21 @@ return function(tree, ctx)
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
                         local cfg_modified_tag = ws and cname_cfg
                                 and ws:is_config_modified(proj, cname_cfg) and "+" or ""
-                        local cfg_pin_icon = cfg_group == "published"
-                                and cname_cfg and cname_cfg._user_pinned
-                                and "\u{1f4cc} " or ""
 
                         local project = proj  -- capture for closure
                         local cfg_name = cname
                         local cfg_obj = cname_cfg
                         local has_user_entry = cfg_obj and cfg_obj.is_user or false
 
-                        ct:node(cfg_modified_tag .. cfg_pin_icon .. cname .. brief_str, {
+                        ct:node(cfg_modified_tag .. cname .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
                             hl = config_hl,
                             enter_label = "Edit configuration",
                             on_enter = function() edit_project_configuration(project, cfg_name) end,
-                            publish_label = cname_cfg and helpers.publish_action_label(cname_cfg,
-                                ws and ws:is_config_in_baseline(proj, cname_cfg) or false) or nil,
+                            publish_label = cname_cfg and helpers.intent_action_label(cname_cfg) or nil,
                             on_publish = cname_cfg and function()
-                                local had_user = cname_cfg._in_user_json
-                                helpers.cycle_publish(cname_cfg,
-                                    ws and ws:is_config_in_baseline(proj, cname_cfg) or false)
-                                if cname_cfg._in_user_json and not had_user then proj:_mark_user_owned() end
+                                helpers.cycle_intent(cname_cfg)
                                 if ws then
                                     ws:_save_user()
                                     ws._core._deps.events.emit("active_set_changed", ws._active_set)

@@ -578,30 +578,34 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
         ctx, workspace, cache, deps)
     local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
 
-    -- Set _source flags on projects and config_sets (two-layer merge provenance)
+    -- Set _source and _intent on projects, config_sets, and profiles
     local user_project_keys = deps.user_project_keys or {}
     local user_cs_names = deps.user_cs_names or {}
     local user_provenance = deps.user_provenance or {}
     local shared_baseline = deps.shared_baseline
-    local pub_overrides = deps.published_overrides or {}
-    local pub_projects = pub_overrides.projects or {}
-    local pub_configs = pub_overrides.configurations or {}
-    local pub_sets = pub_overrides.configuration_sets or {}
-    local pub_profiles = pub_overrides.profiles or {}
+    local intent_overrides = deps.intent_overrides or {}
+    local intent_projects = intent_overrides.projects or {}
+    local intent_configs = intent_overrides.configurations or {}
+    local intent_sets = intent_overrides.configuration_sets or {}
+    local intent_profiles = intent_overrides.profiles or {}
+
+    --- Compute default intent from file presence.
+    local function default_intent(in_user, in_baseline)
+        if in_user and in_baseline then return "local+shared" end
+        if in_user then return "local" end
+        if in_baseline then return "shared" end
+        return "local"
+    end
+
     for _, p in pairs(projects) do
         p._source = user_project_keys[p.key] and "user" or "shared"
-        -- _in_user_json: true if this project has any data from user.json
-        p._in_user_json = user_project_keys[p.key] or false
-        -- _published: default from baseline, overridden by persisted flag
         local in_baseline = shared_baseline
             and shared_baseline.projects
             and shared_baseline.projects[p.key] ~= nil
-        if pub_projects[p.key] ~= nil then
-            p._published = pub_projects[p.key]
-        else
-            p._published = in_baseline or false
-        end
-        -- Set per-configuration _published and _in_user_json flags
+        local in_user = user_project_keys[p.key] or false
+        p._intent = intent_projects[p.key] or default_intent(in_user, in_baseline)
+
+        -- Per-configuration _intent
         local prov = user_provenance[p.key] or {}
         local baseline_configs = shared_baseline
             and shared_baseline.projects
@@ -609,39 +613,27 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
             and shared_baseline.projects[p.key].type_config
             and shared_baseline.projects[p.key].type_config.configurations
         for _, cfg in ipairs(p._configurations or {}) do
-            cfg._in_user_json = prov.user_configs and prov.user_configs[cfg.name] or false
+            local cfg_in_user = prov.user_configs and prov.user_configs[cfg.name] or false
+            local cfg_in_baseline = baseline_configs and baseline_configs[cfg.name] ~= nil or false
             local cfg_key = p.key .. "/" .. cfg.name
-            if pub_configs[cfg_key] ~= nil then
-                cfg._published = pub_configs[cfg_key]
-            else
-                cfg._published = baseline_configs and baseline_configs[cfg.name] ~= nil or false
-            end
+            cfg._intent = intent_configs[cfg_key] or default_intent(cfg_in_user, cfg_in_baseline)
         end
     end
     for _, cs in pairs(config_sets) do
         cs._source = user_cs_names[cs.name] and "user" or "shared"
-        cs._in_user_json = user_cs_names[cs.name] or false
         local in_baseline = shared_baseline
             and shared_baseline.configuration_sets
             and shared_baseline.configuration_sets[cs.name] ~= nil
-        if pub_sets[cs.name] ~= nil then
-            cs._published = pub_sets[cs.name]
-        else
-            cs._published = in_baseline or false
-        end
+        local in_user = user_cs_names[cs.name] or false
+        cs._intent = intent_sets[cs.name] or default_intent(in_user, in_baseline)
     end
-    -- Set _in_user_json and _published on profiles (same pattern as config sets)
     local user_profile_keys = deps.user_profile_keys or {}
     for _, prof in pairs(profiles) do
-        prof._in_user_json = user_profile_keys[prof.key] or false
         local in_baseline = shared_baseline
             and shared_baseline.profiles
             and shared_baseline.profiles[prof.key] ~= nil
-        if pub_profiles[prof.key] ~= nil then
-            prof._published = pub_profiles[prof.key]
-        else
-            prof._published = in_baseline or false
-        end
+        local in_user = user_profile_keys[prof.key] or false
+        prof._intent = intent_profiles[prof.key] or default_intent(in_user, in_baseline)
     end
 
     -- Resolve active profile from the active set name

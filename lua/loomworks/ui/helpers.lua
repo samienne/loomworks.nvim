@@ -254,81 +254,54 @@ function M.render_targets(tree, targets, fold_prefix)
     end)
 end
 
---- Cycle the publish state of an item: Local → Local+Shared → Shared → Local.
---- "Shared only" is skipped if the item has no baseline entry (can't be shared-only
---- without existing in loomworks.json).
---- @param item table domain object with _published, _in_user_json flags
---- @param has_baseline boolean whether the item exists in loomworks.json baseline
-function M.cycle_publish(item, has_baseline)
-    if not item._published then
-        -- Local → Local + Shared
-        item._published = true
-        item._user_pinned = true
-        item._in_user_json = true
-    elseif item._in_user_json then
-        if has_baseline then
-            -- Local + Shared → Shared only
-            item._in_user_json = false
-            item._user_pinned = false
-        else
-            -- Local + Shared → Local (no baseline, skip shared-only)
-            item._published = false
-            item._user_pinned = false
-        end
+--- Cycle the intent: local → local+shared → shared → local.
+--- All three states always available. Data stays in user.json while cycling.
+--- @param item table domain object with _intent field
+function M.cycle_intent(item)
+    if item._intent == "local" then
+        item._intent = "local+shared"
+    elseif item._intent == "local+shared" then
+        item._intent = "shared"
     else
-        -- Shared only → Local
-        item._published = false
-        item._in_user_json = true
-        item._user_pinned = false
+        item._intent = "local"
     end
 end
 
---- Get the label for the next publish state transition.
---- @param item table domain object with _published, _in_user_json flags
---- @param has_baseline boolean whether the item exists in loomworks.json baseline
+--- Get the label for the next intent transition.
+--- @param item table domain object with _intent field
 --- @return string
-function M.publish_action_label(item, has_baseline)
-    if not item._published then
-        return "Publish (→ local + shared)"
-    elseif item._in_user_json then
-        if has_baseline then
-            return "Unpin local (→ shared only)"
-        else
-            return "Unpublish (→ local only)"
-        end
+function M.intent_action_label(item)
+    if item._intent == "local" then
+        return "Share (→ local + shared)"
+    elseif item._intent == "local+shared" then
+        return "Unpin local (→ shared)"
     else
-        return "Pin local (→ local only)"
+        return "Pin local (→ local)"
     end
 end
 
---- Classify an item into a publish group based on its flags.
---- @param item table domain object with _published and _in_user_json fields
---- @return "published"|"local"|"shared"
+--- Classify an item into a display group based on _intent.
+--- @param item table domain object with _intent field
+--- @return "local+shared"|"local"|"shared"
 function M.publish_group(item)
-    if item._published then
-        return "published"
-    elseif item._in_user_json then
-        return "local"
-    else
-        return "shared"
-    end
+    return item._intent or "local"
 end
 
---- Sort items into publish groups and render with separators.
---- Groups: Published (with pin icon on pinned items), Local, Shared (dimmed).
---- Empty groups are hidden. No separators when only one group exists.
+--- Sort items into intent groups and render with separators.
+--- Groups: Local + Shared (with pin icon on user-pinned), Local, Shared (dimmed).
+--- Empty groups are hidden.
 --- @param tree loomworks.Tree
 --- @param items table[] array of items to group
 --- @param render_fn fun(tree: loomworks.Tree, item: table, group: string) render a single item
 function M.render_grouped(tree, items, render_fn)
-    local published = {}
+    local both = {}
     local local_items = {}
     local shared = {}
 
     for _, item in ipairs(items) do
         local group = M.publish_group(item)
-        if group == "published" then
-            published[#published + 1] = item
+        if group == "local+shared" then
+            both[#both + 1] = item
         elseif group == "local" then
             local_items[#local_items + 1] = item
         else
@@ -336,10 +309,10 @@ function M.render_grouped(tree, items, render_fn)
         end
     end
 
-    if #published > 0 then
+    if #both > 0 then
         tree:leaf("── Local + Shared ──", "NonText")
-        for _, item in ipairs(published) do
-            render_fn(tree, item, "published")
+        for _, item in ipairs(both) do
+            render_fn(tree, item, "local+shared")
         end
     end
     if #local_items > 0 then

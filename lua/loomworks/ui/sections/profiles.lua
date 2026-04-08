@@ -135,8 +135,7 @@ return function(tree, ctx)
         local hl
 
         local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
-        local pin_icon = group == "published" and profile._user_pinned and "\u{1f4cc} " or ""
-        local display = prof_modified .. pin_icon .. profile.key
+        local display = prof_modified .. profile.key
         if profile.orphaned_set then
             display = display .. " [stale]"
         end
@@ -178,13 +177,9 @@ return function(tree, ctx)
             hl = group == "shared" and "Comment" or hl,
             enter_label = "Activate",
             on_enter = actions.activate(profile),
-            publish_label = helpers.publish_action_label(profile,
-                ws and ws._shared_baseline and ws._shared_baseline.profiles
-                    and ws._shared_baseline.profiles[profile.key] ~= nil or false),
+            publish_label = helpers.intent_action_label(profile),
             on_publish = function()
-                local has_bl = ws and ws._shared_baseline and ws._shared_baseline.profiles
-                    and ws._shared_baseline.profiles[profile.key] ~= nil or false
-                helpers.cycle_publish(profile, has_bl)
+                helpers.cycle_intent(profile)
                 if ws then
                     ws:_save_user()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)

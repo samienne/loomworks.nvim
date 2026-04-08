@@ -26,9 +26,7 @@ local Configuration = require("loomworks.configuration")
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
---- @field _published boolean whether this project declaration should appear in loomworks.json
---- @field _in_user_json boolean whether this project is in user.json (working copy)
---- @field _user_pinned boolean whether user explicitly pinned this (vs transitive dependency)
+--- @field _intent "local"|"shared"|"local+shared" intended publish state
 local Project = {}
 Project.__index = Project
 
@@ -43,9 +41,7 @@ function Project.new(workspace, key, data)
     self.key = key
     self._removed = false
     self._source = "shared"
-    self._published = false
-    self._in_user_json = false
-    self._user_pinned = false
+    self._intent = "local"
     self._configurations = {}
     if data then self:_update(data) end
     return self
@@ -95,7 +91,9 @@ end
 --- Mark this project as in the user.json working copy.
 --- Called when any mutation is about to write to user.json.
 function Project:_mark_user_owned()
-    self._in_user_json = true
+    if self._intent == "shared" then
+        self._intent = "local+shared"
+    end
     if self._source == "shared" then
         self._source = "user"
     end

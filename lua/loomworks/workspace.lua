@@ -679,15 +679,15 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     else
         active_profile_key = self._active_profile_key
         default_target_data = self._default_target_data
-        -- Reconstruct user overlay from domain objects (_in_user_json items)
+        -- Reconstruct user overlay from domain objects (items with local or local+shared intent)
         user_overlay = self:_user_config_from_objects()
         self._user_config_overlay = next(user_overlay) and user_overlay or nil
         -- Reconstruct user_data from current state for merge (includes pinned profiles)
         user_data = self:_serialize_user()
     end
 
-    -- Extract published overrides from user data
-    local published_overrides = user_data and user_data.published or nil
+    -- Extract intent overrides from user data
+    local intent_overrides = user_data and user_data.intent or nil
 
     -- Two-layer merge: combine user overlay with shared config
     local config, user_project_keys, user_cs_names, user_provenance, user_profile_keys =
@@ -721,7 +721,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         user_provenance = user_provenance,
         user_profile_keys = user_profile_keys,
         shared_baseline = self._shared_baseline,
-        published_overrides = published_overrides,
+        intent_overrides = intent_overrides,
         compute_build_dir = function(project, variant, tool_data)
             return self:_compute_build_dir(project, variant, tool_data)
         end,
@@ -2298,15 +2298,15 @@ function Workspace:_shared_config_from_objects()
     return self:_serialize_config_internal()
 end
 
---- Serialize a published project — only includes published configurations.
+--- Serialize a project for loomworks.json — only includes shared-intent configurations.
 --- @param project loomworks.Project
 --- @return table entry raw JSON-compatible project entry
-function Workspace:_serialize_project_published(project)
+function Workspace:_serialize_project_shared(project)
     local type_config = project.type_config
             and vim.deepcopy(project.type_config) or {}
     local configs_dict = {}
     for _, cfg in ipairs(project._configurations) do
-        if cfg._published then
+        if cfg._intent ~= "local" then
             local override = cfg:serialize_user_override()
             if override then
                 configs_dict[cfg.name] = override
@@ -2378,17 +2378,17 @@ function Workspace:_serialize_config()
         raw.name = self.name
     end
 
-    -- Projects: include published projects with published configurations
+    -- Projects: include shared-intent projects
     for _, project in pairs(self._projects) do
-        if not project.orphaned and project._published then
-            raw.projects[project.key] = self:_serialize_project_published(project)
+        if not project.orphaned and project._intent ~= "local" then
+            raw.projects[project.key] = self:_serialize_project_shared(project)
         end
     end
 
-    -- Configuration sets: include published
+    -- Configuration sets: include shared-intent
     local sets = {}
     for _, cs in pairs(self._config_sets) do
-        if cs._published then
+        if cs._intent ~= "local" then
             sets[cs.name] = cs:raw_mappings()
         end
     end
@@ -2487,7 +2487,7 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
 end
 
 --- Reconstruct the user config overlay from domain objects.
---- Returns items with _in_user_json = true in the internal format.
+--- Returns items with _intent ~= "shared" in the internal format.
 --- Used by remerge() when no raw_user is provided (after mutations).
 --- @return table user overlay in the same format as parsed user.json
 function Workspace:_user_config_from_objects()
@@ -2495,13 +2495,13 @@ function Workspace:_user_config_from_objects()
 
     local projects = {}
     for _, project in pairs(self._projects) do
-        if project._in_user_json and not project.orphaned then
+        if project._intent ~= "shared" and not project.orphaned then
             -- Serialize only user-owned configs within this project
             local tc = project.type_config
                     and vim.deepcopy(project.type_config) or {}
             local configs_dict = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._in_user_json then
+                if cfg._intent ~= "shared" then
                     local override = cfg:serialize_user_override()
                     if override then
                         configs_dict[cfg.name] = override
@@ -2527,7 +2527,7 @@ function Workspace:_user_config_from_objects()
 
     local config_sets = {}
     for _, cs in pairs(self._config_sets) do
-        if cs._in_user_json then
+        if cs._intent ~= "shared" then
             config_sets[cs.name] = cs:raw_mappings()
         end
     end
@@ -2535,7 +2535,7 @@ function Workspace:_user_config_from_objects()
 
     local profiles = {}
     for _, profile in pairs(self._profiles) do
-        if profile._in_user_json then
+        if profile._intent ~= "shared" then
             local entry = {}
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
@@ -2593,13 +2593,14 @@ function Workspace:is_config_modified(project, config)
     local bp = self:_baseline_project(project.key)
     local baseline_configs = bp and bp.type_config and bp.type_config.configurations
     local in_baseline = baseline_configs and baseline_configs[config.name] ~= nil
+    local wants_shared = config._intent ~= "local"  -- shared or local+shared
 
-    if config._published and not in_baseline then return true end  -- will add
-    if not config._published and in_baseline then return true end  -- will remove
-    if not config._published and not in_baseline then return false end  -- no-op
+    if wants_shared and not in_baseline then return true end  -- will add
+    if not wants_shared and in_baseline then return true end  -- will remove
+    if not wants_shared and not in_baseline then return false end  -- no-op
 
-    -- Published and in baseline: if user hasn't touched it, it's not modified
-    if not config._in_user_json then return false end
+    -- Wants shared and in baseline: if intent is "shared" (untouched), not modified
+    if config._intent == "shared" then return false end
 
     -- Both published and in baseline, user has modified: compare content
     local current = config:serialize_user_override()
@@ -2621,12 +2622,13 @@ function Workspace:is_project_decl_modified(project)
     local bp = self:_baseline_project(project.key)
     local in_baseline = bp ~= nil
 
-    if project._published and not in_baseline then return true end
-    if not project._published and in_baseline then return true end
-    if not project._published and not in_baseline then return false end
+    local wants_shared = project._intent ~= "local"
+    if wants_shared and not in_baseline then return true end
+    if not wants_shared and in_baseline then return true end
+    if not wants_shared and not in_baseline then return false end
 
-    -- Published and in baseline: if user hasn't touched project fields, not modified
-    if not project._in_user_json then return false end
+    -- Wants shared and in baseline: if intent is "shared" (untouched), not modified
+    if project._intent == "shared" then return false end
 
     -- Compare project-level fields
     if (project.path or project.key) ~= (bp.path or project.key) then return true end
@@ -2671,7 +2673,7 @@ function Workspace:is_project_modified(project)
             local cur = current_launch and current_launch[name]
             local base = baseline_launch and baseline_launch[name]
             -- For now, all launch configs from published projects are published
-            if project._published then
+            if project._intent ~= "local" then
                 if not vim.deep_equal(cur, base) then return true end
             end
         end
@@ -2680,7 +2682,7 @@ function Workspace:is_project_modified(project)
     -- Check variables
     local baseline_vars = bp and bp.variables
     local current_vars = project.variables
-    if project._published then
+    if project._intent ~= "local" then
         if not vim.deep_equal(current_vars, baseline_vars) then return true end
     end
 
@@ -2694,9 +2696,10 @@ function Workspace:is_config_set_modified(cs)
     local baseline = self:_baseline_config_set(cs.name)
     local in_baseline = baseline ~= nil
 
-    if cs._published and not in_baseline then return true end
-    if not cs._published and in_baseline then return true end
-    if not cs._published and not in_baseline then return false end
+    local wants_shared = cs._intent ~= "local"
+    if wants_shared and not in_baseline then return true end
+    if not wants_shared and in_baseline then return true end
+    if not wants_shared and not in_baseline then return false end
 
     -- Compare mappings
     local current = cs:raw_mappings()
@@ -2712,9 +2715,10 @@ function Workspace:is_profile_modified(profile)
     local bp = self._shared_baseline and self._shared_baseline.profiles
     local in_baseline = bp and bp[profile.key] ~= nil
 
-    if profile._published and not in_baseline then return true end
-    if not profile._published and in_baseline then return true end
-    if not profile._published and not in_baseline then return false end
+    local wants_shared = profile._intent ~= "local"
+    if wants_shared and not in_baseline then return true end
+    if not wants_shared and in_baseline then return true end
+    if not wants_shared and not in_baseline then return false end
 
     -- Compare definition
     local current = profile:to_config_def()
@@ -2782,12 +2786,12 @@ end
 function Workspace:_serialize_config_internal()
     local projects = {}
     for _, project in pairs(self._projects) do
-        if not project.orphaned and project._published then
+        if not project.orphaned and project._intent ~= "local" then
             local tc = project.type_config
                     and vim.deepcopy(project.type_config) or {}
             local configs_dict = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._published then
+                if cfg._intent ~= "local" then
                     local override = cfg:serialize_user_override()
                     if override then
                         configs_dict[cfg.name] = override
@@ -2812,7 +2816,7 @@ function Workspace:_serialize_config_internal()
 
     local configuration_sets = nil
     for _, cs in pairs(self._config_sets) do
-        if cs._published then
+        if cs._intent ~= "local" then
             if not configuration_sets then configuration_sets = {} end
             configuration_sets[cs.name] = cs:raw_mappings()
         end
@@ -2821,7 +2825,7 @@ function Workspace:_serialize_config_internal()
     -- Preserve existing explicit profiles (profile publishing not supported)
     local profiles = nil
     for _, profile in pairs(self._profiles) do
-        if profile._published then
+        if profile._intent ~= "local" then
             if not profiles then profiles = {} end
             profiles[profile.key] = profile:to_config_def()
         end
@@ -2895,7 +2899,7 @@ function Workspace:_serialize_user()
     -- Profiles: all profiles in user.json (set-based: configuration_set + tools)
     local user_profiles = {}
     for _, profile in pairs(self._profiles) do
-        if profile._in_user_json then
+        if profile._intent ~= "shared" then
             local entry = {}
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
@@ -2907,22 +2911,22 @@ function Workspace:_serialize_user()
     end
     if next(user_profiles) then data.profiles = user_profiles end
 
-    -- Config sets: include _in_user_json items
+    -- Config sets: include items with local or local+shared intent
     local config_sets = {}
     for _, cs in pairs(self._config_sets) do
-        if cs._in_user_json then
+        if cs._intent ~= "shared" then
             config_sets[cs.name] = cs:raw_mappings()
         end
     end
     if next(config_sets) then data.configuration_sets = config_sets end
 
-    -- Projects: include _in_user_json items with user-owned configs
+    -- Projects: include items with local or local+shared intent
     local projects = {}
     for _, project in pairs(self._projects) do
-        if project._in_user_json and not project.orphaned then
+        if project._intent ~= "shared" and not project.orphaned then
             local user_configs = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._in_user_json then
+                if cfg._intent ~= "shared" then
                     user_configs[cfg.name] = true
                 end
             end
@@ -2933,52 +2937,64 @@ function Workspace:_serialize_user()
     end
     if next(projects) then data.projects = projects end
 
-    -- Persist published flags (only non-default values to keep file small)
-    local pub = {}
-    local pub_projects = {}
-    local pub_configs = {}
+    -- Persist intent overrides (only non-default values to keep file small)
+    local intents = {}
+    local int_projects = {}
+    local int_configs = {}
     for _, project in pairs(self._projects) do
         if not project.orphaned then
-            -- Project declaration: default is published if in baseline
-            local default_pub = self:_baseline_project(project.key) ~= nil
-            if project._published ~= default_pub then
-                pub_projects[project.key] = project._published
+            local in_user = project._source == "user" or project._intent ~= "shared"
+            local in_baseline = self:_baseline_project(project.key) ~= nil
+            local default = (in_user and in_baseline) and "local+shared"
+                or in_user and "local"
+                or in_baseline and "shared"
+                or "local"
+            if project._intent ~= default then
+                int_projects[project.key] = project._intent
             end
-            -- Per-configuration
             local bp = self:_baseline_project(project.key)
             local baseline_configs = bp and bp.type_config
                     and bp.type_config.configurations
             for _, cfg in ipairs(project._configurations or {}) do
-                local cfg_default = baseline_configs
-                        and baseline_configs[cfg.name] ~= nil or false
-                if cfg._published ~= cfg_default then
-                    pub_configs[project.key .. "/" .. cfg.name] = cfg._published
+                local prov = self._user_provenance and self._user_provenance[project.key] or {}
+                local cfg_in_user = prov.user_configs and prov.user_configs[cfg.name] or false
+                local cfg_in_baseline = baseline_configs and baseline_configs[cfg.name] ~= nil or false
+                local cfg_default = (cfg_in_user and cfg_in_baseline) and "local+shared"
+                    or cfg_in_user and "local"
+                    or cfg_in_baseline and "shared"
+                    or "local"
+                if cfg._intent ~= cfg_default then
+                    int_configs[project.key .. "/" .. cfg.name] = cfg._intent
                 end
             end
         end
     end
-    if next(pub_projects) then pub.projects = pub_projects end
-    if next(pub_configs) then pub.configurations = pub_configs end
+    if next(int_projects) then intents.projects = int_projects end
+    if next(int_configs) then intents.configurations = int_configs end
 
-    local pub_sets = {}
+    local int_sets = {}
     for _, cs in pairs(self._config_sets) do
-        local default_pub = self:_baseline_config_set(cs.name) ~= nil
-        if cs._published ~= default_pub then
-            pub_sets[cs.name] = cs._published
+        local in_user = cs._source == "user" or cs._intent ~= "shared"
+        local in_baseline = self:_baseline_config_set(cs.name) ~= nil
+        local default = (in_user and in_baseline) and "local+shared"
+            or in_user and "local"
+            or in_baseline and "shared"
+            or "local"
+        if cs._intent ~= default then
+            int_sets[cs.name] = cs._intent
         end
     end
-    if next(pub_sets) then pub.configuration_sets = pub_sets end
+    if next(int_sets) then intents.configuration_sets = int_sets end
 
-    local pub_profiles = {}
+    local int_profiles = {}
     for _, profile in pairs(self._profiles) do
-        -- Profiles default to unpublished
-        if profile._published then
-            pub_profiles[profile.key] = true
+        if profile._intent ~= "local" then
+            int_profiles[profile.key] = profile._intent
         end
     end
-    if next(pub_profiles) then pub.profiles = pub_profiles end
+    if next(int_profiles) then intents.profiles = int_profiles end
 
-    if next(pub) then data.published = pub end
+    if next(intents) then data.intent = intents end
 
     return data
 end
@@ -3036,7 +3052,7 @@ function Workspace:add_project(key, type, path)
         configurations = {},
         cached_configurations = {},
     })
-    project._in_user_json = true
+    project._intent = "local"
     project._source = "user"
     self._projects[#self._projects + 1] = project
 
@@ -3121,7 +3137,7 @@ function Workspace:add_configuration_set(name, mappings)
         end
     end
     local cs = ConfigurationSet.new(self, name, resolved)
-    cs._in_user_json = true
+    cs._intent = "local"
     cs._source = "user"
     self._config_sets[#self._config_sets + 1] = cs
 
