@@ -189,16 +189,9 @@ A profile is a fully resolved buildable unit. Every profile stores its own
 **mappings** (project_key → variant) directly. Profiles are what users
 activate, build, configure, and delete.
 
-There is one Profile class. Profiles differ in two optional properties:
-
-- **`configuration_set`**: if non-nil, the profile is "set-based" — its
-  mappings are re-derived from the configuration set on every remerge, so
-  adding/removing projects in the config automatically updates the profile.
-  If nil, the profile is "pinned" — its mappings are stored directly and
-  never re-derived.
-- **`explicit`**: if true, the profile is declared in the workspace config
-  under `"profiles"` and always appears in the UI, even before
-  materialization.
+All profiles are **set-based** — they reference a configuration set and
+derive their mappings from it on every remerge. Adding/removing projects
+in the config automatically updates the profile.
 
 **Profile keys are opaque identifiers** — they exist solely for cache
 persistence and display. They carry no semantic meaning and must never be
@@ -236,7 +229,6 @@ Materialization happens when:
 - User presses `<CR>` on a tool entry in Configuration Sets (activate)
 - User presses `b` or `c` on a tool entry (build/configure)
 - `ConfigurationSet:activate()` is called (materializes then activates)
-- User presses `p` on a configuration (creates a pinned profile)
 
 On materialization:
 1. Structured data (set_name, tool_entry) is passed directly — no profile
@@ -351,15 +343,15 @@ Written only when the user saves from the status page (`:w`).
 
 The primary working file. All UI mutations land here. Contains the full
 working state: every item the user has interacted with, plus metadata
-(active profile, pinned profiles, published flags).
+(active profile, profiles, published flags).
 
 ```json
 {
-  "_meta": { "version": 3 },
+  "_meta": { "version": 2 },
   "active_profile": "Debug:ninja-gcc-12",
   "projects": { ... },
   "configuration_sets": { ... },
-  "pinned_profiles": { ... },
+  "profiles": { ... },
   "default_target": { ... }
 }
 ```
@@ -386,9 +378,8 @@ should appear in loomworks.json:
   project. A project can be partly published (some configs shared, others
   personal).
 - **Configuration sets**: `_published` as a whole (atomic unit).
-- **Profiles**: not publishable in v1. Profiles bind machine-specific tools
-  and have a complex lifecycle (pinned vs explicit). Profile publishing is
-  deferred until the profile model is simplified.
+- **Profiles**: `_published` defaults to `false`. Profiles are personal by
+  default. User explicitly opts in to sharing via `P`.
 
 #### Modified indicator (`+`)
 
@@ -702,9 +693,9 @@ Materialization writes a profile to the cache so that build tasks can be
 launched against it. A profile must be materialized before any task runs.
 
 **Trigger**: `ConfigurationSet:activate()`, `build()`, `configure()`, `<CR>` in
-UI, or `p` key (pinned).
+UI.
 
-**Process (set-based profiles)**:
+**Process**:
 1. Receive structured data: set_name and optional tool_entry (tool_key,
    tool_data, tool_label, tool_mod_type)
 2. Look up set_name in `configuration_sets` → mappings
@@ -713,19 +704,7 @@ UI, or `p` key (pinned).
    - Create skeleton cache entry if absent
 4. Write profile entry (with `configuration_set` and tool fields) to
    `cache.profiles`
-5. Save cache, trigger remerge
-
-**Process (pinned profiles)**:
-1. Property-based idempotency check: scan existing pinned profiles for one
-   that references this ConfigUnit. If found, return it (no-op).
-2. Create skeleton cache entry if absent (updates ConfigUnit directly)
-3. Generate profile key via `cache.next_available_key()` to avoid collisions
-4. Write profile entry (with `configuration_set = nil` and `mappings`) to
-   `cache.profiles`
-5. Create Profile and ProfileProject objects directly (no remerge needed)
-6. Save cache
-
-**Idempotent**: no-op if a pinned profile already references this ConfigUnit.
+5. Save user.json, trigger remerge
 
 ### 4.2 Activation
 
@@ -781,7 +760,7 @@ one branch but the configuration set that produced it no longer exists.
 
 **Rules**:
 1. Orphaned configs are never auto-deleted — the user must explicitly delete
-2. Orphaned configs are never auto-adopted into pinned profiles
+2. Orphaned configs are never auto-adopted into profiles
 3. The only action available on an orphaned config is delete (removes cache
    entry + build directory)
 4. Orphaned configs do not affect profile resolution or the active set
@@ -814,7 +793,7 @@ has been successfully deleted.
 
 **Config deletion** (`D` key on a configuration):
 1. Show confirmation dialog
-2. If referenced by any profile (set-based or pinned) → disposition = `reset`
+2. If referenced by any profile → disposition = `reset`
    (clear state but keep skeleton; profile stays and shows "unconfigured")
 3. If not referenced by any profile → disposition = `clean` (remove entry)
 4. Same async stop/mark/execute/unmark cycle
@@ -1103,7 +1082,6 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `<CR>`  | enter       | Open action picker on nearest actionable node |
 | `b`     | build       | Build (walks up to nearest node with `on_build`) |
 | `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
-| `p`     | pin         | Pin configuration as pinned profile |
 | `o`     | options     | Show build options float (on configured project nodes) |
 | `t`     | task        | Open overseer task output for nearest config (float) |
 | `R`     | rebuild     | Clean + build (destructive, with confirmation) |
@@ -1193,8 +1171,8 @@ Where:
 - `{elapsed}` = shown only when running (e.g., "1m23s")
 - `{op_message}` = last operation result (e.g., "built in 42s")
 
-All profiles — whether set-based or pinned — are displayed identically.
-A pinned profile with key `"App/Debug:ninja-gcc"` appears like any other
+All profiles are displayed identically. A profile with key `"Debug:ninja-gcc"`
+appears like any other
 profile; it simply has fewer projects when expanded.
 
 **Profile highlight rules**:
@@ -1288,7 +1266,7 @@ Orphaned Items  [D] delete
 
 **Actions**: `D` (delete) is mapped on config nodes and stray dir items.
 All other action keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned
-items cannot be built, configured, or pinned. Deletion shows the standard
+items cannot be built or configured. Deletion shows the standard
 confirmation dialog.
 
 **Sentinel: Clean all**
@@ -1460,12 +1438,7 @@ Only groups containing at least one target are shown.
 
 | Action | Behavior |
 |--------|----------|
-| `b`    | Build this project+config (creates pinned profile if needed) |
-| `c`    | Configure this project+config (creates pinned profile if needed) |
-| `R`    | Clean + build |
-| `C`    | Clean (reset to unconfigured) |
 | `D`    | Delete config with dialog |
-| `p`    | Pin as pinned profile |
 
 **Tool entry highlight rules** (keyed-tool modules):
 
