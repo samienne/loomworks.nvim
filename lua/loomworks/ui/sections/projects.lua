@@ -446,30 +446,26 @@ return function(tree, ctx)
             and ctx.active_profile.tool.key or nil
     local ws = lw.get_workspace()
 
-    for _, proj in ipairs(sorted) do
+    helpers.render_grouped(tree, sorted, function(t, proj, group)
         local key = proj.key
         local proj_running = proj:running_action()
         local is_active_project = proj.configuration ~= nil and not proj.orphaned
-        -- Dim shared-only projects (not in user.json)
-        local is_dimmed = not proj._in_user_json and not proj.orphaned
+        local is_shared_only = group == "shared"
         local proj_hl = proj_running and "LoomworksRunning"
-                or is_dimmed and "Comment"
+                or is_shared_only and "Comment"
                 or (is_active_project and "LoomworksActive" or "LoomworksActionable")
 
         local modified_tag = ws and ws:is_project_modified(proj) and "+" or ""
         local type_tag = "[" .. proj.type .. "]"
         local orphan_tag = proj.orphaned and " (orphaned)" or ""
         local refresh_tag = proj.needs_refresh and " !" or ""
-        local local_tag = proj._in_user_json and not proj._published and " [local]" or ""
-
-        tree:node(modified_tag .. key .. " " .. type_tag .. orphan_tag .. local_tag .. refresh_tag, {
+        t:node(modified_tag .. key .. " " .. type_tag .. orphan_tag .. refresh_tag, {
             fold_key = "project:" .. key,
             spinning = proj_running ~= nil,
             hl = proj_hl,
-            publish_label = proj._published and "Unpublish" or "Publish",
+            publish_label = helpers.intent_action_label(proj),
             on_publish = function()
-                proj._published = not proj._published
-                proj:_mark_user_owned()
+                helpers.cycle_intent(proj)
                 if ws then
                     ws:_save_user()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
@@ -485,35 +481,42 @@ return function(tree, ctx)
             end
 
             if proj.configurations and next(proj.configurations) then
-                tree:group({{"Configurations:  ", "LoomworksActionable"}, {"[D] delete", "Comment"}}, function()
-                    local config_names = {}
-                    for name in pairs(proj.configurations) do
-                        config_names[#config_names + 1] = name
+                t:group({{"Configurations:  ", "LoomworksActionable"}, {"[D] delete", "Comment"}}, function()
+                    -- Build sorted config list with Configuration objects for grouping
+                    local config_list = {}
+                    for cname, cdata in pairs(proj.configurations) do
+                        local cfg_obj = proj:get_configuration(cname)
+                        config_list[#config_list + 1] = {
+                            name = cname,
+                            data = cdata,
+                            cfg = cfg_obj,
+                            _intent = cfg_obj and cfg_obj._intent or "shared",
+                        }
                     end
-                    table.sort(config_names)
+                    table.sort(config_list, function(a, b) return a.name < b.name end)
 
-                    for _, cname in ipairs(config_names) do
-                        local cdata = proj.configurations[cname]
+                    helpers.render_grouped(t, config_list, function(ct, cfg_entry, cfg_group)
+                        local cname = cfg_entry.name
+                        local cdata = cfg_entry.data
+                        local cname_cfg = cfg_entry.cfg
                         local tool_entries = collect_tool_entries(proj, cname, tools_by_type)
                         local has_tool_entries = #tool_entries > 0
 
                         -- Check running state across all ConfigUnits for this configuration
                         local config_has_running = false
-                        local cname_cfg = proj:get_configuration(cname)
-                        for _, cu in ipairs(cname_cfg and proj:config_units_for_configuration(cname_cfg) or {}) do
-                            if cu:is_running() then
-                                config_has_running = true
-                                break
+                        if cname_cfg then
+                            for _, cu in ipairs(proj:config_units_for_configuration(cname_cfg) or {}) do
+                                if cu:is_running() then
+                                    config_has_running = true
+                                    break
+                                end
                             end
                         end
 
                         -- Abstract configs have no variant (mixin only)
                         local is_abstract = not cdata.variant
-                        -- Dim shared-only configs (not in user.json, not from presets)
-                        local cfg_dimmed = cname_cfg and not cname_cfg._in_user_json
-                                and not cname_cfg.from_preset and not is_dimmed
                         local config_hl = is_abstract and "Comment"
-                                or cfg_dimmed and "Comment"
+                                or cfg_group == "shared" and "Comment"
                                 or (config_has_running and "LoomworksRunning" or "LoomworksActionable")
 
                         local brief = {}
@@ -533,27 +536,21 @@ return function(tree, ctx)
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
                         local cfg_modified_tag = ws and cname_cfg
                                 and ws:is_config_modified(proj, cname_cfg) and "+" or ""
-                        local cfg_local_tag = cname_cfg
-                                and cname_cfg._in_user_json and not cname_cfg._published
-                                and " [local]" or ""
 
                         local project = proj  -- capture for closure
                         local cfg_name = cname
-                        -- Check if config is user-defined via Configuration domain object
-                        local cfg_obj = proj:get_configuration(cname)
+                        local cfg_obj = cname_cfg
                         local has_user_entry = cfg_obj and cfg_obj.is_user or false
 
-                        tree:node(cfg_modified_tag .. cname .. cfg_local_tag .. brief_str, {
+                        ct:node(cfg_modified_tag .. cname .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
                             hl = config_hl,
                             enter_label = "Edit configuration",
                             on_enter = function() edit_project_configuration(project, cfg_name) end,
-                            publish_label = cname_cfg and (cname_cfg._published and "Unpublish" or "Publish") or nil,
+                            publish_label = cname_cfg and helpers.intent_action_label(cname_cfg) or nil,
                             on_publish = cname_cfg and function()
-                                cname_cfg._published = not cname_cfg._published
-                                cname_cfg._in_user_json = true
-                                proj:_mark_user_owned()
+                                helpers.cycle_intent(cname_cfg)
                                 if ws then
                                     ws:_save_user()
                                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
@@ -643,7 +640,7 @@ return function(tree, ctx)
                                 end
                             end
                         end)
-                    end
+                    end)
                     -- "Add configuration" sentinel
                     if not proj.orphaned then
                         local project = proj
@@ -727,7 +724,7 @@ return function(tree, ctx)
 
             tree:blank()
         end)
-    end
+    end)
 
     tree:item("▸ Add project", {
         hl = "LoomworksActionable",

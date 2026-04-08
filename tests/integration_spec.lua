@@ -3130,7 +3130,7 @@ describe("two-layer merge", function()
         assert.is_nil(user_data.projects and user_data.projects.App)
     end)
 
-    it("serialize_user includes all _in_user_json projects", function()
+    it("serialize_user includes all local-intent projects", function()
         local ws = make_ws(
             { projects = { App = { cmake = {} } } },
             { projects = { MyLib = { cmake = {} } } }
@@ -3204,25 +3204,24 @@ describe("two-layer merge", function()
     end)
 
     -- Published flag tests
-    it("shared project has _published = true", function()
+    it("shared-only project has intent shared", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
         })
         local app = h.find_project_in(ws:get_projects(), "App")
         assert.is_not_nil(app)
-        assert.is_true(app._published)
-        assert.is_false(app._in_user_json)
+        assert.equals("shared", app._intent)
     end)
 
-    it("user-only project has _published = false", function()
+    it("user-only project has intent local", function()
         local ws = make_ws(
             { projects = {} },
             { projects = { MyLib = { cmake = {} } } }
         )
         local mylib = h.find_project_in(ws:get_projects(), "MyLib")
         assert.is_not_nil(mylib)
-        assert.is_false(mylib._published)
-        assert.is_true(mylib._in_user_json)
+        assert.equals("local", mylib._intent)
+        -- _in_user_json replaced by _intent
     end)
 
     it("shared baseline is captured from raw config", function()
@@ -3235,25 +3234,25 @@ describe("two-layer merge", function()
         assert.is_not_nil(ws._shared_baseline.configuration_sets.Debug)
     end)
 
-    it("shared config set has _published = true", function()
+    it("shared-only config set has intent shared", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
             configuration_sets = { Debug = { App = "Debug" } },
         })
         local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
         assert.is_not_nil(cs)
-        assert.is_true(cs._published)
+        assert.equals("shared", cs._intent)
     end)
 
-    it("user-only config set has _published = false", function()
+    it("user-only config set has intent local", function()
         local ws = make_ws(
             { projects = { App = { cmake = {} } } },
             { configuration_sets = { UserDebug = { App = "Debug" } } }
         )
         local cs = h.find_config_set_in(ws:get_config_sets(), "UserDebug")
         assert.is_not_nil(cs)
-        assert.is_false(cs._published)
-        assert.is_true(cs._in_user_json)
+        assert.equals("local", cs._intent)
+        -- _in_user_json replaced by _intent
     end)
 
     it("per-config merge: shared and user configs combine", function()
@@ -3295,7 +3294,7 @@ describe("two-layer merge", function()
         assert.is_true(config_names["Asan"])
     end)
 
-    it("per-config _published flags set from baseline", function()
+    it("per-config _intent set from baseline", function()
         local ws = make_ws(
             {
                 projects = {
@@ -3327,16 +3326,16 @@ describe("two-layer merge", function()
         for _, cfg in ipairs(app._configurations) do
             if cfg.name == "Debug" or cfg.name == "Release" then
                 -- These are in the shared baseline
-                assert.is_true(cfg._published, cfg.name .. " should be published")
+                assert.is_true(cfg._intent ~= "local", cfg.name .. " should be published")
             end
             if cfg.name == "Asan" then
                 -- This is user-only
-                assert.is_false(cfg._published, "Asan should not be published")
+                assert.is_false(cfg._intent ~= "local", "Asan should not be published")
             end
         end
     end)
 
-    it("per-config _in_user_json flags set from provenance", function()
+    it("per-config _intent set from provenance", function()
         local ws = make_ws(
             {
                 projects = {
@@ -3361,10 +3360,10 @@ describe("two-layer merge", function()
         assert.is_not_nil(app)
         for _, cfg in ipairs(app._configurations) do
             if cfg.name == "Debug" then
-                assert.is_true(cfg._in_user_json, "Debug should be in user json")
+                assert.is_true(cfg._intent ~= "shared", "Debug should be in user json")
             end
             if cfg.name == "Release" then
-                assert.is_false(cfg._in_user_json, "Release should not be in user json")
+                assert.is_false(cfg._intent ~= "shared", "Release should not be in user json")
             end
         end
     end)
@@ -3400,7 +3399,7 @@ describe("modified state", function()
             { projects = { MyLib = { cmake = {} } } }
         )
         local mylib = h.find_project_in(ws:get_projects(), "MyLib")
-        mylib._published = true
+        mylib._intent = "local+shared"
         assert.is_true(ws:is_project_decl_modified(mylib))
         assert.is_true(ws:is_project_modified(mylib))
         assert.is_true(ws:has_any_modified())
@@ -3411,7 +3410,7 @@ describe("modified state", function()
             projects = { App = { cmake = {} } },
         })
         local app = h.find_project_in(ws:get_projects(), "App")
-        app._published = false
+        app._intent = "local"
         assert.is_true(ws:is_project_decl_modified(app))
         assert.is_true(ws:has_any_modified())
     end)
@@ -3434,11 +3433,11 @@ describe("modified state", function()
             if cfg.name == "Asan" then asan = cfg end
         end
         assert.is_not_nil(asan)
-        assert.is_false(asan._published)
-        -- Not published + not in baseline = not modified
+        assert.equals("local", asan._intent)
+        -- Local intent + not in baseline = not modified
         assert.is_false(ws:is_config_modified(app, asan))
         -- Mark as published → modified (will add)
-        asan._published = true
+        asan._intent = "local+shared"
         assert.is_true(ws:is_config_modified(app, asan))
     end)
 
@@ -3454,7 +3453,7 @@ describe("modified state", function()
             if cfg.name == "Debug" then debug_cfg = cfg end
         end
         assert.is_not_nil(debug_cfg)
-        assert.is_true(debug_cfg._published)
+        assert.is_true(debug_cfg._intent ~= "local")
         assert.is_false(ws:is_config_modified(app, debug_cfg))
     end)
 
@@ -3482,7 +3481,7 @@ describe("modified state", function()
             { configuration_sets = { UserSet = { App = "Debug" } } }
         )
         local cs = h.find_config_set_in(ws:get_config_sets(), "UserSet")
-        cs._published = true
+        cs._intent = "local+shared"
         assert.is_true(ws:is_config_set_modified(cs))
         assert.is_true(ws:has_any_modified())
     end)
@@ -3506,42 +3505,42 @@ describe("modified state", function()
         for _, cfg in ipairs(app._configurations) do
             if cfg.name == "Debug" then debug_cfg = cfg end
         end
-        assert.is_true(debug_cfg._published)
+        assert.is_true(debug_cfg._intent ~= "local")
         assert.is_true(ws:is_config_modified(app, debug_cfg))
         -- Bubbles up
         assert.is_true(ws:is_project_modified(app))
     end)
 
-    it("published flags are persisted in user data", function()
+    it("intent is persisted in user data", function()
         local ws = make_ws(
             { projects = { App = { cmake = {} } } },
             { projects = { MyLib = { cmake = {} } } }
         )
         -- MyLib is user-only, unpublished by default
         local mylib = h.find_project_in(ws:get_projects(), "MyLib")
-        assert.is_false(mylib._published)
+        assert.equals("local", mylib._intent)
 
         -- Toggle publish
-        mylib._published = true
+        mylib._intent = "local+shared"
         local user_data = ws:_serialize_user()
-        assert.is_not_nil(user_data.published)
-        assert.is_true(user_data.published.projects.MyLib)
+        assert.is_not_nil(user_data.intent)
+        assert.equals("local+shared", user_data.intent.projects.MyLib)
 
         -- App is shared, published by default — no override stored
-        assert.is_nil(user_data.published.projects.App)
+        assert.is_nil(user_data.intent.projects.App)
     end)
 
-    it("published overrides are restored on remerge", function()
+    it("intent overrides are restored on remerge", function()
         local ws = make_ws(
             { projects = { App = { cmake = {} } } },
             {
                 projects = { MyLib = { cmake = {} } },
-                published = { projects = { MyLib = true } },
+                intent = { projects = { MyLib = "local+shared" } },
             }
         )
         local mylib = h.find_project_in(ws:get_projects(), "MyLib")
         assert.is_not_nil(mylib)
-        assert.is_true(mylib._published)
+        assert.equals("local+shared", mylib._intent)
     end)
 end)
 
@@ -4881,7 +4880,7 @@ end)
 -- =========================================================================
 
 describe("profile persistence", function()
-    it("created profile is in user json and serialized in user data", function()
+    it("created profile has local intent and is serialized in user data", function()
         local ws = make_ws({
             projects = {
                 App = { cmake = {} },
@@ -4903,7 +4902,7 @@ describe("profile persistence", function()
 
         local profile = wv.execute_create_profile(cs, nil, false)
         assert.is_not_nil(profile, "profile should be created")
-        assert.is_true(profile._in_user_json, "profile should be in user json")
+        assert.is_true(profile._intent ~= "shared", "profile should be in user json")
 
         -- Serialize user data and check profiles
         local user_data = ws:_serialize_user()
@@ -4942,7 +4941,7 @@ describe("profile persistence", function()
         for _, p in pairs(ws._profiles) do
             if p.key == profile_key then
                 found = true
-                assert.is_true(p._in_user_json, "profile should still be in user json after remerge")
+                assert.is_true(p._intent ~= "shared", "profile should still be in user json after remerge")
                 break
             end
         end

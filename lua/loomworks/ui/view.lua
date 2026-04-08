@@ -156,8 +156,20 @@ function View:refresh()
 
     local win = self._snacks_win.win
 
-    -- Save cursor
+    -- Save cursor and identify current item by fold_key for stable tracking
     local cursor = vim.api.nvim_win_get_cursor(win)
+    local saved_fold_key = nil
+    local meta = self._widget.line_meta
+    if meta then
+        -- Walk from cursor line upward to find nearest widget with fold_key
+        for l = cursor[1], 1, -1 do
+            local w = meta[l]
+            if w and w.fold_key then
+                saved_fold_key = w.fold_key
+                break
+            end
+        end
+    end
 
     local lines, highlights, _, needs_frame = self._widget:render()
 
@@ -177,10 +189,22 @@ function View:refresh()
             self._bufnr, self._ns, hl.hl_group, hl.line - 1, hl.col_start, hl.col_end)
     end
 
-    -- Restore cursor
+    -- Restore cursor — try to find the same item by fold_key first
     local line_count = #lines
-    if cursor[1] > line_count then cursor[1] = line_count end
-    pcall(vim.api.nvim_win_set_cursor, win, cursor)
+    local restored = false
+    if saved_fold_key and self._widget.line_meta then
+        for l, w in pairs(self._widget.line_meta) do
+            if w.fold_key == saved_fold_key then
+                pcall(vim.api.nvim_win_set_cursor, win, { l, cursor[2] })
+                restored = true
+                break
+            end
+        end
+    end
+    if not restored then
+        if cursor[1] > line_count then cursor[1] = line_count end
+        pcall(vim.api.nvim_win_set_cursor, win, cursor)
+    end
 
     -- Snap to nearest actionable line when locked
     if self._lock_to_items then

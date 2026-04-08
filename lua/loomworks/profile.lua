@@ -157,7 +157,7 @@ end
 --- Runtime state:
 --- @field _operations loomworks.Operation[] active operations
 --- @field _last_operation { message: string, success: boolean }|nil
---- @field _published boolean whether this profile should appear in loomworks.json (default false)
+--- @field _intent "local"|"shared"|"local+shared" intended publish state
 local Profile = {}
 Profile.__index = Profile
 
@@ -181,7 +181,7 @@ function Profile.new(workspace, data)
     local self = setmetatable({}, Profile)
     self._workspace = workspace
     self._removed = false
-    self._published = false
+    self._intent = "local"
     if data then self:_apply(data) end
     return self
 end

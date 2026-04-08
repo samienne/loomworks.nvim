@@ -254,4 +254,79 @@ function M.render_targets(tree, targets, fold_prefix)
     end)
 end
 
+--- Cycle the intent: local → local+shared → shared → local.
+--- All three states always available. Data stays in user.json while cycling.
+--- @param item table domain object with _intent field
+function M.cycle_intent(item)
+    if item._intent == "local" then
+        item._intent = "local+shared"
+    elseif item._intent == "local+shared" then
+        item._intent = "shared"
+    else
+        item._intent = "local"
+    end
+end
+
+--- Get the label for the next intent transition.
+--- @param item table domain object with _intent field
+--- @return string
+function M.intent_action_label(item)
+    if item._intent == "local" then
+        return "Share (→ local + shared)"
+    elseif item._intent == "local+shared" then
+        return "Unpin local (→ shared)"
+    else
+        return "Pin local (→ local)"
+    end
+end
+
+--- Classify an item into a display group based on _intent.
+--- @param item table domain object with _intent field
+--- @return "local+shared"|"local"|"shared"
+function M.publish_group(item)
+    return item._intent or "local"
+end
+
+--- Sort items into intent groups and render with separators.
+--- Groups: Local + Shared (with pin icon on user-pinned), Local, Shared (dimmed).
+--- Empty groups are hidden.
+--- @param tree loomworks.Tree
+--- @param items table[] array of items to group
+--- @param render_fn fun(tree: loomworks.Tree, item: table, group: string) render a single item
+function M.render_grouped(tree, items, render_fn)
+    local both = {}
+    local local_items = {}
+    local shared = {}
+
+    for _, item in ipairs(items) do
+        local group = M.publish_group(item)
+        if group == "local+shared" then
+            both[#both + 1] = item
+        elseif group == "local" then
+            local_items[#local_items + 1] = item
+        else
+            shared[#shared + 1] = item
+        end
+    end
+
+    if #both > 0 then
+        tree:leaf("── Local + Shared ──", "NonText")
+        for _, item in ipairs(both) do
+            render_fn(tree, item, "local+shared")
+        end
+    end
+    if #local_items > 0 then
+        tree:leaf("── Local ──", "NonText")
+        for _, item in ipairs(local_items) do
+            render_fn(tree, item, "local")
+        end
+    end
+    if #shared > 0 then
+        tree:leaf("── Shared ──", "NonText")
+        for _, item in ipairs(shared) do
+            render_fn(tree, item, "shared")
+        end
+    end
+end
+
 return M

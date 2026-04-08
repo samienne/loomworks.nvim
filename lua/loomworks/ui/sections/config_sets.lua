@@ -308,26 +308,25 @@ return function(tree, ctx)
 
     local ws = lw.get_workspace()
 
-    for _, cs in ipairs(sorted) do
+    helpers.render_grouped(tree, sorted, function(t, cs, group)
         local is_active_set = active_profile
                 and active_profile._config_set_ref == cs
-        local cs_dimmed = not cs._in_user_json
+        local is_shared_only = group == "shared"
         local set_hl = is_active_set and "LoomworksActive"
-                or cs_dimmed and "Comment"
+                or is_shared_only and "Comment"
                 or "LoomworksActionable"
         local sname = cs.name
         local cs_modified = ws and ws:is_config_set_modified(cs) and "+" or ""
-        local cs_local = cs._in_user_json and not cs._published and " [local]" or ""
+        local pin_icon = group == "published" and cs._user_pinned and "\u{1f4cc} " or ""
 
-        tree:node(cs_modified .. cs.name .. cs_local, {
+        t:node(cs_modified .. pin_icon .. cs.name, {
             fold_key = "set:" .. cs.name,
             hl = set_hl,
             enter_label = "Edit mappings",
             on_enter = function() edit_config_set(cs) end,
-            publish_label = cs._published and "Unpublish" or "Publish",
+            publish_label = helpers.intent_action_label(cs),
             on_publish = function()
-                cs._published = not cs._published
-                cs._in_user_json = true
+                helpers.cycle_intent(cs)
                 if ws then
                     ws:_save_user()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
@@ -340,10 +339,10 @@ return function(tree, ctx)
             end,
             on_delete = function() delete_config_set(cs) end,
         }, function()
-            render_set_details(tree, cs,
+            render_set_details(t, cs,
                 tool_entries[cs.name] or {}, active_profile, lw)
         end)
-    end
+    end)
 
     tree:item("▸ Create configuration set", {
         hl = "LoomworksActionable",
