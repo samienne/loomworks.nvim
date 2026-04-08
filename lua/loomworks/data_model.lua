@@ -630,10 +630,17 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
             cs._published = in_baseline or false
         end
     end
-    -- Apply published overrides to profiles
+    -- Set _in_user_json and _published on profiles (same pattern as config sets)
+    local user_profile_keys = deps.user_profile_keys or {}
     for _, prof in pairs(profiles) do
-        if pub_profiles[prof.key] then
-            prof._published = true
+        prof._in_user_json = user_profile_keys[prof.key] or false
+        local in_baseline = shared_baseline
+            and shared_baseline.profiles
+            and shared_baseline.profiles[prof.key] ~= nil
+        if pub_profiles[prof.key] ~= nil then
+            prof._published = pub_profiles[prof.key]
+        else
+            prof._published = in_baseline or false
         end
     end
 

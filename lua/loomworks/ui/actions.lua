@@ -282,17 +282,6 @@ function M.open_task(unit)
 end
 
 --- @param unit loomworks.ConfigUnit
-function M.pin_config(unit)
-    return function()
-        local pkey, ckey = unit_display_keys(unit)
-        if #unit:referencing_profiles() > 0 then
-            vim.notify("loomworks: already pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
-            return
-        end
-        unit:materialize_pinned()
-        vim.notify("loomworks: pinned " .. pkey .. " / " .. ckey, vim.log.levels.INFO)
-    end
-end
 
 -- ---------------------------------------------------------------------------
 -- Profile creation flow

@@ -134,11 +134,7 @@
 --- Profile definition from merge.get_all_profiles().
 --- @class loomworks.ProfileDef
 --- @field configuration_set? string nil for pinned profiles
---- @field mappings? table<string, string> project_key -> variant
 --- @field tools? table<string, { key: string, data?: table, label?: string }>
---- @field explicit? boolean
---- @field explicit_def? table raw definition from loomworks.json
---- @field _pinned? boolean true if from user.json pinned_profiles
 --- @field _tool_objects? table<loomworks.Module, loomworks.Tool> pre-resolved tools
 --- @field _config_set_ref? loomworks.ConfigurationSet pre-resolved reference
 

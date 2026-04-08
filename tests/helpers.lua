@@ -412,14 +412,12 @@ function M.make_mock_workspace(overrides)
         end
         if next(targets) then data.default_target = targets end
 
-        -- Walk pin roots to compute transitive closure
+        -- Serialize all profiles in user.json
+        local user_profiles = {}
         local needed_projects = {}
         local needed_config_sets = {}
-
-        -- Serialize pinned profiles and collect their deps
-        local pinned = {}
         for _, profile in pairs(self_ws._profiles) do
-            if profile._pinned then
+            if profile._in_user_json then
                 local entry = {}
                 if profile._configuration_set_name then
                     entry.configuration_set = profile._configuration_set_name
@@ -427,12 +425,8 @@ function M.make_mock_workspace(overrides)
                 end
                 local tools = profile.tools_data and profile:tools_data() or nil
                 if tools then entry.tools = tools end
-                if profile.mappings and not profile._configuration_set_name then
-                    entry.mappings = profile.mappings
-                end
-                pinned[profile.key] = entry
+                user_profiles[profile.key] = entry
 
-                -- Collect project/config dependencies from profile mappings
                 if profile.mappings then
                     for project_key, variant in pairs(profile.mappings) do
                         if not needed_projects[project_key] then
@@ -443,8 +437,8 @@ function M.make_mock_workspace(overrides)
                 end
             end
         end
-        if next(pinned) then
-            data.pinned_profiles = pinned
+        if next(user_profiles) then
+            data.profiles = user_profiles
         end
 
         -- Collect deps from needed config sets

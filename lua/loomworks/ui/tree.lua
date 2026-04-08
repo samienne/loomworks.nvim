@@ -18,7 +18,6 @@ local ACTION_ORDER = {
     { action = "build",     label = "Build" },
     { action = "configure", label = "Configure" },
     { action = "task",      label = "Open task output" },
-    { action = "pin",       label = "Pin as profile" },
     { action = "options",   label = "Show build options" },
     { action = "move_up",   label = "Move up  <C-k>" },
     { action = "move_down", label = "Move down  <C-j>" },
@@ -145,18 +144,20 @@ function Tree:on_key(action, line)
                 elseif entry.action == "publish" and w.publish_label then
                     label = w.publish_label
                 end
-                items[#items + 1] = { label = label, callback = cb }
+                items[#items + 1] = { label = label, action = entry.action, callback = cb }
             end
         end
         if #items == 0 then return {} end
 
         -- Direct-invoke when: widget is marked direct, or only one
-        -- non-destructive action exists.
+        -- non-destructive action exists (exclude delete and publish).
         if w.direct then
             items[1].callback()
             return {}
         end
-        if #items == 1 and items[1].label ~= "Delete" then
+        if #items == 1
+                and items[1].action ~= "delete"
+                and items[1].action ~= "publish" then
             items[1].callback()
             return {}
         end

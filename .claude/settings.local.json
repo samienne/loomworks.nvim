@@ -55,7 +55,9 @@
       "Bash(grep -v \"0 $\")",
       "Bash(nvim --headless -c \"lua:*)",
       "Bash(echo \"Exit code: $?\")",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(cat /tmp/*)",
+      "Read(//c/Users/samie/AppData/Local/Temp/claude/C--src-nvim-plugins-loomworks-nvim/1325109c-2771-4822-97a2-25d8d9f39d1b/tasks/**)"
     ]
   }
 }

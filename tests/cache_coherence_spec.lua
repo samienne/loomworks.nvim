@@ -280,32 +280,45 @@ describe("cache coherence", function()
             assert_cache_empty(core, "fresh workspace")
         end)
 
-        it("materialize_pinned + build creates coherent state", function()
-            local core = make_tracked_core({
-                projects = { App = { typescript = {} } },
-            })
+        it("set-based profile build creates coherent state", function()
+            local core = make_tracked_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { development = { App = "development" } },
+                },
+                {
+                    profiles = {
+                        development = { configuration_set = "development" },
+                    },
+                }
+            )
             core:setup({ root = "/root" })
 
-            get_unit(core, "App", "development"):materialize_pinned("development")
-            assert_cache_coherent(core, "after materialize_pinned")
             assert.equals(1, count_profiles(core))
 
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
             assert_cache_coherent(core, "after build")
         end)
 
-        it("deleting sole pinned profile cleans config and build dir", function()
-            local core, rm_calls = make_tracked_core({
-                projects = { App = { typescript = {} } },
-            })
+        it("deleting sole profile cleans config and build dir", function()
+            local core, rm_calls = make_tracked_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { development = { App = "development" } },
+                },
+                {
+                    profiles = {
+                        development = { configuration_set = "development" },
+                    },
+                }
+            )
             core:setup({ root = "/root" })
 
-            get_unit(core, "App", "development"):materialize_pinned("development")
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
             assert.equals(1, count_cached_configs(core))
 
             -- Delete via plan+execute (as UI would)
-            local profile = h.find_profile(core:get_profiles(), "App/development")
+            local profile = h.find_profile(core:get_profiles(), "development")
             assert.is_not_nil(profile)
             local plan = profile:plan_deletion()
             -- Config is unreferenced after removing sole profile
@@ -325,11 +338,15 @@ describe("cache coherence", function()
             local core = make_tracked_core(
                 {
                     projects = { App = { typescript = {} } },
-                    configuration_sets = { debug = { App = "development" } },
+                    configuration_sets = {
+                        debug = { App = "development" },
+                        staging = { App = "development" },
+                    },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
+                        staging = { configuration_set = "staging" },
                     },
                 },
                 {
@@ -347,27 +364,23 @@ describe("cache coherence", function()
 
             -- Config already built via cache
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
-            assert_cache_coherent(core, "after pinned profile build")
+            assert_cache_coherent(core, "after profile build")
 
-            -- Also create an ad-hoc pinned for the same config
-            get_unit(core, "App", "development"):materialize_pinned("development")
-            assert_cache_coherent(core, "after also creating ad-hoc pinned")
-            local n_profiles = count_profiles(core)
-            assert.is_true(n_profiles >= 2)
+            assert.equals(2, count_profiles(core))
 
-            -- Delete ad-hoc — config should survive intact (debug profile still references it)
-            local adhoc = h.find_profile(core:get_profiles(), "App/development")
-            assert.is_not_nil(adhoc)
-            local plan = adhoc:plan_deletion()
+            -- Delete staging — config should survive intact (debug profile still references it)
+            local staging = h.find_profile(core:get_profiles(), "staging")
+            assert.is_not_nil(staging)
+            local plan = staging:plan_deletion()
             assert.equals(1, #plan.items)
             assert.equals("keep", plan.items[1].disposition)
 
             local done = false
-            core:execute_deletion(plan, { deactivate_profile = adhoc },
+            core:execute_deletion(plan, { deactivate_profile = staging },
                 function() done = true end)
             assert.is_true(done)
 
-            assert_cache_coherent(core, "after deleting ad-hoc pinned")
+            assert_cache_coherent(core, "after deleting one profile")
             assert.equals(1, count_cached_configs(core))
             -- Config entry exists with state preserved
             local ws = core:get_workspace()
@@ -382,8 +395,34 @@ describe("cache coherence", function()
             local core, rm_calls, setup = make_tracked_core(
                 {
                     projects = { Lib = { cmake = {} } },
+                    configuration_sets = { debug = { Lib = "Debug" } },
                 },
-                nil, nil,
+                {
+                    profiles = {
+                        ["debug:ninja-gcc"] = {
+                            configuration_set = "debug",
+                            tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
+                        },
+                        ["debug:ninja-clang"] = {
+                            configuration_set = "debug",
+                            tools = { cmake = { key = "ninja-clang", data = { id = "ninja-clang", generator = "Ninja", compiler_id = "clang" } } },
+                        },
+                    },
+                },
+                {
+                    build_dirs = {
+                        ["build/Lib/ninja-gcc/Debug"] = {
+                            project_key = "Lib", config_key = "Debug:ninja-gcc", variant = "Debug", type = "cmake",
+                            tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" },
+                            state = "built", build_dir = "/root/.nvim/build/Lib/ninja-gcc/Debug",
+                        },
+                        ["build/Lib/ninja-clang/Debug"] = {
+                            project_key = "Lib", config_key = "Debug:ninja-clang", variant = "Debug", type = "cmake",
+                            tool_key = "ninja-clang", tool_data = { id = "ninja-clang", generator = "Ninja", compiler_id = "clang" },
+                            state = "built", build_dir = "/root/.nvim/build/Lib/ninja-clang/Debug",
+                        },
+                    },
+                },
                 {
                     tools_by_type = {
                         cmake = {
@@ -395,20 +434,10 @@ describe("cache coherence", function()
             )
             setup({ root = "/root" })
             assert_cache_coherent(core, "after setup")
-
-            -- Build with gcc
-            get_unit(core, "Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
-            simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/ninja-gcc/Debug")
-            assert_cache_coherent(core, "after gcc build")
-
-            -- Build with clang
-            get_unit(core, "Lib", "Debug:ninja-clang"):materialize_pinned("Debug", { key = "ninja-clang" })
-            simulate_build(core, "Lib", "Debug:ninja-clang", "/root/.nvim/build/Lib/ninja-clang/Debug")
-            assert_cache_coherent(core, "after clang build")
             assert.equals(2, count_cached_configs(core))
 
             -- Delete gcc profile
-            local gcc_profile = h.find_profile(core:get_profiles(), "Lib/Debug:ninja-gcc")
+            local gcc_profile = h.find_profile(core:get_profiles(), "debug:ninja-gcc")
             assert.is_not_nil(gcc_profile)
             local plan = gcc_profile:plan_deletion()
             assert.equals(1, #plan.items)
@@ -433,8 +462,37 @@ describe("cache coherence", function()
             local core, rm_calls, setup = make_tracked_core(
                 {
                     projects = { Lib = { cmake = {} } },
+                    configuration_sets = {
+                        debug = { Lib = "Debug" },
+                        release = { Lib = "Release" },
+                    },
                 },
-                nil, nil,
+                {
+                    profiles = {
+                        ["debug:ninja-gcc"] = {
+                            configuration_set = "debug",
+                            tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
+                        },
+                        ["release:ninja-gcc"] = {
+                            configuration_set = "release",
+                            tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
+                        },
+                    },
+                },
+                {
+                    build_dirs = {
+                        ["build/Lib/ninja-gcc/Debug"] = {
+                            project_key = "Lib", config_key = "Debug:ninja-gcc", variant = "Debug", type = "cmake",
+                            tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" },
+                            state = "built", build_dir = "/root/.nvim/build/Lib/ninja-gcc/Debug",
+                        },
+                        ["build/Lib/ninja-gcc/Release"] = {
+                            project_key = "Lib", config_key = "Release:ninja-gcc", variant = "Release", type = "cmake",
+                            tool_key = "ninja-gcc", tool_data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" },
+                            state = "built", build_dir = "/root/.nvim/build/Lib/ninja-gcc/Release",
+                        },
+                    },
+                },
                 {
                     tools_by_type = {
                         cmake = {
@@ -444,23 +502,18 @@ describe("cache coherence", function()
                 }
             )
             setup({ root = "/root" })
-
-            get_unit(core, "Lib", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
-            simulate_build(core, "Lib", "Debug:ninja-gcc", "/root/.nvim/build/Lib/ninja-gcc/Debug")
-            get_unit(core, "Lib", "Release:ninja-gcc"):materialize_pinned("Release", { key = "ninja-gcc" })
-            simulate_build(core, "Lib", "Release:ninja-gcc", "/root/.nvim/build/Lib/ninja-gcc/Release")
             assert.equals(2, count_cached_configs(core))
-            assert_cache_coherent(core, "after two builds")
+            assert_cache_coherent(core, "after setup")
 
             -- Delete first
-            local p1 = h.find_profile(core:get_profiles(), "Lib/Debug:ninja-gcc")
+            local p1 = h.find_profile(core:get_profiles(), "debug:ninja-gcc")
             local plan1 = p1:plan_deletion()
             core:execute_deletion(plan1, { deactivate_profile = p1 })
             assert_cache_coherent(core, "after first delete")
             assert.equals(1, count_cached_configs(core))
 
             -- Delete second
-            local p2 = h.find_profile(core:get_profiles(), "Lib/Release:ninja-gcc")
+            local p2 = h.find_profile(core:get_profiles(), "release:ninja-gcc")
             local plan2 = p2:plan_deletion()
             core:execute_deletion(plan2, { deactivate_profile = p2 })
 
@@ -481,7 +534,7 @@ describe("cache coherence", function()
                     debug = { Backend = "Debug", Frontend = "development" },
                 },
             }, {
-                pinned_profiles = {
+                profiles = {
                     ["debug:ninja-gcc"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -528,7 +581,7 @@ describe("cache coherence", function()
             assert.equals(2, #rm_calls)
         end)
 
-        it("mixed pinned profiles with shared configs", function()
+        it("deleting sole multi-project profile cleans all configs", function()
             local core, rm_calls, setup = make_tracked_core({
                 projects = {
                     Backend = { cmake = {} },
@@ -538,7 +591,7 @@ describe("cache coherence", function()
                     debug = { Backend = "Debug", Frontend = "development" },
                 },
             }, {
-                pinned_profiles = {
+                profiles = {
                     ["debug:ninja-gcc"] = {
                         configuration_set = "debug",
                         tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -568,30 +621,17 @@ describe("cache coherence", function()
             -- Configs already built via cache
             simulate_build(core, "Backend", "Debug:ninja-gcc", "/root/.nvim/build/Backend/ninja-gcc/Debug")
             simulate_build(core, "Frontend", "development", "/root/.nvim/build/Frontend/development")
-
-            -- Ad-hoc pinned: build Backend with same config (overlapping reference)
-            get_unit(core, "Backend", "Debug:ninja-gcc"):materialize_pinned("Debug", { key = "ninja-gcc" })
-            assert_cache_coherent(core, "after ad-hoc pinned overlapping")
-
-            -- Delete ad-hoc — config shared by debug:ninja-gcc profile, kept intact
-            local adhoc = h.find_profile(core:get_profiles(), "Backend/Debug:ninja-gcc")
-            assert.is_not_nil(adhoc)
-            local plan = adhoc:plan_deletion()
-            assert.equals(1, #plan.items)
-            assert.equals("keep", plan.items[1].disposition)
-            core:execute_deletion(plan, { deactivate_profile = adhoc })
-            assert_cache_coherent(core, "after ad-hoc delete")
+            assert_cache_coherent(core, "after builds")
             assert.equals(2, count_cached_configs(core))
-            assert.equals(0, #rm_calls) -- "keep" does not touch build dir
 
-            -- Now delete debug:ninja-gcc profile — both configs should be cleaned
+            -- Delete debug:ninja-gcc profile — both configs should be cleaned
             local full = h.find_profile(core:get_profiles(), "debug:ninja-gcc")
             assert.is_not_nil(full)
-            local plan2 = full:plan_deletion()
-            assert.equals(2, #plan2.items)
-            core:execute_deletion(plan2, { deactivate_profile = full })
+            local plan = full:plan_deletion()
+            assert.equals(2, #plan.items)
+            core:execute_deletion(plan, { deactivate_profile = full })
 
-            assert_cache_empty(core, "after pinned profile delete")
+            assert_cache_empty(core, "after profile delete")
             assert.equals(2, #rm_calls)
         end)
     end)
@@ -629,7 +669,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 }
@@ -753,10 +793,13 @@ describe("cache coherence", function()
 
         it("configs referenced by profile are not orphaned", function()
             local core = make_tracked_core(
-                { projects = { App = { typescript = {} } } },
                 {
-                    pinned_profiles = {
-                        ["App/development"] = { mappings = { App = "development" } },
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { development = { App = "development" } },
+                },
+                {
+                    profiles = {
+                        development = { configuration_set = "development" },
                     },
                 },
                 {
@@ -773,7 +816,6 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
             assert_cache_coherent(core, "after init")
-            -- Should have exactly 1 profile (the pinned one)
             assert.equals(1, count_profiles(core))
         end)
 
@@ -849,7 +891,7 @@ describe("cache coherence", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -890,7 +932,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -915,16 +957,19 @@ describe("cache coherence", function()
             assert.equals(1, count_cached_configs(core))
         end)
 
-        it("two pinned profiles both referencing same config", function()
+        it("two profiles both referencing same config", function()
             local core = make_tracked_core(
                 {
                     projects = { App = { typescript = {} } },
-                    configuration_sets = { debug = { App = "development" } },
+                    configuration_sets = {
+                        debug = { App = "development" },
+                        staging = { App = "development" },
+                    },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
-                        ["App/development"] = { mappings = { App = "development" } },
+                        staging = { configuration_set = "staging" },
                     },
                 },
                 {
@@ -942,7 +987,7 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
 
-            assert_cache_coherent(core, "two pinned profiles overlap")
+            assert_cache_coherent(core, "two profiles overlap")
             assert.equals(2, count_profiles(core))
             assert.equals(1, count_cached_configs(core))
         end)
@@ -993,7 +1038,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1058,15 +1103,19 @@ describe("cache coherence", function()
             assert.equals("initialized", core:state())
         end)
 
-        it("multiple pinned profiles for same project different configs", function()
+        it("multiple profiles for same project different configs", function()
             local core = make_tracked_core(
                 {
                     projects = { App = { typescript = {} } },
+                    configuration_sets = {
+                        development = { App = "development" },
+                        production = { App = "production" },
+                    },
                 },
                 {
-                    pinned_profiles = {
-                        ["App/development"] = { mappings = { App = "development" } },
-                        ["App/production"] = { mappings = { App = "production" } },
+                    profiles = {
+                        development = { configuration_set = "development" },
+                        production = { configuration_set = "production" },
                     },
                 },
                 {
@@ -1092,7 +1141,7 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
 
-            assert_cache_coherent(core, "multiple pinned same project")
+            assert_cache_coherent(core, "multiple profiles same project")
             assert.equals(2, count_profiles(core))
             assert.equals(2, count_cached_configs(core))
         end)
@@ -1104,7 +1153,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { Lib = "Debug" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
                             tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -1165,7 +1214,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1202,7 +1251,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1274,7 +1323,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { Lib = "Debug" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
                             tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -1305,7 +1354,7 @@ describe("cache coherence", function()
             )
             setup({ root = "/root" })
 
-            -- Profile "debug:ninja-gcc" exists from pinned_profiles
+            -- Profile "debug:ninja-gcc" exists from profiles
             assert.is_not_nil(h.find_profile(core:get_workspace()._profiles, "debug:ninja-gcc"))
             -- Old build entry is orphaned (no profile for the old tool)
             assert.equals(1, count_cached_configs(core))
@@ -1317,33 +1366,29 @@ describe("cache coherence", function()
     describe("sequential workflow", function()
 
         it("build -> delete -> rebuild -> delete leaves cache clean", function()
-            local core, rm_calls = make_tracked_core({
-                projects = { App = { typescript = {} } },
-            })
+            local core, rm_calls = make_tracked_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { development = { App = "development" } },
+                },
+                {
+                    profiles = {
+                        development = { configuration_set = "development" },
+                    },
+                }
+            )
             core:setup({ root = "/root" })
 
             -- First build
-            get_unit(core, "App", "development"):materialize_pinned("development")
             simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
             assert_cache_coherent(core, "first build")
 
             -- Delete
-            local p1 = h.find_profile(core:get_profiles(), "App/development")
+            local p1 = h.find_profile(core:get_profiles(), "development")
             local plan1 = p1:plan_deletion()
             core:execute_deletion(plan1, { deactivate_profile = p1 })
             assert_cache_empty(core, "first delete")
-
-            -- Rebuild (materialize_pinned creates a new pinned)
-            get_unit(core, "App", "development"):materialize_pinned("development")
-            simulate_build(core, "App", "development", "/root/.nvim/build/App/development")
-            assert_cache_coherent(core, "rebuild")
-
-            -- Delete again
-            local p2 = h.find_profile(core:get_profiles(), "App/development")
-            local plan2 = p2:plan_deletion()
-            core:execute_deletion(plan2, { deactivate_profile = p2 })
-            assert_cache_empty(core, "second delete")
-            assert.equals(2, #rm_calls)
+            assert.equals(1, #rm_calls)
         end)
 
         it("pinned profile configure -> failed build -> delete cleans up", function()
@@ -1353,7 +1398,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1399,18 +1444,7 @@ describe("cache coherence", function()
             assert.equals(1, #rm_calls)
         end)
 
-        it("materialize_pinned is idempotent", function()
-            local core = make_tracked_core({
-                projects = { App = { typescript = {} } },
-            })
-            core:setup({ root = "/root" })
-
-            local key1 = get_unit(core, "App", "development"):materialize_pinned("development")
-            local key2 = get_unit(core, "App", "development"):materialize_pinned("development")
-            assert.equals(key1, key2)
-            assert.equals(1, count_profiles(core))
-            assert_cache_coherent(core, "idempotent materialize")
-        end)
+        -- materialize_pinned test removed: pinned profiles no longer exist
     end)
 
     describe("shared config GC handoff", function()
@@ -1425,7 +1459,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -1491,7 +1525,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         setA = { configuration_set = "setA" },
                         setB = { configuration_set = "setB" },
                         setC = { configuration_set = "setC" },
@@ -1584,7 +1618,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1618,26 +1652,7 @@ describe("cache coherence", function()
             assert.equals(1, #rm_calls)
         end)
 
-        it("pinned materialized but never built, then deleted", function()
-            local core, rm_calls = make_tracked_core({
-                projects = { App = { typescript = {} } },
-            })
-            core:setup({ root = "/root" })
-
-            get_unit(core, "App", "production"):materialize_pinned("production")
-            assert_cache_coherent(core, "after materialize_pinned")
-            assert.equals(1, count_profiles(core))
-
-            local profile = h.find_profile(core:get_profiles(), "App/production")
-            assert.is_not_nil(profile)
-            local plan = profile:plan_deletion()
-            assert.equals(1, #plan.items)
-            core:execute_deletion(plan, { deactivate_profile = profile })
-
-            assert_cache_empty(core, "after deleting unbuilt pinned")
-            -- In v7, skeletons have a build_dir so deletion attempts cleanup
-            assert.equals(1, #rm_calls)
-        end)
+        -- "pinned materialized but never built" test removed: pinned profiles no longer exist
     end)
 
     describe("active profile deactivation", function()
@@ -1650,7 +1665,7 @@ describe("cache coherence", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -1691,7 +1706,7 @@ describe("cache coherence", function()
                 },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         release = { configuration_set = "release" },
                     },
@@ -1784,7 +1799,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["debug:ninja-gcc"] = {
                             configuration_set = "debug",
                             tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", generator = "Ninja", compiler_id = "gcc" } } },
@@ -1864,7 +1879,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -1912,7 +1927,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -1959,7 +1974,7 @@ describe("cache coherence", function()
                     configuration_sets = { debug = { App = "development" } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 },
@@ -2008,7 +2023,7 @@ describe("cache coherence", function()
                     projects = { App = { typescript = {} } },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         ["App/development"] = { mappings = { App = "development" } },
                     },
                 },
@@ -2051,16 +2066,19 @@ describe("cache coherence", function()
 
     describe("find_referencing_profiles", function()
 
-        it("counts both pinned profiles referencing same config", function()
+        it("counts both profiles referencing same config", function()
             local core = make_tracked_core(
                 {
                     projects = { App = { typescript = {} } },
-                    configuration_sets = { debug = { App = "development" } },
+                    configuration_sets = {
+                        debug = { App = "development" },
+                        staging = { App = "development" },
+                    },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
-                        ["App/development"] = { mappings = { App = "development" } },
+                        staging = { configuration_set = "staging" },
                     },
                 },
                 {
@@ -2077,11 +2095,11 @@ describe("cache coherence", function()
             )
             core:setup({ root = "/root" })
 
-            -- "debug" profile exists (from pinned_profiles)
-            local debug_profile = h.find_profile(core:get_profiles(), "debug")
-            assert.is_not_nil(debug_profile)
+            -- Both profiles should exist
+            assert.is_not_nil(h.find_profile(core:get_profiles(), "debug"))
+            assert.is_not_nil(h.find_profile(core:get_profiles(), "staging"))
 
-            -- referencing_profiles should find both pinned profiles
+            -- referencing_profiles should find both profiles
             local refs = get_unit(core, "App", "development"):referencing_profiles()
             assert.equals(2, #refs)
         end)
@@ -2108,7 +2126,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                         staging = { configuration_set = "staging" },
                     },
@@ -2188,7 +2206,7 @@ describe("cache coherence", function()
                     },
                 },
                 {
-                    pinned_profiles = {
+                    profiles = {
                         debug = { configuration_set = "debug" },
                     },
                 }

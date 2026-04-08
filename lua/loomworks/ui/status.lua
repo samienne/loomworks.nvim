@@ -97,7 +97,6 @@ local view = View.new({
         ["C"]     = "clean",
         ["D"]     = "delete",
         ["t"]     = "task",
-        ["p"]     = "pin",
         ["o"]     = "options",
         ["P"]     = "publish",
         ["N"]     = "create_workspace",

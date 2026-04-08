@@ -143,9 +143,6 @@ end
 --- Data fields (set during _apply):
 --- @field _configuration_set_name string|nil set name for set-based profiles
 --- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
---- @field _pinned boolean true if stored in user.json pinned_profiles
---- @field explicit boolean true if defined in loomworks.json
---- @field explicit_def table|nil raw definition from loomworks.json
 --- @field _default_target_descriptor table|nil user.json default target for this profile
 --- Resolved references (set during _apply):
 --- @field _tool_objects table<loomworks.Module, loomworks.Tool>|nil
@@ -195,9 +192,6 @@ end
 function Profile:_apply(data)
     self._configuration_set_name = data.configuration_set
     self._tools_raw = data.tools or nil
-    self._pinned = data._pinned or false
-    self.explicit = data.explicit or false
-    self.explicit_def = data.explicit_def or nil
 
     -- Read pre-resolved Tool domain objects (set by _sync_profiles)
     self._tool_objects = data._tool_objects
@@ -221,31 +215,11 @@ function Profile:_apply(data)
 end
 
 --- Compute and set self.key from the profile's data fields.
---- Set-based profiles derive from configuration_set_name + tools.
---- Single-config (pinned) profiles derive from project/config_key.
+--- All profiles are set-based: key = configuration_set_name + tools.
 function Profile:_derive_key()
     if self._configuration_set_name then
-        -- Set-based profiles always derive key from set name + tools
-        -- (even when pinned — the key tracks the set name)
         local merge_mod = require("loomworks.merge")
         self.key = merge_mod.profile_key(self._configuration_set_name, self:tools_data())
-    elseif self.mappings then
-        -- Single-config profile: derive from project/variant:tool
-        local merge_mod = require("loomworks.merge")
-        for project_key, variant in pairs(self.mappings) do
-            local tools = self:tools_data()
-            local tool_key = nil
-            if tools then
-                for _, tool_ref in pairs(tools) do
-                    tool_key = tool_ref.key
-                    break
-                end
-            end
-            local config_key = merge_mod.build_config_key(variant, tool_key)
-            self.key = merge_mod.pinned_key(project_key, config_key)
-            return  -- single-config: one mapping only
-        end
-        self.key = "unnamed"
     else
         self.key = "unnamed"
     end
@@ -257,7 +231,7 @@ end
 --- @return table<string, string>|nil mappings
 --- @return boolean orphaned
 function Profile:_resolve_mappings(data)
-    -- Tier 1: Set-based profiles — derive from live ConfigurationSet (reactive)
+    -- Derive from live ConfigurationSet (reactive)
     if data.configuration_set then
         local cs = self._config_set_ref
         if cs then
@@ -267,12 +241,8 @@ function Profile:_resolve_mappings(data)
             end
             return mappings, false
         end
-    end
-
-    -- Tier 2: Pinned profiles with stored mappings
-    if data.mappings then
-        local orphaned = data.configuration_set ~= nil
-        return data.mappings, orphaned
+        -- Config set referenced but not found → orphaned
+        return nil, true
     end
 
     return nil, false
@@ -312,10 +282,8 @@ function Profile:tools_data()
 end
 
 --- Generate a definition suitable for loomworks.json.
---- Used when publishing a profile that doesn't have explicit_def.
---- @return table definition { configuration_set?, kit_id? }
+--- @return table definition { configuration_set?, tools? }
 function Profile:to_config_def()
-    if self.explicit_def then return self.explicit_def end
     local def = {}
     if self._configuration_set_name then
         def.configuration_set = self._configuration_set_name
@@ -396,10 +364,8 @@ end
 -- Actions
 -- ---------------------------------------------------------------------------
 
---- Activate this profile.
---- Pins the profile (if not already pinned) and sets it as active.
+--- Activate this profile and set it as active.
 function Profile:activate()
-    self._pinned = true
     self._workspace._active_profile = self
     self._workspace._active_profile_key = self.key
     self._workspace:_save_user()
@@ -436,12 +402,7 @@ end
 --- Resolves from the profile's stored descriptor, falls back to loomworks.json definition.
 --- @return loomworks.LaunchTarget|nil
 function Profile:default_target()
-    -- Check profile-owned descriptor first (populated from user.json during sync)
     local descriptor = self._default_target_descriptor
-    -- Fall back to loomworks.json profile definition
-    if not descriptor and self.explicit_def then
-        descriptor = self.explicit_def.default_target
-    end
     if not descriptor or not descriptor.project then
         return nil
     end
@@ -679,12 +640,9 @@ function Profile:plan_deletion()
         return a_key < b_key
     end)
 
-    local defined_in_config = self.explicit_def and true or false
-
     return {
         items = items,
         profile = self,
-        defined_in_config = defined_in_config and true or false,
     }
 end
 

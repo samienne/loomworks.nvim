@@ -276,7 +276,23 @@ function M.merge_configs(user_config, shared_config)
         merged.configuration_sets = nil
     end
 
-    return merged, user_project_keys, user_cs_names, user_provenance
+    -- Profiles: user wins per key (same pattern as config sets)
+    local user_profile_keys = {}
+    local merged_profiles = {}
+    if shared_config and shared_config.profiles then
+        for k, v in pairs(shared_config.profiles) do
+            merged_profiles[k] = v
+        end
+    end
+    if user_config and user_config.profiles then
+        for k, v in pairs(user_config.profiles) do
+            merged_profiles[k] = v
+            user_profile_keys[k] = true
+        end
+    end
+    merged.profiles = next(merged_profiles) and merged_profiles or nil
+
+    return merged, user_project_keys, user_cs_names, user_provenance, user_profile_keys
 end
 
 --- Assemble workspace data from raw file contents.
@@ -649,14 +665,15 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     -- otherwise use current domain state
     local active_profile_key, default_target_data
     local user_overlay
-    local user_data  -- for merge.merge (includes pinned_profiles)
+    local user_data  -- for merge.merge (includes profiles)
     if raw_user then
         active_profile_key = raw_user.active_profile
         default_target_data = raw_user.default_target
-        -- Store user overlay (projects/configuration_sets from user.json)
+        -- Store user overlay (projects/configuration_sets/profiles from user.json)
         user_overlay = {}
         if raw_user.projects then user_overlay.projects = raw_user.projects end
         if raw_user.configuration_sets then user_overlay.configuration_sets = raw_user.configuration_sets end
+        if raw_user.profiles then user_overlay.profiles = raw_user.profiles end
         self._user_config_overlay = next(user_overlay) and user_overlay or nil
         user_data = raw_user
     else
@@ -673,11 +690,12 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     local published_overrides = user_data and user_data.published or nil
 
     -- Two-layer merge: combine user overlay with shared config
-    local config, user_project_keys, user_cs_names, user_provenance =
+    local config, user_project_keys, user_cs_names, user_provenance, user_profile_keys =
         M.merge_configs(user_overlay, shared_config)
     self._user_project_keys = user_project_keys
     self._user_cs_names = user_cs_names
     self._user_provenance = user_provenance
+    self._user_profile_keys = user_profile_keys
 
     local active_set, all_profile_defs = self._core._deps.merge.merge(
         config, active_profile_key, cache, self.root, self._tools_by_type, user_data)
@@ -701,6 +719,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         user_project_keys = user_project_keys,
         user_cs_names = user_cs_names,
         user_provenance = user_provenance,
+        user_profile_keys = user_profile_keys,
         shared_baseline = self._shared_baseline,
         published_overrides = published_overrides,
         compute_build_dir = function(project, variant, tool_data)
@@ -2010,10 +2029,9 @@ function Workspace:execute_deletion(plan, opts, on_done)
         opts.deactivate_profile:deactivate()
     end
 
-    if plan.profile and plan.profile._pinned then
+    if plan.profile then
         local profile = plan.profile
         profile._removed = true
-        profile._pinned = false
         for i, p in ipairs(self._profiles) do
             if p == profile then table.remove(self._profiles, i); break end
         end
@@ -2256,10 +2274,8 @@ function Workspace:_config_from_objects()
 
     local profiles = nil
     for _, profile in pairs(self._profiles) do
-        if profile.explicit_def then
-            if not profiles then profiles = {} end
-            profiles[profile.key] = profile.explicit_def
-        end
+        if not profiles then profiles = {} end
+        profiles[profile.key] = profile:to_config_def()
     end
 
     return {
@@ -2517,6 +2533,21 @@ function Workspace:_user_config_from_objects()
     end
     if next(config_sets) then overlay.configuration_sets = config_sets end
 
+    local profiles = {}
+    for _, profile in pairs(self._profiles) do
+        if profile._in_user_json then
+            local entry = {}
+            if profile._configuration_set_name then
+                entry.configuration_set = profile._configuration_set_name
+            end
+            if profile._tools_raw then
+                entry.tools = profile._tools_raw
+            end
+            profiles[profile.key] = entry
+        end
+    end
+    if next(profiles) then overlay.profiles = profiles end
+
     return overlay
 end
 
@@ -2692,7 +2723,9 @@ function Workspace:has_any_modified()
     for _, cs in pairs(self._config_sets) do
         if self:is_config_set_modified(cs) then return true end
     end
-    -- Profiles are not publishable (excluded from modified check)
+    for _, profile in pairs(self._profiles) do
+        if self:is_profile_modified(profile) then return true end
+    end
     return false
 end
 
@@ -2777,9 +2810,9 @@ function Workspace:_serialize_config_internal()
     -- Preserve existing explicit profiles (profile publishing not supported)
     local profiles = nil
     for _, profile in pairs(self._profiles) do
-        if profile.explicit_def then
+        if profile._published then
             if not profiles then profiles = {} end
-            profiles[profile.key] = profile.explicit_def
+            profiles[profile.key] = profile:to_config_def()
         end
     end
 
@@ -2829,8 +2862,7 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
 end
 
 --- Serialize user state from domain objects into a user.json data table.
---- Walks pin roots to compute transitive closure — only reachable objects
---- are serialized (serialization-as-GC).
+--- All user-owned items are serialized directly (no transitive closure).
 --- @return loomworks.UserData
 function Workspace:_serialize_user()
     local data = { _meta = { version = 2 } }
@@ -2840,7 +2872,7 @@ function Workspace:_serialize_user()
         data.active_profile = self._active_profile_key
     end
 
-    -- Default targets (all profiles, not just pinned)
+    -- Default targets
     local targets = {}
     for _, profile in pairs(self._profiles) do
         if profile._default_target_descriptor then
@@ -2849,105 +2881,34 @@ function Workspace:_serialize_user()
     end
     if next(targets) then data.default_target = targets end
 
-    -- Walk pin roots to compute transitive closure
-    local needed_projects = {}   -- project_key → set of config names needed
-    local needed_config_sets = {} -- set_name → true
-
-    -- Serialize pinned profiles and collect their deps
-    local pinned = {}
+    -- Profiles: all profiles in user.json (set-based: configuration_set + tools)
+    local user_profiles = {}
     for _, profile in pairs(self._profiles) do
-        if profile._pinned then
+        if profile._in_user_json then
             local entry = {}
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
-                needed_config_sets[profile._configuration_set_name] = true
             end
             local tools = profile:tools_data()
             if tools then entry.tools = tools end
-            if profile.mappings and not profile._configuration_set_name then
-                entry.mappings = profile.mappings
-            end
-            pinned[profile.key] = entry
-
-            -- Collect project/config dependencies from profile mappings
-            if profile.mappings then
-                for project_key, variant in pairs(profile.mappings) do
-                    if not needed_projects[project_key] then
-                        needed_projects[project_key] = {}
-                    end
-                    needed_projects[project_key][variant] = true
-                end
-            end
+            user_profiles[profile.key] = entry
         end
     end
-    if next(pinned) then
-        data.pinned_profiles = pinned
-    end
+    if next(user_profiles) then data.profiles = user_profiles end
 
-    -- Collect deps from needed config sets (they map projects to configs)
-    for _, cs in pairs(self._config_sets) do
-        if needed_config_sets[cs.name] then
-            for project, config in pairs(cs.mappings) do
-                if not needed_projects[project.key] then
-                    needed_projects[project.key] = {}
-                end
-                needed_projects[project.key][config.name] = true
-            end
-        end
-    end
-
-    -- Expand inherits chains for each needed config
-    for project_key, config_names in pairs(needed_projects) do
-        local project = nil
-        for _, p in pairs(self._projects) do
-            if p.key == project_key then project = p; break end
-        end
-        if project then
-            local expanded = {}
-            local function expand(name)
-                if expanded[name] then return end
-                expanded[name] = true
-                local cfg = project:get_configuration(name)
-                if cfg and cfg.inherits_names then
-                    for _, base in ipairs(cfg.inherits_names) do
-                        expand(base)
-                    end
-                end
-            end
-            for name in pairs(config_names) do
-                expand(name)
-            end
-            needed_projects[project_key] = expanded
-        end
-    end
-
-    -- Serialize config sets: include user-sourced OR _in_user_json
+    -- Config sets: include _in_user_json items
     local config_sets = {}
     for _, cs in pairs(self._config_sets) do
-        if cs._in_user_json or (needed_config_sets[cs.name] and cs._source == "user") then
+        if cs._in_user_json then
             config_sets[cs.name] = cs:raw_mappings()
         end
     end
     if next(config_sets) then data.configuration_sets = config_sets end
 
-    -- Serialize projects: include user-sourced OR _in_user_json
-    -- For pin-reachable projects, use partial serialization (only needed configs).
-    -- For _in_user_json projects not in the pin closure, serialize all user configs.
+    -- Projects: include _in_user_json items with user-owned configs
     local projects = {}
-    for project_key, config_names in pairs(needed_projects) do
-        local project = nil
-        for _, p in pairs(self._projects) do
-            if p.key == project_key then project = p; break end
-        end
-        if project and not project.orphaned
-                and (project._in_user_json or project._source == "user") then
-            projects[project_key] = self:_serialize_project_partial(project, config_names)
-        end
-    end
-    -- Also include _in_user_json projects not in the pin closure
     for _, project in pairs(self._projects) do
-        if project._in_user_json and not project.orphaned and not projects[project.key] then
-            -- Serialize only user-owned configs
+        if project._in_user_json and not project.orphaned then
             local user_configs = {}
             for _, cfg in ipairs(project._configurations) do
                 if cfg._in_user_json then
@@ -3184,28 +3145,14 @@ function Workspace:remove_configuration_set(cs)
     if not ok then return false, err end
 
     -- Update affected profiles:
-    -- Non-pinned derived profiles are removed entirely (they only existed
-    -- because this config set existed). Pinned profiles are kept with
-    -- orphaned_set = true so the user can decide what to do.
-    local profiles_to_remove = {}
+    -- Profiles referencing this config set become orphaned (stale).
+    -- They're kept so the user can decide what to do.
     for _, profile in pairs(self._profiles) do
         if profile._configuration_set_name == cs.name then
-            if profile._pinned then
-                profile._config_set_ref = nil
-                -- Re-derive mappings — will fall through to Tier 2/3 and set orphaned_set
-                profile.mappings, profile.orphaned_set = profile:_resolve_mappings({
-                    configuration_set = profile._configuration_set_name,
-                    mappings = profile.mappings,
-                    _resolved_mappings = nil,
-                })
-                self:_rebuild_profile_projects_for(profile)
-            else
-                profiles_to_remove[#profiles_to_remove + 1] = profile
-            end
+            profile._config_set_ref = nil
+            profile.orphaned_set = true
+            profile.mappings = nil
         end
-    end
-    for _, profile in ipairs(profiles_to_remove) do
-        self:_remove_profile(profile)
     end
     self:_sync_build_dir_refs()
     self:_resolve_active_profile()

@@ -76,19 +76,19 @@ describe("user", function()
             assert.equals("Debug", result.configuration_sets.Debug.MyLib)
         end)
 
-        it("preserves pinned_profiles from v2", function()
+        it("preserves profiles from v2", function()
             local json = vim.json.encode({
                 _meta = { version = 2 },
                 active_profile = "debug",
-                pinned_profiles = {
+                profiles = {
                     ["App/Debug"] = { mappings = { App = "Debug" } },
                 },
             })
             local result = user.parse(json)
             assert.equals("debug", result.active_profile)
-            assert.is_not_nil(result.pinned_profiles)
-            assert.is_not_nil(result.pinned_profiles["App/Debug"])
-            assert.same({ App = "Debug" }, result.pinned_profiles["App/Debug"].mappings)
+            assert.is_not_nil(result.profiles)
+            assert.is_not_nil(result.profiles["App/Debug"])
+            assert.same({ App = "Debug" }, result.profiles["App/Debug"].mappings)
         end)
     end)
 

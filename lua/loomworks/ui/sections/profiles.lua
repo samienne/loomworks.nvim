@@ -102,7 +102,7 @@ return function(tree, ctx)
     local lw = ctx.lw
     local all_profiles = ctx.all_profiles
 
-    -- All profiles are shown (only pinned/explicit/orphaned exist now)
+    -- All profiles are shown
     local profiles = {}
     for _, profile in pairs(all_profiles) do
         profiles[#profiles + 1] = profile
@@ -123,6 +123,8 @@ return function(tree, ctx)
         end
     end
 
+    local ws = lw.get_workspace()
+
     for _, profile in ipairs(profiles) do
         local is_active = profile == ctx.active_profile
         local profile_running = profile:is_running()
@@ -132,12 +134,14 @@ return function(tree, ctx)
         local marker = helpers.status_marker(status_label)
         local hl
 
-        local display = profile.key
+        local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
+        local prof_local = profile._in_user_json and not profile._published and " [local]" or ""
+        local is_dimmed = not profile._in_user_json
+        local display = prof_modified .. profile.key
         if profile.orphaned_set then
             display = display .. " [stale]"
-        elseif profile.explicit then
-            display = display .. " [explicit]"
         end
+        display = display .. prof_local
 
         display = display .. " (" .. status_label .. ")"
         if has_operation then
@@ -174,9 +178,18 @@ return function(tree, ctx)
             fold_key = "profile:" .. profile.key,
             marker = marker,
             spinning = profile_running or has_operation,
-            hl = hl,
+            hl = is_dimmed and "Comment" or hl,
             enter_label = "Activate",
             on_enter = actions.activate(profile),
+            publish_label = profile._published and "Unpublish" or "Publish",
+            on_publish = function()
+                profile._published = not profile._published
+                profile._in_user_json = true
+                if ws then
+                    ws:_save_user()
+                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                end
+            end,
             on_build = actions.build(profile),
             on_rebuild = actions.rebuild(profile),
             on_clean = actions.clean(profile),

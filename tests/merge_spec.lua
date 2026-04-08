@@ -52,37 +52,34 @@ describe("merge", function()
     -- parse_profile_key was removed (zero runtime callers)
 
     describe("get_all_profiles", function()
-        it("returns empty when no pinned or explicit profiles", function()
+        it("returns empty when no profiles in config", function()
             local ws = make_ws()
             local profiles = merge.get_all_profiles(ws.config, ws.cache, {})
             assert.are.same({}, profiles)
         end)
 
-        it("includes pinned profiles from user_data", function()
-            local ws = make_ws({
-                configuration_sets = { debug = { App = "development" } },
-            })
-            local user_data = {
-                _meta = { version = 2 },
-                pinned_profiles = {
-                    ["App/development"] = { mappings = { App = "development" } },
-                },
-            }
-            local profiles = merge.get_all_profiles(ws.config, ws.cache, {}, user_data)
-            assert.is_not_nil(profiles["App/development"])
-            assert.is_true(profiles["App/development"]._pinned)
-        end)
-
-        it("explicit profiles from config", function()
+        it("includes set-based profiles from merged config", function()
             local ws = make_ws({
                 configuration_sets = { debug = { App = "development" } },
                 profiles = {
-                    debug = { configuration_set = "debug", kit_id = "custom" },
+                    debug = { configuration_set = "debug" },
                 },
             })
             local profiles = merge.get_all_profiles(ws.config, ws.cache, {})
-            assert.is_true(profiles.debug.explicit)
-            assert.equals("debug", profiles.debug.configuration_set)
+            assert.is_not_nil(profiles["debug"])
+            assert.equals("debug", profiles["debug"].configuration_set)
+        end)
+
+        it("profiles from config with configuration_set", function()
+            local ws = make_ws({
+                configuration_sets = { debug = { App = "development" } },
+                profiles = {
+                    debug = { configuration_set = "debug" },
+                },
+            })
+            local profiles = merge.get_all_profiles(ws.config, ws.cache, {})
+            assert.is_not_nil(profiles["debug"])
+            assert.equals("debug", profiles["debug"].configuration_set)
         end)
     end)
 
@@ -129,12 +126,12 @@ describe("merge", function()
 
         it("reads status from cache", function()
             local ws = make_ws(
-                { configuration_sets = { debug = { App = "development" } } },
+                {
+                    configuration_sets = { debug = { App = "development" } },
+                    profiles = { debug = { configuration_set = "debug" } },
+                },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
-                        debug = { configuration_set = "debug" },
-                    },
                 },
                 {
                     configurations = {
@@ -154,12 +151,12 @@ describe("merge", function()
 
         it("resolves active profile from user preferences", function()
             local ws = make_ws(
-                { configuration_sets = { debug = { App = "development" } } },
+                {
+                    configuration_sets = { debug = { App = "development" } },
+                    profiles = { debug = { configuration_set = "debug" } },
+                },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
-                        debug = { configuration_set = "debug" },
-                    },
                 },
                 {
                     configurations = {
@@ -186,12 +183,12 @@ describe("merge", function()
 
         it("resolves configuration from active set", function()
             local ws = make_ws(
-                { configuration_sets = { debug = { App = "development" } } },
+                {
+                    configuration_sets = { debug = { App = "development" } },
+                    profiles = { debug = { configuration_set = "debug" } },
+                },
                 {
                     active_profile = "debug",
-                    pinned_profiles = {
-                        debug = { configuration_set = "debug" },
-                    },
                 },
                 {
                     configurations = {

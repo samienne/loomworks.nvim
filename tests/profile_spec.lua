@@ -1,4 +1,5 @@
 local Profile = require("loomworks.profile").Profile
+local ConfigurationSet = require("loomworks.configuration_set")
 local h = require("tests.helpers")
 
 describe("Profile", function()
@@ -30,12 +31,19 @@ describe("Profile", function()
                 configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
             })
         end
+        -- Create a ConfigurationSet so _resolve_mappings works
+        local app = core._projects["App"]
+        local lib = core._projects["Lib"]
+        local cs = ConfigurationSet.new(core, "debug", {
+            [app] = h.get_or_create_config(app, "Debug"),
+            [lib] = h.get_or_create_config(lib, "Debug"),
+        })
+        core._config_sets[#core._config_sets + 1] = cs
         -- ConfigUnits are created via ensure_config_unit_by_id when needed
         local data = vim.tbl_deep_extend("force", {
             configuration_set = "debug",
             tools = nil,
-            explicit = false,
-            mappings = { App = "Debug", Lib = "Debug" },
+            _config_set_ref = cs,
             _cached_configurations = { "App/Debug", "Lib/Debug" },
         }, overrides or {})
         local profile = Profile.new(core, data)
@@ -54,7 +62,6 @@ describe("Profile", function()
             local p = make_profile()
             assert.equals("debug", p.key)
             assert.equals("debug", p._configuration_set_name)
-            assert.is_false(p.explicit)
         end)
 
         it("stores mappings", function()
@@ -397,7 +404,7 @@ describe("ProfileProject", function()
         local Project = require("loomworks.project")
         core._projects["App"] = Project.new(core, "App", {
             type = "cmake", path = "App", status = "unconfigured",
-            configurations = {}, cached_configurations = {},
+            configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
         })
         -- Create ConfigUnit with build_dir-based id so ProfileProject resolves it
         local ConfigUnit = require("loomworks.config_unit")
@@ -407,11 +414,17 @@ describe("ProfileProject", function()
         })
         core._config_units[#core._config_units + 1] = unit
         h.refresh_config_unit(core, unit)
+        -- Create a ConfigurationSet so _resolve_mappings works
+        local app = core._projects["App"]
+        local cs = ConfigurationSet.new(core, "debug", {
+            [app] = h.get_or_create_config(app, "Debug"),
+        })
+        core._config_sets[#core._config_sets + 1] = cs
         local tools = tool_key and { cmake = { key = tool_key } } or nil
         local data = {
             configuration_set = "debug",
             tools = tools,
-            mappings = { App = "Debug" },
+            _config_set_ref = cs,
         }
         local profile = Profile.new(core, data)
         -- Populate profile_projects registry and Profile's direct lists
@@ -483,20 +496,26 @@ describe("ProfileProject", function()
             local Project = require("loomworks.project")
             core._projects["App"] = Project.new(core, "App", {
                 type = "cmake", path = "App", status = "unconfigured",
-                configurations = {}, cached_configurations = {},
+                configurations = { Debug = { variant = "Debug" } }, cached_configurations = {},
             })
             -- Ensure ConfigUnit exists before ProfileProject construction
             h.ensure_config_unit_by_id(core, "build/App/Debug", "App")
+            -- Create a ConfigurationSet for the profiles
+            local app = core._projects["App"]
+            local cs = ConfigurationSet.new(core, "debug", {
+                [app] = h.get_or_create_config(app, "Debug"),
+            })
+            core._config_sets[#core._config_sets + 1] = cs
             local Profile = require("loomworks.profile").Profile
             local p1 = Profile.new(core, {
                 configuration_set = "debug",
                 tools = { cmake = { key = "ninja-gcc" } },
-                mappings = { App = "Debug" },
+                _config_set_ref = cs,
             })
             local p2 = Profile.new(core, {
                 configuration_set = "debug",
                 tools = { cmake = { key = "ninja-clang" } },
-                mappings = { App = "Debug" },
+                _config_set_ref = cs,
             })
             -- Populate profile_projects registry and Profile's direct lists
             for _, p in ipairs({ p1, p2 }) do

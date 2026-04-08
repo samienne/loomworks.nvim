@@ -75,7 +75,7 @@ describe("buf_status", function()
             configuration_sets = { debug = { App = "Debug" } },
         }, {
             active_profile = "debug",
-            pinned_profiles = {
+            profiles = {
                 debug = { configuration_set = "debug" },
             },
         }, {
@@ -111,7 +111,7 @@ describe("buf_status", function()
             configuration_sets = { debug = { App = "Debug" } },
         }, {
             active_profile = "debug:ninja-gcc-12",
-            pinned_profiles = {
+            profiles = {
                 ["debug:ninja-gcc-12"] = {
                     configuration_set = "debug",
                     tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" } } },
@@ -167,7 +167,7 @@ describe("buf_status", function()
             configuration_sets = { debug = { App = "Debug" } },
         }, {
             active_profile = "debug",
-            pinned_profiles = {
+            profiles = {
                 debug = { configuration_set = "debug" },
             },
         }, {
