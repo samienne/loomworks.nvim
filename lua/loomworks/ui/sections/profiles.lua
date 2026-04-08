@@ -125,7 +125,7 @@ return function(tree, ctx)
 
     local ws = lw.get_workspace()
 
-    for _, profile in ipairs(profiles) do
+    helpers.render_grouped(tree, profiles, function(t, profile, group)
         local is_active = profile == ctx.active_profile
         local profile_running = profile:is_running()
         local has_operation = profile:has_active_operation()
@@ -135,17 +135,14 @@ return function(tree, ctx)
         local hl
 
         local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
-        local prof_local = profile._in_user_json and not profile._published and " [local]" or ""
-        local is_dimmed = not profile._in_user_json
-        local display = prof_modified .. profile.key
+        local pin_icon = group == "published" and profile._user_pinned and "\u{1f4cc} " or ""
+        local display = prof_modified .. pin_icon .. profile.key
         if profile.orphaned_set then
             display = display .. " [stale]"
         end
-        display = display .. prof_local
 
         display = display .. " (" .. status_label .. ")"
         if has_operation then
-            -- This profile owns the running action — show orange + timer/progress
             hl = is_active and "LoomworksActive" or "LoomworksRunning"
             local pps = profile:projects()
             local pct = helpers.aggregate_progress(pps)
@@ -174,16 +171,17 @@ return function(tree, ctx)
             end
         end
 
-        tree:node(display, {
+        t:node(display, {
             fold_key = "profile:" .. profile.key,
             marker = marker,
             spinning = profile_running or has_operation,
-            hl = is_dimmed and "Comment" or hl,
+            hl = group == "shared" and "Comment" or hl,
             enter_label = "Activate",
             on_enter = actions.activate(profile),
             publish_label = profile._published and "Unpublish" or "Publish",
             on_publish = function()
                 profile._published = not profile._published
+                profile._user_pinned = profile._published
                 profile._in_user_json = true
                 if ws then
                     ws:_save_user()
@@ -196,9 +194,9 @@ return function(tree, ctx)
             on_configure = actions.configure(profile),
             on_delete = actions.delete_profile(profile),
         }, function()
-            render_profile_details(tree, profile, lw)
+            render_profile_details(t, profile, lw)
         end)
-    end
+    end)
 
     -- Sentinel line for profile creation
     if not has_projects then

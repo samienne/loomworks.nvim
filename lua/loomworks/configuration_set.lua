@@ -8,6 +8,7 @@
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
 --- @field _published boolean whether this set should appear in loomworks.json
 --- @field _in_user_json boolean whether this set is in user.json
+--- @field _user_pinned boolean whether user explicitly pinned this
 local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 
@@ -24,6 +25,7 @@ function ConfigurationSet.new(workspace, name, resolved_mappings)
     self._source = "shared"
     self._published = false
     self._in_user_json = false
+    self._user_pinned = false
     self:_update(resolved_mappings)
     return self
 end

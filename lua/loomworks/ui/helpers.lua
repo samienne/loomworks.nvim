@@ -254,4 +254,65 @@ function M.render_targets(tree, targets, fold_prefix)
     end)
 end
 
+--- Classify an item into a publish group based on its flags.
+--- @param item table domain object with _published and _in_user_json fields
+--- @return "published"|"local"|"shared"
+function M.publish_group(item)
+    if item._published then
+        return "published"
+    elseif item._in_user_json then
+        return "local"
+    else
+        return "shared"
+    end
+end
+
+--- Sort items into publish groups and render with separators.
+--- Groups: Published (with pin icon on pinned items), Local, Shared (dimmed).
+--- Empty groups are hidden. No separators when only one group exists.
+--- @param tree loomworks.Tree
+--- @param items table[] array of items to group
+--- @param render_fn fun(tree: loomworks.Tree, item: table, group: string) render a single item
+function M.render_grouped(tree, items, render_fn)
+    local published = {}
+    local local_items = {}
+    local shared = {}
+
+    for _, item in ipairs(items) do
+        local group = M.publish_group(item)
+        if group == "published" then
+            published[#published + 1] = item
+        elseif group == "local" then
+            local_items[#local_items + 1] = item
+        else
+            shared[#shared + 1] = item
+        end
+    end
+
+    local group_count = 0
+    if #published > 0 then group_count = group_count + 1 end
+    if #local_items > 0 then group_count = group_count + 1 end
+    if #shared > 0 then group_count = group_count + 1 end
+    local show_headers = group_count > 1
+
+    if #published > 0 then
+        if show_headers then tree:leaf("── Published ──", "NonText") end
+        for _, item in ipairs(published) do
+            render_fn(tree, item, "published")
+        end
+    end
+    if #local_items > 0 then
+        if show_headers then tree:leaf("── Local ──", "NonText") end
+        for _, item in ipairs(local_items) do
+            render_fn(tree, item, "local")
+        end
+    end
+    if #shared > 0 then
+        if show_headers then tree:leaf("── Shared ──", "NonText") end
+        for _, item in ipairs(shared) do
+            render_fn(tree, item, "shared")
+        end
+    end
+end
+
 return M

@@ -28,6 +28,7 @@ local Configuration = require("loomworks.configuration")
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
 --- @field _published boolean whether this project declaration should appear in loomworks.json
 --- @field _in_user_json boolean whether this project is in user.json (working copy)
+--- @field _user_pinned boolean whether user explicitly pinned this (vs transitive dependency)
 local Project = {}
 Project.__index = Project
 
@@ -44,6 +45,7 @@ function Project.new(workspace, key, data)
     self._source = "shared"
     self._published = false
     self._in_user_json = false
+    self._user_pinned = false
     self._configurations = {}
     if data then self:_update(data) end
     return self

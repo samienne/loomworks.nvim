@@ -18,6 +18,7 @@
 --- @field _removed boolean
 --- @field _published boolean whether this config should appear in loomworks.json
 --- @field _in_user_json boolean whether this config is in user.json
+--- @field _user_pinned boolean whether user explicitly pinned this
 local Configuration = {}
 Configuration.__index = Configuration
 
@@ -33,6 +34,7 @@ function Configuration.new(project, name, data)
     self._removed = false
     self._published = false
     self._in_user_json = false
+    self._user_pinned = false
     self:_update(data)
     return self
 end

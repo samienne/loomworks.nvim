@@ -158,6 +158,8 @@ end
 --- @field _operations loomworks.Operation[] active operations
 --- @field _last_operation { message: string, success: boolean }|nil
 --- @field _published boolean whether this profile should appear in loomworks.json (default false)
+--- @field _in_user_json boolean whether this profile is in user.json
+--- @field _user_pinned boolean whether user explicitly pinned this
 local Profile = {}
 Profile.__index = Profile
 
