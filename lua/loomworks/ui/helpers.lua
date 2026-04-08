@@ -289,26 +289,20 @@ function M.render_grouped(tree, items, render_fn)
         end
     end
 
-    local group_count = 0
-    if #published > 0 then group_count = group_count + 1 end
-    if #local_items > 0 then group_count = group_count + 1 end
-    if #shared > 0 then group_count = group_count + 1 end
-    local show_headers = group_count > 1
-
     if #published > 0 then
-        if show_headers then tree:leaf("── Published ──", "NonText") end
+        tree:leaf("── Published ──", "NonText")
         for _, item in ipairs(published) do
             render_fn(tree, item, "published")
         end
     end
     if #local_items > 0 then
-        if show_headers then tree:leaf("── Local ──", "NonText") end
+        tree:leaf("── Local ──", "NonText")
         for _, item in ipairs(local_items) do
             render_fn(tree, item, "local")
         end
     end
     if #shared > 0 then
-        if show_headers then tree:leaf("── Shared ──", "NonText") end
+        tree:leaf("── Shared ──", "NonText")
         for _, item in ipairs(shared) do
             render_fn(tree, item, "shared")
         end
