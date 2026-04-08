@@ -465,11 +465,11 @@ return function(tree, ctx)
             fold_key = "project:" .. key,
             spinning = proj_running ~= nil,
             hl = proj_hl,
-            publish_label = proj._published and "Unpublish" or "Publish",
+            publish_label = helpers.publish_action_label(proj, ws and ws:_baseline_project(proj.key) ~= nil or false),
             on_publish = function()
-                proj._published = not proj._published
-                proj._user_pinned = proj._published
-                proj:_mark_user_owned()
+                local had_user = proj._in_user_json
+                helpers.cycle_publish(proj, ws and ws:_baseline_project(proj.key) ~= nil or false)
+                if proj._in_user_json and not had_user then proj:_mark_user_owned() end
                 if ws then
                     ws:_save_user()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
@@ -558,12 +558,13 @@ return function(tree, ctx)
                             hl = config_hl,
                             enter_label = "Edit configuration",
                             on_enter = function() edit_project_configuration(project, cfg_name) end,
-                            publish_label = cname_cfg and (cname_cfg._published and "Unpublish" or "Publish") or nil,
+                            publish_label = cname_cfg and helpers.publish_action_label(cname_cfg,
+                                ws and ws:is_config_in_baseline(proj, cname_cfg) or false) or nil,
                             on_publish = cname_cfg and function()
-                                cname_cfg._published = not cname_cfg._published
-                                cname_cfg._user_pinned = cname_cfg._published
-                                cname_cfg._in_user_json = true
-                                proj:_mark_user_owned()
+                                local had_user = cname_cfg._in_user_json
+                                helpers.cycle_publish(cname_cfg,
+                                    ws and ws:is_config_in_baseline(proj, cname_cfg) or false)
+                                if cname_cfg._in_user_json and not had_user then proj:_mark_user_owned() end
                                 if ws then
                                     ws:_save_user()
                                     ws._core._deps.events.emit("active_set_changed", ws._active_set)

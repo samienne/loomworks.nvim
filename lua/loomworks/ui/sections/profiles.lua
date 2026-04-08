@@ -178,11 +178,13 @@ return function(tree, ctx)
             hl = group == "shared" and "Comment" or hl,
             enter_label = "Activate",
             on_enter = actions.activate(profile),
-            publish_label = profile._published and "Unpublish" or "Publish",
+            publish_label = helpers.publish_action_label(profile,
+                ws and ws._shared_baseline and ws._shared_baseline.profiles
+                    and ws._shared_baseline.profiles[profile.key] ~= nil or false),
             on_publish = function()
-                profile._published = not profile._published
-                profile._user_pinned = profile._published
-                profile._in_user_json = true
+                local has_bl = ws and ws._shared_baseline and ws._shared_baseline.profiles
+                    and ws._shared_baseline.profiles[profile.key] ~= nil or false
+                helpers.cycle_publish(profile, has_bl)
                 if ws then
                     ws:_save_user()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)

@@ -324,11 +324,9 @@ return function(tree, ctx)
             hl = set_hl,
             enter_label = "Edit mappings",
             on_enter = function() edit_config_set(cs) end,
-            publish_label = cs._published and "Unpublish" or "Publish",
+            publish_label = helpers.publish_action_label(cs, ws and ws:_baseline_config_set(cs.name) ~= nil or false),
             on_publish = function()
-                cs._published = not cs._published
-                cs._user_pinned = cs._published
-                cs._in_user_json = true
+                helpers.cycle_publish(cs, ws and ws:_baseline_config_set(cs.name) ~= nil or false)
                 if ws then
                     ws:_save_user()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)

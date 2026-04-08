@@ -2573,6 +2573,17 @@ function Workspace:_baseline_config_set(cs_name)
     return bcs and bcs[cs_name]
 end
 
+--- Check if a configuration exists in the shared baseline.
+--- @param project loomworks.Project
+--- @param config loomworks.Configuration
+--- @return boolean
+function Workspace:is_config_in_baseline(project, config)
+    local bp = self:_baseline_project(project.key)
+    if not bp then return false end
+    local bc = bp.type_config and bp.type_config.configurations
+    return bc and bc[config.name] ~= nil or false
+end
+
 --- Check if a single configuration is modified (would :w change loomworks.json for it).
 --- Returns true when the published state differs from the shared baseline.
 --- @param project loomworks.Project

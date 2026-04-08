@@ -254,6 +254,53 @@ function M.render_targets(tree, targets, fold_prefix)
     end)
 end
 
+--- Cycle the publish state of an item: Local → Local+Shared → Shared → Local.
+--- "Shared only" is skipped if the item has no baseline entry (can't be shared-only
+--- without existing in loomworks.json).
+--- @param item table domain object with _published, _in_user_json flags
+--- @param has_baseline boolean whether the item exists in loomworks.json baseline
+function M.cycle_publish(item, has_baseline)
+    if not item._published then
+        -- Local → Local + Shared
+        item._published = true
+        item._user_pinned = true
+        item._in_user_json = true
+    elseif item._in_user_json then
+        if has_baseline then
+            -- Local + Shared → Shared only
+            item._in_user_json = false
+            item._user_pinned = false
+        else
+            -- Local + Shared → Local (no baseline, skip shared-only)
+            item._published = false
+            item._user_pinned = false
+        end
+    else
+        -- Shared only → Local
+        item._published = false
+        item._in_user_json = true
+        item._user_pinned = false
+    end
+end
+
+--- Get the label for the next publish state transition.
+--- @param item table domain object with _published, _in_user_json flags
+--- @param has_baseline boolean whether the item exists in loomworks.json baseline
+--- @return string
+function M.publish_action_label(item, has_baseline)
+    if not item._published then
+        return "Publish (→ local + shared)"
+    elseif item._in_user_json then
+        if has_baseline then
+            return "Unpin local (→ shared only)"
+        else
+            return "Unpublish (→ local only)"
+        end
+    else
+        return "Pin local (→ local only)"
+    end
+end
+
 --- Classify an item into a publish group based on its flags.
 --- @param item table domain object with _published and _in_user_json fields
 --- @return "published"|"local"|"shared"
