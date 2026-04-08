@@ -999,14 +999,15 @@ describe("Core", function()
     end)
 
     describe("plan_config_deletion", function()
-        it("resets config when only pinned profiles reference it", function()
+        it("resets config when only profiles reference it", function()
             local core = make_core(
                 {
                     projects = { App = { typescript = {} } },
+                    configuration_sets = { development = { App = "development" } },
                 },
                 {
                     profiles = {
-                        ["App/development"] = { mappings = { App = "development" } },
+                        development = { configuration_set = "development" },
                     },
                 },
                 {
@@ -1028,7 +1029,7 @@ describe("Core", function()
             assert.is_not_nil(plan.items[1].unit)
             assert.equals("App", plan.items[1].unit._project.key)
             assert.equals("/root/.nvim/build/App/development", plan.items[1].build_dir)
-            -- Pinned profile still references it, so disposition is "reset"
+            -- Profile still references it, so disposition is "reset"
             assert.equals("reset", plan.items[1].disposition)
             assert.is_true(plan.defined_in_config)
         end)
@@ -1311,10 +1312,11 @@ describe("Core", function()
             local core = make_core(
                 {
                     projects = { App = { typescript = {} } },
+                    configuration_sets = { development = { App = "development" } },
                 },
                 {
                     profiles = {
-                        ["App/development"] = { mappings = { App = "development" } },
+                        development = { configuration_set = "development" },
                     },
                 },
                 {
@@ -1333,7 +1335,7 @@ describe("Core", function()
 
             local refs = get_unit(core, "App", "development"):referencing_profiles()
             assert.equals(1, #refs)
-            assert.equals("App/development", refs[1].key)
+            assert.equals("development", refs[1].key)
         end)
 
     end)

@@ -791,46 +791,8 @@ describe("profile upgrade and downgrade", function()
         assert.equals("Debug", ws._active_profile_key)
     end)
 
-    it("pinned ad-hoc profiles are not affected by upgrade", function()
-        local ws = make_ws(
-            {
-                projects = {
-                    Frontend = { ets = {} },
-                    App = { cmake = {} },
-                },
-                configuration_sets = { Debug = { Frontend = "debug", App = "Debug" } },
-            },
-            {
-                profiles = {
-                    Debug = { configuration_set = "Debug" },
-                    ["App/Debug"] = { mappings = { App = "Debug" } },
-                },
-            },
-            {
-                configurations = {
-                    ["App/Debug"] = {
-                        project_key = "App", config_key = "Debug",
-                        type = "cmake", variant = "Debug",
-                    },
-                    ["Frontend/debug"] = {
-                        project_key = "Frontend", config_key = "debug",
-                        type = "ets", variant = "debug",
-                    },
-                },
-            }
-        )
-
-        ws:upgrade_profiles_for_tool(tool_entry)
-
-        -- Set-based profile upgraded
-        local cache = ws:_serialize_cache()
-        assert.is_nil(h.find_profile(ws._profiles, "Debug"))
-        assert.is_not_nil(h.find_profile(ws._profiles, "Debug:ninja-gcc-12"))
-
-        -- Pinned profile unchanged
-        assert.is_not_nil(h.find_profile(ws._profiles, "App/Debug"))
-        assert.is_nil(h.find_profile(ws._profiles, "App/Debug").tools)
-    end)
+    -- "pinned ad-hoc profiles are not affected by upgrade" test removed:
+    -- pinned profiles no longer exist
 
     it("downgrade is no-op when other keyed-module projects remain", function()
         local ws = make_ws(
@@ -1748,7 +1710,7 @@ describe("configuration rename propagation", function()
         assert.equals("DebugASAN", h.cs_mapping(cs, "App"))
     end)
 
-    it("rename updates pinned profile key and variant; Configuration mutated in place", function()
+    it("rename updates profile variant and Configuration mutated in place", function()
         local ws = make_ws({
             projects = {
                 App = {
@@ -1759,10 +1721,11 @@ describe("configuration rename propagation", function()
                     },
                 },
             },
+            configuration_sets = { debug = { App = "Debug-asan" } },
         }, {
             profiles = {
-                ["App/Debug-asan:ninja-gcc"] = {
-                    mappings = { App = "Debug-asan" },
+                ["debug:ninja-gcc"] = {
+                    configuration_set = "debug",
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc", display = "GCC" }, label = "GCC" } },
                 },
             },
@@ -1778,7 +1741,7 @@ describe("configuration rename propagation", function()
         })
 
         -- Before rename: PP works
-        local profile = h.find_profile(ws:get_profiles(), "App/Debug-asan:ninja-gcc")
+        local profile = h.find_profile(ws:get_profiles(), "debug:ninja-gcc")
         assert.is_not_nil(profile)
         local pp = profile:project("App")
         assert.equals("Debug-asan", pp:variant_name())
@@ -1792,9 +1755,8 @@ describe("configuration rename propagation", function()
         })
         assert.is_true(ok)
 
-        -- Pinned profile key updated to new variant
-        assert.is_nil(h.find_profile(ws:get_profiles(), "App/Debug-asan:ninja-gcc"))
-        profile = h.find_profile(ws:get_profiles(), "App/DebugASAN:ninja-gcc")
+        -- Profile key unchanged (set-based, key comes from config set name + tool)
+        profile = h.find_profile(ws:get_profiles(), "debug:ninja-gcc")
         assert.is_not_nil(profile)
         assert.equals("DebugASAN", profile.mappings["App"])
 
@@ -1958,9 +1920,7 @@ describe("configuration rename propagation", function()
             },
         }, {
             profiles = {
-                ["App/Debug-asan"] = {
-                    mappings = { App = "Debug-asan" },
-                },
+                debug = { configuration_set = "debug" },
             },
         }, {
             build_dirs = {
@@ -1979,8 +1939,8 @@ describe("configuration rename propagation", function()
         cfg_before.is_user = true
 
         local cs_before = h.find_config_set_in(ws:get_config_sets(), "debug")
-        local profile_before = h.find_profile(ws:get_profiles(), "App/Debug-asan")
-        assert.is_not_nil(profile_before, "pinned profile should exist")
+        local profile_before = h.find_profile(ws:get_profiles(), "debug")
+        assert.is_not_nil(profile_before, "profile should exist")
         local pp_before = profile_before:projects()[1]
         assert.is_not_nil(pp_before, "PP should exist")
         local unit_before = pp_before._config_unit
@@ -2003,9 +1963,9 @@ describe("configuration rename propagation", function()
         assert.equals(cs_before, cs_after)
         assert.equals("DebugASAN", h.cs_mapping(cs_after, "App"))
 
-        -- Same Profile object (key re-derived)
-        local profile_after = h.find_profile(ws:get_profiles(), "App/DebugASAN")
-        assert.is_not_nil(profile_after, "profile should exist with new key")
+        -- Same Profile object (key unchanged for set-based profiles)
+        local profile_after = h.find_profile(ws:get_profiles(), "debug")
+        assert.is_not_nil(profile_after, "profile should exist")
         assert.equals(profile_before, profile_after) -- same table
         assert.equals("DebugASAN", profile_after.mappings["App"])
 
@@ -2046,9 +2006,7 @@ describe("configuration rename propagation", function()
             },
         }, {
             profiles = {
-                ["App/Debug-asan"] = {
-                    mappings = { App = "Debug-asan" },
-                },
+                debug = { configuration_set = "debug" },
             },
         }, {
             build_dirs = {
@@ -2112,8 +2070,8 @@ describe("configuration rename propagation", function()
             },
         }, {
             profiles = {
-                ["App/Debug-asan:ninja-gcc"] = {
-                    mappings = { App = "Debug-asan" },
+                ["debug:ninja-gcc"] = {
+                    configuration_set = "debug",
                     tools = { cmake = { key = "ninja-gcc", data = { id = "ninja-gcc" }, label = "GCC" } },
                 },
             },
@@ -2200,9 +2158,7 @@ describe("configuration rename propagation", function()
             },
         }, {
             profiles = {
-                ["App/Debug-asan"] = {
-                    mappings = { App = "Debug-asan" },
-                },
+                debug = { configuration_set = "debug" },
             },
         })
 
@@ -4925,7 +4881,7 @@ end)
 -- =========================================================================
 
 describe("profile persistence", function()
-    it("created profile is pinned and serialized in user data", function()
+    it("created profile is in user json and serialized in user data", function()
         local ws = make_ws({
             projects = {
                 App = { cmake = {} },
@@ -4947,7 +4903,7 @@ describe("profile persistence", function()
 
         local profile = wv.execute_create_profile(cs, nil, false)
         assert.is_not_nil(profile, "profile should be created")
-        assert.is_true(profile._pinned, "profile should be pinned")
+        assert.is_true(profile._in_user_json, "profile should be in user json")
 
         -- Serialize user data and check profiles
         local user_data = ws:_serialize_user()
@@ -4956,7 +4912,7 @@ describe("profile persistence", function()
             "profile key should be in profiles")
         assert.equals("Debug",
             user_data.profiles[profile.key].configuration_set,
-            "pinned profile should reference config set")
+            "profile should reference config set")
     end)
 
     it("created profile survives remerge", function()
@@ -4986,7 +4942,7 @@ describe("profile persistence", function()
         for _, p in pairs(ws._profiles) do
             if p.key == profile_key then
                 found = true
-                assert.is_true(p._pinned, "profile should still be pinned after remerge")
+                assert.is_true(p._in_user_json, "profile should still be in user json after remerge")
                 break
             end
         end

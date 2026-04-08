@@ -669,10 +669,11 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     if raw_user then
         active_profile_key = raw_user.active_profile
         default_target_data = raw_user.default_target
-        -- Store user overlay (projects/configuration_sets from user.json)
+        -- Store user overlay (projects/configuration_sets/profiles from user.json)
         user_overlay = {}
         if raw_user.projects then user_overlay.projects = raw_user.projects end
         if raw_user.configuration_sets then user_overlay.configuration_sets = raw_user.configuration_sets end
+        if raw_user.profiles then user_overlay.profiles = raw_user.profiles end
         self._user_config_overlay = next(user_overlay) and user_overlay or nil
         user_data = raw_user
     else
@@ -2531,6 +2532,21 @@ function Workspace:_user_config_from_objects()
         end
     end
     if next(config_sets) then overlay.configuration_sets = config_sets end
+
+    local profiles = {}
+    for _, profile in pairs(self._profiles) do
+        if profile._in_user_json then
+            local entry = {}
+            if profile._configuration_set_name then
+                entry.configuration_set = profile._configuration_set_name
+            end
+            if profile._tools_raw then
+                entry.tools = profile._tools_raw
+            end
+            profiles[profile.key] = entry
+        end
+    end
+    if next(profiles) then overlay.profiles = profiles end
 
     return overlay
 end
