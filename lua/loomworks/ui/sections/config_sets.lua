@@ -244,12 +244,27 @@ local function delete_config_set(cs)
     })
 end
 
---- Create a new config set via the editor dialog.
-local function create_config_set()
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return end
+--- Create a config set from a template (auto-detected mappings).
+--- Template mappings are already raw {project_key → variant_name} strings
+--- so we call add_configuration_set directly (not execute_create_config_set
+--- which expects domain objects).
+--- @param ws loomworks.Workspace
+--- @param name string set name
+--- @param mappings table<string, string> project_key → variant
+local function create_from_template(ws, name, mappings)
+    local cs_new, err = ws:add_configuration_set(name, mappings)
+    if cs_new then
+        vim.notify("loomworks: configuration set '" .. name .. "' created",
+            vim.log.levels.INFO)
+    else
+        vim.notify("loomworks: " .. (err or "failed to create config set"),
+            vim.log.levels.ERROR)
+    end
+end
 
+--- Create a config set via the manual editor dialog.
+--- @param ws loomworks.Workspace
+local function create_custom_config_set(ws)
     local workspace_view = require("loomworks.workspace_view")
     local ctx = workspace_view.compute_create_config_set_context(ws)
 
@@ -282,6 +297,65 @@ local function create_config_set()
     })
 end
 
+--- Create a new config set: offer templates then custom option.
+local function create_config_set()
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    -- Collect existing set names for filtering
+    local existing_names = {}
+    for _, cs in pairs(ws._config_sets) do
+        existing_names[cs.name] = true
+    end
+
+    -- Generate auto-detected templates
+    local auto_sets = ws:generate_default_config_sets()
+    local choices = {}
+    local template_data = {}
+
+    if auto_sets then
+        for name, mappings in pairs(auto_sets) do
+            if not existing_names[name] then
+                -- Build description from mappings
+                local parts = {}
+                local keys = {}
+                for k in pairs(mappings) do keys[#keys + 1] = k end
+                table.sort(keys)
+                for _, k in ipairs(keys) do
+                    parts[#parts + 1] = k .. " → " .. mappings[k]
+                end
+                local desc = table.concat(parts, ", ")
+                choices[#choices + 1] = name .. " (" .. desc .. ")"
+                template_data[choices[#choices]] = { name = name, mappings = mappings }
+            end
+        end
+        table.sort(choices)
+    end
+
+    -- Always offer custom option
+    local custom_label = "Custom..."
+    choices[#choices + 1] = custom_label
+
+    if #choices == 1 then
+        -- Only custom option — go straight to editor
+        create_custom_config_set(ws)
+        return
+    end
+
+    vim.ui.select(choices, { prompt = "Create configuration set:" }, function(choice)
+        if not choice then return end
+        if choice == custom_label then
+            create_custom_config_set(ws)
+        else
+            local data = template_data[choice]
+            if data then
+                create_from_template(ws, data.name, data.mappings)
+            end
+        end
+    end)
+end
+
 --- Render the configuration sets section.
 --- @param tree loomworks.Tree
 --- @param ctx table { lw, all_profiles, active_profile, config_sets, tool_entries }
@@ -289,8 +363,14 @@ return function(tree, ctx)
     local config_sets = ctx.config_sets
     local has_sets = config_sets and next(config_sets)
 
-    -- Show section only when there are sets or projects (to offer create)
-    if not has_sets then return end
+    -- Show section when sets exist OR when projects exist (to offer create)
+    local lw_for_check = ctx.lw
+    local has_projects = false
+    local projects = lw_for_check.get_projects()
+    if projects then
+        for _ in pairs(projects) do has_projects = true; break end
+    end
+    if not has_sets and not has_projects then return end
 
     local all_profiles = ctx.all_profiles
     local active_profile = ctx.active_profile

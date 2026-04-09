@@ -94,6 +94,31 @@ function M.create_workspace_config(root, name, write_json)
     return write_json(path, data)
 end
 
+--- Initialize a workspace by creating user.json only.
+--- No loomworks.json is created — the user publishes later with :w.
+--- @param root string workspace root directory
+--- @param write_json? fun(path: string, data: table): boolean, string|nil
+--- @return boolean ok, string|nil err
+function M.init_workspace(root, write_json)
+    local uv = vim.uv or vim.loop
+    local user_path = user_mod.filepath(root)
+    local config_path = root .. "/loomworks.json"
+
+    -- Already initialized if either file exists
+    if uv.fs_stat(config_path) or uv.fs_stat(user_path) then
+        return false, "workspace already exists in " .. root
+    end
+
+    -- Ensure .nvim directory exists
+    local nvim_dir = root .. "/.nvim"
+    if not uv.fs_stat(nvim_dir) then
+        vim.fn.mkdir(nvim_dir, "p")
+    end
+
+    write_json = write_json or require("loomworks.io").write_json
+    return write_json(user_path, { _meta = { version = 2 } })
+end
+
 --- Return the file paths that a workspace root implies.
 --- @param root string absolute workspace root
 --- @return { config: string, user: string, cache: string }
@@ -304,13 +329,22 @@ end
 --- @param cache_content string|nil raw cache.json content
 --- @return loomworks.WorkspaceData|nil ws, string|nil err
 function M.assemble(root, config_content, user_content, cache_content)
-    if not config_content then
-        return nil, "loomworks.json not found or empty in " .. root
-    end
-
-    local config, config_err = config_mod.parse(config_content, root)
-    if not config then
-        return nil, config_err
+    local config
+    if config_content then
+        local config_err
+        config, config_err = config_mod.parse(config_content, root)
+        if not config then
+            return nil, config_err
+        end
+    else
+        -- No loomworks.json — empty shared baseline. Workspace operates
+        -- from user.json alone.
+        config = {
+            projects = {},
+            name = nil,
+            configuration_sets = nil,
+            profiles = nil,
+        }
     end
 
     local user_data, user_version_mismatch
@@ -342,7 +376,7 @@ function M.assemble(root, config_content, user_content, cache_content)
 
     -- Update cache hash from raw content
     if cache_data._meta then
-        cache_data._meta.loomworks_hash = cache_mod.compute_hash(config_content)
+        cache_data._meta.loomworks_hash = cache_mod.compute_hash(config_content or "")
     end
 
     -- Validate cache internal consistency

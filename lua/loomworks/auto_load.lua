@@ -8,11 +8,13 @@ local M = {}
 --- Decide what action to take for auto-loading.
 --- Pure function: no side effects, fully testable.
 ---
---- @param opts { mode: string|false, config_exists: boolean, cache_exists: boolean, loaded_root: string|nil, cwd_root: string }
+--- @param opts { mode: string|false, config_exists: boolean, user_exists?: boolean, cache_exists: boolean, loaded_root: string|nil, cwd_root: string }
 --- @return "load"|"prompt"|"prompt_switch"|"notify"|"skip"
 function M.decide(opts)
     if opts.mode == false then return "skip" end
-    if not opts.config_exists then return "skip" end
+    -- Either loomworks.json or user.json is sufficient
+    local has_workspace = opts.config_exists or opts.user_exists
+    if not has_workspace then return "skip" end
     if opts.loaded_root then
         if opts.loaded_root == opts.cwd_root then return "skip" end
         return "prompt_switch"
@@ -38,9 +40,11 @@ function M.check_cwd()
     local cwd = vim.fn.getcwd()
     local cwd_root = vim.fs.normalize(cwd)
     local config_path = cwd_root .. "/loomworks.json"
+    local user_path = cwd_root .. "/.nvim/loomworks.user.json"
     local cache_path = cwd_root .. "/.nvim/loomworks.cache.json"
 
     local config_exists = vim.uv.fs_stat(config_path) ~= nil
+    local user_exists = vim.uv.fs_stat(user_path) ~= nil
     local cache_exists = vim.uv.fs_stat(cache_path) ~= nil
 
     local ws = lw.get_workspace()
@@ -49,6 +53,7 @@ function M.check_cwd()
     local action = M.decide({
         mode = mode,
         config_exists = config_exists,
+        user_exists = user_exists,
         cache_exists = cache_exists,
         loaded_root = loaded_root,
         cwd_root = cwd_root,
@@ -63,7 +68,7 @@ function M.check_cwd()
         )
     elseif action == "prompt" then
         vim.ui.input(
-            { prompt = "loomworks.json found at " .. cwd_root .. ", load workspace? (y/n) " },
+            { prompt = "Workspace found at " .. cwd_root .. ", load? (y/n) " },
             function(input)
                 if input and input:lower() == "y" then
                     lw.setup({ root = cwd_root })

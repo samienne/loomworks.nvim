@@ -221,11 +221,11 @@ function Tree:_create_workspace()
     end
 
     local root = vim.fn.getcwd()
-    local ok, err = require("loomworks.workspace").create_workspace_config(root)
+    local ok, err = require("loomworks.workspace").init_workspace(root)
     if ok then
         lw.setup({ root = root })
     else
-        vim.notify("loomworks: " .. (err or "failed to create workspace"), vim.log.levels.ERROR)
+        vim.notify("loomworks: " .. (err or "failed to initialize workspace"), vim.log.levels.ERROR)
     end
 end
 

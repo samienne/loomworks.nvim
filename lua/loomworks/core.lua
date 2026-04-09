@@ -140,12 +140,14 @@ function Core:_on_files_read(root, paths, results)
     end
 
     local config_content = results[paths.config]
-    if not config_content then
-        fail("loomworks.json not found in " .. root)
-        return
-    end
     local user_content = results[paths.user]
     local cache_content = results[paths.cache]
+
+    -- Need at least one of loomworks.json or user.json
+    if not config_content and not user_content then
+        fail("no workspace files found in " .. root)
+        return
+    end
 
     -- Assemble workspace data from raw content
     local data, err = ws_mod.assemble(root, config_content, user_content, cache_content)
