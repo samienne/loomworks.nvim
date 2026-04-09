@@ -14,46 +14,38 @@ function adapter.root(dir)
     local ws = lw.get_workspace()
     if not ws then return nil end
 
-    -- Check if dir is under the workspace root
-    local root = vim.fs.normalize(ws.root)
-    local norm_dir = vim.fs.normalize(dir)
+    -- Normalize both to lowercase with forward slashes for comparison
+    local root = ws.root:gsub("\\", "/"):lower()
+    local norm_dir = dir:gsub("\\", "/"):lower()
     if norm_dir == root or norm_dir:sub(1, #root + 1) == root .. "/" then
-        return root
+        -- Return the root with consistent forward slashes
+        return ws.root:gsub("\\", "/")
     end
     return nil
 end
 
 --- Filter directories during file discovery.
---- Skip build directories and .nvim.
+--- We only need neotest to find CTestTestfile.cmake files inside build
+--- directories under .nvim/. Skip everything else.
 --- @param name string directory basename
+--- @param rel_path string path relative to root
 --- @return boolean true to search inside
 function adapter.filter_dir(name)
-    if name == "build" or name == ".nvim" or name == "node_modules" then
-        return false
-    end
-    return true
+    return false
 end
 
 --- Check if a file could contain tests.
+--- For build-system discovery, we match CMakeLists.txt at the project
+--- root as the sentinel file. All ctest tests are attached to it.
+--- We check against the root() result to identify the root CMakeLists.
 --- @param file_path string absolute file path
 --- @return boolean
 function adapter.is_test_file(file_path)
-    -- We rely on build-system discovery, not source parsing.
-    -- Return true for C++ test source files as a hint to neotest.
-    local ext = file_path:match("%.([^%.]+)$")
-    if not ext then return false end
-    ext = ext:lower()
-    if ext == "cpp" or ext == "cc" or ext == "cxx" or ext == "c" then
-        local name = vim.fn.fnamemodify(file_path, ":t:r"):lower()
-        return name:match("test") ~= nil
-    end
-    -- TypeScript/JavaScript test files
-    if ext == "ts" or ext == "tsx" or ext == "js" or ext == "jsx" then
-        return file_path:match("%.test%.") ~= nil
-            or file_path:match("%.spec%.") ~= nil
-            or file_path:match("/tests?/") ~= nil
-    end
-    return false
+    local name = file_path:match("[/\\]([^/\\]+)$")
+    if name ~= "CMakeLists.txt" then return false end
+    -- Only root CMakeLists: parent dir should be the project root
+    local parent = file_path:sub(1, #file_path - #name - 1)
+    return adapter.root(parent) == parent
 end
 
 --- Resolve the file path → project → active profile → ConfigUnit chain.
@@ -68,11 +60,13 @@ local function resolve_config_unit(file_path)
     if not profile then return nil, nil end
 
     -- Find project by path prefix matching
-    local norm_path = vim.fs.normalize(file_path):lower()
+    local norm_path = file_path:gsub("\\", "/"):lower()
     local best_project, best_len = nil, 0
     for _, project in pairs(ws._projects) do
         local project_path = project.path or project.key
-        local project_abs = vim.fs.normalize(ws.root .. "/" .. project_path):lower()
+        local project_abs = (ws.root .. "/" .. project_path):gsub("\\", "/"):lower()
+        -- Normalize trailing /. (project path "." → root/.)
+        project_abs = project_abs:gsub("/%.$", "")
         if norm_path == project_abs or norm_path:sub(1, #project_abs + 1) == project_abs .. "/" then
             if #project_abs > best_len then
                 best_project = project
@@ -91,20 +85,24 @@ local function resolve_config_unit(file_path)
 end
 
 --- Build a neotest position tree from ConfigUnit test entries.
+--- Uses synthetic ranges since tests are discovered from the build system,
+--- not from source parsing.
 --- @param entries table[] test tree entries from discover_tests
 --- @param root_id string root position id
 --- @param root_name string root position name
 --- @param root_path string root file/dir path
+--- @param root_type? string "dir" or "file" (default "dir")
 --- @return table neotest.Tree
-local function build_neotest_tree(entries, root_id, root_name, root_path)
+local function build_neotest_tree(entries, root_id, root_name, root_path, root_type)
     local Tree = require("neotest.types").Tree
+
+    -- Do NOT normalize paths — use exactly what neotest passed us.
+    -- Neotest matches tree positions by path identity.
 
     -- Build parent → children map
     local children_of = {}
     local top_level = {}
-    local by_id = {}
     for _, entry in ipairs(entries) do
-        by_id[entry.id] = entry
         if entry.parent then
             children_of[entry.parent] = children_of[entry.parent] or {}
             children_of[entry.parent][#children_of[entry.parent] + 1] = entry
@@ -113,38 +111,87 @@ local function build_neotest_tree(entries, root_id, root_name, root_path)
         end
     end
 
+    -- Assign synthetic line numbers for range (neotest needs ranges to
+    -- build the tree hierarchy). Each entry gets a unique line range.
+    local line = 1
+
     --- Convert an entry to a neotest tree list node recursively.
     --- @param entry table test entry
     --- @return table list node for Tree.from_list
     local function to_node(entry)
-        local pos = {
-            id = root_path .. "::" .. entry.id,
-            type = children_of[entry.id] and "namespace" or "test",
-            name = entry.name,
-            path = root_path,
-        }
-        local node = { pos }
+        local start_line = line
         local kids = children_of[entry.id]
+
+        local node_type = kids and "namespace" or "test"
+        local child_nodes = {}
         if kids then
             for _, child in ipairs(kids) do
-                node[#node + 1] = to_node(child)
+                child_nodes[#child_nodes + 1] = to_node(child)
             end
+        else
+            line = line + 1
         end
-        return node
+
+        local pos = {
+            id = root_path .. "::" .. entry.id,
+            type = node_type,
+            name = entry.name,
+            path = root_path,
+            range = { start_line, 0, line, 0 },
+            -- Carry through metadata for execution
+            _original_id = entry._original_id or entry.id,
+            _config_unit = entry._config_unit,
+            executable = entry.executable,
+            framework = entry.framework,
+        }
+
+        local result = { pos }
+        for _, cn in ipairs(child_nodes) do
+            result[#result + 1] = cn
+        end
+        return result
     end
 
-    -- Root node
-    local root_node = {
-        { id = root_id, type = "dir", name = root_name, path = root_path },
-    }
+    -- Root node covers all lines
+    local child_nodes = {}
     for _, entry in ipairs(top_level) do
-        root_node[#root_node + 1] = to_node(entry)
+        child_nodes[#child_nodes + 1] = to_node(entry)
+    end
+
+    local root_node = {
+        {
+            id = root_id,
+            type = root_type or "dir",
+            name = root_name,
+            path = root_path,
+            range = { 0, 0, line + 1, 0 },
+        },
+    }
+    for _, cn in ipairs(child_nodes) do
+        root_node[#root_node + 1] = cn
     end
 
     return Tree.from_list(root_node, function(pos) return pos.id end)
 end
 
+--- Trigger async test discovery for all ConfigUnits in the active profile.
+--- Populates _test_tree caches so discover_positions can return immediately.
+local function ensure_test_cache()
+    local lw = require("loomworks")
+    local profile = lw.get_active_profile()
+    if not profile then return end
+
+    for _, pp in ipairs(profile:projects()) do
+        local unit = pp._config_unit
+        if unit and not unit._test_tree then
+            unit:discover_tests_async(function() end)
+        end
+    end
+end
+
 --- Discover test positions.
+--- Returns cached test data. If not cached yet, returns nil (neotest
+--- will retry on next refresh). Use ensure_test_cache() to pre-populate.
 --- @param path string absolute file or directory path
 --- @return table|nil neotest.Tree
 function adapter.discover_positions(path)
@@ -155,13 +202,13 @@ function adapter.discover_positions(path)
     local profile = lw.get_active_profile()
     if not profile then return nil end
 
-    local stat = vim.uv.fs_stat(path)
-    if not stat then return nil end
-
-    if stat.type == "directory" then
-        -- Directory-level discovery: collect tests from all ConfigUnits
-        -- in the active profile under this directory
+    -- Determine if path is a file or directory by checking extension.
+    -- Avoid vim.uv.fs_stat which can deadlock in nio coroutine context.
+    local is_file = path:match("%.[^/\\]+$") ~= nil
+    if not is_file then
+        -- Directory-level discovery: collect cached tests from all ConfigUnits
         local all_entries = {}
+        local any_pending = false
         for _, pp in ipairs(profile:projects()) do
             local unit = pp._config_unit
             if not unit then goto continue end
@@ -169,32 +216,35 @@ function adapter.discover_positions(path)
             local project = pp._project or unit._project
             if not project then goto continue end
 
-            local project_abs = vim.fs.normalize(ws.root .. "/" .. (project.path or project.key))
-            local norm_path = vim.fs.normalize(path)
-            -- Only include projects under this directory
-            if norm_path ~= vim.fs.normalize(ws.root)
+            local project_abs = (ws.root .. "/" .. (project.path or project.key)):gsub("\\", "/"):gsub("/%.$", "")
+            local norm_path = path:gsub("\\", "/")
+            if norm_path ~= ws.root:gsub("\\", "/")
                 and project_abs:sub(1, #norm_path + 1) ~= norm_path .. "/"
                 and project_abs ~= norm_path then
                 goto continue
             end
 
-            local entries = unit:discover_tests()
-            if entries then
-                for _, e in ipairs(entries) do
-                    -- Prefix ids with project key to avoid collisions
-                    all_entries[#all_entries + 1] = {
-                        id = project.key .. "/" .. e.id,
-                        name = project.key .. ": " .. e.name,
-                        parent = e.parent and (project.key .. "/" .. e.parent) or nil,
-                        runnable = e.runnable,
-                        framework = e.framework,
-                        executable = e.executable,
-                        status = e.status,
-                        -- Store original id and unit for execution
-                        _original_id = e.id,
-                        _config_unit = unit,
-                    }
-                end
+            -- Use cached data only — never block
+            local entries = unit._test_tree
+            if not entries then
+                -- Trigger async discovery for next time
+                any_pending = true
+                unit:discover_tests_async(function() end)
+                goto continue
+            end
+
+            for _, e in ipairs(entries) do
+                all_entries[#all_entries + 1] = {
+                    id = project.key .. "/" .. e.id,
+                    name = project.key .. ": " .. e.name,
+                    parent = e.parent and (project.key .. "/" .. e.parent) or nil,
+                    runnable = e.runnable,
+                    framework = e.framework,
+                    executable = e.executable,
+                    status = e.status,
+                    _original_id = e.id,
+                    _config_unit = unit,
+                }
             end
 
             ::continue::
@@ -204,17 +254,18 @@ function adapter.discover_positions(path)
 
         return build_neotest_tree(all_entries, path, vim.fn.fnamemodify(path, ":t"), path)
     else
-        -- File-level discovery: find tests associated with this file
+        -- File-level discovery: the root CMakeLists.txt is our sentinel.
         local unit, project = resolve_config_unit(path)
         if not unit then return nil end
 
-        local entries = unit:discover_tests()
-        if not entries then return nil end
+        -- Use cached data only — never block
+        local entries = unit._test_tree
+        if not entries then
+            -- Trigger async discovery for next time
+            unit:discover_tests_async(function() end)
+            return nil
+        end
 
-        -- For now, return all tests for the config unit when viewing a test file.
-        -- Source-level filtering (which tests are in this file) would require
-        -- file-api target→source mapping. We return the full tree and let
-        -- neotest show all tests.
         local file_entries = {}
         for _, e in ipairs(entries) do
             file_entries[#file_entries + 1] = {
@@ -232,7 +283,7 @@ function adapter.discover_positions(path)
 
         if #file_entries == 0 then return nil end
 
-        return build_neotest_tree(file_entries, path, vim.fn.fnamemodify(path, ":t"), path)
+        return build_neotest_tree(file_entries, path, vim.fn.fnamemodify(path, ":t"), path, "file")
     end
 end
 

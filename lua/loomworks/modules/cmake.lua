@@ -1493,16 +1493,69 @@ local function parse_gtest_list(output, executable, target_id)
     return entries
 end
 
+--- Find the directory containing CTestTestfile.cmake, searching from build_dir.
+--- Returns build_dir itself if it has the file, otherwise searches subdirectories
+--- depth-first (skipping cmake internal dirs).
+--- @param build_dir string
+--- @return string|nil test_dir
+local function find_ctest_dir(build_dir)
+    if uv.fs_stat(build_dir .. "/CTestTestfile.cmake") then
+        return build_dir
+    end
+    local skip = { _deps = true, CMakeFiles = true, [".cmake"] = true }
+    local function search(dir, depth)
+        if depth > 5 then return nil end
+        local handle = uv.fs_scandir(dir)
+        if not handle then return nil end
+        while true do
+            local name, typ = uv.fs_scandir_next(handle)
+            if not name then break end
+            if not skip[name] then
+                local sub = dir .. "/" .. name
+                -- On Windows, typ may be nil; check with fs_stat
+                if typ == "directory" or (not typ and uv.fs_stat(sub .. "/")) then
+                    if uv.fs_stat(sub .. "/CTestTestfile.cmake") then
+                        return sub
+                    end
+                    local found = search(sub, depth + 1)
+                    if found then return found end
+                end
+            end
+        end
+        return nil
+    end
+    return search(build_dir, 0)
+end
+
+--- Build the ctest base command with the right flags for this project.
+--- Always passes -C <variant> when a configuration is known (harmless for
+--- single-config generators, required for multi-config).
+--- Searches for CTestTestfile.cmake if not at build root.
+--- @param project_ctx loomworks.ModuleContext
+--- @param build_dir string
+--- @return string[] cmd base ctest command
+local function ctest_base_cmd(project_ctx, build_dir)
+    -- Find the directory with CTestTestfile.cmake
+    local test_dir = find_ctest_dir(build_dir) or build_dir
+    local cmd = { "ctest", "--test-dir", test_dir }
+    -- Always pass -C when we know the configuration — required for
+    -- multi-config generators, harmless for single-config
+    if project_ctx.configuration then
+        cmd[#cmd + 1] = "-C"
+        cmd[#cmd + 1] = project_ctx.configuration
+    end
+    return cmd
+end
+
 --- Discover tests from the build directory using ctest.
 --- @param project_ctx loomworks.ModuleContext
 --- @param build_dir string absolute build directory path
 --- @return table[]|nil TestTree entries
 function M.discover_tests(project_ctx, build_dir)
-    -- Run ctest --show-only=json-v1 synchronously
-    local result = vim.system(
-        { "ctest", "--test-dir", build_dir, "--show-only=json-v1" },
-        { text = true, timeout = 10000 }
-    ):wait()
+    local cmd = ctest_base_cmd(project_ctx, build_dir)
+    cmd[#cmd + 1] = "--show-only=json-v1"
+
+    local result = vim.system(cmd, { text = true, timeout = 10000 }):wait()
 
     if result.code ~= 0 or not result.stdout then return nil end
 
@@ -1514,9 +1567,10 @@ end
 --- @param build_dir string absolute build directory path
 --- @param callback fun(entries: table[]|nil)
 function M.discover_tests_async(project_ctx, build_dir, callback)
-    vim.system(
-        { "ctest", "--test-dir", build_dir, "--show-only=json-v1" },
-        { text = true, timeout = 10000 },
+    local cmd = ctest_base_cmd(project_ctx, build_dir)
+    cmd[#cmd + 1] = "--show-only=json-v1"
+
+    vim.system(cmd, { text = true, timeout = 10000 },
         function(result)
             vim.schedule(function()
                 if result.code ~= 0 or not result.stdout then
@@ -1564,7 +1618,8 @@ end
 --- @return table { cmd: string[], env: table, cwd: string }
 function M.test_command(project_ctx, build_dir, test_id, opts)
     opts = opts or {}
-    local cmd = { "ctest", "--test-dir", build_dir, "--output-on-failure" }
+    local cmd = ctest_base_cmd(project_ctx, build_dir)
+    cmd[#cmd + 1] = "--output-on-failure"
     local env = {}
 
     -- Extract the test name from the id
@@ -1598,7 +1653,8 @@ end
 --- @param filter? string regex filter for test names
 --- @return table { cmd: string[], env: table, cwd: string, output_path: string }
 function M.test_command_all(project_ctx, build_dir, filter)
-    local cmd = { "ctest", "--test-dir", build_dir, "--output-on-failure" }
+    local cmd = ctest_base_cmd(project_ctx, build_dir)
+    cmd[#cmd + 1] = "--output-on-failure"
 
     if filter then
         cmd[#cmd + 1] = "-R"
