@@ -6,20 +6,26 @@
 
 local adapter = { name = "loomworks" }
 
+--- Normalize a path: forward slashes, no trailing slash, lowercase for comparison.
+--- @param p string
+--- @return string normalized path
+local function norm(p)
+    return p:gsub("\\", "/"):gsub("/$", "")
+end
+
 --- Find the workspace root for a directory.
 --- @param dir string absolute directory path
---- @return string|nil root path
+--- @return string|nil root path (using the same format as the input dir)
 function adapter.root(dir)
     local lw = require("loomworks")
     local ws = lw.get_workspace()
     if not ws then return nil end
 
-    -- Normalize both to lowercase with forward slashes for comparison
-    local root = ws.root:gsub("\\", "/"):lower()
-    local norm_dir = dir:gsub("\\", "/"):lower()
+    local root = norm(ws.root):lower()
+    local norm_dir = norm(dir):lower()
     if norm_dir == root or norm_dir:sub(1, #root + 1) == root .. "/" then
-        -- Return the root with consistent forward slashes
-        return ws.root:gsub("\\", "/")
+        -- Return in the same format as the input dir (neotest expects this)
+        return norm(dir):sub(1, #root)
     end
     return nil
 end
@@ -44,8 +50,10 @@ function adapter.is_test_file(file_path)
     local name = file_path:match("[/\\]([^/\\]+)$")
     if name ~= "CMakeLists.txt" then return false end
     -- Only root CMakeLists: parent dir should be the project root
-    local parent = file_path:sub(1, #file_path - #name - 1)
-    return adapter.root(parent) == parent
+    local parent = norm(file_path):match("^(.+)/[^/]+$")
+    if not parent then return false end
+    local root = adapter.root(parent)
+    return root ~= nil
 end
 
 --- Resolve the file path → project → active profile → ConfigUnit chain.
@@ -60,11 +68,11 @@ local function resolve_config_unit(file_path)
     if not profile then return nil, nil end
 
     -- Find project by path prefix matching
-    local norm_path = file_path:gsub("\\", "/"):lower()
+    local norm_path = norm(file_path):lower()
     local best_project, best_len = nil, 0
     for _, project in pairs(ws._projects) do
         local project_path = project.path or project.key
-        local project_abs = (ws.root .. "/" .. project_path):gsub("\\", "/"):lower()
+        local project_abs = norm(ws.root .. "/" .. project_path):lower()
         -- Normalize trailing /. (project path "." → root/.)
         project_abs = project_abs:gsub("/%.$", "")
         if norm_path == project_abs or norm_path:sub(1, #project_abs + 1) == project_abs .. "/" then
@@ -96,8 +104,8 @@ end
 local function build_neotest_tree(entries, root_id, root_name, root_path, root_type)
     local Tree = require("neotest.types").Tree
 
-    -- Do NOT normalize paths — use exactly what neotest passed us.
-    -- Neotest matches tree positions by path identity.
+    -- Use the path exactly as passed by neotest. Neotest's run.run()
+    -- lookup uses the same key it passed to discover_positions.
 
     -- Build parent → children map
     local children_of = {}
@@ -330,9 +338,9 @@ function adapter.discover_positions(path)
             local project = pp._project or unit._project
             if not project then goto continue end
 
-            local project_abs = (ws.root .. "/" .. (project.path or project.key)):gsub("\\", "/"):gsub("/%.$", "")
-            local norm_path = path:gsub("\\", "/")
-            if norm_path ~= ws.root:gsub("\\", "/")
+            local project_abs = norm(ws.root .. "/" .. (project.path or project.key)):gsub("/%.$", "")
+            local norm_path = norm(path)
+            if norm_path ~= norm(ws.root)
                 and project_abs:sub(1, #norm_path + 1) ~= norm_path .. "/"
                 and project_abs ~= norm_path then
                 goto continue
