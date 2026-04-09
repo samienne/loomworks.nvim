@@ -1639,6 +1639,8 @@ function Workspace:record_task_result(result)
                 project.needs_refresh = false
                 project.refresh_reasons = {}
             end
+            -- Invalidate test cache (test targets may have changed)
+            config_unit:invalidate_tests()
         else
             config_unit.state_value = "failed_configure"
         end
@@ -1646,6 +1648,8 @@ function Workspace:record_task_result(result)
         if success then
             config_unit.state_value = "built"
             config_unit.last_built = now
+            -- Invalidate test cache (test binaries rebuilt)
+            config_unit:invalidate_tests()
         else
             config_unit.state_value = "failed_build"
         end

@@ -1389,4 +1389,296 @@ function M.inspect(path, config, cached)
     }
 end
 
+-- ========================== Test integration ==========================
+
+--- Parse ctest --show-only=json-v1 output into a TestTree.
+--- @param json_str string raw JSON output from ctest
+--- @return table[]|nil flat list of test entries
+local function parse_ctest_json(json_str)
+    local ok, data = pcall(vim.json.decode, json_str)
+    if not ok or not data then return nil end
+
+    local tests_data = data.tests
+    if not tests_data or #tests_data == 0 then return nil end
+
+    local entries = {}
+    -- Track which executables we've seen to create target-level groups
+    local executables = {}
+
+    for _, test in ipairs(tests_data) do
+        local name = test.name
+        if not name then goto continue end
+
+        -- ctest JSON includes the command array: [executable, args...]
+        local exe = test.command and test.command[1] or nil
+
+        -- Determine if this looks like an individual gtest case
+        -- (gtest_discover_tests produces names like "Suite.Test")
+        local suite, case = name:match("^([^%.]+)%.(.+)$")
+        local is_individual = suite ~= nil and exe ~= nil
+
+        if is_individual then
+            -- Ensure we have a target-level group for the executable
+            if not executables[exe] then
+                local exe_name = vim.fn.fnamemodify(exe, ":t:r")
+                executables[exe] = exe_name
+                entries[#entries + 1] = {
+                    id = "target:" .. exe_name,
+                    name = exe_name,
+                    parent = nil,
+                    runnable = true,
+                    framework = "gtest",
+                    executable = exe,
+                }
+            end
+            entries[#entries + 1] = {
+                id = "test:" .. name,
+                name = name,
+                parent = "target:" .. executables[exe],
+                runnable = true,
+                framework = "gtest",
+                executable = exe,
+            }
+        else
+            -- Opaque test target (add_test with no individual discovery)
+            entries[#entries + 1] = {
+                id = "target:" .. name,
+                name = name,
+                parent = nil,
+                runnable = true,
+                framework = nil,
+                executable = exe,
+            }
+        end
+
+        ::continue::
+    end
+
+    return #entries > 0 and entries or nil
+end
+
+--- Parse --gtest_list_tests output into test entries.
+--- @param output string stdout from --gtest_list_tests
+--- @param executable string path to the test executable
+--- @param target_id string parent target id
+--- @return table[] test entries
+local function parse_gtest_list(output, executable, target_id)
+    local entries = {}
+    local current_suite = nil
+
+    for line in output:gmatch("[^\r\n]+") do
+        -- Suite lines end with "."
+        local suite = line:match("^(%S+)%.$")
+        if suite then
+            current_suite = suite
+        elseif current_suite then
+            -- Test case lines are indented
+            local case = line:match("^%s+(%S+)")
+            if case then
+                -- Strip type parameter suffix if present
+                case = case:match("^([^#]+)") or case
+                local full_name = current_suite .. "." .. case
+                entries[#entries + 1] = {
+                    id = "test:" .. full_name,
+                    name = full_name,
+                    parent = target_id,
+                    runnable = true,
+                    framework = "gtest",
+                    executable = executable,
+                }
+            end
+        end
+    end
+
+    return entries
+end
+
+--- Discover tests from the build directory using ctest.
+--- @param project_ctx loomworks.ModuleContext
+--- @param build_dir string absolute build directory path
+--- @return table[]|nil TestTree entries
+function M.discover_tests(project_ctx, build_dir)
+    -- Run ctest --show-only=json-v1 synchronously
+    local result = vim.system(
+        { "ctest", "--test-dir", build_dir, "--show-only=json-v1" },
+        { text = true, timeout = 10000 }
+    ):wait()
+
+    if result.code ~= 0 or not result.stdout then return nil end
+
+    return parse_ctest_json(result.stdout)
+end
+
+--- Discover tests asynchronously.
+--- @param project_ctx loomworks.ModuleContext
+--- @param build_dir string absolute build directory path
+--- @param callback fun(entries: table[]|nil)
+function M.discover_tests_async(project_ctx, build_dir, callback)
+    vim.system(
+        { "ctest", "--test-dir", build_dir, "--show-only=json-v1" },
+        { text = true, timeout = 10000 },
+        function(result)
+            vim.schedule(function()
+                if result.code ~= 0 or not result.stdout then
+                    callback(nil)
+                    return
+                end
+                callback(parse_ctest_json(result.stdout))
+            end)
+        end
+    )
+end
+
+--- Detect the test framework of an executable by probing.
+--- @param executable string absolute path to the test binary
+--- @param callback fun(framework: string|nil, test_list: table[]|nil, target_id: string)
+--- @param target_id string the target id for parenting discovered tests
+function M.detect_test_framework(executable, callback, target_id)
+    vim.system(
+        { executable, "--gtest_list_tests" },
+        { text = true, timeout = 5000 },
+        function(result)
+            vim.schedule(function()
+                if result.code ~= 0 or not result.stdout then
+                    callback(nil, nil, target_id)
+                    return
+                end
+                -- Validate it looks like gtest output (first line should be a suite)
+                local first_line = result.stdout:match("^([^\r\n]+)")
+                if not first_line or not first_line:match("^%S+%.$") then
+                    callback(nil, nil, target_id)
+                    return
+                end
+                local entries = parse_gtest_list(result.stdout, executable, target_id)
+                callback("gtest", entries, target_id)
+            end)
+        end
+    )
+end
+
+--- Construct the command to run a specific test via ctest.
+--- @param project_ctx loomworks.ModuleContext
+--- @param build_dir string absolute build directory path
+--- @param test_id string test identifier (from discover_tests)
+--- @param opts? table { gtest_filter?: string }
+--- @return table { cmd: string[], env: table, cwd: string }
+function M.test_command(project_ctx, build_dir, test_id, opts)
+    opts = opts or {}
+    local cmd = { "ctest", "--test-dir", build_dir, "--output-on-failure" }
+    local env = {}
+
+    -- Extract the test name from the id
+    local test_name = test_id:match("^test:(.+)$") or test_id:match("^target:(.+)$") or test_id
+
+    cmd[#cmd + 1] = "-R"
+    cmd[#cmd + 1] = "^" .. vim.pesc(test_name) .. "$"
+
+    -- For cursor-level gtest filtering on add_test() targets,
+    -- inject GTEST_FILTER env var
+    if opts.gtest_filter then
+        env.GTEST_FILTER = opts.gtest_filter
+    end
+
+    -- Add JUnit XML output for result parsing
+    local output_path = build_dir .. "/.nvim/test_results.xml"
+    cmd[#cmd + 1] = "--output-junit"
+    cmd[#cmd + 1] = output_path
+
+    return {
+        cmd = cmd,
+        env = env,
+        cwd = project_ctx.workspace_root,
+        output_path = output_path,
+    }
+end
+
+--- Construct the command to run all tests via ctest.
+--- @param project_ctx loomworks.ModuleContext
+--- @param build_dir string absolute build directory path
+--- @param filter? string regex filter for test names
+--- @return table { cmd: string[], env: table, cwd: string, output_path: string }
+function M.test_command_all(project_ctx, build_dir, filter)
+    local cmd = { "ctest", "--test-dir", build_dir, "--output-on-failure" }
+
+    if filter then
+        cmd[#cmd + 1] = "-R"
+        cmd[#cmd + 1] = filter
+    end
+
+    local output_path = build_dir .. "/.nvim/test_results.xml"
+    cmd[#cmd + 1] = "--output-junit"
+    cmd[#cmd + 1] = output_path
+
+    return {
+        cmd = cmd,
+        env = {},
+        cwd = project_ctx.workspace_root,
+        output_path = output_path,
+    }
+end
+
+--- Parse ctest JUnit XML output into test results.
+--- @param output_path string path to the JUnit XML file
+--- @return table[]|nil TestResult entries
+function M.parse_test_results(output_path)
+    local f = io.open(output_path, "r")
+    if not f then return nil end
+    local content = f:read("*a")
+    f:close()
+
+    if not content or content == "" then return nil end
+
+    local results = {}
+
+    -- Parse JUnit XML testcase elements.
+    -- ctest --output-junit produces standard JUnit format.
+    -- Three forms:
+    --   <testcase name="..." time="..."/>           (self-closing)
+    --   <testcase name="..." time="..."></testcase>  (empty body)
+    --   <testcase name="..." time="..."><failure>...</failure></testcase>
+
+    -- Match all testcase elements: opening tag attrs + everything until </testcase>
+    -- For self-closing, body will be empty.
+    for tag in content:gmatch("<testcase%s[^>]->.-</testcase>") do
+        local attrs = tag:match("<testcase%s(.-[^/])>")
+        local body = tag:match("<testcase[^>]*>(.-)</testcase>") or ""
+        if not attrs then
+            -- Try self-closing
+            attrs = tag:match("<testcase%s(.-)/%s*>")
+            body = ""
+        end
+        if not attrs then goto continue end
+
+        local name = attrs:match('name="([^"]*)"')
+        local time_str = attrs:match('time="([^"]*)"')
+        if not name then goto continue end
+
+        local status = "passed"
+        local message
+        if body:match("<failure") then
+            status = "failed"
+            message = body:match("<failure[^>]*>(.-)<%/failure>")
+                or body:match('<failure message="([^"]*)"')
+        elseif body:match("<skipped") then
+            status = "skipped"
+        elseif body:match("<error") then
+            status = "errored"
+            message = body:match("<error[^>]*>(.-)<%/error>")
+                or body:match('<error message="([^"]*)"')
+        end
+
+        results[#results + 1] = {
+            test_id = "test:" .. name,
+            status = status,
+            message = message,
+            duration = time_str and tonumber(time_str)
+                and tonumber(time_str) * 1000 or nil,
+        }
+
+        ::continue::
+    end
+
+    return #results > 0 and results or nil
+end
+
 return M
