@@ -6,11 +6,22 @@
 
 local adapter = { name = "loomworks" }
 
---- Normalize a path: forward slashes, no trailing slash, lowercase for comparison.
+--- Normalize a path: forward slashes, no trailing slash (for comparison).
 --- @param p string
 --- @return string normalized path
 local function norm(p)
     return p:gsub("\\", "/"):gsub("/$", "")
+end
+
+--- Convert path to OS-native format (backslashes on Windows).
+--- This matches what neotest uses internally via vim.uv and fnamemodify.
+--- @param p string
+--- @return string
+local function to_native(p)
+    if vim.fn.has("win32") == 1 then
+        return p:gsub("/", "\\")
+    end
+    return p
 end
 
 --- Find the workspace root for a directory.
@@ -24,8 +35,8 @@ function adapter.root(dir)
     local root = norm(ws.root):lower()
     local norm_dir = norm(dir):lower()
     if norm_dir == root or norm_dir:sub(1, #root + 1) == root .. "/" then
-        -- Return in the same format as the input dir (neotest expects this)
-        return norm(dir):sub(1, #root)
+        -- Always return native format to match neotest's internal paths
+        return to_native(ws.root)
     end
     return nil
 end
@@ -104,8 +115,9 @@ end
 local function build_neotest_tree(entries, root_id, root_name, root_path, root_type)
     local Tree = require("neotest.types").Tree
 
-    -- Use the path exactly as passed by neotest. Neotest's run.run()
-    -- lookup uses the same key it passed to discover_positions.
+    -- Convert to native path format to match neotest's internal keys.
+    root_id = to_native(root_id)
+    root_path = to_native(root_path)
 
     -- Build parent → children map
     local children_of = {}
@@ -555,13 +567,18 @@ function adapter.results(spec, result, tree)
         end
     end
 
-    -- If no structured results, fall back to exit code
-    if not next(results) then
-        local pos = tree:data()
-        results[pos.id] = {
-            status = result.code == 0 and "passed" or "failed",
-            output = result.output,
-        }
+    -- For any tree node without a result, assign based on exit code.
+    -- This prevents neotest from showing "unknown" status and avoids
+    -- tree structure confusion.
+    local overall_status = result.code == 0 and "passed" or "failed"
+    for _, node in tree:iter_nodes() do
+        local data = node:data()
+        if not results[data.id] then
+            results[data.id] = {
+                status = overall_status,
+                output = result.output,
+            }
+        end
     end
 
     return results
