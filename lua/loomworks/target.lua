@@ -7,6 +7,7 @@
 --- @field type string "executable"|"static_library"|"shared_library"|"module_library"|"object_library"|"interface_library"
 --- @field dependencies? string[] project-owned targets this links against
 --- @field artifact? string output file path (relative to build dir)
+--- @field sources? string[] absolute source file paths (for test source mapping)
 --- @field _config_unit loomworks.ConfigUnit back-reference to owning unit
 local Target = {}
 Target.__index = Target
@@ -23,6 +24,7 @@ function Target.new(config_unit, id, raw)
     self.type = raw.type
     self.dependencies = raw.dependencies
     self.artifact = raw.artifact
+    self.sources = raw.sources
     return self
 end
 

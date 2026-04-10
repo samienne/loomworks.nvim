@@ -100,16 +100,25 @@ end
 --- @param test_entries table[] entries with id like "test:Suite.Case"
 --- @param source_files string[] absolute paths to source files
 function M.find_source_locations(test_entries, source_files)
-    -- Build lookup: "Suite.Case" → entry
-    local by_name = {}
+    -- Build lookups for matching test entries by name.
+    -- Exact: "Suite.Case" → entry
+    -- By case name: "Case" → entry[] (for fuzzy matching when macros
+    -- transform the suite name, e.g. UNIT_TEST(API_Suite, Case) → Suite.Case)
+    local by_exact = {}
+    local by_case = {}
     for _, entry in ipairs(test_entries) do
         local test_name = entry.id:match("^test:(.+)$")
         if test_name then
-            by_name[test_name] = entry
+            by_exact[test_name] = entry
+            local _, case = test_name:match("^(.+)%.(.+)$")
+            if case then
+                by_case[case] = by_case[case] or {}
+                by_case[case][#by_case[case] + 1] = entry
+            end
         end
     end
 
-    if not next(by_name) then return end
+    if not next(by_exact) then return end
 
     -- Scan each source file for TEST macros
     for _, file_path in ipairs(source_files) do
@@ -119,14 +128,41 @@ function M.find_source_locations(test_entries, source_files)
         local line_num = 0
         for line in f:lines() do
             line_num = line_num + 1
-            -- Match TEST(Suite, Name), TEST_F(Suite, Name), TEST_P(Suite, Name)
-            local suite, name = line:match("TEST[_FP]*%s*%((%w+)%s*,%s*(%w+)")
+            -- Match test macros: find TEST followed by optional suffix,
+            -- then extract first two arguments from the parenthesized list.
+            -- Covers: TEST(S,N), TEST_F(S,N), TEST_P(S,N), UNIT_TEST(S,N,...),
+            -- UNIT_TEST_F(S,N,...), TYPED_TEST(S,N), etc.
+            -- Two-step: check for TEST macro, then extract args after "("
+            local args = line:match("TEST[_%w]*%s*%((.+)")
+            local suite, name
+            if args then
+                suite, name = args:match("^%s*([%w_]+)%s*,%s*([%w_]+)")
+            end
             if suite and name then
+                -- Try exact match first
                 local full = suite .. "." .. name
-                local entry = by_name[full]
-                if entry then
+                local entry = by_exact[full]
+                if entry and not entry.file then
                     entry.file = file_path
                     entry.line = line_num
+                else
+                    -- Fuzzy: match by case name + suite suffix.
+                    -- Handles macros that add/remove prefixes (e.g.
+                    -- UNIT_TEST(API_Suite, Case) registers as Suite.Case)
+                    local candidates = by_case[name]
+                    if candidates then
+                        for _, e in ipairs(candidates) do
+                            if not e.file then
+                                -- Check if the gtest suite is a suffix of the macro suite
+                                local gtest_suite = e.id:match("^test:(.+)%.")
+                                if gtest_suite and suite:match(gtest_suite .. "$") then
+                                    e.file = file_path
+                                    e.line = line_num
+                                    break
+                                end
+                            end
+                        end
+                    end
                 end
             end
         end

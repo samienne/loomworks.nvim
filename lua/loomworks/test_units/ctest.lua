@@ -254,55 +254,41 @@ function CTestUnit:_probe_frameworks(entries, callback)
     end
 end
 
---- Find source locations for gtest entries using file-api data.
+--- Find source locations for gtest entries using file-api target data.
+--- Matches ctest executables to cmake targets by artifact filename,
+--- then scans source files for TEST() macros.
 --- @param entries table[]
 function CTestUnit:_find_sources(entries)
     local unit = self._config_unit
     if not unit or not unit.targets then return end
 
-    -- Build executable → source files mapping from file-api targets
-    -- File-api targets have artifact paths; ctest gives us executable paths.
-    -- Match by filename.
-    local source_files = {}
-    for _, target_data in pairs(unit.targets) do
-        if target_data.sources then
-            local artifact = target_data.artifact
-            if artifact then
-                source_files[artifact] = target_data.sources
-            end
+    -- Build a mapping from executable filename → target's source files
+    local sources_by_exe_name = {}
+    for _, target in pairs(unit.targets) do
+        if target.sources and target.artifact then
+            local art_name = vim.fn.fnamemodify(target.artifact, ":t"):gsub("%.exe$", ""):lower()
+            sources_by_exe_name[art_name] = target.sources
         end
     end
 
-    -- For each gtest entry, find source files from the matching target
-    local gtest_entries = {}
-    local files_to_scan = {}
+    if not next(sources_by_exe_name) then return end
+
+    -- Collect gtest entries grouped by executable
+    local entries_by_exe = {}
     for _, e in ipairs(entries) do
         if e.framework == "gtest" and e.parent and e.executable then
-            gtest_entries[#gtest_entries + 1] = e
-            -- Find source files for this executable's target
-            if not files_to_scan[e.executable] then
-                -- Match by executable filename
-                local exe_name = vim.fn.fnamemodify(e.executable, ":t")
-                for artifact, sources in pairs(source_files) do
-                    local art_name = vim.fn.fnamemodify(artifact, ":t")
-                    if art_name == exe_name or art_name:gsub("%.exe$", "") == exe_name:gsub("%.exe$", "") then
-                        files_to_scan[e.executable] = sources
-                        break
-                    end
-                end
+            local exe_name = vim.fn.fnamemodify(e.executable, ":t"):gsub("%.exe$", ""):lower()
+            if not entries_by_exe[exe_name] then
+                entries_by_exe[exe_name] = {}
             end
+            entries_by_exe[exe_name][#entries_by_exe[exe_name] + 1] = e
         end
     end
 
-    -- Scan source files for each executable
-    for exe, sources in pairs(files_to_scan) do
-        local exe_entries = {}
-        for _, e in ipairs(gtest_entries) do
-            if e.executable == exe then
-                exe_entries[#exe_entries + 1] = e
-            end
-        end
-        if #exe_entries > 0 and sources and #sources > 0 then
+    -- Scan source files for each executable's tests
+    for exe_name, exe_entries in pairs(entries_by_exe) do
+        local sources = sources_by_exe_name[exe_name]
+        if sources and #sources > 0 then
             gtest.find_source_locations(exe_entries, sources)
         end
     end

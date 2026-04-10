@@ -152,12 +152,21 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
             line = line + 1
         end
 
+        -- Use real source location if available, synthetic otherwise
+        local pos_path = entry.file and to_native(entry.file) or root_path
+        local pos_range
+        if entry.file and entry.line then
+            pos_range = { entry.line - 1, 0, entry.line, 0 }
+        else
+            pos_range = { start_line, 0, line, 0 }
+        end
+
         local pos = {
             id = root_path .. "::" .. entry.id,
             type = node_type,
             name = entry.name,
-            path = root_path,
-            range = { start_line, 0, line, 0 },
+            path = pos_path,
+            range = pos_range,
             -- Carry through metadata for execution
             _original_id = entry._original_id or entry.id,
             _config_unit = entry._config_unit,
