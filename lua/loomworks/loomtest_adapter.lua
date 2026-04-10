@@ -140,12 +140,15 @@ local function create_adapter()
                 if unit then
                     local tus = unit:test_units()
                     if #tus > 0 then
-                        -- ctest -R uses regex, not Lua patterns
-                        -- Escape regex special chars in suite name
-                        local escaped = suite_name:gsub("([%.%+%-%*%?%[%]%(%)%^%$])", "\\%1")
-                        return tus[1]:test_command_all({
-                            filter = "^" .. escaped .. "\\.",
-                        })
+                        -- Use GTEST_FILTER to run all tests in the suite.
+                        -- This works for both add_test() and gtest_discover_tests()
+                        -- because GTEST_FILTER is passed to the executable via env.
+                        local target_id = suite_id:match("^(.+)::") or ""
+                        local target_name = target_id:match("^target:(.+)$") or target_id
+                        return tus[1]:test_command(
+                            "target:" .. target_name,
+                            { gtest_filter = suite_name .. ".*" }
+                        )
                     end
                 end
             end

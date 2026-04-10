@@ -452,32 +452,55 @@ function M.open()
         ["<Tab>"] = function()
             local node = node_at_cursor()
             if not node then return end
-            if _folds[node.id] then
-                fold_open()
-            else
-                fold_close()
-            end
+            if _folds[node.id] then fold_open() else fold_close() end
         end,
-        o = function()
+        i = function()
+            -- Jump to test source in the previous window
             local node = node_at_cursor()
-            if node and node.file and node.line then
-                vim.cmd("wincmd p")
-                vim.cmd("edit " .. vim.fn.fnameescape(node.file))
-                vim.api.nvim_win_set_cursor(0, { node.line, 0 })
-            end
-        end,
-        e = function()
-            local node = node_at_cursor()
-            if node and node._errors and #node._errors > 0 then
-                local err = node._errors[1]
-                if err.file and err.line then
-                    vim.cmd("wincmd p")
-                    vim.cmd("edit " .. vim.fn.fnameescape(err.file))
-                    vim.api.nvim_win_set_cursor(0, { err.line, 0 })
+            if not node or not node.file or not node.line then return end
+            -- Find a non-explorer window to open in
+            local target_win = nil
+            for _, w in ipairs(vim.api.nvim_list_wins()) do
+                local buf = vim.api.nvim_win_get_buf(w)
+                if buf ~= _bufnr and vim.bo[buf].buftype == "" then
+                    target_win = w
+                    break
                 end
             end
+            if not target_win then
+                vim.cmd("wincmd p")
+                target_win = vim.api.nvim_get_current_win()
+            else
+                vim.api.nvim_set_current_win(target_win)
+            end
+            vim.cmd("edit " .. vim.fn.fnameescape(node.file))
+            pcall(vim.api.nvim_win_set_cursor, target_win, { node.line, 0 })
         end,
-        d = function()
+        e = function()
+            -- Jump to first error location
+            local node = node_at_cursor()
+            if not node or not node._errors or #node._errors == 0 then return end
+            local err = node._errors[1]
+            if not err.file or not err.line then return end
+            local target_win = nil
+            for _, w in ipairs(vim.api.nvim_list_wins()) do
+                local buf = vim.api.nvim_win_get_buf(w)
+                if buf ~= _bufnr and vim.bo[buf].buftype == "" then
+                    target_win = w
+                    break
+                end
+            end
+            if not target_win then
+                vim.cmd("wincmd p")
+                target_win = vim.api.nvim_get_current_win()
+            else
+                vim.api.nvim_set_current_win(target_win)
+            end
+            vim.cmd("edit " .. vim.fn.fnameescape(err.file))
+            pcall(vim.api.nvim_win_set_cursor, target_win, { err.line, 0 })
+        end,
+        o = function()
+            -- Show test output
             local node = node_at_cursor()
             if node then
                 _selected_id = node.id
