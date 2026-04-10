@@ -584,6 +584,28 @@ by `Profile:default_target()`. `deploy()` method executes deploy steps
 from the launch config's `deploy` dict before launching — resolves sources
 within the profile context, checks freshness, copies files.
 
+**TestUnit** (`test_unit.lua`) is the interface for test discovery and
+execution within a ConfigUnit. **CTestUnit** (`test_units/ctest.lua`)
+wraps ctest for cmake projects — discovers targets via
+`ctest --show-only=json-v1`, probes binaries for framework detection,
+runs tests via ctest commands. Created lazily by the module's
+`create_test_unit()` factory. ConfigUnit delegates all test operations
+to its TestUnit instances.
+
+**GTest** (`gtest.lua`) is a shared helper (not a TestUnit) containing
+gtest-specific functionality: binary probing (`--gtest_list_tests`),
+source location scanning (TEST macro grep with multi-line and
+parameterized support), JUnit XML parsing, and filter construction.
+Used by CTestUnit for framework detection and source mapping.
+
+**Neotest adapter** (`neotest/init.lua`) bridges ConfigUnit's test
+interface to neotest's adapter protocol. Uses cached test file/directory
+sets for `is_test_file` and `filter_dir`. All adapter methods are
+pcall-wrapped (neotest's nio coroutine context hangs on unhandled
+errors). No `vim.fn` calls (deadlock in nio context). Deduplicates
+`discover_positions` calls (neotest calls with different path formats
+on Windows).
+
 ---
 
 ## Testing

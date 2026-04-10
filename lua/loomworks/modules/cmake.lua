@@ -1039,6 +1039,9 @@ function M.parse_file_api(build_dir, config_name)
 
     local reply_dir = build_dir .. "/.cmake/api/v1/reply"
 
+    -- Source root from codemodel (absolute path to project source dir)
+    local source_root = codemodel.paths and codemodel.paths.source or nil
+
     -- Select the right configuration (first for single-config, matched for multi-config)
     local config_data
     if config_name then
@@ -1125,10 +1128,35 @@ function M.parse_file_api(build_dir, config_name)
             end
         end
 
+        -- Extract source file paths (for test source location mapping)
+        local sources
+        if tgt_detail.sources and source_root then
+            for _, src in ipairs(tgt_detail.sources) do
+                if src.path then
+                    local ext = src.path:match("%.([^%.]+)$")
+                    if ext then
+                        ext = ext:lower()
+                        if ext == "cpp" or ext == "cc" or ext == "cxx" or ext == "c" then
+                            sources = sources or {}
+                            local abs
+                            if src.path:match("^[A-Za-z]:") or src.path:match("^/") then
+                                abs = src.path
+                            else
+                                -- Relative to codemodel source root
+                                abs = source_root .. "/" .. src.path
+                            end
+                            sources[#sources + 1] = abs:gsub("\\", "/")
+                        end
+                    end
+                end
+            end
+        end
+
         targets[tgt_ref.name] = {
             type = target_type,
             dependencies = deps,
             artifact = artifact,
+            sources = sources,
         }
 
         ::continue::
@@ -1387,6 +1415,17 @@ function M.inspect(path, config, cached)
         reasons = reasons,
         notes = notes,
     }
+end
+
+-- ========================== Test integration ==========================
+
+--- Create a CTestUnit for test discovery and execution.
+--- @param config_unit loomworks.ConfigUnit
+--- @return loomworks.CTestUnit|nil
+function M.create_test_unit(config_unit)
+    if not config_unit:build_dir() then return nil end
+    local CTestUnit = require("loomworks.test_units.ctest")
+    return CTestUnit.new(config_unit)
 end
 
 return M

@@ -2320,6 +2320,276 @@ explicit action field in the source descriptor.
 **user.json deploy**: Deploy steps live in user.json as part of the
 working copy. Published deploy steps are written to loomworks.json on `:w`.
 
+### 9.9 Test Integration
+
+Loomworks provides test discovery, execution, and result reporting through
+a neotest adapter. ConfigUnit is the test interface — callers never interact
+with TestUnit or framework helpers directly.
+
+#### 9.9.1 Architecture
+
+```
+ConfigUnit
+├── test_units() → TestUnit[]     (created lazily by module)
+├── discover_tests()              (delegates to TestUnits)
+├── run_test(test_id)             (finds owning TestUnit, delegates)
+└── run_tests()                   (delegates to all TestUnits)
+
+TestUnit (interface — test_unit.lua)
+├── CTestUnit (test_units/ctest.lua)  wraps ctest for cmake projects
+│   └── uses GTest helper for framework detection + source mapping
+├── MesonTestUnit (future)            wraps meson test
+└── GTestUnit (future)                direct gtest binary for launch targets
+
+GTest (gtest.lua — shared helper, not a TestUnit)
+├── probe(executable)             → detect framework, list tests
+├── probe_sync(executable)        → synchronous version
+├── parse_list_tests(output)      → parse --gtest_list_tests output
+├── find_source_locations(entries, sources) → file/line per test
+├── parse_xml_results(path)       → per-test pass/fail from JUnit XML
+└── build_filter(test_id)         → --gtest_filter string
+```
+
+#### 9.9.2 TestUnit interface
+
+TestUnit (`test_unit.lua`) is the base interface for test sources within
+a ConfigUnit. Each TestUnit represents one way to discover and run tests.
+A ConfigUnit may have multiple TestUnits (though typically one).
+
+**Required methods**:
+
+**`discover() → TestEntry[]|nil`**
+
+Discover tests synchronously. Returns a flat list of test entries or nil.
+Includes framework detection and source location mapping.
+
+**`discover_async(callback)`**
+
+Async version. Calls `callback(entries)` when done. Used during
+background cache population.
+
+**`test_command(test_id, opts?) → RunSpec|nil`**
+
+Construct the command to run a specific test. Returns
+`{ cmd, env, cwd, output_path }` or nil.
+
+**`test_command_all(opts?) → RunSpec|nil`**
+
+Construct the command to run all tests. `opts.filter` for name filtering.
+
+**`parse_results(output_path) → TestResult[]|nil`**
+
+Parse structured test output into results.
+
+**`invalidate()`**
+
+Clear all cached data (entries, framework detection). Called after
+build/configure completes.
+
+**`entries() → TestEntry[]|nil`**
+
+Return cached entries without triggering discovery.
+
+#### 9.9.3 CTestUnit
+
+CTestUnit (`test_units/ctest.lua`) wraps ctest for cmake projects. One
+per ConfigUnit. Contains all ctest test targets — each target may have
+a different framework.
+
+**Discovery flow**:
+1. Run `ctest --test-dir <dir> -C <config> --show-only=json-v1`
+2. Parse JSON into test target entries
+3. For targets with `gtest_discover_tests()`: individual tests already
+   present in ctest output
+4. For `add_test()` targets: probe with GTest helper (`--gtest_list_tests`)
+   to detect framework and enumerate individual tests
+5. Map tests to source locations via GTest helper + cmake file-api data
+   (target → source files from codemodel reply)
+
+**CTestTestfile search**: When `CTestTestfile.cmake` is not at the build
+root (e.g., `enable_testing()` in a subdirectory), CTestUnit searches
+subdirectories depth-first (max depth 5, skipping `_deps`, `CMakeFiles`,
+`.cmake`).
+
+**`-C` flag**: Always passed (required for multi-config generators like
+MSVC, harmless for single-config like Ninja).
+
+**Execution**: Always through ctest to preserve test properties (env,
+timeout, working directory, fixtures):
+
+| Scenario | Command |
+|----------|---------|
+| Run all tests | `ctest --test-dir <dir> -C <cfg> --output-on-failure --output-junit <path>` |
+| Run specific test | `ctest --test-dir <dir> -C <cfg> -R ^<name>$ --output-on-failure --output-junit <path>` |
+| Individual gtest case (`add_test`) | Same + `GTEST_FILTER=Suite.Test` in env |
+
+#### 9.9.4 GTest helper
+
+GTest (`gtest.lua`) is a shared utility class containing all gtest-specific
+functionality. Not a TestUnit — used by CTestUnit and future TestUnits.
+
+**`parse_list_tests(output, executable, target_id) → TestEntry[]`**
+
+Parse `--gtest_list_tests` output. Strips `#` parameter suffixes.
+
+**`probe(executable, target_id, callback)`** /
+**`probe_sync(executable, target_id) → framework, entries`**
+
+Run `--gtest_list_tests` with 5s timeout. Validate output format
+(first line must be a suite ending with `.`). Returns `"gtest"` +
+entries, or nil.
+
+**`find_source_locations(test_entries, source_files)`**
+
+Scan source files for test macros to find file + line per test entry.
+Matches in priority order:
+
+1. **Exact match**: `suite.case` from macro matches test entry exactly
+2. **Parameterized (by_base)**: runtime name `Prefix/Suite.Case/N` →
+   extract base `Suite.Case` → match `TEST_P(Suite, Case)` in source
+3. **Fuzzy (by_case)**: match by case name only. Handles typed tests
+   (`TYPED_TEST` registers with different suite), fixture inheritance,
+   and custom macros with suite name transformations.
+
+**Macro patterns recognized**: Any identifier containing `TEST` followed
+by `(args)`. Covers: `TEST`, `TEST_F`, `TEST_P`, `UNIT_TEST`,
+`UNIT_TEST_F`, `UNIT_TEST_P`, `TYPED_TEST`, etc.
+
+**Multi-line support**: When `TEST_P(\n  suite, name, ...)`, the scanner
+accumulates lines until the first two arguments are found (max 5 lines).
+Handles both `TEST_P(suite, name)` on one line and `TEST_P(\nsuite, name)`
+across lines.
+
+**Source files**: Come from cmake file-api target detail (`sources` array
+with paths relative to codemodel `paths.source`). Paths are normalized
+via `vim.fn.fnamemodify(:p)` for consistent neotest matching.
+
+**`parse_xml_results(output_path) → TestResult[]|nil`**
+
+Parse JUnit XML output (ctest `--output-junit` format). Handles
+`<testcase>` with `<failure>`, `<skipped>`, `<error>` children.
+
+**`build_filter(test_id) → string`**
+
+Strip `test:` prefix from test ID for `--gtest_filter` value.
+
+#### 9.9.5 ConfigUnit test interface
+
+ConfigUnit delegates all test operations to its TestUnit instances.
+TestUnits are created lazily on first `test_units()` or `discover_tests()`
+call via the module's `create_test_unit(config_unit)` factory.
+
+**`config_unit:test_units() → TestUnit[]`**
+
+Returns the array of TestUnits. The cmake module returns `{ CTestUnit }`,
+others return `{}`.
+
+**`config_unit:discover_tests() → TestTree|nil`**
+
+Returns merged test entries from all TestUnits. Cached on `_test_tree`;
+invalidated after successful build or configure.
+
+**`config_unit:discover_tests_async(callback)`**
+
+Async version for background population.
+
+**`config_unit:invalidate_tests()`**
+
+Clears `_test_tree`, `_test_results`, and `_test_units`. Called by
+`Workspace:record_task_result()` after successful build or configure.
+
+**`config_unit:run_test(test_id, opts?) → Future`**
+
+Prerequisite chain: `run_configuration_action("build")` → launch test
+via overseer. Finds the owning TestUnit, delegates command construction.
+
+**`config_unit:run_tests(opts?) → Future`**
+
+Same chain, runs all tests.
+
+**TestTree entry format**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique identifier (e.g., `"test:Suite.Case"`, `"target:Runner"`) |
+| `name` | string | Human-readable display name |
+| `file` | string\|nil | Absolute source file path (canonical, for neotest navigation) |
+| `line` | number\|nil | 1-based line number in source |
+| `parent` | string\|nil | Parent entry id (for tree nesting) |
+| `runnable` | boolean | Whether this entry can be executed directly |
+| `framework` | string\|nil | Detected framework (`"gtest"`, nil for opaque) |
+| `executable` | string\|nil | Path to test binary |
+| `status` | string\|nil | Last result: `"passed"`, `"failed"`, `"skipped"`, `"errored"` |
+| `message` | string\|nil | Last failure message |
+| `duration` | number\|nil | Last duration in milliseconds |
+
+#### 9.9.6 Neotest adapter
+
+The loomworks neotest adapter (`neotest/init.lua`) bridges ConfigUnit's
+test interface to neotest's adapter protocol. No framework-specific code
+in the adapter — it works through TestUnit/TestTree only.
+
+**File discovery model**: Neotest is file-centric — it discovers tests
+by scanning the filesystem for test files. The adapter uses cached test
+data to guide neotest's scanning:
+
+- `is_test_file(path)`: checks the cached test file set (files with
+  matched test entries). Falls back to `*_test.cpp` pattern when cache
+  is empty.
+- `filter_dir(name, rel_path, root)`: checks the cached test directory
+  set (directories that lead to test files). Returns false when cache is
+  empty — neotest shows nothing until async discovery completes.
+- `discover_positions(path)`: for each test file, returns entries from
+  the cached test tree matching that file. All positions use the file
+  path neotest passed (preserving its format for key matching).
+
+**Cache population**: On module load, `setup_events()` registers
+listeners for `workspace_changed` and `active_set_changed`. Sync
+discovery runs during `require()` if the workspace is already loaded
+(ensures cache is ready before neotest's first scan). Async discovery
+runs in background otherwise, with `neotest.setup_project()` called
+after completion to trigger re-scan.
+
+**Position tree construction**: `build_neotest_tree()` creates a neotest
+Tree from test entries. Each test position uses the file path for
+`path` (enabling gutter marks and nearest-test), with `range` set to
+the real source line when available or synthetic line numbers otherwise.
+
+**Windows path handling**: All adapter methods use `pcall` wrapping
+(neotest calls them in nio coroutine context where unhandled errors cause
+permanent hangs). Paths use `to_native()` for backslash conversion and
+`norm()` for forward-slash comparison. No `vim.fn` calls (these deadlock
+in nio context).
+
+**Execution** (`build_spec`): Finds the owning TestUnit via ConfigUnit,
+constructs ctest command. Checks ConfigUnit state and warns if project
+needs configuring.
+
+**Results** (`results`): Parses JUnit XML via TestUnit, maps results to
+neotest positions by matching test IDs. Assigns overall pass/fail to
+unmatched nodes.
+
+#### 9.9.7 Prerequisite chain
+
+Test execution reuses the same cascading pattern as builds. ConfigUnit
+owns the chain — the caller requests the test and receives a Future:
+
+1. **Configure if needed**: same as section 5.2.
+2. **Build if needed**: build after successful configure.
+3. **Run test**: after prerequisites complete, run via TestUnit.
+
+Failure at any step stops the chain. Build directory operation queue
+(section 5.3) applies — test runs acquire a shared lock.
+
+#### 9.9.8 Debug integration
+
+When `strategy = "dap"`, the adapter constructs a DAP launch config:
+- Executable path from the test binary
+- `--gtest_filter=Suite.Test` in arguments
+- Environment and working directory from ConfigUnit context
+
+Delegates to neotest's DAP strategy → nvim-dap.
+
 ---
 
 ## 10. LSP Integration

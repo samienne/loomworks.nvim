@@ -36,6 +36,11 @@
 --- @field _listeners function[]
 --- @field _removed boolean
 --- @field targets table<string, loomworks.Target>|nil runtime-only
+--- Test integration (runtime-only):
+--- @field _test_tree table[]|nil cached merged test entries from all TestUnits
+--- @field _test_results table[]|nil last parsed test results
+--- @field _test_units loomworks.TestUnit[]|nil lazily created TestUnit array
+--- @field _last_test_task_id number|nil most recent test overseer task ID
 local ConfigUnit = {}
 ConfigUnit.__index = ConfigUnit
 
@@ -60,6 +65,11 @@ function ConfigUnit.new(workspace, id, project_key)
     self._listeners = {}
     self._removed = false
     self.targets = nil
+    -- Test integration
+    self._test_tree = nil
+    self._test_results = nil
+    self._test_units = nil
+    self._last_test_task_id = nil
     -- References (resolved during _apply)
     self._project = nil
     self._tool = nil
@@ -655,6 +665,267 @@ function ConfigUnit:_notify()
     for _, fn in ipairs(self._listeners) do
         fn(self)
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- Test integration
+-- ---------------------------------------------------------------------------
+
+--- Get the module implementation for this unit's project.
+--- @return table|nil module implementation table
+function ConfigUnit:_module_impl()
+    if not self._project then return nil end
+    return self._project._module and self._project._module.impl or nil
+end
+
+--- Get or create the TestUnit array for this configuration.
+--- Created lazily by calling the module's create_test_unit factory.
+--- @return loomworks.TestUnit[]
+function ConfigUnit:test_units()
+    if self._test_units then return self._test_units end
+
+    local impl = self:_module_impl()
+    if not impl or not impl.create_test_unit then
+        self._test_units = {}
+        return self._test_units
+    end
+
+    local tu = impl.create_test_unit(self)
+    self._test_units = tu and { tu } or {}
+    return self._test_units
+end
+
+--- Discover tests for this configuration. Returns cached results if
+--- available, or runs discovery synchronously. Delegates to TestUnits.
+--- Discovery is passive — it never triggers configure/build.
+--- @return table[]|nil TestTree entries
+function ConfigUnit:discover_tests()
+    if self._test_tree then return self._test_tree end
+
+    local units = self:test_units()
+    if #units == 0 then return nil end
+
+    local all_entries = {}
+    for _, tu in ipairs(units) do
+        local entries = tu:discover()
+        if entries then
+            for _, e in ipairs(entries) do
+                all_entries[#all_entries + 1] = e
+            end
+        end
+    end
+
+    if #all_entries == 0 then return nil end
+    self._test_tree = all_entries
+    return self._test_tree
+end
+
+--- Discover tests asynchronously. Delegates to TestUnits.
+--- @param callback fun(entries: table[]|nil)
+function ConfigUnit:discover_tests_async(callback)
+    if self._test_tree then
+        callback(self._test_tree)
+        return
+    end
+
+    local units = self:test_units()
+    if #units == 0 then
+        callback(nil)
+        return
+    end
+
+    local all_entries = {}
+    local pending = #units
+    for _, tu in ipairs(units) do
+        tu:discover_async(function(entries)
+            if entries then
+                for _, e in ipairs(entries) do
+                    all_entries[#all_entries + 1] = e
+                end
+            end
+            pending = pending - 1
+            if pending == 0 then
+                if #all_entries == 0 then
+                    callback(nil)
+                else
+                    self._test_tree = all_entries
+                    callback(all_entries)
+                end
+            end
+        end)
+    end
+end
+
+--- Invalidate cached test data (called after build/configure completes).
+function ConfigUnit:invalidate_tests()
+    self._test_tree = nil
+    self._test_results = nil
+    self._test_units = nil
+end
+
+--- Merge test results into the cached test tree.
+--- @param results table[]|nil TestResult entries
+function ConfigUnit:_apply_test_results(results)
+    if not results then return end
+    self._test_results = results
+
+    if not self._test_tree then return end
+    local by_id = {}
+    for _, r in ipairs(results) do
+        by_id[r.test_id] = r
+    end
+    for _, entry in ipairs(self._test_tree) do
+        local r = by_id[entry.id]
+        if r then
+            entry.status = r.status
+            entry.message = r.message
+            entry.duration = r.duration
+        end
+    end
+end
+
+--- Find the TestUnit that owns a given test_id.
+--- @param test_id string
+--- @return loomworks.TestUnit|nil
+function ConfigUnit:_find_test_unit(test_id)
+    for _, tu in ipairs(self:test_units()) do
+        local entries = tu:entries()
+        if entries then
+            for _, e in ipairs(entries) do
+                if e.id == test_id then return tu end
+            end
+        end
+    end
+    -- Fallback: return first TestUnit
+    local units = self:test_units()
+    return units[1]
+end
+
+--- Run a single test. Handles the full prerequisite chain:
+--- configure if needed → build if needed → run test.
+--- @param test_id string test identifier from discover_tests
+--- @param opts? table { strategy?: "run"|"dap", gtest_filter?: string }
+--- @return loomworks.Future
+function ConfigUnit:run_test(test_id, opts)
+    opts = opts or {}
+    local overseer_mod = require("loomworks.overseer")
+
+    local unit = self
+    return overseer_mod.run_configuration_action(self, "build"):next(function()
+        return unit:_launch_test(test_id, opts)
+    end)
+end
+
+--- Run all tests. Handles the full prerequisite chain.
+--- @param opts? table { filter?: string, strategy?: "run"|"dap" }
+--- @return loomworks.Future
+function ConfigUnit:run_tests(opts)
+    opts = opts or {}
+    local overseer_mod = require("loomworks.overseer")
+
+    local unit = self
+    return overseer_mod.run_configuration_action(self, "build"):next(function()
+        return unit:_launch_test_all(opts)
+    end)
+end
+
+--- Launch a single test task via overseer (after prerequisites are met).
+--- @param test_id string
+--- @param opts table
+--- @return loomworks.Future
+function ConfigUnit:_launch_test(test_id, opts)
+    local future_mod = require("loomworks.future")
+    local tu = self:_find_test_unit(test_id)
+    if not tu then
+        return future_mod.rejected("no test unit for " .. test_id)
+    end
+
+    local test_cmd = tu:test_command(test_id, opts)
+    if not test_cmd then
+        return future_mod.rejected("test unit cannot build command for " .. test_id)
+    end
+
+    return self:_run_test_task(
+        "test: " .. (test_id:match("^test:(.+)$") or test_id),
+        test_cmd, tu
+    )
+end
+
+--- Launch all tests task via overseer (after prerequisites are met).
+--- @param opts table
+--- @return loomworks.Future
+function ConfigUnit:_launch_test_all(opts)
+    local future_mod = require("loomworks.future")
+    local units = self:test_units()
+    if #units == 0 then
+        return future_mod.rejected("no test units")
+    end
+
+    local tu = units[1]
+    local test_cmd = tu:test_command_all(opts)
+    if not test_cmd then
+        return future_mod.rejected("test unit cannot build command")
+    end
+
+    return self:_run_test_task("test: all", test_cmd, tu)
+end
+
+--- Run a test task via overseer and parse results on completion.
+--- @param name string display name for the task
+--- @param test_cmd table { cmd, env, cwd, output_path }
+--- @param tu loomworks.TestUnit the test unit for result parsing
+--- @return loomworks.Future
+function ConfigUnit:_run_test_task(name, test_cmd, tu)
+    local future_mod = require("loomworks.future")
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        return future_mod.rejected("overseer.nvim not found")
+    end
+
+    local f = future_mod.Future.new()
+    local unit = self
+    local project_name = self._project and self._project.key or "?"
+
+    -- Dispose previous test task
+    if self._last_test_task_id then
+        local prev = self._workspace._core._deps.get_overseer_task(self._last_test_task_id)
+        if prev and prev:is_complete() then
+            prev:dispose()
+        end
+    end
+
+    local task = overseer.new_task({
+        name = project_name .. ": " .. name,
+        cmd = test_cmd.cmd,
+        cwd = test_cmd.cwd,
+        env = test_cmd.env,
+        components = { "default" },
+    })
+
+    self._last_test_task_id = task.id
+
+    task:subscribe("on_complete", function(_, status)
+        vim.schedule(function()
+            if test_cmd.output_path then
+                local results = tu:parse_results(test_cmd.output_path)
+                unit:_apply_test_results(results)
+            end
+
+            local events = unit._workspace._core._deps.events
+            events.emit("test_results_changed", unit)
+
+            if status == "SUCCESS" then
+                f:_resolve(true)
+            else
+                f:_reject("test failed")
+            end
+        end)
+    end)
+
+    task:start()
+    overseer.open({ enter = false })
+
+    return f
 end
 
 return ConfigUnit

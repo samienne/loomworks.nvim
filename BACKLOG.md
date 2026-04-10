@@ -5,6 +5,16 @@ they don't get lost.
 
 ---
 
+## No-tool profile: MSVC auto-detection metadata
+
+When creating a profile without selecting a tool (no cmake kits detected),
+cmake picks MSVC automatically. The resulting build is multi-config but
+loomworks metadata (cmake_info.multi_config, tool_data.generator) doesn't
+reflect this. Investigate why tool detection didn't offer MSVC and why
+cmake_info is wrong after configure.
+
+---
+
 ## Overseer template references as launch targets
 
 LaunchTarget currently supports module targets (cmake executables) and
