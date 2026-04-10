@@ -11,37 +11,137 @@ local _win = nil
 local _bufnr = nil
 --- @type number namespace for highlights
 local _ns = vim.api.nvim_create_namespace("loomtest_explorer")
-
+--- @type table<string, boolean> fold state: node_id → collapsed
+local _folds = {}
 --- @type string|nil selected test ID for output viewing
 local _selected_id = nil
 
-local STATUS_MARKERS = {
+local STATUS_ICONS = {
     passed  = { icon = "✔", hl = "DiagnosticOk" },
     failed  = { icon = "✗", hl = "DiagnosticError" },
     skipped = { icon = "⊘", hl = "DiagnosticWarn" },
     errored = { icon = "!", hl = "DiagnosticError" },
-    running = { icon = "⠋", hl = "DiagnosticInfo" },
+    running = { icon = "↻", hl = "DiagnosticInfo" },
 }
 
---- Build the tree structure from flat test nodes.
---- Groups by target → suite → test.
+--- Infer suite grouping from flat test nodes.
+--- Tests with names like "Suite.Test" get grouped under a synthetic suite node.
+--- Returns a new node list with suite nodes inserted.
+--- @param nodes loomtest.TestNode[]
+--- @return loomtest.TestNode[]
+local function build_grouped_nodes(nodes)
+    local result = {}
+    -- Track which targets have children and what suites exist
+    local suites_by_target = {} -- target_id → { suite_name → { tests } }
+    local targets = {}
+    local target_order = {}
+
+    for _, node in ipairs(nodes) do
+        if not node.parent then
+            targets[node.id] = node
+            target_order[#target_order + 1] = node.id
+        end
+    end
+
+    for _, node in ipairs(nodes) do
+        if node.parent and targets[node.parent] then
+            -- Infer suite from test name: "Suite.Test" → suite "Suite"
+            local suite_name = node.name:match("^([^%.]+)%.")
+            if suite_name then
+                local target_id = node.parent
+                suites_by_target[target_id] = suites_by_target[target_id] or {}
+                suites_by_target[target_id][suite_name] = suites_by_target[target_id][suite_name] or {}
+                local suite_tests = suites_by_target[target_id][suite_name]
+                suite_tests[#suite_tests + 1] = node
+            end
+        end
+    end
+
+    -- Build the grouped list
+    for _, target_id in ipairs(target_order) do
+        local target = targets[target_id]
+        result[#result + 1] = target
+
+        local suites = suites_by_target[target_id]
+        if suites then
+            -- Sort suite names
+            local suite_names = {}
+            for name in pairs(suites) do
+                suite_names[#suite_names + 1] = name
+            end
+            table.sort(suite_names)
+
+            for _, suite_name in ipairs(suite_names) do
+                local suite_id = target_id .. "::" .. suite_name
+                -- Compute aggregate status
+                local suite_status = nil
+                local tests = suites[suite_name]
+                for _, t in ipairs(tests) do
+                    if t.status == "failed" or t.status == "errored" then
+                        suite_status = "failed"
+                    elseif t.status == "running" then
+                        suite_status = suite_status or "running"
+                    elseif t.status == "passed" and not suite_status then
+                        suite_status = "passed"
+                    elseif t.status == "skipped" and not suite_status then
+                        suite_status = "skipped"
+                    end
+                end
+
+                result[#result + 1] = {
+                    id = suite_id,
+                    name = suite_name,
+                    type = "suite",
+                    parent = target_id,
+                    runnable = true,
+                    status = suite_status,
+                    _synthetic = true,
+                    _test_count = #tests,
+                }
+
+                -- Add tests under suite, stripping suite prefix from name
+                for _, test in ipairs(tests) do
+                    result[#result + 1] = {
+                        id = test.id,
+                        name = test.name:match("^[^%.]+%.(.+)$") or test.name,
+                        type = "test",
+                        parent = suite_id,
+                        file = test.file,
+                        line = test.line,
+                        runnable = test.runnable,
+                        status = test.status,
+                        message = test.message,
+                        duration = test.duration,
+                        _output = test._output,
+                        _errors = test._errors,
+                    }
+                end
+            end
+        end
+    end
+
+    return result
+end
+
+--- Build the rendered tree lines from grouped nodes.
 --- @return table[] lines, table[] highlights, table[] line_data
 local function build_tree()
     local loomtest = require("loomtest")
-    local nodes = loomtest.nodes()
+    local raw_nodes = loomtest.nodes()
     local config = loomtest.config()
+
+    local grouped = build_grouped_nodes(raw_nodes)
 
     local lines = {}
     local highlights = {}
-    local line_data = {}  -- line_num → { node, adapter }
+    local line_data = {}
 
-    -- Build header
+    -- Header
     local adapter = loomtest.adapters()[1]
     local desc = adapter and adapter.description() or nil
-    local counts = { total = 0, passed = 0, failed = 0, skipped = 0, unknown = 0, running = 0 }
-    for _, node in ipairs(nodes) do
+    local counts = { passed = 0, failed = 0, skipped = 0, unknown = 0, running = 0 }
+    for _, node in ipairs(grouped) do
         if node.type == "test" then
-            counts.total = counts.total + 1
             local s = node.status or "unknown"
             if s == "errored" then s = "failed" end
             counts[s] = (counts[s] or 0) + 1
@@ -52,7 +152,7 @@ local function build_tree()
     if desc then header = desc .. "  " end
     header = header .. "✔ " .. counts.passed .. "  ✗ " .. counts.failed
     if counts.skipped > 0 then header = header .. "  ⊘ " .. counts.skipped end
-    if counts.running > 0 then header = header .. "  ⠋ " .. counts.running end
+    if counts.running > 0 then header = header .. "  ↻ " .. counts.running end
     header = header .. "  ○ " .. counts.unknown
     lines[#lines + 1] = header
     highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #header, hl_group = "Comment" }
@@ -61,7 +161,7 @@ local function build_tree()
     -- Build parent → children map
     local children_of = {}
     local top_level = {}
-    for _, node in ipairs(nodes) do
+    for _, node in ipairs(grouped) do
         if node.parent then
             children_of[node.parent] = children_of[node.parent] or {}
             children_of[node.parent][#children_of[node.parent] + 1] = node
@@ -70,29 +170,38 @@ local function build_tree()
         end
     end
 
-    -- Render a node recursively
     local function render_node(node, indent)
         local kids = children_of[node.id]
-        local marker = STATUS_MARKERS[node.status]
-        local icon = marker and marker.icon or "○"
-        local hl = marker and marker.hl or "Comment"
+        local has_kids = kids and #kids > 0
+        local collapsed = _folds[node.id]
+
+        local si = STATUS_ICONS[node.status]
+        local icon = si and si.icon or "○"
+        local hl = si and si.hl or "Comment"
 
         local prefix = string.rep("  ", indent)
         local fold_char = ""
-        if kids and #kids > 0 then
-            fold_char = "▼ "
+        if has_kids then
+            fold_char = collapsed and "▶ " or "▼ "
+        else
+            fold_char = "  "
         end
 
-        -- Build display line
+        -- Build display
         local display = prefix .. fold_char .. icon .. " " .. node.name
 
-        -- Add error info for failed tests
+        -- Suite: show test count
+        if node.type == "suite" and node._test_count then
+            display = display .. " (" .. node._test_count .. ")"
+        end
+
+        -- Failed: show inline error
         if node.status == "failed" and node.message then
             local short_msg = node.message:gsub("\n.*", ""):sub(1, 50)
             display = display .. "  — " .. short_msg
         end
 
-        -- Add duration
+        -- Duration
         if node.duration then
             local dur
             if node.duration < 1000 then
@@ -103,22 +212,24 @@ local function build_tree()
             display = display .. "  " .. dur
         end
 
-        -- Filter
+        -- Filter passed
         if not config.show_passed and node.status == "passed" and node.type == "test" then
             return
         end
 
         lines[#lines + 1] = display
         line_data[#lines] = node
+        -- Highlight the status icon
+        local icon_start = #prefix + #fold_char
         highlights[#highlights + 1] = {
             line = #lines,
-            col_start = #prefix + #fold_char,
-            col_end = #prefix + #fold_char + #icon,
+            col_start = icon_start,
+            col_end = icon_start + #icon,
             hl_group = hl,
         }
 
-        -- Render children
-        if kids then
+        -- Render children (unless collapsed)
+        if has_kids and not collapsed then
             for _, child in ipairs(kids) do
                 render_node(child, indent + 1)
             end
@@ -142,7 +253,6 @@ function M.refresh()
     vim.api.nvim_buf_set_lines(_bufnr, 0, -1, false, lines)
     vim.bo[_bufnr].modifiable = false
 
-    -- Apply highlights
     vim.api.nvim_buf_clear_namespace(_bufnr, _ns, 0, -1)
     for _, hl in ipairs(highlights) do
         pcall(vim.api.nvim_buf_add_highlight,
@@ -168,6 +278,14 @@ local function node_at_cursor()
     return nil
 end
 
+--- Toggle fold on the node at cursor.
+local function toggle_fold()
+    local node = node_at_cursor()
+    if not node then return end
+    _folds[node.id] = not _folds[node.id]
+    M.refresh()
+end
+
 --- Open the explorer panel.
 function M.open()
     if M.is_open() then
@@ -178,7 +296,6 @@ function M.open()
     local loomtest = require("loomtest")
     local config = loomtest.config()
 
-    -- Create buffer
     _bufnr = vim.api.nvim_create_buf(false, true)
     vim.bo[_bufnr].buftype = "nofile"
     vim.bo[_bufnr].bufhidden = "wipe"
@@ -186,7 +303,6 @@ function M.open()
     vim.bo[_bufnr].filetype = "loomtest"
     vim.bo[_bufnr].modifiable = false
 
-    -- Build Snacks.win config
     local win_config = {
         buf = _bufnr,
         enter = true,
@@ -218,6 +334,7 @@ function M.open()
                 end
             end,
             R = function() loomtest.run_all() end,
+            ["<Tab>"] = toggle_fold,
             o = function()
                 local node = node_at_cursor()
                 if node and node.file and node.line then
@@ -258,7 +375,6 @@ function M.open()
 
     _win = Snacks.win(win_config)
 
-    -- Discover tests if not done yet
     if #loomtest.nodes() == 0 then
         loomtest.discover(function()
             M.refresh()
@@ -303,7 +419,6 @@ function M.show_output()
         node = loomtest.get_node(_selected_id)
     end
 
-    -- Fallback: find last failed or most recently run test
     if not node then
         for _, n in ipairs(loomtest.nodes()) do
             if n.status == "failed" and n._output then
@@ -329,13 +444,9 @@ function M.show_output()
 end
 
 --- Display output in a floating window.
---- @param title string window title
---- @param output string output text
---- @param errors loomtest.TestError[] error locations
 function M._show_output_float(title, output, errors)
     local lines = vim.split(output, "\n")
 
-    -- Add error summary at top
     if #errors > 0 then
         local err_lines = { "Errors:", "" }
         for _, err in ipairs(errors) do
