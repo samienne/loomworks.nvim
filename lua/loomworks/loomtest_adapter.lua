@@ -127,10 +127,28 @@ local function create_adapter()
         end,
 
         run_suite = function(suite_id, opts)
-            -- Run all tests matching the suite via filter
-            local unit, tu = M._find_test_unit(suite_id)
-            if not tu then return nil end
-            return tu:test_command(suite_id, opts)
+            -- Suite ID format: "target_id::SuiteName"
+            -- Run via ctest with filter matching all tests in the suite
+            local suite_name = suite_id:match("::(.+)$")
+            if not suite_name then return nil end
+
+            -- Find any test in this suite to get the TestUnit
+            local lw = require("loomworks")
+            local profile = lw.get_active_profile()
+            if not profile then return nil end
+
+            for _, pp in ipairs(profile:projects()) do
+                local unit = pp._config_unit
+                if unit then
+                    local tus = unit:test_units()
+                    if #tus > 0 then
+                        return tus[1]:test_command_all({
+                            filter = "^" .. vim.pesc(suite_name) .. "%.",
+                        })
+                    end
+                end
+            end
+            return nil
         end,
 
         parse_results = function(output_path)

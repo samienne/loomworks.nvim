@@ -13,8 +13,12 @@ local _bufnr = nil
 local _ns = vim.api.nvim_create_namespace("loomtest_explorer")
 --- @type table<string, boolean> fold state: node_id → collapsed
 local _folds = {}
+--- @type table<string, number> fold cursor memory: node_id → child line offset
+local _fold_cursor = {}
 --- @type string|nil selected test ID for output viewing
 local _selected_id = nil
+--- @type table[] current line_data for cursor operations
+local _line_data = {}
 
 local STATUS_ICONS = {
     passed  = { icon = "✔", hl = "DiagnosticOk" },
@@ -25,14 +29,11 @@ local STATUS_ICONS = {
 }
 
 --- Infer suite grouping from flat test nodes.
---- Tests with names like "Suite.Test" get grouped under a synthetic suite node.
---- Returns a new node list with suite nodes inserted.
 --- @param nodes loomtest.TestNode[]
 --- @return loomtest.TestNode[]
 local function build_grouped_nodes(nodes)
     local result = {}
-    -- Track which targets have children and what suites exist
-    local suites_by_target = {} -- target_id → { suite_name → { tests } }
+    local suites_by_target = {}
     local targets = {}
     local target_order = {}
 
@@ -45,7 +46,6 @@ local function build_grouped_nodes(nodes)
 
     for _, node in ipairs(nodes) do
         if node.parent and targets[node.parent] then
-            -- Infer suite from test name: "Suite.Test" → suite "Suite"
             local suite_name = node.name:match("^([^%.]+)%.")
             if suite_name then
                 local target_id = node.parent
@@ -57,14 +57,12 @@ local function build_grouped_nodes(nodes)
         end
     end
 
-    -- Build the grouped list
     for _, target_id in ipairs(target_order) do
         local target = targets[target_id]
         result[#result + 1] = target
 
         local suites = suites_by_target[target_id]
         if suites then
-            -- Sort suite names
             local suite_names = {}
             for name in pairs(suites) do
                 suite_names[#suite_names + 1] = name
@@ -73,14 +71,13 @@ local function build_grouped_nodes(nodes)
 
             for _, suite_name in ipairs(suite_names) do
                 local suite_id = target_id .. "::" .. suite_name
-                -- Compute aggregate status
                 local suite_status = nil
                 local tests = suites[suite_name]
                 for _, t in ipairs(tests) do
                     if t.status == "failed" or t.status == "errored" then
                         suite_status = "failed"
-                    elseif t.status == "running" then
-                        suite_status = suite_status or "running"
+                    elseif t.status == "running" and suite_status ~= "failed" then
+                        suite_status = "running"
                     elseif t.status == "passed" and not suite_status then
                         suite_status = "passed"
                     elseif t.status == "skipped" and not suite_status then
@@ -99,7 +96,6 @@ local function build_grouped_nodes(nodes)
                     _test_count = #tests,
                 }
 
-                -- Add tests under suite, stripping suite prefix from name
                 for _, test in ipairs(tests) do
                     result[#result + 1] = {
                         id = test.id,
@@ -123,22 +119,25 @@ local function build_grouped_nodes(nodes)
     return result
 end
 
---- Build the rendered tree lines from grouped nodes.
+--- Build the rendered tree.
 --- @return table[] lines, table[] highlights, table[] line_data
 local function build_tree()
     local loomtest = require("loomtest")
     local raw_nodes = loomtest.nodes()
     local config = loomtest.config()
-
     local grouped = build_grouped_nodes(raw_nodes)
 
     local lines = {}
     local highlights = {}
     local line_data = {}
 
-    -- Header
+    -- Header line 1: adapter description
     local adapter = loomtest.adapters()[1]
-    local desc = adapter and adapter.description() or nil
+    local desc = adapter and adapter.description() or "Tests"
+    lines[#lines + 1] = " " .. desc
+    highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines], hl_group = "Title" }
+
+    -- Header line 2: counts
     local counts = { passed = 0, failed = 0, skipped = 0, unknown = 0, running = 0 }
     for _, node in ipairs(grouped) do
         if node.type == "test" then
@@ -147,15 +146,16 @@ local function build_tree()
             counts[s] = (counts[s] or 0) + 1
         end
     end
+    local count_parts = {}
+    if counts.passed > 0 then count_parts[#count_parts + 1] = "✔ " .. counts.passed end
+    if counts.failed > 0 then count_parts[#count_parts + 1] = "✗ " .. counts.failed end
+    if counts.skipped > 0 then count_parts[#count_parts + 1] = "⊘ " .. counts.skipped end
+    if counts.running > 0 then count_parts[#count_parts + 1] = "↻ " .. counts.running end
+    count_parts[#count_parts + 1] = "○ " .. counts.unknown
+    lines[#lines + 1] = " " .. table.concat(count_parts, "  ")
+    highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines], hl_group = "Comment" }
 
-    local header = ""
-    if desc then header = desc .. "  " end
-    header = header .. "✔ " .. counts.passed .. "  ✗ " .. counts.failed
-    if counts.skipped > 0 then header = header .. "  ⊘ " .. counts.skipped end
-    if counts.running > 0 then header = header .. "  ↻ " .. counts.running end
-    header = header .. "  ○ " .. counts.unknown
-    lines[#lines + 1] = header
-    highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #header, hl_group = "Comment" }
+    -- Blank separator
     lines[#lines + 1] = ""
 
     -- Build parent → children map
@@ -180,36 +180,33 @@ local function build_tree()
         local hl = si and si.hl or "Comment"
 
         local prefix = string.rep("  ", indent)
-        local fold_char = ""
+        local fold_char
         if has_kids then
             fold_char = collapsed and "▶ " or "▼ "
         else
             fold_char = "  "
         end
 
-        -- Build display
         local display = prefix .. fold_char .. icon .. " " .. node.name
 
-        -- Suite: show test count
-        if node.type == "suite" and node._test_count then
+        -- Suite: show count
+        if node._test_count then
             display = display .. " (" .. node._test_count .. ")"
         end
 
-        -- Failed: show inline error
+        -- Failed: inline error
         if node.status == "failed" and node.message then
-            local short_msg = node.message:gsub("\n.*", ""):sub(1, 50)
+            local short_msg = node.message:gsub("\n.*", ""):sub(1, 40)
             display = display .. "  — " .. short_msg
         end
 
         -- Duration
         if node.duration then
-            local dur
             if node.duration < 1000 then
-                dur = string.format("%dms", node.duration)
+                display = display .. "  " .. string.format("%dms", node.duration)
             else
-                dur = string.format("%.1fs", node.duration / 1000)
+                display = display .. "  " .. string.format("%.1fs", node.duration / 1000)
             end
-            display = display .. "  " .. dur
         end
 
         -- Filter passed
@@ -219,7 +216,8 @@ local function build_tree()
 
         lines[#lines + 1] = display
         line_data[#lines] = node
-        -- Highlight the status icon
+
+        -- Highlight status icon
         local icon_start = #prefix + #fold_char
         highlights[#highlights + 1] = {
             line = #lines,
@@ -227,8 +225,32 @@ local function build_tree()
             col_end = icon_start + #icon,
             hl_group = hl,
         }
+        -- Highlight fold char
+        if has_kids then
+            highlights[#highlights + 1] = {
+                line = #lines,
+                col_start = #prefix,
+                col_end = #prefix + #fold_char - 1,
+                hl_group = "NonText",
+            }
+        end
+        -- Highlight name for targets/suites
+        if node.type == "target" then
+            highlights[#highlights + 1] = {
+                line = #lines,
+                col_start = icon_start + #icon + 1,
+                col_end = #display,
+                hl_group = "Function",
+            }
+        elseif node.type == "suite" then
+            highlights[#highlights + 1] = {
+                line = #lines,
+                col_start = icon_start + #icon + 1,
+                col_end = icon_start + #icon + 1 + #node.name,
+                hl_group = "Type",
+            }
+        end
 
-        -- Render children (unless collapsed)
         if has_kids and not collapsed then
             for _, child in ipairs(kids) do
                 render_node(child, indent + 1)
@@ -243,11 +265,44 @@ local function build_tree()
     return lines, highlights, line_data
 end
 
+--- Find the nearest actionable line to the given line.
+--- @param target_line number
+--- @return number|nil
+local function nearest_actionable(target_line)
+    if _line_data[target_line] then return target_line end
+    local total = #_line_data
+    for offset = 1, total do
+        local down = target_line + offset
+        local up = target_line - offset
+        if down <= total and _line_data[down] then return down end
+        if up >= 1 and _line_data[up] then return up end
+    end
+    return nil
+end
+
+--- Snap cursor to nearest actionable line.
+local function snap_cursor()
+    if not _win or not _bufnr then return end
+    local win = type(_win) == "table" and _win.win or nil
+    if not win or not vim.api.nvim_win_is_valid(win) then return end
+
+    local cursor = vim.api.nvim_win_get_cursor(win)
+    local target = nearest_actionable(cursor[1])
+    if target and target ~= cursor[1] then
+        pcall(vim.api.nvim_win_set_cursor, win, { target, 0 })
+    end
+end
+
 --- Render the explorer buffer.
 function M.refresh()
     if not _bufnr or not vim.api.nvim_buf_is_valid(_bufnr) then return end
 
+    local win = _win and type(_win) == "table" and _win.win or nil
+    local saved_cursor = win and vim.api.nvim_win_is_valid(win)
+        and vim.api.nvim_win_get_cursor(win) or nil
+
     local lines, highlights, line_data = build_tree()
+    _line_data = line_data
 
     vim.bo[_bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(_bufnr, 0, -1, false, lines)
@@ -259,8 +314,12 @@ function M.refresh()
             _bufnr, _ns, hl.hl_group, hl.line - 1, hl.col_start, hl.col_end)
     end
 
-    -- Store line data for keybinding handlers
-    vim.b[_bufnr]._loomtest_line_data = line_data
+    -- Restore cursor
+    if saved_cursor and win and vim.api.nvim_win_is_valid(win) then
+        local line = math.min(saved_cursor[1], #lines)
+        pcall(vim.api.nvim_win_set_cursor, win, { line, 0 })
+    end
+    snap_cursor()
 end
 
 --- Get the test node at the current cursor line.
@@ -271,19 +330,57 @@ local function node_at_cursor()
     if not win or not vim.api.nvim_win_is_valid(win) then return nil end
 
     local cursor = vim.api.nvim_win_get_cursor(win)
-    local line_data = vim.b[_bufnr]._loomtest_line_data
-    if line_data then
-        return line_data[cursor[1]]
-    end
-    return nil
+    return _line_data[cursor[1]]
 end
 
---- Toggle fold on the node at cursor.
-local function toggle_fold()
+--- Close fold (h key): collapse the current node, or move to parent.
+local function fold_close()
     local node = node_at_cursor()
     if not node then return end
-    _folds[node.id] = not _folds[node.id]
-    M.refresh()
+
+    if not _folds[node.id] and (node.type == "target" or node.type == "suite") then
+        -- Save cursor position within this fold
+        local win = _win and type(_win) == "table" and _win.win or nil
+        if win then
+            _fold_cursor[node.id] = vim.api.nvim_win_get_cursor(win)[1]
+        end
+        _folds[node.id] = true
+        M.refresh()
+    elseif node.parent then
+        -- Already collapsed or leaf — move to parent
+        for line, ld in pairs(_line_data) do
+            if ld and ld.id == node.parent then
+                local win = _win and type(_win) == "table" and _win.win or nil
+                if win then
+                    pcall(vim.api.nvim_win_set_cursor, win, { line, 0 })
+                end
+                break
+            end
+        end
+    end
+end
+
+--- Open fold (l key): expand the current node and restore cursor.
+local function fold_open()
+    local node = node_at_cursor()
+    if not node then return end
+
+    if _folds[node.id] then
+        _folds[node.id] = nil
+        local saved_line = _fold_cursor[node.id]
+        M.refresh()
+        -- Restore cursor to saved position within this fold
+        if saved_line then
+            local win = _win and type(_win) == "table" and _win.win or nil
+            if win then
+                local max_line = vim.api.nvim_buf_line_count(_bufnr)
+                local target = math.min(saved_line, max_line)
+                pcall(vim.api.nvim_win_set_cursor, win, { target, 0 })
+                snap_cursor()
+            end
+            _fold_cursor[node.id] = nil
+        end
+    end
 end
 
 --- Open the explorer panel.
@@ -303,77 +400,95 @@ function M.open()
     vim.bo[_bufnr].filetype = "loomtest"
     vim.bo[_bufnr].modifiable = false
 
-    local win_config = {
-        buf = _bufnr,
-        enter = true,
-        width = config.size,
+    local win_config = vim.tbl_deep_extend("force", {
         position = config.position,
+        width = config.size,
         border = "rounded",
         title = " Tests ",
         title_pos = "center",
-        wo = {
-            number = false,
-            relativenumber = false,
-            signcolumn = "no",
-            foldcolumn = "0",
-            wrap = false,
-            cursorline = true,
-        },
-        keys = {
-            q = "close",
-            ["<CR>"] = function()
-                local node = node_at_cursor()
-                if node and node.runnable then
-                    loomtest.run(node.id)
-                end
-            end,
-            r = function()
-                local node = node_at_cursor()
-                if node and node.runnable then
-                    loomtest.run(node.id)
-                end
-            end,
-            R = function() loomtest.run_all() end,
-            ["<Tab>"] = toggle_fold,
-            o = function()
-                local node = node_at_cursor()
-                if node and node.file and node.line then
+    }, config.win or {})
+
+    -- Non-overridable fields
+    win_config.buf = _bufnr
+    win_config.enter = true
+    win_config.wo = vim.tbl_extend("force", {
+        number = false,
+        relativenumber = false,
+        signcolumn = "no",
+        foldcolumn = "0",
+        wrap = false,
+        cursorline = true,
+    }, win_config.wo or {})
+    win_config.keys = {
+        q = "close",
+        ["<CR>"] = function()
+            local node = node_at_cursor()
+            if node and node.runnable then
+                loomtest.run(node.id)
+            end
+        end,
+        r = function()
+            local node = node_at_cursor()
+            if node and node.runnable then
+                loomtest.run(node.id)
+            end
+        end,
+        R = function() loomtest.run_all() end,
+        h = fold_close,
+        l = fold_open,
+        ["<Tab>"] = function()
+            local node = node_at_cursor()
+            if not node then return end
+            if _folds[node.id] then
+                fold_open()
+            else
+                fold_close()
+            end
+        end,
+        o = function()
+            local node = node_at_cursor()
+            if node and node.file and node.line then
+                vim.cmd("wincmd p")
+                vim.cmd("edit " .. vim.fn.fnameescape(node.file))
+                vim.api.nvim_win_set_cursor(0, { node.line, 0 })
+            end
+        end,
+        e = function()
+            local node = node_at_cursor()
+            if node and node._errors and #node._errors > 0 then
+                local err = node._errors[1]
+                if err.file and err.line then
                     vim.cmd("wincmd p")
-                    vim.cmd("edit " .. vim.fn.fnameescape(node.file))
-                    vim.api.nvim_win_set_cursor(0, { node.line, 0 })
+                    vim.cmd("edit " .. vim.fn.fnameescape(err.file))
+                    vim.api.nvim_win_set_cursor(0, { err.line, 0 })
                 end
-            end,
-            e = function()
-                local node = node_at_cursor()
-                if node and node._errors and #node._errors > 0 then
-                    local err = node._errors[1]
-                    if err.file and err.line then
-                        vim.cmd("wincmd p")
-                        vim.cmd("edit " .. vim.fn.fnameescape(err.file))
-                        vim.api.nvim_win_set_cursor(0, { err.line, 0 })
-                    end
-                end
-            end,
-            d = function()
-                local node = node_at_cursor()
-                if node then
-                    _selected_id = node.id
-                    M.show_output()
-                end
-            end,
-            g = function() loomtest.refresh() end,
-            p = function()
-                config.show_passed = not config.show_passed
-                M.refresh()
-            end,
-        },
-        on_close = function()
-            _win = nil
-            _bufnr = nil
+            end
+        end,
+        d = function()
+            local node = node_at_cursor()
+            if node then
+                _selected_id = node.id
+                M.show_output()
+            end
+        end,
+        g = function() loomtest.refresh() end,
+        p = function()
+            config.show_passed = not config.show_passed
+            M.refresh()
         end,
     }
+    win_config.on_close = function()
+        _win = nil
+        _bufnr = nil
+    end
 
     _win = Snacks.win(win_config)
+
+    -- Lock cursor to actionable lines
+    vim.api.nvim_create_autocmd("CursorMoved", {
+        buffer = _bufnr,
+        callback = snap_cursor,
+    })
 
     if #loomtest.nodes() == 0 then
         loomtest.discover(function()
@@ -403,11 +518,7 @@ end
 
 --- Toggle the explorer panel.
 function M.toggle()
-    if M.is_open() then
-        M.close()
-    else
-        M.open()
-    end
+    if M.is_open() then M.close() else M.open() end
 end
 
 --- Show test output in a floating window.
@@ -418,18 +529,15 @@ function M.show_output()
     if _selected_id then
         node = loomtest.get_node(_selected_id)
     end
-
     if not node then
         for _, n in ipairs(loomtest.nodes()) do
             if n.status == "failed" and n._output then
-                node = n
-                break
+                node = n; break
             end
         end
     end
     if not node then
-        local runner = require("loomtest.runner")
-        local output = runner.last_output()
+        local output = require("loomtest.runner").last_output()
         if output then
             M._show_output_float("Last test run", output, {})
             return
@@ -439,8 +547,7 @@ function M.show_output()
     end
 
     local title = node.name .. " (" .. (node.status or "unknown") .. ")"
-    local output = node._output or node.message or "No output"
-    M._show_output_float(title, output, node._errors or {})
+    M._show_output_float(title, node._output or node.message or "No output", node._errors or {})
 end
 
 --- Display output in a floating window.
@@ -480,11 +587,7 @@ function M._show_output_float(title, output, errors)
         title = " " .. title .. " ",
         title_pos = "center",
         keys = { q = "close" },
-        wo = {
-            number = false,
-            relativenumber = false,
-            wrap = true,
-        },
+        wo = { number = false, relativenumber = false, wrap = true },
     })
 end
 

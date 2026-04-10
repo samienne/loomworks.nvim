@@ -28,6 +28,7 @@ local DEFAULT_CONFIG = {
     auto_open = false,
     auto_run = false,
     show_passed = true,
+    win = {},  -- Snacks.win config overrides
     keys = {
         toggle = "<leader>ts",
         run = "<leader>tt",
@@ -222,7 +223,8 @@ function M.find_adapter(test_id)
     return _adapters[1]
 end
 
---- Run a specific test by ID.
+--- Run a specific test, suite, or target by ID.
+--- For suites/targets, collects all child test IDs.
 --- @param test_id string
 function M.run(test_id)
     local adapter = M.find_adapter(test_id)
@@ -232,14 +234,38 @@ function M.run(test_id)
     if not node then return end
 
     local spec
+    local ids = {}
+
     if node.type == "suite" then
+        -- Collect all test IDs under this suite
+        for _, n in ipairs(_node_list) do
+            if n.parent == test_id and n.type == "test" then
+                ids[#ids + 1] = n.id
+            end
+        end
         spec = adapter.run_suite(test_id)
+    elseif node.type == "target" then
+        -- Collect all test IDs under this target (including nested suites)
+        local suite_ids = {}
+        for _, n in ipairs(_node_list) do
+            if n.parent == test_id then
+                suite_ids[n.id] = true
+            end
+        end
+        for _, n in ipairs(_node_list) do
+            if n.type == "test" and (n.parent == test_id or suite_ids[n.parent]) then
+                ids[#ids + 1] = n.id
+            end
+        end
+        spec = adapter.run_all()
     else
+        ids[#ids + 1] = test_id
         spec = adapter.run(test_id)
     end
     if not spec then return end
+    if #ids == 0 then ids[1] = test_id end
 
-    require("loomtest.runner").execute(adapter, spec, { test_id })
+    require("loomtest.runner").execute(adapter, spec, ids)
 end
 
 --- Run all tests.
