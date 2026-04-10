@@ -31,21 +31,24 @@ end
 local _cached_native_root = nil
 
 function adapter.root(dir)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return nil end
+    local ok, result = pcall(function()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        if not ws then return nil end
 
-    -- Compute and cache the native root once
-    if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(ws.root):lower() then
-        _cached_native_root = to_native(ws.root)
-    end
+        if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(ws.root):lower() then
+            _cached_native_root = to_native(ws.root)
+        end
 
-    local root_lower = norm(ws.root):lower()
-    local dir_lower = norm(dir):lower()
-    if dir_lower == root_lower or dir_lower:sub(1, #root_lower + 1) == root_lower .. "/" then
-        return _cached_native_root
-    end
-    return nil
+        local root_lower = norm(ws.root):lower()
+        local dir_lower = norm(dir):lower()
+        if dir_lower == root_lower or dir_lower:sub(1, #root_lower + 1) == root_lower .. "/" then
+            return _cached_native_root
+        end
+        return nil
+    end)
+    if not ok then return nil end
+    return result
 end
 
 --- Filter directories during file discovery.
@@ -137,17 +140,21 @@ end
 --- @param file_path string absolute file path
 --- @return boolean
 function adapter.is_test_file(file_path)
-    local file_set = get_test_file_set()
-    if next(file_set) then
-        return file_set[norm(file_path):lower()] or false
-    end
-    -- Fallback: pattern match when cache is not yet populated
-    local name = file_path:match("[/\\]([^/\\]+)$")
-    if not name then return false end
-    local name_lower = name:lower()
-    return (name_lower:match("_test%.cpp$") or name_lower:match("_test%.cc$")
-        or name_lower:match("_test%.cxx$")
-        or name_lower:match("^test_.*%.cpp$") or name_lower:match("^test_.*%.cc$")) ~= nil
+    local ok, result = pcall(function()
+        local file_set = get_test_file_set()
+        if next(file_set) then
+            return file_set[norm(file_path):lower()] or false
+        end
+        -- Fallback: pattern match when cache is not yet populated
+        local name = file_path:match("[/\\]([^/\\]+)$")
+        if not name then return false end
+        local name_lower = name:lower()
+        return (name_lower:match("_test%.cpp$") or name_lower:match("_test%.cc$")
+            or name_lower:match("_test%.cxx$")
+            or name_lower:match("^test_.*%.cpp$") or name_lower:match("^test_.*%.cc$")) ~= nil
+    end)
+    if not ok then return false end
+    return result
 end
 
 --- Resolve the file path → project → active profile → ConfigUnit chain.

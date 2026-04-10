@@ -5,15 +5,6 @@ they don't get lost.
 
 ---
 
-## Investigate hang on opening specific test files
-
-Opening `intf_animation_modifier_test.cpp` (623 lines) permanently hangs
-Neovim. The file has 0 matched tests in the neotest adapter (is_test_file
-returns false), so loomworks' adapter is not involved. Likely clangd,
-treesitter, or another plugin issue. Needs isolation testing.
-
----
-
 ## No-tool profile: MSVC auto-detection metadata
 
 When creating a profile without selecting a tool (no cmake kits detected),
