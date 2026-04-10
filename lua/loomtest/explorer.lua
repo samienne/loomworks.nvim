@@ -343,22 +343,29 @@ local function find_line_for_node(node_id)
     return nil
 end
 
---- Close fold (h key): collapse current node or move to parent.
---- Saves the current cursor node so l can restore it.
+--- Close fold (h key): fold current node and move cursor to it.
+--- On a leaf or already-collapsed node, moves to parent and folds it.
+--- Saves the cursor node so l can restore position.
 local function fold_close()
     local node = node_at_cursor()
     if not node then return end
     local win = _win and type(_win) == "table" and _win.win or nil
     if not win then return end
 
+    -- If on an expanded foldable node, collapse it
     if not _folds[node.id] and (node.type == "target" or node.type == "suite") then
-        -- Collapsing a foldable node: save cursor node as the current node
         _fold_cursor[node.id] = node.id
         _folds[node.id] = true
         M.refresh()
-    elseif node.parent then
-        -- Leaf or already collapsed: move to parent, save this node
+        return
+    end
+
+    -- Otherwise, move to parent and collapse the parent
+    if node.parent then
         _fold_cursor[node.parent] = node.id
+        _folds[node.parent] = true
+        M.refresh()
+        -- Move cursor to the parent node
         local parent_line = find_line_for_node(node.parent)
         if parent_line then
             pcall(vim.api.nvim_win_set_cursor, win, { parent_line, 0 })
@@ -430,13 +437,13 @@ function M.open()
         ["<CR>"] = function()
             local node = node_at_cursor()
             if node and node.runnable then
-                loomtest.run(node.id)
+                loomtest.run(node.id, node.type)
             end
         end,
         r = function()
             local node = node_at_cursor()
             if node and node.runnable then
-                loomtest.run(node.id)
+                loomtest.run(node.id, node.type)
             end
         end,
         R = function() loomtest.run_all() end,

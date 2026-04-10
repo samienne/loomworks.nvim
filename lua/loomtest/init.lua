@@ -224,36 +224,40 @@ function M.find_adapter(test_id)
 end
 
 --- Run a specific test, suite, or target by ID.
---- For suites/targets, collects all child test IDs.
+--- Handles both real nodes (from adapter) and synthetic suite nodes
+--- (created by the explorer's grouping).
 --- @param test_id string
-function M.run(test_id)
+--- @param node_type? string override type ("suite", "target", "test")
+function M.run(test_id, node_type)
     local adapter = M.find_adapter(test_id)
     if not adapter then return end
 
     local node = _nodes[test_id]
-    if not node then return end
+    local ntype = node_type or (node and node.type) or nil
+
+    -- Detect synthetic suite ID (format: "target_id::SuiteName")
+    if not node and test_id:match("::") then
+        ntype = "suite"
+    end
 
     local spec
     local ids = {}
 
-    if node.type == "suite" then
-        -- Collect all test IDs under this suite
-        for _, n in ipairs(_node_list) do
-            if n.parent == test_id and n.type == "test" then
-                ids[#ids + 1] = n.id
+    if ntype == "suite" then
+        -- Collect all matching test IDs by checking which tests
+        -- have names starting with the suite name
+        local suite_name = test_id:match("::(.+)$")
+        if suite_name then
+            for _, n in ipairs(_node_list) do
+                if n.type == "test" and n.name:match("^" .. vim.pesc(suite_name) .. "%.") then
+                    ids[#ids + 1] = n.id
+                end
             end
         end
         spec = adapter.run_suite(test_id)
-    elseif node.type == "target" then
-        -- Collect all test IDs under this target (including nested suites)
-        local suite_ids = {}
+    elseif ntype == "target" then
         for _, n in ipairs(_node_list) do
-            if n.parent == test_id then
-                suite_ids[n.id] = true
-            end
-        end
-        for _, n in ipairs(_node_list) do
-            if n.type == "test" and (n.parent == test_id or suite_ids[n.parent]) then
+            if n.parent == test_id and n.type == "test" then
                 ids[#ids + 1] = n.id
             end
         end
