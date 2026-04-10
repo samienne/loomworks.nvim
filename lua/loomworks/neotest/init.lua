@@ -132,10 +132,16 @@ local function get_test_file_set()
 end
 
 --- Check if a file could contain tests.
---- Uses filename pattern matching (fast, no state dependency).
+--- Uses the cached test file set when available (exact match, no false
+--- positives). Falls back to filename pattern matching when cache is empty.
 --- @param file_path string absolute file path
 --- @return boolean
 function adapter.is_test_file(file_path)
+    local file_set = get_test_file_set()
+    if next(file_set) then
+        return file_set[norm(file_path):lower()] or false
+    end
+    -- Fallback: pattern match when cache is not yet populated
     local name = file_path:match("[/\\]([^/\\]+)$")
     if not name then return false end
     local name_lower = name:lower()
