@@ -2324,9 +2324,56 @@ working copy. Published deploy steps are written to loomworks.json on `:w`.
 
 Loomworks provides test discovery, execution, and result reporting through
 a neotest adapter. ConfigUnit is the test interface — callers never interact
-with modules or test frameworks directly.
+with TestUnit or framework helpers directly.
 
-#### 9.9.1 Two-level test model
+#### 9.9.1 Architecture
+
+```
+ConfigUnit
+├── test_units() → TestUnit[]     (created lazily by module)
+├── discover_tests()              (delegates to TestUnits)
+├── run_test(test_id)             (delegates to owning TestUnit)
+└── run_tests()                   (delegates to all TestUnits)
+
+TestUnit (interface)
+├── CTestUnit                     (wraps ctest for cmake projects)
+│   └── uses GTest helper for framework-specific functionality
+├── MesonTestUnit                 (wraps meson test — future)
+└── GTestUnit                     (direct gtest binary — future, for launch targets)
+
+GTest (shared helper, not a TestUnit)
+├── probe(executable)             → detect framework, list tests
+├── find_source_locations(tests, source_files) → file/line per test
+├── parse_xml_results(path)       → per-test pass/fail
+└── build_filter(test_id)         → --gtest_filter string
+```
+
+**TestUnit** is the interface for a test source within a ConfigUnit.
+Each TestUnit represents one way to run tests (ctest, meson test, direct
+binary). A ConfigUnit may have multiple TestUnits (though typically one).
+
+**CTestUnit** wraps ctest for cmake projects. It discovers test targets
+via `ctest --show-only=json-v1`, probes executables for framework
+detection via the GTest helper, and runs tests via ctest commands. One
+CTestUnit per ConfigUnit. Contains all ctest test targets — each target
+may have a different framework (gtest, catch2, opaque).
+
+**GTest** is a shared helper class (not a TestUnit) containing all
+gtest-specific functionality: probing via `--gtest_list_tests`, parsing
+gtest XML results, constructing `--gtest_filter` strings, and scanning
+source files for `TEST()` macros to find source locations. Multiple
+TestUnits can use the same GTest helper.
+
+**TestUnit lifecycle**: Created lazily on first `discover_tests()` call.
+The module provides a factory method (`create_test_unit(config_unit)`)
+that returns the appropriate TestUnit type. The cmake module returns a
+CTestUnit, meson returns MesonTestUnit, others return nil.
+
+**Build dir locking**: TestUnits that share a build directory must not
+run concurrently. Test runs acquire a shared lock on the build dir
+(same as builds, section 5.3).
+
+#### 9.9.2 Two-level test model
 
 Test discovery operates at two levels:
 
@@ -2347,12 +2394,10 @@ depends on how the project registers tests:
   appear in `ctest --show-only=json-v1` output immediately after
   configure. No binary introspection needed.
 - **cmake with `add_test()` only**: ctest knows the executable but not
-  individual cases. After the first build, the module probes the binary
-  (e.g., `--gtest_list_tests`) to discover individual tests.
+  individual cases. After the first build, the GTest helper probes the
+  binary with `--gtest_list_tests` to discover individual tests.
 - **meson**: `meson test --list` enumerates registered tests. Individual
-  case discovery via binary introspection after build.
-- **typescript**: test runners (`jest --listTests`) enumerate test files.
-  Individual test discovery from structured output after first run.
+  case discovery via GTest helper after build.
 
 Discovery is passive — `discover_tests()` returns whatever is known
 without triggering any operations. The tree progressively enriches:
@@ -2360,7 +2405,7 @@ unconfigured → nil, configured → test targets (and individual tests if
 `gtest_discover_tests()` was used), after build → individual tests from
 introspection.
 
-#### 9.9.2 Build system as test runner
+#### 9.9.3 Build system as test runner
 
 Test execution always goes through the build system's test runner (ctest,
 meson test) rather than running test binaries directly. The build system
@@ -2368,27 +2413,20 @@ owns test configuration — environment variables, working directory,
 timeout, fixtures, expected-failure flags — that would be lost by running
 binaries directly.
 
-**cmake/ctest execution**:
+**cmake/ctest execution** (CTestUnit):
 
 | Scenario | Command |
 |----------|---------|
-| Run all tests | `ctest --test-dir <build_dir> [--output-junit <path>]` |
-| Run one test target | `ctest --test-dir <build_dir> -R <target_name>` |
-| Run individual case (`gtest_discover_tests`) | `ctest --test-dir <build_dir> -R <Suite.Test>` |
-| Run individual case (`add_test` only) | `ctest --test-dir <build_dir> -R <target>` with `GTEST_FILTER=Suite.Test` in env |
+| Run all tests | `ctest --test-dir <build_dir> -C <config> [--output-junit <path>]` |
+| Run one test target | `ctest --test-dir <build_dir> -C <config> -R <target_name>` |
+| Run individual case (`gtest_discover_tests`) | `ctest --test-dir <build_dir> -C <config> -R <Suite.Test>` |
+| Run individual case (`add_test` only) | `ctest --test-dir <build_dir> -C <config> -R <target>` with `GTEST_FILTER=Suite.Test` in env |
 
-When a project uses `gtest_discover_tests()`, ctest already registers
-each gtest case with the correct `--gtest_filter`. Running via ctest
-preserves all test properties (env, timeout, working dir, fixtures).
+The `-C <config>` flag is always passed (required for multi-config
+generators, harmless for single-config). CTestUnit searches subdirectories
+for `CTestTestfile.cmake` when not present at the build root.
 
-When a project uses `add_test()` only, the test is a single ctest entry
-for the whole executable. To run an individual case, the module sets the
-`GTEST_FILTER` environment variable and runs ctest with `-R` matching
-the target name. ctest passes the parent environment through to the
-executable, so the gtest binary sees the filter. The `ENVIRONMENT` test
-property merges with (does not replace) the parent environment.
-
-**meson execution**:
+**meson execution** (MesonTestUnit — future):
 
 | Scenario | Command |
 |----------|---------|
@@ -2396,48 +2434,71 @@ property merges with (does not replace) the parent environment.
 | Run one test target | `meson test -C <build_dir> <test_name>` |
 | Run individual gtest case | `meson test -C <build_dir> <test_name> --test-args="--gtest_filter=Suite.Test"` |
 
-Meson's `--test-args` flag passes arguments directly to the test
-executable, allowing framework-specific filters while preserving meson's
-test configuration.
+#### 9.9.4 GTest helper
 
-**typescript execution**: The test runner (jest, vitest) is invoked
-directly — there is no separate build system layer.
+The GTest helper is a shared utility class used by CTestUnit and future
+TestUnit implementations. It encapsulates all gtest-specific knowledge.
 
-#### 9.9.3 Test framework detection
+**`GTest.probe(executable, callback)`**
+
+Run `--gtest_list_tests` with a short timeout. Parse output into test
+entries (suite + case names). Returns framework name (`"gtest"`) and
+test list, or nil if the executable is not gtest.
+
+**`GTest.find_source_locations(test_entries, source_files)`**
+
+Scan source files for gtest macros (`TEST`, `TEST_F`, `TEST_P`) to find
+file and line number for each test entry. Source files come from cmake
+file-api target → source file mapping (section 9.5) or meson
+introspection.
+
+Pattern matching: search for `TEST(SuiteName, TestName)` and similar
+macros. Match against the test entry's suite and case name. Returns
+updated test entries with `file` and `line` fields populated.
+
+This enables neotest's "jump to test source" navigation from the summary
+panel.
+
+**`GTest.parse_xml_results(output_path)`**
+
+Parse gtest XML output (`--gtest_output=xml:<path>`) into per-test
+results with status, message, and duration.
+
+**`GTest.build_filter(test_id)`**
+
+Construct the `--gtest_filter` string from a test ID. Handles suite.case
+format and wildcard patterns.
+
+#### 9.9.5 Test framework detection
 
 For test targets registered without individual case granularity (cmake
-`add_test()`, meson `test()`), the module needs to detect the test
-framework to enable individual test discovery and filtering.
-
-**Automatic detection**: After the first build, the module probes each
-test executable. For gtest: run with `--gtest_list_tests` with a short
-timeout. If the output matches the expected format, the target is
-identified as gtest and individual tests are enumerated. If detection
-fails or produces unrecognized output, the target is treated as opaque
-(run-only, no individual test breakdown).
-
-Detection results are cached per test target on the ConfigUnit and
-invalidated on rebuild.
+`add_test()`, meson `test()`), the TestUnit probes each executable
+using the GTest helper. Detection runs once per test target after
+the first build; results are cached on the TestUnit and invalidated
+on rebuild.
 
 **Supported frameworks** (v1): gtest. Additional frameworks (catch2,
-doctest) can be added by implementing detection probes and result parsers.
+doctest) can be added by implementing new helper classes with probe and
+parse methods.
 
-#### 9.9.3 ConfigUnit test interface
+#### 9.9.6 ConfigUnit test interface
+
+ConfigUnit delegates all test operations to its TestUnit instances.
+TestUnits are created lazily on first access.
+
+**`config_unit:test_units() → TestUnit[]`**
+
+Returns the array of TestUnits for this configuration. Created lazily
+by calling the module's `create_test_unit(config_unit)` factory.
 
 **`config_unit:discover_tests() → TestTree|nil`**
 
-Returns the test tree for this configuration, or nil if tests are not
-available (module doesn't support tests, not yet configured, etc.).
-Delegates to the module. Results are cached on the ConfigUnit and
-invalidated after each successful build or test run.
+Returns the merged test tree from all TestUnits, or nil if no tests
+are available. Results are cached and invalidated after each successful
+build or configure.
 
 Discovery is read-only — it never triggers configure, build, or test
-execution. It returns what is currently known:
-- Not configured → nil
-- Configured, not built → test targets only (from ctest/meson)
-- Built, not yet run → test targets + individual tests from
-  introspection (e.g., `--gtest_list_tests`)
-- After test run → full tree with pass/fail results
+execution. It returns what is currently known.
 
 The returned TestTree is a flat list of test entries:
 
@@ -2445,8 +2506,10 @@ The returned TestTree is a flat list of test entries:
 |-------|------|-------------|
 | `id` | string | Unique test identifier within this config unit |
 | `name` | string | Human-readable test name |
+| `file` | string\|nil | Absolute source file path (for navigation) |
+| `line` | number\|nil | 1-based line number in source |
 | `parent` | string\|nil | Parent test id (suite/group) for tree nesting |
-| `runnable` | boolean | Whether this node can be run directly (false for suite-only groupings) |
+| `runnable` | boolean | Whether this node can be run directly |
 | `framework` | string\|nil | Detected framework (`"gtest"`, nil for opaque) |
 | `executable` | string\|nil | Path to test binary (for test targets) |
 | `status` | string\|nil | Last run result: `"passed"`, `"failed"`, `"skipped"`, `"errored"` |
@@ -2455,191 +2518,86 @@ The returned TestTree is a flat list of test entries:
 
 **`config_unit:run_test(test_id, opts?) → Operation`**
 
-Run a single test identified by `test_id`. ConfigUnit automatically
-handles the full prerequisite chain: configure if unconfigured or stale,
-build the test target if needed, then run the test. The caller does not
-check or manage ConfigUnit state — it simply requests the test run.
-
-`opts` may include:
-- `strategy`: `"run"` (default) or `"dap"` (debug via DAP)
-
-Returns an Operation for progress tracking, same as build/configure
-operations. After the test completes, results are parsed and the cached
-TestTree is updated with pass/fail status.
+Run a single test. ConfigUnit finds the owning TestUnit and delegates.
+Automatically handles the full prerequisite chain: configure → build →
+test. The caller does not manage state.
 
 **`config_unit:run_tests(opts?) → Operation`**
 
-Run all tests for this configuration. Same automatic prerequisite chain
-as `run_test` — configure and build if needed before running.
+Run all tests across all TestUnits. Same prerequisite chain.
 
-`opts` may include:
-- `filter`: string pattern to filter test names
-- `strategy`: `"run"` or `"dap"`
-
-#### 9.9.4 Cursor-level test running
+#### 9.9.7 Cursor-level test running
 
 For frameworks with known test macro patterns (gtest: `TEST`,
-`TEST_F`, `TEST_P`), Tree-sitter queries on the source file identify
-the test name at the cursor position. The query extracts the suite and
-test name to construct the framework-specific filter:
+`TEST_F`, `TEST_P`), source file scanning identifies the test name
+at the cursor position and constructs the appropriate filter.
 
-- **gtest**: `TEST(Suite, Name)` → filter `Suite.Name`
+The test is executed through the build system's test runner (see
+section 9.9.3). The GTest helper provides the `GTEST_FILTER` value.
 
-This allows "run test under cursor" without requiring a prior test run —
-the TS query finds the test name directly from source, and the module
-constructs the appropriate run command.
+Cursor-level running requires knowing which test target contains the
+source file. This mapping comes from cmake file-api data (target →
+source files, section 9.5) or meson introspection, resolved by the
+GTest helper's `find_source_locations`.
 
-The test is still executed through the build system's test runner (see
-section 9.9.2). For cmake with `gtest_discover_tests()`, the individual
-case is already a ctest entry — run via `ctest -R Suite.Name`. For cmake
-with `add_test()`, run via ctest with `GTEST_FILTER=Suite.Name` in env.
-For meson, run via `meson test <target> --test-args="--gtest_filter=
-Suite.Name"`.
-
-Cursor-level running requires knowing which test target (executable)
-contains the source file. This mapping comes from cmake file-api data
-(target → source files, section 9.5) or meson introspection.
-
-For opaque targets (unknown framework), cursor-level running is not
-available. The user runs tests from the neotest summary tree by name.
-
-#### 9.9.5 Module test methods (optional)
-
-Modules opt into test support by implementing these methods. None are
-required — modules without test support simply don't implement them,
-and `config_unit:discover_tests()` returns nil.
-
-**`discover_tests(project_ctx, build_dir) → TestTree|nil`**
-
-Discover tests from the build directory. Returns what is currently known
-without running tests.
-
-- **cmake**: runs `ctest --test-dir <build_dir> --show-only=json-v1`.
-  If `gtest_discover_tests()` was used, individual test cases appear
-  directly. For `add_test()` targets, returns test executables as
-  top-level entries. If the binary has been built and framework detected,
-  enriches with individual tests from introspection.
-- **meson**: runs `meson test --list -C <build_dir>`. Enriches with
-  individual tests from introspection when framework is detected.
-- **typescript**: delegates to the project's test runner (`jest
-  --listTests`, `vitest --list`).
-
-**`test_command(project_ctx, build_dir, test_id, opts?) → cmd, args, env, cwd`**
-
-Construct the command to run a specific test. Always uses the build
-system's test runner to preserve test configuration (env, timeout,
-fixtures).
-
-`opts` may include:
-- `gtest_filter`: individual gtest case filter (e.g., `"Suite.Test"`)
-
-Commands per module (see section 9.9.2 for full details):
-- **cmake**: `ctest --test-dir <build_dir> -R <pattern>
-  [--output-junit <path>]`. Adds `GTEST_FILTER` to env when filtering
-  individual cases within an `add_test()` target.
-- **meson**: `meson test -C <build_dir> <test_name>`. Adds
-  `--test-args="--gtest_filter=<filter>"` for individual cases.
-- **typescript**: `npx jest --testPathPattern <file> -t <test_name>
-  --json`.
-
-**`test_command_all(project_ctx, build_dir, filter?) → cmd, args, env, cwd`**
-
-Construct the command to run all (or filtered) tests.
-
-- **cmake**: `ctest --test-dir <build_dir> [-R <filter>]
-  [--output-junit <path>]`.
-- **meson**: `meson test -C <build_dir> [<filter>]`.
-- **typescript**: `npx jest [--testPathPattern <filter>] --json`.
-
-**`parse_test_results(output_path) → TestResult[]`**
-
-Parse structured test output into results.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `test_id` | string | Matches an id from discover_tests |
-| `status` | string | `"passed"`, `"failed"`, `"skipped"`, `"errored"` |
-| `message` | string\|nil | Failure message or error output |
-| `duration` | number\|nil | Test duration in milliseconds |
-
-- **cmake/ctest**: parse ctest JUnit XML output (`--output-junit`).
-  For `gtest_discover_tests()` targets, each ctest test maps to one
-  gtest case.
-- **meson**: parse meson test log.
-- **typescript**: parse jest JSON output (`--json`).
-
-**`detect_test_framework(executable_path) → string|nil`**
-
-Probe a test executable to detect its framework. Returns framework name
-(e.g., `"gtest"`) or nil if unrecognized. Called once per test target
-after first build, result cached.
-
-- Runs `<executable> --gtest_list_tests` with a short timeout. If output
-  matches gtest format, returns `"gtest"` and the parsed test list is
-  used for individual test discovery.
-- Future: probe for catch2 (`--list-tests`), doctest (`--list-test-cases`).
-
-#### 9.9.6 Neotest adapter
+#### 9.9.8 Neotest adapter
 
 The loomworks neotest adapter is registered as a single adapter. It
 bridges ConfigUnit's test interface to neotest's adapter protocol.
 
+The adapter works with the TestUnit/TestTree interface only — no
+framework-specific code in the adapter.
+
+**Sentinel file**: The root `CMakeLists.txt` serves as neotest's
+sentinel file. All test positions are attached to it, since build-system
+tests are not inherently tied to individual source files. When source
+locations are available (via GTest helper), test positions include
+`file` and `line` for navigation.
+
 **Discovery** (`discover_positions`):
-1. Source file → project (via workspace project path matching)
-2. Project → active profile → ConfigUnit
-3. `config_unit:discover_tests()` → filter entries relevant to the file
-4. Map to neotest position tree
-5. If framework supports cursor-level (9.9.4): augment with TS query
-   positions from source
+1. ConfigUnit → `discover_tests()` → TestTree with file/line
+2. Map to neotest position tree with source locations
 
 **Execution** (`build_spec`):
-1. Neotest position → test_id (from tree) or cursor test name (from TS)
-2. test_id → ConfigUnit (from discovery mapping)
-3. `config_unit:run_test(test_id, { strategy })` → Operation
-4. Operation runs via overseer (same task tracking as build/configure)
-5. ConfigUnit handles the entire chain (configure → build → test)
+1. Neotest position → test_id → owning TestUnit
+2. TestUnit constructs the ctest/meson command
+3. Warns if project needs configure first
 
 **Results** (`results`):
-1. Task output → `module.parse_test_results(output_path)`
-2. Map TestResult[] back to neotest result format
-3. ConfigUnit's cached TestTree updated with new results
+1. Parse structured output (JUnit XML) via TestUnit
+2. Map results to neotest format keyed by position ID
+3. Assign overall status to unmatched nodes
 
-**Profile switching**: When the active profile changes
-(`active_set_changed` event), the adapter invalidates its cached test
-trees and triggers neotest re-discovery.
+**Auto-discovery**: On workspace load and profile switch, the adapter
+triggers async test discovery to pre-populate caches. This ensures
+tests are visible in the neotest summary immediately.
 
-#### 9.9.7 Prerequisite chain
+**Profile switching**: `active_set_changed` event invalidates all
+TestUnit caches and triggers re-discovery.
+
+#### 9.9.9 Prerequisite chain
 
 Test execution reuses the same cascading prerequisite pattern as builds.
 ConfigUnit owns the entire chain — the caller simply requests the test
 run and receives a single Operation covering all steps:
 
-1. **Configure if needed**: If ConfigUnit is unconfigured or in
-   `configure_failed` state, configure first (same as section 5.2).
-2. **Build if needed**: Build the test target after successful configure.
-   For cmake, this means building the specific test executable when
-   identifiable. For typescript, the test runner manages its own
-   compilation.
-3. **Run test**: After prerequisites complete successfully, run the test
-   command.
+1. **Configure if needed**: same as section 5.2.
+2. **Build if needed**: build the test target after successful configure.
+3. **Run test**: after prerequisites complete, run via TestUnit.
 
-If any step fails, the operation reports the failure without proceeding
-to the next step.
+If any step fails, the operation reports the failure without proceeding.
+Build directory operation queue (section 5.3) applies throughout.
 
-Build directory operation queue (section 5.3) applies throughout — test
-runs acquire a shared lock (same as builds).
+#### 9.9.10 Debug integration
 
-#### 9.9.8 Debug integration
-
-When `strategy = "dap"`, the module constructs a DAP launch configuration
-instead of a shell command:
+When `strategy = "dap"`, the TestUnit constructs a DAP launch
+configuration instead of a shell command:
 - Executable path from the test binary
 - Arguments include the test filter (e.g., `--gtest_filter=Suite.Test`)
 - Environment and working directory from the ConfigUnit context
 
 The adapter hands this to neotest's DAP strategy, which delegates to
-nvim-dap. This reuses the same DAP infrastructure that target launching
-(section 9.7) will use.
+nvim-dap.
 
 ---
 

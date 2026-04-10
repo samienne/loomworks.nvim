@@ -194,67 +194,9 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
     return Tree.from_list(root_node, function(pos) return pos.id end)
 end
 
---- Probe test executables for framework detection (e.g., gtest).
---- After ctest discovery finds opaque targets, runs --gtest_list_tests
---- to enumerate individual tests.
---- @param unit loomworks.ConfigUnit
---- @param entries table[] test entries from ctest discovery
---- @param callback fun() called when all probing is done
-local function probe_test_frameworks(unit, entries, callback)
-    local impl = unit:_module_impl()
-    if not impl or not impl.detect_test_framework then
-        callback()
-        return
-    end
-
-    -- Find opaque targets (no framework detected, have an executable)
-    local targets_to_probe = {}
-    for _, e in ipairs(entries) do
-        if not e.parent and not e.framework and e.executable then
-            -- Only probe if not already cached
-            local cached = unit._test_frameworks[e.executable]
-            if cached == nil then -- nil = not probed yet, false = probed and unknown
-                targets_to_probe[#targets_to_probe + 1] = e
-            elseif cached and cached ~= false then
-                -- Already detected — mark on entry
-                e.framework = cached
-            end
-        end
-    end
-
-    if #targets_to_probe == 0 then
-        callback()
-        return
-    end
-
-    local pending = #targets_to_probe
-    for _, target in ipairs(targets_to_probe) do
-        impl.detect_test_framework(target.executable, function(framework, test_list, target_id)
-            -- Cache the result
-            unit._test_frameworks[target.executable] = framework or false
-
-            if framework and test_list and #test_list > 0 then
-                -- Update the target's framework
-                target.framework = framework
-                -- Append individual tests to the tree
-                for _, test_entry in ipairs(test_list) do
-                    entries[#entries + 1] = test_entry
-                end
-            end
-
-            pending = pending - 1
-            if pending == 0 then
-                -- Update cached tree with enriched entries
-                unit._test_tree = entries
-                callback()
-            end
-        end, target.id)
-    end
-end
-
 --- Trigger async test discovery for all ConfigUnits in the active profile.
 --- Populates _test_tree caches so discover_positions can return immediately.
---- After ctest discovery, probes executables for framework detection.
+--- TestUnits handle framework probing internally.
 local function ensure_test_cache()
     local lw = require("loomworks")
     local profile = lw.get_active_profile()
@@ -263,11 +205,7 @@ local function ensure_test_cache()
     for _, pp in ipairs(profile:projects()) do
         local unit = pp._config_unit
         if unit and not unit._test_tree then
-            unit:discover_tests_async(function(entries)
-                if entries then
-                    probe_test_frameworks(unit, entries, function() end)
-                end
-            end)
+            unit:discover_tests_async(function() end)
         end
     end
 end
@@ -305,16 +243,13 @@ local function setup_events()
     -- If workspace is already loaded, populate synchronously.
     -- This happens when neotest is lazy-loaded after workspace init.
     -- Sync is safe here because we're not in a coroutine.
+    -- TestUnits handle framework probing internally.
     if lw.get_workspace() and lw.get_active_profile() then
         local profile = lw.get_active_profile()
         for _, pp in ipairs(profile:projects()) do
             local unit = pp._config_unit
             if unit and not unit._test_tree then
-                -- Sync discover (safe — not in coroutine)
-                local entries = unit:discover_tests()
-                if entries then
-                    probe_test_frameworks(unit, entries, function() end)
-                end
+                unit:discover_tests()
             end
         end
     end
@@ -452,26 +387,20 @@ function adapter.build_spec(args)
         end
     end
 
-    local impl = unit:_module_impl()
-    if not impl then return nil end
-
-    local project_ctx, bd = unit:_test_context()
-    if not project_ctx then return nil end
+    -- Find the TestUnit for this test
+    local tu = unit:_find_test_unit(original_id or pos.name)
+    if not tu then return nil end
 
     -- Determine what to run based on position type
     local test_cmd
     if pos.type == "test" or pos.type == "namespace" then
-        if not impl.test_command then return nil end
-        test_cmd = impl.test_command(project_ctx, bd, original_id or pos.name)
+        test_cmd = tu:test_command(original_id or pos.name)
     else
-        -- dir or file level: run all tests
-        if not impl.test_command_all then return nil end
-        test_cmd = impl.test_command_all(project_ctx, bd)
+        test_cmd = tu:test_command_all()
     end
+    if not test_cmd then return nil end
 
     -- Check if the project needs to be built first.
-    -- We can't run overseer from neotest's coroutine context, so for now
-    -- we notify the user if a build is needed.
     local state = unit:state()
     if state == "unconfigured" or state == "configure_failed" then
         vim.schedule(function()
@@ -487,6 +416,7 @@ function adapter.build_spec(args)
         context = {
             output_path = test_cmd.output_path,
             config_unit = unit,
+            test_unit = tu,
             position_id = pos.id,
         },
     }
@@ -529,12 +459,12 @@ function adapter.results(spec, result, tree)
     local results = {}
     local ctx = spec.context or {}
 
-    -- Try to parse structured output (JUnit XML)
-    if ctx.output_path and ctx.config_unit then
-        local impl = ctx.config_unit:_module_impl()
-        if impl and impl.parse_test_results then
-            local parsed = impl.parse_test_results(ctx.output_path)
-            if parsed then
+    -- Try to parse structured output (JUnit XML) via TestUnit
+    local tu = ctx.test_unit
+    if ctx.output_path and tu then
+        local parsed = tu:parse_results(ctx.output_path)
+        if parsed then
+            if ctx.config_unit then
                 -- Apply results to ConfigUnit's test cache
                 ctx.config_unit:_apply_test_results(parsed)
 

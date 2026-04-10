@@ -37,9 +37,9 @@
 --- @field _removed boolean
 --- @field targets table<string, loomworks.Target>|nil runtime-only
 --- Test integration (runtime-only):
---- @field _test_tree table[]|nil cached test discovery entries
+--- @field _test_tree table[]|nil cached merged test entries from all TestUnits
 --- @field _test_results table[]|nil last parsed test results
---- @field _test_frameworks table<string, string|false> per-executable framework detection cache
+--- @field _test_units loomworks.TestUnit[]|nil lazily created TestUnit array
 --- @field _last_test_task_id number|nil most recent test overseer task ID
 local ConfigUnit = {}
 ConfigUnit.__index = ConfigUnit
@@ -68,7 +68,7 @@ function ConfigUnit.new(workspace, id, project_key)
     -- Test integration
     self._test_tree = nil
     self._test_results = nil
-    self._test_frameworks = {}
+    self._test_units = nil
     self._last_test_task_id = nil
     -- References (resolved during _apply)
     self._project = nil
@@ -678,60 +678,49 @@ function ConfigUnit:_module_impl()
     return self._project._module and self._project._module.impl or nil
 end
 
---- Build a module context for test methods.
---- @return table|nil project_ctx, string|nil build_dir
-function ConfigUnit:_test_context()
-    local bd = self:build_dir()
-    if not bd then return nil, nil end
-    if not self._project then return nil, nil end
+--- Get or create the TestUnit array for this configuration.
+--- Created lazily by calling the module's create_test_unit factory.
+--- @return loomworks.TestUnit[]
+function ConfigUnit:test_units()
+    if self._test_units then return self._test_units end
 
-    local ws = self._workspace
-    if not ws then return nil, nil end
-
-    local tool_data = self._tool and self._tool.data or self._tool_data
-    local tc_for_module = self._project:_type_config_for_module()
     local impl = self:_module_impl()
-    local variant = self:variant()
-    local abs_path = ws.root .. "/" .. (self._project.path or self._project.key)
-    local mod_info = impl and impl.info and impl.info(abs_path, tc_for_module)
-        or { configurations = {} }
+    if not impl or not impl.create_test_unit then
+        self._test_units = {}
+        return self._test_units
+    end
 
-    local project_ctx = {
-        name = self._project.key,
-        path = self._project.path or self._project.key,
-        type = self._project.type,
-        configuration = variant,
-        configuration_key = self:config_key(),
-        configurations = mod_info.configurations or {},
-        type_config = tc_for_module,
-        tool_data = tool_data,
-        workspace_root = ws.root,
-        env = tool_data and tool_data.env or {},
-        cached_build_dir = bd,
-    }
-
-    return project_ctx, bd
+    local tu = impl.create_test_unit(self)
+    self._test_units = tu and { tu } or {}
+    return self._test_units
 end
 
 --- Discover tests for this configuration. Returns cached results if
---- available, or runs discovery synchronously. Returns nil if the module
---- doesn't support tests or the unit isn't configured.
+--- available, or runs discovery synchronously. Delegates to TestUnits.
 --- Discovery is passive — it never triggers configure/build.
 --- @return table[]|nil TestTree entries
 function ConfigUnit:discover_tests()
     if self._test_tree then return self._test_tree end
 
-    local impl = self:_module_impl()
-    if not impl or not impl.discover_tests then return nil end
+    local units = self:test_units()
+    if #units == 0 then return nil end
 
-    local project_ctx, bd = self:_test_context()
-    if not project_ctx then return nil end
+    local all_entries = {}
+    for _, tu in ipairs(units) do
+        local entries = tu:discover()
+        if entries then
+            for _, e in ipairs(entries) do
+                all_entries[#all_entries + 1] = e
+            end
+        end
+    end
 
-    self._test_tree = impl.discover_tests(project_ctx, bd)
+    if #all_entries == 0 then return nil end
+    self._test_tree = all_entries
     return self._test_tree
 end
 
---- Discover tests asynchronously.
+--- Discover tests asynchronously. Delegates to TestUnits.
 --- @param callback fun(entries: table[]|nil)
 function ConfigUnit:discover_tests_async(callback)
     if self._test_tree then
@@ -739,39 +728,47 @@ function ConfigUnit:discover_tests_async(callback)
         return
     end
 
-    local impl = self:_module_impl()
-    if not impl or not impl.discover_tests_async then
-        -- Fall back to sync
-        callback(self:discover_tests())
-        return
-    end
-
-    local project_ctx, bd = self:_test_context()
-    if not project_ctx then
+    local units = self:test_units()
+    if #units == 0 then
         callback(nil)
         return
     end
 
-    impl.discover_tests_async(project_ctx, bd, function(entries)
-        self._test_tree = entries
-        callback(entries)
-    end)
+    local all_entries = {}
+    local pending = #units
+    for _, tu in ipairs(units) do
+        tu:discover_async(function(entries)
+            if entries then
+                for _, e in ipairs(entries) do
+                    all_entries[#all_entries + 1] = e
+                end
+            end
+            pending = pending - 1
+            if pending == 0 then
+                if #all_entries == 0 then
+                    callback(nil)
+                else
+                    self._test_tree = all_entries
+                    callback(all_entries)
+                end
+            end
+        end)
+    end
 end
 
 --- Invalidate cached test data (called after build/configure completes).
 function ConfigUnit:invalidate_tests()
     self._test_tree = nil
     self._test_results = nil
-    self._test_frameworks = {}
+    self._test_units = nil
 end
 
 --- Merge test results into the cached test tree.
---- @param results table[]|nil TestResult entries from parse_test_results
+--- @param results table[]|nil TestResult entries
 function ConfigUnit:_apply_test_results(results)
     if not results then return end
     self._test_results = results
 
-    -- Merge into tree if available
     if not self._test_tree then return end
     local by_id = {}
     for _, r in ipairs(results) do
@@ -787,6 +784,23 @@ function ConfigUnit:_apply_test_results(results)
     end
 end
 
+--- Find the TestUnit that owns a given test_id.
+--- @param test_id string
+--- @return loomworks.TestUnit|nil
+function ConfigUnit:_find_test_unit(test_id)
+    for _, tu in ipairs(self:test_units()) do
+        local entries = tu:entries()
+        if entries then
+            for _, e in ipairs(entries) do
+                if e.id == test_id then return tu end
+            end
+        end
+    end
+    -- Fallback: return first TestUnit
+    local units = self:test_units()
+    return units[1]
+end
+
 --- Run a single test. Handles the full prerequisite chain:
 --- configure if needed → build if needed → run test.
 --- @param test_id string test identifier from discover_tests
@@ -795,10 +809,8 @@ end
 function ConfigUnit:run_test(test_id, opts)
     opts = opts or {}
     local overseer_mod = require("loomworks.overseer")
-    local future_mod = require("loomworks.future")
 
     local unit = self
-    -- Prerequisite chain: ensure built, then run test
     return overseer_mod.run_configuration_action(self, "build"):next(function()
         return unit:_launch_test(test_id, opts)
     end)
@@ -823,21 +835,19 @@ end
 --- @return loomworks.Future
 function ConfigUnit:_launch_test(test_id, opts)
     local future_mod = require("loomworks.future")
-    local impl = self:_module_impl()
-    if not impl or not impl.test_command then
-        return future_mod.rejected("module does not support test execution")
+    local tu = self:_find_test_unit(test_id)
+    if not tu then
+        return future_mod.rejected("no test unit for " .. test_id)
     end
 
-    local project_ctx, bd = self:_test_context()
-    if not project_ctx then
-        return future_mod.rejected("no build directory")
+    local test_cmd = tu:test_command(test_id, opts)
+    if not test_cmd then
+        return future_mod.rejected("test unit cannot build command for " .. test_id)
     end
-
-    local test_cmd = impl.test_command(project_ctx, bd, test_id, opts)
 
     return self:_run_test_task(
         "test: " .. (test_id:match("^test:(.+)$") or test_id),
-        test_cmd
+        test_cmd, tu
     )
 end
 
@@ -846,26 +856,26 @@ end
 --- @return loomworks.Future
 function ConfigUnit:_launch_test_all(opts)
     local future_mod = require("loomworks.future")
-    local impl = self:_module_impl()
-    if not impl or not impl.test_command_all then
-        return future_mod.rejected("module does not support test execution")
+    local units = self:test_units()
+    if #units == 0 then
+        return future_mod.rejected("no test units")
     end
 
-    local project_ctx, bd = self:_test_context()
-    if not project_ctx then
-        return future_mod.rejected("no build directory")
+    local tu = units[1]
+    local test_cmd = tu:test_command_all(opts)
+    if not test_cmd then
+        return future_mod.rejected("test unit cannot build command")
     end
 
-    local test_cmd = impl.test_command_all(project_ctx, bd, opts.filter)
-
-    return self:_run_test_task("test: all", test_cmd)
+    return self:_run_test_task("test: all", test_cmd, tu)
 end
 
 --- Run a test task via overseer and parse results on completion.
 --- @param name string display name for the task
 --- @param test_cmd table { cmd, env, cwd, output_path }
+--- @param tu loomworks.TestUnit the test unit for result parsing
 --- @return loomworks.Future
-function ConfigUnit:_run_test_task(name, test_cmd)
+function ConfigUnit:_run_test_task(name, test_cmd, tu)
     local future_mod = require("loomworks.future")
     local ok, overseer = pcall(require, "overseer")
     if not ok then
@@ -896,14 +906,9 @@ function ConfigUnit:_run_test_task(name, test_cmd)
 
     task:subscribe("on_complete", function(_, status)
         vim.schedule(function()
-            -- Parse results regardless of exit code (some tests may have
-            -- passed even if the overall run "failed")
             if test_cmd.output_path then
-                local impl = unit:_module_impl()
-                if impl and impl.parse_test_results then
-                    local results = impl.parse_test_results(test_cmd.output_path)
-                    unit:_apply_test_results(results)
-                end
+                local results = tu:parse_results(test_cmd.output_path)
+                unit:_apply_test_results(results)
             end
 
             local events = unit._workspace._core._deps.events

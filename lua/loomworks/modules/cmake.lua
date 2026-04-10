@@ -1391,6 +1391,18 @@ end
 
 -- ========================== Test integration ==========================
 
+--- Create a CTestUnit for test discovery and execution.
+--- @param config_unit loomworks.ConfigUnit
+--- @return loomworks.CTestUnit|nil
+function M.create_test_unit(config_unit)
+    if not config_unit:build_dir() then return nil end
+    local CTestUnit = require("loomworks.test_units.ctest")
+    return CTestUnit.new(config_unit)
+end
+
+-- Legacy functions below are kept for test compatibility but
+-- new code should use CTestUnit via create_test_unit().
+
 --- Parse ctest --show-only=json-v1 output into a TestTree.
 --- @param json_str string raw JSON output from ctest
 --- @return table[]|nil flat list of test entries
