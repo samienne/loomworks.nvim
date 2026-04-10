@@ -35,14 +35,14 @@ function adapter.root(dir)
     local ws = lw.get_workspace()
     if not ws then return nil end
 
-    local root = norm(ws.root):lower()
-    local norm_dir = norm(dir):lower()
-    if norm_dir == root or norm_dir:sub(1, #root + 1) == root .. "/" then
-        -- Return the exact same string every time to prevent neotest
-        -- from creating multiple adapter instances due to case differences.
-        if not _cached_native_root or norm(_cached_native_root):lower() ~= root then
-            _cached_native_root = to_native(ws.root)
-        end
+    -- Compute and cache the native root once
+    if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(ws.root):lower() then
+        _cached_native_root = to_native(ws.root)
+    end
+
+    local root_lower = norm(ws.root):lower()
+    local dir_lower = norm(dir):lower()
+    if dir_lower == root_lower or dir_lower:sub(1, #root_lower + 1) == root_lower .. "/" then
         return _cached_native_root
     end
     return nil
@@ -54,10 +54,40 @@ end
 --- @param name string directory basename
 --- @param rel_path string path relative to root
 --- @return boolean true to search inside
+--- Cached set of directories that contain or lead to test files.
+local _test_dir_set = nil
+local _test_dir_set_version = 0
+
+local function get_test_dir_set()
+    local file_set = get_test_file_set()
+    local version = _test_file_set_version
+
+    if _test_dir_set and _test_dir_set_version == version then
+        return _test_dir_set
+    end
+
+    _test_dir_set = {}
+    for file_path in pairs(file_set) do
+        -- Add all parent directories up to the root
+        local dir = file_path:match("^(.+)/[^/]+$")
+        while dir do
+            if _test_dir_set[dir] then break end -- already added parents
+            _test_dir_set[dir] = true
+            dir = dir:match("^(.+)/[^/]+$")
+        end
+    end
+    _test_dir_set_version = version
+    return _test_dir_set
+end
+
 function adapter.filter_dir(name)
-    -- Skip build artifacts and hidden dirs (neotest already skips dotfiles)
-    if name == "build" or name == "node_modules" or name == "_deps"
-        or name == "CMakeFiles" or name == ".cmake" then
+    local name_lower = name:lower()
+    if name_lower == "build" or name_lower == "node_modules"
+        or name_lower == "_deps" or name_lower == "cmakefiles"
+        or name_lower == ".cmake" or name_lower == "3rdparty"
+        or name_lower == "googletest" or name_lower == "googlemock"
+        or name_lower == "include" or name_lower == "doc"
+        or name_lower == "cmake" or name_lower == "submodules" then
         return false
     end
     return true
@@ -102,29 +132,16 @@ local function get_test_file_set()
 end
 
 --- Check if a file could contain tests.
+--- Uses filename pattern matching (fast, no state dependency).
 --- @param file_path string absolute file path
 --- @return boolean
 function adapter.is_test_file(file_path)
     local name = file_path:match("[/\\]([^/\\]+)$")
     if not name then return false end
-
-    -- Root CMakeLists.txt: only if NO tests have source locations
-    -- (otherwise tests are discovered per-source-file and the sentinel
-    -- would just create duplicates)
-    if name == "CMakeLists.txt" then
-        local parent = norm(file_path):match("^(.+)/[^/]+$")
-        local root = adapter.root(parent or "")
-        if root and norm(root):lower() == norm(parent or ""):lower() then
-            -- Check if any tests have source locations
-            local file_set = get_test_file_set()
-            if not next(file_set) then
-                return true
-            end
-        end
-    end
-
-    -- Check cached set of test source files
-    return get_test_file_set()[norm(file_path):lower()] or false
+    local name_lower = name:lower()
+    return (name_lower:match("_test%.cpp$") or name_lower:match("_test%.cc$")
+        or name_lower:match("_test%.cxx$")
+        or name_lower:match("^test_.*%.cpp$") or name_lower:match("^test_.*%.cc$")) ~= nil
 end
 
 --- Resolve the file path → project → active profile → ConfigUnit chain.
@@ -178,35 +195,6 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
     root_id = to_native(root_id)
     root_path = to_native(root_path)
 
-    -- Group leaf test entries by source file path.
-    -- Entries with parents (individual tests) get grouped by their file.
-    -- Entries without parents (test targets/namespaces) become groups.
-    local by_file = {}       -- native_file_path → entries[]
-    local no_file = {}       -- entries without source location
-    local namespaces = {}    -- target/namespace entries (id → entry)
-    local children_of = {}   -- parent_id → entries[]
-
-    for _, entry in ipairs(entries) do
-        if entry.parent then
-            children_of[entry.parent] = children_of[entry.parent] or {}
-            children_of[entry.parent][#children_of[entry.parent] + 1] = entry
-            if entry.file then
-                local native = to_native(entry.file)
-                by_file[native] = by_file[native] or {}
-                by_file[native][#by_file[native] + 1] = entry
-            else
-                no_file[#no_file + 1] = entry
-            end
-        else
-            namespaces[entry.id] = entry
-        end
-    end
-
-    -- All tests go under the root file node (CMakeLists.txt).
-    -- Tests with source locations get their real file/line for navigation.
-    -- Tests without source locations get synthetic positions.
-    -- Namespaces (test targets) group their children.
-
     local line = 1
 
     -- Build parent → children map
@@ -235,12 +223,14 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
             line = line + 1
         end
 
-        -- Use real source file/line for navigation when available.
-        -- The path determines which file neotest opens on jump.
-        local pos_path = root_path
+        -- Always use root_path for the position path. This ensures all
+        -- positions in this tree share the same path as the root (which
+        -- is what neotest passed to discover_positions). Gutter marks
+        -- and nearest-test lookup match by buffer path = position path.
+        -- The entry.file/line are used for range only (navigation via
+        -- summary 'i' key uses range to jump).
         local pos_range = { start_line, 0, line, 0 }
-        if entry.file and entry.line then
-            pos_path = to_native(entry.file)
+        if entry.line then
             pos_range = { entry.line - 1, 0, entry.line, 0 }
         end
 
@@ -248,7 +238,7 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
             id = root_path .. "::" .. entry.id,
             type = node_type,
             name = entry.name,
-            path = pos_path,
+            path = root_path,
             range = pos_range,
             _original_id = entry._original_id or entry.id,
             _config_unit = entry._config_unit,
@@ -263,7 +253,6 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
         return result
     end
 
-    -- Root file node
     local child_nodes = {}
     for _, entry in ipairs(top_level) do
         child_nodes[#child_nodes + 1] = to_node(entry)
@@ -331,15 +320,16 @@ local function setup_events()
         vim.defer_fn(ensure_test_cache, 200)
     end)
 
-    -- If workspace is already loaded, populate synchronously.
-    -- This happens when neotest is lazy-loaded after workspace init.
-    -- Sync is safe here because we're not in a coroutine.
-    -- TestUnits handle framework probing internally.
+    -- Populate test cache synchronously if workspace is ready.
+    -- This runs during require("loomworks.neotest") which happens
+    -- inside neotest.setup(). The cache must be ready BEFORE neotest
+    -- starts its file scan (which happens right after setup returns).
     if lw.get_workspace() and lw.get_active_profile() then
-        local profile = lw.get_active_profile()
-        for _, pp in ipairs(profile:projects()) do
+        for _, pp in ipairs(lw.get_active_profile():projects()) do
             local unit = pp._config_unit
             if unit and not unit._test_tree then
+                -- Safe: we're in the main thread during require(),
+                -- not in a coroutine.
                 unit:discover_tests()
             end
         end
@@ -355,6 +345,7 @@ setup_events()
 --- @param path string absolute file or directory path
 --- @return table|nil neotest.Tree
 function adapter.discover_positions(path)
+    local ok, result = pcall(function()
     local lw = require("loomworks")
     local ws = lw.get_workspace()
     if not ws then return nil end
@@ -500,6 +491,9 @@ function adapter.discover_positions(path)
             return build_neotest_tree(file_entries, path, vim.fn.fnamemodify(path, ":t"), path, "file")
         end
     end
+    end)
+    if not ok then return nil end
+    return result
 end
 
 --- Build a run specification for a test.
@@ -658,6 +652,25 @@ function adapter.results(spec, result, tree)
     end
 
     return results
+end
+
+--- Debug: expose cache state for troubleshooting.
+function adapter.debug_cache()
+    local fs = get_test_file_set()
+    local ds = get_test_dir_set()
+    local fc, dc = 0, 0
+    for _ in pairs(fs) do fc = fc + 1 end
+    for _ in pairs(ds) do dc = dc + 1 end
+    vim.notify("file_set=" .. fc .. " dir_set=" .. dc)
+    -- Show a sample dir
+    for d in pairs(ds) do
+        vim.notify("  dir: " .. d)
+        break
+    end
+    for f in pairs(fs) do
+        vim.notify("  file: " .. f)
+        break
+    end
 end
 
 --- Allow calling the adapter as a function for neotest setup compatibility.

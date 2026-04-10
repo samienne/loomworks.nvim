@@ -153,7 +153,8 @@ function M.find_source_locations(test_entries, source_files)
             end
             return
         end
-        -- Fuzzy: match by case name + suite suffix
+        -- Fuzzy: match by case name + suite relationship.
+        -- Handles UNIT_TEST prefix (suite suffix match)
         local candidates = by_case[name]
         if candidates then
             for _, e in ipairs(candidates) do
@@ -162,7 +163,6 @@ function M.find_source_locations(test_entries, source_files)
                     if gtest_suite and suite:match(gtest_suite .. "$") then
                         e.file = canonical_path
                         e.line = macro_line
-                        break
                     end
                 end
             end
