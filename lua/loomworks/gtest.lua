@@ -102,67 +102,105 @@ end
 function M.find_source_locations(test_entries, source_files)
     -- Build lookups for matching test entries by name.
     -- Exact: "Suite.Case" → entry
-    -- By case name: "Case" → entry[] (for fuzzy matching when macros
-    -- transform the suite name, e.g. UNIT_TEST(API_Suite, Case) → Suite.Case)
+    -- By case name: "Case" → entry[]
+    -- By base name: "Suite.Case" → entry[] (for parameterized tests
+    --   where runtime name is "Prefix/Suite.Case/N")
     local by_exact = {}
     local by_case = {}
+    local by_base = {}  -- for parameterized tests
     for _, entry in ipairs(test_entries) do
         local test_name = entry.id:match("^test:(.+)$")
         if test_name then
             by_exact[test_name] = entry
             local _, case = test_name:match("^(.+)%.(.+)$")
             if case then
-                by_case[case] = by_case[case] or {}
-                by_case[case][#by_case[case] + 1] = entry
+                -- Strip param index suffix (e.g. "Case/0" → "Case")
+                local base_case = case:match("^(.+)/") or case
+                by_case[base_case] = by_case[base_case] or {}
+                by_case[base_case][#by_case[base_case] + 1] = entry
+            end
+            -- For parameterized: "Prefix/Suite.Case/N" → base "Suite.Case"
+            local base = test_name:match("^[^/]+/(.+)/[^/]+$")
+            if base then
+                by_base[base] = by_base[base] or {}
+                by_base[base][#by_base[base] + 1] = entry
             end
         end
     end
 
-    if not next(by_exact) then return end
+    if not next(by_exact) and not next(by_base) then return end
 
-    -- Scan each source file for TEST macros
+    -- Scan each source file for TEST macros.
+    -- Handles multi-line macros by accumulating lines until the first
+    -- two arguments (suite, name) are found.
+    local function try_match(suite, name, canonical_path, macro_line)
+        local full = suite .. "." .. name
+        -- Exact match
+        local entry = by_exact[full]
+        if entry and not entry.file then
+            entry.file = canonical_path
+            entry.line = macro_line
+            return
+        end
+        -- Parameterized: "Prefix/Suite.Name/N" → base "Suite.Name"
+        local base_entries = by_base[full]
+        if base_entries then
+            for _, e in ipairs(base_entries) do
+                if not e.file then
+                    e.file = canonical_path
+                    e.line = macro_line
+                end
+            end
+            return
+        end
+        -- Fuzzy: match by case name + suite suffix
+        local candidates = by_case[name]
+        if candidates then
+            for _, e in ipairs(candidates) do
+                if not e.file then
+                    local gtest_suite = e.id:match("^test:(.+)%.")
+                    if gtest_suite and suite:match(gtest_suite .. "$") then
+                        e.file = canonical_path
+                        e.line = macro_line
+                        break
+                    end
+                end
+            end
+        end
+    end
+
     for _, file_path in ipairs(source_files) do
+        local canonical_path = vim.fn.fnamemodify(file_path, ":p"):gsub("[/\\]$", "")
         local f = io.open(file_path, "r")
         if not f then goto continue end
 
         local line_num = 0
+        local pending_line = nil
+        local pending_args = nil
         for line in f:lines() do
             line_num = line_num + 1
-            -- Match test macros: find TEST followed by optional suffix,
-            -- then extract first two arguments from the parenthesized list.
-            -- Covers: TEST(S,N), TEST_F(S,N), TEST_P(S,N), UNIT_TEST(S,N,...),
-            -- UNIT_TEST_F(S,N,...), TYPED_TEST(S,N), etc.
-            -- Two-step: check for TEST macro, then extract args after "("
-            local args = line:match("TEST[_%w]*%s*%((.+)")
-            local suite, name
-            if args then
-                suite, name = args:match("^%s*([%w_]+)%s*,%s*([%w_]+)")
+
+            if pending_args then
+                -- Continue accumulating a multi-line macro
+                pending_args = pending_args .. " " .. line
+            else
+                local args = line:match("TEST[_%w]*%s*%((.+)")
+                if args then
+                    pending_args = args
+                    pending_line = line_num
+                end
             end
-            if suite and name then
-                -- Try exact match first
-                local full = suite .. "." .. name
-                local entry = by_exact[full]
-                if entry and not entry.file then
-                    entry.file = file_path
-                    entry.line = line_num
-                else
-                    -- Fuzzy: match by case name + suite suffix.
-                    -- Handles macros that add/remove prefixes (e.g.
-                    -- UNIT_TEST(API_Suite, Case) registers as Suite.Case)
-                    local candidates = by_case[name]
-                    if candidates then
-                        for _, e in ipairs(candidates) do
-                            if not e.file then
-                                -- Check if the gtest suite is a suffix of the macro suite
-                                local gtest_suite = e.id:match("^test:(.+)%.")
-                                if gtest_suite and suite:match(gtest_suite .. "$") then
-                                    e.file = file_path
-                                    e.line = line_num
-                                    break
-                                end
-                            end
-                        end
-                    end
+
+            if pending_args then
+                local suite, name = pending_args:match("^%s*([%w_]+)%s*,%s*([%w_]+)")
+                if suite and name then
+                    try_match(suite, name, canonical_path, pending_line)
+                    pending_args = nil
+                    pending_line = nil
+                elseif pending_args:match("%)") or line_num - (pending_line or 0) > 5 then
+                    -- Give up: closing paren without match, or too many lines
+                    pending_args = nil
+                    pending_line = nil
                 end
             end
         end

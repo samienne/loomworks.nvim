@@ -27,6 +27,9 @@ end
 --- Find the workspace root for a directory.
 --- @param dir string absolute directory path
 --- @return string|nil root path (using the same format as the input dir)
+--- Cached native root path (computed once to ensure consistency).
+local _cached_native_root = nil
+
 function adapter.root(dir)
     local lw = require("loomworks")
     local ws = lw.get_workspace()
@@ -35,8 +38,12 @@ function adapter.root(dir)
     local root = norm(ws.root):lower()
     local norm_dir = norm(dir):lower()
     if norm_dir == root or norm_dir:sub(1, #root + 1) == root .. "/" then
-        -- Always return native format to match neotest's internal paths
-        return to_native(ws.root)
+        -- Return the exact same string every time to prevent neotest
+        -- from creating multiple adapter instances due to case differences.
+        if not _cached_native_root or norm(_cached_native_root):lower() ~= root then
+            _cached_native_root = to_native(ws.root)
+        end
+        return _cached_native_root
     end
     return nil
 end
@@ -48,23 +55,76 @@ end
 --- @param rel_path string path relative to root
 --- @return boolean true to search inside
 function adapter.filter_dir(name)
-    return false
+    -- Skip build artifacts and hidden dirs (neotest already skips dotfiles)
+    if name == "build" or name == "node_modules" or name == "_deps"
+        or name == "CMakeFiles" or name == ".cmake" then
+        return false
+    end
+    return true
+end
+
+--- Cached set of normalized source file paths that contain tests.
+--- Rebuilt when test tree changes.
+local _test_file_set = nil
+local _test_file_set_version = 0
+
+local function get_test_file_set()
+    local lw = require("loomworks")
+    local profile = lw.get_active_profile()
+    if not profile then return {} end
+
+    -- Simple version check: total test tree entries
+    local version = 0
+    for _, pp in ipairs(profile:projects()) do
+        local unit = pp._config_unit
+        if unit and unit._test_tree then
+            version = version + #unit._test_tree
+        end
+    end
+
+    if _test_file_set and _test_file_set_version == version then
+        return _test_file_set
+    end
+
+    _test_file_set = {}
+    for _, pp in ipairs(profile:projects()) do
+        local unit = pp._config_unit
+        if unit and unit._test_tree then
+            for _, e in ipairs(unit._test_tree) do
+                if e.file then
+                    _test_file_set[norm(e.file):lower()] = true
+                end
+            end
+        end
+    end
+    _test_file_set_version = version
+    return _test_file_set
 end
 
 --- Check if a file could contain tests.
---- For build-system discovery, we match CMakeLists.txt at the project
---- root as the sentinel file. All ctest tests are attached to it.
---- We check against the root() result to identify the root CMakeLists.
 --- @param file_path string absolute file path
 --- @return boolean
 function adapter.is_test_file(file_path)
     local name = file_path:match("[/\\]([^/\\]+)$")
-    if name ~= "CMakeLists.txt" then return false end
-    -- Only root CMakeLists: parent dir should be the project root
-    local parent = norm(file_path):match("^(.+)/[^/]+$")
-    if not parent then return false end
-    local root = adapter.root(parent)
-    return root ~= nil
+    if not name then return false end
+
+    -- Root CMakeLists.txt: only if NO tests have source locations
+    -- (otherwise tests are discovered per-source-file and the sentinel
+    -- would just create duplicates)
+    if name == "CMakeLists.txt" then
+        local parent = norm(file_path):match("^(.+)/[^/]+$")
+        local root = adapter.root(parent or "")
+        if root and norm(root):lower() == norm(parent or ""):lower() then
+            -- Check if any tests have source locations
+            local file_set = get_test_file_set()
+            if not next(file_set) then
+                return true
+            end
+        end
+    end
+
+    -- Check cached set of test source files
+    return get_test_file_set()[norm(file_path):lower()] or false
 end
 
 --- Resolve the file path → project → active profile → ConfigUnit chain.
@@ -104,8 +164,8 @@ local function resolve_config_unit(file_path)
 end
 
 --- Build a neotest position tree from ConfigUnit test entries.
---- Uses synthetic ranges since tests are discovered from the build system,
---- not from source parsing.
+--- Groups tests by source file for navigation. Tests without source
+--- locations are grouped under the sentinel file (CMakeLists.txt).
 --- @param entries table[] test tree entries from discover_tests
 --- @param root_id string root position id
 --- @param root_name string root position name
@@ -115,9 +175,39 @@ end
 local function build_neotest_tree(entries, root_id, root_name, root_path, root_type)
     local Tree = require("neotest.types").Tree
 
-    -- Convert to native path format to match neotest's internal keys.
     root_id = to_native(root_id)
     root_path = to_native(root_path)
+
+    -- Group leaf test entries by source file path.
+    -- Entries with parents (individual tests) get grouped by their file.
+    -- Entries without parents (test targets/namespaces) become groups.
+    local by_file = {}       -- native_file_path → entries[]
+    local no_file = {}       -- entries without source location
+    local namespaces = {}    -- target/namespace entries (id → entry)
+    local children_of = {}   -- parent_id → entries[]
+
+    for _, entry in ipairs(entries) do
+        if entry.parent then
+            children_of[entry.parent] = children_of[entry.parent] or {}
+            children_of[entry.parent][#children_of[entry.parent] + 1] = entry
+            if entry.file then
+                local native = to_native(entry.file)
+                by_file[native] = by_file[native] or {}
+                by_file[native][#by_file[native] + 1] = entry
+            else
+                no_file[#no_file + 1] = entry
+            end
+        else
+            namespaces[entry.id] = entry
+        end
+    end
+
+    -- All tests go under the root file node (CMakeLists.txt).
+    -- Tests with source locations get their real file/line for navigation.
+    -- Tests without source locations get synthetic positions.
+    -- Namespaces (test targets) group their children.
+
+    local line = 1
 
     -- Build parent → children map
     local children_of = {}
@@ -131,13 +221,6 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
         end
     end
 
-    -- Assign synthetic line numbers for range (neotest needs ranges to
-    -- build the tree hierarchy). Each entry gets a unique line range.
-    local line = 1
-
-    --- Convert an entry to a neotest tree list node recursively.
-    --- @param entry table test entry
-    --- @return table list node for Tree.from_list
     local function to_node(entry)
         local start_line = line
         local kids = children_of[entry.id]
@@ -152,13 +235,13 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
             line = line + 1
         end
 
-        -- Use real source location if available, synthetic otherwise
-        local pos_path = entry.file and to_native(entry.file) or root_path
-        local pos_range
+        -- Use real source file/line for navigation when available.
+        -- The path determines which file neotest opens on jump.
+        local pos_path = root_path
+        local pos_range = { start_line, 0, line, 0 }
         if entry.file and entry.line then
+            pos_path = to_native(entry.file)
             pos_range = { entry.line - 1, 0, entry.line, 0 }
-        else
-            pos_range = { start_line, 0, line, 0 }
         end
 
         local pos = {
@@ -167,7 +250,6 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
             name = entry.name,
             path = pos_path,
             range = pos_range,
-            -- Carry through metadata for execution
             _original_id = entry._original_id or entry.id,
             _config_unit = entry._config_unit,
             executable = entry.executable,
@@ -181,7 +263,7 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
         return result
     end
 
-    -- Root node covers all lines
+    -- Root file node
     local child_nodes = {}
     for _, entry in ipairs(top_level) do
         child_nodes[#child_nodes + 1] = to_node(entry)
@@ -320,6 +402,8 @@ function adapter.discover_positions(path)
                     framework = e.framework,
                     executable = e.executable,
                     status = e.status,
+                    file = e.file,
+                    line = e.line,
                     _original_id = e.id,
                     _config_unit = unit,
                 }
@@ -332,36 +416,89 @@ function adapter.discover_positions(path)
 
         return build_neotest_tree(all_entries, path, vim.fn.fnamemodify(path, ":t"), path)
     else
-        -- File-level discovery: the root CMakeLists.txt is our sentinel.
+        -- File-level discovery
         local unit, project = resolve_config_unit(path)
         if not unit then return nil end
 
         -- Use cached data only — never block
         local entries = unit._test_tree
         if not entries then
-            -- Trigger async discovery for next time
             unit:discover_tests_async(function() end)
             return nil
         end
 
-        local file_entries = {}
-        for _, e in ipairs(entries) do
-            file_entries[#file_entries + 1] = {
-                id = e.id,
-                name = e.name,
-                parent = e.parent,
-                runnable = e.runnable,
-                framework = e.framework,
-                executable = e.executable,
-                status = e.status,
-                _original_id = e.id,
-                _config_unit = unit,
-            }
+        -- Check if this is a source file with tests or the CMakeLists sentinel
+        local norm_path = norm(path):lower()
+        local is_sentinel = path:match("[/\\]CMakeLists%.txt$") ~= nil
+
+        if is_sentinel then
+            -- CMakeLists.txt: only tests WITHOUT source locations.
+            -- Tests with source are discovered per-file instead.
+            -- Include namespace entries that have at least one sourceless child.
+            local sourceless = {}
+            local ns_has_sourceless = {}
+            for _, e in ipairs(entries) do
+                if e.parent and not e.file then
+                    sourceless[#sourceless + 1] = {
+                        id = e.id,
+                        name = e.name,
+                        parent = e.parent,
+                        runnable = e.runnable,
+                        framework = e.framework,
+                        executable = e.executable,
+                        status = e.status,
+                        _original_id = e.id,
+                        _config_unit = unit,
+                    }
+                    ns_has_sourceless[e.parent] = true
+                elseif not e.parent then
+                    -- Namespace/target — include if it has sourceless children
+                    -- (checked after this loop)
+                    sourceless[#sourceless + 1] = {
+                        id = e.id,
+                        name = e.name,
+                        runnable = e.runnable,
+                        framework = e.framework,
+                        executable = e.executable,
+                        _original_id = e.id,
+                        _config_unit = unit,
+                        _is_namespace = true,
+                    }
+                end
+            end
+            -- Filter: only keep namespaces that have sourceless children
+            local filtered = {}
+            for _, e in ipairs(sourceless) do
+                if not e._is_namespace or ns_has_sourceless[e.id] then
+                    e._is_namespace = nil
+                    filtered[#filtered + 1] = e
+                end
+            end
+            if #filtered == 0 then return nil end
+            return build_neotest_tree(filtered, path, vim.fn.fnamemodify(path, ":t"), path, "file")
+        else
+            -- Source file: return only tests from this file
+            local file_entries = {}
+            for _, e in ipairs(entries) do
+                if e.file and norm(e.file):lower() == norm_path then
+                    file_entries[#file_entries + 1] = {
+                        id = e.id,
+                        name = e.name,
+                        -- Don't set parent — these are top-level in this file
+                        runnable = e.runnable,
+                        framework = e.framework,
+                        executable = e.executable,
+                        status = e.status,
+                        file = e.file,
+                        line = e.line,
+                        _original_id = e.id,
+                        _config_unit = unit,
+                    }
+                end
+            end
+            if #file_entries == 0 then return nil end
+            return build_neotest_tree(file_entries, path, vim.fn.fnamemodify(path, ":t"), path, "file")
         end
-
-        if #file_entries == 0 then return nil end
-
-        return build_neotest_tree(file_entries, path, vim.fn.fnamemodify(path, ":t"), path, "file")
     end
 end
 
