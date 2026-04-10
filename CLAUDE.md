@@ -277,6 +277,16 @@ These are implementation-specific details not covered by the spec or architectur
   `expand.launch_context()` after built-in variables (two-pass: variable
   value expanded using built-in context). Path-typed variables appear in
   deploy editor segment picker.
+- **Test integration** (spec §9.9): neotest adapter bridges ConfigUnit's test
+  interface to neotest. TestUnit (`test_unit.lua`) is the interface; CTestUnit
+  (`test_units/ctest.lua`) wraps ctest. GTest helper (`gtest.lua`) handles
+  framework detection, source scanning, XML parsing. ConfigUnit delegates to
+  TestUnits created lazily by module factory (`create_test_unit`). cmake
+  file-api `parse_file_api` extracts source files per target for test→source
+  mapping. Neotest adapter uses pcall on all methods (nio coroutine hangs on
+  errors), avoids `vim.fn` calls (deadlock in nio), deduplicates
+  `discover_positions` calls (Windows path format mismatch), and caps
+  per-line entries (parameterized test merge performance).
 - **Error handling**: on deserialization error (structurally invalid data),
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still
