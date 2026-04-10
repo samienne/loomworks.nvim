@@ -25,6 +25,10 @@ local function to_native(p)
     return p
 end
 
+-- Forward declarations for local functions used by adapter methods
+local get_test_file_set
+local get_test_dir_set
+
 --- Find the workspace root for a directory.
 --- @param dir string absolute directory path
 --- @return string|nil root path (using the same format as the input dir)
@@ -54,43 +58,26 @@ end
 --- @param name string directory basename
 --- @param rel_path string path relative to root
 --- @return boolean true to search inside
---- Cached set of directories that contain or lead to test files.
-local _test_dir_set = nil
-local _test_dir_set_version = 0
 
-local function get_test_dir_set()
-    local file_set = get_test_file_set()
-    local version = _test_file_set_version
+function adapter.filter_dir(name, rel_path, root)
+    local ok, result = pcall(function()
+        if not root or not rel_path then return false end
 
-    if _test_dir_set and _test_dir_set_version == version then
-        return _test_dir_set
-    end
+        local dir_set = get_test_dir_set()
+        if not next(dir_set) then return false end
 
-    _test_dir_set = {}
-    for file_path in pairs(file_set) do
-        -- Add all parent directories up to the root
-        local dir = file_path:match("^(.+)/[^/]+$")
-        while dir do
-            if _test_dir_set[dir] then break end -- already added parents
-            _test_dir_set[dir] = true
-            dir = dir:match("^(.+)/[^/]+$")
+        local full = norm(root .. "/" .. rel_path):lower()
+        if dir_set[full] then return true end
+        local prefix = full .. "/"
+        for dir_path in pairs(dir_set) do
+            if dir_path:sub(1, #prefix) == prefix then
+                return true
+            end
         end
-    end
-    _test_dir_set_version = version
-    return _test_dir_set
-end
-
-function adapter.filter_dir(name)
-    local name_lower = name:lower()
-    if name_lower == "build" or name_lower == "node_modules"
-        or name_lower == "_deps" or name_lower == "cmakefiles"
-        or name_lower == ".cmake" or name_lower == "3rdparty"
-        or name_lower == "googletest" or name_lower == "googlemock"
-        or name_lower == "include" or name_lower == "doc"
-        or name_lower == "cmake" or name_lower == "submodules" then
         return false
-    end
-    return true
+    end)
+    if not ok then return false end
+    return result
 end
 
 --- Cached set of normalized source file paths that contain tests.
@@ -98,7 +85,7 @@ end
 local _test_file_set = nil
 local _test_file_set_version = 0
 
-local function get_test_file_set()
+function get_test_file_set()
     local lw = require("loomworks")
     local profile = lw.get_active_profile()
     if not profile then return {} end
@@ -129,6 +116,31 @@ local function get_test_file_set()
     end
     _test_file_set_version = version
     return _test_file_set
+end
+
+--- Cached set of directories that contain or lead to test files.
+local _test_dir_set = nil
+local _test_dir_set_version = 0
+
+function get_test_dir_set()
+    local file_set = get_test_file_set()
+    local version = _test_file_set_version
+
+    if _test_dir_set and _test_dir_set_version == version then
+        return _test_dir_set
+    end
+
+    _test_dir_set = {}
+    for file_path in pairs(file_set) do
+        local dir = file_path:match("^(.+)/[^/]+$")
+        while dir do
+            if _test_dir_set[dir] then break end
+            _test_dir_set[dir] = true
+            dir = dir:match("^(.+)/[^/]+$")
+        end
+    end
+    _test_dir_set_version = version
+    return _test_dir_set
 end
 
 --- Check if a file could contain tests.
@@ -660,25 +672,6 @@ function adapter.results(spec, result, tree)
     end
 
     return results
-end
-
---- Debug: expose cache state for troubleshooting.
-function adapter.debug_cache()
-    local fs = get_test_file_set()
-    local ds = get_test_dir_set()
-    local fc, dc = 0, 0
-    for _ in pairs(fs) do fc = fc + 1 end
-    for _ in pairs(ds) do dc = dc + 1 end
-    vim.notify("file_set=" .. fc .. " dir_set=" .. dc)
-    -- Show a sample dir
-    for d in pairs(ds) do
-        vim.notify("  dir: " .. d)
-        break
-    end
-    for f in pairs(fs) do
-        vim.notify("  file: " .. f)
-        break
-    end
 end
 
 --- Allow calling the adapter as a function for neotest setup compatibility.

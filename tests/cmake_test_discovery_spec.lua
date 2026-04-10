@@ -1,89 +1,11 @@
---- Tests for cmake module's test discovery functions.
+--- Tests for test integration: GTest helper and CTestUnit.
 
-local cmake = require("loomworks.modules.cmake")
+local gtest = require("loomworks.gtest")
 
--- Access internal parse functions via the module's public discover_tests
--- by testing the full flow with mock data. For unit testing the parsers,
--- we call them through discover_tests with a fake build dir, or test
--- the output format expectations.
+describe("gtest helper", function()
 
-describe("cmake test discovery", function()
-
-    describe("parse_ctest_json (via ctest --show-only=json-v1 format)", function()
-        -- We test the parser indirectly by checking that discover_tests
-        -- produces the right structure. For unit tests of the parser itself,
-        -- we need to expose it or test via integration.
-
-        -- For now, test the expected output format from known ctest JSON.
-    end)
-
-    describe("gtest_discover_tests format", function()
-        it("should parse individual gtest cases from ctest JSON", function()
-            -- Simulate ctest JSON output from gtest_discover_tests()
-            local json = vim.json.encode({
-                tests = {
-                    {
-                        name = "MathSuite.test_add",
-                        command = { "/build/tests/unit_tests", "--gtest_filter=MathSuite.test_add" },
-                    },
-                    {
-                        name = "MathSuite.test_sub",
-                        command = { "/build/tests/unit_tests", "--gtest_filter=MathSuite.test_sub" },
-                    },
-                    {
-                        name = "IOSuite.test_read",
-                        command = { "/build/tests/unit_tests", "--gtest_filter=IOSuite.test_read" },
-                    },
-                    {
-                        name = "IntegrationSuite.test_connect",
-                        command = { "/build/tests/integration_tests", "--gtest_filter=IntegrationSuite.test_connect" },
-                    },
-                },
-            })
-
-            -- Parse using the internal parser (exposed through the module)
-            -- Since parse_ctest_json is local, we test through the expected structure
-            local ok, data = pcall(vim.json.decode, json)
-            assert.is_true(ok)
-            assert.is_not_nil(data.tests)
-            assert.equals(4, #data.tests)
-
-            -- Verify the names follow gtest_discover_tests pattern (Suite.Test)
-            for _, test in ipairs(data.tests) do
-                local suite, case = test.name:match("^([^%.]+)%.(.+)$")
-                assert.is_not_nil(suite, "test name should have Suite.Case format: " .. test.name)
-                assert.is_not_nil(case)
-            end
-        end)
-    end)
-
-    describe("add_test format", function()
-        it("should identify opaque test targets", function()
-            local json = vim.json.encode({
-                tests = {
-                    {
-                        name = "unit_tests",
-                        command = { "/build/tests/unit_tests" },
-                    },
-                    {
-                        name = "integration_tests",
-                        command = { "/build/tests/integration_tests" },
-                    },
-                },
-            })
-
-            local ok, data = pcall(vim.json.decode, json)
-            assert.is_true(ok)
-            -- Names without dots → opaque targets
-            for _, test in ipairs(data.tests) do
-                local suite = test.name:match("^([^%.]+)%.(.+)$")
-                assert.is_nil(suite, "opaque target should not have Suite.Case format")
-            end
-        end)
-    end)
-
-    describe("gtest_list_tests parsing", function()
-        it("should parse standard gtest --gtest_list_tests output", function()
+    describe("parse_list_tests", function()
+        it("should parse standard --gtest_list_tests output", function()
             local output = table.concat({
                 "MathSuite.",
                 "  test_add",
@@ -94,31 +16,13 @@ describe("cmake test discovery", function()
                 "  test_write",
             }, "\n")
 
-            -- Test the expected parsing behavior
-            local entries = {}
-            local current_suite = nil
-            for line in output:gmatch("[^\r\n]+") do
-                local suite = line:match("^(%S+)%.$")
-                if suite then
-                    current_suite = suite
-                elseif current_suite then
-                    local case = line:match("^%s+(%S+)")
-                    if case then
-                        case = case:match("^([^#]+)") or case
-                        entries[#entries + 1] = {
-                            id = "test:" .. current_suite .. "." .. case,
-                            name = current_suite .. "." .. case,
-                        }
-                    end
-                end
-            end
-
+            local entries = gtest.parse_list_tests(output, "/build/test_runner", "target:test_runner")
             assert.equals(5, #entries)
             assert.equals("test:MathSuite.test_add", entries[1].id)
-            assert.equals("test:MathSuite.test_sub", entries[2].id)
-            assert.equals("test:MathSuite.test_mul", entries[3].id)
+            assert.equals("MathSuite.test_add", entries[1].name)
+            assert.equals("target:test_runner", entries[1].parent)
+            assert.equals("gtest", entries[1].framework)
             assert.equals("test:IOSuite.test_read", entries[4].id)
-            assert.equals("test:IOSuite.test_write", entries[5].id)
         end)
 
         it("should handle parameterized tests with # suffix", function()
@@ -128,92 +32,120 @@ describe("cmake test discovery", function()
                 "  test_values/1  # GetParam() = 2",
             }, "\n")
 
-            local entries = {}
-            local current_suite = nil
-            for line in output:gmatch("[^\r\n]+") do
-                local suite = line:match("^(%S+)%.$")
-                if suite then
-                    current_suite = suite
-                elseif current_suite then
-                    local case = line:match("^%s+(%S+)")
-                    if case then
-                        case = case:match("^([^#]+)") or case
-                        -- Trim trailing whitespace from # stripping
-                        case = case:match("^(.-)%s*$")
-                        entries[#entries + 1] = {
-                            name = current_suite .. "." .. case,
-                        }
-                    end
-                end
-            end
-
+            local entries = gtest.parse_list_tests(output, "/build/runner", "target:runner")
             assert.equals(2, #entries)
             assert.equals("ParamSuite.test_values/0", entries[1].name)
             assert.equals("ParamSuite.test_values/1", entries[2].name)
         end)
     end)
 
-    describe("test_command", function()
-        it("should construct ctest command for a specific test", function()
-            local project_ctx = { workspace_root = "/workspace" }
-            local result = cmake.test_command(
-                project_ctx, "/workspace/build", "test:MathSuite.test_add")
+    describe("find_source_locations", function()
+        it("should match TEST macros to entries", function()
+            local tmp = vim.fn.tempname() .. ".cpp"
+            local f = io.open(tmp, "w")
+            f:write("#include <gtest/gtest.h>\n")
+            f:write("TEST(MathSuite, test_add) { EXPECT_EQ(2, 1+1); }\n")
+            f:write("TEST_F(MathSuite, test_sub) { EXPECT_EQ(0, 1-1); }\n")
+            f:close()
 
-            assert.is_table(result.cmd)
-            assert.equals("ctest", result.cmd[1])
-            assert.equals("--test-dir", result.cmd[2])
-            assert.equals("/workspace/build", result.cmd[3])
-            -- Should have -R with anchored pattern
-            local found_r = false
-            for i, v in ipairs(result.cmd) do
-                if v == "-R" then
-                    found_r = true
-                    assert.is_not_nil(result.cmd[i + 1]:match("^%^"))
-                    assert.is_not_nil(result.cmd[i + 1]:match("%$$"))
-                end
-            end
-            assert.is_true(found_r, "should have -R flag")
-            assert.is_not_nil(result.output_path)
+            local entries = {
+                { id = "test:MathSuite.test_add", name = "MathSuite.test_add" },
+                { id = "test:MathSuite.test_sub", name = "MathSuite.test_sub" },
+            }
+            gtest.find_source_locations(entries, { tmp })
+
+            assert.is_not_nil(entries[1].file)
+            assert.equals(2, entries[1].line)
+            assert.is_not_nil(entries[2].file)
+            assert.equals(3, entries[2].line)
+
+            os.remove(tmp)
         end)
 
-        it("should inject GTEST_FILTER for cursor-level filtering", function()
-            local project_ctx = { workspace_root = "/workspace" }
-            local result = cmake.test_command(
-                project_ctx, "/workspace/build", "target:unit_tests",
-                { gtest_filter = "MathSuite.test_add" })
+        it("should match custom macros like UNIT_TEST", function()
+            local tmp = vim.fn.tempname() .. ".cpp"
+            local f = io.open(tmp, "w")
+            f:write('#include "test.h"\n')
+            f:write("UNIT_TEST(API_MySuite, DoSomething, TestSize.Level1)\n")
+            f:write("UNIT_TEST_F(API_MySuite, DoOther, TestSize.Level1)\n")
+            f:close()
 
-            assert.equals("MathSuite.test_add", result.env.GTEST_FILTER)
+            local entries = {
+                { id = "test:API_MySuite.DoSomething", name = "API_MySuite.DoSomething" },
+                { id = "test:API_MySuite.DoOther", name = "API_MySuite.DoOther" },
+            }
+            gtest.find_source_locations(entries, { tmp })
+
+            assert.is_not_nil(entries[1].file)
+            assert.equals(2, entries[1].line)
+            assert.is_not_nil(entries[2].file)
+            assert.equals(3, entries[2].line)
+
+            os.remove(tmp)
+        end)
+
+        it("should handle multi-line macros", function()
+            local tmp = vim.fn.tempname() .. ".cpp"
+            local f = io.open(tmp, "w")
+            f:write("UNIT_TEST_P(\n")
+            f:write("    API_MySuite, LongTestName, TestSize.Level1)\n")
+            f:write("{\n")
+            f:write("    // test body\n")
+            f:write("}\n")
+            f:close()
+
+            local entries = {
+                { id = "test:API_MySuite.LongTestName", name = "API_MySuite.LongTestName" },
+            }
+            gtest.find_source_locations(entries, { tmp })
+
+            assert.is_not_nil(entries[1].file)
+            assert.equals(1, entries[1].line)
+
+            os.remove(tmp)
+        end)
+
+        it("should match parameterized tests via base name", function()
+            local tmp = vim.fn.tempname() .. ".cpp"
+            local f = io.open(tmp, "w")
+            f:write("TEST_P(MySuite, MyTest) { }\n")
+            f:write("INSTANTIATE_TEST_SUITE_P(MyPrefix, MySuite, testing::Values(1,2));\n")
+            f:close()
+
+            local entries = {
+                { id = "test:MyPrefix/MySuite.MyTest/0", name = "MyPrefix/MySuite.MyTest/0" },
+                { id = "test:MyPrefix/MySuite.MyTest/1", name = "MyPrefix/MySuite.MyTest/1" },
+            }
+            gtest.find_source_locations(entries, { tmp })
+
+            assert.is_not_nil(entries[1].file)
+            assert.equals(1, entries[1].line)
+            assert.is_not_nil(entries[2].file)
+            assert.equals(1, entries[2].line)
+
+            os.remove(tmp)
+        end)
+
+        it("should match typed tests by case name", function()
+            local tmp = vim.fn.tempname() .. ".cpp"
+            local f = io.open(tmp, "w")
+            f:write("TYPED_TEST(TypedSuite, MyCase) { }\n")
+            f:close()
+
+            -- Typed test: gtest registers with a different suite name
+            local entries = {
+                { id = "test:RuntimeSuite.MyCase", name = "RuntimeSuite.MyCase" },
+            }
+            gtest.find_source_locations(entries, { tmp })
+
+            assert.is_not_nil(entries[1].file)
+            assert.equals(1, entries[1].line)
+
+            os.remove(tmp)
         end)
     end)
 
-    describe("test_command_all", function()
-        it("should construct ctest command for all tests", function()
-            local project_ctx = { workspace_root = "/workspace" }
-            local result = cmake.test_command_all(project_ctx, "/workspace/build")
-
-            assert.is_table(result.cmd)
-            assert.equals("ctest", result.cmd[1])
-            assert.equals("--test-dir", result.cmd[2])
-            assert.is_not_nil(result.output_path)
-        end)
-
-        it("should add filter when provided", function()
-            local project_ctx = { workspace_root = "/workspace" }
-            local result = cmake.test_command_all(
-                project_ctx, "/workspace/build", "Math.*")
-
-            local found_r = false
-            for i, v in ipairs(result.cmd) do
-                if v == "-R" then
-                    found_r = true
-                    assert.equals("Math.*", result.cmd[i + 1])
-                end
-            end
-            assert.is_true(found_r)
-        end)
-    end)
-
-    describe("parse_test_results", function()
+    describe("parse_xml_results", function()
         it("should parse JUnit XML with passed tests", function()
             local tmp = vim.fn.tempname() .. ".xml"
             local f = io.open(tmp, "w")
@@ -226,7 +158,7 @@ describe("cmake test discovery", function()
 </testsuites>]])
             f:close()
 
-            local results = cmake.parse_test_results(tmp)
+            local results = gtest.parse_xml_results(tmp)
             assert.is_not_nil(results)
             assert.equals(2, #results)
             assert.equals("test:MathSuite.test_add", results[1].test_id)
@@ -252,7 +184,7 @@ describe("cmake test discovery", function()
 </testsuites>]])
             f:close()
 
-            local results = cmake.parse_test_results(tmp)
+            local results = gtest.parse_xml_results(tmp)
             assert.is_not_nil(results)
             assert.equals(2, #results)
             assert.equals("passed", results[1].status)
@@ -275,7 +207,7 @@ describe("cmake test discovery", function()
 </testsuites>]])
             f:close()
 
-            local results = cmake.parse_test_results(tmp)
+            local results = gtest.parse_xml_results(tmp)
             assert.is_not_nil(results)
             assert.equals(1, #results)
             assert.equals("skipped", results[1].status)
@@ -284,8 +216,18 @@ describe("cmake test discovery", function()
         end)
 
         it("should return nil for missing file", function()
-            local results = cmake.parse_test_results("/nonexistent/path.xml")
+            local results = gtest.parse_xml_results("/nonexistent/path.xml")
             assert.is_nil(results)
+        end)
+    end)
+
+    describe("build_filter", function()
+        it("should strip test: prefix", function()
+            assert.equals("MathSuite.test_add", gtest.build_filter("test:MathSuite.test_add"))
+        end)
+
+        it("should pass through plain names", function()
+            assert.equals("MathSuite.test_add", gtest.build_filter("MathSuite.test_add"))
         end)
     end)
 end)
