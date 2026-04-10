@@ -128,11 +128,9 @@ local function create_adapter()
 
         run_suite = function(suite_id, opts)
             -- Suite ID format: "target_id::SuiteName"
-            -- Run via ctest with filter matching all tests in the suite
             local suite_name = suite_id:match("::(.+)$")
             if not suite_name then return nil end
 
-            -- Find any test in this suite to get the TestUnit
             local lw = require("loomworks")
             local profile = lw.get_active_profile()
             if not profile then return nil end
@@ -142,8 +140,11 @@ local function create_adapter()
                 if unit then
                     local tus = unit:test_units()
                     if #tus > 0 then
+                        -- ctest -R uses regex, not Lua patterns
+                        -- Escape regex special chars in suite name
+                        local escaped = suite_name:gsub("([%.%+%-%*%?%[%]%(%)%^%$])", "\\%1")
                         return tus[1]:test_command_all({
-                            filter = "^" .. vim.pesc(suite_name) .. "%.",
+                            filter = "^" .. escaped .. "\\.",
                         })
                     end
                 end

@@ -13,7 +13,7 @@ local _bufnr = nil
 local _ns = vim.api.nvim_create_namespace("loomtest_explorer")
 --- @type table<string, boolean> fold state: node_id → collapsed
 local _folds = {}
---- @type table<string, number> fold cursor memory: node_id → child line offset
+--- @type table<string, string> fold cursor memory: fold_node_id → cursor_node_id
 local _fold_cursor = {}
 --- @type string|nil selected test ID for output viewing
 local _selected_id = nil
@@ -333,52 +333,58 @@ local function node_at_cursor()
     return _line_data[cursor[1]]
 end
 
---- Close fold (h key): collapse the current node, or move to parent.
+--- Find the line number of a node by ID in current line_data.
+--- @param node_id string
+--- @return number|nil
+local function find_line_for_node(node_id)
+    for line, node in pairs(_line_data) do
+        if node and node.id == node_id then return line end
+    end
+    return nil
+end
+
+--- Close fold (h key): collapse current node or move to parent.
+--- Saves the current cursor node so l can restore it.
 local function fold_close()
     local node = node_at_cursor()
     if not node then return end
+    local win = _win and type(_win) == "table" and _win.win or nil
+    if not win then return end
 
     if not _folds[node.id] and (node.type == "target" or node.type == "suite") then
-        -- Save cursor position within this fold
-        local win = _win and type(_win) == "table" and _win.win or nil
-        if win then
-            _fold_cursor[node.id] = vim.api.nvim_win_get_cursor(win)[1]
-        end
+        -- Collapsing a foldable node: save cursor node as the current node
+        _fold_cursor[node.id] = node.id
         _folds[node.id] = true
         M.refresh()
     elseif node.parent then
-        -- Already collapsed or leaf — move to parent
-        for line, ld in pairs(_line_data) do
-            if ld and ld.id == node.parent then
-                local win = _win and type(_win) == "table" and _win.win or nil
-                if win then
-                    pcall(vim.api.nvim_win_set_cursor, win, { line, 0 })
-                end
-                break
-            end
+        -- Leaf or already collapsed: move to parent, save this node
+        _fold_cursor[node.parent] = node.id
+        local parent_line = find_line_for_node(node.parent)
+        if parent_line then
+            pcall(vim.api.nvim_win_set_cursor, win, { parent_line, 0 })
         end
     end
 end
 
---- Open fold (l key): expand the current node and restore cursor.
+--- Open fold (l key): expand current node and restore saved cursor.
 local function fold_open()
     local node = node_at_cursor()
     if not node then return end
 
     if _folds[node.id] then
+        local saved_node_id = _fold_cursor[node.id]
         _folds[node.id] = nil
-        local saved_line = _fold_cursor[node.id]
+        _fold_cursor[node.id] = nil
         M.refresh()
-        -- Restore cursor to saved position within this fold
-        if saved_line then
-            local win = _win and type(_win) == "table" and _win.win or nil
-            if win then
-                local max_line = vim.api.nvim_buf_line_count(_bufnr)
-                local target = math.min(saved_line, max_line)
-                pcall(vim.api.nvim_win_set_cursor, win, { target, 0 })
-                snap_cursor()
+        -- Restore cursor to the saved node
+        if saved_node_id then
+            local target_line = find_line_for_node(saved_node_id)
+            if target_line then
+                local win = _win and type(_win) == "table" and _win.win or nil
+                if win then
+                    pcall(vim.api.nvim_win_set_cursor, win, { target_line, 0 })
+                end
             end
-            _fold_cursor[node.id] = nil
         end
     end
 end
