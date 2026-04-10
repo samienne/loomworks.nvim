@@ -36,20 +36,24 @@ local get_test_dir_set
 local _cached_native_root = nil
 
 function adapter.root(dir)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return nil end
+    local ok, result = pcall(function()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        if not ws then return nil end
 
-    if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(ws.root):lower() then
-        _cached_native_root = to_native(ws.root)
-    end
+        if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(ws.root):lower() then
+            _cached_native_root = to_native(ws.root)
+        end
 
-    local root_lower = norm(ws.root):lower()
-    local dir_lower = norm(dir):lower()
-    if dir_lower == root_lower or dir_lower:sub(1, #root_lower + 1) == root_lower .. "/" then
-        return _cached_native_root
-    end
-    return nil
+        local root_lower = norm(ws.root):lower()
+        local dir_lower = norm(dir):lower()
+        if dir_lower == root_lower or dir_lower:sub(1, #root_lower + 1) == root_lower .. "/" then
+            return _cached_native_root
+        end
+        return nil
+    end)
+    if not ok then return nil end
+    return result
 end
 
 --- Filter directories during file discovery.
@@ -149,17 +153,20 @@ end
 --- @param file_path string absolute file path
 --- @return boolean
 function adapter.is_test_file(file_path)
-    local file_set = get_test_file_set()
-    if next(file_set) then
-        return file_set[norm(file_path):lower()] or false
-    end
-    -- Fallback: pattern match when cache is not yet populated
-    local name = file_path:match("[/\\]([^/\\]+)$")
-    if not name then return false end
-    local name_lower = name:lower()
-    return (name_lower:match("_test%.cpp$") or name_lower:match("_test%.cc$")
-        or name_lower:match("_test%.cxx$")
-        or name_lower:match("^test_.*%.cpp$") or name_lower:match("^test_.*%.cc$")) ~= nil
+    local ok, result = pcall(function()
+        local file_set = get_test_file_set()
+        if next(file_set) then
+            return file_set[norm(file_path):lower()] or false
+        end
+        local name = file_path:match("[/\\]([^/\\]+)$")
+        if not name then return false end
+        local name_lower = name:lower()
+        return (name_lower:match("_test%.cpp$") or name_lower:match("_test%.cc$")
+            or name_lower:match("_test%.cxx$")
+            or name_lower:match("^test_.*%.cpp$") or name_lower:match("^test_.*%.cc$")) ~= nil
+    end)
+    if not ok then return false end
+    return result
 end
 
 --- Resolve the file path → project → active profile → ConfigUnit chain.
@@ -215,6 +222,16 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
 
     local line = 1
 
+    -- Count entries per source line to detect parameterized clusters.
+    -- Lines with multiple entries get synthetic ranges to avoid neotest
+    -- O(n²) merge performance issues.
+    local line_counts = {}
+    for _, entry in ipairs(entries) do
+        if entry.line then
+            line_counts[entry.line] = (line_counts[entry.line] or 0) + 1
+        end
+    end
+
     -- Build parent → children map
     local children_of = {}
     local top_level = {}
@@ -241,14 +258,11 @@ local function build_neotest_tree(entries, root_id, root_name, root_path, root_t
             line = line + 1
         end
 
-        -- Always use root_path for the position path. This ensures all
-        -- positions in this tree share the same path as the root (which
-        -- is what neotest passed to discover_positions). Gutter marks
-        -- and nearest-test lookup match by buffer path = position path.
-        -- The entry.file/line are used for range only (navigation via
-        -- summary 'i' key uses range to jump).
+        -- Use real source line for range only when this entry is the
+        -- sole occupant of that line. Parameterized instances sharing
+        -- a line get synthetic ranges to avoid neotest O(n²) merge.
         local pos_range = { start_line, 0, line, 0 }
-        if entry.line then
+        if entry.line and (line_counts[entry.line] or 0) <= 1 then
             pos_range = { entry.line - 1, 0, entry.line, 0 }
         end
 
@@ -340,6 +354,7 @@ local function setup_events()
         _test_file_set_version = 0
         _test_dir_set = nil
         _test_dir_set_version = 0
+        adapter._discovered_files = nil
 
         -- Re-discover for new profile
         vim.defer_fn(ensure_test_cache, 200)
@@ -372,6 +387,15 @@ setup_events()
 function adapter.discover_positions(path)
     -- pcall: neotest calls this in a nio coroutine where unhandled
     -- errors cause permanent hangs instead of error messages.
+    -- Deduplicate: neotest may call discover_positions for the same file
+    -- with different path formats (c:\... vs C:/...). The second call's
+    -- tree merge can hang neotest. Track discovered files by normalized path.
+    adapter._discovered_files = adapter._discovered_files or {}
+    local dedup_key = norm(path):lower()
+    if adapter._discovered_files[dedup_key] then
+        return nil
+    end
+
     local ok, result = pcall(function()
     local lw = require("loomworks")
     local ws = lw.get_workspace()
@@ -497,21 +521,29 @@ function adapter.discover_positions(path)
         else
             -- Source file: return only tests from this file
             local file_entries = {}
+            -- Collect entries, deduplicating parameterized instances.
+            -- Multiple parameterized tests map to the same TEST_P line.
+            -- Keep only one representative per unique source line to avoid
+            -- neotest O(n²) merge on large parameterized suites.
+            local seen_lines = {}
             for _, e in ipairs(entries) do
                 if e.file and norm(e.file):lower() == norm_path then
-                    file_entries[#file_entries + 1] = {
-                        id = e.id,
-                        name = e.name,
-                        -- Don't set parent — these are top-level in this file
-                        runnable = e.runnable,
-                        framework = e.framework,
-                        executable = e.executable,
-                        status = e.status,
-                        file = e.file,
-                        line = e.line,
-                        _original_id = e.id,
-                        _config_unit = unit,
-                    }
+                    local line_key = e.line or (#file_entries + 1)
+                    if not seen_lines[line_key] then
+                        seen_lines[line_key] = true
+                        file_entries[#file_entries + 1] = {
+                            id = e.id,
+                            name = e.name,
+                            runnable = e.runnable,
+                            framework = e.framework,
+                            executable = e.executable,
+                            status = e.status,
+                            file = e.file,
+                            line = e.line,
+                            _original_id = e.id,
+                            _config_unit = unit,
+                        }
+                    end
                 end
             end
             if #file_entries == 0 then return nil end
@@ -520,6 +552,9 @@ function adapter.discover_positions(path)
     end
     end)
     if not ok then return nil end
+    if result then
+        adapter._discovered_files[dedup_key] = true
+    end
     return result
 end
 
