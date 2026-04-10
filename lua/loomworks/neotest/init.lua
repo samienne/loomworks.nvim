@@ -326,15 +326,22 @@ local function setup_events()
     end)
 
     lw.on("active_set_changed", function()
-        -- Invalidate all caches and re-discover
+        -- Invalidate all caches (ConfigUnit, adapter file/dir sets)
         local profile = lw.get_active_profile()
-        if not profile then return end
-        for _, pp in ipairs(profile:projects()) do
-            local unit = pp._config_unit
-            if unit then
-                unit:invalidate_tests()
+        if profile then
+            for _, pp in ipairs(profile:projects()) do
+                local unit = pp._config_unit
+                if unit then
+                    unit:invalidate_tests()
+                end
             end
         end
+        _test_file_set = nil
+        _test_file_set_version = 0
+        _test_dir_set = nil
+        _test_dir_set_version = 0
+
+        -- Re-discover for new profile
         vim.defer_fn(ensure_test_cache, 200)
     end)
 
