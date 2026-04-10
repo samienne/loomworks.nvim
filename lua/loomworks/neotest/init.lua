@@ -17,8 +17,9 @@ end
 --- This matches what neotest uses internally via vim.uv and fnamemodify.
 --- @param p string
 --- @return string
+local _is_win = (jit and jit.os == "Windows") or (vim.uv.os_uname().sysname:match("Windows") ~= nil)
 local function to_native(p)
-    if vim.fn.has("win32") == 1 then
+    if _is_win then
         return p:gsub("/", "\\")
     end
     return p
@@ -31,24 +32,20 @@ end
 local _cached_native_root = nil
 
 function adapter.root(dir)
-    local ok, result = pcall(function()
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        if not ws then return nil end
+    local lw = require("loomworks")
+    local ws = lw.get_workspace()
+    if not ws then return nil end
 
-        if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(ws.root):lower() then
-            _cached_native_root = to_native(ws.root)
-        end
+    if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(ws.root):lower() then
+        _cached_native_root = to_native(ws.root)
+    end
 
-        local root_lower = norm(ws.root):lower()
-        local dir_lower = norm(dir):lower()
-        if dir_lower == root_lower or dir_lower:sub(1, #root_lower + 1) == root_lower .. "/" then
-            return _cached_native_root
-        end
-        return nil
-    end)
-    if not ok then return nil end
-    return result
+    local root_lower = norm(ws.root):lower()
+    local dir_lower = norm(dir):lower()
+    if dir_lower == root_lower or dir_lower:sub(1, #root_lower + 1) == root_lower .. "/" then
+        return _cached_native_root
+    end
+    return nil
 end
 
 --- Filter directories during file discovery.
@@ -140,21 +137,17 @@ end
 --- @param file_path string absolute file path
 --- @return boolean
 function adapter.is_test_file(file_path)
-    local ok, result = pcall(function()
-        local file_set = get_test_file_set()
-        if next(file_set) then
-            return file_set[norm(file_path):lower()] or false
-        end
-        -- Fallback: pattern match when cache is not yet populated
-        local name = file_path:match("[/\\]([^/\\]+)$")
-        if not name then return false end
-        local name_lower = name:lower()
-        return (name_lower:match("_test%.cpp$") or name_lower:match("_test%.cc$")
-            or name_lower:match("_test%.cxx$")
-            or name_lower:match("^test_.*%.cpp$") or name_lower:match("^test_.*%.cc$")) ~= nil
-    end)
-    if not ok then return false end
-    return result
+    local file_set = get_test_file_set()
+    if next(file_set) then
+        return file_set[norm(file_path):lower()] or false
+    end
+    -- Fallback: pattern match when cache is not yet populated
+    local name = file_path:match("[/\\]([^/\\]+)$")
+    if not name then return false end
+    local name_lower = name:lower()
+    return (name_lower:match("_test%.cpp$") or name_lower:match("_test%.cc$")
+        or name_lower:match("_test%.cxx$")
+        or name_lower:match("^test_.*%.cpp$") or name_lower:match("^test_.*%.cc$")) ~= nil
 end
 
 --- Resolve the file path → project → active profile → ConfigUnit chain.
@@ -358,6 +351,8 @@ setup_events()
 --- @param path string absolute file or directory path
 --- @return table|nil neotest.Tree
 function adapter.discover_positions(path)
+    -- pcall: neotest calls this in a nio coroutine where unhandled
+    -- errors cause permanent hangs instead of error messages.
     local ok, result = pcall(function()
     local lw = require("loomworks")
     local ws = lw.get_workspace()
@@ -418,7 +413,7 @@ function adapter.discover_positions(path)
 
         if #all_entries == 0 then return nil end
 
-        return build_neotest_tree(all_entries, path, vim.fn.fnamemodify(path, ":t"), path)
+        return build_neotest_tree(all_entries, path, path:match("[/\\]([^/\\]+)$") or path, path)
     else
         -- File-level discovery
         local unit, project = resolve_config_unit(path)
@@ -479,7 +474,7 @@ function adapter.discover_positions(path)
                 end
             end
             if #filtered == 0 then return nil end
-            return build_neotest_tree(filtered, path, vim.fn.fnamemodify(path, ":t"), path, "file")
+            return build_neotest_tree(filtered, path, path:match("[/\\]([^/\\]+)$") or path, path, "file")
         else
             -- Source file: return only tests from this file
             local file_entries = {}
@@ -501,7 +496,7 @@ function adapter.discover_positions(path)
                 end
             end
             if #file_entries == 0 then return nil end
-            return build_neotest_tree(file_entries, path, vim.fn.fnamemodify(path, ":t"), path, "file")
+            return build_neotest_tree(file_entries, path, path:match("[/\\]([^/\\]+)$") or path, path, "file")
         end
     end
     end)
