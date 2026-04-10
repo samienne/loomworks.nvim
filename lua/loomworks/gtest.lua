@@ -153,17 +153,17 @@ function M.find_source_locations(test_entries, source_files)
             end
             return
         end
-        -- Fuzzy: match by case name + suite relationship.
-        -- Handles UNIT_TEST prefix (suite suffix match)
+        -- Fuzzy: match by case name.
+        -- Handles: UNIT_TEST prefix (suite suffix), typed tests
+        -- (TYPED_TEST uses different suite from gtest runtime),
+        -- and fixture inheritance (gtest uses base class as suite).
+        -- Only assigns to entries that don't already have a file.
         local candidates = by_case[name]
         if candidates then
             for _, e in ipairs(candidates) do
                 if not e.file then
-                    local gtest_suite = e.id:match("^test:(.+)%.")
-                    if gtest_suite and suite:match(gtest_suite .. "$") then
-                        e.file = canonical_path
-                        e.line = macro_line
-                    end
+                    e.file = canonical_path
+                    e.line = macro_line
                 end
             end
         end
