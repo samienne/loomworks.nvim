@@ -188,6 +188,10 @@ function M.find_source_locations(test_entries, source_files)
                 if args then
                     pending_args = args
                     pending_line = line_num
+                elseif line:match("TEST[_%w]*%s*%(%s*$") then
+                    -- Opening paren with nothing after (macro continues on next line)
+                    pending_args = ""
+                    pending_line = line_num
                 end
             end
 
