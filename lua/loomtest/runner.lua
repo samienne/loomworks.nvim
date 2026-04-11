@@ -49,7 +49,6 @@ local function parse_gtest_line(line, loomtest, explorer)
         local name = ok_test:match("^%s*(.-)%s*%(")
             or ok_test:match("^%s*(.-)%s*$")
         if name then
-            -- Save output
             if _current_test and #_current_output > 0 then
                 _test_outputs["test:" .. _current_test] = _current_output
             end
@@ -59,6 +58,8 @@ local function parse_gtest_line(line, loomtest, explorer)
                 if explorer.is_open() then
                     explorer.refresh()
                 end
+            else
+                vim.notify("loomtest: unmatched OK result: " .. name, vim.log.levels.WARN)
             end
             _current_test = nil
             _current_output = {}
@@ -78,8 +79,14 @@ local function parse_gtest_line(line, loomtest, explorer)
             local node = loomtest.get_node("test:" .. name)
             if node then
                 node.status = "failed"
+                node.message = table.concat(_current_output, "\n")
                 if explorer.is_open() then
                     explorer.refresh()
+                end
+            else
+                -- Skip summary lines like "[  FAILED  ] 1 test, listed below:"
+                if not name:match("^%d+ test") then
+                    vim.notify("loomtest: unmatched FAILED result: " .. name, vim.log.levels.WARN)
                 end
             end
             _current_test = nil
@@ -180,27 +187,15 @@ function M.execute(adapter, spec, test_ids)
             end
             _current_test = nil
 
-            -- Parse gtest XML for authoritative results + per-test details
-            local results
-            if spec.output_path then
-                results = adapter.parse_results(spec.output_path)
-            end
-
-            if results then
-                -- Attach streamed output to results
-                for _, r in ipairs(results) do
-                    if not r.output then
-                        local captured = _test_outputs[r.test_id]
-                        if captured then
-                            r.output = table.concat(captured, "\n")
-                        end
-                    end
+            -- Attach captured output to test nodes
+            for test_id, output_lines in pairs(_test_outputs) do
+                local node = loomtest.get_node(test_id)
+                if node then
+                    node._output = table.concat(output_lines, "\n")
                 end
-                loomtest.apply_results(results)
             end
 
-            -- Tests still "running" or "pending" after completion
-            -- had no XML result — mark as unknown
+            -- Tests still "running" or "pending" had no streaming result
             for _, id in ipairs(test_ids) do
                 local node = loomtest.get_node(id)
                 if node and (node.status == "running" or node.status == "pending") then

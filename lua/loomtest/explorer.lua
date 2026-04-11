@@ -288,14 +288,17 @@ local function nearest_actionable(target_line)
 end
 
 --- Snap cursor to nearest actionable line.
-local function snap_cursor()
+--- @param force? boolean if true, always snap even on non-move events
+local function snap_cursor(force)
     if not _win or not _bufnr then return end
     local win = type(_win) == "table" and _win.win or nil
     if not win or not vim.api.nvim_win_is_valid(win) then return end
 
     local cursor = vim.api.nvim_win_get_cursor(win)
+    if _line_data[cursor[1]] then return end -- already on actionable line
+
     local target = nearest_actionable(cursor[1])
-    if target and target ~= cursor[1] then
+    if target then
         pcall(vim.api.nvim_win_set_cursor, win, { target, 0 })
     end
 end
