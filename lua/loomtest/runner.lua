@@ -159,11 +159,14 @@ function M.execute(adapter, spec, test_ids)
             vim.api.nvim_buf_attach(output_bufnr, false, {
                 on_lines = function(_, buf, _, first, _, last)
                     if not vim.api.nvim_buf_is_valid(buf) then return true end
-                    -- Read new lines
                     local new_lines = vim.api.nvim_buf_get_lines(buf, first, last, false)
-                    for _, line in ipairs(new_lines) do
-                        parse_gtest_line(line, loomtest, explorer)
-                    end
+                    -- Defer parsing to avoid E565 (can't modify buffers
+                    -- inside on_lines callback)
+                    vim.schedule(function()
+                        for _, line in ipairs(new_lines) do
+                            parse_gtest_line(line, loomtest, explorer)
+                        end
+                    end)
                 end,
             })
         end
