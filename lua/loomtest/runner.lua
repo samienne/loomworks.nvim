@@ -1,15 +1,12 @@
 --- loomtest/runner.lua — Test execution via overseer.
 ---
---- Executes RunSpecs as overseer tasks, parses results on completion,
---- and updates the test tree.
+--- Executes RunSpecs as overseer tasks, parses results from XML only.
+--- Exit codes and process output are not used for status determination.
 
 local M = {}
 
 --- @type number|nil most recent test task ID
 local _last_task_id = nil
-
---- @type string|nil output from last test run
-local _last_output = nil
 
 --- Execute a test RunSpec via overseer.
 --- @param adapter loomtest.TestAdapter the adapter for result parsing
@@ -23,6 +20,7 @@ function M.execute(adapter, spec, test_ids)
     end
 
     local loomtest = require("loomtest")
+    local explorer = require("loomtest.explorer")
 
     -- Mark tests as running
     for _, id in ipairs(test_ids) do
@@ -33,25 +31,20 @@ function M.execute(adapter, spec, test_ids)
     end
 
     -- Refresh explorer to show running state
-    local explorer = require("loomtest.explorer")
     if explorer.is_open() then
         explorer.refresh()
     end
 
     -- Dispose previous test task
     if _last_task_id then
-        local prev_task = nil
         pcall(function()
             for _, t in ipairs(overseer.list_tasks()) do
-                if t.id == _last_task_id then
-                    prev_task = t
+                if t.id == _last_task_id and t:is_complete() then
+                    t:dispose()
                     break
                 end
             end
         end)
-        if prev_task and prev_task:is_complete() then
-            prev_task:dispose()
-        end
     end
 
     -- Create and start the task
@@ -65,53 +58,24 @@ function M.execute(adapter, spec, test_ids)
 
     _last_task_id = task.id
 
-    task:subscribe("on_complete", function(_, status)
+    task:subscribe("on_complete", function()
         vim.schedule(function()
-            -- Capture output
-            local bufnr = task:get_bufnr()
-            if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-                local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-                _last_output = table.concat(lines, "\n")
-            end
-
-            -- Parse results
+            -- Parse results from XML only
+            local results
             if spec.output_path then
-                local results = adapter.parse_results(spec.output_path)
-                if results then
-                    -- Attach output to results
-                    for _, r in ipairs(results) do
-                        if not r.output then
-                            r.output = _last_output
-                        end
-                    end
-                    loomtest.apply_results(results)
-                end
+                results = adapter.parse_results(spec.output_path)
             end
 
-            -- Fallback: if no structured results, use exit code
-            local any_result = false
-            for _, id in ipairs(test_ids) do
-                local node = loomtest.get_node(id)
-                if node and node.status ~= "running" then
-                    any_result = true
-                    break
-                end
-            end
-            if not any_result then
-                local fallback_status = status == "SUCCESS" and "passed" or "failed"
-                for _, id in ipairs(test_ids) do
-                    local node = loomtest.get_node(id)
-                    if node then
-                        node.status = fallback_status
-                    end
-                end
+            if results then
+                loomtest.apply_results(results)
             end
 
-            -- Clear running status for any tests still marked running
+            -- Any tests still marked "running" had no XML result —
+            -- mark as unknown (not passed/failed, we don't know)
             for _, id in ipairs(test_ids) do
                 local node = loomtest.get_node(id)
                 if node and node.status == "running" then
-                    node.status = status == "SUCCESS" and "passed" or "failed"
+                    node.status = nil
                 end
             end
 
@@ -124,12 +88,6 @@ function M.execute(adapter, spec, test_ids)
     end)
 
     task:start()
-end
-
---- Get the output from the last test run.
---- @return string|nil
-function M.last_output()
-    return _last_output
 end
 
 --- Get the last task ID.

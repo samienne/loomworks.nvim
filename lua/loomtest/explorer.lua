@@ -566,7 +566,6 @@ end
 --- Show test output in a floating window.
 function M.show_output()
     local loomtest = require("loomtest")
-    local runner = require("loomtest.runner")
     local node
 
     if _selected_id then
@@ -580,16 +579,13 @@ function M.show_output()
         end
     end
 
-    -- Use node output, or fall back to last runner output
-    local output = node and node._output or runner.last_output()
-    if not output then
+    if not node or not node._output then
         vim.notify("loomtest: no test output available", vim.log.levels.INFO)
         return
     end
 
-    local title = node and (node.name .. " (" .. (node.status or "unknown") .. ")") or "Test output"
-    local errors = node and node._errors or {}
-    M._show_output_float(title, output, errors)
+    local title = node.name .. " (" .. (node.status or "unknown") .. ")"
+    M._show_output_float(title, node._output, node._errors or {})
 end
 
 --- Display output in a floating window.

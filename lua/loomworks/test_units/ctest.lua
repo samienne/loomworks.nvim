@@ -304,12 +304,40 @@ function CTestUnit:test_command(test_id, opts)
     cmd[#cmd + 1] = "--output-on-failure"
     local env = {}
 
+    -- Determine if this is a target-level or individual test.
+    -- Individual tests (test:Suite.Case) need GTEST_FILTER because
+    -- ctest only knows about add_test() targets, not individual cases.
+    local is_target = test_id:match("^target:")
     local test_name = test_id:match("^test:(.+)$") or test_id:match("^target:(.+)$") or test_id
 
-    cmd[#cmd + 1] = "-R"
-    cmd[#cmd + 1] = "^" .. vim.pesc(test_name) .. "$"
+    if is_target then
+        -- Run the ctest target directly
+        cmd[#cmd + 1] = "-R"
+        cmd[#cmd + 1] = "^" .. vim.pesc(test_name) .. "$"
+    else
+        -- Individual test: find the parent target and use GTEST_FILTER
+        local target_name = nil
+        if self._entries then
+            for _, e in ipairs(self._entries) do
+                if e.id == test_id and e.parent then
+                    target_name = e.parent:match("^target:(.+)$")
+                    break
+                end
+            end
+        end
+        if target_name then
+            cmd[#cmd + 1] = "-R"
+            cmd[#cmd + 1] = "^" .. vim.pesc(target_name) .. "$"
+            env.GTEST_FILTER = opts.gtest_filter or test_name
+        else
+            -- Fallback: try matching by test name directly (gtest_discover_tests case)
+            cmd[#cmd + 1] = "-R"
+            cmd[#cmd + 1] = "^" .. vim.pesc(test_name) .. "$"
+        end
+    end
 
-    if opts.gtest_filter then
+    -- User-provided gtest_filter overrides
+    if opts.gtest_filter and not env.GTEST_FILTER then
         env.GTEST_FILTER = opts.gtest_filter
     end
 
@@ -327,7 +355,7 @@ function CTestUnit:test_command(test_id, opts)
         cmd = cmd,
         env = env,
         cwd = ws and ws.root or nil,
-        output_path = gtest_xml,  -- prefer gtest XML (has per-test output)
+        output_path = gtest_xml,
         fallback_output_path = output_path,
     }
 end
