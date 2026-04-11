@@ -44,8 +44,13 @@ local function build_grouped_nodes(nodes)
         end
     end
 
+    local seen_ids = {}
     for _, node in ipairs(nodes) do
         if node.parent and targets[node.parent] then
+            -- Deduplicate: skip if we've already seen this test ID
+            if seen_ids[node.id] then goto continue end
+            seen_ids[node.id] = true
+
             local suite_name = node.name:match("^([^%.]+)%.")
             if suite_name then
                 local target_id = node.parent
@@ -54,6 +59,7 @@ local function build_grouped_nodes(nodes)
                 local suite_tests = suites_by_target[target_id][suite_name]
                 suite_tests[#suite_tests + 1] = node
             end
+            ::continue::
         end
     end
 
@@ -500,7 +506,7 @@ function M.open()
             pcall(vim.api.nvim_win_set_cursor, target_win, { err.line, 0 })
         end,
         o = function()
-            -- Show test output
+            -- Show test output — look up canonical node for output data
             local node = node_at_cursor()
             if node then
                 _selected_id = node.id
@@ -560,6 +566,7 @@ end
 --- Show test output in a floating window.
 function M.show_output()
     local loomtest = require("loomtest")
+    local runner = require("loomtest.runner")
     local node
 
     if _selected_id then
@@ -572,18 +579,17 @@ function M.show_output()
             end
         end
     end
-    if not node then
-        local output = require("loomtest.runner").last_output()
-        if output then
-            M._show_output_float("Last test run", output, {})
-            return
-        end
+
+    -- Use node output, or fall back to last runner output
+    local output = node and node._output or runner.last_output()
+    if not output then
         vim.notify("loomtest: no test output available", vim.log.levels.INFO)
         return
     end
 
-    local title = node.name .. " (" .. (node.status or "unknown") .. ")"
-    M._show_output_float(title, node._output or node.message or "No output", node._errors or {})
+    local title = node and (node.name .. " (" .. (node.status or "unknown") .. ")") or "Test output"
+    local errors = node and node._errors or {}
+    M._show_output_float(title, output, errors)
 end
 
 --- Display output in a floating window.

@@ -29,24 +29,28 @@ local function create_adapter()
             if not profile then return nil end
 
             local all_nodes = {}
+            local seen = {}
             for _, pp in ipairs(profile:projects()) do
                 local unit = pp._config_unit
                 if unit then
                     local entries = unit:discover_tests()
                     if entries then
                         for _, e in ipairs(entries) do
-                            all_nodes[#all_nodes + 1] = {
-                                id = e.id,
-                                name = e.name,
-                                type = e.parent and "test" or "target",
-                                parent = e.parent,
-                                file = e.file,
-                                line = e.line,
-                                runnable = e.runnable,
-                                status = e.status,
-                                message = e.message,
-                                duration = e.duration,
-                            }
+                            if not seen[e.id] then
+                                seen[e.id] = true
+                                all_nodes[#all_nodes + 1] = {
+                                    id = e.id,
+                                    name = e.name,
+                                    type = e.parent and "test" or "target",
+                                    parent = e.parent,
+                                    file = e.file,
+                                    line = e.line,
+                                    runnable = e.runnable,
+                                    status = e.status,
+                                    message = e.message,
+                                    duration = e.duration,
+                                }
+                            end
                         end
                     end
                 end
@@ -63,6 +67,7 @@ local function create_adapter()
             end
 
             local all_nodes = {}
+            local seen = {}
             local pending = 0
             local projects = profile:projects()
             if #projects == 0 then
@@ -77,18 +82,21 @@ local function create_adapter()
                     unit:discover_tests_async(function(entries)
                         if entries then
                             for _, e in ipairs(entries) do
-                                all_nodes[#all_nodes + 1] = {
-                                    id = e.id,
-                                    name = e.name,
-                                    type = e.parent and "test" or "target",
-                                    parent = e.parent,
-                                    file = e.file,
-                                    line = e.line,
-                                    runnable = e.runnable,
-                                    status = e.status,
-                                    message = e.message,
-                                    duration = e.duration,
-                                }
+                                if not seen[e.id] then
+                                    seen[e.id] = true
+                                    all_nodes[#all_nodes + 1] = {
+                                        id = e.id,
+                                        name = e.name,
+                                        type = e.parent and "test" or "target",
+                                        parent = e.parent,
+                                        file = e.file,
+                                        line = e.line,
+                                        runnable = e.runnable,
+                                        status = e.status,
+                                        message = e.message,
+                                        duration = e.duration,
+                                    }
+                                end
                             end
                         end
                         pending = pending - 1
