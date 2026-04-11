@@ -313,6 +313,11 @@ function CTestUnit:test_command(test_id, opts)
         env.GTEST_FILTER = opts.gtest_filter
     end
 
+    -- gtest XML output for per-test stdout/stderr and failure locations
+    local gtest_xml = self._build_dir .. "/.nvim/gtest_results.xml"
+    env.GTEST_OUTPUT = "xml:" .. gtest_xml
+
+    -- ctest JUnit output as fallback
     local output_path = self._build_dir .. "/.nvim/test_results.xml"
     cmd[#cmd + 1] = "--output-junit"
     cmd[#cmd + 1] = output_path
@@ -322,7 +327,8 @@ function CTestUnit:test_command(test_id, opts)
         cmd = cmd,
         env = env,
         cwd = ws and ws.root or nil,
-        output_path = output_path,
+        output_path = gtest_xml,  -- prefer gtest XML (has per-test output)
+        fallback_output_path = output_path,
     }
 end
 
@@ -339,23 +345,37 @@ function CTestUnit:test_command_all(opts)
         cmd[#cmd + 1] = opts.filter
     end
 
+    local env = {}
+    local gtest_xml = self._build_dir .. "/.nvim/gtest_results.xml"
+    env.GTEST_OUTPUT = "xml:" .. gtest_xml
+
     local output_path = self._build_dir .. "/.nvim/test_results.xml"
     cmd[#cmd + 1] = "--output-junit"
     cmd[#cmd + 1] = output_path
 
     return {
         cmd = cmd,
-        env = {},
+        env = env,
         cwd = self._config_unit._workspace and self._config_unit._workspace.root or nil,
-        output_path = output_path,
+        output_path = gtest_xml,
+        fallback_output_path = output_path,
     }
 end
 
---- Parse test results from JUnit XML output.
+--- Parse test results from XML output.
+--- Tries the given path first (gtest XML with per-test output),
+--- falls back to ctest JUnit XML.
 --- @param output_path string
 --- @return table[]|nil
 function CTestUnit:parse_results(output_path)
-    return gtest.parse_xml_results(output_path)
+    local results = gtest.parse_xml_results(output_path)
+    if results then return results end
+    -- Fallback: try ctest JUnit path
+    local fallback = output_path:gsub("gtest_results%.xml$", "test_results.xml")
+    if fallback ~= output_path then
+        return gtest.parse_xml_results(fallback)
+    end
+    return nil
 end
 
 --- Invalidate all cached data.

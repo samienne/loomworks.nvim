@@ -221,8 +221,29 @@ function M.build_filter(test_id)
     return test_id:match("^test:(.+)$") or test_id
 end
 
+--- Parse file:line from a gtest failure message.
+--- gtest embeds "path/to/file.cpp:42\nExpected..." in failure text.
+--- @param text string failure message text
+--- @return loomtest.TestError[]
+local function parse_failure_locations(text)
+    local errors = {}
+    -- Match lines like "path/file.cpp:42" or "path\file.cpp:42"
+    for file, line in text:gmatch("([%w_/\\%.%-]+%.[ch]pp?):(%d+)") do
+        errors[#errors + 1] = {
+            message = text:match("^.-\n(.-)$") or text,
+            file = file:gsub("\\", "/"),
+            line = tonumber(line),
+        }
+    end
+    return errors
+end
+
 --- Parse gtest XML output into test results.
---- @param output_path string path to gtest XML file
+--- Handles both gtest native XML (--gtest_output=xml) and ctest JUnit
+--- (--output-junit). Extracts per-test output from <system-out>/<system-err>,
+--- failure locations from message text, and builds full test IDs from
+--- classname + name.
+--- @param output_path string path to XML file
 --- @return table[]|nil TestResult entries
 function M.parse_xml_results(output_path)
     local f = io.open(output_path, "r")
@@ -234,7 +255,6 @@ function M.parse_xml_results(output_path)
 
     local results = {}
 
-    -- Parse JUnit/gtest XML testcase elements.
     for tag in content:gmatch("<testcase%s[^>]->.-</testcase>") do
         local attrs = tag:match("<testcase%s(.-[^/])>")
         local body = tag:match("<testcase[^>]*>(.-)</testcase>") or ""
@@ -245,15 +265,29 @@ function M.parse_xml_results(output_path)
         if not attrs then goto continue end
 
         local name = attrs:match('name="([^"]*)"')
+        local classname = attrs:match('classname="([^"]*)"')
         local time_str = attrs:match('time="([^"]*)"')
         if not name then goto continue end
 
+        -- Build full test ID: classname.name (gtest format)
+        -- or just name (ctest JUnit format)
+        local test_id
+        if classname and classname ~= "" then
+            test_id = "test:" .. classname .. "." .. name
+        else
+            test_id = "test:" .. name
+        end
+
         local status = "passed"
         local message
+        local errors
         if body:match("<failure") then
             status = "failed"
             message = body:match("<failure[^>]*>(.-)<%/failure>")
                 or body:match('<failure message="([^"]*)"')
+            if message then
+                errors = parse_failure_locations(message)
+            end
         elseif body:match("<skipped") then
             status = "skipped"
         elseif body:match("<error") then
@@ -262,10 +296,26 @@ function M.parse_xml_results(output_path)
                 or body:match('<error message="([^"]*)"')
         end
 
+        -- Extract per-test output
+        local sys_out = body:match("<system%-out>(.-)</system%-out>")
+        local sys_err = body:match("<system%-err>(.-)</system%-err>")
+        local output
+        if sys_out or sys_err then
+            local parts = {}
+            if sys_out and sys_out ~= "" then parts[#parts + 1] = sys_out end
+            if sys_err and sys_err ~= "" then
+                parts[#parts + 1] = "--- stderr ---"
+                parts[#parts + 1] = sys_err
+            end
+            output = table.concat(parts, "\n")
+        end
+
         results[#results + 1] = {
-            test_id = "test:" .. name,
+            test_id = test_id,
             status = status,
             message = message,
+            output = output,
+            errors = errors,
             duration = time_str and tonumber(time_str)
                 and tonumber(time_str) * 1000 or nil,
         }
