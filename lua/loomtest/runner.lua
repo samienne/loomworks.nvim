@@ -1,12 +1,98 @@
 --- loomtest/runner.lua — Test execution via overseer.
 ---
---- Executes RunSpecs as overseer tasks, parses results from XML only.
---- Exit codes and process output are not used for status determination.
+--- Executes RunSpecs as overseer tasks. Streams gtest output for
+--- real-time status updates. Parses gtest XML on completion for
+--- authoritative results with per-test output.
 
 local M = {}
 
 --- @type number|nil most recent test task ID
 local _last_task_id = nil
+
+--- @type string|nil current test being run (from [ RUN ] line)
+local _current_test = nil
+
+--- @type string[] output lines for the current test
+local _current_output = {}
+
+--- @type table<string, string[]> test_id → captured output lines
+local _test_outputs = {}
+
+--- Parse a gtest stdout line for real-time status tracking.
+--- @param line string
+--- @param loomtest table the loomtest module
+--- @param explorer table the explorer module
+local function parse_gtest_line(line, loomtest, explorer)
+    -- [ RUN      ] Suite.Test
+    local run_test = line:match("^%[%s*RUN%s*%] (.+)$")
+    if run_test then
+        -- Save previous test's output
+        if _current_test and #_current_output > 0 then
+            _test_outputs["test:" .. _current_test] = _current_output
+        end
+        _current_test = run_test:match("^%s*(.-)%s*$")
+        _current_output = {}
+
+        local node = loomtest.get_node("test:" .. _current_test)
+        if node then
+            node.status = "running"
+            if explorer.is_open() then
+                explorer.refresh()
+            end
+        end
+        return
+    end
+
+    -- [       OK ] Suite.Test (N ms)
+    local ok_test = line:match("^%[%s*OK%s*%] (.+)")
+    if ok_test then
+        local name = ok_test:match("^%s*(.-)%s*%(")
+            or ok_test:match("^%s*(.-)%s*$")
+        if name then
+            -- Save output
+            if _current_test and #_current_output > 0 then
+                _test_outputs["test:" .. _current_test] = _current_output
+            end
+            local node = loomtest.get_node("test:" .. name)
+            if node then
+                node.status = "passed"
+                if explorer.is_open() then
+                    explorer.refresh()
+                end
+            end
+            _current_test = nil
+            _current_output = {}
+        end
+        return
+    end
+
+    -- [  FAILED  ] Suite.Test (N ms)
+    local fail_test = line:match("^%[%s*FAILED%s*%] (.+)")
+    if fail_test then
+        local name = fail_test:match("^%s*(.-)%s*%(")
+            or fail_test:match("^%s*(.-)%s*$")
+        if name then
+            if _current_test and #_current_output > 0 then
+                _test_outputs["test:" .. _current_test] = _current_output
+            end
+            local node = loomtest.get_node("test:" .. name)
+            if node then
+                node.status = "failed"
+                if explorer.is_open() then
+                    explorer.refresh()
+                end
+            end
+            _current_test = nil
+            _current_output = {}
+        end
+        return
+    end
+
+    -- Capture output lines between RUN and OK/FAILED
+    if _current_test then
+        _current_output[#_current_output + 1] = line
+    end
+end
 
 --- Execute a test RunSpec via overseer.
 --- @param adapter loomtest.TestAdapter the adapter for result parsing
@@ -22,6 +108,11 @@ function M.execute(adapter, spec, test_ids)
     local loomtest = require("loomtest")
     local explorer = require("loomtest.explorer")
 
+    -- Reset streaming state
+    _current_test = nil
+    _current_output = {}
+    _test_outputs = {}
+
     -- Mark tests as running
     for _, id in ipairs(test_ids) do
         local node = loomtest.get_node(id)
@@ -30,7 +121,6 @@ function M.execute(adapter, spec, test_ids)
         end
     end
 
-    -- Refresh explorer to show running state
     if explorer.is_open() then
         explorer.refresh()
     end
@@ -49,7 +139,7 @@ function M.execute(adapter, spec, test_ids)
 
     -- Create and start the task
     local task = overseer.new_task({
-        name = "loomtest: " .. (spec.cmd[1] or "test"),
+        name = "loomtest: " .. (spec.cmd[#spec.cmd] or "test"):match("[/\\]?([^/\\]+)$"),
         cmd = spec.cmd,
         cwd = spec.cwd,
         env = spec.env,
@@ -58,20 +148,45 @@ function M.execute(adapter, spec, test_ids)
 
     _last_task_id = task.id
 
+    -- Stream output for real-time status updates
+    task:subscribe("on_output", function(_, data)
+        if data then
+            for _, line in ipairs(data) do
+                vim.schedule(function()
+                    parse_gtest_line(line, loomtest, explorer)
+                end)
+            end
+        end
+    end)
+
     task:subscribe("on_complete", function()
         vim.schedule(function()
-            -- Parse results from XML only
+            -- Save last test's output
+            if _current_test and #_current_output > 0 then
+                _test_outputs["test:" .. _current_test] = _current_output
+            end
+            _current_test = nil
+
+            -- Parse gtest XML for authoritative results + per-test details
             local results
             if spec.output_path then
                 results = adapter.parse_results(spec.output_path)
             end
 
             if results then
+                -- Attach streamed output to results
+                for _, r in ipairs(results) do
+                    if not r.output then
+                        local captured = _test_outputs[r.test_id]
+                        if captured then
+                            r.output = table.concat(captured, "\n")
+                        end
+                    end
+                end
                 loomtest.apply_results(results)
             end
 
-            -- Any tests still marked "running" had no XML result —
-            -- mark as unknown (not passed/failed, we don't know)
+            -- Tests still "running" after completion had no XML result
             for _, id in ipairs(test_ids) do
                 local node = loomtest.get_node(id)
                 if node and node.status == "running" then
