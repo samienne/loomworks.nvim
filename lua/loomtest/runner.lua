@@ -113,11 +113,11 @@ function M.execute(adapter, spec, test_ids)
     _current_output = {}
     _test_outputs = {}
 
-    -- Mark tests as running
+    -- Mark tests as pending (queued, not yet actively running)
     for _, id in ipairs(test_ids) do
         local node = loomtest.get_node(id)
         if node then
-            node.status = "running"
+            node.status = "pending"
         end
     end
 
@@ -139,7 +139,7 @@ function M.execute(adapter, spec, test_ids)
 
     -- Create and start the task
     local task = overseer.new_task({
-        name = "loomtest: " .. (spec.cmd[#spec.cmd] or "test"):match("[/\\]?([^/\\]+)$"),
+        name = "loomtest: " .. (spec.cmd[1] or "test"):match("[/\\]([^/\\]+)$") or spec.cmd[1] or "test",
         cmd = spec.cmd,
         cwd = spec.cwd,
         env = spec.env,
@@ -148,14 +148,24 @@ function M.execute(adapter, spec, test_ids)
 
     _last_task_id = task.id
 
-    -- Stream output for real-time status updates
-    task:subscribe("on_output", function(_, data)
-        if data then
-            for _, line in ipairs(data) do
-                vim.schedule(function()
-                    parse_gtest_line(line, loomtest, explorer)
-                end)
-            end
+    -- Stream output for real-time status updates.
+    -- Watch the task buffer for new lines via autocmd.
+    local last_line_count = 0
+    local output_bufnr = nil
+
+    task:subscribe("on_start", function()
+        output_bufnr = task:get_bufnr()
+        if output_bufnr and vim.api.nvim_buf_is_valid(output_bufnr) then
+            vim.api.nvim_buf_attach(output_bufnr, false, {
+                on_lines = function(_, buf, _, first, _, last)
+                    if not vim.api.nvim_buf_is_valid(buf) then return true end
+                    -- Read new lines
+                    local new_lines = vim.api.nvim_buf_get_lines(buf, first, last, false)
+                    for _, line in ipairs(new_lines) do
+                        parse_gtest_line(line, loomtest, explorer)
+                    end
+                end,
+            })
         end
     end)
 
@@ -186,10 +196,11 @@ function M.execute(adapter, spec, test_ids)
                 loomtest.apply_results(results)
             end
 
-            -- Tests still "running" after completion had no XML result
+            -- Tests still "running" or "pending" after completion
+            -- had no XML result — mark as unknown
             for _, id in ipairs(test_ids) do
                 local node = loomtest.get_node(id)
-                if node and node.status == "running" then
+                if node and (node.status == "running" or node.status == "pending") then
                     node.status = nil
                 end
             end

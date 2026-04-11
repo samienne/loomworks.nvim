@@ -26,6 +26,7 @@ local STATUS_ICONS = {
     skipped = { icon = "⊘", hl = "DiagnosticWarn" },
     errored = { icon = "!", hl = "DiagnosticError" },
     running = { icon = "↻", hl = "DiagnosticInfo" },
+    pending = { icon = "◌", hl = "DiagnosticHint" },
 }
 
 --- Infer suite grouping from flat test nodes.

@@ -396,7 +396,9 @@ function CTestUnit:test_command(test_id, opts)
     end
 
     -- gtest XML output for per-test results and output capture
-    local gtest_xml = self._build_dir .. "/.nvim/gtest_results.xml"
+    local nvim_dir = self._build_dir .. "/.nvim"
+    vim.fn.mkdir(nvim_dir, "p")
+    local gtest_xml = nvim_dir .. "/gtest_results.xml"
     cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
     return {
@@ -436,7 +438,9 @@ function CTestUnit:test_command_all(opts)
         env.GTEST_FILTER = opts.filter
     end
 
-    local gtest_xml = self._build_dir .. "/.nvim/gtest_results.xml"
+    local nvim_dir = self._build_dir .. "/.nvim"
+    vim.fn.mkdir(nvim_dir, "p")
+    local gtest_xml = nvim_dir .. "/gtest_results.xml"
     cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
     return {
