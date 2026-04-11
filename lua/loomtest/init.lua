@@ -136,8 +136,24 @@ end
 --- Apply test results to the current tree.
 --- @param results loomtest.TestResult[]
 function M.apply_results(results)
+    -- Build a name-based lookup for fuzzy matching
+    -- (XML test IDs may differ slightly from tree IDs)
+    local by_name = {}
+    for _, node in ipairs(_node_list) do
+        if node.type == "test" then
+            -- Store by the test name part (after last .)
+            local short = node.id:match("^test:(.+)$") or node.id
+            by_name[short] = by_name[short] or node
+        end
+    end
+
     for _, r in ipairs(results) do
         local node = _nodes[r.test_id]
+        if not node then
+            -- Fuzzy: try matching by name
+            local short = r.test_id:match("^test:(.+)$") or r.test_id
+            node = by_name[short]
+        end
         if node then
             node.status = r.status
             node.message = r.message

@@ -527,10 +527,13 @@ function M.open()
 
     _win = Snacks.win(win_config)
 
-    -- Lock cursor to actionable lines
+    -- Lock cursor to actionable lines, but allow gg/G to work
+    -- by snapping after a short defer
     vim.api.nvim_create_autocmd("CursorMoved", {
         buffer = _bufnr,
-        callback = snap_cursor,
+        callback = function()
+            vim.schedule(snap_cursor)
+        end,
     })
 
     if #loomtest.nodes() == 0 then

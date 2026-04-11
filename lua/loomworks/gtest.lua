@@ -221,6 +221,14 @@ function M.build_filter(test_id)
     return test_id:match("^test:(.+)$") or test_id
 end
 
+--- Strip CDATA wrappers from XML content.
+--- @param text string
+--- @return string
+local function strip_cdata(text)
+    if not text then return text end
+    return text:gsub("<!%[CDATA%[", ""):gsub("%]%]>", "")
+end
+
 --- Parse file:line from a gtest failure message.
 --- gtest embeds "path/to/file.cpp:42\nExpected..." in failure text.
 --- @param text string failure message text
@@ -285,6 +293,7 @@ function M.parse_xml_results(output_path)
             status = "failed"
             message = body:match("<failure[^>]*>(.-)<%/failure>")
                 or body:match('<failure message="([^"]*)"')
+            message = strip_cdata(message)
             if message then
                 errors = parse_failure_locations(message)
             end
@@ -294,11 +303,12 @@ function M.parse_xml_results(output_path)
             status = "errored"
             message = body:match("<error[^>]*>(.-)<%/error>")
                 or body:match('<error message="([^"]*)"')
+            message = strip_cdata(message)
         end
 
         -- Extract per-test output
-        local sys_out = body:match("<system%-out>(.-)</system%-out>")
-        local sys_err = body:match("<system%-err>(.-)</system%-err>")
+        local sys_out = strip_cdata(body:match("<system%-out>(.-)</system%-out>"))
+        local sys_err = strip_cdata(body:match("<system%-err>(.-)</system%-err>"))
         local output
         if sys_out or sys_err then
             local parts = {}
