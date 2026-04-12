@@ -152,6 +152,7 @@ function M.execute(adapter, spec, test_ids, opts)
     if explorer.is_open() then
         explorer.refresh()
     end
+    require("loomtest.signs").update_all()
 
     -- Auto-build if adapter supports it (unless skip_build is set)
     if adapter.ensure_built and not opts.skip_build then
@@ -296,6 +297,7 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
             if explorer.is_open() then
                 explorer.refresh()
             end
+            require("loomtest.signs").update_all()
             if not task_complete then
                 fidget_update(format_progress(test_ids, loomtest))
             end
