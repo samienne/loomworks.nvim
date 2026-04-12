@@ -293,7 +293,6 @@ Registers on workspace load, re-registers on profile switch.
 
 ## 14. Future Considerations
 
-- DAP integration (debug a test)
 - Watch mode (auto-run on file save)
 - Coverage display
 - Standalone plugin extraction

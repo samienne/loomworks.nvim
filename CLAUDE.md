@@ -293,6 +293,18 @@ These are implementation-specific details not covered by the spec or architectur
   `loomworks_adapter.lua` bridges ConfigUnit/TestUnit to loomtest's TestAdapter
   interface. Auto-builds test targets before execution. Timestamp-based
   staleness clears only changed files' results. See LOOMTEST.md for full spec.
+  Explorer uses `relative = "win"` (splits within code area, not full frame)
+  and `winfixbuf = true` (prevents buffer hijacking).
+- **DAP integration** (`lua/loomworks/debug.lua`): single gateway to nvim-dap.
+  `debug.run(spec, callbacks)` constructs DAP config and calls `dap.run()`.
+  `resolve_adapter(workspace, module_type)` reads `user.json` `debug.adapters`
+  mapping with fallback defaults (cmake → codelldb). `available()` checks for
+  nvim-dap via pcall. Per-session `on_terminated` callback uses unique listener
+  keys that auto-remove. `LaunchTarget:debug()` falls back to `launch()` when
+  dap unavailable. `runner.debug()` falls back to `runner.execute()`. Workspace
+  stores `_debug_settings` from `user.json` `debug` key (pass-through, serialized
+  back on save). `setup()` registers default keymaps including debug variants
+  (opt-out with `keys = false`).
 - **Error handling**: on deserialization error (structurally invalid data),
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still

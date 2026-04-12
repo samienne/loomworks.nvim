@@ -268,7 +268,8 @@ may import from its own layer or any layer below it, never above.
 | `profile.lua` | Profile and ProfileProject classes (tools dict keyed by Module object, `tool_object_for(module)` accessor), status aggregation, plan_deletion, activate/deactivate. Profile resolves mappings + ConfigurationSet reference in `_update()`. ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation. References Workspace via `_workspace` | Own state beyond what workspace provides |
 | `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag (with reason: "deleting"/"cleaning"), queued action. Synced during remerge (`_update()` refreshes variant/tool from cache, preserves runtime state) + lazy creation via `get_config_unit()`. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `resolve_tool()`, `referencing_profiles()`. References Workspace via `_workspace` | Persist anything (runtime only) |
-| `launch_target.lua` | LaunchTarget class: resolves profile's default target descriptor into object references (Project, ConfigUnit, Target). `build()` builds deps then self. `deploy()` executes deploy steps (freshness check, copy). `launch()` runs the target via overseer | Own state beyond resolution; do I/O directly |
+| `launch_target.lua` | LaunchTarget class: resolves profile's default target descriptor into object references (Project, ConfigUnit, Target). `build()` builds deps then self. `deploy()` executes deploy steps (freshness check, copy). `launch()` runs the target via overseer. `debug()` runs via nvim-dap (falls back to `launch()` when dap unavailable) | Own state beyond resolution; do I/O directly |
+| `debug.lua` | DAP integration gateway. `run(spec, callbacks)` constructs DAP launch config and calls `dap.run()`. `resolve_adapter(workspace, module_type)` reads `user.json` debug settings. `available()` checks if nvim-dap is installed. Per-session callbacks via unique listener keys | Own state; depend on workspace internals |
 | `target.lua` | Target class: wraps module-detected build target (type, dependencies, artifact). `build()` delegates to module. `launch()` runs executable via overseer. Runtime-only, recreated on parse | Persist anything |
 | `deploy.lua` | Deploy step validation, resolution, freshness checking, execution, cleanup. Pure functions — no state. Resolves source config units within profile context, compares mtime + source identity for freshness, copies files | Own state; do I/O beyond file copy |
 | `variables.lua` | Project variable validation and resolution. `resolve(project, configuration)` walks inheritance chain via object references, returns values with provenance (source Configuration object). Reserved name checking | Own state; mutate anything |
@@ -686,8 +687,9 @@ loomworks.nvim/
 │   │   ├── project.lua                Project class (owns Configuration[])
 │   │   ├── config_unit.lua            ConfigUnit: user intent (project+config+tool)
 │   │   ├── build_dir.lua             BuildDir: cached build artifacts for a directory
-│   │   ├── launch_target.lua         LaunchTarget: profile's default build/launch target
+│   │   ├── launch_target.lua         LaunchTarget: profile's default build/launch/debug target
 │   │   ├── target.lua                Target: module-detected build target (cmake exe, etc.)
+│   │   ├── debug.lua                 DAP integration: config builder, adapter resolution
 │   │   ├── deploy.lua                Deploy step resolution, freshness, execution
 │   │   ├── variables.lua             Project variable resolution + validation
 │   │   ├── operation.lua              Operation class (profile action tracking)

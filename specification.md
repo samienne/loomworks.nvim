@@ -2583,12 +2583,62 @@ Failure at any step stops the chain. Build directory operation queue
 
 #### 9.9.8 Debug integration
 
-When `strategy = "dap"`, the adapter constructs a DAP launch config:
-- Executable path from the test binary
-- `--gtest_filter=Suite.Test` in arguments
-- Environment and working directory from ConfigUnit context
+Debug integration uses `debug.lua` as the single gateway to nvim-dap.
+When nvim-dap is not installed, all debug paths silently fall back to
+their non-debug equivalents (launch via overseer, test run via overseer).
 
-Delegates to neotest's DAP strategy → nvim-dap.
+**Launch target debugging.** `LaunchTarget:debug()` mirrors `launch()`:
+same build → deploy chain, but the final step calls `debug.run(spec)`
+instead of `overseer.launch_run_task()`. Both command-type and module
+target paths are supported. The DAP adapter type is resolved from
+`user.json` `debug.adapters` mapping (module_type → adapter), with
+fallback defaults (cmake → codelldb).
+
+**Test debugging.** `loomtest.debug(test_id)` mirrors `loomtest.run()`:
+same resolution logic (test/suite/target), same build-before-run via
+`ensure_built()`, but dispatches to `runner.debug()` which calls
+`debug.run()` with the test executable, gtest filter args, and
+environment. On session termination, a per-session DAP listener parses
+the gtest XML output and applies results to the test tree (signs,
+inline annotations, explorer).
+
+**debug.run(spec, callbacks)** constructs a DAP launch config from:
+- `program` — executable path
+- `args` — command arguments
+- `cwd` — working directory
+- `env` — environment variables
+- `adapter` — DAP adapter type (resolved by caller)
+
+Optional `callbacks.on_terminated` registers a one-shot listener on the
+DAP session that fires on `event_terminated` or `event_exited` and
+auto-removes itself.
+
+**Adapter configuration** in `user.json`:
+```json
+{
+  "debug": {
+    "adapters": {
+      "cmake": "codelldb",
+      "typescript": "pwa-node"
+    }
+  }
+}
+```
+
+If omitted, defaults apply (cmake → codelldb).
+
+**Default keymaps** registered by `setup()` (opt-out with `keys = false`):
+
+| Key | Action |
+|-----|--------|
+| `<F5>` / `<leader>wr` | Debug target (build → deploy → dap) |
+| `<leader>wR` | Launch target without debugger |
+| `<leader>tt` | Debug nearest test |
+| `<leader>tT` | Run nearest test |
+| `<leader>tf` | Debug file tests |
+| `<leader>tF` | Run file tests |
+| `d` (loomtest explorer) | Debug selected test |
+| `r` (loomtest explorer) | Run selected test |
 
 ---
 

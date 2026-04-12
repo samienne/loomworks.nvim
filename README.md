@@ -65,6 +65,7 @@ directory containing `loomworks.json`. You can also initialize manually:
 ```lua
 require("loomworks").setup({
   auto_load = "auto",  -- default: always load silently, notify via vim.notify
+  keys = true,         -- default: register default keymaps (false to disable)
 })
 ```
 
@@ -74,6 +75,44 @@ require("loomworks").setup({
 | `"cached_only"` | Load silently only if the workspace has been used before |
 | `"prompt"` | Load cached workspaces silently, prompt for new ones |
 | `false` | Never auto-load, only manual `:LoomworksInit` |
+
+### Default keymaps
+
+`setup()` registers these keymaps by default (disable with `keys = false`):
+
+| Key | Action |
+|-----|--------|
+| `<leader>ww` | Toggle loomworks status page |
+| `<leader>wb` | Build default target |
+| `<leader>wB` | Build active profile |
+| `<leader>wr` | Debug target (build + deploy + nvim-dap) |
+| `<leader>wR` | Launch target without debugger |
+| `<leader>ws` | Select profile |
+| `<F5>` | Debug target |
+| `<S-F5>` | Stop running launch |
+| `<leader>tt` | Debug nearest test |
+| `<leader>tT` | Run nearest test |
+| `<leader>tf` | Debug file tests |
+| `<leader>tF` | Run file tests |
+
+When nvim-dap is not installed, debug keymaps silently fall back to
+launching/running without the debugger.
+
+### Debug adapter configuration
+
+DAP adapter selection is per module type. Configure in `user.json`:
+
+```json
+{
+  "debug": {
+    "adapters": {
+      "cmake": "codelldb"
+    }
+  }
+}
+```
+
+Defaults: cmake uses `codelldb`. If omitted, defaults apply.
 
 ## Configuration
 
