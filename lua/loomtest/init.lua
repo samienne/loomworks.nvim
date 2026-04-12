@@ -245,11 +245,13 @@ function M.discover(callback)
 end
 
 --- Refresh: invalidate all adapters and re-discover.
+--- Resets all state including run timestamps.
 function M.refresh()
     for _, adapter in ipairs(_adapters) do
         adapter.invalidate()
     end
     M.clear()
+    require("loomtest.runner").reset_run_time()
     M.discover()
 end
 

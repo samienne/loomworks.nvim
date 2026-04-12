@@ -367,4 +367,9 @@ function M.last_task_id()
     return _last_task_id
 end
 
+--- Reset the last run time (e.g. on profile switch).
+function M.reset_run_time()
+    _last_run_time = nil
+end
+
 return M
