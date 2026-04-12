@@ -14,6 +14,7 @@ local uv = vim.uv or vim.loop
 --- @field _configuration string|nil variant name (for -C flag)
 --- @field _ctest_dir string|nil cached CTestTestfile directory
 --- @field _source_files_by_exe table<string, string[]> executable → source files
+--- @field _exec_specs table<string, table> executable → { cmd, cwd, env, timeout }
 local CTestUnit = setmetatable({}, { __index = TestUnit })
 CTestUnit.__index = CTestUnit
 
@@ -28,6 +29,7 @@ function CTestUnit.new(config_unit)
     self._configuration = config_unit:variant()
     self._ctest_dir = nil
     self._source_files_by_exe = {}
+    self._exec_specs = {}
     return self
 end
 
@@ -83,6 +85,7 @@ local function parse_ctest_json(json_str)
 
     local entries = {}
     local executables = {}
+    local exec_specs = {}  -- executable → { cmd, cwd, env, timeout }
 
     for _, test in ipairs(tests_data) do
         local name = test.name
@@ -91,6 +94,32 @@ local function parse_ctest_json(json_str)
         local exe = test.command and test.command[1] or nil
         local suite, case = name:match("^([^%.]+)%.(.+)$")
         local is_individual = suite ~= nil and exe ~= nil
+
+        -- Extract execution spec from ctest properties
+        if exe and not exec_specs[exe] then
+            local spec = {
+                cmd = test.command,  -- full command array (exe + args)
+                cwd = nil,
+                env = {},
+                timeout = nil,
+            }
+            if test.properties then
+                for _, prop in ipairs(test.properties) do
+                    if prop.name == "WORKING_DIRECTORY" then
+                        spec.cwd = prop.value
+                    elseif prop.name == "ENVIRONMENT" then
+                        -- ENVIRONMENT can appear multiple times (one per var)
+                        local key, val = prop.value:match("^([^=]+)=(.*)")
+                        if key then
+                            spec.env[key] = val
+                        end
+                    elseif prop.name == "TIMEOUT" then
+                        spec.timeout = tonumber(prop.value)
+                    end
+                end
+            end
+            exec_specs[exe] = spec
+        end
 
         if is_individual then
             if not executables[exe] then
@@ -127,7 +156,7 @@ local function parse_ctest_json(json_str)
         ::continue::
     end
 
-    return #entries > 0 and entries or nil
+    return (#entries > 0 and entries or nil), exec_specs
 end
 
 --- Discover test targets and individual tests.
@@ -142,8 +171,10 @@ function CTestUnit:discover()
     local result = vim.system(cmd, { text = true, timeout = 10000 }):wait()
     if result.code ~= 0 or not result.stdout then return nil end
 
-    local entries = parse_ctest_json(result.stdout)
+    local entries, exec_specs = parse_ctest_json(result.stdout)
     if not entries then return nil end
+
+    self._exec_specs = exec_specs or {}
 
     -- Probe opaque targets for framework detection
     self:_probe_frameworks_sync(entries)
@@ -178,11 +209,12 @@ function CTestUnit:discover_async(callback)
                     callback(nil)
                     return
                 end
-                local entries = parse_ctest_json(result.stdout)
+                local entries, exec_specs = parse_ctest_json(result.stdout)
                 if not entries then
                     callback(nil)
                     return
                 end
+                self_ref._exec_specs = exec_specs or {}
 
                 -- Probe frameworks async, then find sources
                 self_ref:_probe_frameworks(entries, function()
@@ -298,31 +330,84 @@ end
 --- @param test_id string
 --- @param opts? table { gtest_filter?: string }
 --- @return table { cmd, env, cwd, output_path }
+--- Find the execution spec for a test entry's executable.
+--- @param test_id string
+--- @return table|nil exec_spec { cmd, cwd, env, timeout }
+--- @return string|nil executable path
+function CTestUnit:_find_exec_spec(test_id)
+    local exe = nil
+    if self._entries then
+        for _, e in ipairs(self._entries) do
+            if e.id == test_id then
+                exe = e.executable
+                break
+            end
+            -- For individual tests, look up via parent target
+            if e.id == test_id or (e.parent and e.id == test_id) then
+                exe = e.executable
+                break
+            end
+        end
+    end
+    if not exe then return nil, nil end
+    return self._exec_specs[exe], exe
+end
+
 function CTestUnit:test_command(test_id, opts)
     opts = opts or {}
-    local cmd = self:_base_cmd()
-    cmd[#cmd + 1] = "--output-on-failure"
-    local env = {}
 
-    local test_name = test_id:match("^test:(.+)$") or test_id:match("^target:(.+)$") or test_id
+    -- Find the executable for this test
+    local exe = nil
+    local parent_id = nil
+    if self._entries then
+        for _, e in ipairs(self._entries) do
+            if e.id == test_id then
+                exe = e.executable
+                parent_id = e.parent
+                break
+            end
+        end
+    end
+    if not exe and parent_id then
+        -- Look up parent's executable
+        for _, e in ipairs(self._entries) do
+            if e.id == parent_id then
+                exe = e.executable
+                break
+            end
+        end
+    end
+    if not exe then return nil end
 
-    cmd[#cmd + 1] = "-R"
-    cmd[#cmd + 1] = "^" .. vim.pesc(test_name) .. "$"
+    local spec = self._exec_specs[exe]
+    if not spec then return nil end
 
-    if opts.gtest_filter then
+    -- Build command: original command + gtest flags
+    local cmd = vim.deepcopy(spec.cmd)
+    local env = vim.deepcopy(spec.env)
+
+    -- Determine gtest filter
+    local is_target = test_id:match("^target:")
+    if not is_target then
+        local test_name = test_id:match("^test:(.+)$") or test_id
+        env.GTEST_FILTER = opts.gtest_filter or test_name
+    elseif opts.gtest_filter then
         env.GTEST_FILTER = opts.gtest_filter
     end
 
-    local output_path = self._build_dir .. "/.nvim/test_results.xml"
-    cmd[#cmd + 1] = "--output-junit"
-    cmd[#cmd + 1] = output_path
+    -- gtest XML output for per-test results and output capture
+    local nvim_dir = self._build_dir .. "/.nvim"
+    if not uv.fs_stat(nvim_dir) then
+        uv.fs_mkdir(nvim_dir, 493) -- 0755
+    end
+    local gtest_xml = nvim_dir .. "/gtest_results.xml"
+    cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
-    local ws = self._config_unit._workspace
     return {
         cmd = cmd,
         env = env,
-        cwd = ws and ws.root or nil,
-        output_path = output_path,
+        cwd = spec.cwd or self._build_dir,
+        output_path = gtest_xml,
     }
 end
 
@@ -331,27 +416,46 @@ end
 --- @return table { cmd, env, cwd, output_path }
 function CTestUnit:test_command_all(opts)
     opts = opts or {}
-    local cmd = self:_base_cmd()
-    cmd[#cmd + 1] = "--output-on-failure"
 
+    -- Find the first executable (for single-target projects)
+    local exe = nil
+    if self._entries then
+        for _, e in ipairs(self._entries) do
+            if e.executable then
+                exe = e.executable
+                break
+            end
+        end
+    end
+    if not exe then return nil end
+
+    local spec = self._exec_specs[exe]
+    if not spec then return nil end
+
+    local cmd = vim.deepcopy(spec.cmd)
+    local env = vim.deepcopy(spec.env)
+
+    -- Apply filter via GTEST_FILTER if specified
     if opts.filter then
-        cmd[#cmd + 1] = "-R"
-        cmd[#cmd + 1] = opts.filter
+        env.GTEST_FILTER = opts.filter
     end
 
-    local output_path = self._build_dir .. "/.nvim/test_results.xml"
-    cmd[#cmd + 1] = "--output-junit"
-    cmd[#cmd + 1] = output_path
+    local nvim_dir = self._build_dir .. "/.nvim"
+    if not uv.fs_stat(nvim_dir) then
+        uv.fs_mkdir(nvim_dir, 493) -- 0755
+    end
+    local gtest_xml = nvim_dir .. "/gtest_results.xml"
+    cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
     return {
         cmd = cmd,
-        env = {},
-        cwd = self._config_unit._workspace and self._config_unit._workspace.root or nil,
-        output_path = output_path,
+        env = env,
+        cwd = spec.cwd or self._build_dir,
+        output_path = gtest_xml,
     }
 end
 
---- Parse test results from JUnit XML output.
+--- Parse test results from gtest XML output.
 --- @param output_path string
 --- @return table[]|nil
 function CTestUnit:parse_results(output_path)
@@ -362,6 +466,7 @@ end
 function CTestUnit:invalidate()
     TestUnit.invalidate(self)
     self._ctest_dir = nil
+    self._exec_specs = {}
     self._build_dir = self._config_unit:build_dir()
     self._configuration = self._config_unit:variant()
 end

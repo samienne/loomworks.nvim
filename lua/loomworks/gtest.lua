@@ -9,6 +9,8 @@ local M = {}
 local uv = vim.uv or vim.loop
 
 --- Parse --gtest_list_tests output into test entries.
+--- Strict parser: rejects lines that don't match the expected format
+--- and reports them.
 --- @param output string stdout from --gtest_list_tests
 --- @param executable string path to the test executable
 --- @param target_id string parent target id for tree nesting
@@ -16,20 +18,35 @@ local uv = vim.uv or vim.loop
 function M.parse_list_tests(output, executable, target_id)
     local entries = {}
     local current_suite = nil
+    local line_num = 0
 
     for line in output:gmatch("[^\r\n]+") do
-        -- Suite lines end with "."
-        local suite = line:match("^(%S+)%.$")
-        if suite then
-            current_suite = suite
-        elseif current_suite then
-            -- Test case lines are indented
-            local case = line:match("^%s+(%S+)")
-            if case then
-                -- Strip type parameter suffix if present
-                case = case:match("^([^#]+)") or case
-                -- Trim trailing whitespace from # stripping
-                case = case:match("^(.-)%s*$")
+        line_num = line_num + 1
+
+        -- Strip trailing whitespace
+        line = line:match("^(.-)%s*$")
+
+        -- Skip empty lines
+        if line == "" then goto continue end
+
+        -- Strip inline comments: "  # TypeParam = ..." or "  # GetParam() = ..."
+        local content = line:gsub("%s+#.*$", "")
+
+        -- Suite line: non-indented, ends with "."
+        -- Format: "SuiteName." or "Prefix/SuiteName."
+        if not content:match("^%s") and content:match("%.$") then
+            local suite = content:match("^(.+)%.$")
+            if suite and suite ~= "" then
+                current_suite = suite
+            end
+            goto continue
+        end
+
+        -- Test line: indented with spaces, contains test name
+        -- Format: "  TestName" or "  TestName/ParamIndex"
+        if content:match("^%s+%S") and current_suite then
+            local case = content:match("^%s+(.+)$")
+            if case and case ~= "" then
                 local full_name = current_suite .. "." .. case
                 entries[#entries + 1] = {
                     id = "test:" .. full_name,
@@ -39,8 +56,17 @@ function M.parse_list_tests(output, executable, target_id)
                     framework = "gtest",
                     executable = executable,
                 }
+                goto continue
             end
         end
+
+        -- Unrecognized line — skip silently for known patterns
+        -- (gtest prints a header line "Running main() from ..." sometimes)
+        if not line:match("^Running main") and not line:match("^$") then
+            -- Unknown format — could log for debugging
+        end
+
+        ::continue::
     end
 
     return entries
@@ -221,8 +247,38 @@ function M.build_filter(test_id)
     return test_id:match("^test:(.+)$") or test_id
 end
 
+--- Strip CDATA wrappers from XML content.
+--- @param text string
+--- @return string
+local function strip_cdata(text)
+    if not text then return text end
+    return text:gsub("<!%[CDATA%[", ""):gsub("%]%]>", "")
+end
+
+--- Parse file:line from a gtest failure message.
+--- gtest embeds "path/to/file.cpp:42\nExpected..." in failure text.
+--- @param text string failure message text
+--- @return loomtest.TestError[]
+local function parse_failure_locations(text)
+    local errors = {}
+    -- Match lines like "C:/path/file.cpp:42" or "path\file.cpp:42"
+    -- Include : for drive letters (C:) but the final :digits is the line number
+    for file, line in text:gmatch("([%w_/\\%.%-:]+%.[ch]pp?):(%d+)") do
+        errors[#errors + 1] = {
+            message = text:match("^.-\n(.-)$") or text,
+            file = file:gsub("\\", "/"),
+            line = tonumber(line),
+        }
+    end
+    return errors
+end
+
 --- Parse gtest XML output into test results.
---- @param output_path string path to gtest XML file
+--- Handles both gtest native XML (--gtest_output=xml) and ctest JUnit
+--- (--output-junit). Extracts per-test output from <system-out>/<system-err>,
+--- failure locations from message text, and builds full test IDs from
+--- classname + name.
+--- @param output_path string path to XML file
 --- @return table[]|nil TestResult entries
 function M.parse_xml_results(output_path)
     local f = io.open(output_path, "r")
@@ -234,43 +290,108 @@ function M.parse_xml_results(output_path)
 
     local results = {}
 
-    -- Parse JUnit/gtest XML testcase elements.
-    for tag in content:gmatch("<testcase%s[^>]->.-</testcase>") do
-        local attrs = tag:match("<testcase%s(.-[^/])>")
-        local body = tag:match("<testcase[^>]*>(.-)</testcase>") or ""
-        if not attrs then
-            attrs = tag:match("<testcase%s(.-)/%s*>")
-            body = ""
+    -- Parse line-by-line for performance (gmatch on 675KB+ strings is slow).
+    -- gtest XML has one testcase per line for self-closing tags.
+    -- Failed tests span multiple lines (<testcase>...<failure>...</testcase>).
+    local in_testcase = nil  -- accumulating a multi-line testcase
+    for line in content:gmatch("[^\n]+") do
+        if in_testcase then
+            in_testcase = in_testcase .. "\n" .. line
+            if line:match("</testcase>") then
+                -- Process accumulated testcase
+                local attrs = in_testcase:match("<testcase%s(.-[^/])>")
+                local body = in_testcase:match("<testcase[^>]*>(.-)</testcase>") or ""
+                if attrs then
+                    local name = attrs:match('name="([^"]*)"')
+                    local classname = attrs:match('classname="([^"]*)"')
+                    local time_str = attrs:match('time="([^"]*)"')
+                    if name then
+                        local test_id = (classname and classname ~= "")
+                            and ("test:" .. classname .. "." .. name)
+                            or ("test:" .. name)
+
+                        local status = "passed"
+                        local message, errors, output
+                        if body:match("<failure") then
+                            status = "failed"
+                            message = body:match("<failure[^>]*>(.-)<%/failure>")
+                                or body:match('<failure message="([^"]*)"')
+                            message = strip_cdata(message)
+                            if message then errors = parse_failure_locations(message) end
+                        elseif body:match("<skipped") then
+                            status = "skipped"
+                        elseif body:match("<error") then
+                            status = "errored"
+                            message = body:match("<error[^>]*>(.-)<%/error>")
+                            message = strip_cdata(message)
+                        end
+
+                        local sys_out = strip_cdata(body:match("<system%-out>(.-)</system%-out>"))
+                        local sys_err = strip_cdata(body:match("<system%-err>(.-)</system%-err>"))
+                        if sys_out or sys_err then
+                            local parts = {}
+                            if sys_out and sys_out ~= "" then parts[#parts + 1] = sys_out end
+                            if sys_err and sys_err ~= "" then
+                                parts[#parts + 1] = "--- stderr ---"
+                                parts[#parts + 1] = sys_err
+                            end
+                            output = table.concat(parts, "\n")
+                        end
+
+                        results[#results + 1] = {
+                            test_id = test_id, status = status,
+                            message = message, output = output,
+                            errors = errors,
+                            duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
+                        }
+                    end
+                end
+                in_testcase = nil
+            end
+        elseif line:match("<testcase%s") then
+            if line:match("/>%s*$") then
+                -- Self-closing testcase (passing test, single line)
+                local attrs = line:match("<testcase%s(.-)/>")
+                if attrs then
+                    local name = attrs:match('name="([^"]*)"')
+                    local classname = attrs:match('classname="([^"]*)"')
+                    local time_str = attrs:match('time="([^"]*)"')
+                    if name then
+                        local test_id = (classname and classname ~= "")
+                            and ("test:" .. classname .. "." .. name)
+                            or ("test:" .. name)
+                        results[#results + 1] = {
+                            test_id = test_id, status = "passed",
+                            duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
+                        }
+                    end
+                end
+            elseif line:match("</testcase>") then
+                -- Single-line testcase with body (rare)
+                in_testcase = line
+                -- Re-trigger end processing
+                local attrs = line:match("<testcase%s(.-[^/])>")
+                local body = line:match("<testcase[^>]*>(.-)</testcase>") or ""
+                if attrs then
+                    local name = attrs:match('name="([^"]*)"')
+                    local classname = attrs:match('classname="([^"]*)"')
+                    local time_str = attrs:match('time="([^"]*)"')
+                    if name then
+                        local test_id = (classname and classname ~= "")
+                            and ("test:" .. classname .. "." .. name)
+                            or ("test:" .. name)
+                        results[#results + 1] = {
+                            test_id = test_id, status = "passed",
+                            duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
+                        }
+                    end
+                end
+                in_testcase = nil
+            else
+                -- Multi-line testcase (has children like <failure>, <system-out>)
+                in_testcase = line
+            end
         end
-        if not attrs then goto continue end
-
-        local name = attrs:match('name="([^"]*)"')
-        local time_str = attrs:match('time="([^"]*)"')
-        if not name then goto continue end
-
-        local status = "passed"
-        local message
-        if body:match("<failure") then
-            status = "failed"
-            message = body:match("<failure[^>]*>(.-)<%/failure>")
-                or body:match('<failure message="([^"]*)"')
-        elseif body:match("<skipped") then
-            status = "skipped"
-        elseif body:match("<error") then
-            status = "errored"
-            message = body:match("<error[^>]*>(.-)<%/error>")
-                or body:match('<error message="([^"]*)"')
-        end
-
-        results[#results + 1] = {
-            test_id = "test:" .. name,
-            status = status,
-            message = message,
-            duration = time_str and tonumber(time_str)
-                and tonumber(time_str) * 1000 or nil,
-        }
-
-        ::continue::
     end
 
     return #results > 0 and results or nil
