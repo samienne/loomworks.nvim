@@ -37,8 +37,34 @@ end
 -- Setup & workspace
 -- ---------------------------------------------------------------------------
 
---- Initialize loomworks workspace.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table }
+--- Set up default keymaps.
+--- @param opts? { keys?: boolean|table }
+local function setup_keymaps(opts)
+    if opts and opts.keys == false then return end
+
+    local map = vim.keymap.set
+    -- Workspace
+    map("n", "<leader>ww", function() M.toggle() end, { desc = "Loomworks info" })
+    map("n", "<leader>wb", function() M.build_target() end, { desc = "Build default target" })
+    map("n", "<leader>wB", function() M.build_profile() end, { desc = "Build active profile" })
+    map("n", "<leader>wr", function() M.debug_target() end, { desc = "Debug target" })
+    map("n", "<leader>wR", function() M.launch_target() end, { desc = "Launch target" })
+    map("n", "<leader>ws", function() M.pick_profile() end, { desc = "Select profile" })
+    map("n", "<F5>", function() M.debug_target() end, { desc = "Debug target" })
+    map("n", "<S-F5>", function() M.stop_target() end, { desc = "Stop launch" })
+    -- Tests
+    local loomtest = require("loomtest")
+    map("n", "<leader>tt", function() loomtest.debug_nearest() end, { desc = "Debug nearest test" })
+    map("n", "<leader>tT", function() loomtest.run_nearest() end, { desc = "Run nearest test" })
+    map("n", "<leader>tf", function() loomtest.debug_file() end, { desc = "Debug file tests" })
+    map("n", "<leader>tF", function() loomtest.run_file() end, { desc = "Run file tests" })
+end
+
+--- Initialize loomworks.
+--- Registers keymaps and fidget integration. Workspace loading is handled
+--- separately by auto_load when a file is opened, or by calling load()
+--- explicitly.
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean }
 function M.setup(opts)
     if opts and opts.auto_load ~= nil then
         auto_load_mode = opts.auto_load
@@ -47,10 +73,15 @@ function M.setup(opts)
         task_output_win = opts.task_output_win
     end
 
+    setup_keymaps(opts)
+
     -- Optional fidget.nvim integration for progress notifications (registers listeners, fast)
     require("loomworks.fidget").setup()
 
-    core:setup(opts)
+    -- Load workspace if root is specified (auto_load passes root explicitly)
+    if opts and opts.root then
+        core:setup(opts)
+    end
 end
 
 --- Get the current auto-load mode.
@@ -563,6 +594,69 @@ function M.launch_target()
         local new_target = profile:default_target()
         if new_target and new_target:is_launchable() then
             build_deploy_launch(new_target)
+        end
+    end)
+end
+
+--- Build, deploy, and debug a target using Future chains.
+--- @param target loomworks.LaunchTarget
+local function build_deploy_debug(target)
+    local fidget = require("loomworks.fidget")
+    local handle = fidget.start_action("Debugging " .. target:display_name())
+
+    local chain
+    if target:is_buildable() then
+        fidget.report(handle, "building...")
+        chain = target:build()
+    else
+        chain = require("loomworks.future").resolved(true)
+    end
+
+    chain
+        :next(function()
+            fidget.report(handle, "deploying...")
+            return target:deploy()
+        end)
+        :next(function()
+            fidget.report(handle, "debugging...")
+            target:debug()
+            fidget.finish(handle, "debugging")
+        end)
+        :catch(function(err)
+            fidget.fail(handle, err)
+            vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
+        end)
+end
+
+function M.debug_target()
+    local profile = M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+
+    local launch_target = profile:default_target()
+
+    if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
+        build_deploy_debug(launch_target)
+        return
+    end
+
+    -- Stale target
+    if launch_target and not launch_target:is_valid() then
+        vim.notify("loomworks: target '" .. launch_target:display_name()
+            .. "' no longer available", vim.log.levels.WARN)
+        profile:clear_default_target()
+    end
+
+    -- No default or stale: show picker, then debug the selection
+    M._pick_target(profile, function(project, target_id)
+        if project and target_id then
+            profile:set_default_target(project, target_id)
+        end
+        local new_target = profile:default_target()
+        if new_target and new_target:is_launchable() then
+            build_deploy_debug(new_target)
         end
     end)
 end

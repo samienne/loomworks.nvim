@@ -361,6 +361,104 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
     task:start()
 end
 
+--- Debug a test RunSpec via nvim-dap.
+--- Falls back to execute() if nvim-dap is not available.
+--- @param adapter loomtest.TestAdapter the adapter (for ensure_built)
+--- @param spec loomtest.RunSpec the command to execute
+--- @param test_ids string[] test IDs being debugged
+--- @param opts? table { skip_build?: boolean }
+function M.debug(adapter, spec, test_ids, opts)
+    local debug_mod = require("loomworks.debug")
+    if not debug_mod.available() then
+        M.execute(adapter, spec, test_ids, opts)
+        return
+    end
+
+    opts = opts or {}
+    local loomtest = require("loomtest")
+    local explorer = require("loomtest.explorer")
+
+    local function start_debug()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+
+        -- Mark tests as pending
+        for _, id in ipairs(test_ids) do
+            local node = loomtest.get_node(id)
+            if node then
+                node.status = "pending"
+                node.message = nil
+                node._output = nil
+                node._errors = nil
+            end
+        end
+        if explorer.is_open() then explorer.refresh() end
+        require("loomtest.signs").update_all()
+
+        -- spec.cmd is an array: first element is the program, rest are args
+        local program = spec.cmd[1]
+        local args = {}
+        for i = 2, #spec.cmd do
+            args[#args + 1] = spec.cmd[i]
+        end
+
+        -- Resolve adapter type from workspace module
+        local adapter_type = "codelldb"
+        if ws then
+            adapter_type = debug_mod.resolve_adapter(ws, "cmake")
+        end
+
+        debug_mod.run({
+            name = "Debug test",
+            program = program,
+            args = args,
+            cwd = spec.cwd,
+            env = spec.env,
+            adapter = adapter_type,
+        }, {
+            on_terminated = function()
+                vim.schedule(function()
+                    -- Parse gtest XML for authoritative results
+                    if spec.output_path then
+                        local results = adapter.parse_results(spec.output_path)
+                        if results then
+                            loomtest.apply_results(results)
+                        end
+                    end
+
+                    -- Tests still "pending" had no result
+                    for _, id in ipairs(test_ids) do
+                        local node = loomtest.get_node(id)
+                        if node and (node.status == "pending" or node.status == "running") then
+                            node.status = nil
+                        end
+                    end
+
+                    _last_run_time = os.time()
+
+                    require("loomtest.signs").update_all()
+                    require("loomtest.inline").update_all()
+                    if explorer.is_open() then explorer.refresh() end
+                end)
+            end,
+        })
+    end
+
+    -- Auto-build if adapter supports it
+    if adapter.ensure_built and not opts.skip_build then
+        adapter.ensure_built(test_ids, function(ok)
+            if not ok then
+                vim.notify("loomtest: build failed, cannot debug test", vim.log.levels.ERROR)
+                return
+            end
+            start_debug()
+        end)
+        return
+    end
+
+    start_debug()
+end
+
 --- Get the last task ID.
 --- @return number|nil
 function M.last_task_id()

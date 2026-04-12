@@ -315,6 +315,53 @@ function M.run(test_id, node_type, opts)
     require("loomtest.runner").execute(adapter, spec, ids, opts)
 end
 
+--- Debug a test under nvim-dap.
+--- Same resolution as run() but dispatches to runner.debug().
+--- @param test_id string
+--- @param node_type? string
+--- @param opts? table
+function M.debug(test_id, node_type, opts)
+    opts = opts or {}
+    local adapter = M.find_adapter(test_id)
+    if not adapter then return end
+
+    local node = _nodes[test_id]
+    local ntype = node_type or (node and node.type) or nil
+
+    if not node and test_id:match("::") then
+        ntype = "suite"
+    end
+
+    local spec
+    local ids = {}
+
+    if ntype == "suite" then
+        local suite_name = test_id:match("::(.+)$")
+        if suite_name then
+            for _, n in ipairs(_node_list) do
+                if n.type == "test" and n.name:match("^" .. vim.pesc(suite_name) .. "%.") then
+                    ids[#ids + 1] = n.id
+                end
+            end
+        end
+        spec = adapter.run_suite(test_id)
+    elseif ntype == "target" then
+        for _, n in ipairs(_node_list) do
+            if n.parent == test_id and n.type == "test" then
+                ids[#ids + 1] = n.id
+            end
+        end
+        spec = adapter.run_all()
+    else
+        ids[#ids + 1] = test_id
+        spec = adapter.run(test_id)
+    end
+    if not spec then return end
+    if #ids == 0 then ids[1] = test_id end
+
+    require("loomtest.runner").debug(adapter, spec, ids, opts)
+end
+
 --- Run all tests.
 --- @param opts? table { skip_build?: boolean }
 function M.run_all(opts)
@@ -354,6 +401,52 @@ function M.run_nearest()
     end
 
     vim.notify("loomtest: no test at cursor", vim.log.levels.INFO)
+end
+
+--- Debug test at cursor.
+function M.debug_nearest()
+    local bufnr = vim.api.nvim_get_current_buf()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local line = cursor[1]
+
+    for _, adapter in ipairs(_adapters) do
+        local test_id = adapter.get_cursor_test(bufnr, line)
+        if test_id then
+            M.debug(test_id)
+            return
+        end
+    end
+
+    vim.notify("loomtest: no test at cursor", vim.log.levels.INFO)
+end
+
+--- Debug all tests in the current file.
+function M.debug_file()
+    local bufnr = vim.api.nvim_get_current_buf()
+    local buf_path = vim.api.nvim_buf_get_name(bufnr)
+    if buf_path == "" then return end
+
+    local norm_path = buf_path:gsub("\\", "/"):lower()
+
+    local file_ids = {}
+    for _, node in ipairs(_node_list) do
+        if node.file and node.file:gsub("\\", "/"):lower() == norm_path and node.type == "test" then
+            file_ids[#file_ids + 1] = node.id
+        end
+    end
+
+    if #file_ids == 0 then
+        vim.notify("loomtest: no tests in this file", vim.log.levels.INFO)
+        return
+    end
+
+    local adapter = _adapters[1]
+    if not adapter then return end
+
+    local spec = adapter.run_all({ file = buf_path })
+    if not spec then return end
+
+    require("loomtest.runner").debug(adapter, spec, file_ids)
 end
 
 --- Run all tests in the current file.

@@ -484,6 +484,7 @@ function M.open()
         border = "rounded",
         title = " Tests ",
         title_pos = "center",
+        relative = "win",
     }, config.win or {})
 
     -- Non-overridable fields
@@ -496,6 +497,7 @@ function M.open()
         foldcolumn = "0",
         wrap = false,
         cursorline = true,
+        winfixbuf = true,
     }, win_config.wo or {})
     win_config.keys = {
         q = "close",
@@ -509,6 +511,12 @@ function M.open()
             local node = node_at_cursor()
             if node and node.runnable then
                 loomtest.run(node.id, node.type)
+            end
+        end,
+        d = function()
+            local node = node_at_cursor()
+            if node and node.runnable then
+                loomtest.debug(node.id, node.type)
             end
         end,
         R = function() loomtest.run_all() end,
