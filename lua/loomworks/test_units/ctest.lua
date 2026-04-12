@@ -397,7 +397,9 @@ function CTestUnit:test_command(test_id, opts)
 
     -- gtest XML output for per-test results and output capture
     local nvim_dir = self._build_dir .. "/.nvim"
-    vim.fn.mkdir(nvim_dir, "p")
+    if not uv.fs_stat(nvim_dir) then
+        uv.fs_mkdir(nvim_dir, 493) -- 0755
+    end
     local gtest_xml = nvim_dir .. "/gtest_results.xml"
     cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
@@ -439,7 +441,9 @@ function CTestUnit:test_command_all(opts)
     end
 
     local nvim_dir = self._build_dir .. "/.nvim"
-    vim.fn.mkdir(nvim_dir, "p")
+    if not uv.fs_stat(nvim_dir) then
+        uv.fs_mkdir(nvim_dir, 493) -- 0755
+    end
     local gtest_xml = nvim_dir .. "/gtest_results.xml"
     cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 

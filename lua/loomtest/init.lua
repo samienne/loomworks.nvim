@@ -177,6 +177,13 @@ function M.apply_results(results)
     end
 end
 
+--- Register a single node into the lookup table.
+--- Used by runner to add dynamically discovered tests.
+--- @param node loomtest.TestNode
+function M._register_node(node)
+    _nodes[node.id] = node
+end
+
 --- Clear all test data.
 function M.clear()
     _node_list = {}
