@@ -186,13 +186,12 @@ local function build_tree()
     local count_segments = {
         { icon = "✔", count = counts.passed, hl = "DiagnosticOk" },
         { icon = "✗", count = counts.failed, hl = "DiagnosticError" },
-        { icon = "↻", count = counts.running, hl = "DiagnosticInfo" },
-        { icon = "◌", count = counts.pending, hl = "DiagnosticHint" },
+        { icon = "↻", count = counts.running + counts.pending, hl = "DiagnosticInfo" },
         { icon = "⊘", count = counts.skipped, hl = "DiagnosticWarn" },
         { icon = "○", count = counts.unknown, hl = "Comment" },
     }
     for _, seg in ipairs(count_segments) do
-        if seg.count > 0 then
+        do
             local part = "  " .. seg.icon .. " " .. seg.count
             local start = #count_line
             count_line = count_line .. part
