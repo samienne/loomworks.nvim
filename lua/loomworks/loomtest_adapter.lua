@@ -148,15 +148,33 @@ local function create_adapter()
                         end
                     end
 
+                    -- Build via a plain overseer task (not loomworks task
+                    -- tracker) to avoid invalidating the test cache.
+                    local ok_o, overseer = pcall(require, "overseer")
+                    if not ok_o then callback(false); return end
+
+                    local ws = unit._workspace
+                    local bd = unit:build_dir()
+                    if not bd then callback(false); return end
+
+                    local build_cmd = { "cmake", "--build", bd }
                     if target_obj then
-                        target_obj:build()
-                            :next(function() callback(true) end)
-                            :catch(function() callback(false) end)
-                    else
-                        require("loomworks.overseer").run_configuration_action(unit, "build")
-                            :next(function() callback(true) end)
-                            :catch(function() callback(false) end)
+                        build_cmd[#build_cmd + 1] = "--target"
+                        build_cmd[#build_cmd + 1] = target_obj.id
                     end
+
+                    local build_task = overseer.new_task({
+                        name = "loomtest build: " .. (target_obj and target_obj.id or "all"),
+                        cmd = build_cmd,
+                        cwd = ws and ws.root or nil,
+                        components = { "on_exit_set_status" },
+                    })
+                    build_task:subscribe("on_complete", function(_, status)
+                        vim.schedule(function()
+                            callback(status == "SUCCESS")
+                        end)
+                    end)
+                    build_task:start()
                     return
                 end
             end

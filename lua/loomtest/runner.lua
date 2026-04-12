@@ -9,8 +9,56 @@ local M = {}
 --- @type number|nil most recent test task ID
 local _last_task_id = nil
 
+--- @type number|nil timestamp (seconds) when tests last completed
+local _last_run_time = nil
+
 --- @type table|nil fidget progress handle
 local _fidget_handle = nil
+
+--- Clear status for tests whose source files changed since last run.
+--- Tests without source file info are left unchanged.
+--- @param test_ids string[] test IDs to check
+--- @param loomtest table
+--- @return number cleared count of tests cleared
+local function clear_stale_tests(test_ids, loomtest)
+    if not _last_run_time then return 0 end
+
+    local uv = vim.uv or vim.loop
+    -- Cache stat results per file (many tests share same file)
+    local file_changed = {}
+    local cleared = 0
+
+    for _, id in ipairs(test_ids) do
+        local node = loomtest.get_node(id)
+        if not node or not node.status then goto continue end
+
+        local file = node.file
+        if not file then goto continue end
+
+        -- Check file mtime (cached per file)
+        if file_changed[file] == nil then
+            local stat = uv.fs_stat(file)
+            if stat then
+                file_changed[file] = stat.mtime.sec > _last_run_time
+            else
+                file_changed[file] = false
+            end
+        end
+
+        if file_changed[file] then
+            node.status = nil
+            node.message = nil
+            node.duration = nil
+            node._output = nil
+            node._errors = nil
+            cleared = cleared + 1
+        end
+
+        ::continue::
+    end
+
+    return cleared
+end
 
 --- Format test progress: "✔ 590 ✗ 2 / 1323 (45%)"
 --- @param test_ids string[]
@@ -89,6 +137,9 @@ function M.execute(adapter, spec, test_ids, opts)
 
     local loomtest = require("loomtest")
     local explorer = require("loomtest.explorer")
+
+    -- Clear stale tests (source changed since last run)
+    local stale_count = clear_stale_tests(test_ids, loomtest)
 
     -- Mark tests as pending
     for _, id in ipairs(test_ids) do
@@ -286,6 +337,9 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
                     node.status = nil
                 end
             end
+
+            -- Record completion time for staleness checks
+            _last_run_time = os.time()
 
             -- Final UI update
             require("loomtest.signs").update_all()
