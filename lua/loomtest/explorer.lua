@@ -572,7 +572,7 @@ function M.open()
                 M.show_output()
             end
         end,
-        g = function() loomtest.refresh() end,
+        ["<C-r>"] = function() loomtest.refresh() end,
         p = function()
             config.show_passed = not config.show_passed
             M.refresh()
