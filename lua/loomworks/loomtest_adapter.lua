@@ -111,11 +111,12 @@ local function create_adapter()
             end
         end,
 
-        --- Build the project before running tests.
-        --- Always builds (source files may have changed).
-        --- Calls callback(true) when ready, callback(false) on failure.
+        --- Build the test target before running tests.
+        --- Builds only the specific test executable when possible
+        --- (via Target:build()), falls back to full project build.
+        --- @param test_ids string[] test IDs to build for
         --- @param callback fun(ok: boolean)
-        ensure_built = function(callback)
+        ensure_built = function(test_ids, callback)
             local lw = require("loomworks")
             local profile = lw.get_active_profile()
             if not profile then callback(false); return end
@@ -123,10 +124,39 @@ local function create_adapter()
             for _, pp in ipairs(profile:projects()) do
                 local unit = pp._config_unit
                 if unit then
-                    local overseer_mod = require("loomworks.overseer")
-                    overseer_mod.run_configuration_action(unit, "build")
-                        :next(function() callback(true) end)
-                        :catch(function() callback(false) end)
+                    -- Try to find the cmake Target object for the test executable
+                    local target_obj = nil
+                    if unit.targets and test_ids and #test_ids > 0 then
+                        local tus = unit:test_units()
+                        if #tus > 0 and tus[1]._entries then
+                            for _, e in ipairs(tus[1]._entries) do
+                                if e.id == test_ids[1] and e.executable then
+                                    local exe_name = (e.executable:match("[/\\]([^/\\]+)$") or e.executable):gsub("%.exe$", "")
+                                    target_obj = unit.targets and unit.targets[exe_name]
+                                    break
+                                end
+                            end
+                            if not target_obj then
+                                for _, e in ipairs(tus[1]._entries) do
+                                    if e.executable and not e.parent then
+                                        local exe_name = (e.executable:match("[/\\]([^/\\]+)$") or e.executable):gsub("%.exe$", "")
+                                        target_obj = unit.targets and unit.targets[exe_name]
+                                        if target_obj then break end
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    if target_obj then
+                        target_obj:build()
+                            :next(function() callback(true) end)
+                            :catch(function() callback(false) end)
+                    else
+                        require("loomworks.overseer").run_configuration_action(unit, "build")
+                            :next(function() callback(true) end)
+                            :catch(function() callback(false) end)
+                    end
                     return
                 end
             end

@@ -34,6 +34,7 @@ local DEFAULT_CONFIG = {
         run = "<leader>tt",
         run_file = "<leader>tf",
         run_all = "<leader>ta",
+        run_all_no_build = "<leader>tA",
         output = "<leader>to",
     },
 }
@@ -57,6 +58,9 @@ function M.setup(opts)
     if keys.run_all then
         vim.keymap.set("n", keys.run_all, M.run_all, { desc = "Run all tests" })
     end
+    if keys.run_all_no_build then
+        vim.keymap.set("n", keys.run_all_no_build, M.run_all_no_build, { desc = "Run all tests (no build)" })
+    end
     if keys.output then
         vim.keymap.set("n", keys.output, M.show_output, { desc = "Show test output" })
     end
@@ -66,6 +70,7 @@ function M.setup(opts)
     vim.api.nvim_create_user_command("LoomtestRun", M.run_nearest, {})
     vim.api.nvim_create_user_command("LoomtestRunFile", M.run_file, {})
     vim.api.nvim_create_user_command("LoomtestRunAll", M.run_all, {})
+    vim.api.nvim_create_user_command("LoomtestRunAllNoBuild", M.run_all_no_build, {})
     vim.api.nvim_create_user_command("LoomtestRefresh", M.refresh, {})
     vim.api.nvim_create_user_command("LoomtestOutput", M.show_output, {})
 end
@@ -251,7 +256,9 @@ end
 --- (created by the explorer's grouping).
 --- @param test_id string
 --- @param node_type? string override type ("suite", "target", "test")
-function M.run(test_id, node_type)
+--- @param opts? table { skip_build?: boolean }
+function M.run(test_id, node_type, opts)
+    opts = opts or {}
     local adapter = M.find_adapter(test_id)
     if not adapter then return end
 
@@ -292,18 +299,18 @@ function M.run(test_id, node_type)
     if not spec then return end
     if #ids == 0 then ids[1] = test_id end
 
-    require("loomtest.runner").execute(adapter, spec, ids)
+    require("loomtest.runner").execute(adapter, spec, ids, opts)
 end
 
 --- Run all tests.
-function M.run_all()
+--- @param opts? table { skip_build?: boolean }
+function M.run_all(opts)
     local adapter = _adapters[1]
     if not adapter then return end
 
     local spec = adapter.run_all()
     if not spec then return end
 
-    -- Collect all runnable test IDs
     local ids = {}
     for _, node in ipairs(_node_list) do
         if node.type == "test" then
@@ -311,7 +318,12 @@ function M.run_all()
         end
     end
 
-    require("loomtest.runner").execute(adapter, spec, ids)
+    require("loomtest.runner").execute(adapter, spec, ids, opts)
+end
+
+--- Run all tests without building first.
+function M.run_all_no_build()
+    M.run_all({ skip_build = true })
 end
 
 --- Run test at cursor.

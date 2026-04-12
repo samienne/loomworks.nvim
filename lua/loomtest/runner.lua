@@ -78,7 +78,9 @@ local REFRESH_EVERY = 5  -- 5 * 50ms = 250ms
 --- @param adapter loomtest.TestAdapter the adapter for result parsing
 --- @param spec loomtest.RunSpec the command to execute
 --- @param test_ids string[] test IDs being run (for status tracking)
-function M.execute(adapter, spec, test_ids)
+--- @param opts? table { skip_build?: boolean }
+function M.execute(adapter, spec, test_ids, opts)
+    opts = opts or {}
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomtest: overseer.nvim not found", vim.log.levels.ERROR)
@@ -100,10 +102,10 @@ function M.execute(adapter, spec, test_ids)
         explorer.refresh()
     end
 
-    -- Auto-build if adapter supports it
-    if adapter.ensure_built then
+    -- Auto-build if adapter supports it (unless skip_build is set)
+    if adapter.ensure_built and not opts.skip_build then
         fidget_update("building...")
-        adapter.ensure_built(function(ok)
+        adapter.ensure_built(test_ids, function(ok)
             if not ok then
                 vim.notify("loomtest: build failed, cannot run tests", vim.log.levels.ERROR)
                 for _, id in ipairs(test_ids) do
@@ -114,7 +116,6 @@ function M.execute(adapter, spec, test_ids)
                 fidget_update("build failed", true)
                 return
             end
-            -- Build succeeded — now run tests
             M._execute_task(adapter, spec, test_ids, loomtest, explorer)
         end)
         return
