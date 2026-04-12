@@ -565,7 +565,6 @@ function M.open()
             pcall(vim.api.nvim_win_set_cursor, target_win, { err.line, 0 })
         end,
         o = function()
-            -- Show test output — look up canonical node for output data
             local node = node_at_cursor()
             if node then
                 _selected_id = node.id
@@ -628,52 +627,104 @@ end
 --- Show test output in a floating window.
 function M.show_output()
     local loomtest = require("loomtest")
-    local node
 
-    if _selected_id then
-        node = loomtest.get_node(_selected_id)
+    if not _selected_id then
+        vim.notify("loomtest: no test selected", vim.log.levels.INFO)
+        return
     end
-    if not node then
+
+    -- Look up the canonical node
+    local node = loomtest.get_node(_selected_id)
+
+    -- For suite/target nodes, find a failed child
+    if not node or (not node._output and not node.message and node.type ~= "test") then
         for _, n in ipairs(loomtest.nodes()) do
-            if n.status == "failed" and n._output then
+            if n.type == "test" and n.status == "failed"
+                and (n._output or n.message)
+                and n.id:find(_selected_id, 1, true) then
                 node = n; break
             end
         end
     end
 
-    if not node or not node._output then
-        vim.notify("loomtest: no test output available", vim.log.levels.INFO)
+    if not node then
+        vim.notify("loomtest: no output for this test", vim.log.levels.INFO)
         return
     end
 
+    -- For tests with no output/message (e.g. passed tests)
+    if not node._output and not node.message then
+        local title = node.name .. " (" .. (node.status or "unknown") .. ")"
+        M._show_output_float(title, "No output captured.", {})
+        return
+    end
+
+    local output = node._output or node.message or ""
+    if node.message and node._output and node.message ~= node._output then
+        output = node.message .. "\n\n--- stdout/stderr ---\n" .. node._output
+    end
+
     local title = node.name .. " (" .. (node.status or "unknown") .. ")"
-    M._show_output_float(title, node._output, node._errors or {})
+    M._show_output_float(title, output, node._errors or {})
 end
 
---- Display output in a floating window.
+--- Display output in a floating window with highlights.
 function M._show_output_float(title, output, errors)
-    local lines = vim.split(output, "\n")
+    local lines = {}
+    local hl_lines = {}  -- { line_num (0-based), hl_group }
 
+    -- Error section at top
     if #errors > 0 then
-        local err_lines = { "Errors:", "" }
+        lines[#lines + 1] = "Errors:"
+        hl_lines[#hl_lines + 1] = { #lines - 1, "DiagnosticError" }
+        lines[#lines + 1] = ""
         for _, err in ipairs(errors) do
             local loc = ""
             if err.file and err.line then
-                loc = vim.fn.fnamemodify(err.file, ":t") .. ":" .. err.line .. " "
+                loc = vim.fn.fnamemodify(err.file, ":t") .. ":" .. err.line .. "  "
             end
-            err_lines[#err_lines + 1] = "  " .. loc .. err.message
+            -- Split multi-line messages into separate lines
+            local msg = (err.message or ""):gsub("\r", "")
+            local first = true
+            for msg_line in (msg .. "\n"):gmatch("([^\n]*)\n") do
+                if first then
+                    lines[#lines + 1] = "  " .. loc .. msg_line
+                    first = false
+                else
+                    lines[#lines + 1] = "    " .. msg_line
+                end
+                hl_lines[#hl_lines + 1] = { #lines - 1, "DiagnosticWarn" }
+            end
         end
-        err_lines[#err_lines + 1] = ""
-        err_lines[#err_lines + 1] = "Output:"
-        err_lines[#err_lines + 1] = ""
-        for _, l in ipairs(lines) do
-            err_lines[#err_lines + 1] = l
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "Output:"
+        hl_lines[#hl_lines + 1] = { #lines - 1, "Title" }
+        lines[#lines + 1] = ""
+    end
+
+    -- Output lines (strip \r from Windows line endings)
+    output = output:gsub("\r", "")
+    for _, l in ipairs(vim.split(output, "\n")) do
+        lines[#lines + 1] = l
+        -- Highlight failure-related lines
+        if l:match("^%s*Expected") or l:match("^%s*Actual")
+            or l:match("^%s*Value of") or l:match("ASSERT_")
+            or l:match("EXPECT_") then
+            hl_lines[#hl_lines + 1] = { #lines - 1, "DiagnosticWarn" }
+        elseif l:match("%.cpp:%d+") or l:match("%.h:%d+") then
+            hl_lines[#hl_lines + 1] = { #lines - 1, "DiagnosticInfo" }
         end
-        lines = err_lines
     end
 
     local buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+
+    -- Apply highlights
+    local ns = vim.api.nvim_create_namespace("loomtest_output")
+    for _, hl in ipairs(hl_lines) do
+        pcall(vim.api.nvim_buf_add_highlight, buf, ns, hl[2], hl[1], 0, -1)
+    end
+
     vim.bo[buf].modifiable = false
     vim.bo[buf].bufhidden = "wipe"
 
@@ -687,7 +738,7 @@ function M._show_output_float(title, output, errors)
         title = " " .. title .. " ",
         title_pos = "center",
         keys = { q = "close" },
-        wo = { number = false, relativenumber = false, wrap = true },
+        wo = { number = true, relativenumber = false, wrap = true },
     })
 end
 
