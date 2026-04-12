@@ -100,6 +100,32 @@ function M.execute(adapter, spec, test_ids)
         explorer.refresh()
     end
 
+    -- Auto-build if adapter supports it
+    if adapter.ensure_built then
+        fidget_update("building...")
+        adapter.ensure_built(function(ok)
+            if not ok then
+                vim.notify("loomtest: build failed, cannot run tests", vim.log.levels.ERROR)
+                for _, id in ipairs(test_ids) do
+                    local node = loomtest.get_node(id)
+                    if node then node.status = nil end
+                end
+                if explorer.is_open() then explorer.refresh() end
+                fidget_update("build failed", true)
+                return
+            end
+            -- Build succeeded — now run tests
+            M._execute_task(adapter, spec, test_ids, loomtest, explorer)
+        end)
+        return
+    end
+
+    M._execute_task(adapter, spec, test_ids, loomtest, explorer)
+end
+
+--- Internal: execute the overseer task (after build if needed).
+function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
+    local overseer = require("overseer")
     fidget_update("0% ✔ 0")
 
     -- Dispose previous test task
@@ -122,7 +148,6 @@ function M.execute(adapter, spec, test_ids)
         cwd = spec.cwd,
         env = spec.env,
         components = {
-            "on_output_summarize",
             "on_exit_set_status",
             -- No "on_complete_notify" — suppresses success/failure notifications
         },

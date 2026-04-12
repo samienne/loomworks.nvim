@@ -111,6 +111,28 @@ local function create_adapter()
             end
         end,
 
+        --- Build the project before running tests.
+        --- Always builds (source files may have changed).
+        --- Calls callback(true) when ready, callback(false) on failure.
+        --- @param callback fun(ok: boolean)
+        ensure_built = function(callback)
+            local lw = require("loomworks")
+            local profile = lw.get_active_profile()
+            if not profile then callback(false); return end
+
+            for _, pp in ipairs(profile:projects()) do
+                local unit = pp._config_unit
+                if unit then
+                    local overseer_mod = require("loomworks.overseer")
+                    overseer_mod.run_configuration_action(unit, "build")
+                        :next(function() callback(true) end)
+                        :catch(function() callback(false) end)
+                    return
+                end
+            end
+            callback(false)
+        end,
+
         run = function(test_id, opts)
             local unit, tu = M._find_test_unit(test_id)
             if not tu then return nil end
