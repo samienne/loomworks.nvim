@@ -36,6 +36,7 @@ local DEFAULT_CONFIG = {
     },
     keys = {
         toggle = "<leader>ts",
+        goto_test = "<leader>tg",
         run = "<leader>tt",
         run_file = "<leader>tf",
         run_all = "<leader>ta",
@@ -53,6 +54,11 @@ function M.setup(opts)
     local keys = _config.keys
     if keys.toggle then
         vim.keymap.set("n", keys.toggle, M.toggle, { desc = "Toggle test explorer" })
+    end
+    if keys.goto_test then
+        vim.keymap.set("n", keys.goto_test, function()
+            require("loomtest.explorer").goto_test()
+        end, { desc = "Go to test in explorer" })
     end
     if keys.run then
         vim.keymap.set("n", keys.run, M.run_nearest, { desc = "Run test at cursor" })

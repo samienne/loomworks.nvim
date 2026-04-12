@@ -620,8 +620,108 @@ function M.is_open()
 end
 
 --- Toggle the explorer panel.
+--- If opening, optionally reveal the test at cursor.
 function M.toggle()
-    if M.is_open() then M.close() else M.open() end
+    if M.is_open() then
+        M.close()
+    else
+        -- Find test at cursor in the source buffer before opening
+        local test_id = M._find_current_test()
+        M.open()
+        if test_id then
+            M.reveal(test_id)
+        end
+    end
+end
+
+--- Open the explorer and reveal a specific test.
+--- @param test_id? string test to reveal (finds from cursor if nil)
+function M.goto_test(test_id)
+    if not test_id then
+        test_id = M._find_current_test()
+    end
+    if not M.is_open() then
+        M.open()
+    else
+        -- Focus the explorer window
+        local win = _win and type(_win) == "table" and _win.win or nil
+        if win and vim.api.nvim_win_is_valid(win) then
+            vim.api.nvim_set_current_win(win)
+        end
+    end
+    if test_id then
+        M.reveal(test_id)
+    end
+end
+
+--- Reveal a test in the explorer by scrolling to its line.
+--- Unfolds parents as needed.
+--- @param test_id string
+function M.reveal(test_id)
+    if not M.is_open() then return end
+
+    -- Unfold any parent that contains this test
+    -- The test_id format is "test:Suite.TestName"
+    -- Suite nodes have IDs like "target:Runner::SuiteName"
+    -- We need to unfold any collapsed parent
+    local suite_name = test_id:match("^test:([^%.]+)%.")
+    if suite_name then
+        for fold_id in pairs(_folds) do
+            if fold_id:match("::" .. vim.pesc(suite_name) .. "$") then
+                _folds[fold_id] = nil
+            end
+        end
+        -- Also unfold the target
+        for fold_id in pairs(_folds) do
+            if fold_id:match("^target:") then
+                _folds[fold_id] = nil
+            end
+        end
+    end
+
+    M.refresh()
+
+    -- Find the line for this test
+    local target_line = nil
+    for line, node in pairs(_line_data) do
+        if node and node.id == test_id then
+            target_line = line
+            break
+        end
+    end
+
+    if target_line then
+        local win = _win and type(_win) == "table" and _win.win or nil
+        if win and vim.api.nvim_win_is_valid(win) then
+            pcall(vim.api.nvim_win_set_cursor, win, { target_line, 0 })
+        end
+    end
+end
+
+--- Find the test ID at the current cursor position in the source buffer.
+--- @return string|nil test_id
+function M._find_current_test()
+    local bufnr = vim.api.nvim_get_current_buf()
+    local buf_path = vim.api.nvim_buf_get_name(bufnr)
+    if buf_path == "" then return nil end
+
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local cursor_line = cursor[1]
+    local norm_path = buf_path:gsub("\\", "/"):lower()
+
+    -- Find the nearest test at or above cursor
+    local loomtest = require("loomtest")
+    local best_id, best_line = nil, 0
+    for _, node in ipairs(loomtest.nodes()) do
+        if node.file and node.file:gsub("\\", "/"):lower() == norm_path
+            and node.line and node.line <= cursor_line
+            and node.line > best_line
+            and node.type == "test" then
+            best_id = node.id
+            best_line = node.line
+        end
+    end
+    return best_id
 end
 
 --- Show test output in a floating window.
