@@ -9,14 +9,19 @@ local DEFAULT_ADAPTERS = {
     cmake = "codelldb",
 }
 
+--- Check if nvim-dap is available.
+--- @return boolean
+function M.available()
+    local ok = pcall(require, "dap")
+    return ok
+end
+
 --- Launch a debug session via nvim-dap.
 --- @param spec { program: string, args?: string[], cwd?: string, env?: table<string, string>, adapter: string, name?: string }
-function M.run(spec)
+--- @param callbacks? { on_terminated?: fun() }
+function M.run(spec, callbacks)
     local ok, dap = pcall(require, "dap")
-    if not ok then
-        vim.notify("loomworks: nvim-dap is not installed", vim.log.levels.ERROR)
-        return
-    end
+    if not ok then return false end
 
     local config = {
         name = spec.name or ("Debug " .. vim.fn.fnamemodify(spec.program, ":t")),
@@ -28,7 +33,20 @@ function M.run(spec)
         env = spec.env,
     }
 
+    -- Register per-session callbacks via unique listener keys
+    if callbacks and callbacks.on_terminated then
+        local key = "loomworks-session-" .. tostring(os.clock())
+        local function cleanup()
+            dap.listeners.before.event_terminated[key] = nil
+            dap.listeners.before.event_exited[key] = nil
+            callbacks.on_terminated()
+        end
+        dap.listeners.before.event_terminated[key] = cleanup
+        dap.listeners.before.event_exited[key] = cleanup
+    end
+
     dap.run(config)
+    return true
 end
 
 --- Resolve the DAP adapter type for a given module type.

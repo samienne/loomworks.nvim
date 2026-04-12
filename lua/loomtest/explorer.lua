@@ -484,6 +484,7 @@ function M.open()
         border = "rounded",
         title = " Tests ",
         title_pos = "center",
+        relative = "win",
     }, config.win or {})
 
     -- Non-overridable fields
@@ -496,6 +497,7 @@ function M.open()
         foldcolumn = "0",
         wrap = false,
         cursorline = true,
+        winfixbuf = true,
     }, win_config.wo or {})
     win_config.keys = {
         q = "close",

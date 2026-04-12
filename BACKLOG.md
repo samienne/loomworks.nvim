@@ -202,3 +202,22 @@ objects. Fix: pure in-place mutation — Configuration, Profile, ConfigUnit
 all keep identity. Old BuildDir orphaned as domain object; rename-back
 adopts it. Introduced BuildDir domain object, removed `_last_raw_cache`.
 
+---
+
+## Graceful degradation for external dependencies
+
+Current hard dependencies: **overseer** (build/launch), **snacks** (picker,
+explorer window). Soft: fidget (progress), nvim-dap (debug), lualine
+(status component).
+
+Issues to address:
+- **fidget**: build/deploy progress uses fidget exclusively — if not
+  installed, progress is silent. Should fall back to `vim.notify` or
+  a minimal echo.
+- **snacks**: used for `vim.ui.select`-style pickers and the loomtest
+  explorer window (`Snacks.win`). Should fall back to `vim.ui.select` /
+  `vim.ui.input` for pickers. Explorer window needs snacks or an
+  alternative (floating window API directly).
+- **overseer**: core dependency, hard to remove. Document as required.
+- Audit all `require()` calls to external modules for pcall guards.
+

@@ -296,8 +296,12 @@ function LaunchTarget:_launch_command()
 end
 
 --- Debug this target via nvim-dap.
---- Same two paths as launch(), but dispatches to debug.run() instead of overseer.
+--- Falls back to launch() if nvim-dap is not available.
 function LaunchTarget:debug()
+    if not debug_mod.available() then
+        self:launch()
+        return
+    end
     if self._launch_config then
         self:_debug_command()
     elseif self._target and self._target:is_executable() then

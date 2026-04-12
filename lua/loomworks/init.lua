@@ -37,8 +37,34 @@ end
 -- Setup & workspace
 -- ---------------------------------------------------------------------------
 
---- Initialize loomworks workspace.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table }
+--- Set up default keymaps.
+--- @param opts? { keys?: boolean|table }
+local function setup_keymaps(opts)
+    if opts and opts.keys == false then return end
+
+    local map = vim.keymap.set
+    -- Workspace
+    map("n", "<leader>ww", function() M.toggle() end, { desc = "Loomworks info" })
+    map("n", "<leader>wb", function() M.build_target() end, { desc = "Build default target" })
+    map("n", "<leader>wB", function() M.build_profile() end, { desc = "Build active profile" })
+    map("n", "<leader>wr", function() M.debug_target() end, { desc = "Debug target" })
+    map("n", "<leader>wR", function() M.launch_target() end, { desc = "Launch target" })
+    map("n", "<leader>ws", function() M.pick_profile() end, { desc = "Select profile" })
+    map("n", "<F5>", function() M.debug_target() end, { desc = "Debug target" })
+    map("n", "<S-F5>", function() M.stop_target() end, { desc = "Stop launch" })
+    -- Tests
+    local loomtest = require("loomtest")
+    map("n", "<leader>tt", function() loomtest.debug_nearest() end, { desc = "Debug nearest test" })
+    map("n", "<leader>tT", function() loomtest.run_nearest() end, { desc = "Run nearest test" })
+    map("n", "<leader>tf", function() loomtest.debug_file() end, { desc = "Debug file tests" })
+    map("n", "<leader>tF", function() loomtest.run_file() end, { desc = "Run file tests" })
+end
+
+--- Initialize loomworks.
+--- Registers keymaps and fidget integration. Workspace loading is handled
+--- separately by auto_load when a file is opened, or by calling load()
+--- explicitly.
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean }
 function M.setup(opts)
     if opts and opts.auto_load ~= nil then
         auto_load_mode = opts.auto_load
@@ -47,10 +73,15 @@ function M.setup(opts)
         task_output_win = opts.task_output_win
     end
 
+    setup_keymaps(opts)
+
     -- Optional fidget.nvim integration for progress notifications (registers listeners, fast)
     require("loomworks.fidget").setup()
 
-    core:setup(opts)
+    -- Load workspace if root is specified (auto_load passes root explicitly)
+    if opts and opts.root then
+        core:setup(opts)
+    end
 end
 
 --- Get the current auto-load mode.

@@ -362,18 +362,38 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
 end
 
 --- Debug a test RunSpec via nvim-dap.
---- Builds if needed, then launches the test executable under the debugger.
+--- Falls back to execute() if nvim-dap is not available.
 --- @param adapter loomtest.TestAdapter the adapter (for ensure_built)
 --- @param spec loomtest.RunSpec the command to execute
 --- @param test_ids string[] test IDs being debugged
 --- @param opts? table { skip_build?: boolean }
 function M.debug(adapter, spec, test_ids, opts)
+    local debug_mod = require("loomworks.debug")
+    if not debug_mod.available() then
+        M.execute(adapter, spec, test_ids, opts)
+        return
+    end
+
     opts = opts or {}
+    local loomtest = require("loomtest")
+    local explorer = require("loomtest.explorer")
 
     local function start_debug()
-        local debug_mod = require("loomworks.debug")
         local lw = require("loomworks")
         local ws = lw.get_workspace()
+
+        -- Mark tests as pending
+        for _, id in ipairs(test_ids) do
+            local node = loomtest.get_node(id)
+            if node then
+                node.status = "pending"
+                node.message = nil
+                node._output = nil
+                node._errors = nil
+            end
+        end
+        if explorer.is_open() then explorer.refresh() end
+        require("loomtest.signs").update_all()
 
         -- spec.cmd is an array: first element is the program, rest are args
         local program = spec.cmd[1]
@@ -395,6 +415,32 @@ function M.debug(adapter, spec, test_ids, opts)
             cwd = spec.cwd,
             env = spec.env,
             adapter = adapter_type,
+        }, {
+            on_terminated = function()
+                vim.schedule(function()
+                    -- Parse gtest XML for authoritative results
+                    if spec.output_path then
+                        local results = adapter.parse_results(spec.output_path)
+                        if results then
+                            loomtest.apply_results(results)
+                        end
+                    end
+
+                    -- Tests still "pending" had no result
+                    for _, id in ipairs(test_ids) do
+                        local node = loomtest.get_node(id)
+                        if node and (node.status == "pending" or node.status == "running") then
+                            node.status = nil
+                        end
+                    end
+
+                    _last_run_time = os.time()
+
+                    require("loomtest.signs").update_all()
+                    require("loomtest.inline").update_all()
+                    if explorer.is_open() then explorer.refresh() end
+                end)
+            end,
         })
     end
 
