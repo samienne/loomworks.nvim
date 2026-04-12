@@ -9,6 +9,64 @@ local M = {}
 --- @type number|nil most recent test task ID
 local _last_task_id = nil
 
+--- @type table|nil fidget progress handle
+local _fidget_handle = nil
+
+--- Format test progress: "✔ 590 ✗ 2 / 1323 (45%)"
+--- @param test_ids string[]
+--- @param loomtest table
+--- @return string
+local function format_progress(test_ids, loomtest)
+    local p, f = 0, 0
+    local total = #test_ids
+    for _, id in ipairs(test_ids) do
+        local node = loomtest.get_node(id)
+        if node then
+            if node.status == "passed" then p = p + 1
+            elseif node.status == "failed" then f = f + 1
+            end
+        end
+    end
+    local done = p + f
+    local pct = total > 0 and math.floor(done / total * 100) or 0
+    local msg = "✔ " .. p
+    if f > 0 then msg = msg .. " ✗ " .. f end
+    msg = msg .. " / " .. total .. " (" .. pct .. "%)"
+    return msg
+end
+
+--- Create or update fidget progress.
+--- @param message string
+--- @param done? boolean
+local function fidget_update(message, done)
+    local ok, fidget_progress = pcall(function()
+        return require("fidget.progress")
+    end)
+    if not ok or not fidget_progress then return end
+
+    if done then
+        if _fidget_handle then
+            _fidget_handle.message = message
+            _fidget_handle:finish()
+            _fidget_handle = nil
+        end
+        return
+    end
+
+    if not _fidget_handle then
+        pcall(function()
+            _fidget_handle = fidget_progress.handle.create({
+                title = "Tests",
+                lsp_client = { name = "loomtest" },
+            })
+        end)
+    end
+
+    if _fidget_handle then
+        _fidget_handle.message = message
+    end
+end
+
 --- Batch size: max lines to process per tick
 local BATCH_SIZE = 20
 --- Processing interval in ms
@@ -42,6 +100,8 @@ function M.execute(adapter, spec, test_ids)
         explorer.refresh()
     end
 
+    fidget_update("0% ✔ 0")
+
     -- Dispose previous test task
     if _last_task_id then
         pcall(function()
@@ -54,13 +114,18 @@ function M.execute(adapter, spec, test_ids)
         end)
     end
 
-    -- Create and start the task
+    -- Create and start the task.
+    -- Use minimal components to suppress overseer's default notifications.
     local task = overseer.new_task({
         name = "loomtest: " .. ((spec.cmd[1] or "test"):match("[/\\]([^/\\]+)$") or spec.cmd[1] or "test"),
         cmd = spec.cmd,
         cwd = spec.cwd,
         env = spec.env,
-        components = { "default" },
+        components = {
+            "on_output_summarize",
+            "on_exit_set_status",
+            -- No "on_complete_notify" — suppresses success/failure notifications
+        },
     })
 
     _last_task_id = task.id
@@ -154,6 +219,9 @@ function M.execute(adapter, spec, test_ids)
             if explorer.is_open() then
                 explorer.refresh()
             end
+            if not task_complete then
+                fidget_update(format_progress(test_ids, loomtest))
+            end
         end
 
         -- Schedule next tick if task is running or there are unprocessed lines
@@ -198,6 +266,8 @@ function M.execute(adapter, spec, test_ids)
             if explorer.is_open() then
                 explorer.refresh()
             end
+
+            fidget_update(format_progress(test_ids, loomtest), true)
         end)
     end)
 
