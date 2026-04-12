@@ -4,6 +4,7 @@
 --- configs from loomworks.json.
 
 local expand = require("loomworks.expand")
+local debug_mod = require("loomworks.debug")
 
 --- @class loomworks.LaunchTarget
 --- @field _workspace loomworks.Workspace
@@ -291,6 +292,78 @@ function LaunchTarget:_launch_command()
         args = args,
         cwd = cwd,
         env = env,
+    })
+end
+
+--- Debug this target via nvim-dap.
+--- Same two paths as launch(), but dispatches to debug.run() instead of overseer.
+function LaunchTarget:debug()
+    if self._launch_config then
+        self:_debug_command()
+    elseif self._target and self._target:is_executable() then
+        self:_debug_target()
+    end
+end
+
+--- Debug from a command-type config (loomworks.json launch section).
+function LaunchTarget:_debug_command()
+    local cfg = self._launch_config
+    if not cfg or not cfg.command then return end
+
+    local ws = self._workspace
+    local ctx = expand.launch_context(ws, self._profile, self._project)
+
+    local cmd = expand.expand_string(cfg.command, ctx)
+    local args = expand.expand_array(cfg.args, ctx) or {}
+
+    local cwd
+    if cfg.working_dir then
+        local expanded_cwd = expand.expand_string(cfg.working_dir, ctx)
+        if expanded_cwd:match("^/") or expanded_cwd:match("^%a:") then
+            cwd = expanded_cwd
+        else
+            cwd = ws.root .. "/" .. expanded_cwd
+        end
+    else
+        cwd = ws.root .. "/" .. (self._project.path or self._project.key)
+    end
+
+    local env = expand.expand_dict(cfg.env, ctx)
+    local mod_type = self._project._module and self._project._module.mod_type or "cmake"
+
+    debug_mod.run({
+        name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
+        program = cmd,
+        args = args,
+        cwd = cwd,
+        env = env,
+        adapter = debug_mod.resolve_adapter(ws, mod_type),
+    })
+end
+
+--- Debug a module target (cmake executable).
+function LaunchTarget:_debug_target()
+    local target = self._target
+    if not target:is_executable() or not target.artifact then return end
+
+    local unit = target._config_unit
+    if not unit then return end
+
+    local build_dir = unit:build_dir()
+    if not build_dir then
+        vim.notify("loomworks: no build directory for " .. target.id, vim.log.levels.WARN)
+        return
+    end
+
+    local artifact_path = build_dir .. "/" .. target.artifact
+    local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
+    local mod_type = unit._project and unit._project._module and unit._project._module.mod_type or "cmake"
+
+    debug_mod.run({
+        name = project_name .. ": debug " .. target.id,
+        program = artifact_path,
+        cwd = build_dir,
+        adapter = debug_mod.resolve_adapter(self._workspace, mod_type),
     })
 end
 

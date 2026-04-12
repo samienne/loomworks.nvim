@@ -410,6 +410,7 @@ end
 --- @field _active_profile_key string|nil persisted active profile key
 --- @field _active_profile loomworks.Profile|nil resolved active profile object
 --- @field _default_target_data table|nil raw default_target map from user.json
+--- @field _debug_settings table|nil debug settings from user.json (e.g. adapters)
 --- @field _active_set loomworks.ActiveSet|nil
 --- @field _modules loomworks.Module[] module domain objects
 --- @field _config_units loomworks.ConfigUnit[] all config units
@@ -451,6 +452,7 @@ function Workspace.new(core, data)
     self._active_profile = nil
     self._active_profile_key = nil
     self._default_target_data = nil
+    self._debug_settings = nil
     self._config_units = {}
     self._config_sets = {}
     self._profiles = {}
@@ -703,6 +705,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     if raw_user then
         active_profile_key = raw_user.active_profile
         default_target_data = raw_user.default_target
+        self._debug_settings = raw_user.debug
         -- Store user overlay (projects/configuration_sets/profiles from user.json)
         user_overlay = {}
         if raw_user.projects then user_overlay.projects = raw_user.projects end
@@ -2933,6 +2936,9 @@ function Workspace:_serialize_user()
         end
     end
     if next(targets) then data.default_target = targets end
+
+    -- Debug settings (pass-through)
+    if self._debug_settings then data.debug = self._debug_settings end
 
     -- Profiles: all profiles in user.json (set-based: configuration_set + tools)
     local user_profiles = {}

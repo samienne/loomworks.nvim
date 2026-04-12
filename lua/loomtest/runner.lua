@@ -361,6 +361,58 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
     task:start()
 end
 
+--- Debug a test RunSpec via nvim-dap.
+--- Builds if needed, then launches the test executable under the debugger.
+--- @param adapter loomtest.TestAdapter the adapter (for ensure_built)
+--- @param spec loomtest.RunSpec the command to execute
+--- @param test_ids string[] test IDs being debugged
+--- @param opts? table { skip_build?: boolean }
+function M.debug(adapter, spec, test_ids, opts)
+    opts = opts or {}
+
+    local function start_debug()
+        local debug_mod = require("loomworks.debug")
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+
+        -- spec.cmd is an array: first element is the program, rest are args
+        local program = spec.cmd[1]
+        local args = {}
+        for i = 2, #spec.cmd do
+            args[#args + 1] = spec.cmd[i]
+        end
+
+        -- Resolve adapter type from workspace module
+        local adapter_type = "codelldb"
+        if ws then
+            adapter_type = debug_mod.resolve_adapter(ws, "cmake")
+        end
+
+        debug_mod.run({
+            name = "Debug test",
+            program = program,
+            args = args,
+            cwd = spec.cwd,
+            env = spec.env,
+            adapter = adapter_type,
+        })
+    end
+
+    -- Auto-build if adapter supports it
+    if adapter.ensure_built and not opts.skip_build then
+        adapter.ensure_built(test_ids, function(ok)
+            if not ok then
+                vim.notify("loomtest: build failed, cannot debug test", vim.log.levels.ERROR)
+                return
+            end
+            start_debug()
+        end)
+        return
+    end
+
+    start_debug()
+end
+
 --- Get the last task ID.
 --- @return number|nil
 function M.last_task_id()

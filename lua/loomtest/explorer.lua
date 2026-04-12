@@ -511,6 +511,12 @@ function M.open()
                 loomtest.run(node.id, node.type)
             end
         end,
+        d = function()
+            local node = node_at_cursor()
+            if node and node.runnable then
+                loomtest.debug(node.id, node.type)
+            end
+        end,
         R = function() loomtest.run_all() end,
         h = fold_close,
         l = fold_open,

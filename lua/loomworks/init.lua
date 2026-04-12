@@ -567,6 +567,69 @@ function M.launch_target()
     end)
 end
 
+--- Build, deploy, and debug a target using Future chains.
+--- @param target loomworks.LaunchTarget
+local function build_deploy_debug(target)
+    local fidget = require("loomworks.fidget")
+    local handle = fidget.start_action("Debugging " .. target:display_name())
+
+    local chain
+    if target:is_buildable() then
+        fidget.report(handle, "building...")
+        chain = target:build()
+    else
+        chain = require("loomworks.future").resolved(true)
+    end
+
+    chain
+        :next(function()
+            fidget.report(handle, "deploying...")
+            return target:deploy()
+        end)
+        :next(function()
+            fidget.report(handle, "debugging...")
+            target:debug()
+            fidget.finish(handle, "debugging")
+        end)
+        :catch(function(err)
+            fidget.fail(handle, err)
+            vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
+        end)
+end
+
+function M.debug_target()
+    local profile = M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+
+    local launch_target = profile:default_target()
+
+    if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
+        build_deploy_debug(launch_target)
+        return
+    end
+
+    -- Stale target
+    if launch_target and not launch_target:is_valid() then
+        vim.notify("loomworks: target '" .. launch_target:display_name()
+            .. "' no longer available", vim.log.levels.WARN)
+        profile:clear_default_target()
+    end
+
+    -- No default or stale: show picker, then debug the selection
+    M._pick_target(profile, function(project, target_id)
+        if project and target_id then
+            profile:set_default_target(project, target_id)
+        end
+        local new_target = profile:default_target()
+        if new_target and new_target:is_launchable() then
+            build_deploy_debug(new_target)
+        end
+    end)
+end
+
 --- Stop the running launch task.
 function M.stop_target()
     if _active_launch and _active_launch:is_running() then
