@@ -20,6 +20,35 @@ local _selected_id = nil
 --- @type table[] current line_data for cursor operations
 local _line_data = {}
 
+--- Status priority for parent aggregation.
+--- Higher number = stronger (overrides lower).
+local STATUS_PRIORITY = {
+    passed  = 1,
+    skipped = 2,
+    pending = 3,
+    running = 4,
+    errored = 5,
+    failed  = 5,
+}
+
+--- Compute aggregate status from children.
+--- @param statuses string[] child statuses
+--- @return string|nil
+local function aggregate_status(statuses)
+    local best = nil
+    local best_pri = 0
+    for _, s in ipairs(statuses) do
+        local pri = STATUS_PRIORITY[s or ""] or 0
+        if pri > best_pri then
+            best = s
+            best_pri = pri
+        elseif pri == 0 and best_pri == 0 then
+            best = nil
+        end
+    end
+    return best
+end
+
 local STATUS_ICONS = {
     passed  = { icon = "✔", hl = "DiagnosticOk" },
     failed  = { icon = "✗", hl = "DiagnosticError" },
@@ -78,19 +107,12 @@ local function build_grouped_nodes(nodes)
 
             for _, suite_name in ipairs(suite_names) do
                 local suite_id = target_id .. "::" .. suite_name
-                local suite_status = nil
                 local tests = suites[suite_name]
+                local child_statuses = {}
                 for _, t in ipairs(tests) do
-                    if t.status == "failed" or t.status == "errored" then
-                        suite_status = "failed"
-                    elseif t.status == "running" and suite_status ~= "failed" then
-                        suite_status = "running"
-                    elseif t.status == "passed" and not suite_status then
-                        suite_status = "passed"
-                    elseif t.status == "skipped" and not suite_status then
-                        suite_status = "skipped"
-                    end
+                    child_statuses[#child_statuses + 1] = t.status
                 end
+                local suite_status = aggregate_status(child_statuses)
 
                 result[#result + 1] = {
                     id = suite_id,
@@ -144,28 +166,50 @@ local function build_tree()
     lines[#lines + 1] = " " .. desc
     highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines], hl_group = "Title" }
 
-    -- Header line 2: counts
-    local counts = { passed = 0, failed = 0, skipped = 0, unknown = 0, running = 0 }
+    -- Header line 2: counts with per-status colors
+    local counts = { passed = 0, failed = 0, skipped = 0, unknown = 0, running = 0, pending = 0 }
+    local total = 0
     for _, node in ipairs(grouped) do
         if node.type == "test" then
+            total = total + 1
             local s = node.status or "unknown"
             if s == "errored" then s = "failed" end
             counts[s] = (counts[s] or 0) + 1
         end
     end
-    local count_parts = {}
-    if counts.passed > 0 then count_parts[#count_parts + 1] = "✔ " .. counts.passed end
-    if counts.failed > 0 then count_parts[#count_parts + 1] = "✗ " .. counts.failed end
-    if counts.skipped > 0 then count_parts[#count_parts + 1] = "⊘ " .. counts.skipped end
-    if counts.running > 0 then count_parts[#count_parts + 1] = "↻ " .. counts.running end
-    count_parts[#count_parts + 1] = "○ " .. counts.unknown
-    lines[#lines + 1] = " " .. table.concat(count_parts, "  ")
-    highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines], hl_group = "Comment" }
+
+    -- Build colored count line: "🧪 1323  ✔ 1200  ✗ 3  ..."
+    local count_line = " 🧪 " .. total
+    local count_hl_line = #lines + 1
+    highlights[#highlights + 1] = { line = count_hl_line, col_start = 0, col_end = #count_line, hl_group = "Comment" }
+
+    local count_segments = {
+        { icon = "✔", count = counts.passed, hl = "DiagnosticOk" },
+        { icon = "✗", count = counts.failed, hl = "DiagnosticError" },
+        { icon = "↻", count = counts.running, hl = "DiagnosticInfo" },
+        { icon = "◌", count = counts.pending, hl = "DiagnosticHint" },
+        { icon = "⊘", count = counts.skipped, hl = "DiagnosticWarn" },
+        { icon = "○", count = counts.unknown, hl = "Comment" },
+    }
+    for _, seg in ipairs(count_segments) do
+        if seg.count > 0 then
+            local part = "  " .. seg.icon .. " " .. seg.count
+            local start = #count_line
+            count_line = count_line .. part
+            highlights[#highlights + 1] = {
+                line = count_hl_line,
+                col_start = start + 2,
+                col_end = start + 2 + #seg.icon,
+                hl_group = seg.hl,
+            }
+        end
+    end
+    lines[#lines + 1] = count_line
 
     -- Blank separator
     lines[#lines + 1] = ""
 
-    -- Build parent → children map
+    -- Build parent → children map and propagate status to targets
     local children_of = {}
     local top_level = {}
     for _, node in ipairs(grouped) do
@@ -174,6 +218,18 @@ local function build_tree()
             children_of[node.parent][#children_of[node.parent] + 1] = node
         else
             top_level[#top_level + 1] = node
+        end
+    end
+
+    -- Propagate status to target nodes from their children
+    for _, node in ipairs(top_level) do
+        local kids = children_of[node.id]
+        if kids then
+            local child_statuses = {}
+            for _, child in ipairs(kids) do
+                child_statuses[#child_statuses + 1] = child.status
+            end
+            node.status = aggregate_status(child_statuses)
         end
     end
 
