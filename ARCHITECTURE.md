@@ -606,6 +606,14 @@ errors). No `vim.fn` calls (deadlock in nio context). Deduplicates
 `discover_positions` calls (neotest calls with different path formats
 on Windows).
 
+**loomtest** (`lua/loomtest/`) is a test-first test explorer independent
+from loomworks. Discovers tests from the build system (not source files).
+Integration with loomworks through `loomtest_adapter.lua` which bridges
+ConfigUnit/TestUnit to the TestAdapter interface. Core modules: explorer
+(Snacks.win tree UI), runner (overseer execution with streaming + XML
+parsing), signs (gutter marks), inline (virtual text + vim.diagnostic).
+See LOOMTEST.md for full specification.
+
 ---
 
 ## Testing

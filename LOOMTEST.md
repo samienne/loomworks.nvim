@@ -19,142 +19,88 @@ used standalone with any adapter.
 ┌──────────────────────────────────────────────────┐
 │ loomtest core (lua/loomtest/)                    │
 │                                                  │
-│  init.lua ─── setup, commands, keymaps           │
-│  explorer.lua ─── test tree UI (View + widget)   │
+│  init.lua ─── setup, commands, keymaps, tree     │
+│  explorer.lua ─── test tree UI (Snacks.win)      │
+│  runner.lua ─── execution, streaming, XML parse  │
 │  signs.lua ─── gutter sign management            │
+│  inline.lua ─── virtual text + diagnostics       │
 │  cursor.lua ─── cursor-level test detection      │
-│  runner.lua ─── test execution orchestration     │
 │  types.lua ─── type definitions                  │
 │                                                  │
-│  Uses: Tree widget (from loomworks.ui or shared) │
-│  Uses: Snacks.win (for floating window)          │
-│  Uses: overseer.nvim (for task execution)        │
+│  Uses: Snacks.win, overseer.nvim, fidget.nvim    │
 └──────────┬───────────────────────────────────────┘
            │ TestAdapter interface
-           │
 ┌──────────┴───────────────────────────────────────┐
-│ Adapters                                         │
-│                                                  │
-│  loomworks_adapter.lua — bridges ConfigUnit/     │
-│    TestUnit to loomtest. Uses loomworks API.     │
-│                                                  │
-│  (future) standalone adapters:                   │
-│    ctest_adapter.lua — direct ctest without      │
-│      loomworks                                   │
-│    jest_adapter.lua — jest/vitest                 │
-│    cargo_adapter.lua — cargo test                │
+│ loomworks_adapter.lua                            │
+│  Bridges ConfigUnit/TestUnit to loomtest.        │
+│  Registers on workspace load, refreshes on       │
+│  profile switch. Auto-builds test targets.       │
 └──────────────────────────────────────────────────┘
 ```
 
 ### 2.1 Dependency rules
 
-- **loomtest core** depends on: Neovim API, Snacks.win, overseer.nvim,
-  Tree widget. Does NOT depend on loomworks.
+- **loomtest core** depends on: Neovim API, Snacks.win, overseer.nvim.
+  Does NOT depend on loomworks.
 - **loomworks adapter** depends on: loomtest core (types), loomworks
-  (ConfigUnit, TestUnit).
-- **loomtest core** communicates with adapters ONLY through the
-  TestAdapter interface.
-
-### 2.2 File layout
-
-```
-lua/loomtest/
-├── init.lua              — setup(), register_adapter(), commands
-├── explorer.lua          — test tree window (explorer widget)
-├── signs.lua             — gutter sign placement and updates
-├── cursor.lua            — find test at cursor position
-├── runner.lua            — execute tests via overseer
-└── types.lua             — TestAdapter, TestNode, TestResult types
-
-lua/loomworks/loomtest_adapter.lua  — loomworks adapter implementation
-```
+  (ConfigUnit, TestUnit, Target).
 
 ## 3. TestAdapter Interface
-
-An adapter provides test discovery, execution, and result parsing for
-one test source (e.g., ctest, jest, cargo test).
 
 ```lua
 ---@class loomtest.TestAdapter
 ---@field name string unique adapter name
----@field description() → string|nil  context string for explorer header
----@field discover() → loomtest.TestNode[]|nil
----@field discover_async(callback: fun(nodes: loomtest.TestNode[]|nil))
----@field run(test_id: string, opts?: table) → loomtest.RunSpec
----@field run_all(opts?: table) → loomtest.RunSpec
----@field run_suite(suite_id: string, opts?: table) → loomtest.RunSpec
----@field parse_results(output_path: string) → loomtest.TestResult[]|nil
----@field invalidate()
----@field get_cursor_test(bufnr: number, line: number) → string|nil
+---@field description fun(): string|nil  context for explorer header
+---@field discover fun(): loomtest.TestNode[]|nil
+---@field discover_async fun(callback: fun(nodes: loomtest.TestNode[]|nil))
+---@field run fun(test_id: string, opts?: table): loomtest.RunSpec|nil
+---@field run_all fun(opts?: table): loomtest.RunSpec|nil
+---@field run_suite fun(suite_id: string, opts?: table): loomtest.RunSpec|nil
+---@field parse_results fun(output_path: string): loomtest.TestResult[]|nil
+---@field invalidate fun()
+---@field get_cursor_test fun(bufnr: number, line: number): string|nil
+---@field ensure_built? fun(test_ids: string[], callback: fun(ok: boolean))
 ```
 
 ### 3.1 TestNode
-
-Returned by `discover()`. Represents a test, test suite, or test target
-in a flat list with parent references for tree nesting.
 
 ```lua
 ---@class loomtest.TestNode
 ---@field id string        unique identifier
 ---@field name string      display name
 ---@field type string      "target" | "suite" | "test"
----@field parent string|nil  parent node id (for tree nesting)
+---@field parent string|nil  parent node id
 ---@field file string|nil  absolute source file path
 ---@field line number|nil  1-based line number in source
----@field runnable boolean whether this node can be executed
----@field status string|nil  "passed"|"failed"|"skipped"|"errored"|nil
+---@field runnable boolean
+---@field status string|nil  "passed"|"failed"|"skipped"|"errored"|"running"|"pending"|nil
 ---@field message string|nil  last failure message
 ---@field duration number|nil  last duration in milliseconds
 ```
 
-**Node types**:
-- `target` — a test executable or runner (e.g., ctest target, jest
-  project). Top level. Always runnable.
-- `suite` — a test suite/class/fixture (e.g., gtest suite). Groups
-  tests. Runnable (runs all tests in suite).
-- `test` — an individual test case. Leaf node. Always runnable.
-
-**Adapter description**: Each adapter provides a `description()` method
-that returns a human-readable string shown in the explorer header. The
-loomworks adapter returns the active profile name (e.g.,
-"Debug:ninja-clang-18"). This is adapter-agnostic — any adapter can
-provide context about what configuration is active.
-
-```lua
----@field description() → string|nil  context string for explorer header
-```
-
 ### 3.2 RunSpec
-
-Returned by `run()`, `run_all()`, `run_suite()`. Describes how to
-execute the test(s).
 
 ```lua
 ---@class loomtest.RunSpec
 ---@field cmd string[]     command and arguments
 ---@field cwd string|nil   working directory
 ---@field env table|nil    environment variables
----@field output_path string|nil  path for structured result output
+---@field output_path string|nil  path for gtest XML output
 ```
 
 ### 3.3 TestResult
-
-Returned by `parse_results()`. Per-test result after execution.
 
 ```lua
 ---@class loomtest.TestResult
 ---@field test_id string        matches a TestNode id
 ---@field status string         "passed"|"failed"|"skipped"|"errored"
----@field message string|nil    failure message or error output
----@field output string|nil     full test output text
----@field errors loomtest.TestError[]|nil  error locations for jump-to
+---@field message string|nil    failure message
+---@field output string|nil     per-test stdout/stderr
+---@field errors loomtest.TestError[]|nil  error locations
 ---@field duration number|nil   duration in milliseconds
 ```
 
 ### 3.4 TestError
-
-Represents a failure location within a test. Enables "jump to failure"
-in the explorer and diagnostic-style annotations in the source.
 
 ```lua
 ---@class loomtest.TestError
@@ -163,247 +109,192 @@ in the explorer and diagnostic-style annotations in the source.
 ---@field line number|nil    1-based line number
 ```
 
-A single test may have multiple errors (e.g., multiple failed
-assertions). The GTest XML output includes file/line for each
-`<failure>` element. The explorer shows the first error; `d` key
-shows all.
-
-### 3.5 Adapter lifecycle
-
-1. Adapter is registered via `loomtest.register_adapter(adapter)`
-2. On first explorer open or explicit refresh, `discover_async()` is
-   called. Results populate the test tree.
-3. On test execution, `run()` / `run_all()` / `run_suite()` returns a
-   RunSpec. The runner executes it via overseer.
-4. On task completion, `parse_results()` extracts per-test results.
-5. On profile switch or explicit refresh, `invalidate()` is called,
-   then `discover_async()` re-populates.
-
-### 3.6 get_cursor_test
-
-```lua
----@param bufnr number buffer number
----@param line number 1-based cursor line
----@return string|nil test_id matching test, or nil
-```
-
-Given a buffer and cursor position, returns the test ID at that
-location. The adapter knows how to map source locations to test IDs
-(e.g., GTest helper scans for TEST macros). Returns nil if no test
-is at the cursor.
-
-Used by the "run test at cursor" command.
-
 ## 4. Explorer UI
 
-### 4.1 Window
+### 4.1 Tree structure
 
-The explorer opens as a side panel (configurable: left, right, bottom,
-float). Uses the Tree widget for rendering. Persistent — stays open
-across interactions.
-
-### 4.2 Tree structure
+Tests grouped by target → suite → test. Suites inferred from test
+names (gtest `Suite.Test` → suite `Suite` with child `Test`).
 
 ```
-LumeMetaAPITest                    ✔  (target)
-├── API_BitfieldPropertyTest          (suite)
-│   ├── GetValue                   ✔  (test)
-│   ├── SetValue                   ✔
-│   └── Or                         ✗
-├── API_AnimationControllerTest
-│   ├── RunningAnimationList...    ✔
-│   └── Seeking...                 ✔
-└── API_LoopAnimationModifierSuite
-    ├── AnimationIsLooping/Keyframe0  ✔
-    └── AnimationIsLooping/Track1     ✔
+▼ ✔ LumeMetaAPITest
+  ▼ ✔ API_BitfieldPropertyTest (3)
+      ✔ GetValue                    2ms
+      ✔ SetValue                    1ms
+      ✗ Or  — Expected 4 but got 5 3ms
+  ▶ ✔ API_AnimationControllerTest (18)
 ```
 
-Nodes are grouped by target → suite → test. Suites are inferred from
-the test name (gtest: `Suite.Test` → suite node `Suite` with child
-`Test`). This grouping is done by the explorer from the flat TestNode
-list, not by the adapter.
+### 4.2 Header
 
-### 4.3 Node display
+Line 1: adapter description (profile name for loomworks).
+Line 2: colored counts — 🧪 total ✔ passed ✗ failed ↻ running ⊘ skipped ○ unknown.
+All counts always shown to prevent layout shifts.
 
-```
-{fold_char} {status_marker} {name} {duration}
-```
+### 4.3 Status propagation
 
-Where:
-- `{fold_char}` — ▶/▼ for nodes with children, blank for leaves
-- `{status_marker}` — ✔ (passed), ✗ (failed), ○ (not run), ⊘ (skipped),
-  spinner (running)
-- `{duration}` — e.g., "12ms", shown after run (Comment highlight)
+Parent (target/suite) status derived from children:
+failed > running > pending > passed > skipped > unknown.
 
-### 4.4 Keybindings (explorer window)
+### 4.4 Keybindings (explorer)
 
 | Key     | Action |
 |---------|--------|
-| `<CR>`  | Run test/suite/target under cursor |
-| `r`     | Run test/suite/target under cursor |
+| `<CR>`  | Run test/suite/target |
+| `r`     | Run test/suite/target |
 | `R`     | Run all tests |
-| `o`     | Jump to test source (open file at line) |
-| `e`     | Jump to first error location (failed tests) |
+| `i`     | Jump to test source |
+| `o`     | Show test output |
+| `e`     | Jump to first error location |
+| `h`     | Fold close (or move to parent + fold) |
+| `l`     | Fold open (restore cursor position) |
 | `<Tab>` | Toggle fold |
 | `p`     | Toggle show passed tests |
-| `f`     | Toggle show failed tests only |
-| `d`     | Show test output in float (full stdout/stderr) |
-| `g`     | Refresh (re-discover) |
-| `q`     | Close explorer |
+| `<C-r>` | Refresh (re-discover) |
+| `q`     | Close |
 
-### 4.5 Error navigation
+### 4.5 Fold position memory
 
-When a test fails, pressing `e` on it jumps to the first error
-location (file + line from `TestError`). If the test has multiple
-errors, repeated `e` cycles through them.
+`h` on a leaf saves the node ID, folds the parent. `l` on the parent
+unfolds and restores cursor to the saved node.
 
-Failed tests show the first error message inline (truncated) after
-the test name in the tree:
+## 5. Test Execution
 
-```
-✗ MyTest  — Expected 4 but got 5 (test.cpp:42)
-```
+### 5.1 Direct binary execution
 
-### 4.6 Explorer header
+Tests run via the gtest binary directly (not through ctest), using
+execution specs from `ctest --show-only=json-v1` (command, env,
+working directory, timeout).
 
-Summary shown at the top of the explorer:
+### 5.2 Auto-build
 
-```
-Debug:ninja-clang-18  ✔ 1200  ✗ 3  ⊘ 2  ○ 118
-```
+`ensure_built` builds the test target via a plain overseer task (not
+loomworks tracker, to avoid invalidating the test cache). Builds only
+the specific test target when possible. `<leader>tA` skips the build.
 
-The first part is the adapter's `description()` — for loomworks this is
-the active profile name. For a standalone ctest adapter it might be the
-build directory basename. If no description, just the counts are shown.
+### 5.3 Timestamp-based staleness
 
-### 4.7 Test output
+Before running, checks each test's source file mtime against the last
+run time. Only clears status for tests whose source file changed.
+Tests in unchanged files keep their previous results during the run.
 
-Pressing `d` on a test opens a floating window with the full test
-output (stdout + stderr). For failed tests, error locations are
-highlighted and clickable (Enter on an error line jumps to that
-file:line).
+### 5.4 Streaming
 
-The output window shows:
-- Test name and status
-- Duration
-- Full output text
-- Error locations (highlighted, with file:line references)
+Batch processing via `vim.defer_fn` every 50ms, reading up to 20
+lines per tick from the overseer buffer. Matches `[ RUN ]`, `[ OK ]`,
+`[ FAILED ]` patterns for real-time status updates. Explorer refreshes
+every 250ms (5 ticks). No interference with overseer's stdout handling.
 
-The `:LoomtestOutput` command opens the output for the most recently
-run test.
+### 5.5 XML results
 
-## 5. Gutter Signs
+On completion, gtest XML (`--gtest_output=xml`) provides authoritative
+results. Line-by-line parsing for performance (avoids gmatch on large
+strings). Self-closing `<testcase ... />` for passed tests, multi-line
+for failed tests with `<failure>`, `<system-out>`, `<system-err>`.
 
-### 5.1 Sign placement
+### 5.6 Fidget progress
 
-When a buffer is opened, loomtest checks if any TestNodes have `file`
-matching the buffer path. If so, signs are placed at their `line`
-positions.
+Shows `✔ 590 ✗ 2 / 1323 (45%)` during execution. Updates every 250ms.
+Finishes cleanly on completion.
 
-Signs are updated when:
-- Test results change (after run completion)
-- Buffer is opened/entered
-- Test tree is refreshed
+## 6. Gutter Signs
 
-### 5.2 Sign types
+Signs placed at test source locations using `node.file` and `node.line`.
+Updated on BufEnter, during test execution, and on completion.
+Priority 15 (higher than diagnostic signs at 8).
 
-| Status    | Sign | Highlight |
-|-----------|------|-----------|
-| passed    | ✔    | DiagnosticOk |
-| failed    | ✗    | DiagnosticError |
-| skipped   | ⊘    | DiagnosticWarn |
-| errored   | !    | DiagnosticError |
-| not run   | ○    | Comment |
+Aggregation for shared lines: failed > running > skipped > passed.
 
-### 5.3 Multiple tests per line
+## 7. Inline Annotations
 
-Parameterized tests may share a source line. The sign shows the
-aggregate status: if any failed → ✗, else if any skipped → ⊘, else ✔.
+### 7.1 Virtual text (extmarks)
 
-## 6. Cursor-Level Running
+Test-level: `✔ passed 2ms` or `✗ failed` at TEST() macro line.
+Configurable via `setup({ inline = { test_result, error_detail } })`.
 
-### 6.1 Flow
+### 7.2 Diagnostics
 
-1. User presses `<leader>tt` in a source buffer
-2. loomtest calls `adapter.get_cursor_test(bufnr, cursor_line)` for
-   each registered adapter
-3. Adapter returns the test_id at cursor, or nil
-4. If found, `runner.run(adapter, test_id)` executes it
-5. Results update the tree and gutter signs
+Assertion-level errors published as `vim.diagnostic` (source: "loomtest").
+Integrates with `<leader>d` hover, `[d`/`]d` navigation, trouble.nvim.
+Diagnostic virtual text shows error message inline (LSP-consistent).
+No underline. Diagnostic signs at lower priority than loomtest signs.
 
-### 6.2 File-level running
+## 8. Test Output Viewer
 
-`<leader>tf` runs all tests whose `file` matches the current buffer.
-loomtest filters the test tree (not the adapter) — any test with
-matching file path is collected and passed to `adapter.run_all()` with
-appropriate filter.
+### 8.1 From explorer (`o` key)
 
-## 7. Commands
+Shows per-test output from gtest XML, failure message, and error
+locations. "No output captured" for passing tests. Suite/target nodes
+find their first failed child.
 
-| Command | Description |
-|---------|-------------|
-| `:LoomtestToggle` | Toggle explorer panel |
-| `:LoomtestRun` | Run test at cursor |
-| `:LoomtestRunFile` | Run all tests in current file |
-| `:LoomtestRunAll` | Run all tests |
-| `:LoomtestRefresh` | Re-discover tests |
-| `:LoomtestOutput` | Show output of last test |
+### 8.2 From source (`<leader>to`)
 
-## 8. Global Keymaps (configurable)
+Finds test at cursor, shows its output. "No test found on this line"
+for non-test lines. In explorer, delegates to selected node.
 
-| Key | Command |
-|-----|---------|
-| `<leader>ts` | `:LoomtestToggle` |
-| `<leader>tt` | `:LoomtestRun` (cursor) |
-| `<leader>tf` | `:LoomtestRunFile` |
-| `<leader>ta` | `:LoomtestRunAll` |
-| `<leader>to` | `:LoomtestOutput` |
+### 8.3 Error navigation
 
-## 9. Integration with loomworks
+`<CR>` in the output float jumps to file:line using full paths from
+error data. Closes the float and opens in a non-explorer window.
+`e` in the explorer jumps to first error location.
 
-The loomworks adapter (`loomworks/loomtest_adapter.lua`) bridges
-loomworks domain objects to the loomtest TestAdapter interface:
+## 9. Source Navigation
 
-- `discover()` → iterates active profile's ConfigUnits, calls
-  `test_units()` → `discover()` on each TestUnit
-- `run(test_id)` → finds owning TestUnit, delegates `test_command()`
-- `parse_results()` → delegates to TestUnit
-- `invalidate()` → calls `ConfigUnit:invalidate_tests()`
-- `get_cursor_test()` → uses GTest helper to match TEST macros
+### 9.1 Explorer → source (`i` key)
 
-The adapter registers itself on workspace load (`workspace_changed`
-event) and re-registers on profile switch (`active_set_changed`).
+Opens test source file in a non-explorer window at the test's line.
 
-## 10. Configuration
+### 9.2 Source → explorer
+
+`<leader>ts`: toggle explorer. On open, scrolls to test at cursor.
+`<leader>tg`: always open explorer and reveal test at cursor. Unfolds
+parents as needed.
+
+## 10. Global Keymaps
+
+| Key | Action |
+|-----|--------|
+| `<leader>ts` | Toggle test explorer |
+| `<leader>tg` | Go to test in explorer |
+| `<leader>tt` | Run test at cursor |
+| `<leader>tf` | Run tests in file |
+| `<leader>ta` | Run all tests (with build) |
+| `<leader>tA` | Run all tests (no build) |
+| `<leader>to` | Show test output |
+
+## 11. Configuration
 
 ```lua
 require("loomtest").setup({
-    -- Explorer window position: "left", "right", "bottom", "float"
     position = "right",
-    -- Explorer width (for left/right) or height (for bottom)
     size = 40,
-    -- Auto-open explorer on first test discovery
     auto_open = false,
-    -- Auto-run tests on file save
     auto_run = false,
-    -- Show passed tests in explorer (toggle with 'p')
     show_passed = true,
-    -- Keymaps (set to false to disable)
-    keys = {
-        toggle = "<leader>ts",
-        run = "<leader>tt",
-        run_file = "<leader>tf",
-        run_all = "<leader>ta",
-        output = "<leader>to",
+    win = {},
+    inline = {
+        enabled = true,
+        test_result = true,
+        error_detail = true,
     },
+    keys = { ... },
 })
 ```
 
-## 11. Future Considerations
+## 12. Profile Switching
 
-- **DAP integration**: run test under debugger
-- **Watch mode**: auto-run on file save
-- **Coverage**: display coverage data alongside test results
-- **History**: track test results over time
-- **Standalone plugin**: extract from loomworks repo into separate
-  package with its own adapter ecosystem
+On `active_set_changed`: clears inline annotations and diagnostics,
+invalidates adapters, re-discovers tests, resets run timestamps.
+
+## 13. Loomworks Adapter
+
+Bridges ConfigUnit/TestUnit to the loomtest TestAdapter interface.
+Registers on workspace load, re-registers on profile switch.
+
+## 14. Future Considerations
+
+- DAP integration (debug a test)
+- Watch mode (auto-run on file save)
+- Coverage display
+- Standalone plugin extraction
+- Additional adapters (jest, cargo test, meson)

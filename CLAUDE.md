@@ -287,6 +287,12 @@ These are implementation-specific details not covered by the spec or architectur
   errors), avoids `vim.fn` calls (deadlock in nio), deduplicates
   `discover_positions` calls (Windows path format mismatch), and caps
   per-line entries (parameterized test merge performance).
+- **loomtest** (`lua/loomtest/`): test-first test explorer, independent from
+  loomworks. Core: explorer (Snacks.win tree), runner (overseer + streaming
+  + gtest XML), signs (gutter), inline (extmark virtual text + vim.diagnostic).
+  `loomworks_adapter.lua` bridges ConfigUnit/TestUnit to loomtest's TestAdapter
+  interface. Auto-builds test targets before execution. Timestamp-based
+  staleness clears only changed files' results. See LOOMTEST.md for full spec.
 - **Error handling**: on deserialization error (structurally invalid data),
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still
