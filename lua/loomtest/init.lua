@@ -392,9 +392,44 @@ function M.toggle()
     require("loomtest.explorer").toggle()
 end
 
---- Show output of the most recently run (or selected) test.
+--- Show output for the test at cursor, or the most recent failed test.
+--- Works from any buffer context.
 function M.show_output()
-    require("loomtest.explorer").show_output()
+    local explorer = require("loomtest.explorer")
+
+    -- If in the explorer, use its selected node
+    if explorer.is_open() and vim.bo.filetype == "loomtest" then
+        explorer.show_output()
+        return
+    end
+
+    -- Try to find test at cursor in source file
+    local bufnr = vim.api.nvim_get_current_buf()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local test_id = nil
+    for _, adapter in ipairs(_adapters) do
+        test_id = adapter.get_cursor_test(bufnr, cursor[1])
+        if test_id then break end
+    end
+
+    if test_id then
+        local node = _nodes[test_id]
+        if node and (node._output or node.message) then
+            local output = node._output or node.message or ""
+            if node.message and node._output and node.message ~= node._output then
+                output = node.message .. "\n\n--- stdout/stderr ---\n" .. node._output
+            end
+            local title = node.name .. " (" .. (node.status or "unknown") .. ")"
+            explorer._show_output_float(title, output, node._errors or {})
+            return
+        elseif node then
+            local title = node.name .. " (" .. (node.status or "unknown") .. ")"
+            explorer._show_output_float(title, "No output captured.", {})
+            return
+        end
+    end
+
+    vim.notify("loomtest: no test found on this line", vim.log.levels.INFO)
 end
 
 return M

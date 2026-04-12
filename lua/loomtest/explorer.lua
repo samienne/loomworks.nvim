@@ -820,6 +820,35 @@ function M._show_output_float(title, output, errors)
         end
     end
 
+    -- Build a lookup of line_num → { file, line } for jump-to-error
+    local jump_targets = {}  -- 1-based line → { file, line }
+
+    -- Scan all lines for file:line patterns and store full paths
+    -- Also check errors array for full paths on error section lines
+    local error_line_start = 0
+    if #errors > 0 then
+        error_line_start = 3  -- after "Errors:" and blank line
+        for i, err in ipairs(errors) do
+            if err.file and err.line then
+                -- Error lines start at line 3 (1-based)
+                jump_targets[error_line_start + (i - 1)] = {
+                    file = err.file, line = err.line,
+                }
+            end
+        end
+    end
+
+    -- Also scan output lines for file:line patterns
+    local output_start = #errors > 0 and (error_line_start + #errors + 2) or 0
+    for i, l in ipairs(lines) do
+        if not jump_targets[i] then
+            local file, lnum = l:match("([%w_/\\%.%-:]+%.[ch]pp?):(%d+)")
+            if file and lnum then
+                jump_targets[i] = { file = file, line = tonumber(lnum) }
+            end
+        end
+    end
+
     local buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 
@@ -841,7 +870,28 @@ function M._show_output_float(title, output, errors)
         border = "rounded",
         title = " " .. title .. " ",
         title_pos = "center",
-        keys = { q = "close" },
+        keys = {
+            q = "close",
+            ["<CR>"] = function(self)
+                local cursor = vim.api.nvim_win_get_cursor(self.win)
+                local target = jump_targets[cursor[1]]
+                if not target then return end
+                self:close()
+                local target_win = nil
+                for _, w in ipairs(vim.api.nvim_list_wins()) do
+                    local wbuf = vim.api.nvim_win_get_buf(w)
+                    if vim.bo[wbuf].buftype == "" then
+                        target_win = w
+                        break
+                    end
+                end
+                if target_win then
+                    vim.api.nvim_set_current_win(target_win)
+                end
+                vim.cmd("edit " .. vim.fn.fnameescape(target.file))
+                pcall(vim.api.nvim_win_set_cursor, 0, { target.line, 0 })
+            end,
+        },
         wo = { number = true, relativenumber = false, wrap = true },
     })
 end
