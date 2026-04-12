@@ -576,6 +576,10 @@ function M.open()
             config.show_passed = not config.show_passed
             M.refresh()
         end,
+        -- Disable keymaps that would navigate away from the explorer
+        ["-"] = function() end,
+        ["<C-o>"] = function() end,
+        ["<C-i>"] = function() end,
     }
     win_config.on_close = function()
         _win = nil

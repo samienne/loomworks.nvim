@@ -5,6 +5,15 @@ they don't get lost.
 
 ---
 
+## Disable navigation keymaps in loomworks UI windows
+
+`<C-o>`, `-` (oil.nvim), and similar global keymaps can navigate away
+from loomworks status page, config editors, and other UI windows.
+Fixed in loomtest explorer — need same treatment in loomworks View/Tree
+widget (view.lua, status.lua).
+
+---
+
 ## No-tool profile: MSVC auto-detection metadata
 
 When creating a profile without selecting a tool (no cmake kits detected),
