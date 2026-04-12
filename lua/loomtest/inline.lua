@@ -7,6 +7,7 @@
 local M = {}
 
 local NS = vim.api.nvim_create_namespace("loomtest_inline")
+local DIAG_NS = vim.api.nvim_create_namespace("loomtest_diagnostics")
 
 local STATUS_TEXT = {
     passed  = { text = "✔ passed", hl = "DiagnosticOk" },
@@ -70,7 +71,9 @@ function M.update_buf(bufnr)
         end
     end
 
-    -- Place assertion-level error annotations
+    -- Publish assertion-level errors as vim diagnostics.
+    -- This integrates with <leader>d, [d/]d, and diagnostic UI.
+    local diagnostics = {}
     if show_error then
         for _, node in ipairs(loomtest.nodes()) do
             if node._errors and node.file
@@ -79,21 +82,42 @@ function M.update_buf(bufnr)
                     if err.file and err.line then
                         local err_norm = err.file:gsub("\\", "/"):lower()
                         if err_norm == norm_path then
-                            local line = err.line - 1
-                            if line >= 0 and line < line_count then
-                                local msg = (err.message or ""):gsub("\n.*", ""):sub(1, 60)
-                                pcall(vim.api.nvim_buf_set_extmark, bufnr, NS, line, 0, {
-                                    virt_text = { { "  ✗ " .. msg, "DiagnosticError" } },
-                                    virt_text_pos = "eol",
-                                    hl_mode = "combine",
-                                })
-                            end
+                            local msg = err.message or "test assertion failed"
+                            diagnostics[#diagnostics + 1] = {
+                                lnum = err.line - 1,
+                                col = 0,
+                                end_col = 0,  -- no underline
+                                message = msg,
+                                severity = vim.diagnostic.severity.ERROR,
+                                source = "loomtest",
+                            }
                         end
                     end
                 end
             end
+            -- Also add a diagnostic for failed tests at the TEST() line
+            if node.status == "failed" and node.message
+                and node.file and node.file:gsub("\\", "/"):lower() == norm_path
+                and node.line then
+                local line = node.line - 1
+                -- Only add if we don't already have an error at this line
+                local has_error_at_line = false
+                for _, d in ipairs(diagnostics) do
+                    if d.lnum == line then has_error_at_line = true; break end
+                end
+                if not has_error_at_line then
+                    diagnostics[#diagnostics + 1] = {
+                        lnum = line,
+                        col = 0,
+                        message = node.message:gsub("\n.*", ""):sub(1, 100),
+                        severity = vim.diagnostic.severity.ERROR,
+                        source = "loomtest",
+                    }
+                end
+            end
         end
     end
+    vim.diagnostic.set(DIAG_NS, bufnr, diagnostics)
 end
 
 --- Update inline annotations for all open buffers.
@@ -105,13 +129,14 @@ function M.update_all()
     end
 end
 
---- Clear all inline annotations.
+--- Clear all inline annotations and diagnostics.
 function M.clear_all()
     for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
         if vim.api.nvim_buf_is_valid(bufnr) then
             vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
         end
     end
+    vim.diagnostic.reset(DIAG_NS)
 end
 
 --- Set up autocmds for automatic inline updates.
@@ -123,6 +148,21 @@ function M.setup()
             M.update_buf(ev.buf)
         end,
     })
+
+    -- Configure diagnostic display for test results:
+    -- - No underline (too noisy)
+    -- - Signs enabled (for assertion lines — our gutter signs handle TEST() lines)
+    -- - Virtual text enabled (shows error message inline, consistent with LSP style)
+    vim.diagnostic.config({
+        underline = false,
+        signs = {
+            priority = 8,  -- lower than our loomtest signs (default 10)
+        },
+        virtual_text = {
+            prefix = "✗",
+            source = false,
+        },
+    }, DIAG_NS)
 end
 
 return M

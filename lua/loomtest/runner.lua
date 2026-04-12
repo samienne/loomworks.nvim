@@ -141,11 +141,14 @@ function M.execute(adapter, spec, test_ids, opts)
     -- Clear stale tests (source changed since last run)
     local stale_count = clear_stale_tests(test_ids, loomtest)
 
-    -- Mark tests as pending
+    -- Mark tests as pending, clear old results
     for _, id in ipairs(test_ids) do
         local node = loomtest.get_node(id)
         if node then
             node.status = "pending"
+            node.message = nil
+            node._output = nil
+            node._errors = nil
         end
     end
 

@@ -75,7 +75,7 @@ function M.update_buf(bufnr)
     for line, statuses in pairs(by_line) do
         local status = aggregate_status(statuses)
         local sign_name = "loomtest_" .. status
-        pcall(vim.fn.sign_place, 0, SIGN_GROUP, sign_name, bufnr, { lnum = line })
+        pcall(vim.fn.sign_place, 0, SIGN_GROUP, sign_name, bufnr, { lnum = line, priority = 15 })
     end
 end
 
