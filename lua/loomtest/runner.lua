@@ -298,6 +298,7 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
                 explorer.refresh()
             end
             require("loomtest.signs").update_all()
+            require("loomtest.inline").update_all()
             if not task_complete then
                 fidget_update(format_progress(test_ids, loomtest))
             end
@@ -345,6 +346,7 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
 
             -- Final UI update
             require("loomtest.signs").update_all()
+            require("loomtest.inline").update_all()
             if explorer.is_open() then
                 explorer.refresh()
             end

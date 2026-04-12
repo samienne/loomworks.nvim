@@ -29,6 +29,11 @@ local DEFAULT_CONFIG = {
     auto_run = false,
     show_passed = true,
     win = {},  -- Snacks.win config overrides
+    inline = {
+        enabled = true,
+        test_result = true,   -- show pass/fail at TEST() line
+        error_detail = true,  -- show assertion error at failure line
+    },
     keys = {
         toggle = "<leader>ts",
         run = "<leader>tt",

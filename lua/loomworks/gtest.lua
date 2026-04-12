@@ -261,8 +261,9 @@ end
 --- @return loomtest.TestError[]
 local function parse_failure_locations(text)
     local errors = {}
-    -- Match lines like "path/file.cpp:42" or "path\file.cpp:42"
-    for file, line in text:gmatch("([%w_/\\%.%-]+%.[ch]pp?):(%d+)") do
+    -- Match lines like "C:/path/file.cpp:42" or "path\file.cpp:42"
+    -- Include : for drive letters (C:) but the final :digits is the line number
+    for file, line in text:gmatch("([%w_/\\%.%-:]+%.[ch]pp?):(%d+)") do
         errors[#errors + 1] = {
             message = text:match("^.-\n(.-)$") or text,
             file = file:gsub("\\", "/"),
