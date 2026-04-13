@@ -343,6 +343,7 @@ function LaunchTarget:_debug_command()
         -- program is the entry point (first arg), rest are args
         extra.runtimeExecutable = cmd
         extra.sourceMaps = true
+        extra.console = "integratedTerminal"
         local program = args[1]
         local remaining_args = {}
         for i = 2, #args do
