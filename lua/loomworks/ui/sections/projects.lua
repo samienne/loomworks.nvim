@@ -129,6 +129,7 @@ local function edit_launch_config(project, launch_name)
         working_dir = ctx.working_dir,
         env = ctx.env,
         deploy = ctx.deploy,
+        debug = ctx.debug,
         projects = ws and ws:get_projects() or {},
         profile = ws and lw.get_active_profile() or nil,
         workspace = ws,
@@ -149,6 +150,7 @@ local function edit_launch_config(project, launch_name)
                     working_dir = result.working_dir,
                     env = result.env,
                     deploy = result.deploy,
+                    debug = result.debug,
                 })
             if ok then
                 local verb = launch_name and "updated" or "created"
