@@ -2645,6 +2645,35 @@ Selection persists to `user.json` via `Workspace:set_debug_adapter()`.
 Known adapters: cmake (codelldb, cppdbg), typescript (pwa-node,
 pwa-chrome).
 
+**Language-based adapter resolution.** Adapters are resolved per
+language, not per module type. Modules declare their supported
+languages (e.g., cmake → `"c++"`). The workspace-level
+`debug.adapters` mapping uses language keys. Backwards-compatible:
+accepts both language strings and legacy module type keys.
+
+**Multi-adapter debugging.** A launch config can specify a `debug`
+array of language strings to attach multiple debuggers to the same
+process:
+```json
+{
+  "launch": {
+    "app": {
+      "command": "node",
+      "args": ["app.js"],
+      "debug": ["typescript", "c++"]
+    }
+  }
+}
+```
+
+First entry launches the process, remaining entries attach to the
+same PID (captured from `runInTerminal` response). Each language
+resolves to its configured adapter. The launch editor UI supports
+adding, removing, and reordering debug languages.
+
+Format: each entry is either a string (language name) or an object
+(`{ "language": "c++", ... }`) for future extensibility.
+
 **Session tracking.** `session_tracker.lua` manages the lifecycle of
 all active runs (overseer launches and dap debug sessions). When
 starting a new run while one is active, a confirmation dialog asks

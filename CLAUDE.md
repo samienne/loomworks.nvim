@@ -297,20 +297,21 @@ These are implementation-specific details not covered by the spec or architectur
   and `winfixbuf = true` (prevents buffer hijacking).
 - **DAP integration** (`lua/loomworks/debug.lua`): single gateway to nvim-dap.
   `debug.run(spec, callbacks)` constructs DAP config with adapter-specific
-  `extra` fields and calls `dap.run()`. Checks adapter availability before
-  launch (shows Mason install hint, returns false). `resolve_adapter(workspace,
-  module_type)` reads `user.json` `debug.adapters` mapping with fallback
-  defaults (cmake → codelldb, typescript → pwa-node). `known_adapters()`
-  returns picker options per module type. `available()` checks for nvim-dap
-  via pcall. Per-session `on_terminated` callback uses unique listener keys
-  that auto-remove. `LaunchTarget:debug()` falls back to `launch()` when dap
-  unavailable; TypeScript path sets `runtimeExecutable` + `sourceMaps = true`.
-  `runner.debug()` falls back to `runner.execute()`. Workspace stores
-  `_debug_settings` from `user.json` `debug` key (pass-through, serialized
-  back on save). `Workspace:set_debug_adapter()` persists adapter selection.
-  Status page Debug Adapters section (`ui/sections/debug.lua`) shows current
-  adapter per module with picker for known adapters. `setup()` registers
-  default keymaps including debug variants (opt-out with `keys = false`).
+  `extra` fields and calls `dap.run()`. Supports `request = "attach"` with
+  `attach_pid` for multi-adapter sessions. Checks adapter availability before
+  launch (shows Mason install hint, returns false). Language-based adapter
+  resolution: `resolve_adapter(workspace, language)` reads `user.json`
+  `debug.adapters` mapping with fallback defaults (`c++` → codelldb,
+  typescript → pwa-node). Backwards-compatible with legacy module type keys
+  via `MODULE_TO_LANGUAGE` mapping. Modules declare `languages` field
+  (e.g., cmake.languages = {"c++"}). Module domain object exposes
+  `primary_language()`. `on_pid` callback captures PID from `runInTerminal`
+  response for multi-adapter attach. `known_languages()` returns all known
+  languages. Status page Debug Adapters section shows languages not module
+  types. Launch config `debug` field: array of language strings, first =
+  primary (launch), rest = attach to same PID. Launch editor UI for
+  adding/removing/reordering debug languages. `setup()` registers default
+  keymaps including debug variants (opt-out with `keys = false`).
 - **Session tracking** (`lua/loomworks/session_tracker.lua`): unified
   lifecycle manager for overseer launches and dap debug sessions.
   `start(target, mode)` shows confirmation dialog if a session is active,
