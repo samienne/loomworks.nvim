@@ -5,6 +5,7 @@ local io_mod = require("loomworks.io")
 M.id = "cmake"
 M.has_keyed_tools = true
 M.has_options = true
+M.languages = { "c++" }
 
 local uv = vim.uv or vim.loop
 

@@ -309,11 +309,11 @@ function LaunchTarget:debug()
     end
 end
 
---- Debug from a command-type config (loomworks.json launch section).
-function LaunchTarget:_debug_command()
+--- Build the resolved spec data for debug from a command-type launch config.
+--- @return table spec_data { program, args, cwd, env, extra }
+--- @return string adapter resolved adapter type
+function LaunchTarget:_resolve_debug_spec()
     local cfg = self._launch_config
-    if not cfg or not cfg.command then return end
-
     local ws = self._workspace
     local ctx = expand.launch_context(ws, self._profile, self._project)
 
@@ -333,41 +333,70 @@ function LaunchTarget:_debug_command()
     end
 
     local env = expand.expand_dict(cfg.env, ctx)
-    local mod_type = self._project._module and self._project._module.id or "cmake"
-    local adapter = debug_mod.resolve_adapter(ws, mod_type)
+    local lang = self._project._module and self._project._module:primary_language() or "c++"
+    local adapter = debug_mod.resolve_adapter(ws, lang)
 
-    -- Build adapter-specific extra fields
     local extra = {}
-    if mod_type == "typescript" then
-        -- pwa-node: runtimeExecutable is the command (node/ts-node),
-        -- program is the entry point (first arg), rest are args
+    local program = cmd
+    local final_args = args
+
+    if lang == "typescript" then
         extra.runtimeExecutable = cmd
         extra.sourceMaps = true
         extra.console = "integratedTerminal"
-        local program = args[1]
-        local remaining_args = {}
+        program = args[1]
+        final_args = {}
         for i = 2, #args do
-            remaining_args[#remaining_args + 1] = args[i]
+            final_args[#final_args + 1] = args[i]
         end
-        debug_mod.run({
-            name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
-            program = program,
-            args = #remaining_args > 0 and remaining_args or nil,
-            cwd = cwd,
-            env = env,
-            adapter = adapter,
-            extra = extra,
-        })
-    else
-        debug_mod.run({
-            name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
-            program = cmd,
-            args = args,
-            cwd = cwd,
-            env = env,
-            adapter = adapter,
-        })
+        if #final_args == 0 then final_args = nil end
     end
+
+    return {
+        program = program,
+        args = final_args,
+        cwd = cwd,
+        env = env,
+        extra = next(extra) and extra or nil,
+    }, adapter
+end
+
+--- Debug from a command-type config (loomworks.json launch section).
+function LaunchTarget:_debug_command()
+    local cfg = self._launch_config
+    if not cfg or not cfg.command then return end
+
+    local spec_data, adapter = self:_resolve_debug_spec()
+
+    -- Multi-adapter: launch config has a debug[] array of languages
+    if cfg.debug and type(cfg.debug) == "table" and #cfg.debug > 1 then
+        local ws = self._workspace
+        local parsed = {}
+        for _, entry in ipairs(cfg.debug) do
+            local language = type(entry) == "string" and entry or entry.language
+            parsed[#parsed + 1] = { adapter = debug_mod.resolve_adapter(ws, language) }
+        end
+        local tracker = require("loomworks.session_tracker")
+        tracker.start_multi_adapter(self, parsed, spec_data)
+        return
+    end
+
+    -- Single adapter: use debug[] first entry if present, else module default
+    if cfg.debug and type(cfg.debug) == "table" and #cfg.debug == 1 then
+        local entry = cfg.debug[1]
+        local language = type(entry) == "string" and entry or entry.language
+        adapter = debug_mod.resolve_adapter(self._workspace, language)
+    end
+
+    debug_mod.run({
+        name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
+        adapter = adapter,
+        program = spec_data.program,
+        args = spec_data.args,
+        cwd = spec_data.cwd,
+        env = spec_data.env,
+        extra = spec_data.extra,
+    })
 end
 
 --- Debug a module target (cmake executable).
@@ -386,13 +415,13 @@ function LaunchTarget:_debug_target()
 
     local artifact_path = build_dir .. "/" .. target.artifact
     local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
-    local mod_type = unit._project and unit._project._module and unit._project._module.id or "cmake"
+    local lang = unit._project and unit._project._module and unit._project._module:primary_language() or "c++"
 
     debug_mod.run({
         name = project_name .. ": debug " .. target.id,
         program = artifact_path,
         cwd = build_dir,
-        adapter = debug_mod.resolve_adapter(self._workspace, mod_type),
+        adapter = debug_mod.resolve_adapter(self._workspace, lang),
     })
 end
 

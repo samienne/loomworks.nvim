@@ -13,20 +13,33 @@ return function(tree, ctx)
     local ws = lw.get_workspace()
     if not ws then return end
 
+    -- Collect unique languages from all modules
     local modules = ws._modules
     if not modules or #modules == 0 then return end
+
+    local seen = {}
+    local languages = {}
+    for _, mod in ipairs(modules) do
+        for _, lang in ipairs(mod.languages) do
+            if not seen[lang] then
+                seen[lang] = true
+                languages[#languages + 1] = lang
+            end
+        end
+    end
+    if #languages == 0 then return end
+    table.sort(languages)
 
     tree:blank()
     tree:leaf("Debug Adapters", "Title")
     tree:blank()
 
-    for _, mod in ipairs(modules) do
-        local mod_type = mod.id
-        local current = debug_mod.resolve_adapter(ws, mod_type)
-        local default = debug_mod.default_adapter(mod_type)
+    for _, lang in ipairs(languages) do
+        local current = debug_mod.resolve_adapter(ws, lang)
+        local default = debug_mod.default_adapter(lang)
         local is_default = (current == default)
 
-        local label = mod_type .. "  →  " .. current
+        local label = lang .. "  →  " .. current
         if is_default then
             label = label .. "  (default)"
         end
@@ -42,11 +55,11 @@ return function(tree, ctx)
         tree:item(label, {
             hl = hl,
             on_enter = function()
-                local known = debug_mod.known_adapters(mod_type)
+                local known = debug_mod.known_adapters(lang)
                 if #known == 0 then return end
 
                 vim.ui.select(known, {
-                    prompt = "Debug adapter for " .. mod_type .. ":",
+                    prompt = "Debug adapter for " .. lang .. ":",
                     format_item = function(adapter)
                         local marks = {}
                         if adapter == current then
@@ -72,8 +85,8 @@ return function(tree, ctx)
                         -- Reset to default: remove override from user.json
                         if ws._debug_settings
                             and ws._debug_settings.adapters
-                            and ws._debug_settings.adapters[mod_type] then
-                            ws._debug_settings.adapters[mod_type] = nil
+                            and ws._debug_settings.adapters[lang] then
+                            ws._debug_settings.adapters[lang] = nil
                             if not next(ws._debug_settings.adapters) then
                                 ws._debug_settings.adapters = nil
                             end
@@ -83,9 +96,8 @@ return function(tree, ctx)
                             ws:_save_user()
                         end
                     else
-                        ws:set_debug_adapter(mod_type, choice)
+                        ws:set_debug_adapter(lang, choice)
                     end
-                    -- Refresh status page
                     require("loomworks.ui.status").refresh()
                 end)
             end,

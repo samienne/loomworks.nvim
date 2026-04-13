@@ -37,8 +37,13 @@ local function stop_run()
         end
     else
         local ok, dap = pcall(require, "dap")
-        if ok and dap.session() then
-            dap.terminate({ hierarchy = true })
+        if ok then
+            if _active_run.multi_adapter then
+                -- Multi-adapter: terminate all root sessions
+                dap.terminate({ hierarchy = true, all = true })
+            elseif dap.session() then
+                dap.terminate({ hierarchy = true })
+            end
         end
     end
     _active_run = nil
@@ -140,6 +145,108 @@ function M.stop()
     end
     _active_run = nil
     vim.notify("loomworks: no running session", vim.log.levels.INFO)
+end
+
+--- Internal: execute multi-adapter build → deploy → launch + attach chain.
+--- @param target loomworks.LaunchTarget
+--- @param adapters { adapter: string }[]
+--- @param spec_data { program: string, args?: string[], cwd?: string, env?: table, extra?: table }
+local function start_multi_adapter_run(target, adapters, spec_data)
+    local fidget = require("loomworks.fidget")
+    local debug_mod = require("loomworks.debug")
+    local handle = fidget.start_action("Debugging " .. target:display_name() .. " (multi-adapter)")
+
+    local chain
+    if target:is_buildable() then
+        fidget.report(handle, "building...")
+        chain = target:build()
+    else
+        chain = Future.resolved(true)
+    end
+
+    chain
+        :next(function()
+            fidget.report(handle, "deploying...")
+            return target:deploy()
+        end)
+        :next(function()
+            fidget.report(handle, "starting primary debugger...")
+
+            -- Launch with first adapter
+            local primary = adapters[1]
+            local primary_spec = vim.tbl_extend("force", spec_data, {
+                adapter = primary.adapter,
+                name = target:display_name() .. " (" .. primary.adapter .. ")",
+            })
+
+            _active_run = {
+                target = target,
+                mode = "debug",
+                multi_adapter = true,
+                started_at = os.clock(),
+            }
+
+            debug_mod.run(primary_spec, {
+                on_pid = function(pid)
+                    -- Attach remaining adapters to the same PID
+                    for i = 2, #adapters do
+                        local attach_adapter = adapters[i]
+                        fidget.report(handle, "attaching " .. attach_adapter.adapter .. "...")
+                        debug_mod.run({
+                            adapter = attach_adapter.adapter,
+                            request = "attach",
+                            attach_pid = pid,
+                            program = spec_data.program,
+                            cwd = spec_data.cwd,
+                            name = target:display_name() .. " (" .. attach_adapter.adapter .. ")",
+                        })
+                    end
+                    fidget.finish(handle, "debugging (multi-adapter)")
+                end,
+                on_terminated = function()
+                    -- Terminate all remaining sessions
+                    local ok, dap = pcall(require, "dap")
+                    if ok then
+                        -- Terminate all sessions since multi-adapter shares a process
+                        for _, s in pairs(dap.sessions()) do
+                            s:disconnect({ terminateDebuggee = false })
+                        end
+                    end
+                    if _active_run and _active_run.multi_adapter then
+                        _active_run = nil
+                    end
+                end,
+            })
+        end)
+        :catch(function(err)
+            fidget.fail(handle, err)
+            vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
+        end)
+end
+
+--- Start a multi-adapter debug run.
+--- First adapter launches the process, remaining adapters attach to
+--- the same PID. Called by LaunchTarget when launch config has a
+--- `debug` array with multiple adapters.
+--- @param target loomworks.LaunchTarget
+--- @param adapters { adapter: string }[] parsed adapter entries (first = primary)
+--- @param spec_data { program: string, args?: string[], cwd?: string, env?: table, extra?: table }
+function M.start_multi_adapter(target, adapters, spec_data)
+    if is_active_running() then
+        local name = _active_run.target:display_name()
+        local running_mode = _active_run.mode == "debug" and "Debugging" or "Running"
+        vim.ui.select({ "Yes", "No" }, {
+            prompt = running_mode .. " '" .. name .. "'. Terminate and start new?",
+        }, function(choice)
+            if choice ~= "Yes" then return end
+            stop_run()
+            start_multi_adapter_run(target, adapters, spec_data)
+        end)
+        return
+    end
+
+    _active_run = nil
+    start_multi_adapter_run(target, adapters, spec_data)
 end
 
 --- Check if any run is active.

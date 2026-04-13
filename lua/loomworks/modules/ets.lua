@@ -3,6 +3,7 @@ local M = {}
 M.id = "ets"
 M.has_keyed_tools = false
 M.has_options = false
+M.languages = {}
 
 local uv = vim.uv or vim.loop
 

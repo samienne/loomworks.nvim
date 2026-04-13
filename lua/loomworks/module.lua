@@ -9,6 +9,7 @@ local Tool = require("loomworks.tool")
 --- @field id string module type identifier (e.g., "cmake", "ets", "typescript")
 --- @field impl table raw module function table from require()
 --- @field has_keyed_tools boolean whether tools have unique keys
+--- @field languages string[] languages supported by this module (e.g. {"c++"})
 --- @field _tools table<string, loomworks.Tool> tool_key -> Tool ("" for default)
 --- @field _removed boolean
 local Module = {}
@@ -23,6 +24,7 @@ function Module.new(id, impl)
     self.id = id
     self.impl = impl
     self.has_keyed_tools = impl.has_keyed_tools or false
+    self.languages = impl.languages or {}
     self._tools = {}
     self._removed = false
     return self
@@ -33,6 +35,13 @@ end
 function Module:_update(impl)
     self.impl = impl
     self.has_keyed_tools = impl.has_keyed_tools or false
+    self.languages = impl.languages or {}
+end
+
+--- Get the primary language for this module (first in languages list).
+--- @return string|nil
+function Module:primary_language()
+    return self.languages[1]
 end
 
 --- Look up a Tool by key.

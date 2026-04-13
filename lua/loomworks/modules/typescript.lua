@@ -3,6 +3,7 @@ local M = {}
 M.id = "typescript"
 M.has_keyed_tools = false
 M.has_options = false
+M.languages = { "typescript" }
 
 local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
