@@ -519,156 +519,53 @@ function M._pick_target(profile, on_select)
     end)
 end
 
--- Track the active LaunchTarget for stop_target()
-local _active_launch = nil
-
---- Launch the active profile's default target.
---- Builds first (if buildable), then launches.
---- Shows picker if no default set or target is stale.
---- Stop the previous launch if running.
-local function stop_active_launch()
-    if _active_launch and _active_launch:is_running() then
-        _active_launch:stop()
-    end
-end
-
---- Build, deploy, and launch a target using Future chains.
---- @param target loomworks.LaunchTarget
-local function build_deploy_launch(target)
-    stop_active_launch()
-    _active_launch = target
-
-    local fidget = require("loomworks.fidget")
-    local handle = fidget.start_action("Launching " .. target:display_name())
-
-    local chain
-    if target:is_buildable() then
-        fidget.report(handle, "building...")
-        chain = target:build()
-    else
-        chain = require("loomworks.future").resolved(true)
+--- Resolve the default target and start a run via session_tracker.
+--- @param mode "launch"|"debug"
+local function resolve_and_start(mode)
+    local profile = M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
     end
 
-    chain
-        :next(function()
-            fidget.report(handle, "deploying...")
-            return target:deploy()
-        end)
-        :next(function()
-            fidget.report(handle, "launching...")
-            target:launch()
-            fidget.finish(handle, "launched")
-        end)
-        :catch(function(err)
-            fidget.fail(handle, err)
-            vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
-        end)
+    local tracker = require("loomworks.session_tracker")
+    local launch_target = profile:default_target()
+
+    if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
+        tracker.start(launch_target, mode)
+        return
+    end
+
+    -- Stale target
+    if launch_target and not launch_target:is_valid() then
+        vim.notify("loomworks: target '" .. launch_target:display_name()
+            .. "' no longer available", vim.log.levels.WARN)
+        profile:clear_default_target()
+    end
+
+    -- No default or stale: show picker, then start the selection
+    M._pick_target(profile, function(project, target_id)
+        if project and target_id then
+            profile:set_default_target(project, target_id)
+        end
+        local new_target = profile:default_target()
+        if new_target and new_target:is_launchable() then
+            tracker.start(new_target, mode)
+        end
+    end)
 end
 
 function M.launch_target()
-    local profile = M.get_active_profile()
-    if not profile then
-        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
-        return
-    end
-
-    local launch_target = profile:default_target()
-
-    if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
-        build_deploy_launch(launch_target)
-        return
-    end
-
-    -- Stale target
-    if launch_target and not launch_target:is_valid() then
-        vim.notify("loomworks: target '" .. launch_target:display_name()
-            .. "' no longer available", vim.log.levels.WARN)
-        profile:clear_default_target()
-    end
-
-    -- No default or stale: show picker, then launch the selection
-    M._pick_target(profile, function(project, target_id)
-        if project and target_id then
-            profile:set_default_target(project, target_id)
-        end
-        local new_target = profile:default_target()
-        if new_target and new_target:is_launchable() then
-            build_deploy_launch(new_target)
-        end
-    end)
-end
-
---- Build, deploy, and debug a target using Future chains.
---- @param target loomworks.LaunchTarget
-local function build_deploy_debug(target)
-    local fidget = require("loomworks.fidget")
-    local handle = fidget.start_action("Debugging " .. target:display_name())
-
-    local chain
-    if target:is_buildable() then
-        fidget.report(handle, "building...")
-        chain = target:build()
-    else
-        chain = require("loomworks.future").resolved(true)
-    end
-
-    chain
-        :next(function()
-            fidget.report(handle, "deploying...")
-            return target:deploy()
-        end)
-        :next(function()
-            fidget.report(handle, "debugging...")
-            target:debug()
-            fidget.finish(handle, "debugging")
-        end)
-        :catch(function(err)
-            fidget.fail(handle, err)
-            vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
-        end)
+    resolve_and_start("launch")
 end
 
 function M.debug_target()
-    local profile = M.get_active_profile()
-    if not profile then
-        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
-        return
-    end
-
-    local launch_target = profile:default_target()
-
-    if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
-        build_deploy_debug(launch_target)
-        return
-    end
-
-    -- Stale target
-    if launch_target and not launch_target:is_valid() then
-        vim.notify("loomworks: target '" .. launch_target:display_name()
-            .. "' no longer available", vim.log.levels.WARN)
-        profile:clear_default_target()
-    end
-
-    -- No default or stale: show picker, then debug the selection
-    M._pick_target(profile, function(project, target_id)
-        if project and target_id then
-            profile:set_default_target(project, target_id)
-        end
-        local new_target = profile:default_target()
-        if new_target and new_target:is_launchable() then
-            build_deploy_debug(new_target)
-        end
-    end)
+    resolve_and_start("debug")
 end
 
---- Stop the running launch task.
+--- Stop the active launch or debug session.
 function M.stop_target()
-    if _active_launch and _active_launch:is_running() then
-        _active_launch:stop()
-        _active_launch = nil
-        return
-    end
-    vim.notify("loomworks: no running launch task", vim.log.levels.INFO)
+    require("loomworks.session_tracker").stop()
 end
 
 return M
