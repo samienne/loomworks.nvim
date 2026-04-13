@@ -333,16 +333,40 @@ function LaunchTarget:_debug_command()
     end
 
     local env = expand.expand_dict(cfg.env, ctx)
-    local mod_type = self._project._module and self._project._module.mod_type or "cmake"
+    local mod_type = self._project._module and self._project._module.id or "cmake"
+    local adapter = debug_mod.resolve_adapter(ws, mod_type)
 
-    debug_mod.run({
-        name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
-        program = cmd,
-        args = args,
-        cwd = cwd,
-        env = env,
-        adapter = debug_mod.resolve_adapter(ws, mod_type),
-    })
+    -- Build adapter-specific extra fields
+    local extra = {}
+    if mod_type == "typescript" then
+        -- pwa-node: runtimeExecutable is the command (node/ts-node),
+        -- program is the entry point (first arg), rest are args
+        extra.runtimeExecutable = cmd
+        extra.sourceMaps = true
+        local program = args[1]
+        local remaining_args = {}
+        for i = 2, #args do
+            remaining_args[#remaining_args + 1] = args[i]
+        end
+        debug_mod.run({
+            name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
+            program = program,
+            args = #remaining_args > 0 and remaining_args or nil,
+            cwd = cwd,
+            env = env,
+            adapter = adapter,
+            extra = extra,
+        })
+    else
+        debug_mod.run({
+            name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
+            program = cmd,
+            args = args,
+            cwd = cwd,
+            env = env,
+            adapter = adapter,
+        })
+    end
 end
 
 --- Debug a module target (cmake executable).
@@ -361,7 +385,7 @@ function LaunchTarget:_debug_target()
 
     local artifact_path = build_dir .. "/" .. target.artifact
     local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
-    local mod_type = unit._project and unit._project._module and unit._project._module.mod_type or "cmake"
+    local mod_type = unit._project and unit._project._module and unit._project._module.id or "cmake"
 
     debug_mod.run({
         name = project_name .. ": debug " .. target.id,

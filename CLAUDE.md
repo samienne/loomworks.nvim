@@ -296,15 +296,21 @@ These are implementation-specific details not covered by the spec or architectur
   Explorer uses `relative = "win"` (splits within code area, not full frame)
   and `winfixbuf = true` (prevents buffer hijacking).
 - **DAP integration** (`lua/loomworks/debug.lua`): single gateway to nvim-dap.
-  `debug.run(spec, callbacks)` constructs DAP config and calls `dap.run()`.
-  `resolve_adapter(workspace, module_type)` reads `user.json` `debug.adapters`
-  mapping with fallback defaults (cmake → codelldb). `available()` checks for
-  nvim-dap via pcall. Per-session `on_terminated` callback uses unique listener
-  keys that auto-remove. `LaunchTarget:debug()` falls back to `launch()` when
-  dap unavailable. `runner.debug()` falls back to `runner.execute()`. Workspace
-  stores `_debug_settings` from `user.json` `debug` key (pass-through, serialized
-  back on save). `setup()` registers default keymaps including debug variants
-  (opt-out with `keys = false`).
+  `debug.run(spec, callbacks)` constructs DAP config with adapter-specific
+  `extra` fields and calls `dap.run()`. Checks adapter availability before
+  launch (shows Mason install hint, returns false). `resolve_adapter(workspace,
+  module_type)` reads `user.json` `debug.adapters` mapping with fallback
+  defaults (cmake → codelldb, typescript → pwa-node). `known_adapters()`
+  returns picker options per module type. `available()` checks for nvim-dap
+  via pcall. Per-session `on_terminated` callback uses unique listener keys
+  that auto-remove. `LaunchTarget:debug()` falls back to `launch()` when dap
+  unavailable; TypeScript path sets `runtimeExecutable` + `sourceMaps = true`.
+  `runner.debug()` falls back to `runner.execute()`. Workspace stores
+  `_debug_settings` from `user.json` `debug` key (pass-through, serialized
+  back on save). `Workspace:set_debug_adapter()` persists adapter selection.
+  Status page Debug Adapters section (`ui/sections/debug.lua`) shows current
+  adapter per module with picker for known adapters. `setup()` registers
+  default keymaps including debug variants (opt-out with `keys = false`).
 - **Error handling**: on deserialization error (structurally invalid data),
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still
