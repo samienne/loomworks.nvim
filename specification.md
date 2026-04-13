@@ -2645,6 +2645,16 @@ Selection persists to `user.json` via `Workspace:set_debug_adapter()`.
 Known adapters: cmake (codelldb, cppdbg), typescript (pwa-node,
 pwa-chrome).
 
+**Session tracking.** `session_tracker.lua` manages the lifecycle of
+all active runs (overseer launches and dap debug sessions). When
+starting a new run while one is active, a confirmation dialog asks
+whether to terminate the existing session. Fidget progress spans the
+full debug startup: building → deploying → starting debugger →
+debugging (on `event_initialized`). Stop terminates the full dap
+session hierarchy (`hierarchy = true`), ensuring the debuggee process
+is killed alongside the adapter. Tracked runs auto-clean on dap
+session end via per-session listeners.
+
 **Default keymaps** registered by `setup()` (opt-out with `keys = false`):
 
 | Key | Action |
