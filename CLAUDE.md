@@ -311,6 +311,14 @@ These are implementation-specific details not covered by the spec or architectur
   Status page Debug Adapters section (`ui/sections/debug.lua`) shows current
   adapter per module with picker for known adapters. `setup()` registers
   default keymaps including debug variants (opt-out with `keys = false`).
+- **Session tracking** (`lua/loomworks/session_tracker.lua`): unified
+  lifecycle manager for overseer launches and dap debug sessions.
+  `start(target, mode)` shows confirmation dialog if a session is active,
+  then runs build → deploy → execute chain with fidget progress. Debug
+  fidget spans from build start to `event_initialized`. `stop()` terminates
+  dap with `hierarchy = true` (kills debuggee process). Auto-cleans tracked
+  run on session end. init.lua delegates `launch_target()`, `debug_target()`,
+  `stop_target()` to session_tracker.
 - **Error handling**: on deserialization error (structurally invalid data),
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still
