@@ -2608,6 +2608,12 @@ inline annotations, explorer).
 - `cwd` — working directory
 - `env` — environment variables
 - `adapter` — DAP adapter type (resolved by caller)
+- `extra` — adapter-specific fields merged into the DAP config
+  (e.g. `sourceMaps`, `runtimeExecutable` for pwa-node)
+
+Before launching, `debug.run()` checks that the adapter is registered
+in nvim-dap. If not, it shows a notification with Mason install hint
+and returns false (falls back to non-debug launch).
 
 Optional `callbacks.on_terminated` registers a one-shot listener on the
 DAP session that fires on `event_terminated` or `event_exited` and
@@ -2625,7 +2631,19 @@ auto-removes itself.
 }
 ```
 
-If omitted, defaults apply (cmake → codelldb).
+If omitted, defaults apply (cmake → codelldb, typescript → pwa-node).
+
+**TypeScript debugging.** For TypeScript command-type launch configs,
+the debug path sets `runtimeExecutable` to the command (node/ts-node),
+`program` to the entry point (first arg), and `sourceMaps = true`.
+This allows pwa-node to resolve TypeScript source maps automatically.
+
+**Adapter selection UI.** The status page shows a Debug Adapters section
+listing the current adapter per module type. Enter on an item opens a
+picker with known adapters showing installed/default/current status.
+Selection persists to `user.json` via `Workspace:set_debug_adapter()`.
+Known adapters: cmake (codelldb, cppdbg), typescript (pwa-node,
+pwa-chrome).
 
 **Default keymaps** registered by `setup()` (opt-out with `keys = false`):
 

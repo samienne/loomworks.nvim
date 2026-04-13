@@ -112,7 +112,13 @@ DAP adapter selection is per module type. Configure in `user.json`:
 }
 ```
 
-Defaults: cmake uses `codelldb`. If omitted, defaults apply.
+Defaults: cmake → `codelldb`, typescript → `pwa-node`. If omitted,
+defaults apply. The adapter selection can also be changed from the
+status page (Debug Adapters section).
+
+When a debug adapter is not installed, loomworks shows a notification
+with a Mason install hint and falls back to launching without the
+debugger.
 
 ## Configuration
 
