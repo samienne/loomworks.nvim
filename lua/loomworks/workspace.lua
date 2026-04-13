@@ -3046,6 +3046,20 @@ end
 --- Write the current user data to loomworks.user.json.
 --- Updates the file tracker's cached content to suppress self-write detection.
 --- @return boolean ok, string|nil err
+--- Set the debug adapter for a module type and persist to user.json.
+--- @param module_type string
+--- @param adapter_name string
+function Workspace:set_debug_adapter(module_type, adapter_name)
+    if not self._debug_settings then
+        self._debug_settings = {}
+    end
+    if not self._debug_settings.adapters then
+        self._debug_settings.adapters = {}
+    end
+    self._debug_settings.adapters[module_type] = adapter_name
+    self:_save_user()
+end
+
 function Workspace:_save_user()
     local data = self:_serialize_user()
     local ok, err = self._core._deps.user.save(self.root, data)

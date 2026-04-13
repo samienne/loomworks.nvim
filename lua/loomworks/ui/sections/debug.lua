@@ -1,0 +1,100 @@
+--- loomworks/ui/sections/debug.lua — Debug adapter section renderer.
+---
+--- Shows current debug adapter selection per module type.
+--- Allows picking from known adapters via Enter action.
+
+local debug_mod = require("loomworks.debug")
+
+--- Render the Debug Adapters section.
+--- @param tree loomworks.Tree
+--- @param ctx table { lw }
+return function(tree, ctx)
+    local lw = ctx.lw
+    local ws = lw.get_workspace()
+    if not ws then return end
+
+    local modules = ws._modules
+    if not modules or #modules == 0 then return end
+
+    tree:blank()
+    tree:leaf("Debug Adapters", "Title")
+    tree:blank()
+
+    for _, mod in ipairs(modules) do
+        local mod_type = mod.id
+        local current = debug_mod.resolve_adapter(ws, mod_type)
+        local default = debug_mod.default_adapter(mod_type)
+        local is_default = (current == default)
+
+        local label = mod_type .. "  →  " .. current
+        if is_default then
+            label = label .. "  (default)"
+        end
+
+        -- Check if adapter is available in nvim-dap
+        local installed = false
+        local ok, dap = pcall(require, "dap")
+        if ok and dap.adapters[current] then
+            installed = true
+        end
+        local hl = installed and "Comment" or "DiagnosticWarn"
+
+        tree:item(label, {
+            hl = hl,
+            on_enter = function()
+                local known = debug_mod.known_adapters(mod_type)
+                if #known == 0 then return end
+
+                vim.ui.select(known, {
+                    prompt = "Debug adapter for " .. mod_type .. ":",
+                    format_item = function(adapter)
+                        local marks = {}
+                        if adapter == current then
+                            marks[#marks + 1] = "current"
+                        end
+                        if adapter == default then
+                            marks[#marks + 1] = "default"
+                        end
+                        local ok2, dap2 = pcall(require, "dap")
+                        if ok2 and dap2.adapters[adapter] then
+                            marks[#marks + 1] = "installed"
+                        else
+                            marks[#marks + 1] = "not installed"
+                        end
+                        if #marks > 0 then
+                            return adapter .. "  (" .. table.concat(marks, ", ") .. ")"
+                        end
+                        return adapter
+                    end,
+                }, function(choice)
+                    if not choice then return end
+                    if choice == default then
+                        -- Reset to default: remove override from user.json
+                        if ws._debug_settings
+                            and ws._debug_settings.adapters
+                            and ws._debug_settings.adapters[mod_type] then
+                            ws._debug_settings.adapters[mod_type] = nil
+                            if not next(ws._debug_settings.adapters) then
+                                ws._debug_settings.adapters = nil
+                            end
+                            if not next(ws._debug_settings) then
+                                ws._debug_settings = nil
+                            end
+                            ws:_save_user()
+                        end
+                    else
+                        ws:set_debug_adapter(mod_type, choice)
+                    end
+                    -- Refresh status page
+                    require("loomworks.ui.status").refresh()
+                end)
+            end,
+        })
+    end
+
+    if not debug_mod.available() then
+        tree:leaf("nvim-dap not installed", "DiagnosticWarn")
+    end
+
+    tree:blank()
+end

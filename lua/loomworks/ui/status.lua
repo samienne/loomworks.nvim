@@ -67,6 +67,7 @@ local function render_fn(tree)
     require("loomworks.ui.sections.projects")(tree, ctx)
 
     require("loomworks.ui.sections.lsp")(tree, ctx)
+    require("loomworks.ui.sections.debug")(tree, ctx)
 end
 
 -- ---------------------------------------------------------------------------
