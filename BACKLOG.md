@@ -221,3 +221,32 @@ Issues to address:
 - **overseer**: core dependency, hard to remove. Document as required.
 - Audit all `require()` calls to external modules for pcall guards.
 
+---
+
+## codelldb: no local variables for dynamically loaded .node modules
+
+**Symptom**: When debugging a Node.js native addon (.node shared library)
+via codelldb (either launching node directly or attaching), breakpoints
+and line stepping work but local variables are not shown in scopes.
+
+**Root cause**: LLDB's PDB plugin crashes when trying to resolve symbol
+addresses for dynamically loaded modules. `target symbols add` loads
+the PDB but hits assertion failure: `obj_load_address != LLDB_INVALID_ADDRESS`
+in `SymbolFilePDB::InitializeObject`. LLDB can't determine the load
+address of the .node module in memory.
+
+**Findings**:
+- PDB files are present and well-formed (function symbols + line tables load)
+- `image dump symfile` shows empty Types/Compile units before process runs
+- Build uses clang `-g -Xclang -gcodeview` producing CodeView/PDB format
+- Standalone cmake executables debug fine with full locals
+- Issue is specific to shared libraries (.node/.dll) loaded at runtime
+- cppvsdbg (Microsoft's native debugger) would handle this but is
+  licensed for VS Code only
+
+**Potential fixes**:
+- Switch to DWARF debug info (`-gdwarf` instead of `-gcodeview`) — LLDB
+  handles DWARF better for shared libraries
+- Wait for LLDB PDB plugin improvements (active development area)
+- Structured debug entry with symbol search paths (future loomworks feature)
+
