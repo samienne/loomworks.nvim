@@ -310,7 +310,8 @@ function LaunchTarget:debug()
 end
 
 --- Build the resolved spec data for debug from a command-type launch config.
---- @return table spec_data { program, args, cwd, env, extra }
+--- Returns adapter-agnostic data. Adapter-specific transforms happen in debug.run().
+--- @return table spec_data { command, args, cwd, env }
 --- @return string adapter resolved adapter type
 function LaunchTarget:_resolve_debug_spec()
     local cfg = self._launch_config
@@ -336,50 +337,44 @@ function LaunchTarget:_resolve_debug_spec()
     local lang = self._project._module and self._project._module:primary_language() or "c++"
     local adapter = debug_mod.resolve_adapter(ws, lang)
 
-    local extra = {}
-    local program = cmd
-    local final_args = args
-
-    if lang == "typescript" then
-        extra.runtimeExecutable = cmd
-        extra.sourceMaps = true
-        extra.console = "integratedTerminal"
-        program = args[1]
-        final_args = {}
-        for i = 2, #args do
-            final_args[#final_args + 1] = args[i]
-        end
-        if #final_args == 0 then final_args = nil end
-    end
-
     return {
-        program = program,
-        args = final_args,
+        program = cmd,
+        args = args,
         cwd = cwd,
         env = env,
-        extra = next(extra) and extra or nil,
     }, adapter
 end
 
 --- Debug from a command-type config (loomworks.json launch section).
+--- Check if this launch target has a multi-adapter debug config.
+--- @return boolean
+function LaunchTarget:is_multi_adapter()
+    local cfg = self._launch_config
+    return cfg and cfg.debug and type(cfg.debug) == "table" and #cfg.debug > 1
+end
+
+--- Get the resolved multi-adapter specs for this launch target.
+--- Returns adapter entries and the base spec data for the primary adapter.
+--- @return { adapter: string }[] adapters, table spec_data
+function LaunchTarget:multi_adapter_specs()
+    local cfg = self._launch_config
+    local spec_data = self:_resolve_debug_spec()
+    local ws = self._workspace
+    local parsed = {}
+    for _, entry in ipairs(cfg.debug) do
+        local language = type(entry) == "string" and entry or entry.language
+        parsed[#parsed + 1] = { adapter = debug_mod.resolve_adapter(ws, language) }
+    end
+    return parsed, spec_data
+end
+
+--- Debug from a command-type config (loomworks.json launch section).
+--- Only handles single-adapter. Multi-adapter is handled by session_tracker.
 function LaunchTarget:_debug_command()
     local cfg = self._launch_config
     if not cfg or not cfg.command then return end
 
     local spec_data, adapter = self:_resolve_debug_spec()
-
-    -- Multi-adapter: launch config has a debug[] array of languages
-    if cfg.debug and type(cfg.debug) == "table" and #cfg.debug > 1 then
-        local ws = self._workspace
-        local parsed = {}
-        for _, entry in ipairs(cfg.debug) do
-            local language = type(entry) == "string" and entry or entry.language
-            parsed[#parsed + 1] = { adapter = debug_mod.resolve_adapter(ws, language) }
-        end
-        local tracker = require("loomworks.session_tracker")
-        tracker.start_multi_adapter(self, parsed, spec_data)
-        return
-    end
 
     -- Single adapter: use debug[] first entry if present, else module default
     if cfg.debug and type(cfg.debug) == "table" and #cfg.debug == 1 then

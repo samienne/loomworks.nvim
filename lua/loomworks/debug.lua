@@ -10,6 +10,13 @@ local DEFAULT_ADAPTERS = {
     typescript = "pwa-node",
 }
 
+--- JS/TS debug adapters that need runtimeExecutable transformation.
+--- @type table<string, boolean>
+local JS_ADAPTERS = {
+    ["pwa-node"] = true,
+    ["pwa-chrome"] = true,
+}
+
 --- Backwards-compatibility mapping: module type → language.
 --- Used when old-style module type keys appear in user.json debug.adapters.
 --- @type table<string, string>
@@ -40,24 +47,46 @@ function M.run(spec, callbacks)
     end
 
     local request = spec.request or "launch"
+    local is_js_adapter = JS_ADAPTERS[spec.adapter]
 
     local config = {
         name = spec.name or ("Debug " .. vim.fn.fnamemodify(spec.program or "process", ":t")),
         type = spec.adapter,
         request = request,
-        program = spec.program,
         cwd = spec.cwd,
         env = spec.env,
     }
 
-    if request == "launch" then
-        config.args = spec.args
-    else
-        -- Attach mode: set pid for the adapter
+    if request == "attach" then
         config.pid = spec.attach_pid
+        config.program = spec.program  -- for symbol resolution
+    elseif is_js_adapter then
+        -- JS adapters: command becomes runtimeExecutable, first arg becomes program
+        config.runtimeExecutable = spec.program
+        config.sourceMaps = true
+        config.console = "integratedTerminal"
+        local args = spec.args or {}
+        config.program = args[1]
+        if #args > 1 then
+            local remaining = {}
+            for i = 2, #args do remaining[#remaining + 1] = args[i] end
+            config.args = remaining
+        end
+    else
+        -- Native adapters (codelldb, cppdbg): program is the executable.
+        -- Resolve command name to full path via PATH if not already absolute.
+        local program = spec.program
+        if program and not program:match("^/") and not program:match("^%a:") then
+            local resolved = vim.fn.exepath(program)
+            if resolved ~= "" then
+                program = resolved
+            end
+        end
+        config.program = program
+        config.args = spec.args
     end
 
-    -- Merge adapter-specific fields (e.g. sourceMaps, runtimeExecutable)
+    -- Merge any extra adapter-specific fields
     if spec.extra then
         for k, v in pairs(spec.extra) do
             config[k] = v
@@ -76,13 +105,52 @@ function M.run(spec, callbacks)
         dap.listeners.before.event_exited[key] = cleanup
     end
 
-    -- Capture PID from runInTerminal response (for multi-adapter attach)
+    -- Capture PID after session initializes (for multi-adapter attach).
+    -- The PID is available from the terminal job that runInTerminal created.
+    -- For js-debug: event_initialized fires on both parent and child sessions.
+    -- The term_buf may not exist on first firing (parent), so we keep the
+    -- listener until we find it, then poll briefly if needed.
     if callbacks and callbacks.on_pid then
         local pid_key = "loomworks-pid-" .. tostring(os.clock())
-        dap.listeners.after.runInTerminal[pid_key] = function(_, body)
-            dap.listeners.after.runInTerminal[pid_key] = nil
-            if body and body.processId then
-                callbacks.on_pid(body.processId)
+        local pid_found = false
+        local function try_extract_pid()
+            -- Search all sessions for one with a term_buf
+            for _, s in pairs(dap.sessions()) do
+                local cur = s
+                while cur do
+                    if cur.term_buf and vim.api.nvim_buf_is_valid(cur.term_buf) then
+                        local chan = vim.bo[cur.term_buf].channel
+                        if chan and chan > 0 then
+                            local ok_pid, pid = pcall(vim.fn.jobpid, chan)
+                            if ok_pid and pid then
+                                return pid
+                            end
+                        end
+                    end
+                    cur = cur.parent
+                end
+            end
+            return nil
+        end
+
+        dap.listeners.after.event_initialized[pid_key] = function()
+            if pid_found then return end
+            local pid = try_extract_pid()
+            if pid then
+                pid_found = true
+                dap.listeners.after.event_initialized[pid_key] = nil
+                callbacks.on_pid(pid)
+            else
+                -- term_buf might not exist yet; retry after short delay
+                vim.defer_fn(function()
+                    if pid_found then return end
+                    local retry_pid = try_extract_pid()
+                    if retry_pid then
+                        pid_found = true
+                        dap.listeners.after.event_initialized[pid_key] = nil
+                        callbacks.on_pid(retry_pid)
+                    end
+                end, 500)
             end
         end
     end
