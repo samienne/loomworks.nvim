@@ -405,7 +405,7 @@ function M.debug(adapter, spec, test_ids, opts)
         -- Resolve adapter type from workspace module
         local adapter_type = "codelldb"
         if ws then
-            adapter_type = debug_mod.resolve_adapter(ws, "cmake")
+            adapter_type = debug_mod.resolve_adapter(ws, "c++")
         end
 
         debug_mod.run({

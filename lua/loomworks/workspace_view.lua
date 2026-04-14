@@ -1404,6 +1404,7 @@ function M.compute_edit_launch_context(project, launch_name)
         working_dir = config.working_dir or "",
         env = config.env and vim.deepcopy(config.env) or {},
         deploy = config.deploy and vim.deepcopy(config.deploy) or {},
+        debug = config.debug and vim.deepcopy(config.debug) or {},
     }
 end
 
@@ -1420,6 +1421,7 @@ function M.execute_save_launch_config(project, old_name, new_name, data)
     if data.working_dir and data.working_dir ~= "" then config.working_dir = data.working_dir end
     if data.env and next(data.env) then config.env = data.env end
     if data.deploy and next(data.deploy) then config.deploy = data.deploy end
+    if data.debug and #data.debug > 0 then config.debug = data.debug end
 
     -- If renamed, delete old first
     if old_name and old_name ~= new_name then

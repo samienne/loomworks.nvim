@@ -31,6 +31,7 @@ function M.open(opts)
     local working_dir = opts.working_dir or ""
     local env = vim.deepcopy(opts.env or {})
     local deploy = opts.deploy and vim.deepcopy(opts.deploy) or {}
+    local debug_langs = vim.deepcopy(opts.debug or {})
     local name_error = nil
 
     local function revalidate()
@@ -479,6 +480,88 @@ function M.open(opts)
             end,
         })
 
+        -- Debug languages
+        t:blank()
+        if #debug_langs > 0 then
+            t:leaf("Debug:", "Comment")
+            for di, lang in ipairs(debug_langs) do
+                local captured_di = di
+                local debug_mod = require("loomworks.debug")
+                local adapter = opts.workspace
+                    and debug_mod.resolve_adapter(opts.workspace, lang)
+                    or debug_mod.default_adapter(lang) or "?"
+                local prefix = di == 1 and " (primary) " or " (attach)  "
+                t:item("  " .. lang .. prefix .. "→ " .. adapter, {
+                    hl = "LoomworksActionable",
+                    direct = true,
+                    on_delete = function()
+                        table.remove(debug_langs, captured_di)
+                        if view then view:refresh() end
+                    end,
+                    on_move_up = captured_di > 1 and function()
+                        debug_langs[captured_di], debug_langs[captured_di - 1] =
+                            debug_langs[captured_di - 1], debug_langs[captured_di]
+                        if view then view:refresh() end
+                    end or nil,
+                    on_move_down = captured_di < #debug_langs and function()
+                        debug_langs[captured_di], debug_langs[captured_di + 1] =
+                            debug_langs[captured_di + 1], debug_langs[captured_di]
+                        if view then view:refresh() end
+                    end or nil,
+                })
+            end
+        else
+            t:leaf("Debug: (default from project language)", "Comment")
+        end
+
+        t:item("  ▸ Add debug language", {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = function()
+                -- Collect available languages from workspace modules
+                local available = {}
+                local seen = {}
+                -- Add languages from debug.lua known list
+                for _, lang in ipairs(require("loomworks.debug").known_languages()) do
+                    if not seen[lang] then
+                        seen[lang] = true
+                        available[#available + 1] = lang
+                    end
+                end
+                -- Add languages from workspace modules
+                if opts.workspace and opts.workspace._modules then
+                    for _, mod in ipairs(opts.workspace._modules) do
+                        for _, lang in ipairs(mod.languages) do
+                            if not seen[lang] then
+                                seen[lang] = true
+                                available[#available + 1] = lang
+                            end
+                        end
+                    end
+                end
+                -- Filter out already-added languages
+                local filtered = {}
+                local added = {}
+                for _, l in ipairs(debug_langs) do added[l] = true end
+                for _, l in ipairs(available) do
+                    if not added[l] then
+                        filtered[#filtered + 1] = l
+                    end
+                end
+                if #filtered == 0 then
+                    vim.notify("loomworks: no more languages to add", vim.log.levels.INFO)
+                    return
+                end
+                vim.ui.select(filtered, {
+                    prompt = "Add debug language:",
+                }, function(choice)
+                    if not choice then return end
+                    debug_langs[#debug_langs + 1] = choice
+                    if view then view:refresh() end
+                end)
+            end,
+        })
+
         t:blank()
         t:leaf("[Enter] change  [D] remove  [C-j/C-k] move  [y] accept  [q] cancel", "Comment")
     end
@@ -508,6 +591,7 @@ function M.open(opts)
                 working_dir = working_dir,
                 env = env,
                 deploy = deploy,
+                debug = #debug_langs > 0 and debug_langs or nil,
             })
             return {}
         end
