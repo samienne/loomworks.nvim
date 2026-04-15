@@ -521,8 +521,9 @@ end
 --- @param task_id number overseer task ID
 --- @param action string "configure" or "build"
 function ConfigUnit:register_task(task_id, action)
+    local log = self._workspace and self._workspace._core and self._workspace._core._deps.log
+    if log then log:debug("ConfigUnit[%s]: register task %d action=%s", self._config_key or "?", task_id, action) end
     -- Dispose previous completed task to avoid accumulation in overseer
-    if self._last_task_id and self._last_task_id ~= task_id then
         local prev = self._workspace._core._deps.get_overseer_task(self._last_task_id)
         if prev and prev:is_complete() then
             prev:dispose()
@@ -543,14 +544,22 @@ end
 --- from record_task_result.
 --- @param task_id number overseer task ID
 function ConfigUnit:unregister_task(task_id)
+    local log = self._workspace and self._workspace._core and self._workspace._core._deps.log
     if self._task_id == task_id then
+        if log then log:debug("ConfigUnit[%s]: unregister task %d (matched)", self._config_key or "?", task_id) end
         self._task_id = nil
         self._action = nil
         self._progress = nil
         self._start_time = nil
     elseif self._task_id ~= nil then
         -- Different task is running — don't touch state, don't notify
+        if log then log:warn("ConfigUnit[%s]: unregister task %d ignored (current task %d)",
+            self._config_key or "?", task_id, self._task_id) end
         return
+    else
+        -- Task was never registered (on_start didn't fire)
+        if log then log:debug("ConfigUnit[%s]: unregister task %d (never registered, notifying anyway)",
+            self._config_key or "?", task_id) end
     end
     -- Notify even if task was never registered (on_start didn't fire).
     -- record_task_result already updated state_value; listeners need to

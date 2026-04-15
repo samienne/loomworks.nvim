@@ -1630,6 +1630,7 @@ function Workspace:record_task_result(result)
         return
     end
 
+    local prev_state = config_unit.state_value
     if action == "configure" then
         if success then
             -- Don't downgrade from built to configured
@@ -1656,6 +1657,16 @@ function Workspace:record_task_result(result)
         else
             config_unit.state_value = "failed_build"
         end
+    end
+
+    self._core._deps.log:debug("record_task_result: %s/%s %s %s → %s",
+        result.unit and result.unit._init_project_key or "?",
+        result.variant or "?",
+        action,
+        success and "success" or "failure",
+        config_unit.state_value or "?")
+    if prev_state ~= config_unit.state_value then
+        self._core._deps.log:debug("  state changed: %s → %s", prev_state or "nil", config_unit.state_value or "nil")
     end
 
     if result.build_dir then
