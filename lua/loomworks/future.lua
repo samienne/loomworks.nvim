@@ -106,15 +106,16 @@ function M.create(fn)
     local f = Future.new()
     local token = CancelToken.new()
     f._cancel_token = token
-    fn(
-        function(...)
-            if not token:is_cancelled() then f:_resolve(...) end
-        end,
-        function(err)
-            if not token:is_cancelled() then f:_reject(err) end
-        end,
-        token
-    )
+    local resolve = function(...)
+        if not token:is_cancelled() then f:_resolve(...) end
+    end
+    local reject = function(err)
+        if not token:is_cancelled() then f:_reject(err) end
+    end
+    local ok, err = pcall(fn, resolve, reject, token)
+    if not ok then
+        reject(err)
+    end
     return f
 end
 

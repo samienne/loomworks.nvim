@@ -352,17 +352,25 @@ local function start_one_task(overseer, task_def, on_complete)
             task:start()
         end
 
+        -- Protected start: catch errors so the Future always resolves/rejects
+        local function safe_start()
+            local ok, err = pcall(do_start)
+            if not ok then
+                reject("task start failed: " .. tostring(err))
+            end
+        end
+
         -- Acquire build dir lock if task has a build directory
         if lw_meta.build_dir then
             local ws = unit._workspace
             if ws then
                 local dir = ws._core._deps.normalize(lw_meta.build_dir)
-                ws:acquire_build_dir_lock(dir, lock_type_for_action(lw_meta.action), do_start)
+                ws:acquire_build_dir_lock(dir, lock_type_for_action(lw_meta.action), safe_start)
                 return
             end
         end
 
-        do_start()
+        safe_start()
     end)
 
     -- Legacy callback support
