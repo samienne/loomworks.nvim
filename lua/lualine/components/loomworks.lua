@@ -26,8 +26,10 @@ function M:init(options)
 end
 
 function M:update_status()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok then return "" end
+    -- Use package.loaded to avoid triggering lazy.nvim's module loader,
+    -- which can cause circular dependency during startup.
+    local lw = package.loaded["loomworks"]
+    if not lw then return "" end
 
     local status = lw.buf_status()
     if not status then return "" end
