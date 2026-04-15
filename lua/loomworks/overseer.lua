@@ -22,8 +22,13 @@ local function collect_configuration_tasks(unit)
     -- Get module info (reconstruct type_config with configurations for module)
     local abs_path = ws.root .. "/" .. (project.path or project.key)
     local tc_for_module = project:_type_config_for_module()
-    local mod_info = mod.info and mod.info(abs_path, tc_for_module)
-            or { configurations = {} }
+    local mod_info = { configurations = {} }
+    if mod.info then
+        local ok, result = pcall(mod.info, abs_path, tc_for_module)
+        if ok and result then
+            mod_info = result
+        end
+    end
 
     local project_ctx = {
         name = project.key,
@@ -43,7 +48,12 @@ local function collect_configuration_tasks(unit)
             and mod.progress_parser(project_ctx, variant)
             or nil
 
-    local mod_tasks = mod.tasks(project_ctx, variant)
+    local ok_tasks, mod_tasks = pcall(mod.tasks, project_ctx, variant)
+    if not ok_tasks or not mod_tasks then
+        vim.notify("loomworks: module '" .. project.type .. "' tasks() failed: " .. tostring(mod_tasks),
+            vim.log.levels.ERROR)
+        return nil, nil
+    end
     local by_action = { configure = {}, build = {} }
 
     local tool_ref = tool and tool:to_ref() or (unit:tool_key() and {

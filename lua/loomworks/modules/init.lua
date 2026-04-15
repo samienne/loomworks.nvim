@@ -48,8 +48,8 @@ function M.detect_all_types(abs_path)
     for _, id in ipairs(M.list()) do
         local mod = M.get(id)
         if mod and mod.detect then
-            local hit = mod.detect(abs_path)
-            if hit then
+            local ok, hit = pcall(mod.detect, abs_path)
+            if ok and hit then
                 results[#results + 1] = { type = id, marker = hit.marker }
             end
         end

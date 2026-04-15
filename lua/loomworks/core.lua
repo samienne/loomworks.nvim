@@ -30,6 +30,7 @@ local DEFAULT_DEPS = {
     detect_tools_async = require("loomworks.merge").detect_tools_async,
     modules   = require("loomworks.modules"),
     FileTracker = require("loomworks.file_tracker"),
+    log       = require("loomworks.log").default(),
     notify    = vim.notify,
     now       = function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end,
     clock     = function() return vim.uv.hrtime() / 1e9 end,
@@ -143,8 +144,13 @@ function Core:_on_files_read(root, paths, results)
     local user_content = results[paths.user]
     local cache_content = results[paths.cache]
 
+    -- Initialize logger with workspace root
+    self._deps.log:set_root(root)
+    self._deps.log:info("Loading workspace from %s", root)
+
     -- Need at least one of loomworks.json or user.json
     if not config_content and not user_content then
+        self._deps.log:warn("No workspace files found in %s", root)
         fail("no workspace files found in " .. root)
         return
     end
@@ -196,6 +202,10 @@ function Core:_on_files_read(root, paths, results)
     -- Start file tracking (owned by Workspace)
     self._workspace:_start_tracking(paths)
 
+    self._deps.log:info("Workspace '%s' loaded: %d projects, %d profiles",
+        self._workspace.name,
+        #self._workspace._projects,
+        #self._workspace._profiles)
     self._deps.notify("loomworks: workspace '" .. self._workspace.name .. "' loaded (" .. self._workspace.root .. ")", vim.log.levels.INFO)
 
     -- Start async tool detection
