@@ -143,6 +143,13 @@ end
 --- @param unit loomworks.ConfigUnit
 function Operation:_on_unit_change(unit)
     if self.completed then return end
+    local log = self._workspace and self._workspace._core and self._workspace._core._deps.log
+    local state = unit:state()
+    if log then log:debug("Operation[%d/%s]: unit change %s → state=%s done=%s",
+        self.id, self.action,
+        unit._config_key or "?",
+        state,
+        tostring(self._unit_done[unit] or false)) end
     self:_check_unit(unit)
     self:_check_completion()
 end
