@@ -524,6 +524,7 @@ function ConfigUnit:register_task(task_id, action)
     local log = self._workspace and self._workspace._core and self._workspace._core._deps.log
     if log then log:debug("ConfigUnit[%s]: register task %d action=%s", self._config_key or "?", task_id, action) end
     -- Dispose previous completed task to avoid accumulation in overseer
+    if self._last_task_id and self._last_task_id ~= task_id then
         local prev = self._workspace._core._deps.get_overseer_task(self._last_task_id)
         if prev and prev:is_complete() then
             prev:dispose()
