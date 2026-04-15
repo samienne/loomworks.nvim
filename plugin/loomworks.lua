@@ -31,6 +31,56 @@ end, {
   desc = "loomworks: show workspace status page",
 })
 
+vim.api.nvim_create_user_command("LoomworksLog", function()
+  local lw = require("loomworks")
+  local ws = lw.get_workspace()
+  if not ws then
+    vim.notify("loomworks: no workspace loaded", vim.log.levels.WARN)
+    return
+  end
+  local path = ws.root .. "/.nvim/loomworks.log"
+  if not vim.uv.fs_stat(path) then
+    vim.notify("loomworks: no log file yet", vim.log.levels.INFO)
+    return
+  end
+
+  local lines = {}
+  for line in io.lines(path) do
+    lines[#lines + 1] = line
+  end
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].filetype = "loomworks_log"
+
+  local width = math.min(120, vim.o.columns - 4)
+  local height = math.min(#lines + 2, vim.o.lines - 4)
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    col = math.floor((vim.o.columns - width) / 2),
+    row = math.floor((vim.o.lines - height) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " loomworks.log ",
+    title_pos = "center",
+  })
+
+  -- Scroll to bottom
+  vim.api.nvim_win_set_cursor(win, { #lines, 0 })
+
+  vim.keymap.set("n", "q", function()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end, { buffer = buf })
+end, {
+  desc = "loomworks: open workspace log file",
+})
+
 -- Auto-load: check cwd on plugin load, directory changes, and session restore
 local auto_load = require("loomworks.auto_load")
 

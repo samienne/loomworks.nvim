@@ -380,8 +380,17 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
     for key, project in pairs(config.projects) do
         local mod = modules.get(project.type)
         local abs_path = root .. "/" .. project.path
-        local mod_info = mod and mod.info and mod.info(abs_path, project.type_config)
-                or { configurations = {} }
+        local mod_info = { configurations = {} }
+        if mod and mod.info then
+            local ok, result = pcall(mod.info, abs_path, project.type_config)
+            if ok and result then
+                mod_info = result
+            else
+                vim.notify("loomworks: module '" .. (project.type or "?")
+                    .. "' info() failed for " .. key .. ": " .. tostring(result),
+                    vim.log.levels.WARN)
+            end
+        end
 
         local active_configuration = set_mappings and set_mappings[key] or nil
 

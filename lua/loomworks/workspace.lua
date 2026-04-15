@@ -3568,7 +3568,12 @@ end
 function Workspace:query_available_configs(mod_type, abs_path, type_config)
     local mod = self._core._deps.modules.get(mod_type)
     if not mod or not mod.info then return nil end
-    return mod.info(abs_path, type_config or {})
+    local ok, result = pcall(mod.info, abs_path, type_config or {})
+    if not ok then
+        self._core._deps.log:error("Module '%s' info() failed for %s: %s", mod_type, abs_path, tostring(result))
+        return nil
+    end
+    return result
 end
 
 --- Map a variant type to a configuration name using the module's mapper.
