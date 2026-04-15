@@ -111,12 +111,23 @@ local function hvigor_env(tool_data)
     return env
 end
 
---- Wrap a command for Windows (prepend cmd /c for bat files).
+--- Wrap a command for Windows.
+--- Overseer/jobstart can run .bat files directly, but cmd /c is needed
+--- for proper batch script execution. Quote the batch path to handle spaces.
 --- @param cmd string[] command array
 --- @return string[]
 local function wrap_cmd(cmd)
-    if vim.fn.has("win32") == 1 and cmd[1]:match("%.bat$") then
-        return vim.list_extend({ "cmd", "/c" }, cmd)
+    if vim.fn.has("win32") == 1 and (cmd[1]:match("%.bat$") or cmd[1]:match("%.cmd$")) then
+        -- Build a single command string for cmd /c with proper quoting
+        local parts = {}
+        for _, arg in ipairs(cmd) do
+            if arg:match("%s") then
+                parts[#parts + 1] = '"' .. arg .. '"'
+            else
+                parts[#parts + 1] = arg
+            end
+        end
+        return { "cmd", "/c", table.concat(parts, " ") }
     end
     return cmd
 end
@@ -313,14 +324,26 @@ end
 function M.tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local configuration_key = project.configuration_key or active_config
-    local td = project.tool_data or {}
+    local td = project.tool_data
+    -- Non-keyed tool: profile doesn't store tool_data, detect directly
+    if not td or not td.deveco_home then
+        td = detect_deveco() or {}
+    end
 
     -- Resolve product and mode from configuration
     local config_info = project.configurations and project.configurations[active_config]
     local product = config_info and config_info.product or "default"
     local mode = config_info and config_info.mode or "debug"
 
-    local hvigorw = td.hvigorw or "hvigorw"
+    -- DevEco runs hvigorw via node directly (not the .bat wrapper)
+    -- to avoid .npmrc dependency issues
+    local node = td.node or vim.fn.exepath("node")
+    local hvigorw_js = td.deveco_home
+        and (td.deveco_home .. "/tools/hvigor/bin/hvigorw.js")
+        or nil
+    local ohpm = td.deveco_home
+        and (td.deveco_home .. "/tools/ohpm/bin/ohpm.bat")
+        or "ohpm"
     local env = td.deveco_home and hvigor_env(td) or {}
 
     return {
@@ -328,7 +351,7 @@ function M.tasks(project, active_config)
             name = project.name .. ": configure",
             builder = function()
                 return {
-                    cmd = wrap_cmd({ "ohpm", "install" }),
+                    cmd = wrap_cmd({ ohpm, "install" }),
                     cwd = abs_path,
                     env = env,
                 }
@@ -342,11 +365,22 @@ function M.tasks(project, active_config)
         {
             name = project.name .. ": build " .. active_config,
             builder = function()
-                return {
-                    cmd = wrap_cmd({ hvigorw, "assembleHap",
+                local cmd
+                if hvigorw_js and node then
+                    cmd = { node, hvigorw_js,
+                        "--mode", mode,
+                        "-p", "product=" .. product,
+                        "assembleHap",
+                        "--no-daemon" }
+                else
+                    cmd = wrap_cmd({ td.hvigorw or "hvigorw",
+                        "assembleHap",
                         "-p", "product=" .. product,
                         "--mode", mode,
-                        "--no-daemon" }),
+                        "--no-daemon" })
+                end
+                return {
+                    cmd = cmd,
                     cwd = abs_path,
                     env = env,
                 }
@@ -367,17 +401,29 @@ end
 function M.clean_tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local configuration_key = project.configuration_key or active_config
-    local td = project.tool_data or {}
+    local td = project.tool_data
+    if not td or not td.deveco_home then
+        td = detect_deveco() or {}
+    end
 
-    local hvigorw = td.hvigorw or "hvigorw"
+    local node = td.node or vim.fn.exepath("node")
+    local hvigorw_js = td.deveco_home
+        and (td.deveco_home .. "/tools/hvigor/bin/hvigorw.js")
+        or nil
     local env = td.deveco_home and hvigor_env(td) or {}
 
     return {
         {
             name = project.name .. ": clean",
             builder = function()
+                local cmd
+                if hvigorw_js and node then
+                    cmd = { node, hvigorw_js, "clean", "--no-daemon" }
+                else
+                    cmd = wrap_cmd({ td.hvigorw or "hvigorw", "clean", "--no-daemon" })
+                end
                 return {
-                    cmd = wrap_cmd({ hvigorw, "clean", "--no-daemon" }),
+                    cmd = cmd,
                     cwd = abs_path,
                     env = env,
                 }
