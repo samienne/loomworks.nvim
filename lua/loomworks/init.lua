@@ -73,6 +73,14 @@ function M.setup(opts)
         task_output_win = opts.task_output_win
     end
 
+    -- Configure log level
+    if opts and opts.log_level then
+        local log = require("loomworks.log")
+        local levels = { error = log.ERROR, warn = log.WARN, info = log.INFO, debug = log.DEBUG }
+        local level = levels[opts.log_level] or opts.log_level
+        core._deps.log:set_level(level)
+    end
+
     setup_keymaps(opts)
 
     -- Optional fidget.nvim integration for progress notifications (registers listeners, fast)
