@@ -2,7 +2,7 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local KNOWN_TYPES = { cmake = true, ets = true, typescript = true }
+local KNOWN_TYPES = { cmake = true, harmony = true, typescript = true }
 local NON_TYPE_KEYS = { path = true, depends_on = true, launch = true, variables = true }
 
 --- Extract project type from the project definition table.
