@@ -68,6 +68,7 @@ local function render_fn(tree)
 
     require("loomworks.ui.sections.lsp")(tree, ctx)
     require("loomworks.ui.sections.debug")(tree, ctx)
+    require("loomworks.ui.sections.sdks")(tree, ctx)
 end
 
 -- ---------------------------------------------------------------------------
@@ -93,6 +94,7 @@ local view = View.new({
         ["h"]       = "close_fold",
         ["<CR>"]    = "enter",
         ["b"]     = "build",
+        ["<C-b>"] = "build_serial",
         ["R"]     = "rebuild",
         ["c"]     = "configure",
         ["C"]     = "clean",

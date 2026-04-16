@@ -143,6 +143,8 @@ end
 --- Data fields (set during _apply):
 --- @field _configuration_set_name string|nil set name for set-based profiles
 --- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
+--- @field _sdk loomworks.SDK|nil SDK domain object reference
+--- @field _sdk_key string|nil SDK key for serialization
 --- @field _default_target_descriptor table|nil user.json default target for this profile
 --- Resolved references (set during _apply):
 --- @field _tool_objects table<loomworks.Module, loomworks.Tool>|nil
@@ -192,6 +194,13 @@ end
 function Profile:_apply(data)
     self._configuration_set_name = data.configuration_set
     self._tools_raw = data.tools or nil
+    self._sdk_key = data.sdk or nil
+    -- SDK domain object resolved during _sync_profiles or set_sdk()
+    if data._sdk then
+        self._sdk = data._sdk
+        -- Update key to match resolved SDK (migration from old format)
+        self._sdk_key = data._sdk.key
+    end
 
     -- Read pre-resolved Tool domain objects (set by _sync_profiles)
     self._tool_objects = data._tool_objects
@@ -215,13 +224,48 @@ function Profile:_apply(data)
 end
 
 --- Compute and set self.key from the profile's data fields.
---- All profiles are set-based: key = configuration_set_name + tools.
+--- Format: config_set:tool_keys (sorted, joined with +)
+--- SDK key is included alongside module override keys.
 function Profile:_derive_key()
-    if self._configuration_set_name then
-        local merge_mod = require("loomworks.merge")
-        self.key = merge_mod.profile_key(self._configuration_set_name, self:tools_data())
-    else
+    if not self._configuration_set_name then
         self.key = "unnamed"
+        return
+    end
+
+    local parts = {}
+
+    -- SDK key
+    if self._sdk_key then
+        parts[#parts + 1] = self._sdk_key
+    end
+
+    -- Module-specific tool override keys (not SDK-derived)
+    if self._tools_raw then
+        for _, tool_ref in pairs(self._tools_raw) do
+            if tool_ref.key then
+                parts[#parts + 1] = tool_ref.key
+            end
+        end
+    elseif self._tool_objects then
+        for _, tool in pairs(self._tool_objects) do
+            if tool.key then
+                parts[#parts + 1] = tool.key
+            end
+        end
+    end
+
+    table.sort(parts)
+    if #parts > 0 then
+        self.key = self._configuration_set_name .. ":" .. table.concat(parts, "+")
+    else
+        self.key = self._configuration_set_name
+    end
+
+    -- Debug: log derived key
+    if self._workspace and self._workspace._core then
+        self._workspace._core._deps.log:debug("Profile key derived: '%s' (sdk_key=%s, tools_raw=%s)",
+            self.key, tostring(self._sdk_key),
+            self._tools_raw and vim.inspect(vim.tbl_keys(self._tools_raw)) or "nil")
     end
 end
 
@@ -262,23 +306,58 @@ function Profile:config_set()
     return self._config_set_ref
 end
 
---- Derive tools dict from owned data.
---- Prefers _tools_raw (updated by mutations), falls back to deriving from
---- resolved Tool domain objects (populated during sync).
+--- Get the SDK for this profile.
+--- @return loomworks.SDK|nil
+function Profile:sdk()
+    return self._sdk
+end
+
+--- Set the SDK for this profile.
+--- @param sdk loomworks.SDK|nil
+function Profile:set_sdk(sdk)
+    self._sdk = sdk
+    self._sdk_key = sdk and sdk.key or nil
+end
+
+--- Resolve SDK-derived tool for a module type.
+--- @param mod_type string
+--- @return table|nil { key, data, label }
+function Profile:_resolve_sdk_tool(mod_type)
+    if not self._sdk or not self._sdk:is_resolved() then return nil end
+    local caps = self._sdk:query(mod_type)
+    if not caps then return nil end
+    local mod_impl = require("loomworks.modules").get(mod_type)
+    if not mod_impl or not mod_impl.kits_from_sdk then return nil end
+    local ok, kits = pcall(mod_impl.kits_from_sdk, caps, self._sdk)
+    if not ok or not kits or #kits == 0 then return nil end
+    return {
+        key = mod_impl.tool_key and mod_impl.tool_key(kits[1].tool_data) or nil,
+        data = kits[1].tool_data,
+        label = mod_impl.tool_label and mod_impl.tool_label(kits[1].tool_data) or nil,
+    }
+end
+
+--- Derive tools dict from explicit selections only.
+--- Returns module-specific overrides (_tools_raw or _tool_objects).
+--- Does NOT include SDK-derived tools — those are resolved lazily
+--- per-project via tool_for(). This keeps the profile key clean.
 --- @return table<string, { key: string, data: table, label: string|nil }>|nil
 function Profile:tools_data()
-    -- _tools_raw is authoritative when set (updated by mutation methods)
-    if self._tools_raw then return self._tools_raw end
-    if not self._tool_objects then return nil end
-    local result = {}
-    for mod, tool in pairs(self._tool_objects) do
-        result[mod.id] = {
-            key = tool.key,
-            data = tool.data,
-            label = tool.label,
-        }
+    if self._tools_raw and next(self._tools_raw) then
+        return self._tools_raw
     end
-    return next(result) and result or nil
+    if self._tool_objects then
+        local result = {}
+        for mod, tool in pairs(self._tool_objects) do
+            result[mod.id] = {
+                key = tool.key,
+                data = tool.data,
+                label = tool.label,
+            }
+        end
+        if next(result) then return result end
+    end
+    return nil
 end
 
 --- Generate a definition suitable for loomworks.json.
@@ -305,10 +384,11 @@ function Profile:to_config_def()
 end
 
 --- Get the ToolRef for a specific module type from this profile's tools.
---- Prefers resolved domain objects, falls back to raw tools.
+--- Resolution: 1. module override, 2. SDK-derived, 3. nil (incomplete)
 --- @param mod_type string module type (e.g. "cmake")
 --- @return loomworks.ToolRef|nil
 function Profile:tool_for(mod_type)
+    -- 1. Module-specific override (resolved domain objects or raw)
     if self._tool_objects then
         for mod, tool in pairs(self._tool_objects) do
             if mod.id == mod_type then
@@ -316,7 +396,11 @@ function Profile:tool_for(mod_type)
             end
         end
     end
-    return self._tools_raw and self._tools_raw[mod_type] or nil
+    if self._tools_raw and self._tools_raw[mod_type] then
+        return self._tools_raw[mod_type]
+    end
+    -- 2. SDK-derived tool
+    return self:_resolve_sdk_tool(mod_type)
 end
 
 --- Get the Tool domain object for a specific module.
@@ -384,8 +468,8 @@ end
 
 --- Build all projects in this profile via overseer.
 --- @return loomworks.Future
-function Profile:build()
-    return require("loomworks.overseer").run_profile_action(self, "build")
+function Profile:build(opts)
+    return require("loomworks.overseer").run_profile_action(self, "build", opts)
 end
 
 --- Configure all projects in this profile via overseer.
@@ -497,6 +581,25 @@ end
 -- ---------------------------------------------------------------------------
 -- Queries
 -- ---------------------------------------------------------------------------
+
+--- Check if all modules in this profile have tools resolved.
+--- A profile is incomplete if any module that requires tools (keyed tools
+--- or SDK-capable modules) has no tool available.
+--- @return boolean
+function Profile:is_complete()
+    for _, pp in ipairs(self:projects()) do
+        local project = pp._project
+        if not project or not project._module then goto next end
+        local mod = project._module
+        -- Module needs tools if it has keyed tools or can consume SDK capabilities
+        local needs_tools = mod.has_keyed_tools or (mod.impl and mod.impl.kits_from_sdk)
+        if needs_tools and not self:tool_for(project.type) then
+            return false
+        end
+        ::next::
+    end
+    return true
+end
 
 --- Check if this profile has any configured entries.
 --- Iterates ProfileProjects and checks each ConfigUnit's state.

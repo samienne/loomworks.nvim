@@ -478,6 +478,7 @@ function Workspace.new(core, data)
     self._build_dir_refs = {}
     self._build_dir_locks = {}
     self._deploy_records = {}  -- normalized dest path → { source_build_dir, source_rel_path, source_mtime }
+    self._sdks = {}  -- SDK domain objects
 
     return self
 end
@@ -727,6 +728,9 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         -- Reconstruct user_data from current state for merge (includes pinned profiles)
         user_data = self:_serialize_user()
     end
+
+    -- Sync SDKs from config + user data
+    self:_sync_sdks(raw_config and raw_config.sdks, raw_user and raw_user.sdks or (user_data and user_data.sdks))
 
     -- Extract intent overrides from user data
     local intent_overrides = user_data and user_data.intent or nil
@@ -1158,50 +1162,83 @@ function Workspace:get_tool_entries()
     local result = {}
     if #self._config_sets == 0 then return result end
 
-    -- Build set of module types present in projects
-    local active_types = {}
-    for _, proj in pairs(self._projects) do
-        if not proj.orphaned and proj.type then
-            active_types[proj.type] = true
-        end
-    end
-
-    -- Collect keyed tools only for module types with active projects
-    local keyed_tools = {}
-    local keyed_mod_type = nil
-    for mod_type, tools in pairs(self._tools_by_type) do
-        if active_types[mod_type] then
-            for _, tool in ipairs(tools) do
-                if tool.tool_key then
-                    keyed_tools[#keyed_tools + 1] = tool
-                    keyed_mod_type = mod_type
-                end
-            end
-        end
-    end
-
     -- Build profile lookup from domain objects
     local profiles_by_key = {}
     for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
 
-    for _, cs in pairs(self._config_sets) do
-        local entries = {}
-        if #keyed_tools > 0 then
-            for _, tool in ipairs(keyed_tools) do
-                local tools_dict = { [keyed_mod_type] = { key = tool.tool_key } }
-                local pkey = merge_mod.profile_key(cs.name, tools_dict)
-                local profile = profiles_by_key[pkey]
-                entries[#entries + 1] = {
-                    profile_key = pkey,
-                    tool_key = tool.tool_key,
-                    tool_data = tool.tool_data,
-                    tool_label = tool.tool_label,
-                    tool_mod_type = keyed_mod_type,
-                    cached = true,  -- all profiles exist as runtime objects
-                    profile = profile,
-                }
+    -- Collect all non-SDK keyed tools by module type
+    local tools_per_mod = {}
+    for mod_type, tools in pairs(self._tools_by_type) do
+        for _, tool in ipairs(tools) do
+            if tool.tool_key and not (tool.tool_data and tool.tool_data.sdk_key) then
+                tools_per_mod[mod_type] = tools_per_mod[mod_type] or {}
+                tools_per_mod[mod_type][#tools_per_mod[mod_type] + 1] = tool
             end
         end
+    end
+
+    for _, cs in pairs(self._config_sets) do
+        local entries = {}
+
+        -- Determine which module types this config set's projects use
+        local cs_mod_types = {}
+        if cs.mappings then
+            for proj_ref in pairs(cs.mappings) do
+                local proj = type(proj_ref) == "table" and proj_ref or nil
+                if proj and proj.type then
+                    cs_mod_types[proj.type] = true
+                end
+            end
+        end
+
+        -- Host tools: only for module types present in this config set
+        for mod_type, tools in pairs(tools_per_mod) do
+            if cs_mod_types[mod_type] then
+                for _, tool in ipairs(tools) do
+                    local tools_dict = { [mod_type] = { key = tool.tool_key } }
+                    local pkey = merge_mod.profile_key(cs.name, tools_dict)
+                    local profile = profiles_by_key[pkey]
+                    entries[#entries + 1] = {
+                        profile_key = pkey,
+                        tool_key = tool.tool_key,
+                        tool_data = tool.tool_data,
+                        tool_label = tool.tool_label,
+                        tool_mod_type = mod_type,
+                        cached = true,
+                        profile = profile,
+                    }
+                end
+            end
+        end
+
+        -- SDK entries: show if SDK provides capabilities for any module
+        -- type in this config set
+        for _, sdk in ipairs(self._sdks) do
+            if sdk:is_resolved() then
+                -- Check if SDK is relevant to any project in this config set
+                local relevant = false
+                for mod_type in pairs(cs_mod_types) do
+                    if sdk:query(mod_type) then
+                        relevant = true
+                        break
+                    end
+                end
+                -- Also show if config set has no projects yet (user may add later)
+                if relevant or not next(cs_mod_types) then
+                    local pkey = cs.name .. ":" .. sdk.key
+                    local profile = profiles_by_key[pkey]
+                    entries[#entries + 1] = {
+                        profile_key = pkey,
+                        tool_key = sdk.key,
+                        tool_label = sdk:display_name(),
+                        sdk = sdk,
+                        cached = true,
+                        profile = profile,
+                    }
+                end
+            end
+        end
+
         result[cs.name] = entries
     end
 
@@ -1234,12 +1271,12 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
 
     local set_name = config_set.name
 
-    -- Build tools dict from tool_entry
+    -- Build tools dict from tool_entry (skip for SDK entries which have no mod_type)
     local tools = nil
     local tool_key = tool_entry and tool_entry.tool_key or nil
     local tool_data = tool_entry and tool_entry.tool_data or nil
     local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
-    if tool_entry and tool_key then
+    if tool_entry and tool_key and tool_mod_type then
         tools = {
             [tool_mod_type] = {
                 key = tool_key,
@@ -2147,6 +2184,7 @@ function Workspace:_scan_tools()
     local cache = self:_serialize_cache()
     self._tools_by_type = self._core._deps.merge.detect_tools(
         config, cache)
+    self:_enrich_tools_from_sdks(self._tools_by_type)
 end
 
 --- Scan tools asynchronously and remerge when complete.
@@ -2162,6 +2200,8 @@ function Workspace:_scan_tools_async()
             self._core._deps.schedule(function()
                 if not self._core._workspace then return end
                 self._tools_by_type = tools_by_type
+                -- Enrich with SDK-derived tools
+                self:_enrich_tools_from_sdks(tools_by_type)
                 self:remerge()
                 self._tool_state = "scanned"
                 self._core._deps.events.emit("tools_detected")
@@ -2597,7 +2637,10 @@ function Workspace:_user_config_from_objects()
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
-            if profile._tools_raw then
+            if profile._sdk_key then
+                entry.sdk = profile._sdk_key
+            end
+            if profile._tools_raw and next(profile._tools_raw) then
                 entry.tools = profile._tools_raw
             end
             profiles[profile.key] = entry
@@ -2956,6 +2999,16 @@ function Workspace:_serialize_user()
     -- Debug settings (pass-through)
     if self._debug_settings then data.debug = self._debug_settings end
 
+    -- SDKs: persist resolved paths and versions
+    if #self._sdks > 0 then
+        local sdks = {}
+        for _, sdk in ipairs(self._sdks) do
+            sdks[sdk.key] = sdk:serialize()
+            sdks[sdk.key].type = sdk:sdk_type()
+        end
+        data.sdks = sdks
+    end
+
     -- Profiles: all profiles in user.json (set-based: configuration_set + tools)
     local user_profiles = {}
     for _, profile in pairs(self._profiles) do
@@ -2964,8 +3017,12 @@ function Workspace:_serialize_user()
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
-            local tools = profile:tools_data()
-            if tools then entry.tools = tools end
+            if profile._sdk_key then
+                entry.sdk = profile._sdk_key
+            end
+            -- Serialize only module-specific overrides, not SDK-derived tools
+            local tools = profile._tools_raw
+            if tools and next(tools) then entry.tools = tools end
             user_profiles[profile.key] = entry
         end
     end
@@ -3076,6 +3133,228 @@ function Workspace:set_debug_adapter(module_type, adapter_name)
     self:_save_user()
 end
 
+-- ---------------------------------------------------------------------------
+-- SDK management
+-- ---------------------------------------------------------------------------
+
+--- Sync SDKs from config and user data.
+--- Merges declarations from loomworks.json with resolution from user.json.
+--- Auto-detects SDKs that are declared but not yet resolved.
+--- @param config_sdks? table SDK declarations from loomworks.json
+--- @param user_sdks? table SDK resolutions from user.json
+function Workspace:_sync_sdks(config_sdks, user_sdks)
+    local sdk_registry = require("loomworks.sdks")
+    local log = self._core._deps.log
+
+    -- Merge: config declares requirements, user provides paths
+    local declarations = {}
+    if config_sdks then
+        for key, decl in pairs(config_sdks) do
+            declarations[key] = vim.deepcopy(decl)
+        end
+    end
+    if user_sdks then
+        for key, user_data in pairs(user_sdks) do
+            if not declarations[key] then
+                -- User-only SDK (not in loomworks.json)
+                declarations[key] = { type = user_data.type or key }
+            end
+            -- Merge user resolution into declaration
+            declarations[key]._user = user_data
+        end
+    end
+
+    local new_sdks = {}
+    for key, decl in pairs(declarations) do
+        local sdk_type = decl.type or key
+        local provider = sdk_registry.get(sdk_type)
+        if not provider then
+            log:warn("SDK '%s': no provider found for type '%s'", key, sdk_type)
+            goto next
+        end
+
+        local user_data = decl._user
+        local path = user_data and user_data.path
+        local version = user_data and user_data.version
+
+        if path then
+            -- User provided a path — validate it
+            local info = provider.validate(path)
+            if info then
+                version = info.version or version
+                -- Normalize key to include version (migration from old keyless format)
+                local resolved_key = key
+                if version and not key:match("%-[%d%.]+$") then
+                    resolved_key = sdk_type .. "-" .. version
+                end
+                local sdk = provider.create_sdk(resolved_key, path, version)
+                sdk._workspace = self
+                new_sdks[#new_sdks + 1] = sdk
+                log:debug("SDK '%s': resolved at %s (v%s)", key, path, version or "?")
+            else
+                log:warn("SDK '%s': path '%s' is not a valid %s installation", key, path, sdk_type)
+                -- Create unresolved SDK so UI can show the warning
+                local SDK = require("loomworks.sdk")
+                local sdk = SDK.new({
+                    key = key, type = sdk_type, version = version,
+                    path = path, resolved = false, provider = provider,
+                })
+                sdk._workspace = self
+                new_sdks[#new_sdks + 1] = sdk
+            end
+        else
+            -- No path — auto-detect
+            local installations = provider.detect_all()
+            local constraint = {
+                version = decl.version,
+                min_version = decl.min_version,
+            }
+            local matched = false
+            for _, inst in ipairs(installations) do
+                if provider.match_version(constraint, inst.version) then
+                    local sdk = provider.create_sdk(key, inst.path, inst.version)
+                    sdk._workspace = self
+                    new_sdks[#new_sdks + 1] = sdk
+                    log:info("SDK '%s': auto-detected %s v%s at %s",
+                        key, sdk_type, inst.version or "?", inst.path)
+                    matched = true
+                    break
+                end
+            end
+            if not matched then
+                log:warn("SDK '%s': no %s installation found", key, sdk_type)
+                local SDK = require("loomworks.sdk")
+                local sdk = SDK.new({
+                    key = key, type = sdk_type, resolved = false, provider = provider,
+                })
+                sdk._workspace = self
+                new_sdks[#new_sdks + 1] = sdk
+            end
+        end
+
+        ::next::
+    end
+
+    self._sdks = new_sdks
+end
+
+--- Enrich tools_by_type with SDK-derived tools.
+--- Iterates SDKs × modules: for each SDK that provides capabilities for
+--- a module (sdk:query(module.id) non-nil), calls module.kits_from_sdk()
+--- and adds the results to tools_by_type. No module/SDK-specific logic here.
+--- @param tools_by_type table<string, loomworks.DetectedTool[]>
+function Workspace:_enrich_tools_from_sdks(tools_by_type)
+    local log = self._core._deps.log
+    for _, sdk in ipairs(self._sdks) do
+        if not sdk:is_resolved() then goto next_sdk end
+        for _, mod in ipairs(self._modules) do
+            local caps = sdk:query(mod.id)
+            if caps and mod.impl.kits_from_sdk then
+                local ok, sdk_tools = pcall(mod.impl.kits_from_sdk, caps, sdk)
+                if ok and sdk_tools then
+                    tools_by_type[mod.id] = tools_by_type[mod.id] or {}
+                    for _, t in ipairs(sdk_tools) do
+                        tools_by_type[mod.id][#tools_by_type[mod.id] + 1] = {
+                            tool_data = t.tool_data,
+                            tool_key = mod.impl.tool_key and mod.impl.tool_key(t.tool_data) or nil,
+                            tool_label = mod.impl.tool_label and mod.impl.tool_label(t.tool_data) or nil,
+                        }
+                    end
+                    log:debug("SDK '%s' provided %d tools for module '%s'",
+                        sdk.key, #sdk_tools, mod.id)
+                elseif not ok then
+                    log:warn("SDK '%s' kits_from_sdk failed for module '%s': %s",
+                        sdk.key, mod.id, tostring(sdk_tools))
+                end
+            end
+        end
+        ::next_sdk::
+    end
+end
+
+--- Get all SDKs.
+--- @return loomworks.SDK[]
+function Workspace:sdks()
+    return self._sdks
+end
+
+--- Find an SDK by key.
+--- Matches exact key first, then falls back to type-prefix match
+--- (e.g., "ohos" matches "ohos-6.0.1.251" for migration).
+--- @param key string
+--- @return loomworks.SDK|nil
+function Workspace:find_sdk(key)
+    -- Exact match first
+    for _, sdk in ipairs(self._sdks) do
+        if sdk.key == key then return sdk end
+    end
+    -- Prefix match: "ohos" matches "ohos-6.0.1.251"
+    for _, sdk in ipairs(self._sdks) do
+        if sdk.key:sub(1, #key) == key and (sdk.key:sub(#key + 1, #key + 1) == "-" or sdk.key:sub(#key + 1, #key + 1) == "") then
+            return sdk
+        end
+    end
+    return nil
+end
+
+--- Add an SDK to the workspace. Detects or validates, saves to user.json.
+--- @param sdk_type string provider type
+--- @param path? string user-provided path (nil = auto-detect)
+--- @return loomworks.SDK|nil sdk, string|nil error
+function Workspace:add_sdk(sdk_type, path)
+    local sdk_registry = require("loomworks.sdks")
+    local provider = sdk_registry.get(sdk_type)
+    if not provider then
+        return nil, "no provider for SDK type '" .. sdk_type .. "'"
+    end
+
+    local sdk
+    if path then
+        local info = provider.validate(path)
+        if not info then
+            return nil, "'" .. path .. "' is not a valid " .. sdk_type .. " installation"
+        end
+        local key = sdk_type .. (info.version and ("-" .. info.version) or "")
+        if self:find_sdk(key) then
+            return nil, "SDK '" .. key .. "' already added"
+        end
+        sdk = provider.create_sdk(key, path, info.version)
+    else
+        local installations = provider.detect_all()
+        if #installations == 0 then
+            return nil, "no " .. sdk_type .. " installation found"
+        end
+        local inst = installations[1]
+        local key = sdk_type .. (inst.version and ("-" .. inst.version) or "")
+        if self:find_sdk(key) then
+            return nil, "SDK '" .. key .. "' already added"
+        end
+        sdk = provider.create_sdk(key, inst.path, inst.version)
+    end
+
+    sdk._workspace = self
+    self._sdks[#self._sdks + 1] = sdk
+    self:_save_user()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return sdk
+end
+
+--- Remove an SDK from the workspace.
+--- @param key string SDK key
+--- @return boolean ok
+function Workspace:remove_sdk(key)
+    for i, sdk in ipairs(self._sdks) do
+        if sdk.key == key then
+            sdk._removed = true
+            table.remove(self._sdks, i)
+            self:_save_user()
+            self._core._deps.events.emit("active_set_changed", self._active_set)
+            return true
+        end
+    end
+    return false
+end
+
 function Workspace:_save_user()
     local data = self:_serialize_user()
     local ok, err = self._core._deps.user.save(self.root, data)
@@ -3139,7 +3418,8 @@ function Workspace:add_project(key, type, path)
         return nil, err
     end
 
-    self._core._deps.events.emit("active_set_changed", self._active_set)
+    -- Remerge so module info() discovers configurations for the new project
+    self:remerge()
     return project
 end
 

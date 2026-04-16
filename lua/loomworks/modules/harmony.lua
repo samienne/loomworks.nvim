@@ -6,118 +6,8 @@ M.has_options = false
 M.languages = { "arkts" }
 
 local uv = vim.uv or vim.loop
-local io_mod = require("loomworks.io")
-
--- ---------------------------------------------------------------------------
--- DevEco Studio detection
--- ---------------------------------------------------------------------------
-
---- Find DevEco Studio installation path.
---- Priority: DEVECO_HOME env → .home marker → default path.
---- @return string|nil deveco_home
-local function find_deveco_home()
-    -- 1. Environment variable
-    local env = os.getenv("DEVECO_HOME")
-    if env and env ~= "" and uv.fs_stat(env) then
-        return env:gsub("[/\\]+$", "")
-    end
-
-    -- 2. DevEco .home marker file in %LOCALAPPDATA%/Huawei/DevEcoStudio*/
-    local local_app_data = os.getenv("LOCALAPPDATA")
-    if local_app_data then
-        local huawei_dir = local_app_data .. "/Huawei"
-        local handle = uv.fs_scandir(huawei_dir)
-        if handle then
-            local best_name, best_home
-            while true do
-                local name, ftype = uv.fs_scandir_next(handle)
-                if not name then break end
-                if (ftype == "directory" or ftype == nil)
-                    and name:match("^DevEcoStudio") then
-                    if not best_name or name > best_name then
-                        local home_file = huawei_dir .. "/" .. name .. "/.home"
-                        local content = io_mod.read_file(home_file)
-                        if content then
-                            local home = content:match("^%s*(.-)%s*$"):gsub("\\", "/")
-                            if home ~= "" and uv.fs_stat(home) then
-                                best_name = name
-                                best_home = home
-                            end
-                        end
-                    end
-                end
-            end
-            if best_home then return best_home end
-        end
-    end
-
-    -- 3. Default path
-    local default_path = "C:/Program Files/Huawei/DevEco Studio"
-    if uv.fs_stat(default_path) then
-        return default_path
-    end
-
-    return nil
-end
 
 local is_win = vim.fn.has("win32") == 1
-
---- Resolve a tool path, checking platform-specific extensions.
---- @param base string base path without extension
---- @param exts string[] extensions to try (e.g., {".exe", ""})
---- @return string|nil resolved path
-local function resolve_tool(base, exts)
-    for _, ext in ipairs(exts) do
-        local p = base .. ext
-        if uv.fs_stat(p) then return p end
-    end
-    return nil
-end
-
---- Build tool_data from a DevEco Studio installation.
---- @param deveco_home string
---- @return table|nil tool_data
-local function build_tool_data(deveco_home)
-    local exe_exts = is_win and { ".exe", "" } or { "", ".exe" }
-    local script_exts = is_win and { ".bat", ".cmd", "" } or { "", ".sh" }
-
-    local hvigorw_js = deveco_home .. "/tools/hvigor/bin/hvigorw.js"
-    local node = resolve_tool(deveco_home .. "/tools/node/node", exe_exts)
-    local ohpm = resolve_tool(deveco_home .. "/tools/ohpm/bin/ohpm", script_exts)
-    local hdc = resolve_tool(deveco_home .. "/sdk/default/openharmony/toolchains/hdc", exe_exts)
-    local java = resolve_tool(deveco_home .. "/jbr/bin/java", exe_exts)
-
-    -- Verify hvigorw.js and node exist (minimum requirement)
-    if not uv.fs_stat(hvigorw_js) or not node then return nil end
-
-    return {
-        deveco_home = deveco_home,
-        hvigorw_js = hvigorw_js,
-        node = node,
-        ohpm = ohpm,
-        hdc = hdc,
-        java = java,
-    }
-end
-
---- Cached DevEco detection result.
---- @type table|nil|false  nil = not checked, false = not found, table = tool_data
-local _cached_tool_data = nil
-
---- Detect DevEco tools (cached).
---- @return table|nil tool_data
-local function detect_deveco()
-    if _cached_tool_data ~= nil then
-        return _cached_tool_data or nil
-    end
-    local home = find_deveco_home()
-    if home then
-        _cached_tool_data = build_tool_data(home) or false
-    else
-        _cached_tool_data = false
-    end
-    return _cached_tool_data or nil
-end
 
 --- Build hvigor environment variables from tool_data.
 --- @param tool_data table
@@ -188,11 +78,6 @@ function M.validate(path, config)
         warnings[#warnings + 1] = "oh-package.json5 not found in " .. path
     end
 
-    local td = detect_deveco()
-    if not td then
-        warnings[#warnings + 1] = "DevEco Studio not found (set DEVECO_HOME or install to default path)"
-    end
-
     return { valid = true, warnings = warnings }
 end
 
@@ -251,8 +136,7 @@ end
 --- @param config table type_config from loomworks.json
 --- @return table<string, table>
 function M.default_configurations(path, config)
-    local td = detect_deveco()
-    local profile = parse_build_profile(path, td and td.node)
+    local profile = parse_build_profile(path)
 
     if profile and profile.app and profile.app.products then
         local configs = {}
@@ -298,42 +182,60 @@ function M.info(path, config)
     return { configurations = configurations }
 end
 
---- Detect available tools (DevEco Studio).
+--- Detect available tools.
+--- Returns empty — tools are provided by SDK via kits_from_sdk().
 --- @return { tool_data: table }[]
 function M.detect_tools()
-    local td = detect_deveco()
-    if td then
-        return { { tool_data = td } }
-    end
     return { { tool_data = {} } }
 end
 
 --- Detect available tools asynchronously.
 --- @param callback fun(tools: { tool_data: table }[])
 function M.detect_tools_async(callback)
-    -- DevEco detection is filesystem-based, fast enough for sync
     callback(M.detect_tools())
 end
 
---- Compare two eTS tool_data objects. Always match (single tool).
+--- Generate tools from SDK capabilities.
+--- Called by core when an SDK provides capabilities for this module.
+--- @param caps table opaque capability data from SDK query("harmony")
+--- @param sdk loomworks.SDK
+--- @return { tool_data: table }[]
+function M.kits_from_sdk(caps, sdk)
+    -- caps is expected to contain: deveco_home, node, hvigorw_js, ohpm, hdc, java
+    if not caps or not caps.deveco_home then return {} end
+    -- Tag with SDK identity so tool_key can derive a key
+    local td = vim.deepcopy(caps)
+    td.sdk_key = sdk.key
+    td.sdk_display = sdk:display_name()
+    return { { tool_data = td } }
+end
+
+--- Compare two harmony tool_data objects.
+--- Match by sdk_key if present, otherwise always match.
 --- @param a table
 --- @param b table
 --- @return boolean
 function M.tools_match(a, b)
+    if a.sdk_key and b.sdk_key then
+        return a.sdk_key == b.sdk_key
+    end
     return true
 end
 
---- Cache key suffix. nil = no suffix needed (single tool).
+--- Cache key suffix from tool_data.
 --- @param tool_data table
---- @return nil
+--- @return string|nil
 function M.tool_key(tool_data)
-    return nil
+    return tool_data.sdk_key
 end
 
---- Display label for DevEco Studio tool.
+--- Display label for tool.
 --- @param tool_data table
 --- @return string|nil
 function M.tool_label(tool_data)
+    if tool_data.sdk_display then
+        return tool_data.sdk_display
+    end
     if tool_data.deveco_home then
         return "DevEco Studio"
     end
@@ -369,10 +271,7 @@ end
 --- @return table ctx { abs_path, td, node, hvigorw_js, ohpm, env }
 local function resolve_task_ctx(project)
     local abs_path = project.workspace_root .. "/" .. project.path
-    local td = project.tool_data
-    if not td or not td.deveco_home then
-        td = detect_deveco() or {}
-    end
+    local td = project.tool_data or {}
     local env = td.deveco_home and hvigor_env(td) or {}
     return {
         abs_path = abs_path,
@@ -524,8 +423,7 @@ function M.inspect(path, config, cached)
     }
 
     -- Per-module files: detect modules from build-profile.json5
-    local td = detect_deveco()
-    local profile = parse_build_profile(path, td and td.node)
+    local profile = parse_build_profile(path)
     local modules = extract_modules(profile)
     for _, mod_name in ipairs(modules) do
         check_files[#check_files + 1] = {

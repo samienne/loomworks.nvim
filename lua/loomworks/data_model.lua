@@ -286,6 +286,19 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
             data._config_set_ref = ctx.config_sets[data.configuration_set]
         end
 
+        -- Resolve SDK reference from key
+        data._sdk = nil
+        if data.sdk then
+            data._sdk = workspace:find_sdk(data.sdk)
+            if data._sdk then
+                workspace._core._deps.log:debug("Profile '%s': SDK '%s' resolved", key, data.sdk)
+            else
+                workspace._core._deps.log:warn("Profile '%s': SDK key '%s' not found in workspace (have %d SDKs)", key, data.sdk, #workspace._sdks)
+            end
+        else
+            workspace._core._deps.log:debug("Profile '%s': no SDK field in data", key)
+        end
+
         local existing = ctx.profiles[key]
         if existing then
             existing:_apply(data)
@@ -393,12 +406,15 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 end
 
                 -- Resolve tool for this project from profile
+                -- Uses tool_for() which checks overrides then SDK
                 local tool_data = nil
                 local tool_key = nil
-                local tools = profile:tools_data()
-                if tools and project and tools[project.type] then
-                    tool_data = tools[project.type].data
-                    tool_key = tools[project.type].key
+                if project then
+                    local tool_ref = profile:tool_for(project.type)
+                    if tool_ref then
+                        tool_data = tool_ref.data
+                        tool_key = tool_ref.key
+                    end
                 end
 
                 -- Compute expected build_dir

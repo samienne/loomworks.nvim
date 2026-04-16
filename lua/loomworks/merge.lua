@@ -258,6 +258,7 @@ function M.get_all_profiles(config, cache, tools_by_type, user_data)
                 profiles[pkey] = {
                     configuration_set = profile.configuration_set,
                     tools = profile.tools,
+                    sdk = profile.sdk,
                 }
             elseif profile.kit_id then
                 -- Legacy format: resolve kit_id to tools dict
@@ -270,11 +271,13 @@ function M.get_all_profiles(config, cache, tools_by_type, user_data)
                 profiles[pkey] = {
                     configuration_set = profile.configuration_set,
                     tools = tools,
+                    sdk = profile.sdk,
                 }
             else
-                -- Minimal format: just configuration_set
+                -- Minimal format: just configuration_set (may have SDK)
                 profiles[pkey] = {
                     configuration_set = profile.configuration_set,
+                    sdk = profile.sdk,
                 }
             end
         end

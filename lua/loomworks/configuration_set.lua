@@ -106,8 +106,18 @@ end
 function ConfigurationSet:find_profile(tool_entry)
     local tool_data = tool_entry and tool_entry.tool_data or nil
     local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
+    local sdk = tool_entry and tool_entry.sdk or nil
     for _, profile in pairs(self._workspace._profiles) do
         if profile._configuration_set_name == self.name then
+            -- SDK matching
+            if sdk then
+                if profile._sdk and profile._sdk.key == sdk.key then
+                    return profile
+                end
+                goto next
+            end
+            -- No-SDK matching (host tools)
+            if profile._sdk then goto next end
             local profile_tools = profile:tools_data()
             if not tool_data and not profile_tools then
                 return profile
@@ -127,6 +137,7 @@ function ConfigurationSet:find_profile(tool_entry)
                 end
             end
         end
+        ::next::
     end
     return nil
 end
@@ -149,9 +160,16 @@ function ConfigurationSet:ensure_profile(tool_entry)
         -- Create a new pinned profile for this config set + tool combination
         local Profile = require("loomworks.profile").Profile
 
-        -- Build tools dict from tool_entry
+        -- Build tools dict and SDK from tool_entry
         local tools = nil
-        if tool_entry and tool_entry.tool_key then
+        local sdk = nil
+        local sdk_key = nil
+        if tool_entry and tool_entry.sdk then
+            -- SDK-based profile: tools derived from SDK at runtime
+            sdk = tool_entry.sdk
+            sdk_key = sdk.key
+        elseif tool_entry and tool_entry.tool_key then
+            -- Host tool-based profile
             local mod_type = tool_entry.tool_mod_type
             tools = {
                 [mod_type] = {
@@ -165,6 +183,8 @@ function ConfigurationSet:ensure_profile(tool_entry)
         local data = {
             configuration_set = self.name,
             tools = tools,
+            sdk = sdk_key,
+            _sdk = sdk,
         }
 
         -- Resolve references for _apply

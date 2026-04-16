@@ -47,6 +47,18 @@ function M.build(profile)
     end
 end
 
+--- @param profile loomworks.Profile
+function M.build_serial(profile)
+    return function()
+        local fidget = require("loomworks.fidget")
+        local handle = fidget.start_action("Building (serial) " .. profile.key)
+        fidget.report(handle, "building (-j1)...")
+        profile:build({ parallel_jobs = 1 })
+            :next(function() fidget.finish(handle, "built") end)
+            :catch(function(err) fidget.fail(handle, err) end)
+    end
+end
+
 --- Materialize a new profile then build it.
 --- @param config_set loomworks.ConfigurationSet
 --- @param tool_entry? table
@@ -155,6 +167,13 @@ end
 function M.build_configuration(unit)
     return function()
         require("loomworks.overseer").run_configuration_action(unit, "build")
+    end
+end
+
+--- @param unit loomworks.ConfigUnit
+function M.build_serial_configuration(unit)
+    return function()
+        require("loomworks.overseer").run_configuration_action(unit, "build", nil, { parallel_jobs = 1 })
     end
 end
 
@@ -354,8 +373,9 @@ function M._create_profile_step2(cs, set_name, activate)
     local tool_entries = lw.get_tool_entries()
     local entries = tool_entries[set_name] or {}
 
-    if #entries <= 1 then
-        local profile = wv.execute_create_profile(cs, entries[1] or nil, activate)
+    if #entries == 0 then
+        -- No tools available — create profile without tools (will be incomplete for keyed modules)
+        local profile = wv.execute_create_profile(cs, nil, activate)
         if profile and not activate then
             vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
         end

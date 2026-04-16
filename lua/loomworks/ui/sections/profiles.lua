@@ -15,13 +15,76 @@ local function render_profile_details(tree, profile, lw)
         tree:leaf("Set: " .. profile._config_set_ref.name, "Comment")
     end
 
+    -- SDK display
+    local sdk = profile:sdk()
+    if sdk then
+        tree:item("SDK: " .. sdk:display_name(), {
+            hl = sdk:is_resolved() and "Comment" or "DiagnosticWarn",
+            on_enter = function()
+                -- Pick a different SDK
+                local ws = profile._workspace
+                local candidates = {}
+                for _, s in ipairs(ws:sdks()) do
+                    if s:is_resolved() then
+                        candidates[#candidates + 1] = s
+                    end
+                end
+                candidates[#candidates + 1] = { key = nil, display_name = function() return "(none — host build)" end }
+                vim.ui.select(candidates, {
+                    prompt = "Select SDK for profile:",
+                    format_item = function(s)
+                        if s.key == nil then return "(none — host build)" end
+                        local mark = (sdk and s.key == sdk.key) and " (current)" or ""
+                        return s:display_name() .. mark
+                    end,
+                }, function(choice)
+                    if not choice then return end
+                    if choice.key == nil then
+                        profile:set_sdk(nil)
+                    else
+                        profile:set_sdk(choice)
+                    end
+                    profile:_derive_key()
+                    ws:_save_user()
+                    ws:remerge()
+                end)
+            end,
+        })
+    else
+        tree:item("SDK: (none)", {
+            hl = "Comment",
+            on_enter = function()
+                local ws = profile._workspace
+                local candidates = {}
+                for _, s in ipairs(ws:sdks()) do
+                    if s:is_resolved() then
+                        candidates[#candidates + 1] = s
+                    end
+                end
+                if #candidates == 0 then
+                    vim.notify("loomworks: no SDKs available. Add one from the SDKs section.", vim.log.levels.INFO)
+                    return
+                end
+                vim.ui.select(candidates, {
+                    prompt = "Select SDK for profile:",
+                    format_item = function(s) return s:display_name() end,
+                }, function(choice)
+                    if not choice then return end
+                    profile:set_sdk(choice)
+                    profile:_derive_key()
+                    ws:_save_user()
+                    ws:remerge()
+                end)
+            end,
+        })
+    end
+
     local tools_data = profile:tools_data()
     if tools_data then
         for mod_type, tool in pairs(tools_data) do
             if tool.label then
                 tree:leaf("Tool: " .. tool.label, "Comment")
             end
-            -- Show tool details if available (cmake-specific for now)
             if tool.data then
                 if tool.data.generator then
                     tree:leaf("Generator: " .. tool.data.generator, "Comment")
@@ -82,6 +145,7 @@ local function render_profile_details(tree, profile, lw)
                     on_enter = actions.open_task(unit),
                     on_task = actions.open_task(unit),
                     on_build = actions.build_configuration(unit),
+                    on_build_serial = actions.build_serial_configuration(unit),
                     on_rebuild = actions.rebuild_configuration(unit),
                     on_clean = actions.clean_configuration(unit),
                     on_configure = actions.configure_configuration(unit),
@@ -139,6 +203,9 @@ return function(tree, ctx)
         if profile.orphaned_set then
             display = display .. " [stale]"
         end
+        if not profile:is_complete() then
+            display = display .. " [incomplete]"
+        end
 
         display = display .. " (" .. status_label .. ")"
         if has_operation then
@@ -186,6 +253,7 @@ return function(tree, ctx)
                 end
             end,
             on_build = actions.build(profile),
+            on_build_serial = actions.build_serial(profile),
             on_rebuild = actions.rebuild(profile),
             on_clean = actions.clean(profile),
             on_configure = actions.configure(profile),
