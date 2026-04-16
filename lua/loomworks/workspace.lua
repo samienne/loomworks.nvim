@@ -1255,12 +1255,12 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
 
     local set_name = config_set.name
 
-    -- Build tools dict from tool_entry
+    -- Build tools dict from tool_entry (skip for SDK entries which have no mod_type)
     local tools = nil
     local tool_key = tool_entry and tool_entry.tool_key or nil
     local tool_data = tool_entry and tool_entry.tool_data or nil
     local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
-    if tool_entry and tool_key then
+    if tool_entry and tool_key and tool_mod_type then
         tools = {
             [tool_mod_type] = {
                 key = tool_key,
