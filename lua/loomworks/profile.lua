@@ -333,18 +333,17 @@ function Profile:_resolve_sdk_tool(mod_type)
     }
 end
 
---- Derive tools dict from owned data + SDK.
---- Includes module-specific overrides and SDK-derived tools.
+--- Derive tools dict from explicit selections only.
+--- Returns module-specific overrides (_tools_raw or _tool_objects).
+--- Does NOT include SDK-derived tools — those are resolved lazily
+--- per-project via tool_for(). This keeps the profile key clean.
 --- @return table<string, { key: string, data: table, label: string|nil }>|nil
 function Profile:tools_data()
-    local result = {}
-
-    -- Module-specific overrides (authoritative)
-    if self._tools_raw then
-        for k, v in pairs(self._tools_raw) do
-            result[k] = v
-        end
-    elseif self._tool_objects then
+    if self._tools_raw and next(self._tools_raw) then
+        return self._tools_raw
+    end
+    if self._tool_objects then
+        local result = {}
         for mod, tool in pairs(self._tool_objects) do
             result[mod.id] = {
                 key = tool.key,
@@ -352,22 +351,9 @@ function Profile:tools_data()
                 label = tool.label,
             }
         end
+        if next(result) then return result end
     end
-
-    -- SDK-derived tools (fill modules not already covered by overrides)
-    if self._sdk and self._sdk:is_resolved() then
-        local modules = require("loomworks.modules")
-        for _, mod_id in ipairs(modules.list()) do
-            if not result[mod_id] then
-                local sdk_tool = self:_resolve_sdk_tool(mod_id)
-                if sdk_tool then
-                    result[mod_id] = sdk_tool
-                end
-            end
-        end
-    end
-
-    return next(result) and result or nil
+    return nil
 end
 
 --- Generate a definition suitable for loomworks.json.
@@ -593,12 +579,13 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Check if all modules in this profile have tools resolved.
---- A profile is incomplete if any project's module has no tool available.
+--- A profile is incomplete if any keyed-tool module has no tool available.
+--- Non-keyed modules (typescript) don't require explicit tool selection.
 --- @return boolean
 function Profile:is_complete()
     for _, pp in ipairs(self:projects()) do
         local project = pp._project
-        if project and project.type then
+        if project and project._module and project._module.has_keyed_tools then
             if not self:tool_for(project.type) then
                 return false
             end

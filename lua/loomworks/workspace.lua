@@ -1162,64 +1162,80 @@ function Workspace:get_tool_entries()
     local result = {}
     if #self._config_sets == 0 then return result end
 
-    -- Build set of module types present in projects
-    local active_types = {}
-    for _, proj in pairs(self._projects) do
-        if not proj.orphaned and proj.type then
-            active_types[proj.type] = true
-        end
-    end
-
-    -- Collect keyed tools only for module types with active projects.
-    -- Exclude SDK-derived tools (those appear as SDK entries instead).
-    local keyed_tools = {}
-    local keyed_mod_type = nil
-    for mod_type, tools in pairs(self._tools_by_type) do
-        if active_types[mod_type] then
-            for _, tool in ipairs(tools) do
-                if tool.tool_key and not (tool.tool_data and tool.tool_data.sdk_key) then
-                    keyed_tools[#keyed_tools + 1] = tool
-                    keyed_mod_type = mod_type
-                end
-            end
-        end
-    end
-
     -- Build profile lookup from domain objects
     local profiles_by_key = {}
     for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
 
-    for _, cs in pairs(self._config_sets) do
-        local entries = {}
-        if #keyed_tools > 0 then
-            for _, tool in ipairs(keyed_tools) do
-                local tools_dict = { [keyed_mod_type] = { key = tool.tool_key } }
-                local pkey = merge_mod.profile_key(cs.name, tools_dict)
-                local profile = profiles_by_key[pkey]
-                entries[#entries + 1] = {
-                    profile_key = pkey,
-                    tool_key = tool.tool_key,
-                    tool_data = tool.tool_data,
-                    tool_label = tool.tool_label,
-                    tool_mod_type = keyed_mod_type,
-                    cached = true,  -- all profiles exist as runtime objects
-                    profile = profile,
-                }
+    -- Collect all non-SDK keyed tools by module type
+    local tools_per_mod = {}
+    for mod_type, tools in pairs(self._tools_by_type) do
+        for _, tool in ipairs(tools) do
+            if tool.tool_key and not (tool.tool_data and tool.tool_data.sdk_key) then
+                tools_per_mod[mod_type] = tools_per_mod[mod_type] or {}
+                tools_per_mod[mod_type][#tools_per_mod[mod_type] + 1] = tool
             end
         end
-        -- Add SDK entries — each resolved SDK is a tool source option
+    end
+
+    for _, cs in pairs(self._config_sets) do
+        local entries = {}
+
+        -- Determine which module types this config set's projects use
+        local cs_mod_types = {}
+        if cs.mappings then
+            for proj_ref in pairs(cs.mappings) do
+                local proj = type(proj_ref) == "table" and proj_ref or nil
+                if proj and proj.type then
+                    cs_mod_types[proj.type] = true
+                end
+            end
+        end
+
+        -- Host tools: only for module types present in this config set
+        for mod_type, tools in pairs(tools_per_mod) do
+            if cs_mod_types[mod_type] then
+                for _, tool in ipairs(tools) do
+                    local tools_dict = { [mod_type] = { key = tool.tool_key } }
+                    local pkey = merge_mod.profile_key(cs.name, tools_dict)
+                    local profile = profiles_by_key[pkey]
+                    entries[#entries + 1] = {
+                        profile_key = pkey,
+                        tool_key = tool.tool_key,
+                        tool_data = tool.tool_data,
+                        tool_label = tool.tool_label,
+                        tool_mod_type = mod_type,
+                        cached = true,
+                        profile = profile,
+                    }
+                end
+            end
+        end
+
+        -- SDK entries: show if SDK provides capabilities for any module
+        -- type in this config set
         for _, sdk in ipairs(self._sdks) do
             if sdk:is_resolved() then
-                local pkey = cs.name .. ":" .. sdk.key
-                local profile = profiles_by_key[pkey]
-                entries[#entries + 1] = {
-                    profile_key = pkey,
-                    tool_key = sdk.key,
-                    tool_label = sdk:display_name(),
-                    sdk = sdk,  -- SDK domain object for profile creation
-                    cached = true,
-                    profile = profile,
-                }
+                -- Check if SDK is relevant to any project in this config set
+                local relevant = false
+                for mod_type in pairs(cs_mod_types) do
+                    if sdk:query(mod_type) then
+                        relevant = true
+                        break
+                    end
+                end
+                -- Also show if config set has no projects yet (user may add later)
+                if relevant or not next(cs_mod_types) then
+                    local pkey = cs.name .. ":" .. sdk.key
+                    local profile = profiles_by_key[pkey]
+                    entries[#entries + 1] = {
+                        profile_key = pkey,
+                        tool_key = sdk.key,
+                        tool_label = sdk:display_name(),
+                        sdk = sdk,
+                        cached = true,
+                        profile = profile,
+                    }
+                end
             end
         end
 
