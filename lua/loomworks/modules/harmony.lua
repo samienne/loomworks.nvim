@@ -60,22 +60,43 @@ local function find_deveco_home()
     return nil
 end
 
+local is_win = vim.fn.has("win32") == 1
+
+--- Resolve a tool path, checking platform-specific extensions.
+--- @param base string base path without extension
+--- @param exts string[] extensions to try (e.g., {".exe", ""})
+--- @return string|nil resolved path
+local function resolve_tool(base, exts)
+    for _, ext in ipairs(exts) do
+        local p = base .. ext
+        if uv.fs_stat(p) then return p end
+    end
+    return nil
+end
+
 --- Build tool_data from a DevEco Studio installation.
 --- @param deveco_home string
 --- @return table|nil tool_data
 local function build_tool_data(deveco_home)
-    local hvigorw = deveco_home .. "/tools/hvigor/bin/hvigorw.bat"
-    local hdc = deveco_home .. "/sdk/default/openharmony/toolchains/hdc.exe"
-    local node = deveco_home .. "/tools/node/node.exe"
+    local exe_exts = is_win and { ".exe", "" } or { "", ".exe" }
+    local script_exts = is_win and { ".bat", ".cmd", "" } or { "", ".sh" }
 
-    -- Verify hvigorw exists (minimum requirement)
-    if not uv.fs_stat(hvigorw) then return nil end
+    local hvigorw_js = deveco_home .. "/tools/hvigor/bin/hvigorw.js"
+    local node = resolve_tool(deveco_home .. "/tools/node/node", exe_exts)
+    local ohpm = resolve_tool(deveco_home .. "/tools/ohpm/bin/ohpm", script_exts)
+    local hdc = resolve_tool(deveco_home .. "/sdk/default/openharmony/toolchains/hdc", exe_exts)
+    local java = resolve_tool(deveco_home .. "/jbr/bin/java", exe_exts)
+
+    -- Verify hvigorw.js and node exist (minimum requirement)
+    if not uv.fs_stat(hvigorw_js) or not node then return nil end
 
     return {
         deveco_home = deveco_home,
-        hvigorw = hvigorw,
-        hdc = uv.fs_stat(hdc) and hdc or nil,
-        node = uv.fs_stat(node) and node or nil,
+        hvigorw_js = hvigorw_js,
+        node = node,
+        ohpm = ohpm,
+        hdc = hdc,
+        java = java,
     }
 end
 
@@ -102,6 +123,7 @@ end
 --- @param tool_data table
 --- @return table<string, string>
 local function hvigor_env(tool_data)
+    local sep = is_win and ";" or ":"
     local env = {}
     env.DEVECO_SDK_HOME = tool_data.deveco_home .. "/sdk"
     if tool_data.node then
@@ -109,22 +131,21 @@ local function hvigor_env(tool_data)
         env.NODE_HOME = node_dir
     end
     -- Add DevEco's bundled Java to PATH (needed for HAP signing)
-    local java_dir = tool_data.deveco_home .. "/jbr/bin"
-    if uv.fs_stat(java_dir .. "/java.exe") or uv.fs_stat(java_dir .. "/java") then
+    if tool_data.java then
+        local java_dir = tool_data.java:gsub("[/\\][^/\\]+$", "")
         local path = os.getenv("PATH") or ""
-        env.PATH = java_dir .. ";" .. path
+        env.PATH = java_dir .. sep .. path
     end
     return env
 end
 
---- Wrap a command for Windows.
---- Overseer/jobstart can run .bat files directly, but cmd /c is needed
---- for proper batch script execution. Quote the batch path to handle spaces.
+--- Wrap a script command for the platform.
+--- On Windows: .bat/.cmd files need cmd /c with quoted paths.
+--- On Unix: .sh files may need explicit shell invocation.
 --- @param cmd string[] command array
 --- @return string[]
-local function wrap_cmd(cmd)
-    if vim.fn.has("win32") == 1 and (cmd[1]:match("%.bat$") or cmd[1]:match("%.cmd$")) then
-        -- Build a single command string for cmd /c with proper quoting
+local function wrap_script_cmd(cmd)
+    if is_win and (cmd[1]:match("%.bat$") or cmd[1]:match("%.cmd$")) then
         local parts = {}
         for _, arg in ipairs(cmd) do
             if arg:match("%s") then
@@ -352,20 +373,13 @@ local function resolve_task_ctx(project)
     if not td or not td.deveco_home then
         td = detect_deveco() or {}
     end
-    local node = td.node or vim.fn.exepath("node")
-    local hvigorw_js = td.deveco_home
-        and (td.deveco_home .. "/tools/hvigor/bin/hvigorw.js")
-        or nil
-    local ohpm = td.deveco_home
-        and (td.deveco_home .. "/tools/ohpm/bin/ohpm.bat")
-        or "ohpm"
     local env = td.deveco_home and hvigor_env(td) or {}
     return {
         abs_path = abs_path,
         td = td,
-        node = node,
-        hvigorw_js = hvigorw_js,
-        ohpm = ohpm,
+        node = td.node or vim.fn.exepath("node"),
+        hvigorw_js = td.hvigorw_js,
+        ohpm = td.ohpm or "ohpm",
         env = env,
     }
 end
@@ -380,9 +394,10 @@ local function hvigor_cmd(ctx, args)
         vim.list_extend(cmd, args)
         return cmd
     end
-    local cmd = { ctx.td.hvigorw or "hvigorw" }
+    -- Fallback: use hvigorw script directly (needs wrapping on Windows)
+    local cmd = { ctx.td.hvigorw_js or "hvigorw" }
     vim.list_extend(cmd, args)
-    return wrap_cmd(cmd)
+    return wrap_script_cmd(cmd)
 end
 
 --- Return overseer task templates for a project.
@@ -407,7 +422,7 @@ function M.tasks(project, active_config)
             name = project.name .. ": ohpm install",
             builder = function()
                 return {
-                    cmd = wrap_cmd({ ctx.ohpm, "install" }),
+                    cmd = wrap_script_cmd({ ctx.ohpm, "install" }),
                     cwd = ctx.abs_path,
                     env = ctx.env,
                 }
@@ -501,15 +516,31 @@ end
 function M.inspect(path, config, cached)
     local reasons = {}
 
-    -- Files that trigger re-sync when modified
+    -- Root-level files that trigger re-sync
     local check_files = {
         { file = "build-profile.json5", label = "build-profile.json5" },
         { file = "oh-package.json5", label = "oh-package.json5" },
         { file = "hvigorfile.ts", label = "hvigorfile.ts" },
-        { file = "entry/build-profile.json5", label = "entry/build-profile.json5" },
-        { file = "entry/oh-package.json5", label = "entry/oh-package.json5" },
-        { file = "entry/src/main/module.json5", label = "module.json5" },
     }
+
+    -- Per-module files: detect modules from build-profile.json5
+    local td = detect_deveco()
+    local profile = parse_build_profile(path, td and td.node)
+    local modules = extract_modules(profile)
+    for _, mod_name in ipairs(modules) do
+        check_files[#check_files + 1] = {
+            file = mod_name .. "/build-profile.json5",
+            label = mod_name .. "/build-profile.json5",
+        }
+        check_files[#check_files + 1] = {
+            file = mod_name .. "/oh-package.json5",
+            label = mod_name .. "/oh-package.json5",
+        }
+        check_files[#check_files + 1] = {
+            file = mod_name .. "/src/main/module.json5",
+            label = mod_name .. "/module.json5",
+        }
+    end
 
     for _, cached_config in pairs(cached) do
         if cached_config.last_configured then
