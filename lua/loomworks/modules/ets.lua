@@ -108,6 +108,12 @@ local function hvigor_env(tool_data)
         local node_dir = tool_data.node:gsub("[/\\][^/\\]+$", "")
         env.NODE_HOME = node_dir
     end
+    -- Add DevEco's bundled Java to PATH (needed for HAP signing)
+    local java_dir = tool_data.deveco_home .. "/jbr/bin"
+    if uv.fs_stat(java_dir .. "/java.exe") or uv.fs_stat(java_dir .. "/java") then
+        local path = os.getenv("PATH") or ""
+        env.PATH = java_dir .. ";" .. path
+    end
     return env
 end
 
