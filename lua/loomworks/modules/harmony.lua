@@ -163,7 +163,7 @@ end
 -- Module interface
 -- ---------------------------------------------------------------------------
 
---- Detect whether a directory looks like an eTS project.
+--- Detect whether a directory looks like a Harmony/OpenHarmony project.
 --- @param abs_path string absolute directory path
 --- @return { marker: string }|nil
 function M.detect(abs_path)

@@ -9,7 +9,7 @@ modifies your project files and collaborators don't need to know it exists.
 
 ## Status
 
-Early development (v0.0.1-dev). The cmake module is fully implemented; harmony and
+Early development (v0.0.1-dev). The cmake and harmony modules are fully implemented;
 typescript modules are shims.
 
 ## Features
@@ -148,7 +148,7 @@ Projects are declared with their type as the inner key:
 }
 ```
 
-Available types: `cmake` (full), `harmony`, `typescript` (shim).
+Available types: `cmake` (full), `harmony` (full), `typescript` (shim).
 
 ### Paths
 
