@@ -220,13 +220,41 @@ function Profile:_apply(data)
 end
 
 --- Compute and set self.key from the profile's data fields.
---- All profiles are set-based: key = configuration_set_name + tools.
+--- Format: config_set:tool_keys (sorted, joined with +)
+--- SDK key is included alongside module override keys.
 function Profile:_derive_key()
-    if self._configuration_set_name then
-        local merge_mod = require("loomworks.merge")
-        self.key = merge_mod.profile_key(self._configuration_set_name, self:tools_data())
-    else
+    if not self._configuration_set_name then
         self.key = "unnamed"
+        return
+    end
+
+    local parts = {}
+
+    -- SDK key
+    if self._sdk_key then
+        parts[#parts + 1] = self._sdk_key
+    end
+
+    -- Module-specific tool override keys (not SDK-derived)
+    if self._tools_raw then
+        for _, tool_ref in pairs(self._tools_raw) do
+            if tool_ref.key then
+                parts[#parts + 1] = tool_ref.key
+            end
+        end
+    elseif self._tool_objects then
+        for _, tool in pairs(self._tool_objects) do
+            if tool.key then
+                parts[#parts + 1] = tool.key
+            end
+        end
+    end
+
+    table.sort(parts)
+    if #parts > 0 then
+        self.key = self._configuration_set_name .. ":" .. table.concat(parts, "+")
+    else
+        self.key = self._configuration_set_name
     end
 end
 

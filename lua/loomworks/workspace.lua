@@ -1170,13 +1170,14 @@ function Workspace:get_tool_entries()
         end
     end
 
-    -- Collect keyed tools only for module types with active projects
+    -- Collect keyed tools only for module types with active projects.
+    -- Exclude SDK-derived tools (those appear as SDK entries instead).
     local keyed_tools = {}
     local keyed_mod_type = nil
     for mod_type, tools in pairs(self._tools_by_type) do
         if active_types[mod_type] then
             for _, tool in ipairs(tools) do
-                if tool.tool_key then
+                if tool.tool_key and not (tool.tool_data and tool.tool_data.sdk_key) then
                     keyed_tools[#keyed_tools + 1] = tool
                     keyed_mod_type = mod_type
                 end
@@ -1209,9 +1210,7 @@ function Workspace:get_tool_entries()
         -- Add SDK entries — each resolved SDK is a tool source option
         for _, sdk in ipairs(self._sdks) do
             if sdk:is_resolved() then
-                -- SDK contributes to profile key via its key
-                local tools_dict = { [sdk:sdk_type()] = { key = sdk.key } }
-                local pkey = merge_mod.profile_key(cs.name, tools_dict)
+                local pkey = cs.name .. ":" .. sdk.key
                 local profile = profiles_by_key[pkey]
                 entries[#entries + 1] = {
                     profile_key = pkey,
