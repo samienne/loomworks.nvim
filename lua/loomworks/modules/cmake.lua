@@ -571,7 +571,9 @@ function M.tasks(project, active_config)
     end
 
     -- Configure task
-    local configure_cmd = { "cmake" }
+    -- Use SDK-provided cmake if available, otherwise system cmake
+    local cmake_cmd = (kit and kit.cmake_path) or "cmake"
+    local configure_cmd = { cmake_cmd }
 
     if config_info and config_info.from_preset then
         configure_cmd[#configure_cmd + 1] = "--preset"
@@ -607,13 +609,19 @@ function M.tasks(project, active_config)
         end
     end
 
-    -- Toolchain file
-    if config_info and config_info.toolchain then
-        local tc = config_info.toolchain
+    -- Toolchain file: kit.toolchain (from SDK) or config_info.toolchain (from user)
+    local toolchain = (kit and kit.toolchain) or (config_info and config_info.toolchain)
+    if toolchain then
+        local tc = toolchain
         tc = tc:gsub("%${([^}]+)}", function(var)
             return os.getenv(var) or "${" .. var .. "}"
         end)
         configure_cmd[#configure_cmd + 1] = "-DCMAKE_TOOLCHAIN_FILE=" .. tc
+    end
+
+    -- SDK-provided extra cmake args (e.g., -DOHOS_ARCH=arm64-v8a)
+    if kit and kit.extra_args then
+        vim.list_extend(configure_cmd, kit.extra_args)
     end
 
     -- User-defined options (project-wide + inherited + config-specific)
@@ -690,7 +698,7 @@ function M.tasks(project, active_config)
             name = project.name .. ": build " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap({ "cmake", "--build", build_dir, "--config", active_config }),
+                    cmd = wrap({ cmake_cmd, "--build", build_dir, "--config", active_config }),
                     cwd = abs_path,
                     env = env,
                 }
@@ -708,7 +716,7 @@ function M.tasks(project, active_config)
             name = project.name .. ": build " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap({ "cmake", "--build", build_dir }),
+                    cmd = wrap({ cmake_cmd, "--build", build_dir }),
                     cwd = abs_path,
                     env = env,
                 }
@@ -751,7 +759,8 @@ function M.clean_tasks(project, active_config)
         return wrap_cmd(cmd, kit, generator, build_dir)
     end
 
-    local clean_cmd = { "cmake", "--build", build_dir, "--target", "clean" }
+    local cmake_cmd = (kit and kit.cmake_path) or "cmake"
+    local clean_cmd = { cmake_cmd, "--build", build_dir, "--target", "clean" }
     if multi_config then
         clean_cmd[#clean_cmd + 1] = "--config"
         clean_cmd[#clean_cmd + 1] = active_config
@@ -796,7 +805,8 @@ function M.build_target_task(project, target_id)
             or resolve_build_dir(
                 project.name, active_config, config_info, project.workspace_root, multi_config, kit)
 
-    local cmd = { "cmake", "--build", build_dir, "--target", target_id }
+    local cmake_cmd = (kit and kit.cmake_path) or "cmake"
+    local cmd = { cmake_cmd, "--build", build_dir, "--target", target_id }
     if multi_config then
         cmd[#cmd + 1] = "--config"
         cmd[#cmd + 1] = active_config
@@ -954,6 +964,33 @@ end
 --- @return string
 function M.tool_label(tool_data)
     return tool_data.display
+end
+
+--- Generate cross-compilation kits from SDK capabilities.
+--- Called by core when an SDK provides capabilities for cmake.
+--- @param caps table opaque data from sdk:query("cmake")
+--- @param sdk loomworks.SDK
+--- @return { tool_data: table }[]
+function M.kits_from_sdk(caps, sdk)
+    if not caps or not caps.toolchain_file then return {} end
+    local archs = caps.archs or {}
+    local kits = {}
+    for _, arch in ipairs(archs) do
+        local extra_args = {}
+        if caps.arch_args and caps.arch_args[arch] then
+            vim.list_extend(extra_args, caps.arch_args[arch])
+        end
+        kits[#kits + 1] = { tool_data = {
+            id = sdk:sdk_type() .. "-" .. arch,
+            display = (caps.sdk_display or sdk:display_name()) .. " " .. arch,
+            generator = "Ninja",
+            toolchain = caps.toolchain_file,
+            cmake_path = caps.cmake_path,
+            extra_args = extra_args,
+            sdk_key = sdk.key,
+        }}
+    end
+    return kits
 end
 
 --- Cache entry types that are user-facing (not internal/computed).
