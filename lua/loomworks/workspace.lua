@@ -2151,6 +2151,7 @@ function Workspace:_scan_tools()
     local cache = self:_serialize_cache()
     self._tools_by_type = self._core._deps.merge.detect_tools(
         config, cache)
+    self:_enrich_tools_from_sdks(self._tools_by_type)
 end
 
 --- Scan tools asynchronously and remerge when complete.
@@ -2166,6 +2167,8 @@ function Workspace:_scan_tools_async()
             self._core._deps.schedule(function()
                 if not self._core._workspace then return end
                 self._tools_by_type = tools_by_type
+                -- Enrich with SDK-derived tools
+                self:_enrich_tools_from_sdks(tools_by_type)
                 self:remerge()
                 self._tool_state = "scanned"
                 self._core._deps.events.emit("tools_detected")
@@ -3188,6 +3191,40 @@ function Workspace:_sync_sdks(config_sdks, user_sdks)
     end
 
     self._sdks = new_sdks
+end
+
+--- Enrich tools_by_type with SDK-derived tools.
+--- Iterates SDKs × modules: for each SDK that provides capabilities for
+--- a module (sdk:query(module.id) non-nil), calls module.kits_from_sdk()
+--- and adds the results to tools_by_type. No module/SDK-specific logic here.
+--- @param tools_by_type table<string, loomworks.DetectedTool[]>
+function Workspace:_enrich_tools_from_sdks(tools_by_type)
+    local log = self._core._deps.log
+    for _, sdk in ipairs(self._sdks) do
+        if not sdk:is_resolved() then goto next_sdk end
+        for _, mod in ipairs(self._modules) do
+            local caps = sdk:query(mod.id)
+            if caps and mod.impl.kits_from_sdk then
+                local ok, sdk_tools = pcall(mod.impl.kits_from_sdk, caps, sdk)
+                if ok and sdk_tools then
+                    tools_by_type[mod.id] = tools_by_type[mod.id] or {}
+                    for _, t in ipairs(sdk_tools) do
+                        tools_by_type[mod.id][#tools_by_type[mod.id] + 1] = {
+                            tool_data = t.tool_data,
+                            tool_key = mod.impl.tool_key and mod.impl.tool_key(t.tool_data) or nil,
+                            tool_label = mod.impl.tool_label and mod.impl.tool_label(t.tool_data) or nil,
+                        }
+                    end
+                    log:debug("SDK '%s' provided %d tools for module '%s'",
+                        sdk.key, #sdk_tools, mod.id)
+                elseif not ok then
+                    log:warn("SDK '%s' kits_from_sdk failed for module '%s': %s",
+                        sdk.key, mod.id, tostring(sdk_tools))
+                end
+            end
+        end
+        ::next_sdk::
+    end
 end
 
 --- Get all SDKs.
