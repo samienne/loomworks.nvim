@@ -365,18 +365,22 @@ function M.tasks(project, active_config)
         {
             name = project.name .. ": build " .. active_config,
             builder = function()
+                -- hvigor uses --mode module (not debug/release).
+                -- Product selects the build variant.
                 local cmd
                 if hvigorw_js and node then
                     cmd = { node, hvigorw_js,
-                        "--mode", mode,
+                        "--mode", "module",
+                        "-p", "module=entry",
                         "-p", "product=" .. product,
                         "assembleHap",
                         "--no-daemon" }
                 else
                     cmd = wrap_cmd({ td.hvigorw or "hvigorw",
                         "assembleHap",
+                        "--mode", "module",
+                        "-p", "module=entry",
                         "-p", "product=" .. product,
-                        "--mode", mode,
                         "--no-daemon" })
                 end
                 return {
