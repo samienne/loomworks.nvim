@@ -2981,8 +2981,12 @@ function Workspace:_serialize_user()
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
-            local tools = profile:tools_data()
-            if tools then entry.tools = tools end
+            if profile._sdk_key then
+                entry.sdk = profile._sdk_key
+            end
+            -- Serialize only module-specific overrides, not SDK-derived tools
+            local tools = profile._tools_raw
+            if tools and next(tools) then entry.tools = tools end
             user_profiles[profile.key] = entry
         end
     end

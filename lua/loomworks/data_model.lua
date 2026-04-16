@@ -286,6 +286,12 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
             data._config_set_ref = ctx.config_sets[data.configuration_set]
         end
 
+        -- Resolve SDK reference from key
+        data._sdk = nil
+        if data.sdk then
+            data._sdk = workspace:find_sdk(data.sdk)
+        end
+
         local existing = ctx.profiles[key]
         if existing then
             existing:_apply(data)
