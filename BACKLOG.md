@@ -250,3 +250,15 @@ address of the .node module in memory.
 - Wait for LLDB PDB plugin improvements (active development area)
 - Structured debug entry with symbol search paths (future loomworks feature)
 
+---
+
+## Plugin-based module registry
+
+Currently modules are hardcoded in `modules/init.lua`. Third-party plugins
+should be able to register modules by placing files in `lua/loomworks/modules/`
+on the runtimepath. Auto-discovery would scan all rtp entries, validate the
+module interface (`M.id`, `M.detect`, `M.info`, `M.tasks`), and register
+valid modules alongside built-ins. Needs: interface validation, error handling
+for broken modules, load order guarantees, potential config for disabling
+specific modules.
+
