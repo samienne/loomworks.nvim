@@ -2,7 +2,11 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local KNOWN_TYPES = { cmake = true, harmony = true, typescript = true }
+--- Build KNOWN_TYPES from the module registry (single source of truth).
+local KNOWN_TYPES = {}
+for _, id in ipairs(require("loomworks.modules").list()) do
+    KNOWN_TYPES[id] = true
+end
 local NON_TYPE_KEYS = { path = true, depends_on = true, launch = true, variables = true }
 
 --- Extract project type from the project definition table.
