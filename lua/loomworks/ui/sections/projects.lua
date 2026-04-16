@@ -473,6 +473,22 @@ return function(tree, ctx)
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
                 end
             end,
+            on_delete = function()
+                vim.ui.select({ "Yes", "No" }, {
+                    prompt = "Remove project '" .. key .. "'?",
+                }, function(choice)
+                    if choice ~= "Yes" then return end
+                    if ws then
+                        local ok, err = ws:remove_project(proj)
+                        if ok then
+                            vim.notify("loomworks: project '" .. key .. "' removed", vim.log.levels.INFO)
+                            require("loomworks.ui.status").refresh()
+                        else
+                            vim.notify("loomworks: " .. (err or "failed to remove project"), vim.log.levels.ERROR)
+                        end
+                    end
+                end)
+            end,
         }, function()
             tree:leaf("Path: " .. (proj.path or key), "Comment")
 
