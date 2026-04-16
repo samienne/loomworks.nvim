@@ -421,26 +421,32 @@ end
 --- @param overseer table overseer module
 --- @param task_defs table[] task definitions with .builder and .loomworks
 --- @param on_all_done? function legacy callback (deprecated, use Future)
+--- @param opts? { force?: boolean } force=true bypasses readiness checks
 --- @return loomworks.Future, number launched
-local function launch_tasks(overseer, task_defs, on_all_done)
+local function launch_tasks(overseer, task_defs, on_all_done, opts)
     local future_mod = require("loomworks.future")
+    local force = opts and opts.force or false
 
     -- Classify each task
     local to_launch, to_defer = {}, {}
     for _, task_def in ipairs(task_defs) do
         if not task_def.loomworks then goto next end
-        local readiness = check_task_readiness(task_def)
-        if readiness == "launch" then
+        if force then
             to_launch[#to_launch + 1] = task_def
-        elseif readiness == "defer" then
-            to_defer[#to_defer + 1] = task_def
-        elseif readiness == "block" then
-            local meta = task_def.loomworks
-            vim.notify(
-                "loomworks: " .. meta.project_key .. "/" .. meta.configuration_key
-                    .. " is in unknown state — clean or delete first",
-                vim.log.levels.WARN
-            )
+        else
+            local readiness = check_task_readiness(task_def)
+            if readiness == "launch" then
+                to_launch[#to_launch + 1] = task_def
+            elseif readiness == "defer" then
+                to_defer[#to_defer + 1] = task_def
+            elseif readiness == "block" then
+                local meta = task_def.loomworks
+                vim.notify(
+                    "loomworks: " .. meta.project_key .. "/" .. meta.configuration_key
+                        .. " is in unknown state — clean or delete first",
+                    vim.log.levels.WARN
+                )
+            end
         end
         ::next::
     end
@@ -588,7 +594,8 @@ function M.run_configuration_action(unit, action, on_complete)
         end
 
         if action == "configure" then
-            launch_tasks(overseer, all_tasks.configure):next(
+            -- Force=true: explicit configure always runs, even if already configured
+            launch_tasks(overseer, all_tasks.configure, nil, { force = true }):next(
                 function() f:_resolve(true) end,
                 function(err) f:_reject(err) end
             )

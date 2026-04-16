@@ -200,6 +200,24 @@ catch(e){process.stderr.write(e.message);process.exit(1)}
     return data
 end
 
+--- Extract module names from build-profile.json5.
+--- @param profile table parsed build-profile.json5
+--- @return string[] module names (e.g., {"entry"})
+local function extract_modules(profile)
+    local modules = {}
+    if profile and profile.modules then
+        for _, m in ipairs(profile.modules) do
+            if m.name then
+                modules[#modules + 1] = m.name
+            end
+        end
+    end
+    if #modules == 0 then
+        modules[1] = "entry"  -- fallback default
+    end
+    return modules
+end
+
 --- Return the default configurations for this module.
 --- Auto-detects products from build-profile.json5.
 --- @param path string absolute project path
@@ -211,6 +229,7 @@ function M.default_configurations(path, config)
 
     if profile and profile.app and profile.app.products then
         local configs = {}
+        local modules = extract_modules(profile)
         for _, product in ipairs(profile.app.products) do
             if product.name then
                 configs[product.name] = {
@@ -218,6 +237,7 @@ function M.default_configurations(path, config)
                     product = product.name,
                     mode = "debug",
                     runtime_os = product.runtimeOS,
+                    modules = modules,
                     abi_filters = product.buildOption
                         and product.buildOption.externalNativeOptions
                         and product.buildOption.externalNativeOptions.abiFilters,
@@ -317,26 +337,15 @@ function M.map_variant(variant_type, available_configs)
     return nil
 end
 
---- Return overseer task templates for a project.
+--- Resolve common task context from project and tool_data.
 --- @param project loomworks.ModuleContext
---- @param active_config string
---- @return table[] tasks
-function M.tasks(project, active_config)
+--- @return table ctx { abs_path, td, node, hvigorw_js, ohpm, env }
+local function resolve_task_ctx(project)
     local abs_path = project.workspace_root .. "/" .. project.path
-    local configuration_key = project.configuration_key or active_config
     local td = project.tool_data
-    -- Non-keyed tool: profile doesn't store tool_data, detect directly
     if not td or not td.deveco_home then
         td = detect_deveco() or {}
     end
-
-    -- Resolve product and mode from configuration
-    local config_info = project.configurations and project.configurations[active_config]
-    local product = config_info and config_info.product or "default"
-    local mode = config_info and config_info.mode or "debug"
-
-    -- DevEco runs hvigorw via node directly (not the .bat wrapper)
-    -- to avoid .npmrc dependency issues
     local node = td.node or vim.fn.exepath("node")
     local hvigorw_js = td.deveco_home
         and (td.deveco_home .. "/tools/hvigor/bin/hvigorw.js")
@@ -345,15 +354,56 @@ function M.tasks(project, active_config)
         and (td.deveco_home .. "/tools/ohpm/bin/ohpm.bat")
         or "ohpm"
     local env = td.deveco_home and hvigor_env(td) or {}
+    return {
+        abs_path = abs_path,
+        td = td,
+        node = node,
+        hvigorw_js = hvigorw_js,
+        ohpm = ohpm,
+        env = env,
+    }
+end
+
+--- Build an hvigorw command array.
+--- @param ctx table from resolve_task_ctx
+--- @param args string[] hvigor arguments
+--- @return string[]
+local function hvigor_cmd(ctx, args)
+    if ctx.hvigorw_js and ctx.node then
+        local cmd = { ctx.node, ctx.hvigorw_js }
+        vim.list_extend(cmd, args)
+        return cmd
+    end
+    local cmd = { ctx.td.hvigorw or "hvigorw" }
+    vim.list_extend(cmd, args)
+    return wrap_cmd(cmd)
+end
+
+--- Return overseer task templates for a project.
+--- Configure = ohpm install + hvigor sync.
+--- Build = hvigor assembleHap.
+--- @param project loomworks.ModuleContext
+--- @param active_config string
+--- @return table[] tasks
+function M.tasks(project, active_config)
+    local ctx = resolve_task_ctx(project)
+    local configuration_key = project.configuration_key or active_config
+
+    -- Resolve product and modules from configuration
+    local config_info = project.configurations and project.configurations[active_config]
+    local product = config_info and config_info.product or "default"
+    local modules = config_info and config_info.modules or { "entry" }
+    local module_param = modules[1]  -- primary module for build
 
     return {
+        -- Configure step 1: ohpm install (dependency resolution)
         {
-            name = project.name .. ": configure",
+            name = project.name .. ": ohpm install",
             builder = function()
                 return {
-                    cmd = wrap_cmd({ ohpm, "install" }),
-                    cwd = abs_path,
-                    env = env,
+                    cmd = wrap_cmd({ ctx.ohpm, "install" }),
+                    cwd = ctx.abs_path,
+                    env = ctx.env,
                 }
             end,
             loomworks = {
@@ -362,31 +412,38 @@ function M.tasks(project, active_config)
                 configuration_key = configuration_key,
             },
         },
+        -- Configure step 2: hvigor sync (project structure resolution)
+        {
+            name = project.name .. ": sync",
+            builder = function()
+                return {
+                    cmd = hvigor_cmd(ctx, {
+                        "--sync",
+                        "-p", "product=" .. product,
+                        "--no-daemon" }),
+                    cwd = ctx.abs_path,
+                    env = ctx.env,
+                }
+            end,
+            loomworks = {
+                project_key = project.name,
+                action = "configure",
+                configuration_key = configuration_key,
+            },
+        },
+        -- Build: hvigor assembleHap
         {
             name = project.name .. ": build " .. active_config,
             builder = function()
-                -- hvigor uses --mode module (not debug/release).
-                -- Product selects the build variant.
-                local cmd
-                if hvigorw_js and node then
-                    cmd = { node, hvigorw_js,
-                        "--mode", "module",
-                        "-p", "module=entry",
-                        "-p", "product=" .. product,
-                        "assembleHap",
-                        "--no-daemon" }
-                else
-                    cmd = wrap_cmd({ td.hvigorw or "hvigorw",
-                        "assembleHap",
-                        "--mode", "module",
-                        "-p", "module=entry",
-                        "-p", "product=" .. product,
-                        "--no-daemon" })
-                end
                 return {
-                    cmd = cmd,
-                    cwd = abs_path,
-                    env = env,
+                    cmd = hvigor_cmd(ctx, {
+                        "--mode", "module",
+                        "-p", "module=" .. module_param,
+                        "-p", "product=" .. product,
+                        "assembleHap",
+                        "--no-daemon" }),
+                    cwd = ctx.abs_path,
+                    env = ctx.env,
                 }
             end,
             loomworks = {
@@ -403,33 +460,17 @@ end
 --- @param active_config string
 --- @return table[] tasks
 function M.clean_tasks(project, active_config)
-    local abs_path = project.workspace_root .. "/" .. project.path
+    local ctx = resolve_task_ctx(project)
     local configuration_key = project.configuration_key or active_config
-    local td = project.tool_data
-    if not td or not td.deveco_home then
-        td = detect_deveco() or {}
-    end
-
-    local node = td.node or vim.fn.exepath("node")
-    local hvigorw_js = td.deveco_home
-        and (td.deveco_home .. "/tools/hvigor/bin/hvigorw.js")
-        or nil
-    local env = td.deveco_home and hvigor_env(td) or {}
 
     return {
         {
             name = project.name .. ": clean",
             builder = function()
-                local cmd
-                if hvigorw_js and node then
-                    cmd = { node, hvigorw_js, "clean", "--no-daemon" }
-                else
-                    cmd = wrap_cmd({ td.hvigorw or "hvigorw", "clean", "--no-daemon" })
-                end
                 return {
-                    cmd = cmd,
-                    cwd = abs_path,
-                    env = env,
+                    cmd = hvigor_cmd(ctx, { "clean", "--no-daemon" }),
+                    cwd = ctx.abs_path,
+                    env = ctx.env,
                 }
             end,
             loomworks = {
@@ -454,26 +495,29 @@ end
 function M.inspect(path, config, cached)
     local reasons = {}
 
-    local profile_stat = uv.fs_stat(path .. "/build-profile.json5")
-    local pkg_stat = uv.fs_stat(path .. "/oh-package.json5")
+    -- Files that trigger re-sync when modified
+    local check_files = {
+        { file = "build-profile.json5", label = "build-profile.json5" },
+        { file = "oh-package.json5", label = "oh-package.json5" },
+        { file = "hvigorfile.ts", label = "hvigorfile.ts" },
+        { file = "entry/build-profile.json5", label = "entry/build-profile.json5" },
+        { file = "entry/oh-package.json5", label = "entry/oh-package.json5" },
+        { file = "entry/src/main/module.json5", label = "module.json5" },
+    }
 
     for _, cached_config in pairs(cached) do
         if cached_config.last_configured then
             local configured_time = cached_config.last_configured
-            if profile_stat then
-                local t = os.date("!%Y-%m-%dT%H:%M:%SZ", profile_stat.mtime.sec)
-                if t > configured_time then
-                    reasons[#reasons + 1] = "build-profile.json5 modified since last configure"
-                    break
+            for _, cf in ipairs(check_files) do
+                local stat = uv.fs_stat(path .. "/" .. cf.file)
+                if stat then
+                    local t = os.date("!%Y-%m-%dT%H:%M:%SZ", stat.mtime.sec)
+                    if t > configured_time then
+                        reasons[#reasons + 1] = cf.label .. " modified since last configure"
+                    end
                 end
             end
-            if pkg_stat then
-                local t = os.date("!%Y-%m-%dT%H:%M:%SZ", pkg_stat.mtime.sec)
-                if t > configured_time then
-                    reasons[#reasons + 1] = "oh-package.json5 modified since last configure"
-                    break
-                end
-            end
+            if #reasons > 0 then break end
         end
     end
 
