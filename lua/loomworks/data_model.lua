@@ -406,12 +406,15 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 end
 
                 -- Resolve tool for this project from profile
+                -- Uses tool_for() which checks overrides then SDK
                 local tool_data = nil
                 local tool_key = nil
-                local tools = profile:tools_data()
-                if tools and project and tools[project.type] then
-                    tool_data = tools[project.type].data
-                    tool_key = tools[project.type].key
+                if project then
+                    local tool_ref = profile:tool_for(project.type)
+                    if tool_ref then
+                        tool_data = tool_ref.data
+                        tool_key = tool_ref.key
+                    end
                 end
 
                 -- Compute expected build_dir

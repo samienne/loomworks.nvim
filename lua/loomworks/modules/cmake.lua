@@ -548,6 +548,13 @@ function M.tasks(project, active_config)
     local generator = (config_info and config_info.generator)
             or (kit and kit.generator)
             or nil
+
+    -- Generator is required — no fallback to platform default
+    if not generator and not (config_info and config_info.from_preset) then
+        error("cmake: no generator specified for " .. project.name .. "/" .. active_config
+            .. ". Select a tool/SDK with a generator in the profile.")
+    end
+
     local multi_config = is_multi_config(generator)
 
     local build_dir

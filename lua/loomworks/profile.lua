@@ -583,17 +583,20 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Check if all modules in this profile have tools resolved.
---- A profile is incomplete if any keyed-tool module has no tool available.
---- Non-keyed modules (typescript) don't require explicit tool selection.
+--- A profile is incomplete if any module that requires tools (keyed tools
+--- or SDK-capable modules) has no tool available.
 --- @return boolean
 function Profile:is_complete()
     for _, pp in ipairs(self:projects()) do
         local project = pp._project
-        if project and project._module and project._module.has_keyed_tools then
-            if not self:tool_for(project.type) then
-                return false
-            end
+        if not project or not project._module then goto next end
+        local mod = project._module
+        -- Module needs tools if it has keyed tools or can consume SDK capabilities
+        local needs_tools = mod.has_keyed_tools or (mod.impl and mod.impl.kits_from_sdk)
+        if needs_tools and not self:tool_for(project.type) then
+            return false
         end
+        ::next::
     end
     return true
 end
