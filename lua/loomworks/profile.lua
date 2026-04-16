@@ -256,6 +256,13 @@ function Profile:_derive_key()
     else
         self.key = self._configuration_set_name
     end
+
+    -- Debug: log derived key
+    if self._workspace and self._workspace._core then
+        self._workspace._core._deps.log:debug("Profile key derived: '%s' (sdk_key=%s, tools_raw=%s)",
+            self.key, tostring(self._sdk_key),
+            self._tools_raw and vim.inspect(vim.tbl_keys(self._tools_raw)) or "nil")
+    end
 end
 
 --- Resolve mappings for this profile from pre-resolved references.
