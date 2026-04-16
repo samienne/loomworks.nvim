@@ -130,23 +130,13 @@ function M.open(root)
         local prep = workspace_view.prepare_add_project_from_browser(
             ws, root, entry.abs_path, entry.name, type_info.type)
 
-        if prep.action == "add_direct" then
-            local ok, err = workspace_view.execute_add_project(
-                ws, prep.key, prep.mod_type, prep.path, { mappings = {} }, false)
-            if not ok then
-                vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
-            end
-            return
-        end
-
-        -- show_dialog: may need tool detection first
-        if prep.has_keyed then
-            local mod = modules.get(prep.mod_type)
-            workspace_view.ensure_tools_detected(ws, mod, prep.mod_type, function(keyed_tools)
-                open_mapping_dialog(type_info, prep.key, prep.path, prep.config_names, keyed_tools)
-            end)
-        else
-            open_mapping_dialog(type_info, prep.key, prep.path, prep.config_names, {})
+        -- Add project directly with no mappings.
+        -- Config set mappings and tool/SDK selection happen separately
+        -- via the status page.
+        local ok, err = workspace_view.execute_add_project(
+            ws, prep.key, prep.mod_type, prep.path, { mappings = {} }, false)
+        if not ok then
+            vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
         end
     end
 

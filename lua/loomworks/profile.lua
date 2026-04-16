@@ -196,7 +196,11 @@ function Profile:_apply(data)
     self._tools_raw = data.tools or nil
     self._sdk_key = data.sdk or nil
     -- SDK domain object resolved during _sync_profiles or set_sdk()
-    if data._sdk then self._sdk = data._sdk end
+    if data._sdk then
+        self._sdk = data._sdk
+        -- Update key to match resolved SDK (migration from old format)
+        self._sdk_key = data._sdk.key
+    end
 
     -- Read pre-resolved Tool domain objects (set by _sync_profiles)
     self._tool_objects = data._tool_objects

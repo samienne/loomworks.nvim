@@ -290,6 +290,13 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
         data._sdk = nil
         if data.sdk then
             data._sdk = workspace:find_sdk(data.sdk)
+            if data._sdk then
+                workspace._core._deps.log:debug("Profile '%s': SDK '%s' resolved", key, data.sdk)
+            else
+                workspace._core._deps.log:warn("Profile '%s': SDK key '%s' not found in workspace (have %d SDKs)", key, data.sdk, #workspace._sdks)
+            end
+        else
+            workspace._core._deps.log:debug("Profile '%s': no SDK field in data", key)
         end
 
         local existing = ctx.profiles[key]

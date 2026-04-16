@@ -2637,7 +2637,10 @@ function Workspace:_user_config_from_objects()
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
-            if profile._tools_raw then
+            if profile._sdk_key then
+                entry.sdk = profile._sdk_key
+            end
+            if profile._tools_raw and next(profile._tools_raw) then
                 entry.tools = profile._tools_raw
             end
             profiles[profile.key] = entry
@@ -3179,7 +3182,12 @@ function Workspace:_sync_sdks(config_sdks, user_sdks)
             local info = provider.validate(path)
             if info then
                 version = info.version or version
-                local sdk = provider.create_sdk(key, path, version)
+                -- Normalize key to include version (migration from old keyless format)
+                local resolved_key = key
+                if version and not key:match("%-[%d%.]+$") then
+                    resolved_key = sdk_type .. "-" .. version
+                end
+                local sdk = provider.create_sdk(resolved_key, path, version)
                 sdk._workspace = self
                 new_sdks[#new_sdks + 1] = sdk
                 log:debug("SDK '%s': resolved at %s (v%s)", key, path, version or "?")
@@ -3271,11 +3279,20 @@ function Workspace:sdks()
 end
 
 --- Find an SDK by key.
+--- Matches exact key first, then falls back to type-prefix match
+--- (e.g., "ohos" matches "ohos-6.0.1.251" for migration).
 --- @param key string
 --- @return loomworks.SDK|nil
 function Workspace:find_sdk(key)
+    -- Exact match first
     for _, sdk in ipairs(self._sdks) do
         if sdk.key == key then return sdk end
+    end
+    -- Prefix match: "ohos" matches "ohos-6.0.1.251"
+    for _, sdk in ipairs(self._sdks) do
+        if sdk.key:sub(1, #key) == key and (sdk.key:sub(#key + 1, #key + 1) == "-" or sdk.key:sub(#key + 1, #key + 1) == "") then
+            return sdk
+        end
     end
     return nil
 end
@@ -3291,19 +3308,15 @@ function Workspace:add_sdk(sdk_type, path)
         return nil, "no provider for SDK type '" .. sdk_type .. "'"
     end
 
-    local key = sdk_type
-    -- Avoid key collision
-    if self:find_sdk(key) then
-        local i = 2
-        while self:find_sdk(key .. "-" .. i) do i = i + 1 end
-        key = key .. "-" .. i
-    end
-
     local sdk
     if path then
         local info = provider.validate(path)
         if not info then
             return nil, "'" .. path .. "' is not a valid " .. sdk_type .. " installation"
+        end
+        local key = sdk_type .. (info.version and ("-" .. info.version) or "")
+        if self:find_sdk(key) then
+            return nil, "SDK '" .. key .. "' already added"
         end
         sdk = provider.create_sdk(key, path, info.version)
     else
@@ -3312,6 +3325,10 @@ function Workspace:add_sdk(sdk_type, path)
             return nil, "no " .. sdk_type .. " installation found"
         end
         local inst = installations[1]
+        local key = sdk_type .. (inst.version and ("-" .. inst.version) or "")
+        if self:find_sdk(key) then
+            return nil, "SDK '" .. key .. "' already added"
+        end
         sdk = provider.create_sdk(key, inst.path, inst.version)
     end
 
@@ -3401,7 +3418,8 @@ function Workspace:add_project(key, type, path)
         return nil, err
     end
 
-    self._core._deps.events.emit("active_set_changed", self._active_set)
+    -- Remerge so module info() discovers configurations for the new project
+    self:remerge()
     return project
 end
 
