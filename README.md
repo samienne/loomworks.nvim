@@ -9,12 +9,12 @@ modifies your project files and collaborators don't need to know it exists.
 
 ## Status
 
-Early development (v0.0.1-dev). The cmake module is fully implemented; ets and
+Early development (v0.0.1-dev). The cmake module is fully implemented; harmony and
 typescript modules are shims.
 
 ## Features
 
-- **Multi-project workspaces** — manage cmake, ets, and typescript projects
+- **Multi-project workspaces** — manage cmake, harmony, and typescript projects
   from a single `loomworks.json`
 - **CMake preset support** — reads `CMakePresets.json` and
   `CMakeUserPresets.json` with full inheritance
@@ -148,7 +148,7 @@ Projects are declared with their type as the inner key:
 }
 ```
 
-Available types: `cmake` (full), `ets` (shim), `typescript` (shim).
+Available types: `cmake` (full), `harmony`, `typescript` (shim).
 
 ### Paths
 

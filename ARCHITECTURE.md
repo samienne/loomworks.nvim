@@ -77,7 +77,7 @@ system does (data model, state machines, UI behavior, invariants), see
     ui/sections/   ◄── pure rendering functions, one per section
       profiles.lua
       orphaned.lua
-      config_sets.lua
+      config_sharmony.lua
       projects.lua
 
     lua/overseer/component/loomworks/task_tracker.lua
@@ -230,7 +230,7 @@ may import from its own layer or any layer below it, never above.
    for API calls. UI callers that mutate state (project_browser, actions)
    obtain the Workspace via `lw.get_workspace()` and call workspace methods
    directly (e.g., `ws:add_project()`, `ws:add_configuration_set()`).
-6. **Modules** (cmake, ets, typescript) know nothing about profiles, UI, or
+6. **Modules** (cmake, harmony, typescript) know nothing about profiles, UI, or
    overseer. They implement the module interface (validate, info, tasks,
    inspect, detect_tools) and operate on project paths and config data.
 7. **Integrations** (overseer, lsp, fidget, lualine) consume the public API
@@ -290,7 +290,7 @@ may import from its own layer or any layer below it, never above.
 | `config_editor.lua` | **Legacy** — retained for backward compatibility but not used at runtime. Mutation methods (`add_project`, `remove_project`, `add_configuration_set`, etc.) have moved to Workspace. Only `create_workspace` remains as a standalone entry point (paralleled by `workspace.create_workspace_config`) | Domain logic; know about runtime model |
 | `modules/init.lua` | Module registry, lazy loading, detection orchestration (`detect_all_types`, `scan_directory_async`) | Implement module logic |
 | `modules/cmake.lua` | CMake module: detect, validate, info (preset + loomworks config separation), default_configurations, resolve_configurations (inheritance model), resolve_options/resolve_options_with_sources (option merge with source tracking), resolve_variant_source, tasks (CMAKE_BUILD_TYPE auto-set, user -D options), inspect, detect_tools/detect_tools_async, parse_file_api (target discovery), get_options (cache variables), map_variant. Static `has_keyed_tools = true`, `has_options = true` | Know about profiles, UI, or overseer |
-| `modules/ets.lua`, `modules/typescript.lua` | Shim modules (detect + validate + info + default_configurations + detect_tools_async + map_variant). Defaults always present, user configs merged on top. Static `has_keyed_tools = false`, `has_options = false` | Anything beyond the shim interface |
+| `modules/harmony.lua`, `modules/typescript.lua` | Shim modules (detect + validate + info + default_configurations + detect_tools_async + map_variant). Defaults always present, user configs merged on top. Static `has_keyed_tools = false`, `has_options = false` | Anything beyond the shim interface |
 | `progress/init.lua` | Parser registry mapping tool names to parser functions | Parse output itself |
 | `progress/ninja.lua` | Ninja `[n/m]` output parser | Know about other build tools |
 | `types.lua` | LuaCATS type annotations for all data shapes | Contain runtime code (never `require`d) |
@@ -530,7 +530,7 @@ through files.
 8. BuildDirRefs — reverse index from BuildDir paths
 
 **Module** (`module.lua`) wraps a stateless module function table (cmake.lua,
-ets.lua, typescript.lua) as a per-workspace domain object. Owns the Tool
+harmony.lua, typescript.lua) as a per-workspace domain object. Owns the Tool
 registry for its module type. No `_workspace` back-reference — pure domain
 object. Created during `_sync_modules()`. `Project._module` replaces
 `project.type` string for module identity (type string kept for display).
@@ -539,7 +539,7 @@ object. Created during `_sync_modules()`. `Project._module` replaces
 Owned by `Module._tools` registry, keyed by `tool_key`.
 `Tool._module` references the owning Module domain object.
 Created from async detection results AND from cached tool_data at startup.
-For non-keyed modules (ets, typescript), a single default Tool with nil key
+For non-keyed modules (harmony, typescript), a single default Tool with nil key
 exists. ConfigUnit, Profile, and Project carry `_tool` references alongside
 legacy `tool` ToolRef tables. Accessor: `unit:tool_object()`,
 `profile:tool_object_for(module)`.
@@ -704,7 +704,7 @@ loomworks.nvim/
 │   │   ├── modules/
 │   │   │   ├── init.lua               Module registry, detection orchestration
 │   │   │   ├── cmake.lua              CMake module (full v1)
-│   │   │   ├── ets.lua                ETS shim
+│   │   │   ├── harmony.lua                ETS shim
 │   │   │   └── typescript.lua         TypeScript shim
 │   │   ├── progress/
 │   │   │   ├── init.lua               Progress parser registry
@@ -725,7 +725,7 @@ loomworks.nvim/
 │   │       └── sections/
 │   │           ├── profiles.lua       Profiles section
 │   │           ├── orphaned.lua       Orphaned Items section (configs + stray dirs)
-│   │           ├── config_sets.lua    Configuration Sets section
+│   │           ├── config_sharmony.lua    Configuration Sets section
 │   │           ├── projects.lua       Projects section
 │   │           └── debug.lua         Debug Adapters section
 │   ├── overseer/

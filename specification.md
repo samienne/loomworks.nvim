@@ -22,7 +22,7 @@ top-level organizational unit.
 
 ### 1.2 Project
 
-A project is a sub-component of a workspace with a type (cmake, ets,
+A project is a sub-component of a workspace with a type (cmake, harmony,
 typescript, etc.). Projects are declared in `loomworks.json` and/or
 `loomworks.user.json` under `"projects"` (see §2.4 for the merge model).
 
@@ -167,7 +167,7 @@ cache entries.
 - **Keyed tools** (cmake): cache key = `"variant:tool_key"` (e.g.,
   `"Debug:ninja-gcc-12"`). Each generator+compiler produces different build
   output.
-- **Non-keyed tools** (ets, typescript): cache key = `"variant"`. The tool
+- **Non-keyed tools** (harmony, typescript): cache key = `"variant"`. The tool
   does not affect the cache key.
 
 Tool detection runs asynchronously in the background:
@@ -268,7 +268,7 @@ entire system. They are never destroyed during a session.
       }
     },
     "Frontend": { "typescript": {} },
-    "NativeDemo": { "ets": {} }
+    "NativeDemo": { "harmony": {} }
   },
   "configuration_sets": {
     "Debug":   { "App": "Debug",   "Frontend": "development", "NativeDemo": "debug" },
@@ -300,7 +300,7 @@ entire system. They are never destroyed during a session.
 | `depends_on` | Reserved for future cross-project dependencies (ignored in v1) |
 | `<type>` | Inner key determines project type; value is the type-specific config |
 
-The type key (`cmake`, `ets`, `typescript`) is the only required field. Its
+The type key (`cmake`, `harmony`, `typescript`) is the only required field. Its
 value is a table passed to the module as `type_config`.
 
 **CMake type_config fields**:
@@ -1834,7 +1834,7 @@ the marker file that triggered detection, or `nil` if not detected.
 - **cmake**: checks for `CMakeLists.txt`
 - **typescript**: checks for `tsconfig.json` first, then `package.json` with
   a `typescript` dependency
-- **ets**: checks for `build-profile.json5`
+- **harmony**: checks for `build-profile.json5`
 
 Used by the project browser for auto-detection. Lightweight check — no
 subprocess spawning, no deep file parsing.
@@ -1885,7 +1885,7 @@ Detect available tools for this module type asynchronously. Calls
 - `tool_data`: opaque table of tool properties (stored in cache)
 - Additional fields added by core: `tool_key`, `tool_label`
 
-Non-keyed modules (ets, typescript) may call the callback
+Non-keyed modules (harmony, typescript) may call the callback
 immediately with a single entry containing empty `tool_data`.
 
 Modules that spawn subprocesses (e.g., cmake compiler detection)
@@ -1915,7 +1915,7 @@ detected tools against cached tools.
 
 Declares whether this module's tools produce distinct build artifacts
 requiring separate cache entries. `true` for cmake, `false`/nil for
-ets and typescript. Used by merge to construct config keys without
+harmony and typescript. Used by merge to construct config keys without
 requiring tool detection to complete first.
 
 ### 9.3 Variant mapping
@@ -1937,7 +1937,7 @@ Each module knows its own naming conventions:
 |--------|-------|---------|---------------|
 | cmake | `"Debug"` (case-insensitive) | `"Release"` | `"RelWithDebInfo"` |
 | typescript | `"development"`, then `"default"` | `"production"`, then `"default"` | — |
-| ets | `"debug"` | `"release"` | — |
+| harmony | `"debug"` | `"release"` | — |
 
 **Single-config fallback**: If only one configuration exists, return it for
 any variant type (the project builds the same way regardless).

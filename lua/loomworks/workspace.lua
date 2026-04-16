@@ -3098,7 +3098,7 @@ end
 --- Updates config, remerges, and saves to disk.
 --- Mappings are added separately via ConfigurationSet:update_mapping().
 --- @param key string project key
---- @param type string module type ("cmake", "typescript", "ets")
+--- @param type string module type ("cmake", "typescript", "harmony")
 --- @param path? string relative path (defaults to key)
 --- @return boolean ok, string|nil err
 function Workspace:add_project(key, type, path)
