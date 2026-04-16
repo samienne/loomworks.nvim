@@ -557,6 +557,21 @@ end
 -- Queries
 -- ---------------------------------------------------------------------------
 
+--- Check if all modules in this profile have tools resolved.
+--- A profile is incomplete if any project's module has no tool available.
+--- @return boolean
+function Profile:is_complete()
+    for _, pp in ipairs(self:projects()) do
+        local project = pp._project
+        if project and project.type then
+            if not self:tool_for(project.type) then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 --- Check if this profile has any configured entries.
 --- Iterates ProfileProjects and checks each ConfigUnit's state.
 --- @return boolean

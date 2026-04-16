@@ -139,6 +139,9 @@ return function(tree, ctx)
         if profile.orphaned_set then
             display = display .. " [stale]"
         end
+        if not profile:is_complete() then
+            display = display .. " [incomplete]"
+        end
 
         display = display .. " (" .. status_label .. ")"
         if has_operation then

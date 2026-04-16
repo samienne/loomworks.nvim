@@ -1206,6 +1206,24 @@ function Workspace:get_tool_entries()
                 }
             end
         end
+        -- Add SDK entries — each resolved SDK is a tool source option
+        for _, sdk in ipairs(self._sdks) do
+            if sdk:is_resolved() then
+                -- SDK contributes to profile key via its key
+                local tools_dict = { [sdk:sdk_type()] = { key = sdk.key } }
+                local pkey = merge_mod.profile_key(cs.name, tools_dict)
+                local profile = profiles_by_key[pkey]
+                entries[#entries + 1] = {
+                    profile_key = pkey,
+                    tool_key = sdk.key,
+                    tool_label = sdk:display_name(),
+                    sdk = sdk,  -- SDK domain object for profile creation
+                    cached = true,
+                    profile = profile,
+                }
+            end
+        end
+
         result[cs.name] = entries
     end
 
