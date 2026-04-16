@@ -354,8 +354,9 @@ function M._create_profile_step2(cs, set_name, activate)
     local tool_entries = lw.get_tool_entries()
     local entries = tool_entries[set_name] or {}
 
-    if #entries <= 1 then
-        local profile = wv.execute_create_profile(cs, entries[1] or nil, activate)
+    if #entries == 0 then
+        -- No tools available — create profile without tools (will be incomplete for keyed modules)
+        local profile = wv.execute_create_profile(cs, nil, activate)
         if profile and not activate then
             vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
         end
