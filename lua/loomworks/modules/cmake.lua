@@ -979,23 +979,41 @@ end
 --- @param sdk loomworks.SDK
 --- @return { tool_data: table }[]
 function M.kits_from_sdk(caps, sdk)
-    if not caps or not caps.toolchain_file then return {} end
-    local archs = caps.archs or {}
+    if not caps then return {} end
     local kits = {}
-    for _, arch in ipairs(archs) do
-        local extra_args = {}
-        if caps.arch_args and caps.arch_args[arch] then
-            vim.list_extend(extra_args, caps.arch_args[arch])
+    local cmake_path = caps.cmake_path
+
+    -- Support multi-platform SDKs (e.g., HarmonyOS + OpenHarmony)
+    local platforms = caps.platforms
+    if not platforms and caps.toolchain_file then
+        -- Legacy single-platform format
+        platforms = { {
+            name = sdk:display_name(),
+            toolchain_file = caps.toolchain_file,
+            archs = caps.archs or {},
+            arch_args = caps.arch_args or {},
+        } }
+    end
+    if not platforms then return {} end
+
+    for _, platform in ipairs(platforms) do
+        local platform_name = platform.name
+        for _, arch in ipairs(platform.archs or {}) do
+            local extra_args = {}
+            if platform.arch_args and platform.arch_args[arch] then
+                vim.list_extend(extra_args, platform.arch_args[arch])
+            end
+            local id_parts = { sdk:sdk_type(), platform_name:lower():gsub("%s+", "-"), arch }
+            kits[#kits + 1] = { tool_data = {
+                id = table.concat(id_parts, "-"),
+                display = platform_name .. " " .. (sdk:sdk_version() or "") .. " " .. arch,
+                generator = "Ninja",
+                toolchain = platform.toolchain_file,
+                cmake_path = cmake_path,
+                extra_args = extra_args,
+                sdk_key = sdk.key,
+            } }
         end
-        kits[#kits + 1] = { tool_data = {
-            id = sdk:sdk_type() .. "-" .. arch,
-            display = (caps.sdk_display or sdk:display_name()) .. " " .. arch,
-            generator = "Ninja",
-            toolchain = caps.toolchain_file,
-            cmake_path = caps.cmake_path,
-            extra_args = extra_args,
-            sdk_key = sdk.key,
-        }}
     end
     return kits
 end

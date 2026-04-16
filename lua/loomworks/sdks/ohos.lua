@@ -7,7 +7,7 @@ local SDK = require("loomworks.sdk")
 
 local P = {}
 P.id = "ohos"
-P.display_name = "OpenHarmony"
+P.display_name = "DevEco Studio"
 
 local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
@@ -186,17 +186,52 @@ function P.query_capabilities(sdk, module_id)
     end
 
     if module_id == "cmake" then
-        local native = path .. "/sdk/default/openharmony/native"
-        local toolchain = native .. "/build/cmake/ohos.toolchain.cmake"
-        if not uv.fs_stat(toolchain) then return nil end
+        -- Offer both HarmonyOS and OpenHarmony toolchains if available
+        local ohos_native = path .. "/sdk/default/openharmony/native"
+        local hmos_native = path .. "/sdk/default/hms/native"
+        local ohos_tc = ohos_native .. "/build/cmake/ohos.toolchain.cmake"
+        local hmos_tc = hmos_native .. "/build/cmake/hmos.toolchain.cmake"
+        -- cmake_path is shared (from OpenHarmony SDK)
+        local cmake_path = resolve_tool(ohos_native .. "/build-tools/cmake/bin/cmake", exe_exts)
+
+        local platforms = {}
+        if uv.fs_stat(hmos_tc) then
+            platforms[#platforms + 1] = {
+                name = "HarmonyOS",
+                toolchain_file = hmos_tc,
+                archs = { "arm64-v8a" },
+                arch_args = {
+                    ["arm64-v8a"] = {
+                        "-DOHOS_ARCH=arm64-v8a",
+                        "-DOHOS_SDK_NATIVE=" .. ohos_native,
+                        "-DHMOS_SDK_NATIVE=" .. hmos_native,
+                    },
+                },
+            }
+        end
+        if uv.fs_stat(ohos_tc) then
+            platforms[#platforms + 1] = {
+                name = "OpenHarmony",
+                toolchain_file = ohos_tc,
+                archs = { "arm64-v8a", "armeabi-v7a" },
+                arch_args = {
+                    ["arm64-v8a"] = {
+                        "-DOHOS_ARCH=arm64-v8a",
+                        "-DOHOS_SDK_NATIVE=" .. ohos_native,
+                    },
+                    ["armeabi-v7a"] = {
+                        "-DOHOS_ARCH=armeabi-v7a",
+                        "-DOHOS_SDK_NATIVE=" .. ohos_native,
+                    },
+                },
+            }
+        end
+
+        if #platforms == 0 then return nil end
+
         return {
-            toolchain_file = toolchain,
-            cmake_path = resolve_tool(native .. "/build-tools/cmake/bin/cmake", exe_exts),
-            archs = { "arm64-v8a", "armeabi-v7a" },
-            arch_args = {
-                ["arm64-v8a"] = { "-DOHOS_ARCH=arm64-v8a" },
-                ["armeabi-v7a"] = { "-DOHOS_ARCH=armeabi-v7a" },
-            },
+            platforms = platforms,
+            cmake_path = cmake_path,
             sdk_display = P.display_name .. " " .. (sdk:sdk_version() or ""),
         }
     end

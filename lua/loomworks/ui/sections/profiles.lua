@@ -145,6 +145,7 @@ local function render_profile_details(tree, profile, lw)
                     on_enter = actions.open_task(unit),
                     on_task = actions.open_task(unit),
                     on_build = actions.build_configuration(unit),
+                    on_build_serial = actions.build_serial_configuration(unit),
                     on_rebuild = actions.rebuild_configuration(unit),
                     on_clean = actions.clean_configuration(unit),
                     on_configure = actions.configure_configuration(unit),
@@ -252,6 +253,7 @@ return function(tree, ctx)
                 end
             end,
             on_build = actions.build(profile),
+            on_build_serial = actions.build_serial(profile),
             on_rebuild = actions.rebuild(profile),
             on_clean = actions.clean(profile),
             on_configure = actions.configure(profile),

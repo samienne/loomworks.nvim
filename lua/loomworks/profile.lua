@@ -468,8 +468,8 @@ end
 
 --- Build all projects in this profile via overseer.
 --- @return loomworks.Future
-function Profile:build()
-    return require("loomworks.overseer").run_profile_action(self, "build")
+function Profile:build(opts)
+    return require("loomworks.overseer").run_profile_action(self, "build", opts)
 end
 
 --- Configure all projects in this profile via overseer.

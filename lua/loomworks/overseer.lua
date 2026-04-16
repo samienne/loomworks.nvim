@@ -561,7 +561,7 @@ end
 --- @param action "configure"|"build"
 --- @param on_complete? function legacy callback (deprecated)
 --- @return loomworks.Future
-function M.run_configuration_action(unit, action, on_complete)
+function M.run_configuration_action(unit, action, on_complete, opts)
     local future_mod = require("loomworks.future")
 
     local ok, overseer = pcall(require, "overseer")
@@ -603,6 +603,21 @@ function M.run_configuration_action(unit, action, on_complete)
         end
 
         if action == "build" then
+            -- Apply parallel_jobs override
+            if opts and opts.parallel_jobs then
+                local jobs = tostring(opts.parallel_jobs)
+                for _, task_def in ipairs(all_tasks.build or {}) do
+                    local orig_builder = task_def.builder
+                    task_def.builder = function()
+                        local result = orig_builder()
+                        result.cmd = result.cmd or {}
+                        result.cmd[#result.cmd + 1] = "--"
+                        result.cmd[#result.cmd + 1] = "-j" .. jobs
+                        return result
+                    end
+                end
+            end
+
             local needs_configure = filter_unconfigured_tasks(all_tasks)
             if #needs_configure > 0 then
                 launch_tasks(overseer, needs_configure):next(function()
@@ -844,7 +859,7 @@ end
 --- @param profile loomworks.Profile
 --- @param action string "configure" or "build"
 --- @return loomworks.Future
-function M.run_profile_action(profile, action)
+function M.run_profile_action(profile, action, opts)
     local future_mod = require("loomworks.future")
 
     local ok, overseer = pcall(require, "overseer")
@@ -866,6 +881,21 @@ function M.run_profile_action(profile, action)
             if log then log:warn("run_profile_action: no tasks collected for profile '%s'", profile.key) end
             f:_reject("no tasks")
             return
+        end
+
+        -- Apply parallel_jobs override: wrap build task builders to append -jN
+        if opts and opts.parallel_jobs then
+            local jobs = tostring(opts.parallel_jobs)
+            for _, task_def in ipairs(all_tasks.build or {}) do
+                local orig_builder = task_def.builder
+                task_def.builder = function()
+                    local result = orig_builder()
+                    result.cmd = result.cmd or {}
+                    result.cmd[#result.cmd + 1] = "--"
+                    result.cmd[#result.cmd + 1] = "-j" .. jobs
+                    return result
+                end
+            end
         end
 
         if log then

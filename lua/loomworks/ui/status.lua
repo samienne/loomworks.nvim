@@ -94,6 +94,7 @@ local view = View.new({
         ["h"]       = "close_fold",
         ["<CR>"]    = "enter",
         ["b"]     = "build",
+        ["<C-b>"] = "build_serial",
         ["R"]     = "rebuild",
         ["c"]     = "configure",
         ["C"]     = "clean",

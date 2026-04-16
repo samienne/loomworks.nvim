@@ -16,6 +16,7 @@ local ACTION_ORDER = {
     { action = "enter",     label = "Activate" },
     { action = "create",    label = "Create profile from set" },
     { action = "build",     label = "Build" },
+    { action = "build_serial", label = "Build (serial -j1)" },
     { action = "configure", label = "Configure" },
     { action = "task",      label = "Open task output" },
     { action = "options",   label = "Show build options" },
