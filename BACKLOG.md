@@ -262,3 +262,49 @@ valid modules alongside built-ins. Needs: interface validation, error handling
 for broken modules, load order guarantees, potential config for disabling
 specific modules.
 
+---
+
+## Profile-level SDK integration (design ready, not implemented)
+
+**Problem**: Currently profiles select tools per module type independently.
+Cross-compilation requires all modules to use the same SDK. A cmake project
+and a harmony project in the same profile should both use the same OHOS SDK.
+
+**Design decisions**:
+
+1. **SDK is a profile-level selection**, not per-module. Profile has:
+   - Configuration set
+   - SDK (optional domain object reference, nil = host build)
+   - Tool overrides (for modules SDK doesn't cover)
+
+2. **SDK provides tools to all modules it supports**. Core asks
+   `sdk:query(module.id)` for each module — no module/SDK-specific logic
+   in core. If SDK returns nil for a module, that module uses host tools.
+
+3. **No fallback guessing**. If no tool mapping exists for a module in a
+   profile, the profile is flagged "incomplete" rather than silently
+   creating a default. No automatic Visual Studio / default compiler
+   fallbacks. User must explicitly select.
+
+4. **Profile name includes SDK**. "Debug:ohos" or "Debug:ninja-clang-18".
+   SDK profiles are distinct from host profiles.
+
+5. **Profile creation flow**: pick config set → pick "Host" or an SDK →
+   if host, pick cmake kit (existing flow). If SDK, tools derived
+   automatically from SDK capabilities.
+
+6. **Serialization**: profile stores `sdk_key` string. Deserialization
+   resolves to SDK domain object via workspace. If SDK not found,
+   profile is incomplete.
+
+7. **Core stays generic**: no `if sdk_type == "ohos"` anywhere. Core
+   iterates modules × SDKs via query interface.
+
+**Implementation needed**:
+- Profile domain object: add `_sdk` reference field
+- Profile creation UI: SDK picker step
+- Tool resolution: SDK-first, then module detection, then incomplete
+- Remove all tool fallback guessing from modules
+- Serialization: sdk_key in user.json profiles section
+- Status page: show SDK on profile, incomplete state
+
