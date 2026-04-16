@@ -1,7 +1,7 @@
 local M = {}
 
 M.id = "harmony"
-M.has_keyed_tools = false
+M.has_keyed_tools = true
 M.has_options = false
 M.languages = { "arkts" }
 
@@ -203,28 +203,39 @@ end
 function M.kits_from_sdk(caps, sdk)
     -- caps is expected to contain: deveco_home, node, hvigorw_js, ohpm, hdc, java
     if not caps or not caps.deveco_home then return {} end
-    return { { tool_data = caps } }
+    -- Tag with SDK identity so tool_key can derive a key
+    local td = vim.deepcopy(caps)
+    td.sdk_key = sdk.key
+    td.sdk_display = sdk:display_name()
+    return { { tool_data = td } }
 end
 
---- Compare two eTS tool_data objects. Always match (single tool).
+--- Compare two harmony tool_data objects.
+--- Match by sdk_key if present, otherwise always match.
 --- @param a table
 --- @param b table
 --- @return boolean
 function M.tools_match(a, b)
+    if a.sdk_key and b.sdk_key then
+        return a.sdk_key == b.sdk_key
+    end
     return true
 end
 
---- Cache key suffix. nil = no suffix needed (single tool).
+--- Cache key suffix from tool_data.
 --- @param tool_data table
---- @return nil
+--- @return string|nil
 function M.tool_key(tool_data)
-    return nil
+    return tool_data.sdk_key
 end
 
---- Display label for DevEco Studio tool.
+--- Display label for tool.
 --- @param tool_data table
 --- @return string|nil
 function M.tool_label(tool_data)
+    if tool_data.sdk_display then
+        return tool_data.sdk_display
+    end
     if tool_data.deveco_home then
         return "DevEco Studio"
     end
