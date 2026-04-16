@@ -175,7 +175,7 @@ function M.resolve_adapter(workspace, language)
         local adapter = settings.adapters[lang] or settings.adapters[language]
         if adapter then return adapter end
     end
-    return DEFAULT_ADAPTERS[lang] or "codelldb"
+    return DEFAULT_ADAPTERS[lang]
 end
 
 --- Known adapters per language (for picker UI).
