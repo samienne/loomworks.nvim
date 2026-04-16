@@ -503,9 +503,9 @@ function M.clean_tasks(project, active_config)
     }
 end
 
---- Return progress parser tool name. nil = no progress tracking.
+--- Return progress parser tool name.
 function M.progress_parser()
-    return nil
+    return "hvigor"
 end
 
 --- Check if project files have changed since last build.

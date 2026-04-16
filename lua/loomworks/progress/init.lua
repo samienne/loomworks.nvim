@@ -8,9 +8,9 @@ local M = {}
 --- @alias loomworks.ProgressParser fun(line: string): loomworks.ProgressUpdate|nil
 
 --- @class loomworks.ProgressUpdate
---- @field current number current step
---- @field total number total steps
---- @field message? string optional description (e.g. "Building CXX object...")
+--- @field current? number current step (nil for message-only updates)
+--- @field total? number total steps (nil for message-only updates)
+--- @field message? string status description (e.g. "Building CXX object...", "CompileArkTS")
 
 --- @type table<string, loomworks.ProgressParser>
 local parsers = {}

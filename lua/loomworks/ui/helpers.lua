@@ -7,7 +7,14 @@ local M = {}
 --- @return string
 function M.format_progress(p)
     if not p then return "" end
-    return " [" .. p.current .. "/" .. p.total .. "]"
+    if p.current and p.total and p.total > 0 then
+        local str = " [" .. p.current .. "/" .. p.total .. "]"
+        if p.message then str = str .. " " .. p.message end
+        return str
+    elseif p.message then
+        return " " .. p.message
+    end
+    return ""
 end
 
 --- Format elapsed seconds as a compact duration like "1m23s" or "42s".
@@ -42,7 +49,7 @@ function M.aggregate_progress(pps)
         local status = pp:status()
         if status == "configuring" or status == "building" then
             local p = pp._config_unit:progress()
-            if p then
+            if p and p.current and p.total and p.total > 0 then
                 has_any = true
                 local phase_pct = p.current / p.total
                 if status == "configuring" then
