@@ -60,6 +60,7 @@ function ConfigUnit.new(workspace, id, project_key)
     self._action = nil
     self._progress = nil
     self._start_time = nil
+    self._last_progress_notify = nil
     self._deleting = false
     self._deleting_reason = nil
     self._listeners = {}
@@ -568,12 +569,22 @@ function ConfigUnit:unregister_task(task_id)
     self:_notify()
 end
 
+--- Minimum interval between progress notifications (seconds).
+local PROGRESS_THROTTLE = 0.2
+
 --- Update progress for the running task.
+--- Throttled: notifies at most every PROGRESS_THROTTLE seconds to avoid
+--- excessive UI refreshes from fast-updating output.
 --- @param task_id number
 --- @param progress loomworks.ProgressUpdate
 function ConfigUnit:update_progress(task_id, progress)
     if self._task_id ~= task_id then return end
     self._progress = progress
+    local now = self._workspace._core._deps.clock()
+    if self._last_progress_notify and (now - self._last_progress_notify) < PROGRESS_THROTTLE then
+        return
+    end
+    self._last_progress_notify = now
     self:_notify()
 end
 

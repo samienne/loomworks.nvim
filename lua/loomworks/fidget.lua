@@ -166,11 +166,16 @@ function M.setup()
         if not handle then return end
 
         local p = data.progress
-        if p and p.total > 0 then
-            local pct = math.floor(p.current / p.total * 100)
+        if p then
             local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
-            local msg = pkey .. " [" .. p.current .. "/" .. p.total .. "]"
-            handle:report({ message = msg, percentage = pct })
+            if p.total and p.total > 0 then
+                local pct = math.floor(p.current / p.total * 100)
+                local msg = pkey .. " [" .. p.current .. "/" .. p.total .. "]"
+                if p.message then msg = msg .. " " .. p.message end
+                handle:report({ message = msg, percentage = pct })
+            elseif p.message then
+                handle:report({ message = pkey .. ": " .. p.message })
+            end
         end
     end)
 
