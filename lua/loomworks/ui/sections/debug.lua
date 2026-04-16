@@ -37,10 +37,13 @@ return function(tree, ctx)
     for _, lang in ipairs(languages) do
         local current = debug_mod.resolve_adapter(ws, lang)
         local default = debug_mod.default_adapter(lang)
-        local is_default = (current == default)
 
-        local label = lang .. "  →  " .. current
-        if is_default then
+        -- Skip languages with no known adapter
+        if not current and not default then goto next_lang end
+
+        local is_default = (current == default)
+        local label = lang .. "  →  " .. (current or "(none)")
+        if is_default and current then
             label = label .. "  (default)"
         end
 
@@ -102,6 +105,7 @@ return function(tree, ctx)
                 end)
             end,
         })
+        ::next_lang::
     end
 
     if not debug_mod.available() then

@@ -57,7 +57,12 @@
       "Bash(echo \"Exit code: $?\")",
       "Bash(echo \"EXIT: $?\")",
       "Bash(cat /tmp/*)",
-      "Read(//c/Users/samie/AppData/Local/Temp/claude/C--src-nvim-plugins-loomworks-nvim/1325109c-2771-4822-97a2-25d8d9f39d1b/tasks/**)"
+      "Read(//c/Users/samie/AppData/Local/Temp/claude/C--src-nvim-plugins-loomworks-nvim/1325109c-2771-4822-97a2-25d8d9f39d1b/tasks/**)",
+      "WebFetch(domain:igorlfs.github.io)",
+      "WebFetch(domain:www.lazyvim.org)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); attrs=d.get\\('contributes',{}\\).get\\('debuggers',[{}]\\)[0].get\\('configurationAttributes',{}\\).get\\('launch',{}\\).get\\('properties',{}\\); [print\\(k,v.get\\('description',''\\)[:80]\\) for k,v in sorted\\(attrs.items\\(\\)\\) if 'console' in k.lower\\(\\) or 'terminal' in k.lower\\(\\)]\")",
+      "Bash(where ohpm *)",
+      "Read(//c/Program Files/Huawei/DevEco Studio/**)"
     ]
   }
 }

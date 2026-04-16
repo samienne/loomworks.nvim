@@ -65,9 +65,14 @@ function M.resolve_root(path, normalize)
         if vim.fn.has("win32") == 1 then n = n:lower() end
         return n
     end
-    local root = normalize(path or vim.fn.getcwd())
+    local raw = vim.fs.normalize(vim.fn.fnamemodify(path or vim.fn.getcwd(), ":p"))
+    -- Resolve to actual on-disk case (Windows paths may have wrong casing)
+    local realpath = vim.uv.fs_realpath(raw)
+    if realpath then
+        raw = vim.fs.normalize(realpath)
+    end
     -- Strip trailing slash (normalize may leave one for root dirs)
-    return root:gsub("/$", "")
+    return raw:gsub("/$", "")
 end
 
 --- Create a barebones workspace (loomworks.json) on disk.
@@ -3093,7 +3098,7 @@ end
 --- Updates config, remerges, and saves to disk.
 --- Mappings are added separately via ConfigurationSet:update_mapping().
 --- @param key string project key
---- @param type string module type ("cmake", "typescript", "ets")
+--- @param type string module type ("cmake", "typescript", "harmony")
 --- @param path? string relative path (defaults to key)
 --- @return boolean ok, string|nil err
 function Workspace:add_project(key, type, path)

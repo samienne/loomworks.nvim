@@ -48,7 +48,7 @@ end
 --- Add a project to an existing workspace.
 --- @param root string workspace root directory
 --- @param project_key string project name/key
---- @param type string module type ("cmake", "typescript", "ets")
+--- @param type string module type ("cmake", "typescript", "harmony")
 --- @param path? string relative path (omit if same as project_key)
 --- @return boolean ok, string|nil err
 function M.add_project(root, project_key, type, path)
@@ -79,7 +79,7 @@ end
 --- Does NOT create new configuration sets — only adds mappings to existing ones.
 --- @param root string workspace root directory
 --- @param project_key string project name/key
---- @param type string module type ("cmake", "typescript", "ets")
+--- @param type string module type ("cmake", "typescript", "harmony")
 --- @param path? string relative path (omit if same as project_key)
 --- @param set_mappings table<string, string|nil> set_name → variant (nil entries skipped)
 --- @return boolean ok, string|nil err

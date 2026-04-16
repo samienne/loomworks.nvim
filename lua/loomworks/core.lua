@@ -206,6 +206,17 @@ function Core:_on_files_read(root, paths, results)
         self._workspace.name,
         #self._workspace._projects,
         #self._workspace._profiles)
+    for _, p in ipairs(self._workspace._projects) do
+        local cfg_count = p._configurations and #p._configurations or 0
+        self._deps.log:debug("  Project '%s' [%s]: %d configurations", p.key, p.type or "?", cfg_count)
+        if p._configurations then
+            for _, cfg in ipairs(p._configurations) do
+                local variant = cfg.module_config and cfg.module_config.variant or "?"
+                self._deps.log:debug("    Config '%s' variant=%s abstract=%s",
+                    cfg.name, variant, tostring(cfg:is_abstract()))
+            end
+        end
+    end
     self._deps.notify("loomworks: workspace '" .. self._workspace.name .. "' loaded (" .. self._workspace.root .. ")", vim.log.levels.INFO)
 
     -- Start async tool detection

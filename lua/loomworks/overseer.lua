@@ -123,7 +123,12 @@ local function collect_profile_tasks(profile)
                 and mod.progress_parser(project_ctx, active_config)
                 or nil
 
-        local mod_tasks = mod.tasks(project_ctx, active_config)
+        local ok_t, mod_tasks = pcall(mod.tasks, project_ctx, active_config)
+        if not ok_t or not mod_tasks then
+            vim.notify("loomworks: module '" .. (project.type or "?") .. "' tasks() failed: " .. tostring(mod_tasks),
+                vim.log.levels.ERROR)
+            goto continue
+        end
         for _, task_def in ipairs(mod_tasks) do
             local lw_meta = task_def.loomworks
             if lw_meta then
@@ -416,26 +421,32 @@ end
 --- @param overseer table overseer module
 --- @param task_defs table[] task definitions with .builder and .loomworks
 --- @param on_all_done? function legacy callback (deprecated, use Future)
+--- @param opts? { force?: boolean } force=true bypasses readiness checks
 --- @return loomworks.Future, number launched
-local function launch_tasks(overseer, task_defs, on_all_done)
+local function launch_tasks(overseer, task_defs, on_all_done, opts)
     local future_mod = require("loomworks.future")
+    local force = opts and opts.force or false
 
     -- Classify each task
     local to_launch, to_defer = {}, {}
     for _, task_def in ipairs(task_defs) do
         if not task_def.loomworks then goto next end
-        local readiness = check_task_readiness(task_def)
-        if readiness == "launch" then
+        if force then
             to_launch[#to_launch + 1] = task_def
-        elseif readiness == "defer" then
-            to_defer[#to_defer + 1] = task_def
-        elseif readiness == "block" then
-            local meta = task_def.loomworks
-            vim.notify(
-                "loomworks: " .. meta.project_key .. "/" .. meta.configuration_key
-                    .. " is in unknown state — clean or delete first",
-                vim.log.levels.WARN
-            )
+        else
+            local readiness = check_task_readiness(task_def)
+            if readiness == "launch" then
+                to_launch[#to_launch + 1] = task_def
+            elseif readiness == "defer" then
+                to_defer[#to_defer + 1] = task_def
+            elseif readiness == "block" then
+                local meta = task_def.loomworks
+                vim.notify(
+                    "loomworks: " .. meta.project_key .. "/" .. meta.configuration_key
+                        .. " is in unknown state — clean or delete first",
+                    vim.log.levels.WARN
+                )
+            end
         end
         ::next::
     end
@@ -564,14 +575,27 @@ function M.run_configuration_action(unit, action, on_complete)
     local f = future_mod.Future.new()
 
     local function do_action()
+        local ws = unit._workspace
+        local log = ws and ws._core and ws._core._deps.log
+        if log then log:debug("run_configuration_action: %s for %s/%s",
+            action, unit._init_project_key or "?", unit:variant() or "?") end
+
         local all_tasks = collect_configuration_tasks(unit)
         if not all_tasks then
+            if log then log:warn("run_configuration_action: no tasks returned for %s", action) end
             f:_reject("no tasks for " .. action)
             return
         end
 
+        if log then
+            local n_conf = all_tasks.configure and #all_tasks.configure or 0
+            local n_build = all_tasks.build and #all_tasks.build or 0
+            log:debug("run_configuration_action: %d configure, %d build tasks", n_conf, n_build)
+        end
+
         if action == "configure" then
-            launch_tasks(overseer, all_tasks.configure):next(
+            -- Force=true: explicit configure always runs, even if already configured
+            launch_tasks(overseer, all_tasks.configure, nil, { force = true }):next(
                 function() f:_resolve(true) end,
                 function(err) f:_reject(err) end
             )
@@ -833,10 +857,21 @@ function M.run_profile_action(profile, action)
     local f = future_mod.Future.new()
 
     local function do_action()
+        local ws = loomworks.get_workspace()
+        local log = ws and ws._core and ws._core._deps.log
+        if log then log:debug("run_profile_action: %s for profile '%s'", action, profile.key) end
+
         local all_tasks = collect_profile_tasks(profile)
         if not all_tasks then
+            if log then log:warn("run_profile_action: no tasks collected for profile '%s'", profile.key) end
             f:_reject("no tasks")
             return
+        end
+
+        if log then
+            local n_conf = all_tasks.configure and #all_tasks.configure or 0
+            local n_build = all_tasks.build and #all_tasks.build or 0
+            log:debug("run_profile_action: %d configure, %d build tasks for '%s'", n_conf, n_build, profile.key)
         end
 
         if action == "configure" then
