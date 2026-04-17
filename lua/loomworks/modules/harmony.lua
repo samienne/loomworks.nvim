@@ -273,6 +273,18 @@ local function resolve_task_ctx(project)
     local abs_path = project.workspace_root .. "/" .. project.path
     local td = project.tool_data or {}
     local env = td.deveco_home and hvigor_env(td) or {}
+
+    -- Merge cmake_env from type_config (user-defined env vars for cmake)
+    -- Supports ${workspace_root} expansion
+    local tc = project.type_config or {}
+    if tc.cmake_env then
+        for k, v in pairs(tc.cmake_env) do
+            -- Expand ${workspace_root}
+            v = v:gsub("%${workspace_root}", project.workspace_root)
+            env[k] = v
+        end
+    end
+
     return {
         abs_path = abs_path,
         td = td,
