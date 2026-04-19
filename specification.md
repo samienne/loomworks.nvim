@@ -67,6 +67,24 @@ abstract mixins — not directly buildable, only usable as bases.
 (Debug, Release, RelWithDebInfo, MinSizeRel). User entries in
 the workspace config extend defaults (add options) rather than replace them.
 
+**Harmony configurations**: auto-generated from `build-profile.json5` as
+the cross product of products × module targets × ABI filters. Each
+configuration is named `<product>-<target>-<abi>` (e.g.,
+`default-default-arm64-v8a`, `ohos-default-armeabi-v7a`). Products and
+targets come from the build-profile; ABI filters come from the product's
+`externalNativeOptions.abiFilters`. Non-native projects (no ABI filters)
+use `<product>-<target>` without the ABI suffix.
+
+Each harmony configuration stores: `product` (product name), `target`
+(build target name), `abi` (architecture string or nil), `mode`
+(debug/release), `runtime_os` (HarmonyOS/OpenHarmony), `modules` (hvigor
+module names), `module_name` (primary module for build dir path).
+
+When `build-profile.json5` changes (product added, removed, ABI filters
+changed), configurations that no longer match get `_source_missing`
+treatment — they remain visible but marked as unavailable. New
+combinations appear as new configurations.
+
 ### 1.3.1 Project Variables
 
 Projects can declare user-defined variables with typed defaults. These
@@ -268,11 +286,17 @@ entire system. They are never destroyed during a session.
       }
     },
     "Frontend": { "typescript": {} },
-    "NativeDemo": { "harmony": {} }
+    "NativeDemo": {
+      "harmony": {
+        "cmake_env": {
+          "CORE_SUBMODULE_ROOT": "${workspace_root}/submodules"
+        }
+      }
+    }
   },
   "configuration_sets": {
-    "Debug":   { "App": "Debug",   "Frontend": "development", "NativeDemo": "debug" },
-    "Release": { "App": "Release", "Frontend": "production",  "NativeDemo": "release" }
+    "Debug":   { "App": "Debug",   "Frontend": "development", "NativeDemo": "default-default-arm64-v8a" },
+    "Release": { "App": "Release", "Frontend": "production",  "NativeDemo": "default-default-arm64-v8a" }
   },
   "profiles": {
     "cross-ohos": {
@@ -314,6 +338,13 @@ value is a table passed to the module as `type_config`.
 Configuration overrides may include:
 - `toolchain`: path to CMake toolchain file (`${ENV_VAR}` expanded, no absolute paths)
 - `role`: `"compile_commands"` hides the configuration from UI
+
+**Harmony type_config fields**:
+
+| Field | Description |
+|-------|-------------|
+| `configurations` | Dict of config_name → config overrides |
+| `cmake_env` | Dict of env_var → value, passed to hvigor's cmake as environment variables. Supports `${workspace_root}` expansion. |
 
 **Explicit profile fields**:
 
@@ -503,6 +534,11 @@ Sparse record of what has actually been configured and built.
   generated from domain objects on save via `serialize()` methods. After
   deserialization, the cache data is consumed and discarded — no runtime
   code reads from it.
+- **External build directories**: Modules using external build systems
+  (e.g., harmony/hvigor) may have build directories outside `.nvim/build/`.
+  The cache key for these is their absolute path (no `.nvim/` prefix to
+  strip). `absolute_build_dir()` detects absolute paths and returns them
+  unchanged. Deletion safety requires the path to be under workspace root.
 - Atomic writes (temp + fsync + rename) with .bak recovery.
 
 ### 2.4 Three-file reconciliation
@@ -1937,7 +1973,7 @@ Each module knows its own naming conventions:
 |--------|-------|---------|---------------|
 | cmake | `"Debug"` (case-insensitive) | `"Release"` | `"RelWithDebInfo"` |
 | typescript | `"development"`, then `"default"` | `"production"`, then `"default"` | — |
-| harmony | `"debug"` | `"release"` | — |
+| harmony | first available config | — | — |
 
 **Single-config fallback**: If only one configuration exists, return it for
 any variant type (the project builds the same way regardless).
@@ -1969,6 +2005,33 @@ The cmake module supports `option_groups` in its type_config to map
 variable name prefixes to group paths (e.g.,
 `"GFX": ["Media", "Graphics"]`). CMAKE_ prefixed variables are
 automatically separated into a "CMake Options" group.
+
+**`resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data) → string`** *(optional)*
+
+Return the absolute path of the build directory for a given project
+configuration. Modules that use external build systems (e.g., harmony/hvigor)
+return paths outside `.nvim/build/` managed by the external tool. The path
+must be under `workspace_root` for deletion safety. If not implemented, the
+core uses the default formula: `{workspace_root}/.nvim/build/{project}/{config}`.
+
+The harmony module returns hvigor's cmake build directory:
+`{workspace_root}/{project_path}/{module}/.cxx/{product}/{target}/{mode}/{abi}/`
+
+**`native_build_info(project_path, type_config, tool_data, config_info) → table|nil`** *(optional)*
+
+Return LSP integration data for modules with embedded native code managed
+by an external build system. The core LSP layer calls this when resolving
+clangd configuration for a project. Returns a table with optional fields:
+
+- `clangd_binary`: absolute path to a module/SDK-specific clangd binary
+- `clangd_root`: override for clangd root_dir (defaults to build dir)
+
+The `compile_commands_dir` is resolved by the LSP layer from the project's
+active build directory — the same mechanism as cmake projects. The module
+does not need to provide it explicitly.
+
+Modules that do not have native code (e.g., typescript) do not implement
+this method. The LSP layer only queries it when it exists on the module.
 
 **`parse_file_api(build_dir, config_name?) → targets?`** *(optional)*
 

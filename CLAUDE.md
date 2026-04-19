@@ -329,7 +329,9 @@ These are implementation-specific details not covered by the spec or architectur
 
 **V1 modules:**
 - `cmake` — full implementation
-- `harmony` — full implementation (DevEco detection, hvigor build pipeline)
+- `harmony` — full implementation (DevEco/SDK detection, hvigor build pipeline,
+  product×target×ABI configurations, external build dirs, SDK clangd via
+  native_build_info, cmake_env passthrough)
 - `typescript` — shim (shows project exists, no build functionality)
 
 **Deferred (not in v1):**
