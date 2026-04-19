@@ -637,6 +637,32 @@ function Project:save_options(options)
     return true
 end
 
+--- Save an arbitrary type_config field.
+--- Generic mutation for module-specific settings (e.g., cmake_env).
+--- @param field string field name within type_config
+--- @param value any new value (nil or empty table removes the field)
+--- @return boolean ok, string|nil err
+function Project:save_type_config_field(field, value)
+    local ws = self._workspace
+    self:_mark_user_owned()
+
+    if not self.type_config then self.type_config = {} end
+    local old = self.type_config[field]
+    -- Normalize: nil-out empty tables
+    if type(value) == "table" and not next(value) then value = nil end
+    self.type_config[field] = value
+
+    local ok, err = ws:_save_user()
+    if not ok then
+        self.type_config[field] = old
+        return false, err
+    end
+
+    self:_refresh_configurations()
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
 --- Save a project variable declaration (create or update).
 --- @param var_name string variable name
 --- @param declaration { type: string, default: string }

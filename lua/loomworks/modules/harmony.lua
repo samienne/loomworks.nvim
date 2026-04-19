@@ -130,8 +130,55 @@ local function extract_modules(profile)
     return modules
 end
 
+--- Extract module targets from build-profile.json5.
+--- Returns a flat list of { module_name, target_name, apply_to_products }.
+--- @param profile table parsed build-profile.json5
+--- @return { module_name: string, target_name: string, apply_to_products: string[]|nil }[]
+local function extract_targets(profile)
+    local targets = {}
+    if profile and profile.modules then
+        for _, m in ipairs(profile.modules) do
+            if m.targets then
+                for _, t in ipairs(m.targets) do
+                    if t.name then
+                        targets[#targets + 1] = {
+                            module_name = m.name or "entry",
+                            target_name = t.name,
+                            apply_to_products = t.applyToProducts,
+                        }
+                    end
+                end
+            end
+            -- Module with no targets gets a synthetic "default" target
+            if not m.targets or #m.targets == 0 then
+                targets[#targets + 1] = {
+                    module_name = m.name or "entry",
+                    target_name = "default",
+                    apply_to_products = nil, -- applies to all
+                }
+            end
+        end
+    end
+    if #targets == 0 then
+        targets[1] = { module_name = "entry", target_name = "default" }
+    end
+    return targets
+end
+
+--- Check if a target applies to a given product.
+--- @param target table from extract_targets
+--- @param product_name string
+--- @return boolean
+local function target_applies_to(target, product_name)
+    if not target.apply_to_products then return true end
+    for _, p in ipairs(target.apply_to_products) do
+        if p == product_name then return true end
+    end
+    return false
+end
+
 --- Return the default configurations for this module.
---- Auto-detects products from build-profile.json5.
+--- Generates product × target × ABI combinations from build-profile.json5.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
 --- @return table<string, table>
@@ -141,19 +188,53 @@ function M.default_configurations(path, config)
     if profile and profile.app and profile.app.products then
         local configs = {}
         local modules = extract_modules(profile)
+        local targets = extract_targets(profile)
+
         for _, product in ipairs(profile.app.products) do
-            if product.name then
-                configs[product.name] = {
-                    variant = product.name,
-                    product = product.name,
-                    mode = "debug",
-                    runtime_os = product.runtimeOS,
-                    modules = modules,
-                    abi_filters = product.buildOption
-                        and product.buildOption.externalNativeOptions
-                        and product.buildOption.externalNativeOptions.abiFilters,
-                }
+            if not product.name then goto next_product end
+
+            local abi_filters = product.buildOption
+                and product.buildOption.externalNativeOptions
+                and product.buildOption.externalNativeOptions.abiFilters
+
+            for _, target in ipairs(targets) do
+                if not target_applies_to(target, product.name) then
+                    goto next_target
+                end
+
+                if abi_filters and #abi_filters > 0 then
+                    -- Native project: one config per ABI
+                    for _, abi in ipairs(abi_filters) do
+                        local name = product.name .. "-" .. target.target_name .. "-" .. abi
+                        configs[name] = {
+                            variant = name,
+                            product = product.name,
+                            target = target.target_name,
+                            abi = abi,
+                            mode = "debug",
+                            runtime_os = product.runtimeOS,
+                            modules = modules,
+                            module_name = target.module_name,
+                        }
+                    end
+                else
+                    -- Non-native project: no ABI suffix
+                    local name = product.name .. "-" .. target.target_name
+                    configs[name] = {
+                        variant = name,
+                        product = product.name,
+                        target = target.target_name,
+                        mode = "debug",
+                        runtime_os = product.runtimeOS,
+                        modules = modules,
+                        module_name = target.module_name,
+                    }
+                end
+
+                ::next_target::
             end
+
+            ::next_product::
         end
         if next(configs) then return configs end
     end
@@ -180,6 +261,71 @@ function M.info(path, config)
     end
 
     return { configurations = configurations }
+end
+
+--- Resolve the build directory for a harmony configuration.
+--- Native configurations (with ABI) return hvigor's cmake build dir.
+--- Non-native configurations use the default .nvim/build/ formula.
+--- @param project_name string project key (also used as path segment)
+--- @param config_name string configuration name
+--- @param config_info table|nil module_config from Configuration
+--- @param workspace_root string absolute workspace root
+--- @param tool_data table|nil tool data
+--- @return string absolute build directory path
+function M.resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data)
+    local ci = config_info or {}
+    local abi = ci.abi
+    if not abi then
+        return workspace_root .. "/.nvim/build/" .. project_name .. "/" .. config_name
+    end
+    local module_name = ci.module_name
+        or (ci.modules and ci.modules[1])
+        or "entry"
+    local product = ci.product or "default"
+    local target = ci.target or "default"
+    local mode = ci.mode or "debug"
+    -- hvigor layout: <project>/<module>/.cxx/<product>/<target>/<mode>/<abi>/
+    return workspace_root .. "/" .. project_name .. "/"
+        .. module_name .. "/.cxx/"
+        .. product .. "/" .. target .. "/" .. mode .. "/" .. abi
+end
+
+--- Return native build info for LSP integration.
+--- Provides SDK-bundled clangd binary for projects with native code.
+--- @param project_path string project path (relative)
+--- @param type_config table type_config from loomworks.json
+--- @param tool_data table|nil tool data
+--- @param config_info table|nil cached config / active config info
+--- @return table|nil { clangd_binary? }
+function M.native_build_info(project_path, type_config, tool_data, config_info)
+    -- Only relevant for configurations with native code (ABI set)
+    if not config_info then return nil end
+    -- config_info may be the cached entry which has abi in module_config
+    -- or directly on the config
+    local abi = config_info.abi
+        or (config_info.module_config and config_info.module_config.abi)
+    if not abi then return nil end
+
+    local result = {}
+
+    -- SDK clangd lives in the SDK's LLVM toolchain
+    if tool_data and tool_data.deveco_home then
+        local clangd = tool_data.deveco_home
+            .. "/sdk/default/openharmony/native/llvm/bin/clangd"
+        if is_win then clangd = clangd .. ".exe" end
+        if uv.fs_stat(clangd) then
+            result.clangd_binary = clangd
+        end
+    end
+
+    -- Also check tool_data.clangd directly (set by SDK provider)
+    if not result.clangd_binary and tool_data and tool_data.clangd then
+        if uv.fs_stat(tool_data.clangd) then
+            result.clangd_binary = tool_data.clangd
+        end
+    end
+
+    return next(result) and result or nil
 end
 
 --- Detect available tools.
@@ -243,6 +389,8 @@ function M.tool_label(tool_data)
 end
 
 --- Map a semantic variant type to a configuration name from available configs.
+--- Harmony configs are named <product>-<target>-<abi>, all with mode=debug
+--- by default. For "debug", return the first available configuration.
 --- @param variant_type string "debug"|"release"|"release_debug"
 --- @param available_configs string[] configuration names from info()
 --- @return string|nil matching configuration name
@@ -251,14 +399,7 @@ function M.map_variant(variant_type, available_configs)
         return available_configs[1]
     end
 
-    -- Try exact match first
-    for _, config in ipairs(available_configs) do
-        if config:lower() == variant_type then
-            return config
-        end
-    end
-
-    -- For products like "default", "ohos": return first available
+    -- All harmony configs default to mode=debug, so map "debug" to first
     if variant_type == "debug" then
         return available_configs[1]
     end
@@ -273,6 +414,18 @@ local function resolve_task_ctx(project)
     local abs_path = project.workspace_root .. "/" .. project.path
     local td = project.tool_data or {}
     local env = td.deveco_home and hvigor_env(td) or {}
+
+    -- Merge cmake_env from type_config (user-defined env vars for cmake)
+    -- Supports ${workspace_root} expansion
+    local tc = project.type_config or {}
+    if tc.cmake_env then
+        for k, v in pairs(tc.cmake_env) do
+            -- Expand ${workspace_root}
+            v = v:gsub("%${workspace_root}", project.workspace_root)
+            env[k] = v
+        end
+    end
+
     return {
         abs_path = abs_path,
         td = td,
@@ -309,9 +462,11 @@ function M.tasks(project, active_config)
     local ctx = resolve_task_ctx(project)
     local configuration_key = project.configuration_key or active_config
 
-    -- Resolve product and modules from configuration
+    -- Resolve product, target, ABI, and modules from configuration
     local config_info = project.configurations and project.configurations[active_config]
     local product = config_info and config_info.product or "default"
+    local target = config_info and config_info.target or "default"
+    local abi = config_info and config_info.abi
     local modules = config_info and config_info.modules or { "entry" }
     local module_param = modules[1]  -- primary module for build
 
@@ -456,7 +611,32 @@ function M.inspect(path, config, cached)
         end
     end
 
-    return { needs_refresh = #reasons > 0, reasons = reasons, notes = {} }
+    -- Verify build dir prediction against native_work_dir.txt
+    local notes = {}
+    for cache_key, cached_config in pairs(cached) do
+        if cached_config.build_dir and cached_config.state then
+            local nwd_path = cached_config.build_dir .. "/native_work_dir.txt"
+            local fd = uv.fs_open(nwd_path, "r", 438)
+            if fd then
+                local stat = uv.fs_fstat(fd)
+                if stat then
+                    local data = uv.fs_read(fd, stat.size, 0)
+                    if data then
+                        local actual = data:gsub("%s+$", ""):gsub("\\", "/")
+                        local expected = cached_config.build_dir:gsub("\\", "/")
+                        if actual ~= expected then
+                            notes[#notes + 1] = "build dir mismatch for "
+                                .. cache_key .. ": expected " .. expected
+                                .. " but hvigor used " .. actual
+                        end
+                    end
+                end
+                uv.fs_close(fd)
+            end
+        end
+    end
+
+    return { needs_refresh = #reasons > 0, reasons = reasons, notes = notes }
 end
 
 return M

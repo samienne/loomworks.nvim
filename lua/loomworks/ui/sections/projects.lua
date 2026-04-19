@@ -740,6 +740,60 @@ return function(tree, ctx)
                 end)
             end
 
+            -- Build environment (cmake_env from type_config)
+            local cmake_env = proj.type_config and proj.type_config.cmake_env
+            if cmake_env and next(cmake_env) or not proj.orphaned then
+                local project = proj  -- capture for closure
+                local env = cmake_env or {}
+                tree:group("Build environment:", "Comment", function()
+                    local keys = {}
+                    for k in pairs(env) do keys[#keys + 1] = k end
+                    table.sort(keys)
+                    for _, k in ipairs(keys) do
+                        local ek = k  -- capture
+                        tree:item(k .. "=" .. env[k], {
+                            hl = "LoomworksActionable",
+                            enter_label = "Edit env var",
+                            direct = true,
+                            on_enter = function()
+                                vim.ui.input({ prompt = ek .. "=", default = env[ek] }, function(val)
+                                    if not val then return end
+                                    local new_env = vim.deepcopy(env)
+                                    if val == "" then
+                                        new_env[ek] = nil
+                                    else
+                                        new_env[ek] = val
+                                    end
+                                    project:save_type_config_field("cmake_env", new_env)
+                                end)
+                            end,
+                            on_delete = function()
+                                local new_env = vim.deepcopy(env)
+                                new_env[ek] = nil
+                                project:save_type_config_field("cmake_env", new_env)
+                            end,
+                        })
+                    end
+                    if not proj.orphaned then
+                        tree:item("▸ Add env variable", {
+                            hl = "LoomworksActionable",
+                            direct = true,
+                            on_enter = function()
+                                vim.ui.input({ prompt = "Variable name: " }, function(name)
+                                    if not name or name == "" then return end
+                                    vim.ui.input({ prompt = name .. "=" }, function(val)
+                                        if not val then return end
+                                        local new_env = vim.deepcopy(env)
+                                        new_env[name] = val
+                                        project:save_type_config_field("cmake_env", new_env)
+                                    end)
+                                end)
+                            end,
+                        })
+                    end
+                end)
+            end
+
             tree:blank()
         end)
     end)

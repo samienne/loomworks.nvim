@@ -1,6 +1,8 @@
 --- loomworks/lsp.lua — LSP integration helpers.
 --- Provides factory functions for clangd configuration that inject
 --- project-specific compile_commands_dir and clangd binary overrides.
+--- Works for any module that uses clangd (cmake natively, harmony via
+--- native_build_info interface).
 
 local M = {}
 
@@ -15,7 +17,18 @@ local function expand_env(s)
     end))
 end
 
+--- Check if a project uses clangd for code intelligence.
+--- True for cmake projects and any module implementing native_build_info.
+--- @param project loomworks.Project
+--- @return boolean
+local function project_uses_clangd(project)
+    if project.type == "cmake" then return true end
+    local mod = project._module and project._module.impl
+    return mod and mod.native_build_info ~= nil
+end
+
 --- Find the loomworks project matching a root_dir path.
+--- Matches by project source path (cmake) or build dir (native modules).
 --- @param root_dir string|nil absolute path (clangd root)
 --- @return loomworks.Project|nil project
 --- @return loomworks.Workspace|nil workspace
@@ -33,20 +46,30 @@ local function find_project_by_root(root_dir)
 
     local projects = lw.get_projects()
     for _, project in pairs(projects) do
-        if project.type == "cmake" and project.path then
-            local project_abs = normalize(ws.root .. "/" .. project.path)
-            if project_abs == target then
+        if not project.path or not project_uses_clangd(project) then
+            goto continue
+        end
+        -- Match by project source path (cmake projects)
+        local project_abs = normalize(ws.root .. "/" .. project.path)
+        if project_abs == target then
+            return project, ws
+        end
+        -- Match by build dir (native modules like harmony where clangd
+        -- root is the build dir containing compile_commands.json)
+        if project.cached and project.cached.build_dir then
+            if normalize(project.cached.build_dir) == target then
                 return project, ws
             end
         end
+        ::continue::
     end
 
     return nil, nil
 end
 
---- Resolve the compile_commands.json directory for a cmake project.
---- Handles compile_commands_from redirect (e.g. MSVC sourcing from Ninja companion).
---- @param root_dir string|nil clangd root dir (= project source path)
+--- Resolve the compile_commands.json directory for a project.
+--- Handles compile_commands_from redirect (cmake) and external build dirs.
+--- @param root_dir string|nil clangd root dir
 --- @return string|nil compile_commands_dir
 local function resolve_compile_commands_dir(root_dir)
     local project, ws = find_project_by_root(root_dir)
@@ -54,7 +77,7 @@ local function resolve_compile_commands_dir(root_dir)
 
     local build_dir = nil
 
-    -- Check compile_commands_from redirect
+    -- cmake-specific: compile_commands_from redirect
     if project.cmake and project.cmake.compile_commands_from then
         local ref_cfg = project:get_configuration(project.cmake.compile_commands_from)
         local ref_units = ref_cfg and project:config_units_for_configuration(ref_cfg) or {}
@@ -81,9 +104,13 @@ local function resolve_compile_commands_dir(root_dir)
     return build_dir
 end
 
---- Resolve the clangd binary for a cmake project.
---- Resolution order: project cmake.clangd (env-expanded) > tool_data.clangd_path > nil
---- @param root_dir string|nil clangd root dir (= project source path)
+--- Resolve the clangd binary for a project.
+--- Resolution order:
+---   1. Project cmake.clangd (env-expanded, cmake-specific)
+---   2. Kit/tool clangd_path
+---   3. Module native_build_info clangd_binary
+---   4. nil (use default)
+--- @param root_dir string|nil clangd root dir
 --- @return string|nil clangd_path
 local function resolve_clangd_binary(root_dir)
     local project = find_project_by_root(root_dir)
@@ -101,6 +128,21 @@ local function resolve_clangd_binary(root_dir)
     if project.tool_data and project.tool_data.clangd_path then
         if uv.fs_stat(project.tool_data.clangd_path) then
             return project.tool_data.clangd_path
+        end
+    end
+
+    -- 3. Module native_build_info
+    local mod = project._module and project._module.impl
+    if mod and mod.native_build_info then
+        local info = mod.native_build_info(
+            project.path,
+            project.type_config or {},
+            project.tool_data,
+            project.cached)
+        if info and info.clangd_binary then
+            if uv.fs_stat(info.clangd_binary) then
+                return info.clangd_binary
+            end
         end
     end
 
@@ -157,8 +199,10 @@ function M.get_resolved_cmd(root_dir)
     return _resolved_cmd[root_dir]
 end
 
---- Create a root_dir function that uses loomworks project detection for
---- cmake projects, falling back to the provided function otherwise.
+--- Create a root_dir function that uses loomworks project detection,
+--- falling back to the provided function otherwise.
+--- For cmake: root = project source path.
+--- For native modules (harmony): root = build dir containing compile_commands.json.
 --- @param fallback? fun(bufnr: number, on_dir: fun(root: string))
 --- @return fun(bufnr: number, on_dir: fun(root: string))
 function M.clangd_root_dir(fallback)
@@ -166,9 +210,23 @@ function M.clangd_root_dir(fallback)
         local ok, lw = pcall(require, "loomworks")
         if ok then
             local project = lw.project_for_buf(bufnr)
-            if project and project.type == "cmake" then
+            if project and project_uses_clangd(project) then
                 local ws = lw.get_workspace()
                 if ws then
+                    -- For modules with native_build_info, use build dir as root
+                    -- (compile_commands.json references source files by full path)
+                    local mod = project._module and project._module.impl
+                    if mod and mod.native_build_info and project.type ~= "cmake" then
+                        if project.cached and project.cached.build_dir then
+                            local bd = project.cached.build_dir
+                            local cc = bd .. "/compile_commands.json"
+                            if uv.fs_stat(cc) then
+                                on_dir(vim.fs.normalize(bd))
+                                return
+                            end
+                        end
+                    end
+                    -- Default: project source path
                     on_dir(vim.fs.normalize(ws.root .. "/" .. (project.path or project.key)))
                     return
                 end
@@ -188,6 +246,7 @@ end
 --- LSP server names by module type.
 local LSP_SERVERS = {
     cmake = { "clangd" },
+    harmony = { "clangd" },
     typescript = { "ts_ls", "vtsls", "tsserver" },
 }
 
@@ -234,9 +293,9 @@ function M.get_status()
             end
         end
 
-        -- For cmake: also add resolved compile_commands info
+        -- Resolve compile_commands and clangd info for projects using clangd
         local extra = {}
-        if project.type == "cmake" then
+        if project_uses_clangd(project) then
             extra.compile_commands_dir = resolve_compile_commands_dir(project_abs)
             extra.clangd_bin = resolve_clangd_binary(project_abs)
         end
@@ -309,7 +368,9 @@ local function on_active_set_changed()
     local new_state = {}
 
     for key, project in pairs(projects) do
-        if project.type ~= "cmake" or not project.path then goto continue end
+        if not project.path or not project_uses_clangd(project) then
+            goto continue
+        end
 
         local project_abs = vim.fs.normalize(ws.root .. "/" .. project.path)
         local build_dir = resolve_compile_commands_dir(project_abs)
