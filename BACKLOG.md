@@ -5,6 +5,29 @@ they don't get lost.
 
 ---
 
+## Pluggable debug adapter architecture
+
+`lua/loomworks/debug.lua` currently hardcodes behavior for nvim-dap and
+has static tables of known adapters per language (`codelldb`, `cppdbg`,
+`pwa-node`, etc.). To let third-party plugins add new debuggers
+(gdb-mi, rust-analyzer DAP, custom remote debuggers) without editing
+core, the debug layer should follow the same pattern as LSP integrations:
+
+- Core `debug.lua` keeps a thin dispatcher and a registry of backends.
+- Each backend implementation lives in
+  `lua/loomworks/integrations/debug/<backend>.lua` (or an external
+  plugin path). Backends self-register for specific adapter/language
+  combinations.
+- Modules declare opaque `debug_configs(...)` entries the way they
+  already emit `lsp_configs` — core routes entries to the registered
+  backend by name.
+
+Retrofit would mirror the LSP refactor: define the entry shape, move
+nvim-dap wiring out of `debug.lua` into an integration file, and have
+`resolve_adapter` / `run` read from the registry rather than hardcoded
+tables. Deferred until we have a concrete second adapter to validate
+the design against.
+
 ## Streaming device scan into picker
 
 Currently `Workspace:scan_devices()` waits for all modules' `list_devices`
