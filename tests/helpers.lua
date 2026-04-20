@@ -101,7 +101,7 @@ end
 --- @return string JSON content
 function M.make_cache_json(overrides)
     local base = {
-        _meta = { version = 7, loomworks_hash = "", cached_at = "" },
+        _meta = { version = 8, loomworks_hash = "", cached_at = "" },
         build_dirs = {},
     }
     if overrides then
@@ -257,7 +257,7 @@ function M.make_mock_workspace(overrides)
                     cached_entry.tool_key = unit._tool_key or tool_key
                     cached_entry.tool_data = unit._tool_data or tool_data_val
                 end
-                if unit.cmake_info then cached_entry.cmake = unit.cmake_info end
+                if unit.module_info then cached_entry.module_info = unit.module_info end
                 unit:_apply({
                     cached = cached_entry,
                     project = project,
@@ -635,7 +635,7 @@ function M.refresh_config_unit(ws, unit)
         tool_key = unit._tool_key,
         tool_data = unit._tool_data,
     }
-    if unit.cmake_info then cached_entry.cmake = unit.cmake_info end
+    if unit.module_info then cached_entry.module_info = unit.module_info end
     unit:_apply({
         cached = cached_entry,
         project = project,

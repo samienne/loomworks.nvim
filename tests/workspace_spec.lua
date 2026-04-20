@@ -60,7 +60,7 @@ describe("workspace", function()
             assert.is_not_nil(ws.user)
             assert.is_not_nil(ws.cache)
             assert.equals(2, ws.user._meta.version)
-            assert.equals(7, ws.cache._meta.version)
+            assert.equals(8, ws.cache._meta.version)
         end)
 
         it("parses user.json when provided", function()

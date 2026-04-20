@@ -9,7 +9,7 @@
 --- @field state string|nil "configured" | "built" | "failed_configure" | "failed_build" | "unknown"
 --- @field last_configured string|nil ISO 8601 timestamp
 --- @field last_built string|nil ISO 8601 timestamp
---- @field cmake_info loomworks.CachedCmakeInfo|nil
+--- @field module_info table|nil opaque module-specific cached data (e.g. cmake generator/compiler)
 --- Snapshots at time of last configure (for stale detection):
 --- @field options_snapshot table|nil configuration options when last configured
 --- @field module_config_snapshot table|nil module_config when last configured
@@ -38,7 +38,7 @@ function BuildDir.new(rel_path, abs_path, cached)
         self.state = cached.state
         self.last_configured = cached.last_configured
         self.last_built = cached.last_built
-        self.cmake_info = cached.cmake
+        self.module_info = cached.module_info
         self.options_snapshot = cached.options
         self.module_config_snapshot = cached.module_config
         self.tool_snapshot = cached.tool_key and { key = cached.tool_key, data = cached.tool_data } or nil
@@ -50,7 +50,7 @@ function BuildDir.new(rel_path, abs_path, cached)
         self.state = nil
         self.last_configured = nil
         self.last_built = nil
-        self.cmake_info = nil
+        self.module_info = nil
         self.options_snapshot = nil
         self.module_config_snapshot = nil
         self.tool_snapshot = nil
@@ -79,7 +79,7 @@ function BuildDir:serialize()
         entry.tool_key = self.tool_snapshot.key
         entry.tool_data = self.tool_snapshot.data
     end
-    if self.cmake_info then entry.cmake = self.cmake_info end
+    if self.module_info then entry.module_info = self.module_info end
     if self.options_snapshot then entry.options = self.options_snapshot end
     if self.module_config_snapshot then entry.module_config = self.module_config_snapshot end
     return entry
@@ -93,12 +93,12 @@ end
 
 --- Update metadata after a successful configure/build.
 --- Called by task_tracker when a task completes.
---- @param data { state?: string, last_configured?: string, last_built?: string, cmake_info?: table, options?: table, module_config?: table, tool?: table, project_key?: string, variant?: string, config_key?: string, mod_type?: string }
+--- @param data { state?: string, last_configured?: string, last_built?: string, module_info?: table, options?: table, module_config?: table, tool?: table, project_key?: string, variant?: string, config_key?: string, mod_type?: string }
 function BuildDir:update(data)
     if data.state then self.state = data.state end
     if data.last_configured then self.last_configured = data.last_configured end
     if data.last_built then self.last_built = data.last_built end
-    if data.cmake_info then self.cmake_info = data.cmake_info end
+    if data.module_info then self.module_info = data.module_info end
     if data.options then self.options_snapshot = data.options end
     if data.module_config then self.module_config_snapshot = data.module_config end
     if data.tool then self.tool_snapshot = data.tool end
@@ -113,7 +113,7 @@ function BuildDir:clear_state()
     self.state = nil
     self.last_configured = nil
     self.last_built = nil
-    self.cmake_info = nil
+    self.module_info = nil
     self.options_snapshot = nil
     self.module_config_snapshot = nil
 end

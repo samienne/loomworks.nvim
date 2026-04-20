@@ -2158,17 +2158,17 @@ describe("Core", function()
             assert.equals("/root/.nvim/build/App/development", unit:build_dir())
         end)
 
-        it("records cmake data from result", function()
+        it("records module_info data from result", function()
             local core, get_cache = make_recording_core()
             local unit = get_unit(core, "App", "development")
             core:record_task_result({
                 unit = unit,
                 action = "configure",
                 success = true,
-                cmake = { compile_commands_dir = "/root/.nvim/build/App/development" },
+                module_info = { compile_commands_dir = "/root/.nvim/build/App/development" },
             })
             assert.equals("/root/.nvim/build/App/development",
-                get_cache().build_dirs["build/App/development"].cmake.compile_commands_dir)
+                get_cache().build_dirs["build/App/development"].module_info.compile_commands_dir)
         end)
 
         it("records tool_data from result", function()
@@ -2524,7 +2524,7 @@ describe("Core", function()
             local files = {
                 ["loomworks.json"] = h.make_config_json(),
                 ["loomworks.cache.json"] = vim.json.encode({
-                    _meta = { version = 7, loomworks_hash = "", cached_at = "" },
+                    _meta = { version = 8, loomworks_hash = "", cached_at = "" },
                     build_dirs = {
                         ["build/App/Debug"] = { variant = "Debug" },  -- missing project_key
                     },

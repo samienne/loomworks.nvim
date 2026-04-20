@@ -337,7 +337,7 @@ local function start_one_task(overseer, task_def, on_complete)
                         variant = lw_meta.variant,
                         tool = lw_meta.tool,
                         build_dir = lw_meta.build_dir,
-                        cmake = lw_meta.cmake,
+                        module_info = lw_meta.module_info,
                         success = status == "SUCCESS",
                     })
                 end

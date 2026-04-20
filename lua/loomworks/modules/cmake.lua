@@ -446,11 +446,17 @@ function M.info(path, config)
     local defaults = M.default_configurations(path, config)
     local configurations = M.resolve_configurations(defaults, config)
 
+    local module_info = nil
+    if config.compile_commands_from or config.clangd then
+        module_info = {
+            compile_commands_from = config.compile_commands_from,
+            clangd = config.clangd,
+        }
+    end
     return {
         configurations = configurations,
         preset_configurations = preset_configurations,
-        compile_commands_from = config.compile_commands_from,
-        clangd = config.clangd,
+        module_info = module_info,
     }
 end
 
@@ -690,7 +696,7 @@ function M.tasks(project, active_config)
             configuration_key = configuration_key,
             build_dir = build_dir,
             tool_data = cached_tool_data,
-            cmake = {
+            module_info = {
                 multi_config = multi_config,
                 generator = generator,
                 compiler = kit and kit.compiler_id or nil,

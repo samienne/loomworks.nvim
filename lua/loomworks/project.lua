@@ -20,7 +20,7 @@ local Configuration = require("loomworks.configuration")
 --- @field configurations table<string, loomworks.ConfigurationInfo>
 --- @field cached? loomworks.CachedConfig active configuration's cached state
 --- @field cached_configurations table<string, loomworks.CachedConfig>
---- @field cmake? loomworks.ProjectCmakeInfo
+--- @field module_info? table opaque module-specific project-level info
 --- @field depends_on? loomworks.Project[] direct references to dependency projects
 --- @field _depends_on_keys? string[] raw keys from merge (resolved to objects in _update)
 --- @field _configurations? loomworks.Configuration[] Configuration domain objects array
@@ -81,7 +81,7 @@ function Project:_update(data)
     self.preset_configurations = data.preset_configurations or nil
     self.cached = data.cached
     self.cached_configurations = data.cached_configurations or {}
-    self.cmake = data.cmake
+    self.module_info = data.module_info
     -- Store raw keys for deferred resolution (projects may not all exist yet)
     self._depends_on_keys = data.depends_on
     -- Read pre-resolved dependency Project objects (set by _sync_projects)
@@ -588,7 +588,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
                     unit.state_value = bd.state
                     unit.last_configured = bd.last_configured
                     unit.last_built = bd.last_built
-                    unit.cmake_info = bd.cmake_info
+                    unit.module_info = bd.module_info
                     unit._cached_options = bd.options_snapshot
                     unit._cached_module_config = bd.module_config_snapshot
                 else
@@ -601,7 +601,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
                     unit.state_value = nil
                     unit.last_configured = nil
                     unit.last_built = nil
-                    unit.cmake_info = nil
+                    unit.module_info = nil
                     unit._cached_options = nil
                     unit._cached_module_config = nil
                 end

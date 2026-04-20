@@ -632,7 +632,7 @@ function Workspace:_serialize_cache()
     for _, bd in pairs(self._build_dirs) do
         if bd:has_state() then
             local entry = bd:serialize()
-            if entry.cmake then entry.cmake.targets = nil end
+            if entry.module_info then entry.module_info.targets = nil end
             -- Enrich with live Configuration snapshot if a ConfigUnit references this BD
             local unit = unit_for_bd[bd]
             if unit and unit._configuration and not unit._configuration._removed then
@@ -657,7 +657,7 @@ function Workspace:_serialize_cache()
     for _, unit in pairs(self._config_units) do
         if unit._variant and unit.state_value and not unit._build_dir then
             local entry = unit:serialize()
-            if entry.cmake then entry.cmake.targets = nil end
+            if entry.module_info then entry.module_info.targets = nil end
             data.build_dirs[unit.id] = entry
         end
     end
@@ -914,7 +914,7 @@ function Workspace:_rebuild_profile_projects_for(profile)
                         config_unit.build_dir_value = bd.path
                         config_unit.last_configured = bd.last_configured
                         config_unit.last_built = bd.last_built
-                        config_unit.cmake_info = bd.cmake_info
+                        config_unit.module_info = bd.module_info
                         config_unit._cached_options = bd.options_snapshot
                         config_unit._cached_module_config = bd.module_config_snapshot
                     end
@@ -1872,10 +1872,11 @@ function Workspace:record_task_result(result)
         config_unit._tool_data = result.tool.data
     end
 
-    if result.cmake then
-        config_unit.cmake_info = config_unit.cmake_info or {}
-        for k, v in pairs(result.cmake) do
-            config_unit.cmake_info[k] = v
+    -- Module-specific task result info (e.g., cmake generator/compiler)
+    if result.module_info then
+        config_unit.module_info = config_unit.module_info or {}
+        for k, v in pairs(result.module_info) do
+            config_unit.module_info[k] = v
         end
     end
 
@@ -1896,7 +1897,7 @@ function Workspace:record_task_result(result)
         state = config_unit.state_value,
         last_configured = config_unit.last_configured,
         last_built = config_unit.last_built,
-        cmake_info = config_unit.cmake_info,
+        module_info = config_unit.module_info,
         project_key = config_unit._project and config_unit._project.key or config_unit._init_project_key,
         variant = config_unit._variant,
         config_key = config_unit._config_key,
@@ -2002,7 +2003,7 @@ function Workspace:delete_cached_configs(items)
             item.unit.build_dir_value = nil
             item.unit.last_configured = nil
             item.unit.last_built = nil
-            item.unit.cmake_info = nil
+            item.unit.module_info = nil
             item.unit._config_key = nil
             item.unit._variant = nil
             item.unit._tool_key = nil
@@ -2030,7 +2031,7 @@ function Workspace:reset_cached_configs(items)
         item.unit.build_dir_value = nil
         item.unit.last_configured = nil
         item.unit.last_built = nil
-        item.unit.cmake_info = nil
+        item.unit.module_info = nil
         ::continue::
     end
 end

@@ -344,7 +344,7 @@ local function sync_build_dirs(ctx, workspace, cache)
                     existing.state = entry.state
                     existing.last_configured = entry.last_configured
                     existing.last_built = entry.last_built
-                    existing.cmake_info = entry.cmake
+                    existing.module_info = entry.module_info
                     existing.options_snapshot = entry.options
                     existing.module_config_snapshot = entry.module_config
                     if entry.tool_key then

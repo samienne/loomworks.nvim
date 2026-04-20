@@ -2,9 +2,9 @@ local cache = require("loomworks.cache")
 
 describe("cache", function()
     describe("default", function()
-        it("returns table with version 7 and empty build_dirs", function()
+        it("returns table with version 8 and empty build_dirs", function()
             local d = cache.default()
-            assert.equals(7, d._meta.version)
+            assert.equals(8, d._meta.version)
             assert.are.same({}, d.build_dirs)
         end)
     end)
@@ -12,7 +12,7 @@ describe("cache", function()
     describe("parse", function()
         it("parses valid cache.json", function()
             local json = vim.json.encode({
-                _meta = { version = 7, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                _meta = { version = 8, loomworks_hash = "abc", cached_at = "2025-01-01" },
                 build_dirs = {
                     ["build/App/Debug"] = {
                         project_key = "App",
@@ -24,13 +24,13 @@ describe("cache", function()
                 },
             })
             local result = cache.parse(json)
-            assert.equals(7, result._meta.version)
+            assert.equals(8, result._meta.version)
             assert.equals("built", result.build_dirs["build/App/Debug"].state)
         end)
 
         it("returns no version mismatch on valid parse", function()
             local json = vim.json.encode({
-                _meta = { version = 7, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                _meta = { version = 8, loomworks_hash = "abc", cached_at = "2025-01-01" },
                 build_dirs = {},
             })
             local _, mismatch = cache.parse(json)
@@ -39,7 +39,7 @@ describe("cache", function()
 
         it("returns defaults on invalid JSON without version mismatch", function()
             local result, mismatch = cache.parse("broken {{{")
-            assert.equals(7, result._meta.version)
+            assert.equals(8, result._meta.version)
             assert.are.same({}, result.build_dirs)
             assert.is_false(mismatch)
         end)
@@ -75,7 +75,7 @@ describe("cache", function()
 
         it("ensures build_dirs field exists", function()
             local json = vim.json.encode({
-                _meta = { version = 7 },
+                _meta = { version = 8 },
             })
             local result = cache.parse(json)
             assert.are.same({}, result.build_dirs)

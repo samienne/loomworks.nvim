@@ -17,7 +17,7 @@
 --- @field build_dir_value string|nil
 --- @field last_configured string|nil ISO 8601 timestamp
 --- @field last_built string|nil ISO 8601 timestamp
---- @field cmake_info loomworks.CachedCmakeInfo|nil
+--- @field module_info table|nil opaque module-specific cached data (e.g. cmake generator/compiler)
 --- @field _config_key string|nil opaque cache key
 --- @field _variant string|nil configuration variant name
 --- @field _tool_key string|nil tool identifier
@@ -81,7 +81,7 @@ function ConfigUnit.new(workspace, id, project_key)
     self.build_dir_value = nil
     self.last_configured = nil
     self.last_built = nil
-    self.cmake_info = nil
+    self.module_info = nil
     self._config_key = nil
     self._variant = nil
     self._tool_key = nil
@@ -105,7 +105,7 @@ function ConfigUnit:_apply(data)
         self.build_dir_value = nil
         self.last_configured = nil
         self.last_built = nil
-        self.cmake_info = nil
+        self.module_info = nil
         self._config_key = nil
         self._variant = nil
         self._tool_key = nil
@@ -125,7 +125,7 @@ function ConfigUnit:_apply(data)
         self.build_dir_value = c.build_dir
         self.last_configured = c.last_configured
         self.last_built = c.last_built
-        self.cmake_info = c.cmake
+        self.module_info = c.module_info
         self._config_key = c.config_key
         self._variant = c.variant
         self._tool_key = c.tool_key
@@ -138,7 +138,7 @@ function ConfigUnit:_apply(data)
         self.build_dir_value = data.build_dir_value
         self.last_configured = nil
         self.last_built = nil
-        self.cmake_info = nil
+        self.module_info = nil
         -- Derive fields from references if not previously set
         if not self._variant then
             self._variant = data.configuration and data.configuration.name or nil
@@ -175,7 +175,7 @@ function ConfigUnit:serialize()
         last_configured = self.last_configured,
         last_built = self.last_built,
     }
-    if self.cmake_info then entry.cmake = self.cmake_info end
+    if self.module_info then entry.module_info = self.module_info end
     -- Configuration snapshot: inline definition data for self-describing entries
     if self._configuration and not self._configuration._removed then
         local cfg = self._configuration

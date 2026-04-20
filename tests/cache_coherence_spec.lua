@@ -1823,7 +1823,7 @@ describe("cache coherence", function()
                             build_dir = "/root/.nvim/build/Lib/ninja-gcc/Debug",
                             last_configured = "2026-03-01",
                             last_built = "2026-03-01",
-                            cmake = { compile_commands = "/root/.nvim/build/Lib/ninja-gcc/Debug/compile_commands.json" },
+                            module_info = { compile_commands = "/root/.nvim/build/Lib/ninja-gcc/Debug/compile_commands.json" },
                         },
                     },
                 },
@@ -1858,7 +1858,7 @@ describe("cache coherence", function()
             assert.equals("/root/.nvim/build/Lib/ninja-gcc/Debug", cached.build_dir)
             assert.equals("2026-03-01", cached.last_configured)
             assert.equals("2026-03-01", cached.last_built)
-            assert.is_not_nil(cached.cmake)
+            assert.is_not_nil(cached.module_info)
             assert.equals("Debug", cached.variant)
             assert.equals("ninja-gcc", cached.tool_key)
             assert.is_not_nil(cached.tool_data)

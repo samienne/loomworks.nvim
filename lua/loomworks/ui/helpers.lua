@@ -161,17 +161,20 @@ function M.render_cached_details(tree, config_status, status_hl, cached, fold_pr
 
     -- Read from cached table if provided, otherwise from ConfigUnit first-class fields
     local build_dir = cached and cached.build_dir or (unit and unit.build_dir_value)
-    local cmake = cached and cached.cmake or (unit and unit.cmake_info)
+    local module_info = cached and cached.module_info or (unit and unit.module_info)
 
     if build_dir then
         tree:leaf("Build dir: " .. build_dir, "Comment")
     end
-    if cmake then
-        if cmake.generator then
-            tree:leaf("Generator: " .. cmake.generator, "Comment")
+    -- Module-specific cached fields (generator/compiler are cmake's shape; this
+    -- renders them when present. A future improvement would let the module
+    -- declare which fields to display).
+    if module_info then
+        if module_info.generator then
+            tree:leaf("Generator: " .. module_info.generator, "Comment")
         end
-        if cmake.compiler then
-            tree:leaf("Compiler: " .. cmake.compiler, "Comment")
+        if module_info.compiler then
+            tree:leaf("Compiler: " .. module_info.compiler, "Comment")
         end
     end
     -- Targets from ConfigUnit (runtime, not cached)
