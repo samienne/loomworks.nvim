@@ -5,6 +5,46 @@ they don't get lost.
 
 ---
 
+## Strict separation of auto-generated vs user configurations
+
+Larger architectural rework of the configuration model. Replaces the
+current "user edits merged on top of the same-named default in place"
+approach with a clear two-tier model:
+
+- **Auto-gen configs** are read-only, regenerated every load from the
+  module (harmony: build-profile.json5, cmake: CMakePresets.json +
+  defaults). Never persisted. UI shows them with edit actions disabled.
+- **User configs** are explicit, named entries in loomworks.json /
+  user.json with distinct names. Typically set `inherits:` to reference
+  an auto-gen or another user config as base. Always persisted as the
+  user wrote them (no diff-vs-default magic).
+- **No name collisions** between auto-gen and user namespaces.
+- **`configuration_set` mappings** point to either — both are valid targets.
+- **Rebase on orphan** = change the `inherits:` value. When a user
+  config's base is missing, UI shows `[orphan base]` + rename/rebase
+  action.
+
+UX concession for the "quick edit" ergonomic: on auto-gen entries, add
+a single-click `Override this config…` action. Prompts for a name
+(suggested default like "Debug-custom"), creates a user config with
+`inherits:` set, and optionally rewrites the current set mapping to
+point at the new user config.
+
+Wins:
+- No more bloated user.json with duplicated full configs
+- Silent-rename data-loss becomes visible (orphan badge + rebase)
+- Clean mental model for users: "mine vs the module's"
+- Compatible with the existing `inherits` machinery
+
+Supersedes the narrower "[stale] badge for source-missing configurations"
+idea below. Requires: Configuration class split (auto-gen vs user source),
+UI edit-action gating, a migration path that drops user.json entries
+whose content exactly matches the auto-gen (self-heals existing bloat).
+
+Scope: moderate — affects Configuration serialization, merge, UI edit
+paths, and configuration_set resolution. Defer until core-cleanup
+aftermath is verified stable.
+
 ## Visually distinguish stale / source-missing configurations
 
 Configurations in user.json that no longer match any auto-generated
