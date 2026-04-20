@@ -120,6 +120,67 @@ local function start_run(target, mode)
             return target:deploy()
         end)
         :next(function()
+            -- Device target path: install + launch on device, then return
+            if target:requires_device() then
+                local serial = target._profile:device_serial()
+                if not serial then
+                    -- Prompt for device selection
+                    return Future.create(function(resolve, reject)
+                        target._workspace:scan_devices(function(devices)
+                            local items = {}
+                            for _, d in ipairs(devices) do
+                                if d:is_online() then
+                                    items[#items + 1] = d
+                                end
+                            end
+                            if #items == 0 then
+                                reject("no online devices found")
+                                return
+                            end
+                            vim.ui.select(items, {
+                                prompt = "Select device:",
+                                format_item = function(d)
+                                    return d.display_name .. " (" .. d.serial .. ")"
+                                end,
+                            }, function(choice)
+                                if not choice then
+                                    reject("device selection cancelled")
+                                    return
+                                end
+                                target._profile:set_device(choice.serial)
+                                resolve(choice.serial)
+                            end)
+                        end)
+                    end)
+                end
+                return serial
+            end
+        end)
+        :next(function(device_serial)
+            if target:requires_device() then
+                if not device_serial then return end  -- chain was handled above
+                fidget.report(handle, "installing on device...")
+                return target:device_install(device_serial):next(function()
+                    return device_serial
+                end)
+            end
+        end)
+        :next(function(device_serial)
+            if target:requires_device() then
+                if not device_serial then return end
+                fidget.report(handle, "launching on device...")
+                return target:device_launch(device_serial):next(function()
+                    fidget.finish(handle, "running on device")
+                    _active_run = {
+                        target = target,
+                        mode = "launch",
+                        multi_adapter = false,
+                        started_at = os.clock(),
+                    }
+                end)
+            end
+
+            -- Non-device path: launch or debug locally
             if mode == "debug" then
                 fidget.report(handle, "starting debugger...")
 

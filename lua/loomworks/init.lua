@@ -172,6 +172,20 @@ function M.rescan_tools()
     core:rescan_tools()
 end
 
+--- Scan for connected devices from all device-capable modules.
+--- @param callback? fun(devices: loomworks.Device[])
+function M.scan_devices(callback)
+    local ws = M.get_workspace()
+    if ws then ws:scan_devices(callback) end
+end
+
+--- Get the current list of discovered devices.
+--- @return loomworks.Device[]
+function M.get_devices()
+    local ws = M.get_workspace()
+    return ws and ws:devices() or {}
+end
+
 --- Force-reload loomworks.json from disk and remerge.
 --- Use after programmatic writes to avoid waiting for file watcher.
 function M.reload_config()
@@ -376,8 +390,11 @@ function M.build_target()
     M._pick_target(profile, function(project, target_id)
         if project and target_id then
             profile:set_default_target(project, target_id)
-            local new_target = profile:default_target()
-            if new_target then do_build(new_target) end
+        end
+        -- Re-resolve (the picker may have set launch or device descriptor directly)
+        local new_target = profile:default_target()
+        if new_target and new_target:is_buildable() then
+            do_build(new_target)
         end
     end)
 end
@@ -509,20 +526,59 @@ function M._pick_target(profile, on_select)
         end
     end
 
+    -- Collect device targets from modules that support devices
+    for _, pp in ipairs(profile:projects()) do
+        local project = pp._project
+        if not project then goto next_device_pp end
+        local mod = project._module and project._module.impl
+        if mod and mod.has_devices and mod.device_targets then
+            local config_name = pp._configuration and pp._configuration.name
+            if config_name then
+                local device_tgts = mod.device_targets({
+                    name = project.key,
+                    path = project.path or project.key,
+                    workspace_root = ws and ws.root or "",
+                    tool_data = pp._config_unit and pp._config_unit._tool_data or {},
+                    configurations = project._configurations,
+                }, config_name)
+                for _, dt in ipairs(device_tgts or {}) do
+                    items[#items + 1] = {
+                        label = project.key .. " [device: " .. dt.label .. "]",
+                        project = project,
+                        device_target = dt.id,
+                        device_target_label = dt.label,
+                        action = "device",
+                    }
+                end
+            end
+        end
+        ::next_device_pp::
+    end
+
     vim.ui.select(items, {
         prompt = "Select default target:",
         format_item = function(item) return item.label end,
     }, function(choice)
         if not choice then return end -- cancelled
+        local ws = profile._workspace
         if choice.action == "clear" then
             profile:clear_default_target()
         elseif choice.action == "reset_to_default" then
             profile:clear_default_target()
         elseif choice.action == "launch" then
             profile:set_default_target(choice.project, nil, choice.launch_name)
+            ws._core._deps.events.emit("active_set_changed", ws._active_set)
             on_select(nil, nil) -- signal that default was set, trigger re-resolve
         elseif choice.action == "select" then
             on_select(choice.project, choice.target_id)
+        elseif choice.action == "device" then
+            profile:set_default_target_descriptor({
+                project = choice.project.key,
+                device_target = choice.device_target,
+                device_target_label = choice.device_target_label,
+            })
+            ws._core._deps.events.emit("active_set_changed", ws._active_set)
+            on_select(nil, nil)
         end
     end)
 end

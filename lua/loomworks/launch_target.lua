@@ -15,6 +15,8 @@ local debug_mod = require("loomworks.debug")
 --- @field _target_id string|nil fallback identifier for re-resolution
 --- @field _launch_config table|nil launch config from loomworks.json
 --- @field _launch_name string|nil name of the launch config
+--- @field _device_target_id string|nil device target ID (module-generated)
+--- @field _device_target_label string|nil display label for device target
 --- @field _launch_task_id number|nil overseer task ID of running launch
 --- @field _removed boolean
 local LaunchTarget = {}
@@ -23,7 +25,7 @@ LaunchTarget.__index = LaunchTarget
 --- Create a new LaunchTarget from a descriptor.
 --- @param workspace loomworks.Workspace
 --- @param profile loomworks.Profile
---- @param descriptor { project: string, target?: string, launch?: string }
+--- @param descriptor { project: string, target?: string, launch?: string, device_target?: string, device_target_label?: string }
 --- @return loomworks.LaunchTarget
 function LaunchTarget.new(workspace, profile, descriptor)
     local self = setmetatable({}, LaunchTarget)
@@ -36,10 +38,12 @@ function LaunchTarget.new(workspace, profile, descriptor)
 end
 
 --- Resolve references from descriptor (disk data → object references).
---- @param descriptor { project: string, target?: string, launch?: string }
+--- @param descriptor { project: string, target?: string, launch?: string, device_target?: string, device_target_label?: string }
 function LaunchTarget:_update(descriptor)
     self._target_id = descriptor.target
     self._launch_name = descriptor.launch
+    self._device_target_id = descriptor.device_target
+    self._device_target_label = descriptor.device_target_label
 
     -- Resolve project from descriptor key (deserialization from user.json)
     self._project = nil
@@ -424,12 +428,14 @@ end
 --- @return boolean
 function LaunchTarget:is_valid()
     if self._launch_config then return true end
+    if self._device_target_id then return self._config_unit ~= nil end
     return self._target ~= nil
 end
 
 --- Check if this target has a build step.
 --- Module targets build via Target:build(). Command-type launches build
 --- the whole project configuration via overseer.
+--- Device targets build via config unit (assembleHap).
 --- @return boolean
 function LaunchTarget:is_buildable()
     if self._target then return true end
@@ -440,7 +446,14 @@ end
 --- @return boolean
 function LaunchTarget:is_launchable()
     if self._launch_config then return true end
+    if self._device_target_id then return self._config_unit ~= nil end
     return self._target ~= nil and self._target:is_executable()
+end
+
+--- Check if this target requires a device for deployment.
+--- @return boolean
+function LaunchTarget:requires_device()
+    return self._device_target_id ~= nil
 end
 
 --- Check if the launched process is currently running.
@@ -467,12 +480,121 @@ function LaunchTarget:stop()
     self._launch_task_id = nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Device target operations
+-- ---------------------------------------------------------------------------
+
+--- Install the built artifact onto a device. Returns a Future.
+--- Resolves the artifact path via the module, then runs the install command.
+--- @param device_serial string
+--- @return loomworks.Future
+function LaunchTarget:device_install(device_serial)
+    local future_mod = require("loomworks.future")
+    local overseer = require("loomworks.overseer")
+
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_install or not mod.resolve_artifact then
+        return future_mod.rejected("module does not support device install")
+    end
+
+    local unit = self._config_unit
+    if not unit then
+        return future_mod.rejected("no config unit for device install")
+    end
+
+    -- Build module context for resolve_artifact
+    local ws = self._workspace
+    local pp = self._profile:project(self._project.key)
+    local config_info = unit._configuration and unit._configuration.module_config or {}
+    local project_ctx = {
+        path = self._project.path or self._project.key,
+        workspace_root = ws.root,
+        tool_data = unit._tool_data or {},
+        build_dir = unit:build_dir(),
+        config_info = config_info,
+        configuration_key = unit._configuration and unit._configuration.name,
+    }
+
+    local artifact = mod.resolve_artifact(project_ctx, project_ctx.configuration_key)
+    if not artifact then
+        return future_mod.rejected("could not resolve artifact for device install")
+    end
+
+    local spec = mod.device_install(project_ctx.tool_data, device_serial, artifact)
+    if not spec or not spec.cmd then
+        return future_mod.rejected("module returned invalid device_install spec")
+    end
+
+    local task_name = self._project.key .. ": install on " .. device_serial
+    return overseer.run_cmd_task({
+        name = task_name,
+        cmd = spec.cmd,
+        args = spec.args,
+        cwd = ws.root .. "/" .. (self._project.path or self._project.key),
+        env = spec.env,
+        check_output = spec.check_output,
+    })
+end
+
+--- Launch the app on a device. Returns a Future.
+--- Resolves launch info via the module, then runs the launch command.
+--- @param device_serial string
+--- @return loomworks.Future
+function LaunchTarget:device_launch(device_serial)
+    local future_mod = require("loomworks.future")
+    local overseer = require("loomworks.overseer")
+
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_launch or not mod.resolve_launch_info then
+        return future_mod.rejected("module does not support device launch")
+    end
+
+    local unit = self._config_unit
+    if not unit then
+        return future_mod.rejected("no config unit for device launch")
+    end
+
+    local ws = self._workspace
+    local config_info = unit._configuration and unit._configuration.module_config or {}
+    local project_path = ws.root .. "/" .. (self._project.path or self._project.key)
+
+    local launch_info = mod.resolve_launch_info(project_path, config_info, unit._tool_data or {})
+    if not launch_info then
+        return future_mod.rejected("could not resolve launch info for device")
+    end
+
+    local spec = mod.device_launch(unit._tool_data or {}, device_serial, launch_info)
+    if not spec or not spec.cmd then
+        return future_mod.rejected("module returned invalid device_launch spec")
+    end
+
+    local task_name = self._project.key .. ": launch on " .. device_serial
+    return overseer.run_cmd_task({
+        name = task_name,
+        cmd = spec.cmd,
+        args = spec.args,
+        cwd = project_path,
+        env = spec.env,
+        check_output = spec.check_output,
+    })
+end
+
+-- ---------------------------------------------------------------------------
+-- Display
+-- ---------------------------------------------------------------------------
+
 --- Get a display name for this target.
 --- @return string
 function LaunchTarget:display_name()
     local project_name = self._project and self._project.key or "?"
     if self._launch_name then
         return project_name .. ": " .. self._launch_name
+    end
+    if self._device_target_label then
+        return project_name .. ": " .. self._device_target_label
+    end
+    if self._device_target_id then
+        return project_name .. ": " .. self._device_target_id
     end
     if self._target then
         return project_name .. ": " .. self._target:display_name()

@@ -146,6 +146,7 @@ end
 --- @field _sdk loomworks.SDK|nil SDK domain object reference
 --- @field _sdk_key string|nil SDK key for serialization
 --- @field _default_target_descriptor table|nil user.json default target for this profile
+--- @field _device_serial string|nil selected device serial for this profile
 --- Resolved references (set during _apply):
 --- @field _tool_objects table<loomworks.Module, loomworks.Tool>|nil
 --- @field _config_set_ref loomworks.ConfigurationSet|nil
@@ -490,8 +491,8 @@ function Profile:default_target()
     if not descriptor or not descriptor.project then
         return nil
     end
-    -- Need either a target (module target) or a launch config name
-    if not descriptor.target and not descriptor.launch then
+    -- Need a target (module target), launch config name, or device target
+    if not descriptor.target and not descriptor.launch and not descriptor.device_target then
         return nil
     end
 
@@ -521,6 +522,45 @@ end
 function Profile:clear_default_target()
     self._default_target_descriptor = nil
     self._workspace:_save_user()
+end
+
+--- Set the default target descriptor directly.
+--- Used for non-standard descriptors like device targets.
+--- @param descriptor table
+function Profile:set_default_target_descriptor(descriptor)
+    self._default_target_descriptor = descriptor
+    self._workspace:_save_user()
+end
+
+-- ---------------------------------------------------------------------------
+-- Device selection
+-- ---------------------------------------------------------------------------
+
+--- Get the selected device serial for this profile.
+--- @return string|nil
+function Profile:device_serial()
+    return self._device_serial
+end
+
+--- Set the selected device for this profile.
+--- @param serial string device serial
+function Profile:set_device(serial)
+    self._device_serial = serial
+    self._workspace:_save_user()
+end
+
+--- Clear the selected device for this profile.
+function Profile:clear_device()
+    self._device_serial = nil
+    self._workspace:_save_user()
+end
+
+--- Get the Device domain object for the selected device serial.
+--- Returns nil if no device is selected or the device is not in the registry.
+--- @return loomworks.Device|nil
+function Profile:device()
+    if not self._device_serial then return nil end
+    return self._workspace:find_device(self._device_serial)
 end
 
 -- ---------------------------------------------------------------------------

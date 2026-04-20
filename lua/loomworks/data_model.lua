@@ -259,8 +259,9 @@ end
 --- @param all_defs table<string, loomworks.ProfileDef> profile definitions from merge
 --- @param cache table parsed cache data
 --- @param default_target_data table|nil raw default_target map from user.json (profile_key -> descriptor)
+--- @param device_data table|nil raw device map from user.json (profile_key -> serial)
 --- @return table[] profiles array
-local function sync_profiles(ctx, workspace, all_defs, cache, default_target_data)
+local function sync_profiles(ctx, workspace, all_defs, cache, default_target_data, device_data)
     for key, profile in pairs(ctx.profiles) do
         if not all_defs[key] then
             profile._removed = true
@@ -308,10 +309,12 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
         end
     end
 
-    -- Populate _default_target_descriptor from user.json data
+    -- Populate _default_target_descriptor and _device_serial from user.json data
     for key, profile in pairs(ctx.profiles) do
         profile._default_target_descriptor = default_target_data
             and default_target_data[key] or nil
+        profile._device_serial = device_data
+            and device_data[key] or nil
     end
 
     local arr = {}
@@ -574,7 +577,7 @@ end
 --- @param active_set table|nil the active set from merge
 --- @param all_profile_defs table<string, loomworks.ProfileDef> profile definitions from merge
 --- @param current table { modules, projects, config_sets, profiles, config_units, profile_projects }
---- @param deps table { modules_registry, normalize, tools_by_type, default_target_data }
+--- @param deps table { modules_registry, normalize, tools_by_type, default_target_data, device_data }
 --- @return table result { modules, projects, config_sets, profiles, config_units, profile_projects, build_dir_refs }
 function M.refresh(workspace, config, cache, active_set, all_profile_defs, current, deps)
     local ctx = build_ctx(current)
@@ -588,7 +591,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
 
     local projects = sync_projects(ctx, workspace, active_set)
     local config_sets = sync_config_sets(ctx, workspace, config)
-    local profiles = sync_profiles(ctx, workspace, all_profile_defs, cache, deps.default_target_data)
+    local profiles = sync_profiles(ctx, workspace, all_profile_defs, cache, deps.default_target_data, deps.device_data)
     local build_dirs = sync_build_dirs(ctx, workspace, cache)
     local config_units, profile_projects = sync_profile_projects_and_config_units(
         ctx, workspace, cache, deps)

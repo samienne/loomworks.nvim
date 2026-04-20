@@ -415,6 +415,7 @@ end
 --- @field _active_profile_key string|nil persisted active profile key
 --- @field _active_profile loomworks.Profile|nil resolved active profile object
 --- @field _default_target_data table|nil raw default_target map from user.json
+--- @field _device_data table|nil raw device map from user.json (profile_key -> serial)
 --- @field _debug_settings table|nil debug settings from user.json (e.g. adapters)
 --- @field _active_set loomworks.ActiveSet|nil
 --- @field _modules loomworks.Module[] module domain objects
@@ -457,6 +458,7 @@ function Workspace.new(core, data)
     self._active_profile = nil
     self._active_profile_key = nil
     self._default_target_data = nil
+    self._device_data = nil
     self._debug_settings = nil
     self._config_units = {}
     self._config_sets = {}
@@ -479,6 +481,8 @@ function Workspace.new(core, data)
     self._build_dir_locks = {}
     self._deploy_records = {}  -- normalized dest path → { source_build_dir, source_rel_path, source_mtime }
     self._sdks = {}  -- SDK domain objects
+    self._devices = {}  -- serial -> Device domain object (runtime-only)
+    self._device_scan_state = "idle"  -- "idle" | "scanning" | "done"
 
     return self
 end
@@ -705,12 +709,13 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
 
     -- Extract user state: if raw user data is provided, use it (even if fields are nil);
     -- otherwise use current domain state
-    local active_profile_key, default_target_data
+    local active_profile_key, default_target_data, device_data
     local user_overlay
     local user_data  -- for merge.merge (includes profiles)
     if raw_user then
         active_profile_key = raw_user.active_profile
         default_target_data = raw_user.default_target
+        device_data = raw_user.device
         self._debug_settings = raw_user.debug
         -- Store user overlay (projects/configuration_sets/profiles from user.json)
         user_overlay = {}
@@ -722,6 +727,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     else
         active_profile_key = self._active_profile_key
         default_target_data = self._default_target_data
+        device_data = self._device_data
         -- Reconstruct user overlay from domain objects (items with local or local+shared intent)
         user_overlay = self:_user_config_from_objects()
         self._user_config_overlay = next(user_overlay) and user_overlay or nil
@@ -762,6 +768,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         normalize = self._core._deps.normalize,
         tools_by_type = self._tools_by_type,
         default_target_data = default_target_data,
+        device_data = device_data,
         user_project_keys = user_project_keys,
         user_cs_names = user_cs_names,
         user_provenance = user_provenance,
@@ -784,6 +791,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     self._active_profile = result.active_profile
     self._active_profile_key = active_profile_key
     self._default_target_data = default_target_data
+    self._device_data = device_data
     -- Deploy records: read from cache (no domain object resolution needed)
     if raw_cache and raw_cache.deploy_state then
         self._deploy_records = raw_cache.deploy_state
@@ -1000,6 +1008,137 @@ end
 function Workspace:get_tools_for_type(mod_type)
     local mod = self:find_module(mod_type)
     return mod and mod:tools() or {}
+end
+
+-- ===========================================================================
+-- Device registry (runtime-only)
+-- ===========================================================================
+
+--- Get all Device objects as a list.
+--- @return loomworks.Device[]
+function Workspace:devices()
+    local result = {}
+    for _, device in pairs(self._devices) do
+        result[#result + 1] = device
+    end
+    return result
+end
+
+--- Find a Device by serial.
+--- @param serial string
+--- @return loomworks.Device|nil
+function Workspace:find_device(serial)
+    return self._devices[serial]
+end
+
+--- Check if any module in the workspace has device support.
+--- @return boolean
+function Workspace:has_device_modules()
+    for _, mod in pairs(self._modules) do
+        if mod.impl and mod.impl.has_devices then
+            return true
+        end
+    end
+    return false
+end
+
+--- Scan for connected devices from all device-capable modules.
+--- Merges results into the _devices registry (identity-preserving).
+--- Calls callback(devices) when all modules have reported.
+--- @param callback? fun(devices: loomworks.Device[])
+function Workspace:scan_devices(callback)
+    -- Collect modules that support devices with their tool_data.
+    -- For each module, find a tool_data entry that has meaningful fields
+    -- (at minimum, non-empty). Source preference:
+    --   1. profile_project's active config_unit tool_data (most current)
+    --   2. module's Tool registry (fallback)
+    local scans = {}
+    for _, mod in pairs(self._modules) do
+        if mod.impl and mod.impl.has_devices and mod.impl.list_devices then
+            local tool_data = nil
+            -- Try config_units first (they have the resolved tool_data from SDK)
+            for _, pp in pairs(self._profile_projects) do
+                if pp._project and pp._project._module == mod
+                        and pp._config_unit and pp._config_unit._tool_data
+                        and next(pp._config_unit._tool_data) then
+                    tool_data = pp._config_unit._tool_data
+                    break
+                end
+            end
+            -- Fall back: iterate module's tools, pick first non-empty
+            if not tool_data then
+                for _, tool in ipairs(mod:tools()) do
+                    if tool.data and next(tool.data) then
+                        tool_data = tool.data
+                        break
+                    end
+                end
+            end
+            if tool_data then
+                scans[#scans + 1] = { mod = mod, tool_data = tool_data }
+            else
+                -- Last resort: call list_devices with empty tool_data;
+                -- the module will fail gracefully if it can't find the tool
+                scans[#scans + 1] = { mod = mod, tool_data = {} }
+            end
+        end
+    end
+
+    if #scans == 0 then
+        if callback then callback({}) end
+        return
+    end
+
+    self._device_scan_state = "scanning"
+    local pending = #scans
+    local all_results = {}
+
+    for _, scan in ipairs(scans) do
+        scan.mod.impl.list_devices(scan.tool_data, function(devices)
+            for _, d in ipairs(devices or {}) do
+                d.provider = scan.mod.id
+                all_results[#all_results + 1] = d
+            end
+            pending = pending - 1
+            if pending == 0 then
+                vim.schedule(function()
+                    self:_merge_device_results(all_results)
+                    self._device_scan_state = "done"
+                    self._core._deps.events.emit("devices_changed", self:devices())
+                    if callback then callback(self:devices()) end
+                end)
+            end
+        end)
+    end
+end
+
+--- Merge device scan results into the registry.
+--- Updates existing devices, creates new ones, marks vanished as offline.
+--- @param results { serial: string, display_name: string, provider: string, state?: string, properties?: table }[]
+function Workspace:_merge_device_results(results)
+    local Device = require("loomworks.device")
+    local seen = {}
+
+    for _, data in ipairs(results) do
+        seen[data.serial] = true
+        local existing = self._devices[data.serial]
+        if existing then
+            existing:_update({
+                display_name = data.display_name,
+                state = data.state or "online",
+                properties = data.properties,
+            })
+        else
+            self._devices[data.serial] = Device.new(data)
+        end
+    end
+
+    -- Mark vanished devices as offline
+    for serial, device in pairs(self._devices) do
+        if not seen[serial] and device.state ~= "offline" then
+            device.state = "offline"
+        end
+    end
 end
 
 -- ===========================================================================
@@ -2995,6 +3134,15 @@ function Workspace:_serialize_user()
         end
     end
     if next(targets) then data.default_target = targets end
+
+    -- Device selections
+    local devices = {}
+    for _, profile in pairs(self._profiles) do
+        if profile._device_serial then
+            devices[profile.key] = profile._device_serial
+        end
+    end
+    if next(devices) then data.device = devices end
 
     -- Debug settings (pass-through)
     if self._debug_settings then data.debug = self._debug_settings end
