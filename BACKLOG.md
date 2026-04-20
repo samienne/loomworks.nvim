@@ -5,6 +5,23 @@ they don't get lost.
 
 ---
 
+## Plugin-based loomtest adapter discovery
+
+Mirror the existing plugin-based module registry idea: loomtest should
+auto-discover test adapters by scanning a conventional directory
+(`lua/loomtest/adapters/<name>.lua` on the Neovim runtimepath). Each
+file self-registers with `loomtest.register_adapter(...)`. Third-party
+plugins can ship new adapters without editing loomtest itself.
+
+Under this pattern, `lua/loomworks/loomtest_adapter.lua` would move to
+something like `lua/loomtest/adapters/loomworks.lua` or stay in the
+loomworks tree and just follow the same self-registration contract.
+Keymaps for `<leader>t*` move out of loomworks entirely — loomtest
+ships its own default keymaps.
+
+Prerequisite for eventually splitting loomtest into its own repo
+cleanly.
+
 ## Pluggable debug adapter architecture
 
 `lua/loomworks/debug.lua` currently hardcodes behavior for nvim-dap and
