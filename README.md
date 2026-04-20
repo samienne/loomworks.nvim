@@ -250,6 +250,28 @@ Deploy steps ensure the correct file is present regardless of which
 configuration was last built. Freshness is tracked per destination —
 files are only copied when the source changes or the configuration switches.
 
+### Device deployment (harmony)
+
+For project types that deploy to physical or emulated devices (currently
+harmony via `hdc`), the status page shows a **Device** line in the active
+profile when the workspace has device-capable modules. Press `<CR>` to
+scan and pick a connected device — the selection is persisted per profile
+in `user.json`.
+
+The launch target picker offers `[device: Run on device]` entries for
+harmony projects. Selecting one changes the launch chain to:
+
+```
+build → deploy → install on device → launch on device
+```
+
+The harmony module parses `app.json5` for the bundle name and
+`module.json5` for the ability name, locates the HAP output from hvigor,
+and invokes `hdc install` and `hdc shell aa start` on the selected device.
+
+No explicit configuration is needed — the device targets are generated
+by the module from the active configuration.
+
 ### Project variables
 
 Declare typed variables with defaults, override per configuration:
