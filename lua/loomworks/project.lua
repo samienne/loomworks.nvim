@@ -9,6 +9,7 @@ local Configuration = require("loomworks.configuration")
 --- @field path? string relative path from workspace root
 --- @field type_config? table module-specific configuration (options, configurations, etc.)
 --- @field launch? table<string, table> launch configurations
+--- @field deploy? table<string, table|table[]> project-level deploy steps
 --- @field variables? table<string, { type: string, default: string }> user-defined variable declarations
 --- @field configuration? string active configuration name
 --- @field _tool? loomworks.Tool direct reference to Tool domain object
