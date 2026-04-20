@@ -447,6 +447,7 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
             path = project.path,
             type_config = project.type_config,
             launch = project.launch,
+            deploy = project.deploy,
             configuration = active_configuration,
             configuration_key = cache_config_key,
             tool_key = project_tool_key,

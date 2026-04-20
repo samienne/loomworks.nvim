@@ -2244,8 +2244,18 @@ launched process sees up-to-date files regardless of which configuration was
 most recently built.
 
 **Definition**: A deploy step is a declarative intent — "ensure artifact X
-from source config unit Y is at destination Z, up to date, before launch."
-Deploy steps are defined on launch configurations in the workspace config.
+from source config unit Y is at destination Z, up to date." Deploy steps are
+defined at two levels:
+
+- **Project-level** (`projects.<name>.deploy`): applies to every launch,
+  build, and device target for this project.
+- **Launch-level** (`projects.<name>.launch.<launch_name>.deploy`):
+  applies only to this specific launch config.
+
+Each step can also run in one of two **phases** via a `pre_build` source
+flag: before the target is built (`pre_build: true`) or after
+(default, post-build). Pre-build steps let one project deposit files
+into another project's source tree so they are picked up by its build.
 
 #### 9.8.1 Syntax
 
@@ -2308,11 +2318,24 @@ same destination directory).
 | `target` | one of target/path | cmake target name — resolved to artifact path |
 | `path` | one of target/path | file path relative to source build dir |
 | `configuration` | no | Pin to a specific configuration; defaults to profile resolution |
+| `pre_build` | no | Default `false`. If `true`, this step runs **before** the launch target is built, so the deployed file is an input to the target's build (e.g., bundling a `.so` into a HAP). If `false`, runs after build. |
 
 **Duplicate destination keys**: JSON does not allow duplicate keys in an
 object. If `loomworks.json` contains two entries with the same destination
 key, the JSON parser silently keeps only the last one. Use the array
 source format to copy multiple files to the same directory.
+
+**Project + launch merge rule**: When the same destination appears at
+both project level and launch level:
+
+- **Directory destinations** (trailing `/`): sources from both levels are
+  **concatenated** (union). Both sets of files are copied.
+- **File destinations** (no trailing `/`): launch-level **overrides**
+  project-level wholesale. Only the launch-level source is used.
+
+Rationale: directories are collection points where the intent is usually
+to add more files; file destinations are specific override points where
+only one file can end up at that path.
 
 Source fields use **no variable expansion** — `target` is a cmake target
 name resolved via the module, `path` is a literal relative path from the
@@ -2384,19 +2407,25 @@ cache data is retained.
 
 #### 9.8.4 Launch flow with deploy
 
-The launch flow (section 9.7) is extended:
+The launch flow (section 9.7) is extended with both deploy phases:
 
 1. Get active profile's default target (LaunchTarget)
-2. If buildable: build dependencies, then build self
-3. **Resolve deploy steps** from launch config
-4. **Execute deploy steps**: for each step, check freshness, copy if needed
-5. If any deploy step fails (unresolvable, copy error) → **block launch**,
-   notify user with error
-6. Launch the target
-7. Open overseer window for launch output
+2. Collect deploy sources from both project-level and launch-level
+   `deploy` dicts; include unique source projects in the dependency set
+3. **Build dependencies** (explicit `depends_on` + deploy source projects)
+4. **Execute pre-build deploy steps** (`pre_build: true` sources).
+   These run after deps are built so their outputs are up to date, but
+   before the launch target builds so hvigor/cmake sees the copied files
+   as inputs.
+5. **Build self** (if buildable)
+6. **Execute post-build deploy steps** (`pre_build: false`, default).
+   These land artifacts near the launch binary (e.g., `.node` files,
+   DLLs) without affecting the build.
+7. Launch (or device install + launch)
+8. Open overseer window for launch output
 
-Deploy steps execute sequentially (order of dict keys). All deploy steps
-must succeed before the launch proceeds.
+Any failure in any step **blocks the chain** and notifies the user with
+a specific error. Deploy steps within a phase execute sequentially.
 
 #### 9.8.5 Cleanup on deletion/clean
 
@@ -2411,21 +2440,24 @@ When a config unit is deleted or cleaned (sections 4.6, 4.7):
 This ensures deployed artifacts do not outlive their source build
 directories.
 
-#### 9.8.6 Design for extension (not in v1)
+#### 9.8.6 Design for extension
 
-The deploy system is designed for future extension:
+The deploy system is designed for further extension:
 
-**Cascade levels**: Deploy steps can be defined at multiple levels, with
-more specific levels overriding less specific ones per destination key:
+**Cascade levels**: Project-level and launch-level deploy are
+implemented with the merge rules described in §9.8.1. A configuration
+level is reserved but not yet implemented:
 
 ```
-Project.deploy          → applies to all configs/launches of this project
-  Configuration.deploy  → overrides project-level for this configuration
-    Launch.deploy       → overrides config-level for this launch
+Project.deploy          → applies to all configs/launches of this project      (implemented)
+  Configuration.deploy  → overrides project-level for this configuration       (deferred)
+    Launch.deploy       → overrides config-level for this launch               (implemented)
 ```
 
-A `null` value at a more specific level suppresses a parent-level deploy
-step. v1 implements launch-level only.
+When configuration-level deploy is added, the same merge rules apply:
+directory destinations union, file destinations override. A `null`
+value at a more specific level to suppress a parent-level deploy step
+is also deferred.
 
 **Action types**: The `deploy` dict currently implies a "copy" action.
 Future actions (symlink, script execution) could be specified via an

@@ -250,6 +250,29 @@ Deploy steps ensure the correct file is present regardless of which
 configuration was last built. Freshness is tracked per destination —
 files are only copied when the source changes or the configuration switches.
 
+Deploy can also be declared at the **project level** (applies to every
+launch, build, and device target for that project), and individual steps
+can set `"pre_build": true` to run **before** the target is built —
+useful for bundling native libraries into a HAP or APK where the file
+must be an input to the build:
+
+```json
+"NativeDemo": {
+  "harmony": { ... },
+  "deploy": {
+    "${workspace_root}/NativeDemo/entry/libs/arm64-v8a/": {
+      "project": "NativeLib",
+      "target": "my_lib",
+      "pre_build": true
+    }
+  }
+}
+```
+
+When the same destination appears at both project and launch level,
+directories union (both sets of files copied) and file destinations
+override (launch wins).
+
 ### Device deployment (harmony)
 
 For project types that deploy to physical or emulated devices (currently

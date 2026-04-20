@@ -169,6 +169,7 @@
 --- @field cmake? loomworks.ProjectCmakeInfo
 --- @field depends_on? string[]
 --- @field launch? table<string, table>
+--- @field deploy? table<string, table|table[]> project-level deploy steps
 
 --- Configuration info from module.info().
 --- @class loomworks.ConfigurationInfo

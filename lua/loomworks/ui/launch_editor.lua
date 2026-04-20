@@ -370,6 +370,7 @@ function M.open(opts)
             if src.target then display = display .. " : " .. src.target
             elseif src.path then display = display .. " : " .. src.path end
             if src.configuration then display = display .. " (" .. src.configuration .. ")" end
+            if src.pre_build then display = display .. " [pre-build]" end
             return display
         end
 

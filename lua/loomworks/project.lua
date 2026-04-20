@@ -66,6 +66,7 @@ function Project:_update(data)
         self.type_config = data.type_config
     end
     self.launch = data.launch
+    self.deploy = data.deploy
     self.variables = data.variables or nil
     self.configuration = data.configuration
     -- Read pre-resolved Module and Tool domain objects (set by _sync_projects)
@@ -755,6 +756,34 @@ function Project:save_launch_config(launch_name, config)
     if not ok then
         self.launch[launch_name] = nil
         if not next(self.launch) then self.launch = nil end
+        return false, err
+    end
+
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Save the project-level deploy dict.
+--- Pass nil or an empty dict to clear.
+--- @param deploy table<string, table|table[]>|nil
+--- @return boolean ok, string|nil err
+function Project:save_deploy(deploy)
+    local ws = self._workspace
+    self:_mark_user_owned()
+    if self._removed then
+        return false, "project '" .. self.key .. "' has been removed"
+    end
+
+    local old = self.deploy
+    if deploy == nil or not next(deploy) then
+        self.deploy = nil
+    else
+        self.deploy = deploy
+    end
+
+    local ok, err = ws:_save_user()
+    if not ok then
+        self.deploy = old
         return false, err
     end
 
