@@ -1,6 +1,6 @@
 --- loomworks/launch_target.lua — LaunchTarget class.
 --- Represents a user's selected build/launch target for a profile.
---- Supports module targets (cmake executables) and command-type launch
+--- Supports module targets (e.g. cmake executables from file-api), command-type launch
 --- configs from loomworks.json.
 
 local expand = require("loomworks.expand")
@@ -416,7 +416,7 @@ function LaunchTarget:_debug_command()
     })
 end
 
---- Debug a module target (cmake executable).
+--- Debug a module target (executable produced by a module, e.g. cmake).
 function LaunchTarget:_debug_target()
     local target = self._target
     if not target:is_executable() or not target.artifact then return end

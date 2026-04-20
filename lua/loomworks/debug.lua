@@ -17,13 +17,6 @@ local JS_ADAPTERS = {
     ["pwa-chrome"] = true,
 }
 
---- Backwards-compatibility mapping: module type → language.
---- Used when old-style module type keys appear in user.json debug.adapters.
---- @type table<string, string>
-local MODULE_TO_LANGUAGE = {
-    cmake = "c++",
-}
-
 --- Check if nvim-dap is available.
 --- @return boolean
 function M.available()
@@ -161,21 +154,15 @@ end
 
 --- Resolve the DAP adapter type for a language.
 --- Checks workspace debug settings (from user.json) first, falls back to defaults.
---- Accepts both language strings ("c++") and legacy module types ("cmake").
 --- @param workspace loomworks.Workspace
---- @param language string language or module type
+--- @param language string language name (e.g. "c++", "typescript")
 --- @return string adapter_type
 function M.resolve_adapter(workspace, language)
-    -- Normalize legacy module type to language
-    local lang = MODULE_TO_LANGUAGE[language] or language
-
     local settings = workspace._debug_settings
-    if settings and settings.adapters then
-        -- Check language key first, then legacy module type key
-        local adapter = settings.adapters[lang] or settings.adapters[language]
-        if adapter then return adapter end
+    if settings and settings.adapters and settings.adapters[language] then
+        return settings.adapters[language]
     end
-    return DEFAULT_ADAPTERS[lang]
+    return DEFAULT_ADAPTERS[language]
 end
 
 --- Known adapters per language (for picker UI).
