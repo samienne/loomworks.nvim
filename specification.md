@@ -2068,6 +2068,33 @@ core uses the default formula: `{workspace_root}/.nvim/build/{project}/{config}`
 The harmony module returns hvigor's cmake build directory:
 `{workspace_root}/{project_path}/{module}/.cxx/{product}/{target}/{mode}/{abi}/`
 
+**`editable_type_config_fields() → EditableFieldDef[]`** *(optional)*
+
+Declare which fields of the module's `type_config` the core UI should
+render as editable. Each entry describes one field; the UI iterates the
+list, reads the current value from `project.type_config[field.name]`,
+and renders an appropriate editor based on `field.kind`.
+
+Field def shape:
+
+| Field | Purpose |
+|-------|---------|
+| `name` | Key in `type_config` (e.g. `"cmake_env"`) |
+| `label` | Section header shown in the UI |
+| `kind` | Editor type. Currently supported: `"env_dict"` (string→string dict of name/value pairs) |
+
+Example (harmony):
+
+```lua
+function M.editable_type_config_fields()
+    return { { name = "cmake_env", label = "Build environment", kind = "env_dict" } }
+end
+```
+
+The core UI uses `Project:save_type_config_field(name, value)` to persist
+edits. Modules need not implement this method; when absent, no generic
+type_config editor is rendered.
+
 **`lsp_configs(project) → LspConfigEntry[]`** *(optional)*
 
 Return LSP server configurations for this project. Each entry describes

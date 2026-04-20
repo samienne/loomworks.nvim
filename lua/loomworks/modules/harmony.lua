@@ -396,6 +396,16 @@ function M.tool_label(tool_data)
     return nil
 end
 
+--- Declare UI-editable fields in harmony's type_config.
+--- The core UI renders an env-dict editor for `cmake_env`, which
+--- forwards values as environment variables to hvigor's cmake.
+--- @return table[]
+function M.editable_type_config_fields()
+    return {
+        { name = "cmake_env", label = "Build environment", kind = "env_dict" },
+    }
+end
+
 --- Map a semantic variant type to a configuration name from available configs.
 --- Harmony configs are named <product>-<target>-<abi>, all with mode=debug
 --- by default. For "debug", return the first available configuration.
