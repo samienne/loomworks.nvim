@@ -5,6 +5,18 @@ they don't get lost.
 
 ---
 
+## Visually distinguish stale / source-missing configurations
+
+Configurations in user.json that no longer match any auto-generated
+configuration (e.g. harmony `ohos`/`default` entries that predate the
+ABI-in-identity rework, or a preset that a cmake project removed) are
+still rendered as first-class options. The domain already tags them
+`_source_missing = true`; surface that in the status page with a
+`[stale]` badge beside the name so users can tell them apart from
+intentionally user-declared configurations. Delete action is already
+available (requires `is_user`). Do NOT auto-delete — user may have
+tuned values on those entries.
+
 ## Plugin-based loomtest adapter discovery
 
 Mirror the existing plugin-based module registry idea: loomtest should
