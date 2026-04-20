@@ -2068,6 +2068,13 @@ core uses the default formula: `{workspace_root}/.nvim/build/{project}/{config}`
 The harmony module returns hvigor's cmake build directory:
 `{workspace_root}/{project_path}/{module}/.cxx/{product}/{target}/{mode}/{abi}/`
 
+**`invalidate_tools()`** *(optional)*
+
+Clear any cached tool-detection state the module holds. Called by core
+before `rescan_tools()` runs, so the module's next `detect_tools_async`
+starts from a clean slate. Keeps core free of module-specific cache
+requires.
+
 **`editable_type_config_fields() → EditableFieldDef[]`** *(optional)*
 
 Declare which fields of the module's `type_config` the core UI should

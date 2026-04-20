@@ -2479,9 +2479,14 @@ function Workspace:_add_launch_config_targets()
 end
 
 --- Re-scan tools and remerge. Used for manual rescan from UI.
+--- Each module may implement `invalidate_tools()` to clear its own
+--- detection cache before the rescan. Core stays module-agnostic.
 function Workspace:rescan_tools()
-    local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
-    if ok then cmake_kits.clear_cache() end
+    for _, mod in pairs(self._modules) do
+        if mod.impl and mod.impl.invalidate_tools then
+            pcall(mod.impl.invalidate_tools)
+        end
+    end
     self:_scan_tools_async()
 end
 

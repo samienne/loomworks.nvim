@@ -894,6 +894,13 @@ function M.detect_tools()
 end
 
 --- Detect available tools (kits) asynchronously.
+--- Clear the cmake_kits detection cache.
+--- Called by core's rescan_tools() before a fresh scan.
+function M.invalidate_tools()
+    local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
+    if ok then cmake_kits.clear_cache() end
+end
+
 --- @param callback fun(tools: { tool_data: table }[])
 function M.detect_tools_async(callback)
     local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
