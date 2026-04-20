@@ -764,7 +764,7 @@ return function(tree, ctx)
                                     require("loomworks.ui.deploy_editor").open({
                                         destination = captured_dest,
                                         source = vim.deepcopy(src),
-                                        projects = {},  -- populated by editor itself
+                                        projects = lw.get_projects() or {},
                                         profile = lw.get_active_profile(),
                                         workspace = lw.get_workspace(),
                                         launch_project = project,
@@ -828,7 +828,7 @@ return function(tree, ctx)
                                 require("loomworks.ui.deploy_editor").open({
                                     destination = "",
                                     source = nil,
-                                    projects = {},
+                                    projects = lw.get_projects() or {},
                                     profile = lw.get_active_profile(),
                                     workspace = lw.get_workspace(),
                                     launch_project = project,
