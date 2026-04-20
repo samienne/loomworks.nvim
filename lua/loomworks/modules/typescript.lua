@@ -451,22 +451,12 @@ local EXCLUDED_SCRIPTS = {
 }
 
 --- Detect targets from package.json scripts.
---- Returns non-lifecycle scripts as "npm_script" targets.
---- @param build_dir string (unused, kept for interface compatibility)
---- @param config_name? string (unused)
---- @return table<string, loomworks.CachedTarget>|nil
-function M.parse_file_api(build_dir, config_name)
-    -- build_dir isn't meaningful for TypeScript — read from project path
-    -- The caller passes build_dir but for TS we need the project path.
-    -- Since we don't have it here, we return nil and use parse_targets instead.
-    return nil
-end
-
---- Detect targets from package.json scripts for a given project path.
---- Called by core after configure/init instead of parse_file_api.
---- @param project_path string absolute project path
---- @return table<string, { type: string }>|nil
-function M.parse_targets(project_path)
+--- Reads ctx.project_path and scans package.json for non-lifecycle scripts.
+--- @param ctx { build_dir?: string, project_path?: string, config_name?: string }
+--- @return table<string, { type: string, artifact: string }>|nil
+function M.parse_targets(ctx)
+    local project_path = ctx and ctx.project_path
+    if not project_path then return nil end
     local scripts = read_package_scripts(project_path)
     if not scripts then return nil end
 
@@ -484,12 +474,11 @@ function M.parse_targets(project_path)
 end
 
 --- Async version of parse_targets.
---- @param project_path string
---- @param config_name? string (unused)
+--- @param ctx { build_dir?: string, project_path?: string, config_name?: string }
 --- @param callback fun(targets: table|nil)
-function M.parse_targets_async(project_path, config_name, callback)
+function M.parse_targets_async(ctx, callback)
     vim.schedule(function()
-        callback(M.parse_targets(project_path))
+        callback(M.parse_targets(ctx))
     end)
 end
 

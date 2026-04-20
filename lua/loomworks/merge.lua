@@ -466,14 +466,10 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
             variables = project.variables,
         }
 
-        -- Add module-specific info (cmake compile_commands, etc.)
-        local has_cmake_info = (mod and (mod_info.compile_commands_from or mod_info.clangd))
-                or (cached_config_data and cached_config_data.cmake)
-        if has_cmake_info then
-            projects[key].cmake = {
-                compile_commands_from = mod_info and mod_info.compile_commands_from or nil,
-                clangd = mod_info and mod_info.clangd or nil,
-            }
+        -- Module-specific project-level info: modules return it under
+        -- `module_info` in their info() output. Core stores opaquely.
+        if mod_info and mod_info.module_info then
+            projects[key].module_info = mod_info.module_info
         end
     end
 

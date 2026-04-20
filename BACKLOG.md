@@ -5,6 +5,58 @@ they don't get lost.
 
 ---
 
+## Visually distinguish stale / source-missing configurations
+
+Configurations in user.json that no longer match any auto-generated
+configuration (e.g. harmony `ohos`/`default` entries that predate the
+ABI-in-identity rework, or a preset that a cmake project removed) are
+still rendered as first-class options. The domain already tags them
+`_source_missing = true`; surface that in the status page with a
+`[stale]` badge beside the name so users can tell them apart from
+intentionally user-declared configurations. Delete action is already
+available (requires `is_user`). Do NOT auto-delete — user may have
+tuned values on those entries.
+
+## Plugin-based loomtest adapter discovery
+
+Mirror the existing plugin-based module registry idea: loomtest should
+auto-discover test adapters by scanning a conventional directory
+(`lua/loomtest/adapters/<name>.lua` on the Neovim runtimepath). Each
+file self-registers with `loomtest.register_adapter(...)`. Third-party
+plugins can ship new adapters without editing loomtest itself.
+
+Under this pattern, `lua/loomworks/loomtest_adapter.lua` would move to
+something like `lua/loomtest/adapters/loomworks.lua` or stay in the
+loomworks tree and just follow the same self-registration contract.
+Keymaps for `<leader>t*` move out of loomworks entirely — loomtest
+ships its own default keymaps.
+
+Prerequisite for eventually splitting loomtest into its own repo
+cleanly.
+
+## Pluggable debug adapter architecture
+
+`lua/loomworks/debug.lua` currently hardcodes behavior for nvim-dap and
+has static tables of known adapters per language (`codelldb`, `cppdbg`,
+`pwa-node`, etc.). To let third-party plugins add new debuggers
+(gdb-mi, rust-analyzer DAP, custom remote debuggers) without editing
+core, the debug layer should follow the same pattern as LSP integrations:
+
+- Core `debug.lua` keeps a thin dispatcher and a registry of backends.
+- Each backend implementation lives in
+  `lua/loomworks/integrations/debug/<backend>.lua` (or an external
+  plugin path). Backends self-register for specific adapter/language
+  combinations.
+- Modules declare opaque `debug_configs(...)` entries the way they
+  already emit `lsp_configs` — core routes entries to the registered
+  backend by name.
+
+Retrofit would mirror the LSP refactor: define the entry shape, move
+nvim-dap wiring out of `debug.lua` into an integration file, and have
+`resolve_adapter` / `run` read from the registry rather than hardcoded
+tables. Deferred until we have a concrete second adapter to validate
+the design against.
+
 ## Streaming device scan into picker
 
 Currently `Workspace:scan_devices()` waits for all modules' `list_devices`

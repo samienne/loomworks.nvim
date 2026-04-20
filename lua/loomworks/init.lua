@@ -52,20 +52,41 @@ local function setup_keymaps(opts)
     map("n", "<leader>ws", function() M.pick_profile() end, { desc = "Select profile" })
     map("n", "<F5>", function() M.debug_target() end, { desc = "Debug target" })
     map("n", "<S-F5>", function() M.stop_target() end, { desc = "Stop launch" })
-    -- Tests
-    local loomtest = require("loomtest")
-    map("n", "<leader>tt", function() loomtest.debug_nearest() end, { desc = "Debug nearest test" })
-    map("n", "<leader>tT", function() loomtest.run_nearest() end, { desc = "Run nearest test" })
-    map("n", "<leader>tf", function() loomtest.debug_file() end, { desc = "Debug file tests" })
-    map("n", "<leader>tF", function() loomtest.run_file() end, { desc = "Run file tests" })
+    -- Tests — loomtest is optional; skip test keymaps if not installed
+    local ok_loomtest, loomtest = pcall(require, "loomtest")
+    if ok_loomtest then
+        map("n", "<leader>tt", function() loomtest.debug_nearest() end, { desc = "Debug nearest test" })
+        map("n", "<leader>tT", function() loomtest.run_nearest() end, { desc = "Run nearest test" })
+        map("n", "<leader>tf", function() loomtest.debug_file() end, { desc = "Debug file tests" })
+        map("n", "<leader>tF", function() loomtest.run_file() end, { desc = "Run file tests" })
+    end
+end
+
+--- Check that hard dependencies are available. Refuses setup with a
+--- clear message if any is missing. Hard deps: `overseer`, `snacks`.
+--- @return boolean ok, string|nil err
+local function check_hard_dependencies()
+    for _, dep in ipairs({ "overseer", "snacks" }) do
+        if not pcall(require, dep) then
+            return false, "loomworks requires " .. dep .. ".nvim; please install it and restart"
+        end
+    end
+    return true
 end
 
 --- Initialize loomworks.
 --- Registers keymaps and fidget integration. Workspace loading is handled
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
+--- Refuses to set up if required dependencies (overseer, snacks) are missing.
 --- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean }
 function M.setup(opts)
+    local ok, err = check_hard_dependencies()
+    if not ok then
+        vim.notify(err, vim.log.levels.ERROR)
+        return
+    end
+
     if opts and opts.auto_load ~= nil then
         auto_load_mode = opts.auto_load
     end
@@ -624,6 +645,14 @@ function M.launch_target()
 end
 
 function M.debug_target()
+    local debug_mod = require("loomworks.debug")
+    if not debug_mod.available() then
+        vim.notify(
+            "loomworks: nvim-dap not installed; launching without debugger",
+            vim.log.levels.WARN)
+        resolve_and_start("launch")
+        return
+    end
     resolve_and_start("debug")
 end
 

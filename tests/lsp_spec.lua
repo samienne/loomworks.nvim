@@ -29,7 +29,10 @@ local function setup_core(opts)
     local cache_json = h.make_cache_json(cache_data)
     local user_json = opts.user and h.make_user_json(opts.user) or nil
 
-    -- Mock module that returns the cmake info we want
+    -- Mock module that returns the cmake info we want.
+    -- The mock also provides lsp_configs() emitting a clangd entry rooted
+    -- at the project source path — this is what the clangd integration
+    -- and lsp.get_status() consume in the new architecture.
     local mock_modules = {
         get = function(mod_type)
             if mod_type ~= "cmake" then return nil end
@@ -42,6 +45,18 @@ local function setup_core(opts)
                         configurations = { Debug = {}, Release = {} },
                         compile_commands_from = type_config and type_config.compile_commands_from or nil,
                         clangd = type_config and type_config.clangd or nil,
+                    }
+                end,
+                lsp_configs = function(project)
+                    local ws = project._workspace
+                    if not ws then return {} end
+                    local root = ws.root .. "/" .. (project.path or project.key)
+                    return {
+                        {
+                            server = "clangd",
+                            root_dir = root,
+                            compile_commands_dir = project.cached and project.cached.build_dir or nil,
+                        },
                     }
                 end,
             }

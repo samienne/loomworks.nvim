@@ -52,7 +52,7 @@
 --- Explicit profile definition in loomworks.json.
 --- @class loomworks.ConfigProfileDef
 --- @field configuration_set string
---- @field cmake? table
+--- @field module_info? table opaque module-specific project-level info
 --- @field default_target? table
 
 --- Parsed loomworks.user.json structure.
@@ -93,15 +93,15 @@
 --- @field build_dir? string
 --- @field last_configured? string ISO 8601 timestamp
 --- @field last_built? string ISO 8601 timestamp
---- @field cmake? loomworks.CachedCmakeInfo
+--- @field module_info? table opaque module-specific cached info (e.g. cmake generator/compiler)
 --- Configuration snapshot (inline definition data for self-describing entries):
 --- @field options? table user-defined options snapshot
 --- @field module_config? table module-specific config data snapshot
 --- @field is_user? boolean whether this was a user-defined configuration
 --- @field inherits? string|string[] base configuration names
 
---- CMake-specific cached info.
---- @class loomworks.CachedCmakeInfo
+--- Cmake's per-configuration cached module_info shape (documented as example; core treats as opaque).
+--- @class loomworks.CmakeCachedModuleInfo
 --- @field generator? string cmake -G value used
 --- @field compiler? string compiler identifier
 --- @field multi_config? boolean
@@ -166,7 +166,7 @@
 --- @field configurations table<string, loomworks.ConfigurationInfo>
 --- @field cached? loomworks.CachedConfig active configuration's cached state
 --- @field cached_configurations table<string, loomworks.CachedConfig>
---- @field cmake? loomworks.ProjectCmakeInfo
+--- @field module_info? table opaque module-specific project-level info
 --- @field depends_on? string[]
 --- @field launch? table<string, table>
 --- @field deploy? table<string, table|table[]> project-level deploy steps
@@ -180,8 +180,8 @@
 --- @field from_preset? boolean derived from CMakePresets.json
 --- @field role? string e.g. "compile_commands"
 
---- CMake project-level info from merge.
---- @class loomworks.ProjectCmakeInfo
+--- Cmake's project-level module_info shape (documented as an example; core treats it as opaque).
+--- @class loomworks.CmakeProjectModuleInfo
 --- @field compile_commands_from? string configuration to source compile_commands.json from
 --- @field clangd? string project-level clangd binary override (supports ${ENV_VAR})
 
@@ -227,7 +227,7 @@
 --- @field variant? string configuration variant name
 --- @field tool? loomworks.ToolRef bundled tool reference
 --- @field build_dir? string
---- @field cmake? loomworks.CachedCmakeInfo
+--- @field module_info? table opaque module-specific info (e.g. cmake generator/compiler)
 --- @field success boolean
 
 --- Running task info for deletion conflict detection.

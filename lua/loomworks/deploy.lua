@@ -252,7 +252,7 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
                 .. "' has no artifact path"
         end
         source_rel_path = target.artifact
-        -- Safety: if artifact is absolute (prefix strip failed in parse_file_api),
+        -- Safety: if artifact is absolute (prefix strip failed in parse_targets),
         -- strip the build_dir prefix here with case-insensitive comparison
         if source_rel_path:match("^%a:") or source_rel_path:match("^/") then
             local bd_norm = build_dir:gsub("\\", "/"):gsub("/?$", "/")

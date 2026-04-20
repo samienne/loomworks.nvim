@@ -7,6 +7,78 @@ local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
 local workspace_view = require("loomworks.workspace_view")
 
+--- Render an env_dict editable type_config field: a group of name/value
+--- string pairs with per-entry edit/delete and an Add button.
+--- @param tree loomworks.Tree
+--- @param project loomworks.Project
+--- @param field { name: string, label: string }
+local function render_env_dict_field(tree, project, field)
+    local current = project.type_config and project.type_config[field.name] or {}
+    if not next(current) and project.orphaned then return end
+
+    tree:group(field.label .. ":", "Comment", function()
+        local keys = {}
+        for k in pairs(current) do keys[#keys + 1] = k end
+        table.sort(keys)
+        for _, k in ipairs(keys) do
+            local ek = k  -- capture
+            tree:item(k .. "=" .. current[k], {
+                hl = "LoomworksActionable",
+                enter_label = "Edit variable",
+                direct = true,
+                on_enter = function()
+                    vim.ui.input({ prompt = ek .. "=", default = current[ek] }, function(val)
+                        if not val then return end
+                        local new_val = vim.deepcopy(current)
+                        if val == "" then
+                            new_val[ek] = nil
+                        else
+                            new_val[ek] = val
+                        end
+                        project:save_type_config_field(field.name, new_val)
+                    end)
+                end,
+                on_delete = function()
+                    local new_val = vim.deepcopy(current)
+                    new_val[ek] = nil
+                    project:save_type_config_field(field.name, new_val)
+                end,
+            })
+        end
+        if not project.orphaned then
+            tree:item("▸ Add variable", {
+                hl = "LoomworksActionable",
+                direct = true,
+                on_enter = function()
+                    vim.ui.input({ prompt = "Variable name: " }, function(name)
+                        if not name or name == "" then return end
+                        vim.ui.input({ prompt = name .. "=" }, function(val)
+                            if not val then return end
+                            local new_val = vim.deepcopy(current)
+                            new_val[name] = val
+                            project:save_type_config_field(field.name, new_val)
+                        end)
+                    end)
+                end,
+            })
+        end
+    end)
+end
+
+--- Dispatch rendering for an editable type_config field based on its kind.
+--- Extend this switch as new kinds are introduced.
+--- @param tree loomworks.Tree
+--- @param project loomworks.Project
+--- @param field { name: string, label: string, kind: string }
+local function render_editable_type_config_field(tree, project, field)
+    if field.kind == "env_dict" then
+        render_env_dict_field(tree, project, field)
+    else
+        tree:leaf(field.label .. ": (unsupported kind: "
+            .. tostring(field.kind) .. ")", "DiagnosticWarn")
+    end
+end
+
 --- Sort project keys: non-orphaned first (alphabetical), orphaned last.
 --- @param projects table<string, loomworks.Project>
 --- @return loomworks.Project[]
@@ -875,58 +947,12 @@ return function(tree, ctx)
                 end)
             end
 
-            -- Build environment (cmake_env from type_config)
-            local cmake_env = proj.type_config and proj.type_config.cmake_env
-            if cmake_env and next(cmake_env) or not proj.orphaned then
-                local project = proj  -- capture for closure
-                local env = cmake_env or {}
-                tree:group("Build environment:", "Comment", function()
-                    local keys = {}
-                    for k in pairs(env) do keys[#keys + 1] = k end
-                    table.sort(keys)
-                    for _, k in ipairs(keys) do
-                        local ek = k  -- capture
-                        tree:item(k .. "=" .. env[k], {
-                            hl = "LoomworksActionable",
-                            enter_label = "Edit env var",
-                            direct = true,
-                            on_enter = function()
-                                vim.ui.input({ prompt = ek .. "=", default = env[ek] }, function(val)
-                                    if not val then return end
-                                    local new_env = vim.deepcopy(env)
-                                    if val == "" then
-                                        new_env[ek] = nil
-                                    else
-                                        new_env[ek] = val
-                                    end
-                                    project:save_type_config_field("cmake_env", new_env)
-                                end)
-                            end,
-                            on_delete = function()
-                                local new_env = vim.deepcopy(env)
-                                new_env[ek] = nil
-                                project:save_type_config_field("cmake_env", new_env)
-                            end,
-                        })
-                    end
-                    if not proj.orphaned then
-                        tree:item("▸ Add env variable", {
-                            hl = "LoomworksActionable",
-                            direct = true,
-                            on_enter = function()
-                                vim.ui.input({ prompt = "Variable name: " }, function(name)
-                                    if not name or name == "" then return end
-                                    vim.ui.input({ prompt = name .. "=" }, function(val)
-                                        if not val then return end
-                                        local new_env = vim.deepcopy(env)
-                                        new_env[name] = val
-                                        project:save_type_config_field("cmake_env", new_env)
-                                    end)
-                                end)
-                            end,
-                        })
-                    end
-                end)
+            -- Generic module-declared editable type_config fields
+            local mod_impl = proj._module and proj._module.impl or nil
+            local field_defs = mod_impl and mod_impl.editable_type_config_fields
+                and mod_impl.editable_type_config_fields() or {}
+            for _, field in ipairs(field_defs) do
+                render_editable_type_config_field(tree, proj, field)
             end
 
             tree:blank()

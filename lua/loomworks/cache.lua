@@ -2,7 +2,7 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local CURRENT_VERSION = 7
+local CURRENT_VERSION = 8
 
 --- Return the file path for a workspace root.
 --- @param root string
@@ -79,9 +79,32 @@ function M.default()
     }
 end
 
+--- One-way transparent migration v7 → v8: rename build_dir entry field
+--- `cmake` to `module_info`. Lets pre-existing caches load after the
+--- cmake_info→module_info rename without a nuke. Safe to remove after
+--- all dev caches have been rewritten at v8.
+--- TODO: remove once all tracked dev workspaces have migrated.
+--- @param raw table parsed cache
+--- @return boolean migrated true if a migration happened
+local function migrate_v7_to_v8(raw)
+    if not raw._meta or raw._meta.version ~= 7 then return false end
+    if raw.build_dirs then
+        for _, entry in pairs(raw.build_dirs) do
+            if entry.cmake ~= nil and entry.module_info == nil then
+                entry.module_info = entry.cmake
+            end
+            entry.cmake = nil
+        end
+    end
+    raw._meta.version = CURRENT_VERSION
+    return true
+end
+
 --- Parse raw JSON content into CacheData.
 --- Returns defaults on invalid content. Second return value is true when a
 --- version mismatch was detected (valid JSON but wrong version number).
+--- Applies transparent migrations for recent schema bumps (see
+--- `migrate_v7_to_v8`).
 --- @param content string raw JSON content
 --- @return loomworks.CacheData data, boolean version_mismatch
 function M.parse(content)
@@ -89,6 +112,7 @@ function M.parse(content)
     if not ok or type(raw) ~= "table" then
         return M.default(), false
     end
+    migrate_v7_to_v8(raw)
     if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
         return M.default(), true
     end

@@ -2,9 +2,9 @@ local cache = require("loomworks.cache")
 
 describe("cache", function()
     describe("default", function()
-        it("returns table with version 7 and empty build_dirs", function()
+        it("returns table with version 8 and empty build_dirs", function()
             local d = cache.default()
-            assert.equals(7, d._meta.version)
+            assert.equals(8, d._meta.version)
             assert.are.same({}, d.build_dirs)
         end)
     end)
@@ -12,7 +12,7 @@ describe("cache", function()
     describe("parse", function()
         it("parses valid cache.json", function()
             local json = vim.json.encode({
-                _meta = { version = 7, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                _meta = { version = 8, loomworks_hash = "abc", cached_at = "2025-01-01" },
                 build_dirs = {
                     ["build/App/Debug"] = {
                         project_key = "App",
@@ -24,13 +24,13 @@ describe("cache", function()
                 },
             })
             local result = cache.parse(json)
-            assert.equals(7, result._meta.version)
+            assert.equals(8, result._meta.version)
             assert.equals("built", result.build_dirs["build/App/Debug"].state)
         end)
 
         it("returns no version mismatch on valid parse", function()
             local json = vim.json.encode({
-                _meta = { version = 7, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                _meta = { version = 8, loomworks_hash = "abc", cached_at = "2025-01-01" },
                 build_dirs = {},
             })
             local _, mismatch = cache.parse(json)
@@ -39,7 +39,7 @@ describe("cache", function()
 
         it("returns defaults on invalid JSON without version mismatch", function()
             local result, mismatch = cache.parse("broken {{{")
-            assert.equals(7, result._meta.version)
+            assert.equals(8, result._meta.version)
             assert.are.same({}, result.build_dirs)
             assert.is_false(mismatch)
         end)
@@ -75,10 +75,68 @@ describe("cache", function()
 
         it("ensures build_dirs field exists", function()
             local json = vim.json.encode({
-                _meta = { version = 7 },
+                _meta = { version = 8 },
             })
             local result = cache.parse(json)
             assert.are.same({}, result.build_dirs)
+        end)
+
+        it("migrates v7 cache by renaming cmake to module_info", function()
+            local json = vim.json.encode({
+                _meta = { version = 7 },
+                build_dirs = {
+                    ["build/App/Debug"] = {
+                        project_key = "App",
+                        type = "cmake",
+                        variant = "Debug",
+                        state = "built",
+                        cmake = { generator = "Ninja", compiler = "gcc" },
+                    },
+                },
+            })
+            local result, mismatch = cache.parse(json)
+            assert.is_false(mismatch, "v7 cache should migrate without triggering mismatch")
+            assert.equals(8, result._meta.version)
+            local entry = result.build_dirs["build/App/Debug"]
+            assert.is_nil(entry.cmake, "old cmake field should be cleared")
+            assert.is_not_nil(entry.module_info)
+            assert.equals("Ninja", entry.module_info.generator)
+            assert.equals("gcc", entry.module_info.compiler)
+        end)
+
+        it("v7 migration leaves entry unchanged when no cmake field", function()
+            local json = vim.json.encode({
+                _meta = { version = 7 },
+                build_dirs = {
+                    ["build/App/Debug"] = {
+                        project_key = "App",
+                        type = "cmake",
+                        variant = "Debug",
+                        state = "built",
+                    },
+                },
+            })
+            local result = cache.parse(json)
+            assert.equals(8, result._meta.version)
+            assert.is_nil(result.build_dirs["build/App/Debug"].module_info)
+        end)
+
+        it("v7 migration prefers existing module_info over cmake if both present", function()
+            local json = vim.json.encode({
+                _meta = { version = 7 },
+                build_dirs = {
+                    ["build/App/Debug"] = {
+                        project_key = "App",
+                        type = "cmake",
+                        variant = "Debug",
+                        cmake = { generator = "OldGen" },
+                        module_info = { generator = "NewGen" },
+                    },
+                },
+            })
+            local result = cache.parse(json)
+            assert.equals("NewGen", result.build_dirs["build/App/Debug"].module_info.generator)
+            assert.is_nil(result.build_dirs["build/App/Debug"].cmake)
         end)
     end)
 

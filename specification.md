@@ -2068,29 +2068,84 @@ core uses the default formula: `{workspace_root}/.nvim/build/{project}/{config}`
 The harmony module returns hvigor's cmake build directory:
 `{workspace_root}/{project_path}/{module}/.cxx/{product}/{target}/{mode}/{abi}/`
 
-**`native_build_info(project_path, type_config, tool_data, config_info) → table|nil`** *(optional)*
+**`invalidate_tools()`** *(optional)*
 
-Return LSP integration data for modules with embedded native code managed
-by an external build system. The core LSP layer calls this when resolving
-clangd configuration for a project. Returns a table with optional fields:
+Clear any cached tool-detection state the module holds. Called by core
+before `rescan_tools()` runs, so the module's next `detect_tools_async`
+starts from a clean slate. Keeps core free of module-specific cache
+requires.
 
-- `clangd_binary`: absolute path to a module/SDK-specific clangd binary
-- `clangd_root`: override for clangd root_dir (defaults to build dir)
+**`editable_type_config_fields() → EditableFieldDef[]`** *(optional)*
 
-The `compile_commands_dir` is resolved by the LSP layer from the project's
-active build directory — the same mechanism as cmake projects. The module
-does not need to provide it explicitly.
+Declare which fields of the module's `type_config` the core UI should
+render as editable. Each entry describes one field; the UI iterates the
+list, reads the current value from `project.type_config[field.name]`,
+and renders an appropriate editor based on `field.kind`.
 
-Modules that do not have native code (e.g., typescript) do not implement
-this method. The LSP layer only queries it when it exists on the module.
+Field def shape:
 
-**`parse_file_api(build_dir, config_name?) → targets?`** *(optional)*
+| Field | Purpose |
+|-------|---------|
+| `name` | Key in `type_config` (e.g. `"cmake_env"`) |
+| `label` | Section header shown in the UI |
+| `kind` | Editor type. Currently supported: `"env_dict"` (string→string dict of name/value pairs) |
 
-Parse module-specific post-configure data from the build directory. Returns
-a dict of `target_name → { type, dependencies? }` for project-owned targets,
-or `nil` if no data is available. Called by core after a successful configure
-task. `config_name` is provided for multi-config generators to select the
-correct configuration from the reply.
+Example (harmony):
+
+```lua
+function M.editable_type_config_fields()
+    return { { name = "cmake_env", label = "Build environment", kind = "env_dict" } }
+end
+```
+
+The core UI uses `Project:save_type_config_field(name, value)` to persist
+edits. Modules need not implement this method; when absent, no generic
+type_config editor is rendered.
+
+**`lsp_configs(project) → LspConfigEntry[]`** *(optional)*
+
+Return LSP server configurations for this project. Each entry describes
+one LSP server the module wants attached to buffers under this project.
+Entries are **opaque to core** — only the server-specific integration
+(e.g. `lua/loomworks/integrations/clangd.lua`) parses the fields.
+
+Entry shape:
+
+| Field | Purpose |
+|-------|---------|
+| `server` | Server name (e.g. `"clangd"`, `"ts_ls"`) — selects the integration |
+| `root_dir` | Absolute path used for root_dir matching and client scoping |
+| `binary` | (clangd) Override server executable; `${ENV_VAR}` expansion supported |
+| `compile_commands_dir` | (clangd) Absolute directory containing `compile_commands.json` |
+| `tsconfig` | (ts_ls) Absolute path to `tsconfig.json` |
+| _…per-server_ | Each integration documents its own fields |
+
+Modules with no LSP needs return `{}` (or omit the method). The module
+may traverse core domain objects (Project, ConfigUnit) to resolve
+references — e.g. cmake reading another configuration's build dir for
+`compile_commands_from` redirect.
+
+Core never reads entry contents beyond `server` — all interpretation is
+delegated to `lua/loomworks/integrations/<server>.lua`.
+
+**`parse_targets(ctx) → targets?`** *(optional)*
+
+Discover build targets for the project. Returns a dict of
+`target_name → { type, dependencies?, artifact? }` for project-owned
+targets, or `nil` if no data is available. Called by core after a
+successful configure task or during startup scan.
+
+`ctx` is a table with:
+- `build_dir` — absolute build directory (for modules that read build
+  output, e.g. cmake's file API)
+- `project_path` — absolute project root path (for modules that read
+  source files, e.g. typescript reading package.json)
+- `config_name` — configuration variant name (for multi-config
+  generators to select the correct reply)
+
+Each module uses only the fields it needs. An async companion
+`parse_targets_async(ctx, callback)` may be provided for discovery that
+involves I/O.
 
 Only project-owned build targets are included (executables and libraries).
 Imported, alias, and utility targets are excluded. Dependencies list only
@@ -2123,10 +2178,10 @@ configure. The codemodel reply provides targets; the cache reply provides
 build options.
 
 **Reply parsing**: After a successful configure, core calls
-`parse_file_api(build_dir, config_name?)` on the module. The cmake module
+`parse_targets(build_dir, config_name?)` on the module. The cmake module
 reads the codemodel reply from `<build_dir>/.cmake/api/v1/reply/`,
 extracts project-owned targets, and returns them. On startup, existing
-build directories are scanned asynchronously via `parse_file_api_async`.
+build directories are scanned asynchronously via `parse_targets_async`.
 
 **Target filtering**: Only project-owned build targets are included:
 - Executables (`EXECUTABLE`)
@@ -2955,33 +3010,61 @@ The target picker collects from all three sources:
 
 ## 10. LSP Integration
 
-### 10.1 clangd cmd factory
+LSP integration is split between a thin core dispatch layer
+(`lua/loomworks/lsp.lua`) and per-server integration files
+(`lua/loomworks/integrations/<server>.lua`). Core is module-agnostic:
+modules emit opaque `lsp_configs()` entries keyed by `server` name, and
+core routes them to the matching integration.
 
-`loomworks.lsp.clangd_cmd(base_cmd)` returns a function suitable for
-lspconfig's `cmd` option. It resolves per-project:
+### 10.1 Module interface (§9.4 `lsp_configs`)
 
-1. **clangd binary**: project-level override (`cmake.clangd` in
-   workspace config) > kit auto-detected clangd_path > default from base_cmd
-2. **compile_commands_dir**: `--compile-commands-dir=<build_dir>` injected
-   based on active configuration's build directory. If
-   `compile_commands_from` is set, uses that configuration's build dir
-   instead.
+Modules produce entries like
+`{ server = "clangd", root_dir = ..., compile_commands_dir = ..., binary = ... }`.
+Core only inspects the `server` field to dispatch; integrations parse the
+remaining fields. Modules may traverse core domain objects (Project,
+ConfigUnit) to resolve cross-configuration references — e.g. cmake's
+`compile_commands_from` redirect resolves to another cmake configuration's
+build directory inside the module, so the emitted entry's
+`compile_commands_dir` is already fully resolved.
 
-### 10.2 clangd root_dir factory
+### 10.2 Dispatch layer (`lsp.lua`)
 
-`loomworks.lsp.clangd_root_dir(fallback?)` returns a function for
-lspconfig's `root_dir`. For cmake projects, returns the project's absolute
-path (so clangd scopes to the right project). Falls back to provided
-function for non-cmake or when loomworks has no data.
+Responsibilities:
+- Load integrations on startup
+- Re-export integration-provided factory functions for user config
+  (`loomworks.lsp.clangd_cmd`, `loomworks.lsp.clangd_root_dir`)
+- Provide a generic `get_status()` that iterates all projects, calls each
+  module's `lsp_configs()`, and matches active LSP clients by root_dir
+  per server
 
-### 10.3 Automatic restarts
+Core never references specific LSP server names. Adding a new server
+means adding an integration file and updating any module that wants to
+emit entries for it.
 
-The LSP module restarts clangd clients when:
-- Workspace is first loaded
-- Active set changes AND the compile_commands_dir or clangd binary has
-  changed for any cmake project
+### 10.3 clangd integration (`integrations/clangd.lua`)
 
-Restarts are per-client and include notification of the reason.
+Exposes two factory functions used in user nvim config:
+
+- `cmd_factory(base_cmd)` returns a function for lspconfig's `cmd`
+  option. It looks up the clangd entry for the buffer's project, overrides
+  the binary if provided, and appends `--compile-commands-dir=<dir>` when
+  `compile_commands_dir` is set and the `compile_commands.json` file
+  actually exists.
+- `root_dir_factory(fallback)` returns a function for lspconfig's
+  `root_dir`. Returns `entry.root_dir` from the module's clangd entry when
+  available; otherwise calls `fallback`.
+
+### 10.4 Automatic restarts
+
+The clangd integration subscribes to `active_set_changed` and
+`workspace_changed` events. It restarts clangd clients when:
+
+- Workspace is first loaded (pre-existing clients lack loomworks awareness)
+- Active set changes AND the resolved `binary` or `compile_commands_dir`
+  differs from the previous state for any project
+
+Restarts are per-client and include a notification explaining what
+changed (new binary, new compile_commands_dir, or both).
 
 ---
 

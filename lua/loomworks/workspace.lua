@@ -632,7 +632,7 @@ function Workspace:_serialize_cache()
     for _, bd in pairs(self._build_dirs) do
         if bd:has_state() then
             local entry = bd:serialize()
-            if entry.cmake then entry.cmake.targets = nil end
+            if entry.module_info then entry.module_info.targets = nil end
             -- Enrich with live Configuration snapshot if a ConfigUnit references this BD
             local unit = unit_for_bd[bd]
             if unit and unit._configuration and not unit._configuration._removed then
@@ -657,7 +657,7 @@ function Workspace:_serialize_cache()
     for _, unit in pairs(self._config_units) do
         if unit._variant and unit.state_value and not unit._build_dir then
             local entry = unit:serialize()
-            if entry.cmake then entry.cmake.targets = nil end
+            if entry.module_info then entry.module_info.targets = nil end
             data.build_dirs[unit.id] = entry
         end
     end
@@ -914,7 +914,7 @@ function Workspace:_rebuild_profile_projects_for(profile)
                         config_unit.build_dir_value = bd.path
                         config_unit.last_configured = bd.last_configured
                         config_unit.last_built = bd.last_built
-                        config_unit.cmake_info = bd.cmake_info
+                        config_unit.module_info = bd.module_info
                         config_unit._cached_options = bd.options_snapshot
                         config_unit._cached_module_config = bd.module_config_snapshot
                     end
@@ -1872,10 +1872,11 @@ function Workspace:record_task_result(result)
         config_unit._tool_data = result.tool.data
     end
 
-    if result.cmake then
-        config_unit.cmake_info = config_unit.cmake_info or {}
-        for k, v in pairs(result.cmake) do
-            config_unit.cmake_info[k] = v
+    -- Module-specific task result info (e.g., cmake generator/compiler)
+    if result.module_info then
+        config_unit.module_info = config_unit.module_info or {}
+        for k, v in pairs(result.module_info) do
+            config_unit.module_info[k] = v
         end
     end
 
@@ -1896,7 +1897,7 @@ function Workspace:record_task_result(result)
         state = config_unit.state_value,
         last_configured = config_unit.last_configured,
         last_built = config_unit.last_built,
-        cmake_info = config_unit.cmake_info,
+        module_info = config_unit.module_info,
         project_key = config_unit._project and config_unit._project.key or config_unit._init_project_key,
         variant = config_unit._variant,
         config_key = config_unit._config_key,
@@ -1921,12 +1922,18 @@ function Workspace:record_task_result(result)
     self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 
-    -- Parse file-api targets after successful configure (runtime only, not cached)
+    -- Parse targets after successful configure (runtime only, not cached)
     if config_unit and action == "configure" and success and result.build_dir then
         if proj_type ~= "unknown" then
             local mod = self._core._deps.modules.get(proj_type)
-            if mod and mod.parse_file_api then
-                config_unit:set_targets(mod.parse_file_api(result.build_dir, result.variant))
+            if mod and mod.parse_targets then
+                local project = config_unit._project
+                local ctx = {
+                    build_dir = result.build_dir,
+                    project_path = project and (self.root .. "/" .. (project.path or project.key)) or nil,
+                    config_name = result.variant,
+                }
+                config_unit:set_targets(mod.parse_targets(ctx))
             end
         end
     end
@@ -1996,7 +2003,7 @@ function Workspace:delete_cached_configs(items)
             item.unit.build_dir_value = nil
             item.unit.last_configured = nil
             item.unit.last_built = nil
-            item.unit.cmake_info = nil
+            item.unit.module_info = nil
             item.unit._config_key = nil
             item.unit._variant = nil
             item.unit._tool_key = nil
@@ -2024,7 +2031,7 @@ function Workspace:reset_cached_configs(items)
         item.unit.build_dir_value = nil
         item.unit.last_configured = nil
         item.unit.last_built = nil
-        item.unit.cmake_info = nil
+        item.unit.module_info = nil
         ::continue::
     end
 end
@@ -2378,8 +2385,10 @@ end
 --- Runs asynchronously, processing units sequentially to avoid blocking.
 --- Results stored on ConfigUnit.targets (runtime only, not cached).
 function Workspace:_scan_targets_async()
-    -- Collect scannable units: modules with parse_file_api_async (need build_dir)
-    -- or parse_targets_async (need project path)
+    -- Collect scannable units. Modules that read from build_dir (cmake) get
+    -- scanned per-unit. Modules that read from project files (typescript)
+    -- get scanned once per project. The module reads whichever context it
+    -- needs from the ctx dict passed to parse_targets_async.
     local units = {}
     local seen_projects = {} -- avoid duplicate project-level scans
     for _, unit in pairs(self._config_units) do
@@ -2387,22 +2396,21 @@ function Workspace:_scan_targets_async()
         if not project then goto continue end
 
         local mod = project._module and project._module.impl or nil
-        if not mod then goto continue end
+        if not mod or not mod.parse_targets_async then goto continue end
 
+        local abs_path = self.root .. "/" .. (project.path or project.key)
         local build_dir = unit:build_dir()
-        if build_dir and mod.parse_file_api_async then
+        if build_dir then
             units[#units + 1] = {
                 unit = unit, mod = mod,
-                scan_type = "file_api",
                 build_dir = build_dir,
+                project_path = abs_path,
             }
-        elseif mod.parse_targets_async and not seen_projects[project.key] then
-            -- Project-level target scan (e.g., npm scripts) -- once per project
+        elseif not seen_projects[project.key] then
+            -- No build_dir: scan once per project (project-level only).
             seen_projects[project.key] = true
-            local abs_path = self.root .. "/" .. (project.path or project.key)
             units[#units + 1] = {
                 unit = unit, mod = mod,
-                scan_type = "project",
                 project_path = abs_path,
             }
         end
@@ -2437,13 +2445,12 @@ function Workspace:_scan_targets_async()
             end)
         end
 
-        if entry.scan_type == "file_api" then
-            local variant = entry.unit:variant()
-            entry.mod.parse_file_api_async(entry.build_dir, variant, on_targets)
-        else
-            local variant = entry.unit:variant()
-            entry.mod.parse_targets_async(entry.project_path, variant, on_targets)
-        end
+        local variant = entry.unit:variant()
+        entry.mod.parse_targets_async({
+            build_dir = entry.build_dir,
+            project_path = entry.project_path,
+            config_name = variant,
+        }, on_targets)
     end
 
     next_unit()
@@ -2472,9 +2479,14 @@ function Workspace:_add_launch_config_targets()
 end
 
 --- Re-scan tools and remerge. Used for manual rescan from UI.
+--- Each module may implement `invalidate_tools()` to clear its own
+--- detection cache before the rescan. Core stays module-agnostic.
 function Workspace:rescan_tools()
-    local ok, cmake_kits = pcall(require, "loomworks.cmake_kits")
-    if ok then cmake_kits.clear_cache() end
+    for _, mod in pairs(self._modules) do
+        if mod.impl and mod.impl.invalidate_tools then
+            pcall(mod.impl.invalidate_tools)
+        end
+    end
     self:_scan_tools_async()
 end
 
