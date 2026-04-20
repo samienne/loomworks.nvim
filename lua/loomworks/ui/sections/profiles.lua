@@ -96,6 +96,67 @@ local function render_profile_details(tree, profile, lw)
         end
     end
 
+    -- Device selection (only when workspace has device-capable modules)
+    local ws = profile._workspace
+    if ws:has_device_modules() then
+        local device = profile:device()
+        local device_text, device_hl
+        if device and device:is_online() then
+            device_text = "Device: " .. device.display_name
+            if device.display_name ~= device.serial then
+                device_text = device_text .. " (" .. device.serial .. ")"
+            end
+            device_hl = "DiagnosticOk"
+        elseif profile:device_serial() then
+            device_text = "Device: " .. profile:device_serial() .. " (offline)"
+            device_hl = "DiagnosticWarn"
+        else
+            device_text = "Device: (none selected)"
+            device_hl = "Comment"
+        end
+        tree:item(device_text, {
+            hl = device_hl,
+            direct = true,
+            enter_label = "Pick device",
+            on_enter = function()
+                vim.notify("loomworks: scanning for devices...", vim.log.levels.INFO)
+                ws:scan_devices(function(devices)
+                    local online = {}
+                    for _, d in ipairs(devices) do
+                        if d:is_online() then
+                            online[#online + 1] = d
+                        end
+                    end
+                    if #online == 0 then
+                        vim.notify("loomworks: no devices found", vim.log.levels.INFO)
+                        return
+                    end
+                    -- Include a "clear" option if a device is currently set
+                    local items = vim.list_extend({}, online)
+                    if profile:device_serial() then
+                        items[#items + 1] = { clear = true }
+                    end
+                    vim.ui.select(items, {
+                        prompt = "Select device for profile:",
+                        format_item = function(d)
+                            if d.clear then return "(clear selection)" end
+                            local mark = (profile:device_serial() == d.serial) and " (current)" or ""
+                            return d.display_name .. " (" .. d.serial .. ")" .. mark
+                        end,
+                    }, function(choice)
+                        if not choice then return end
+                        if choice.clear then
+                            profile:clear_device()
+                        else
+                            profile:set_device(choice.serial)
+                        end
+                        ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                    end)
+                end)
+            end,
+        })
+    end
+
     local op = profile:operation()
     if op and op.message then
         local op_hl = op.success and "DiagnosticOk" or "DiagnosticError"

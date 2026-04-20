@@ -320,6 +320,17 @@ These are implementation-specific details not covered by the spec or architectur
   dap with `hierarchy = true` (kills debuggee process). Auto-cleans tracked
   run on session end. init.lua delegates `launch_target()`, `debug_target()`,
   `stop_target()` to session_tracker.
+- **Device domain object** (`device.lua`): represents a physical or emulated
+  deployment target. Identified by serial string. Fields: serial, display_name,
+  provider (module id), state (online/offline), properties. Runtime-only
+  (not persisted to cache). Workspace owns `_devices` dict (serial → Device).
+  Discovered on demand via module's `list_devices()`. Profile stores optional
+  `_device_serial` (persisted in user.json). Device interface on modules:
+  `has_devices` (boolean), `list_devices`, `device_targets`, `device_install`,
+  `device_launch`, `device_log`, `resolve_artifact`, `resolve_launch_info`.
+  LaunchTarget has third type: device targets (descriptor field `device_target`).
+  Session tracker extends chain: build → deploy → device-install → device-launch
+  for targets where `requires_device()` is true. Always reinstalls (no freshness).
 - **Error handling**: on deserialization error (structurally invalid data),
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still
@@ -331,7 +342,7 @@ These are implementation-specific details not covered by the spec or architectur
 - `cmake` — full implementation
 - `harmony` — full implementation (DevEco/SDK detection, hvigor build pipeline,
   product×target×ABI configurations, external build dirs, SDK clangd via
-  native_build_info, cmake_env passthrough)
+  native_build_info, cmake_env passthrough, device deployment via hdc)
 - `typescript` — shim (shows project exists, no build functionality)
 
 **Deferred (not in v1):**

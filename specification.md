@@ -265,7 +265,46 @@ profiles may reference the same ConfigUnit; state changes are visible to all.
 ConfigUnits are created lazily (flyweight pattern) and shared across the
 entire system. They are never destroyed during a session.
 
-### 1.8 loomworks.json Schema
+### 1.8 Device
+
+A device is a physical or emulated deployment target (phone, tablet,
+emulator). Devices are identified by a **serial string** assigned by the
+device connector tool (e.g., `hdc` for HarmonyOS, `adb` for Android).
+The serial is stable across USB reconnections and emulator restarts.
+
+**Fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `serial` | string | Unique device identifier (identity key) |
+| `display_name` | string | Human-readable label (model name or serial) |
+| `provider` | string | Module ID that owns this device type (e.g., `"harmony"`) |
+| `state` | string | `"online"` or `"offline"` |
+| `properties` | table | Opaque module-specific data (model, OS version, etc.) |
+
+**Ownership and lifecycle**:
+
+- Devices are **workspace-level** — they are physical hardware, shared
+  across all profiles.
+- Devices are **runtime-only** — discovered on demand via the module's
+  `list_devices()` method (§9.11). Not persisted to cache or user.json.
+- Discovery is triggered by: (1) opening the device picker in UI,
+  (2) attempting to launch a device-requiring target with no device
+  selected, (3) explicit `scan_devices()` API call.
+- Between scans, vanished devices are marked `"offline"` (not removed).
+
+**Profile device selection**:
+
+Each profile may store an optional **device serial** (string). This is the
+device selected for device-requiring launch targets in this profile.
+Persisted in user.json alongside `default_target`. If the serial references
+an offline or unknown device, the UI shows a warning.
+
+Only modules with `has_devices = true` produce device-requiring targets.
+Profiles in workspaces with no device-capable modules never show device
+UI or store device selections.
+
+### 1.9 loomworks.json Schema
 
 ```json
 {
@@ -385,7 +424,15 @@ working state: every item the user has interacted with, plus metadata
   "projects": { ... },
   "configuration_sets": { ... },
   "profiles": { ... },
-  "default_target": { ... }
+  "default_target": { ... },
+  "device": { ... }
+}
+```
+
+The `device` field maps profile keys to device serial strings:
+```json
+"device": {
+    "Debug:ohos-sdk-5.0": "FMR0225108000951"
 }
 ```
 
@@ -1230,6 +1277,9 @@ Profiles that share ConfigUnits with the initiating profile show spinners
 **Profile children** (when unfolded):
 - Set name (with warning if orphaned/stale) — only for set-based profiles
 - Tool label (with generator/compiler details)
+- Device selection (only when workspace has device-capable modules) —
+  shows `Device: <name> (<serial>)` (online), `Device: <serial> (offline)`
+  (offline/stale), or `Device: (none selected)`. `<CR>` opens device picker.
 - Last operation message
 - Projects sub-group:
   - Each project: `project_key [module_type] → variant {progress}` with status highlight
@@ -1847,6 +1897,7 @@ Events are the primary mechanism for cross-component communication.
 | `deletion_completed`   | `DeletionItem[]` | Deletion operation ends (success) |
 | `deletion_failed`      | `{ items, errors }` | One or more build dir deletions failed |
 | `tools_detected`       | `tools_by_type` | Tool detection completed |
+| `devices_changed`      | `Device[]` | Device scan completed |
 
 Events pass data directly to listeners — no need to re-query, no race
 conditions.
@@ -2759,6 +2810,114 @@ session end via per-session listeners.
 | `<leader>tF` | Run file tests |
 | `d` (loomtest explorer) | Debug selected test |
 | `r` (loomtest explorer) | Run selected test |
+
+### 9.10 Device Interface
+
+Modules that deploy to physical or emulated devices implement an optional
+device interface. The core system discovers device-capable modules and
+delegates all device operations to them — no module-specific knowledge in
+core.
+
+#### 9.10.1 Module properties and methods
+
+**Static property:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `has_devices` | `boolean` | `true` if this module's launch targets may require device deployment. Default `false` (omission = no device support). |
+
+**Methods** (all optional, only meaningful when `has_devices = true`):
+
+**`list_devices(tool_data, callback)`** *(async)*
+
+Enumerate connected devices. Calls `callback(devices)` where each device
+is `{ serial: string, display_name: string, state: string, properties: table }`.
+The module is responsible for running the device connector tool
+(e.g., `hdc list targets`) and parsing its output.
+
+**`device_targets(project_ctx, active_config) → table[]`**
+
+Return device launch target descriptors for the active configuration.
+Each descriptor has: `{ id: string, label: string, requires_device: boolean }`.
+These appear in the launch target picker alongside module targets (cmake
+executables) and command-type launches (loomworks.json). The module controls
+which configurations get device targets.
+
+Example return value:
+```lua
+{ { id = "run-device", label = "Run on device", requires_device = true } }
+```
+
+**`device_install(tool_data, device_serial, artifact_path) → { cmd, args, env? }`**
+
+Return an overseer-compatible command spec for installing an artifact onto
+a device. Does NOT execute the command — the core runs it via overseer.
+Always reinstalls (no freshness tracking).
+
+**`device_launch(tool_data, device_serial, launch_info) → { cmd, args, env? }`**
+
+Return a command spec to launch the installed app on a device.
+`launch_info` is module-specific metadata (e.g., bundle name, ability name
+for harmony).
+
+**`device_log(tool_data, device_serial, filter?) → { cmd, args, env? }`**
+
+Return a command spec to stream device logs. Used for background log
+streaming independent of the launch chain.
+
+**`resolve_artifact(project_ctx, active_config) → string|nil`**
+
+Return the absolute path to the built artifact for device deployment.
+Module-specific knowledge of where the build system places output (e.g.,
+HAP file location for harmony).
+
+**`resolve_launch_info(project_path, config_info, tool_data) → table|nil`**
+
+Extract launch metadata from project files. For harmony: bundle name
+from `app.json5`, ability name from `module.json5`. Returns a table that
+is passed to `device_launch()` as `launch_info`.
+
+#### 9.10.2 Launch flow with devices
+
+The launch flow (§9.7) is extended when the target requires a device:
+
+```
+build → file-deploy → device-install → device-launch
+```
+
+1. **Build**: same as §9.7 — build dependencies, then build self.
+2. **File-deploy**: same as §9.8 — copy artifacts between projects.
+3. **Device check**: if `target:requires_device()` is false, proceed to
+   normal launch/debug (existing path, unchanged). Otherwise:
+4. **Device selection**: if the profile has no device serial, prompt with
+   `vim.ui.select` populated from `list_devices()`. On selection, persist
+   to profile.
+5. **Device install**: call `resolve_artifact()` to find the artifact
+   path, then `device_install()` to get the command spec. Execute via
+   overseer as a tracked task. On failure, stop the chain with error.
+6. **Device launch**: call `resolve_launch_info()` then `device_launch()`.
+   Execute via overseer.
+
+Device targets always use launch mode in v1 (no device debug).
+
+#### 9.10.3 LaunchTarget device support
+
+LaunchTarget gains a third target type alongside module targets and
+command-type launches:
+
+| Descriptor field | Target type | Source |
+|-----------------|-------------|--------|
+| `target` | Module target (cmake executable) | file-api discovery |
+| `launch` | Command launch | loomworks.json launch section |
+| `device_target` | Device target | module's `device_targets()` |
+
+The `device_target` field stores the target ID (e.g., `"run-device"`).
+`LaunchTarget:requires_device()` returns `true` when `_device_target` is set.
+
+The target picker collects from all three sources:
+1. Launch configs from projects (`project.launch` dict)
+2. Executable targets from `ConfigUnit.targets`
+3. Device targets from modules (`module.device_targets()`)
 
 ---
 

@@ -5,6 +5,45 @@ they don't get lost.
 
 ---
 
+## Streaming device scan into picker
+
+Currently `Workspace:scan_devices()` waits for all modules' `list_devices`
+callbacks to complete before opening the picker. On slow systems, `hdc
+list targets` can take a couple of seconds, leaving the user staring at
+"scanning for devices..." before the picker appears.
+
+Ideally the picker would open immediately with results streaming in. This
+requires a dynamic-source picker — not supported by `vim.ui.select`.
+Options to investigate:
+- Use Snacks.picker directly with `source = fun(cb)` or a dynamic items
+  mechanism (Snacks is already a hard dependency)
+- Cache previous scan results and show them immediately while re-scanning
+  in the background, updating the visible list when new results arrive
+- Start scans on workspace load so results are cached before the user
+  opens the picker
+
+Same treatment would benefit kit/SDK pickers and any other async source.
+
+---
+
+## Device debug (attach to app on device)
+
+Not in v1. HarmonyOS hdc supports remote debugging via `hdc jpid` +
+JDWP/LLDB forwarding. Would extend session_tracker's device path to
+support `mode = "debug"` for device targets. Currently device targets
+always use launch mode regardless of user input.
+
+---
+
+## Device log streaming
+
+The harmony module already implements `device_log()` returning a command
+spec for `hdc hilog`. Not wired into UI in v1. Could be a standalone
+action on the device status line — start a background overseer task,
+stream logs in a dedicated window.
+
+---
+
 ## Disable navigation keymaps in loomworks UI windows
 
 `<C-o>`, `-` (oil.nvim), and similar global keymaps can navigate away

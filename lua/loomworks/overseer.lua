@@ -796,6 +796,63 @@ function M.launch_run_task(opts)
     return task.id
 end
 
+--- Run a simple command as an overseer task. Returns a Future.
+--- Used for device install/launch operations.
+--- Supports `check_output(lines)` to detect failures when exit code is
+--- unreliable (e.g., hdc exits 0 even on install errors). The function
+--- returns an error string to reject, or nil/true for success.
+--- @param opts { name: string, cmd: string|string[], args?: string[], cwd?: string, env?: table, check_output?: fun(lines: string[]): string|nil }
+--- @return loomworks.Future
+function M.run_cmd_task(opts)
+    local future_mod = require("loomworks.future")
+
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        return future_mod.rejected("overseer.nvim not found")
+    end
+
+    local cmd = opts.cmd
+    if type(cmd) == "string" then cmd = { cmd } end
+    if opts.args then
+        cmd = vim.list_extend(vim.deepcopy(cmd), opts.args)
+    end
+
+    return future_mod.create(function(resolve, reject)
+        local output_lines = {}
+        local task = overseer.new_task({
+            name = opts.name,
+            cmd = cmd,
+            cwd = opts.cwd,
+            env = opts.env,
+            components = { "default" },
+        })
+        if opts.check_output then
+            task:subscribe("on_output_lines", function(_, lines)
+                for _, line in ipairs(lines or {}) do
+                    output_lines[#output_lines + 1] = line
+                end
+            end)
+        end
+        task:subscribe("on_complete", function(_, status)
+            if status ~= "SUCCESS" then
+                reject(opts.name .. " failed (" .. tostring(status) .. ")")
+                return
+            end
+            if opts.check_output then
+                local err = opts.check_output(output_lines)
+                if err then
+                    reject(opts.name .. ": " .. err)
+                    return
+                end
+            end
+            resolve(true)
+        end)
+        task:start()
+        overseer.open({ enter = false })
+    end)
+end
+
 --- Launch a single task definition via overseer.
 --- Used by ConfigUnit:build_target for per-target builds.
 --- @param task_def table task definition with .builder and .loomworks

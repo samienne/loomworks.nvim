@@ -3,6 +3,7 @@ local M = {}
 M.id = "harmony"
 M.has_keyed_tools = false
 M.has_options = false
+M.has_devices = true
 M.languages = { "arkts" }
 
 local uv = vim.uv or vim.loop
@@ -81,20 +82,17 @@ function M.validate(path, config)
     return { valid = true, warnings = warnings }
 end
 
---- Parse build-profile.json5 using Node.js (handles JSON5 syntax).
---- @param project_path string absolute project path
+--- Parse a JSON5 file using Node.js (strips comments/trailing commas).
+--- @param file_path string absolute file path
 --- @param node_path string|nil path to node executable
 --- @return table|nil parsed data
-local function parse_build_profile(project_path, node_path)
+local function parse_json5(file_path, node_path)
     local node = node_path or vim.fn.exepath("node")
     if not node or node == "" then return nil end
 
-    local profile_path = project_path .. "/build-profile.json5"
-    if not uv.fs_stat(profile_path) then return nil end
+    if not uv.fs_stat(file_path) then return nil end
 
-    -- Node.js require() doesn't support .json5 — strip comments/trailing
-    -- commas and parse as standard JSON.
-    local escaped_path = profile_path:gsub("\\", "/"):gsub("'", "\\'")
+    local escaped_path = file_path:gsub("\\", "/"):gsub("'", "\\'")
     local script = [[
 const fs=require('fs');
 let c=fs.readFileSync(']] .. escaped_path .. [[','utf8');
@@ -110,6 +108,14 @@ catch(e){process.stderr.write(e.message);process.exit(1)}
     local ok, data = pcall(vim.json.decode, result)
     if not ok then return nil end
     return data
+end
+
+--- Parse build-profile.json5 using Node.js (handles JSON5 syntax).
+--- @param project_path string absolute project path
+--- @param node_path string|nil path to node executable
+--- @return table|nil parsed data
+local function parse_build_profile(project_path, node_path)
+    return parse_json5(project_path .. "/build-profile.json5", node_path)
 end
 
 --- Extract module names from build-profile.json5.
@@ -637,6 +643,224 @@ function M.inspect(path, config, cached)
     end
 
     return { needs_refresh = #reasons > 0, reasons = reasons, notes = notes }
+end
+
+-- ---------------------------------------------------------------------------
+-- Device interface
+-- ---------------------------------------------------------------------------
+
+--- Return device launch target descriptors for the active configuration.
+--- Harmony always offers "Run on device" for buildable configurations.
+--- @param project_ctx loomworks.ModuleContext
+--- @param active_config string
+--- @return table[]
+function M.device_targets(project_ctx, active_config)
+    return {
+        { id = "run-device", label = "Run on device", requires_device = true },
+    }
+end
+
+--- Enumerate connected devices via hdc.
+--- @param tool_data table
+--- @param callback fun(devices: { serial: string, display_name: string, state: string }[])
+function M.list_devices(tool_data, callback)
+    local hdc = tool_data and tool_data.hdc
+    if not hdc then
+        -- Fall back to hdc on PATH
+        hdc = vim.fn.exepath("hdc")
+        if hdc == "" then hdc = nil end
+    end
+    if not hdc then
+        vim.notify("loomworks/harmony: hdc not found (tool_data or PATH)",
+            vim.log.levels.WARN)
+        callback({})
+        return
+    end
+    vim.notify("loomworks/harmony: using hdc at " .. hdc, vim.log.levels.INFO)
+
+    local devices = {}
+    local called = false
+    local function finish()
+        if called then return end
+        called = true
+        callback(devices)
+    end
+
+    vim.fn.jobstart({ hdc, "list", "targets" }, {
+        stdout_buffered = true,
+        stderr_buffered = true,
+        on_stdout = function(_, data)
+            for _, line in ipairs(data or {}) do
+                local serial = vim.trim(line)
+                if serial ~= "" and serial ~= "[Empty]" then
+                    devices[#devices + 1] = {
+                        serial = serial,
+                        display_name = serial,
+                        state = "online",
+                    }
+                end
+            end
+        end,
+        on_stderr = function(_, data)
+            local msg = table.concat(data or {}, "\n")
+            if msg and msg ~= "" and vim.trim(msg) ~= "" then
+                vim.notify("loomworks/harmony: hdc stderr: " .. msg,
+                    vim.log.levels.WARN)
+            end
+        end,
+        on_exit = function(_, code)
+            if code ~= 0 then
+                vim.notify("loomworks/harmony: hdc list targets exited " .. code,
+                    vim.log.levels.WARN)
+            end
+            finish()
+        end,
+    })
+end
+
+--- Detect hdc install failure from output.
+--- hdc exits 0 even on errors, so we must parse output for [Fail].
+--- @param lines string[]
+--- @return string|nil error message if failure detected
+local function check_hdc_output(lines)
+    for _, line in ipairs(lines) do
+        if line:match("%[Fail%]") or line:match("^%[F%]") then
+            return vim.trim(line)
+        end
+    end
+    return nil
+end
+
+--- Return command spec for installing a HAP on a device.
+--- Normalizes path separators: hdc on Windows requires backslashes and
+--- treats forward-slash paths as relative, producing doubled paths.
+--- Includes check_output to detect failures (hdc exits 0 on errors).
+--- @param tool_data table
+--- @param device_serial string
+--- @param artifact_path string absolute path to HAP file
+--- @return { cmd: string, args: string[], check_output: function }
+function M.device_install(tool_data, device_serial, artifact_path)
+    local path = artifact_path
+    if is_win then path = path:gsub("/", "\\") end
+    return {
+        cmd = tool_data.hdc,
+        args = { "-t", device_serial, "install", path },
+        check_output = check_hdc_output,
+    }
+end
+
+--- Return command spec for launching an app on a device.
+--- @param tool_data table
+--- @param device_serial string
+--- @param launch_info { bundle_name: string, ability_name: string }
+--- @return { cmd: string, args: string[], check_output: function }
+function M.device_launch(tool_data, device_serial, launch_info)
+    return {
+        cmd = tool_data.hdc,
+        args = {
+            "-t", device_serial, "shell", "aa", "start",
+            "-a", launch_info.ability_name,
+            "-b", launch_info.bundle_name,
+        },
+        check_output = check_hdc_output,
+    }
+end
+
+--- Return command spec for streaming device logs.
+--- @param tool_data table
+--- @param device_serial string
+--- @param filter string|nil optional log filter
+--- @return { cmd: string, args: string[] }
+function M.device_log(tool_data, device_serial, filter)
+    local args = { "-t", device_serial, "hilog" }
+    return {
+        cmd = tool_data.hdc,
+        args = args,
+    }
+end
+
+--- Resolve the path to the built HAP artifact.
+--- Searches the hvigor output directory for the most recently built HAP.
+--- @param project_ctx table { path, workspace_root, tool_data, build_dir, config_info, configuration_key }
+--- @param active_config string
+--- @return string|nil absolute path to HAP file
+function M.resolve_artifact(project_ctx, active_config)
+    local ci = project_ctx.config_info or {}
+    local product = ci.product or "default"
+    local target = ci.target or "default"
+    local module_name = ci.module_name
+        or (ci.modules and ci.modules[1])
+        or "entry"
+
+    local abs_path = project_ctx.workspace_root .. "/" .. project_ctx.path
+
+    -- hvigor HAP output convention:
+    -- <project>/<module>/build/<product>/outputs/<target>/<module>-<product>-signed.hap
+    -- The exact filename varies, so glob for *.hap and pick the most recent.
+    local output_dir = abs_path .. "/" .. module_name .. "/build/"
+        .. product .. "/outputs/" .. target
+
+    local stat = uv.fs_stat(output_dir)
+    if not stat then return nil end
+
+    local best_path, best_mtime = nil, 0
+    local handle = uv.fs_scandir(output_dir)
+    if handle then
+        while true do
+            local name, type = uv.fs_scandir_next(handle)
+            if not name then break end
+            if name:match("%.hap$") then
+                local full = output_dir .. "/" .. name
+                local s = uv.fs_stat(full)
+                if s and s.mtime and s.mtime.sec > best_mtime then
+                    best_mtime = s.mtime.sec
+                    best_path = full
+                end
+            end
+        end
+    end
+
+    return best_path
+end
+
+--- Extract launch metadata from project files.
+--- Reads bundle name from app.json5, ability name from module.json5.
+--- @param project_path string absolute project path
+--- @param config_info table configuration info with product, target, module_name
+--- @param tool_data table
+--- @return { bundle_name: string, ability_name: string }|nil
+function M.resolve_launch_info(project_path, config_info, tool_data)
+    local ci = config_info or {}
+    local module_name = ci.module_name
+        or (ci.modules and ci.modules[1])
+        or "entry"
+
+    local node = tool_data and tool_data.node
+
+    -- Parse AppScope/app.json5 for bundleName
+    local app_data = parse_json5(project_path .. "/AppScope/app.json5", node)
+    if not app_data or not app_data.app or not app_data.app.bundleName then
+        return nil
+    end
+    local bundle_name = app_data.app.bundleName
+
+    -- Parse <module>/src/main/module.json5 for ability name
+    local module_data = parse_json5(
+        project_path .. "/" .. module_name .. "/src/main/module.json5", node)
+    if not module_data or not module_data.module then
+        return nil
+    end
+    local abilities = module_data.module.abilities
+    if not abilities or #abilities == 0 then
+        return nil
+    end
+    local ability_name = abilities[1].name
+    if not ability_name then return nil end
+
+    return {
+        bundle_name = bundle_name,
+        ability_name = ability_name,
+    }
 end
 
 return M
