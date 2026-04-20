@@ -380,12 +380,11 @@ function M.open(opts)
                 local sources = deploy_mod.normalize_sources(deploy[dest])
                 local captured_dest = dest
 
+                -- Destination on its own line (may be long)
+                t:leaf("  " .. dest, "Comment")
                 for si, src in ipairs(sources) do
                     local captured_si = si
-                    local prefix = si == 1
-                        and ("  " .. dest .. " <- ")
-                        or ("  " .. string.rep(" ", #dest) .. " <- ")
-                    t:item(prefix .. format_source(src) .. " ▸", {
+                    t:item("    <- " .. format_source(src) .. " ▸", {
                         hl = "LoomworksActionable",
                         direct = true,
                         on_enter = function()

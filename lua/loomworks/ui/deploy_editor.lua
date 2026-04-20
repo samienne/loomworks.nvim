@@ -642,6 +642,12 @@ function M.open(opts)
             backdrop = 70,
             title = " Deploy Step ",
             title_pos = "center",
+            wo = {
+                wrap = true,
+                linebreak = true,
+                breakindent = true,
+                showbreak = "  ↳ ",
+            },
         },
         keymaps = {
             ["<CR>"]    = "enter",
