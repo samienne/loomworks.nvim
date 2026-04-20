@@ -342,7 +342,7 @@ These are implementation-specific details not covered by the spec or architectur
 - `cmake` — full implementation
 - `harmony` — full implementation (DevEco/SDK detection, hvigor build pipeline,
   product×target×ABI configurations, external build dirs, SDK clangd via
-  native_build_info, cmake_env passthrough, device deployment via hdc)
+  lsp_configs (SDK clangd via harmony module), cmake_env passthrough, device deployment via hdc)
 - `typescript` — shim (shows project exists, no build functionality)
 
 **Deferred (not in v1):**

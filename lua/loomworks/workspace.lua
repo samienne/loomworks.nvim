@@ -1921,12 +1921,18 @@ function Workspace:record_task_result(result)
     self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 
-    -- Parse file-api targets after successful configure (runtime only, not cached)
+    -- Parse targets after successful configure (runtime only, not cached)
     if config_unit and action == "configure" and success and result.build_dir then
         if proj_type ~= "unknown" then
             local mod = self._core._deps.modules.get(proj_type)
             if mod and mod.parse_targets then
-                config_unit:set_targets(mod.parse_targets(result.build_dir, result.variant))
+                local project = config_unit._project
+                local ctx = {
+                    build_dir = result.build_dir,
+                    project_path = project and (self.root .. "/" .. (project.path or project.key)) or nil,
+                    config_name = result.variant,
+                }
+                config_unit:set_targets(mod.parse_targets(ctx))
             end
         end
     end
@@ -2378,8 +2384,10 @@ end
 --- Runs asynchronously, processing units sequentially to avoid blocking.
 --- Results stored on ConfigUnit.targets (runtime only, not cached).
 function Workspace:_scan_targets_async()
-    -- Collect scannable units: modules with parse_targets_async (need build_dir)
-    -- or parse_targets_async (need project path)
+    -- Collect scannable units. Modules that read from build_dir (cmake) get
+    -- scanned per-unit. Modules that read from project files (typescript)
+    -- get scanned once per project. The module reads whichever context it
+    -- needs from the ctx dict passed to parse_targets_async.
     local units = {}
     local seen_projects = {} -- avoid duplicate project-level scans
     for _, unit in pairs(self._config_units) do
@@ -2387,22 +2395,21 @@ function Workspace:_scan_targets_async()
         if not project then goto continue end
 
         local mod = project._module and project._module.impl or nil
-        if not mod then goto continue end
+        if not mod or not mod.parse_targets_async then goto continue end
 
+        local abs_path = self.root .. "/" .. (project.path or project.key)
         local build_dir = unit:build_dir()
-        if build_dir and mod.parse_targets_async then
+        if build_dir then
             units[#units + 1] = {
                 unit = unit, mod = mod,
-                scan_type = "file_api",
                 build_dir = build_dir,
+                project_path = abs_path,
             }
-        elseif mod.parse_targets_async and not seen_projects[project.key] then
-            -- Project-level target scan (e.g., npm scripts) -- once per project
+        elseif not seen_projects[project.key] then
+            -- No build_dir: scan once per project (project-level only).
             seen_projects[project.key] = true
-            local abs_path = self.root .. "/" .. (project.path or project.key)
             units[#units + 1] = {
                 unit = unit, mod = mod,
-                scan_type = "project",
                 project_path = abs_path,
             }
         end
@@ -2437,13 +2444,12 @@ function Workspace:_scan_targets_async()
             end)
         end
 
-        if entry.scan_type == "file_api" then
-            local variant = entry.unit:variant()
-            entry.mod.parse_targets_async(entry.build_dir, variant, on_targets)
-        else
-            local variant = entry.unit:variant()
-            entry.mod.parse_targets_async(entry.project_path, variant, on_targets)
-        end
+        local variant = entry.unit:variant()
+        entry.mod.parse_targets_async({
+            build_dir = entry.build_dir,
+            project_path = entry.project_path,
+            config_name = variant,
+        }, on_targets)
     end
 
     next_unit()

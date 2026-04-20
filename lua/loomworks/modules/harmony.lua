@@ -296,42 +296,44 @@ function M.resolve_build_dir(project_name, config_name, config_info, workspace_r
         .. product .. "/" .. target .. "/" .. mode .. "/" .. abi
 end
 
---- Return native build info for LSP integration.
---- Provides SDK-bundled clangd binary for projects with native code.
---- @param project_path string project path (relative)
---- @param type_config table type_config from loomworks.json
---- @param tool_data table|nil tool data
---- @param config_info table|nil cached config / active config info
---- @return table|nil { clangd_binary? }
-function M.native_build_info(project_path, type_config, tool_data, config_info)
-    -- Only relevant for configurations with native code (ABI set)
-    if not config_info then return nil end
-    -- config_info may be the cached entry which has abi in module_config
-    -- or directly on the config
-    local abi = config_info.abi
-        or (config_info.module_config and config_info.module_config.abi)
-    if not abi then return nil end
+--- Return LSP configs for this project.
+--- Emits a clangd entry only for native configurations (ABI set). The
+--- clangd root_dir is the hvigor build directory (since compile_commands.json
+--- references source files by full path). Binary is the SDK-bundled clangd.
+--- @param project loomworks.Project
+--- @return loomworks.LspConfigEntry[]
+function M.lsp_configs(project)
+    -- Only emit clangd for configurations with native code (ABI set)
+    local cached = project.cached
+    if not cached then return {} end
+    local mc = cached.module_config or {}
+    local abi = mc.abi or (cached.abi)
+    if not abi then return {} end
 
-    local result = {}
+    local build_dir = cached.build_dir
+    if not build_dir then return {} end
 
-    -- SDK clangd lives in the SDK's LLVM toolchain
-    if tool_data and tool_data.deveco_home then
+    -- Resolve SDK-bundled clangd
+    local tool_data = project.tool_data or {}
+    local binary = nil
+    if tool_data.deveco_home then
         local clangd = tool_data.deveco_home
             .. "/sdk/default/openharmony/native/llvm/bin/clangd"
         if is_win then clangd = clangd .. ".exe" end
-        if uv.fs_stat(clangd) then
-            result.clangd_binary = clangd
-        end
+        if uv.fs_stat(clangd) then binary = clangd end
+    end
+    if not binary and tool_data.clangd and uv.fs_stat(tool_data.clangd) then
+        binary = tool_data.clangd
     end
 
-    -- Also check tool_data.clangd directly (set by SDK provider)
-    if not result.clangd_binary and tool_data and tool_data.clangd then
-        if uv.fs_stat(tool_data.clangd) then
-            result.clangd_binary = tool_data.clangd
-        end
-    end
-
-    return next(result) and result or nil
+    return {
+        {
+            server = "clangd",
+            binary = binary,
+            compile_commands_dir = build_dir,
+            root_dir = build_dir,
+        },
+    }
 end
 
 --- Detect available tools.

@@ -2231,9 +2231,9 @@ describe("Core", function()
                             return {
                                 validate = function() return { valid = true, warnings = {} } end,
                                 info = function() return { configurations = { Debug = {} } } end,
-                                parse_targets = function(build_dir, config_name)
+                                parse_targets = function(ctx)
                                     parse_called = true
-                                    parse_args = { build_dir = build_dir, config_name = config_name }
+                                    parse_args = { build_dir = ctx.build_dir, config_name = ctx.config_name }
                                     return {
                                         app = { type = "executable", dependencies = { "libcore" } },
                                         libcore = { type = "static_library" },

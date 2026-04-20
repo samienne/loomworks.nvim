@@ -1093,10 +1093,12 @@ local TARGET_TYPE_MAP = {
 }
 
 --- Parse the cmake file-api reply to extract project-owned targets.
---- @param build_dir string absolute path to the build directory
---- @param config_name? string configuration name (for multi-config generators)
+--- @param ctx { build_dir: string, project_path?: string, config_name?: string }
 --- @return table<string, loomworks.CachedTarget>|nil targets
-function M.parse_targets(build_dir, config_name)
+function M.parse_targets(ctx)
+    local build_dir = ctx.build_dir
+    local config_name = ctx.config_name
+    if not build_dir then return nil end
     local codemodel = find_file_api_reply(build_dir, "codemodel", 2)
     if not codemodel or not codemodel.configurations then return nil end
 
@@ -1230,12 +1232,11 @@ end
 
 --- Async wrapper for parse_targets. Yields to the event loop before
 --- parsing to avoid blocking during batch scanning on init.
---- @param build_dir string
---- @param config_name? string
+--- @param ctx { build_dir: string, project_path?: string, config_name?: string }
 --- @param callback fun(targets: table<string, loomworks.CachedTarget>|nil)
-function M.parse_targets_async(build_dir, config_name, callback)
+function M.parse_targets_async(ctx, callback)
     vim.schedule(function()
-        callback(M.parse_targets(build_dir, config_name))
+        callback(M.parse_targets(ctx))
     end)
 end
 
@@ -1489,6 +1490,53 @@ function M.create_test_unit(config_unit)
     if not config_unit:build_dir() then return nil end
     local CTestUnit = require("loomworks.test_units.ctest")
     return CTestUnit.new(config_unit)
+end
+
+--- Return LSP configs for this project.
+--- Emits a single clangd entry whose root_dir is the project source path
+--- and whose compile_commands_dir is the active configuration's build dir
+--- (or the build dir referenced by `compile_commands_from` if set).
+--- @param project loomworks.Project
+--- @return loomworks.LspConfigEntry[]
+function M.lsp_configs(project)
+    local ws = project._workspace
+    if not ws then return {} end
+    local root_dir = ws.root .. "/" .. (project.path or project.key)
+
+    -- Compile commands dir: either a referenced configuration's build dir
+    -- (compile_commands_from redirect) or the active config's build dir.
+    local tc = project.type_config or {}
+    local build_dir = nil
+    if tc.compile_commands_from then
+        local ref_cfg = project.get_configuration and project:get_configuration(tc.compile_commands_from)
+        if ref_cfg and project.config_units_for_configuration then
+            local ref_units = project:config_units_for_configuration(ref_cfg)
+            for _, ref_unit in ipairs(ref_units) do
+                local bd = ref_unit:build_dir()
+                if bd then build_dir = bd break end
+            end
+        end
+    end
+    if not build_dir and project.cached then
+        build_dir = project.cached.build_dir
+    end
+
+    -- Binary: type_config.clangd (env-expanded) wins, else tool_data.clangd_path
+    local binary = nil
+    if type(tc.clangd) == "string" and tc.clangd ~= "" then
+        binary = tc.clangd
+    elseif project.tool_data and project.tool_data.clangd_path then
+        binary = project.tool_data.clangd_path
+    end
+
+    return {
+        {
+            server = "clangd",
+            binary = binary,
+            compile_commands_dir = build_dir,
+            root_dir = root_dir,
+        },
+    }
 end
 
 return M
