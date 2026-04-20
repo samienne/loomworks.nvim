@@ -80,6 +80,64 @@ describe("cache", function()
             local result = cache.parse(json)
             assert.are.same({}, result.build_dirs)
         end)
+
+        it("migrates v7 cache by renaming cmake to module_info", function()
+            local json = vim.json.encode({
+                _meta = { version = 7 },
+                build_dirs = {
+                    ["build/App/Debug"] = {
+                        project_key = "App",
+                        type = "cmake",
+                        variant = "Debug",
+                        state = "built",
+                        cmake = { generator = "Ninja", compiler = "gcc" },
+                    },
+                },
+            })
+            local result, mismatch = cache.parse(json)
+            assert.is_false(mismatch, "v7 cache should migrate without triggering mismatch")
+            assert.equals(8, result._meta.version)
+            local entry = result.build_dirs["build/App/Debug"]
+            assert.is_nil(entry.cmake, "old cmake field should be cleared")
+            assert.is_not_nil(entry.module_info)
+            assert.equals("Ninja", entry.module_info.generator)
+            assert.equals("gcc", entry.module_info.compiler)
+        end)
+
+        it("v7 migration leaves entry unchanged when no cmake field", function()
+            local json = vim.json.encode({
+                _meta = { version = 7 },
+                build_dirs = {
+                    ["build/App/Debug"] = {
+                        project_key = "App",
+                        type = "cmake",
+                        variant = "Debug",
+                        state = "built",
+                    },
+                },
+            })
+            local result = cache.parse(json)
+            assert.equals(8, result._meta.version)
+            assert.is_nil(result.build_dirs["build/App/Debug"].module_info)
+        end)
+
+        it("v7 migration prefers existing module_info over cmake if both present", function()
+            local json = vim.json.encode({
+                _meta = { version = 7 },
+                build_dirs = {
+                    ["build/App/Debug"] = {
+                        project_key = "App",
+                        type = "cmake",
+                        variant = "Debug",
+                        cmake = { generator = "OldGen" },
+                        module_info = { generator = "NewGen" },
+                    },
+                },
+            })
+            local result = cache.parse(json)
+            assert.equals("NewGen", result.build_dirs["build/App/Debug"].module_info.generator)
+            assert.is_nil(result.build_dirs["build/App/Debug"].cmake)
+        end)
     end)
 
     describe("config_cache_key", function()
