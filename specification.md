@@ -363,7 +363,7 @@ UI or store device selections.
 | `depends_on` | Reserved for future cross-project dependencies (ignored in v1) |
 | `<type>` | Inner key determines project type; value is the type-specific config |
 
-The type key (`cmake`, `harmony`, `typescript`) is the only required field. Its
+The type key (`cmake`, `meson`, `harmony`, `typescript`) is the only required field. Its
 value is a table passed to the module as `type_config`.
 
 **CMake type_config fields**:

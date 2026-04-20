@@ -14,7 +14,7 @@ typescript modules are shims.
 
 ## Features
 
-- **Multi-project workspaces** — manage cmake, harmony, and typescript projects
+- **Multi-project workspaces** — manage cmake, meson, harmony, and typescript projects
   from a single `loomworks.json`
 - **CMake preset support** — reads `CMakePresets.json` and
   `CMakeUserPresets.json` with full inheritance
@@ -148,7 +148,7 @@ Projects are declared with their type as the inner key:
 }
 ```
 
-Available types: `cmake` (full), `harmony` (full), `typescript` (shim).
+Available types: `cmake` (full), `meson` (full), `harmony` (full), `typescript` (shim).
 
 ### Paths
 

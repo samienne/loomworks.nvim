@@ -343,9 +343,13 @@ These are implementation-specific details not covered by the spec or architectur
 - `harmony` — full implementation (DevEco/SDK detection, hvigor build pipeline,
   product×target×ABI configurations, external build dirs, SDK clangd via
   lsp_configs (SDK clangd via harmony module), cmake_env passthrough, device deployment via hdc)
+- `meson` — full implementation (detection, default Debug/Release/RelWithDebInfo
+  configs mapping to buildtype, setup+compile+clean tasks, introspect-based
+  parse_targets and get_options, clangd via lsp_configs with auto-generated
+  compile_commands.json, cross-file machine file support)
 - `typescript` — shim (shows project exists, no build functionality)
 
 **Deferred (not in v1):**
-- Meson module, DAP, test integration, sub-workspaces, cross-project
+- DAP, test integration beyond ctest, sub-workspaces, cross-project
   dependencies, auto-detection, named toolchains — see specification.md for
   interface stubs where applicable.
