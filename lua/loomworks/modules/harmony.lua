@@ -250,19 +250,22 @@ function M.default_configurations(path, config)
 end
 
 --- Return what the module knows about the project.
+--- Mark configurations from user type_config as `is_user = true` so the UI
+--- allows deleting them (cmake uses the same convention).
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
 --- @return table info
 function M.info(path, config)
     local configurations = M.default_configurations(path, config)
 
-    -- Merge user overrides/additions on top
     if config.configurations then
         for name, cfg in pairs(config.configurations) do
-            configurations[name] = configurations[name] or {}
+            local merged = configurations[name] or {}
             for k, v in pairs(cfg) do
-                configurations[name][k] = v
+                merged[k] = v
             end
+            merged.is_user = true
+            configurations[name] = merged
         end
     end
 
