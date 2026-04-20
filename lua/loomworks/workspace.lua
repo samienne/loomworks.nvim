@@ -1925,8 +1925,8 @@ function Workspace:record_task_result(result)
     if config_unit and action == "configure" and success and result.build_dir then
         if proj_type ~= "unknown" then
             local mod = self._core._deps.modules.get(proj_type)
-            if mod and mod.parse_file_api then
-                config_unit:set_targets(mod.parse_file_api(result.build_dir, result.variant))
+            if mod and mod.parse_targets then
+                config_unit:set_targets(mod.parse_targets(result.build_dir, result.variant))
             end
         end
     end
@@ -2378,7 +2378,7 @@ end
 --- Runs asynchronously, processing units sequentially to avoid blocking.
 --- Results stored on ConfigUnit.targets (runtime only, not cached).
 function Workspace:_scan_targets_async()
-    -- Collect scannable units: modules with parse_file_api_async (need build_dir)
+    -- Collect scannable units: modules with parse_targets_async (need build_dir)
     -- or parse_targets_async (need project path)
     local units = {}
     local seen_projects = {} -- avoid duplicate project-level scans
@@ -2390,7 +2390,7 @@ function Workspace:_scan_targets_async()
         if not mod then goto continue end
 
         local build_dir = unit:build_dir()
-        if build_dir and mod.parse_file_api_async then
+        if build_dir and mod.parse_targets_async then
             units[#units + 1] = {
                 unit = unit, mod = mod,
                 scan_type = "file_api",
@@ -2439,7 +2439,7 @@ function Workspace:_scan_targets_async()
 
         if entry.scan_type == "file_api" then
             local variant = entry.unit:variant()
-            entry.mod.parse_file_api_async(entry.build_dir, variant, on_targets)
+            entry.mod.parse_targets_async(entry.build_dir, variant, on_targets)
         else
             local variant = entry.unit:variant()
             entry.mod.parse_targets_async(entry.project_path, variant, on_targets)

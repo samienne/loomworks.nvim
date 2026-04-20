@@ -1,4 +1,4 @@
---- Tests for cmake module's parse_file_api function.
+--- Tests for cmake module's parse_targets function.
 
 local cmake = require("loomworks.modules.cmake")
 local uv = vim.uv or vim.loop
@@ -173,7 +173,7 @@ local function rm_rf(path)
     uv.fs_rmdir(path)
 end
 
-describe("cmake parse_file_api", function()
+describe("cmake parse_targets", function()
     local tmp_dir
 
     before_each(function()
@@ -186,7 +186,7 @@ describe("cmake parse_file_api", function()
     end)
 
     it("returns nil when no reply directory exists", function()
-        assert.is_nil(cmake.parse_file_api(tmp_dir))
+        assert.is_nil(cmake.parse_targets(tmp_dir))
     end)
 
     it("parses executable and library targets", function()
@@ -196,7 +196,7 @@ describe("cmake parse_file_api", function()
             { name = "libutil", type = "SHARED_LIBRARY" },
         })
 
-        local targets = cmake.parse_file_api(tmp_dir)
+        local targets = cmake.parse_targets(tmp_dir)
         assert.is_not_nil(targets)
         assert.equals("executable", targets.app.type)
         assert.equals("static_library", targets.libcore.type)
@@ -210,7 +210,7 @@ describe("cmake parse_file_api", function()
             { name = "libutil", type = "SHARED_LIBRARY" },
         })
 
-        local targets = cmake.parse_file_api(tmp_dir)
+        local targets = cmake.parse_targets(tmp_dir)
         assert.is_not_nil(targets)
         assert.are.same({ "libcore", "libutil" }, targets.app.dependencies)
         assert.are.same({ "libutil" }, targets.libcore.dependencies)
@@ -224,7 +224,7 @@ describe("cmake parse_file_api", function()
             { name = "libutil", type = "SHARED_LIBRARY" }, -- no artifact
         })
 
-        local targets = cmake.parse_file_api(tmp_dir)
+        local targets = cmake.parse_targets(tmp_dir)
         assert.is_not_nil(targets)
         assert.equals("app.exe", targets.app.artifact)
         assert.equals("libs/core/libcore.a", targets.libcore.artifact)
@@ -238,7 +238,7 @@ describe("cmake parse_file_api", function()
             { name = "app", type = "EXECUTABLE", artifact = abs_artifact },
         })
 
-        local targets = cmake.parse_file_api(tmp_dir)
+        local targets = cmake.parse_targets(tmp_dir)
         assert.is_not_nil(targets)
         assert.equals("bin/app.exe", targets.app.artifact)
     end)
@@ -250,7 +250,7 @@ describe("cmake parse_file_api", function()
             { name = "uninstall", type = "UTILITY" },
         })
 
-        local targets = cmake.parse_file_api(tmp_dir)
+        local targets = cmake.parse_targets(tmp_dir)
         assert.is_not_nil(targets)
         assert.is_not_nil(targets.app)
         assert.is_nil(targets.install)
@@ -263,7 +263,7 @@ describe("cmake parse_file_api", function()
             { name = "imported_lib", type = "STATIC_LIBRARY" },
         }, "", { "app" }) -- only "app" is project-owned
 
-        local targets = cmake.parse_file_api(tmp_dir)
+        local targets = cmake.parse_targets(tmp_dir)
         assert.is_not_nil(targets)
         assert.is_not_nil(targets.app)
         assert.is_nil(targets.imported_lib)
@@ -276,7 +276,7 @@ describe("cmake parse_file_api", function()
             { name = "external_lib", type = "SHARED_LIBRARY" },
         }, "", { "app", "libcore" }) -- external_lib is not project-owned
 
-        local targets = cmake.parse_file_api(tmp_dir)
+        local targets = cmake.parse_targets(tmp_dir)
         assert.is_not_nil(targets)
         -- Only project-owned deps should be listed
         assert.are.same({ "libcore" }, targets.app.dependencies)
@@ -289,7 +289,7 @@ describe("cmake parse_file_api", function()
             { name = "iface_lib", type = "INTERFACE_LIBRARY" },
         })
 
-        local targets = cmake.parse_file_api(tmp_dir)
+        local targets = cmake.parse_targets(tmp_dir)
         assert.is_not_nil(targets)
         assert.equals("module_library", targets.mod_lib.type)
         assert.equals("object_library", targets.obj_lib.type)
@@ -340,13 +340,13 @@ describe("cmake parse_file_api", function()
         fd:close()
 
         -- Should select Release configuration
-        local targets = cmake.parse_file_api(tmp_dir, "Release")
+        local targets = cmake.parse_targets(tmp_dir, "Release")
         assert.is_not_nil(targets)
         assert.is_not_nil(targets.app)
     end)
 
     it("returns nil when reply dir is empty", function()
         vim.fn.mkdir(tmp_dir .. "/.cmake/api/v1/reply", "p")
-        assert.is_nil(cmake.parse_file_api(tmp_dir))
+        assert.is_nil(cmake.parse_targets(tmp_dir))
     end)
 end)

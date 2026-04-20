@@ -2216,7 +2216,7 @@ describe("Core", function()
             assert.equals("ninja-gcc-14.2.0", cached.tool_data.id)
         end)
 
-        it("calls parse_file_api on successful configure and stores targets on ConfigUnit", function()
+        it("calls parse_targets on successful configure and stores targets on ConfigUnit", function()
             local parse_called = false
             local parse_args = {}
             local core = make_core(
@@ -2231,7 +2231,7 @@ describe("Core", function()
                             return {
                                 validate = function() return { valid = true, warnings = {} } end,
                                 info = function() return { configurations = { Debug = {} } } end,
-                                parse_file_api = function(build_dir, config_name)
+                                parse_targets = function(build_dir, config_name)
                                     parse_called = true
                                     parse_args = { build_dir = build_dir, config_name = config_name }
                                     return {
@@ -2256,7 +2256,7 @@ describe("Core", function()
                 cmake = { generator = "Ninja" },
             })
 
-            assert.is_true(parse_called, "parse_file_api should be called")
+            assert.is_true(parse_called, "parse_targets should be called")
             assert.equals("/root/.nvim/build/App/Debug", parse_args.build_dir)
             assert.equals("Debug", parse_args.config_name)
 
@@ -2267,7 +2267,7 @@ describe("Core", function()
             assert.equals("static_library", unit.targets.libcore.type)
         end)
 
-        it("does not call parse_file_api on failed configure", function()
+        it("does not call parse_targets on failed configure", function()
             local parse_called = false
             local core = make_core(
                 {
@@ -2281,7 +2281,7 @@ describe("Core", function()
                             return {
                                 validate = function() return { valid = true, warnings = {} } end,
                                 info = function() return { configurations = { Debug = {} } } end,
-                                parse_file_api = function()
+                                parse_targets = function()
                                     parse_called = true
                                     return nil
                                 end,
@@ -2300,10 +2300,10 @@ describe("Core", function()
                 build_dir = "/root/.nvim/build/App/Debug",
             })
 
-            assert.is_false(parse_called, "parse_file_api should not be called on failure")
+            assert.is_false(parse_called, "parse_targets should not be called on failure")
         end)
 
-        it("does not call parse_file_api on build action", function()
+        it("does not call parse_targets on build action", function()
             local parse_called = false
             local core = make_core(
                 {
@@ -2317,7 +2317,7 @@ describe("Core", function()
                             return {
                                 validate = function() return { valid = true, warnings = {} } end,
                                 info = function() return { configurations = { Debug = {} } } end,
-                                parse_file_api = function()
+                                parse_targets = function()
                                     parse_called = true
                                     return nil
                                 end,
@@ -2336,7 +2336,7 @@ describe("Core", function()
                 build_dir = "/root/.nvim/build/App/Debug",
             })
 
-            assert.is_false(parse_called, "parse_file_api should not be called for build")
+            assert.is_false(parse_called, "parse_targets should not be called for build")
         end)
     end)
 

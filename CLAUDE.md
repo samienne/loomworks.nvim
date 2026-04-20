@@ -282,7 +282,7 @@ These are implementation-specific details not covered by the spec or architectur
   (`test_units/ctest.lua`) wraps ctest. GTest helper (`gtest.lua`) handles
   framework detection, source scanning, XML parsing. ConfigUnit delegates to
   TestUnits created lazily by module factory (`create_test_unit`). cmake
-  file-api `parse_file_api` extracts source files per target for test→source
+  file-api `parse_targets` extracts source files per target for test→source
   mapping. Neotest adapter uses pcall on all methods (nio coroutine hangs on
   errors), avoids `vim.fn` calls (deadlock in nio), deduplicates
   `discover_positions` calls (Windows path format mismatch), and caps

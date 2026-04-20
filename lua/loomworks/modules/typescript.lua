@@ -455,7 +455,7 @@ local EXCLUDED_SCRIPTS = {
 --- @param build_dir string (unused, kept for interface compatibility)
 --- @param config_name? string (unused)
 --- @return table<string, loomworks.CachedTarget>|nil
-function M.parse_file_api(build_dir, config_name)
+function M.parse_targets(build_dir, config_name)
     -- build_dir isn't meaningful for TypeScript — read from project path
     -- The caller passes build_dir but for TS we need the project path.
     -- Since we don't have it here, we return nil and use parse_targets instead.
@@ -463,7 +463,7 @@ function M.parse_file_api(build_dir, config_name)
 end
 
 --- Detect targets from package.json scripts for a given project path.
---- Called by core after configure/init instead of parse_file_api.
+--- Called by core after configure/init instead of parse_targets.
 --- @param project_path string absolute project path
 --- @return table<string, { type: string }>|nil
 function M.parse_targets(project_path)

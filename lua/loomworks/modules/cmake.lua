@@ -1096,7 +1096,7 @@ local TARGET_TYPE_MAP = {
 --- @param build_dir string absolute path to the build directory
 --- @param config_name? string configuration name (for multi-config generators)
 --- @return table<string, loomworks.CachedTarget>|nil targets
-function M.parse_file_api(build_dir, config_name)
+function M.parse_targets(build_dir, config_name)
     local codemodel = find_file_api_reply(build_dir, "codemodel", 2)
     if not codemodel or not codemodel.configurations then return nil end
 
@@ -1228,14 +1228,14 @@ function M.parse_file_api(build_dir, config_name)
     return next(targets) and targets or nil
 end
 
---- Async wrapper for parse_file_api. Yields to the event loop before
+--- Async wrapper for parse_targets. Yields to the event loop before
 --- parsing to avoid blocking during batch scanning on init.
 --- @param build_dir string
 --- @param config_name? string
 --- @param callback fun(targets: table<string, loomworks.CachedTarget>|nil)
-function M.parse_file_api_async(build_dir, config_name, callback)
+function M.parse_targets_async(build_dir, config_name, callback)
     vim.schedule(function()
-        callback(M.parse_file_api(build_dir, config_name))
+        callback(M.parse_targets(build_dir, config_name))
     end)
 end
 

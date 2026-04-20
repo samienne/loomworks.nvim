@@ -2084,7 +2084,7 @@ does not need to provide it explicitly.
 Modules that do not have native code (e.g., typescript) do not implement
 this method. The LSP layer only queries it when it exists on the module.
 
-**`parse_file_api(build_dir, config_name?) → targets?`** *(optional)*
+**`parse_targets(build_dir, config_name?) → targets?`** *(optional)*
 
 Parse module-specific post-configure data from the build directory. Returns
 a dict of `target_name → { type, dependencies? }` for project-owned targets,
@@ -2123,10 +2123,10 @@ configure. The codemodel reply provides targets; the cache reply provides
 build options.
 
 **Reply parsing**: After a successful configure, core calls
-`parse_file_api(build_dir, config_name?)` on the module. The cmake module
+`parse_targets(build_dir, config_name?)` on the module. The cmake module
 reads the codemodel reply from `<build_dir>/.cmake/api/v1/reply/`,
 extracts project-owned targets, and returns them. On startup, existing
-build directories are scanned asynchronously via `parse_file_api_async`.
+build directories are scanned asynchronously via `parse_targets_async`.
 
 **Target filtering**: Only project-owned build targets are included:
 - Executables (`EXECUTABLE`)
