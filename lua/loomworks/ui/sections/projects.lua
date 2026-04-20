@@ -717,6 +717,141 @@ return function(tree, ctx)
                 end)
             end
 
+            -- Project-level deploy steps
+            local deploy = proj.deploy
+            local has_deploy = deploy and next(deploy) ~= nil
+            if has_deploy or not proj.orphaned then
+                local project = proj  -- capture for closure
+                local deploy_mod = require("loomworks.deploy")
+                tree:group("Deploy:", "Comment", function()
+                    local function format_source(src)
+                        local display = src.project or "?"
+                        if src.target then display = display .. " : " .. src.target
+                        elseif src.path then display = display .. " : " .. src.path end
+                        if src.configuration then display = display .. " (" .. src.configuration .. ")" end
+                        if src.pre_build then display = display .. " [pre-build]" end
+                        return display
+                    end
+
+                    -- Work on a deep copy so mutations can be reverted on save failure
+                    local function get_editable_copy()
+                        return project.deploy and vim.deepcopy(project.deploy) or {}
+                    end
+
+                    local function save(new_deploy)
+                        if not next(new_deploy) then new_deploy = nil end
+                        project:save_deploy(new_deploy)
+                    end
+
+                    local dest_keys = {}
+                    if deploy then
+                        for k in pairs(deploy) do dest_keys[#dest_keys + 1] = k end
+                        table.sort(dest_keys)
+                    end
+
+                    for _, dest in ipairs(dest_keys) do
+                        local sources = deploy_mod.normalize_sources(deploy[dest])
+                        local captured_dest = dest
+                        -- Destination on its own line (may be long)
+                        tree:leaf("  " .. dest, "Comment")
+                        for si, src in ipairs(sources) do
+                            local captured_si = si
+                            tree:item("    <- " .. format_source(src), {
+                                hl = "LoomworksActionable",
+                                enter_label = "Edit deploy step",
+                                on_enter = function()
+                                    require("loomworks.ui.deploy_editor").open({
+                                        destination = captured_dest,
+                                        source = vim.deepcopy(src),
+                                        projects = lw.get_projects() or {},
+                                        profile = lw.get_active_profile(),
+                                        workspace = lw.get_workspace(),
+                                        launch_project = project,
+                                        existing_destinations = dest_keys,
+                                        current_destination = captured_dest,
+                                        on_accept = function(new_dest, new_source)
+                                            local editable = get_editable_copy()
+                                            local cur = deploy_mod.normalize_sources(editable[captured_dest])
+                                            cur[captured_si] = new_source
+                                            if new_dest ~= captured_dest then
+                                                table.remove(cur, captured_si)
+                                                if #cur == 0 then
+                                                    editable[captured_dest] = nil
+                                                elseif #cur == 1 then
+                                                    editable[captured_dest] = cur[1]
+                                                else
+                                                    editable[captured_dest] = cur
+                                                end
+                                                local existing = editable[new_dest]
+                                                if existing then
+                                                    local arr = deploy_mod.normalize_sources(existing)
+                                                    arr[#arr + 1] = new_source
+                                                    editable[new_dest] = arr
+                                                else
+                                                    editable[new_dest] = new_source
+                                                end
+                                            else
+                                                if #cur == 1 then
+                                                    editable[captured_dest] = cur[1]
+                                                else
+                                                    editable[captured_dest] = cur
+                                                end
+                                            end
+                                            save(editable)
+                                        end,
+                                        on_cancel = function() end,
+                                    })
+                                end,
+                                on_delete = function()
+                                    local editable = get_editable_copy()
+                                    local cur = deploy_mod.normalize_sources(editable[captured_dest])
+                                    table.remove(cur, captured_si)
+                                    if #cur == 0 then
+                                        editable[captured_dest] = nil
+                                    elseif #cur == 1 then
+                                        editable[captured_dest] = cur[1]
+                                    else
+                                        editable[captured_dest] = cur
+                                    end
+                                    save(editable)
+                                end,
+                            })
+                        end
+                    end
+
+                    if not proj.orphaned then
+                        tree:item("▸ Add deploy step", {
+                            hl = "LoomworksActionable",
+                            direct = true,
+                            on_enter = function()
+                                require("loomworks.ui.deploy_editor").open({
+                                    destination = "",
+                                    source = nil,
+                                    projects = lw.get_projects() or {},
+                                    profile = lw.get_active_profile(),
+                                    workspace = lw.get_workspace(),
+                                    launch_project = project,
+                                    existing_destinations = dest_keys,
+                                    on_accept = function(new_dest, new_source)
+                                        local editable = get_editable_copy()
+                                        local existing = editable[new_dest]
+                                        if existing then
+                                            local arr = deploy_mod.normalize_sources(existing)
+                                            arr[#arr + 1] = new_source
+                                            editable[new_dest] = arr
+                                        else
+                                            editable[new_dest] = new_source
+                                        end
+                                        save(editable)
+                                    end,
+                                    on_cancel = function() end,
+                                })
+                            end,
+                        })
+                    end
+                end)
+            end
+
             -- Project variables
             local vars = workspace_view.get_variables(proj)
             if #vars > 0 or not proj.orphaned then

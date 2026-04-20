@@ -164,6 +164,9 @@ local function merge_project(shared, user)
                 prov.user_variables[name] = true
             end
         end
+        if user.deploy then
+            prov.user_deploy = true
+        end
         return user, prov
     end
     if not user then
@@ -241,6 +244,18 @@ local function merge_project(shared, user)
         prov.user_variables[name] = true
     end
     merged.variables = next(merged_vars) and merged_vars or nil
+
+    -- Per-destination merge for project-level deploy
+    local shared_deploy = shared.deploy or {}
+    local user_deploy = user.deploy or {}
+    local merged_deploy = {}
+    for dest, src in pairs(shared_deploy) do
+        merged_deploy[dest] = src
+    end
+    for dest, src in pairs(user_deploy) do
+        merged_deploy[dest] = src
+    end
+    merged.deploy = next(merged_deploy) and merged_deploy or nil
 
     return merged, prov
 end
@@ -2495,6 +2510,7 @@ function Workspace:_config_from_objects()
                 type_config = tc,
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
+                deploy = project.deploy,
                 variables = project.variables,
             }
         end
@@ -2563,6 +2579,9 @@ function Workspace:_serialize_project_shared(project)
     if project.launch then
         entry.launch = project.launch
     end
+    if project.deploy and next(project.deploy) then
+        entry.deploy = project.deploy
+    end
     if project.variables and next(project.variables) then
         entry.variables = project.variables
     end
@@ -2596,6 +2615,9 @@ function Workspace:_serialize_project(project)
     end
     if project.launch then
         entry.launch = project.launch
+    end
+    if project.deploy and next(project.deploy) then
+        entry.deploy = project.deploy
     end
     if project.variables and next(project.variables) then
         entry.variables = project.variables
@@ -2755,6 +2777,7 @@ function Workspace:_user_config_from_objects()
                 type_config = tc,
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
+                deploy = project.deploy,
                 variables = project.variables,
             }
         end
@@ -3048,6 +3071,7 @@ function Workspace:_serialize_config_internal()
                 type_config = tc,
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
+                deploy = project.deploy,
                 variables = project.variables,
             }
         end
@@ -3108,6 +3132,9 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     end
     if project.launch then
         entry.launch = project.launch
+    end
+    if project.deploy and next(project.deploy) then
+        entry.deploy = project.deploy
     end
     if project.variables and next(project.variables) then
         entry.variables = project.variables

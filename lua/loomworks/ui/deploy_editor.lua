@@ -221,6 +221,7 @@ function M.open(opts)
     local source_target = opts.source and opts.source.target or ""
     local source_path = opts.source and opts.source.path or ""
     local source_configuration = opts.source and opts.source.configuration or ""
+    local source_pre_build = opts.source and opts.source.pre_build == true
     local source_type = source_target ~= "" and "target" or "path"
     local projects = opts.projects or {}
     local profile = opts.profile
@@ -484,6 +485,17 @@ function M.open(opts)
             end,
         })
 
+        -- Pre-build toggle (runs before target build)
+        local pre_val = source_pre_build and "yes" or "no"
+        t:item("  Pre-build      " .. pre_val .. " ▸", {
+            hl = source_pre_build and "LoomworksActionable" or "Comment",
+            direct = true,
+            on_enter = function()
+                source_pre_build = not source_pre_build
+                if view then view:refresh() end
+            end,
+        })
+
         -- Source type toggle
         t:item("  Type           " .. source_type .. " ▸", {
             hl = "LoomworksActionable",
@@ -608,6 +620,9 @@ function M.open(opts)
             if source_configuration ~= "" then
                 source.configuration = source_configuration
             end
+            if source_pre_build then
+                source.pre_build = true
+            end
 
             opts.on_accept(destination, source)
             return {}
@@ -627,6 +642,12 @@ function M.open(opts)
             backdrop = 70,
             title = " Deploy Step ",
             title_pos = "center",
+            wo = {
+                wrap = true,
+                linebreak = true,
+                breakindent = true,
+                showbreak = "  ↳ ",
+            },
         },
         keymaps = {
             ["<CR>"]    = "enter",

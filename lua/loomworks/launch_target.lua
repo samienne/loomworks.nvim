@@ -126,9 +126,9 @@ function LaunchTarget:build(on_complete)
         end
     end
 
-    local f = self:_build_deps(all_deps):next(function()
-        return build_self()
-    end)
+    local f = self:_build_deps(all_deps)
+        :next(function() return self:_deploy_phase("pre_build") end)
+        :next(function() return build_self() end)
 
     if on_complete then
         f:next(function() on_complete(true) end)
@@ -168,23 +168,33 @@ function LaunchTarget:_build_deps(deps)
     return chain
 end
 
+--- Collect the merged deploy dict (project-level + launch-level).
+--- Returns nil when no deploy steps are declared at either level.
+--- @return table<string, table[]>|nil
+function LaunchTarget:_resolved_deploy()
+    local deploy_mod = require("loomworks.deploy")
+    local project_deploy = self._project and self._project.deploy or nil
+    local launch_deploy = self._launch_config and self._launch_config.deploy or nil
+    if not project_deploy and not launch_deploy then return nil end
+    local merged = deploy_mod.merge_deploy_sources(project_deploy, launch_deploy)
+    if not next(merged) then return nil end
+    return merged
+end
+
 --- Collect unique source projects from deploy steps that need building.
---- Returns Project[] of deploy source projects not yet built.
+--- Includes both project-level and launch-level deploy sources.
 --- @return loomworks.Project[]
 function LaunchTarget:_deploy_source_projects()
-    local cfg = self._launch_config
-    if not cfg or not cfg.deploy or not next(cfg.deploy) then return {} end
+    local deploy = self:_resolved_deploy()
+    if not deploy then return {} end
 
-    local deploy_mod = require("loomworks.deploy")
     local seen = {}
     local result = {}
 
-    for _, source_val in pairs(cfg.deploy) do
-        local sources = deploy_mod.normalize_sources(source_val)
+    for _, sources in pairs(deploy) do
         for _, src in ipairs(sources) do
             if src.project and not seen[src.project] then
                 seen[src.project] = true
-                -- Find project domain object
                 for _, p in pairs(self._workspace._projects) do
                     if p.key == src.project and p ~= self._project then
                         result[#result + 1] = p
@@ -197,24 +207,23 @@ function LaunchTarget:_deploy_source_projects()
     return result
 end
 
---- Execute deploy steps before launching. Returns a Future.
---- Source projects should already be built (build() handles all deps).
---- @param on_complete? fun(ok: boolean, err?: string) legacy callback (deprecated)
+--- Execute deploy steps for a single phase. Returns a Future.
+--- @param phase "pre_build"|"post_build"
 --- @return loomworks.Future
-function LaunchTarget:deploy(on_complete)
+function LaunchTarget:_deploy_phase(phase)
     local future_mod = require("loomworks.future")
-    local cfg = self._launch_config
-    if not cfg or not cfg.deploy or not next(cfg.deploy) then
-        if on_complete then on_complete(true) end
-        return future_mod.resolved(true)
-    end
+    local deploy = self:_resolved_deploy()
+    if not deploy then return future_mod.resolved(true) end
+
+    local deploy_mod = require("loomworks.deploy")
+    local pre_dict, post_dict = deploy_mod.partition_by_phase(deploy)
+    local phase_dict = phase == "pre_build" and pre_dict or post_dict
+    if not next(phase_dict) then return future_mod.resolved(true) end
 
     if not self._project then
-        if on_complete then on_complete(false, "no project for deploy") end
         return future_mod.rejected("no project for deploy")
     end
 
-    local deploy_mod = require("loomworks.deploy")
     local ws = self._workspace
     local ctx = {
         workspace = ws,
@@ -223,10 +232,19 @@ function LaunchTarget:deploy(on_complete)
     }
 
     local f = deploy_mod.execute_deploy_steps(
-        cfg.deploy, ctx, ws._deploy_records, ws._core._deps.normalize)
+        phase_dict, ctx, ws._deploy_records, ws._core._deps.normalize)
 
     f:next(function() ws:_save_cache() end)
 
+    return f
+end
+
+--- Execute post-build deploy steps before launching. Returns a Future.
+--- Pre-build steps are handled inside build().
+--- @param on_complete? fun(ok: boolean, err?: string) legacy callback (deprecated)
+--- @return loomworks.Future
+function LaunchTarget:deploy(on_complete)
+    local f = self:_deploy_phase("post_build")
     if on_complete then
         f:next(function() on_complete(true) end)
          :catch(function(err) on_complete(false, err) end)

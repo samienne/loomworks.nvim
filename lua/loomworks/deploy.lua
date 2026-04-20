@@ -46,6 +46,10 @@ local function validate_single_source(source, dest_key)
         return false, "deploy source for '" .. dest_key
             .. "': 'configuration' must be a string"
     end
+    if source.pre_build ~= nil and type(source.pre_build) ~= "boolean" then
+        return false, "deploy source for '" .. dest_key
+            .. "': 'pre_build' must be a boolean"
+    end
     return true
 end
 
@@ -57,6 +61,77 @@ function M.normalize_sources(source)
     if source[1] then return source end  -- already an array
     if source.project then return { source } end  -- single descriptor
     return { source }
+end
+
+--- Check whether a destination string denotes a directory (trailing "/").
+--- @param dest string
+--- @return boolean
+local function is_dir_destination(dest)
+    return dest:sub(-1) == "/" or dest:sub(-1) == "\\"
+end
+
+--- Partition a deploy dict by the `pre_build` flag on each source.
+--- Each phase dict preserves the destination keys with only the
+--- sources whose `pre_build` value matches the bucket.
+--- @param deploy table<string, table|table[]>|nil
+--- @return table pre_dict, table post_dict
+function M.partition_by_phase(deploy)
+    local pre_dict, post_dict = {}, {}
+    if not deploy then return pre_dict, post_dict end
+    for dest, source_val in pairs(deploy) do
+        local sources = M.normalize_sources(source_val)
+        local pre_sources, post_sources = {}, {}
+        for _, src in ipairs(sources) do
+            if src.pre_build then
+                pre_sources[#pre_sources + 1] = src
+            else
+                post_sources[#post_sources + 1] = src
+            end
+        end
+        if #pre_sources > 0 then pre_dict[dest] = pre_sources end
+        if #post_sources > 0 then post_dict[dest] = post_sources end
+    end
+    return pre_dict, post_dict
+end
+
+--- Merge a project-level deploy dict with a launch-level deploy dict.
+--- For directory destinations (trailing "/"), sources from both levels
+--- are concatenated (union). For single-file destinations, launch-level
+--- overrides project-level wholesale (cascade override).
+--- Inputs may be nil or empty; both are normalised internally.
+--- @param project_deploy table<string, table|table[]>|nil
+--- @param launch_deploy table<string, table|table[]>|nil
+--- @return table<string, table[]> merged deploy dict (values always arrays)
+function M.merge_deploy_sources(project_deploy, launch_deploy)
+    local merged = {}
+
+    if project_deploy then
+        for dest, source_val in pairs(project_deploy) do
+            local sources = M.normalize_sources(source_val)
+            local copy = {}
+            for i, s in ipairs(sources) do copy[i] = s end
+            merged[dest] = copy
+        end
+    end
+
+    if launch_deploy then
+        for dest, source_val in pairs(launch_deploy) do
+            local sources = M.normalize_sources(source_val)
+            if is_dir_destination(dest) and merged[dest] then
+                -- Directory: concatenate (project first, then launch)
+                for _, s in ipairs(sources) do
+                    merged[dest][#merged[dest] + 1] = s
+                end
+            else
+                -- File destination or no collision: launch wins
+                local copy = {}
+                for i, s in ipairs(sources) do copy[i] = s end
+                merged[dest] = copy
+            end
+        end
+    end
+
+    return merged
 end
 
 --- Validate deploy definitions from a launch config.
