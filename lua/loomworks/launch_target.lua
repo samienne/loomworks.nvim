@@ -554,6 +554,22 @@ function LaunchTarget:device_install(device_serial)
     })
 end
 
+--- Resolve module-specific launch info (bundle_name, ability_name) for
+--- this target. Shared by `device_launch` and the log-session flow
+--- that needs `bundle_name` to look up the running app's PID.
+--- @return table|nil
+function LaunchTarget:device_launch_info()
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.resolve_launch_info then return nil end
+    local unit = self._config_unit
+    if not unit then return nil end
+    local ws = self._workspace
+    if not ws then return nil end
+    local config_info = unit._configuration and unit._configuration.module_config or {}
+    local project_path = ws.root .. "/" .. (self._project.path or self._project.key)
+    return mod.resolve_launch_info(project_path, config_info, unit._tool_data or {})
+end
+
 --- Launch the app on a device. Returns a Future.
 --- Resolves launch info via the module, then runs the launch command.
 --- @param device_serial string
@@ -572,14 +588,13 @@ function LaunchTarget:device_launch(device_serial)
         return future_mod.rejected("no config unit for device launch")
     end
 
-    local ws = self._workspace
-    local config_info = unit._configuration and unit._configuration.module_config or {}
-    local project_path = ws.root .. "/" .. (self._project.path or self._project.key)
-
-    local launch_info = mod.resolve_launch_info(project_path, config_info, unit._tool_data or {})
+    local launch_info = self:device_launch_info()
     if not launch_info then
         return future_mod.rejected("could not resolve launch info for device")
     end
+
+    local ws = self._workspace
+    local project_path = ws.root .. "/" .. (self._project.path or self._project.key)
 
     local spec = mod.device_launch(unit._tool_data or {}, device_serial, launch_info)
     if not spec or not spec.cmd then
@@ -595,6 +610,93 @@ function LaunchTarget:device_launch(device_serial)
         env = spec.env,
         check_output = spec.check_output,
     })
+end
+
+--- Resolve the PID of the launched app on the device. Polls the
+--- module's `device_pid` command a few times — `aa start` returns
+--- before the app is actually up, so the very first `pidof` often
+--- yields nothing.
+--- @param device_serial string
+--- @param bundle_name string
+--- @param opts? { tries?: number, interval_ms?: number }
+--- @return loomworks.Future resolves with number (pid) or nil (app never appeared)
+function LaunchTarget:device_resolve_pid(device_serial, bundle_name, opts)
+    local future_mod = require("loomworks.future")
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_pid then
+        return future_mod.resolved(nil)
+    end
+
+    local unit = self._config_unit
+    local td = unit and unit._tool_data or {}
+    local pid_spec = mod.device_pid(td, device_serial, bundle_name)
+    if not pid_spec or not pid_spec.cmd then
+        return future_mod.resolved(nil)
+    end
+
+    opts = opts or {}
+    local tries = opts.tries or 6
+    local interval_ms = opts.interval_ms or 300
+
+    local cmd = vim.list_extend({ pid_spec.cmd }, pid_spec.args or {})
+
+    return future_mod.create(function(resolve)
+        local attempt = 0
+        local function try_once()
+            attempt = attempt + 1
+            vim.system(cmd, { text = true, timeout = 3000 }, function(result)
+                vim.schedule(function()
+                    local pid
+                    if result.code == 0 and result.stdout then
+                        for line in result.stdout:gmatch("[^\r\n]+") do
+                            local n = tonumber(vim.trim(line))
+                            if n and n > 0 then pid = n; break end
+                        end
+                    end
+                    if pid then
+                        resolve(pid)
+                    elseif attempt >= tries then
+                        resolve(nil)
+                    else
+                        vim.defer_fn(try_once, interval_ms)
+                    end
+                end)
+            end)
+        end
+        try_once()
+    end)
+end
+
+--- Start a long-running hilog stream for the device app. The session
+--- tracker calls this right after a device launch succeeds and keeps
+--- the returned task handle so it can dispose the stream when the
+--- session ends. Output shows up in overseer's normal task-output
+--- buffer, matching the UX of build tasks.
+--- @param device_serial string
+--- @param pid number|nil filter to this process (nil = unfiltered stream)
+--- @return table|nil overseer task handle, or nil when the module
+---         doesn't implement device_log or overseer is unavailable
+function LaunchTarget:device_log_start(device_serial, pid)
+    local ok_o, overseer = pcall(require, "overseer")
+    if not ok_o then return nil end
+
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_log then return nil end
+
+    local unit = self._config_unit
+    local td = unit and unit._tool_data or {}
+    local spec = mod.device_log(td, device_serial, { pid = pid })
+    if not spec or not spec.cmd then return nil end
+
+    local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
+    local suffix = pid and (" (pid " .. pid .. ")") or " (unfiltered)"
+    local task = overseer.new_task({
+        name = self._project.key .. ": device logs" .. suffix,
+        cmd = cmd,
+        components = { "default" },
+    })
+    task:start()
+    return task
 end
 
 -- ---------------------------------------------------------------------------

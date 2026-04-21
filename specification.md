@@ -2948,10 +2948,20 @@ Return a command spec to launch the installed app on a device.
 `launch_info` is module-specific metadata (e.g., bundle name, ability name
 for harmony).
 
-**`device_log(tool_data, device_serial, filter?) → { cmd, args, env? }`**
+**`device_pid(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
 
-Return a command spec to stream device logs. Used for background log
-streaming independent of the launch chain.
+Return a command spec that, when run, prints the PID of a running app
+on the device. Used by the session tracker to filter the log stream
+to the launched process.
+
+**`device_log(tool_data, device_serial, opts?) → { cmd, args, env? }`**
+
+Return a command spec to stream device logs. `opts` is an optional
+table; `opts.pid` (when present) asks the module to restrict the
+stream to a single process. Session tracker resolves the PID via
+`device_pid` right after `device_launch` succeeds and starts this
+command as a long-running overseer task whose lifetime tracks the
+launched app.
 
 **`resolve_artifact(project_ctx, active_config) → string|nil`**
 
@@ -2985,6 +2995,14 @@ build → file-deploy → device-install → device-launch
    overseer as a tracked task. On failure, stop the chain with error.
 6. **Device launch**: call `resolve_launch_info()` then `device_launch()`.
    Execute via overseer.
+7. **Log stream** (best-effort): resolve the launched app's PID via
+   `device_pid()` (polled briefly — `aa start` returns before the
+   process is up), then start `device_log()` with `{ pid }` as a
+   long-running overseer task. The task is stored on the active run
+   record and disposed by `session_tracker:stop()`. Failure to
+   resolve the PID is logged as a warning and does not fail the
+   launch chain — the app is already running, we just can't follow
+   its output this time.
 
 Device targets always use launch mode in v1 (no device debug).
 

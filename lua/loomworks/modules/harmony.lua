@@ -781,13 +781,35 @@ function M.device_launch(tool_data, device_serial, launch_info)
     }
 end
 
---- Return command spec for streaming device logs.
+--- Resolve the PID of a running app on a device by bundle name.
+--- Executes `hdc -t <serial> shell pidof <bundle>`. `hdc` exits 0 even
+--- when pidof returns nothing, so the caller parses stdout for a
+--- numeric PID.
 --- @param tool_data table
 --- @param device_serial string
---- @param filter string|nil optional log filter
+--- @param bundle_name string
 --- @return { cmd: string, args: string[] }
-function M.device_log(tool_data, device_serial, filter)
+function M.device_pid(tool_data, device_serial, bundle_name)
+    return {
+        cmd = tool_data.hdc,
+        args = { "-t", device_serial, "shell", "pidof", bundle_name },
+    }
+end
+
+--- Return command spec for streaming device logs. When `opts.pid` is
+--- provided we filter to that single process (`-P <pid>`) — the
+--- system-wide hilog stream is too noisy to follow alongside an app.
+--- @param tool_data table
+--- @param device_serial string
+--- @param opts? { pid?: number }
+--- @return { cmd: string, args: string[] }
+function M.device_log(tool_data, device_serial, opts)
+    opts = opts or {}
     local args = { "-t", device_serial, "hilog" }
+    if opts.pid then
+        args[#args + 1] = "-P"
+        args[#args + 1] = tostring(opts.pid)
+    end
     return {
         cmd = tool_data.hdc,
         args = args,

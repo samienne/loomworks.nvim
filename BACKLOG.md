@@ -159,12 +159,15 @@ always use launch mode regardless of user input.
 
 ---
 
-## Device log streaming
+## Auto-close device log stream when the app exits
 
-The harmony module already implements `device_log()` returning a command
-spec for `hdc hilog`. Not wired into UI in v1. Could be a standalone
-action on the device status line — start a background overseer task,
-stream logs in a dedicated window.
+Device log streaming is wired into session_tracker (starts on device
+launch, stops on `session_tracker:stop`), but there's no automatic
+stop when the app exits on-device without the user pressing stop —
+the hilog task keeps running with nothing to show. Add a periodic
+`pidof` poll (say every 3s) to the active run record; when the PID
+is gone for N consecutive polls, call `stop_log_task()` and clear
+the active run.
 
 ---
 

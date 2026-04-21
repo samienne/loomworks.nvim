@@ -31,6 +31,17 @@ local function is_active_running()
     end
 end
 
+--- Tear down the device-log stream attached to the run, if any.
+--- Stop first (sends SIGTERM via overseer), then dispose. Swallow
+--- errors — this is cleanup and overseer state varies across nvim
+--- builds / task lifecycles.
+local function stop_log_task()
+    if not _active_run or not _active_run.log_task then return end
+    pcall(function() _active_run.log_task:stop() end)
+    pcall(function() _active_run.log_task:dispose() end)
+    _active_run.log_task = nil
+end
+
 --- Stop the active run.
 local function stop_run()
     if not _active_run then return end
@@ -39,6 +50,7 @@ local function stop_run()
         require("loomworks.fidget").fail(_active_run.fidget_handle, "stopped")
         _active_run.fidget_handle = nil
     end
+    stop_log_task()
     if _active_run.mode == "launch" then
         if _active_run.target:is_running() then
             _active_run.target:stop()
@@ -176,7 +188,41 @@ local function start_run(target, mode)
                         mode = "launch",
                         multi_adapter = false,
                         started_at = os.clock(),
+                        device_serial = device_serial,
                     }
+                    -- Kick off the log stream asynchronously. Don't
+                    -- block the fidget handle on it — the launch
+                    -- already succeeded; a log stream that fails to
+                    -- attach is a notification, not a chain failure.
+                    local info = target:device_launch_info()
+                    local bundle = info and info.bundle_name
+                    if bundle then
+                        target:device_resolve_pid(device_serial, bundle)
+                            :next(function(pid)
+                                -- Session may have been stopped or
+                                -- superseded by the time PID lookup
+                                -- returns; only attach to the current
+                                -- run.
+                                if not _active_run
+                                    or _active_run.target ~= target
+                                    or _active_run.log_task then
+                                    return
+                                end
+                                if not pid then
+                                    vim.notify(
+                                        "loomworks: app PID didn't appear — skipping log stream",
+                                        vim.log.levels.WARN)
+                                    return
+                                end
+                                _active_run.log_task =
+                                    target:device_log_start(device_serial, pid)
+                            end)
+                            :catch(function(err)
+                                vim.notify(
+                                    "loomworks: device log stream failed: " .. tostring(err),
+                                    vim.log.levels.WARN)
+                            end)
+                    end
                 end)
             end
 
