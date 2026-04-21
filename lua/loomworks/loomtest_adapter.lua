@@ -112,8 +112,10 @@ local function create_adapter()
         end,
 
         --- Build the test target before running tests.
-        --- Builds only the specific test executable when possible
-        --- (via Target:build()), falls back to full project build.
+        --- Module-agnostic: delegates to each project's module for the
+        --- actual build command via `overseer.build_spec_for(unit, target_id)`.
+        --- Uses a plain overseer task (not the loomworks task tracker)
+        --- to avoid invalidating the test cache.
         --- @param test_ids string[] test IDs to build for
         --- @param callback fun(ok: boolean)
         ensure_built = function(test_ids, callback)
@@ -124,49 +126,44 @@ local function create_adapter()
             for _, pp in ipairs(profile:projects()) do
                 local unit = pp._config_unit
                 if unit then
-                    -- Try to find the cmake Target object for the test executable
-                    local target_obj = nil
+                    -- Prefer a per-target build when the test's executable
+                    -- matches a known build target on this unit.
+                    local target_id = nil
                     if unit.targets and test_ids and #test_ids > 0 then
                         local tus = unit:test_units()
                         if #tus > 0 and tus[1]._entries then
                             for _, e in ipairs(tus[1]._entries) do
                                 if e.id == test_ids[1] and e.executable then
                                     local exe_name = (e.executable:match("[/\\]([^/\\]+)$") or e.executable):gsub("%.exe$", "")
-                                    target_obj = unit.targets and unit.targets[exe_name]
+                                    local target_obj = unit.targets[exe_name]
+                                    if target_obj then target_id = target_obj.id end
                                     break
                                 end
                             end
-                            if not target_obj then
+                            if not target_id then
                                 for _, e in ipairs(tus[1]._entries) do
                                     if e.executable and not e.parent then
                                         local exe_name = (e.executable:match("[/\\]([^/\\]+)$") or e.executable):gsub("%.exe$", "")
-                                        target_obj = unit.targets and unit.targets[exe_name]
-                                        if target_obj then break end
+                                        local target_obj = unit.targets[exe_name]
+                                        if target_obj then target_id = target_obj.id break end
                                     end
                                 end
                             end
                         end
                     end
 
-                    -- Build via a plain overseer task (not loomworks task
-                    -- tracker) to avoid invalidating the test cache.
                     local ok_o, overseer = pcall(require, "overseer")
                     if not ok_o then callback(false); return end
 
-                    local ws = unit._workspace
-                    local bd = unit:build_dir()
-                    if not bd then callback(false); return end
-
-                    local build_cmd = { "cmake", "--build", bd }
-                    if target_obj then
-                        build_cmd[#build_cmd + 1] = "--target"
-                        build_cmd[#build_cmd + 1] = target_obj.id
-                    end
+                    local lw_overseer = require("loomworks.overseer")
+                    local spec = lw_overseer.build_spec_for(unit, target_id)
+                    if not spec or not spec.cmd then callback(false); return end
 
                     local build_task = overseer.new_task({
-                        name = "loomtest build: " .. (target_obj and target_obj.id or "all"),
-                        cmd = build_cmd,
-                        cwd = ws and ws.root or nil,
+                        name = "loomtest build: " .. (target_id or "all"),
+                        cmd = spec.cmd,
+                        cwd = spec.cwd,
+                        env = spec.env,
                         components = { "on_exit_set_status" },
                     })
                     build_task:subscribe("on_complete", function(_, status)

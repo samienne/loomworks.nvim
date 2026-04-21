@@ -76,6 +76,75 @@ local function collect_configuration_tasks(unit)
     return by_action
 end
 
+--- Return a raw build command spec for a ConfigUnit.
+--- Intended for callers that want to invoke a plain overseer task
+--- without going through the loomworks task tracker (e.g. loomtest
+--- auto-building tests). Delegates to the module via `build_target_task`
+--- when a specific target is requested and the module supports it,
+--- otherwise falls back to the "build" action from `module.tasks()`.
+--- @param unit loomworks.ConfigUnit
+--- @param target_id? string optional target to build in isolation
+--- @return table|nil spec `{ cmd, cwd?, env? }` or nil when unavailable
+function M.build_spec_for(unit, target_id)
+    local project = unit._project
+    if not project then return nil end
+    local mod = project._module and project._module.impl or nil
+    if not mod then return nil end
+
+    -- Build a ctx the module's tasks can consume (same shape as
+    -- collect_configuration_tasks uses).
+    local ws = unit._workspace
+    if not ws then return nil end
+    local variant = unit:variant()
+    local tool = unit._tool
+    local tool_data = tool and tool.data or unit:tool_data()
+
+    local abs_path = ws.root .. "/" .. (project.path or project.key)
+    local tc_for_module = project._type_config_for_module
+        and project:_type_config_for_module() or (project.type_config or {})
+
+    local mod_info = { configurations = {} }
+    if mod.info then
+        local ok, result = pcall(mod.info, abs_path, tc_for_module)
+        if ok and result then mod_info = result end
+    end
+
+    local project_ctx = {
+        name = project.key,
+        path = project.path or project.key,
+        type = project.type,
+        configuration = variant,
+        configuration_key = unit:config_key(),
+        configurations = mod_info.configurations or {},
+        type_config = tc_for_module,
+        tool_data = tool_data,
+        workspace_root = ws.root,
+        env = tool_data and tool_data.env or {},
+        cached_build_dir = unit:build_dir(),
+    }
+
+    -- Prefer a per-target build when possible
+    if target_id and mod.build_target_task then
+        local ok, task_def = pcall(mod.build_target_task, project_ctx, target_id)
+        if ok and task_def and task_def.builder then
+            local ok2, spec = pcall(task_def.builder)
+            if ok2 and spec and spec.cmd then return spec end
+        end
+    end
+
+    -- Fall back to the full "build" action from tasks()
+    if not mod.tasks then return nil end
+    local ok_t, mod_tasks = pcall(mod.tasks, project_ctx, variant)
+    if not ok_t or type(mod_tasks) ~= "table" then return nil end
+    for _, t in ipairs(mod_tasks) do
+        if t.loomworks and t.loomworks.action == "build" and t.builder then
+            local ok2, spec = pcall(t.builder)
+            if ok2 and spec and spec.cmd then return spec end
+        end
+    end
+    return nil
+end
+
 --- Collect task definitions for a profile, grouped by action.
 --- Does not change the active profile. Uses registered ProfileProject and
 --- Project objects instead of recomputing from scratch.
