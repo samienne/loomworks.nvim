@@ -54,13 +54,21 @@ describe("meson module", function()
             assert.equals("release", cfgs.Release.buildtype)
             assert.equals("debugoptimized", cfgs.RelWithDebInfo.buildtype)
         end)
+
+        it("each default sets variant = name (concrete, not abstract)", function()
+            local cfgs = meson.default_configurations("/tmp/x", {})
+            assert.equals("Debug", cfgs.Debug.variant)
+            assert.equals("Release", cfgs.Release.variant)
+            assert.equals("RelWithDebInfo", cfgs.RelWithDebInfo.variant)
+        end)
     end)
 
     describe("resolve_configurations", function()
-        it("marks defaults with is_default", function()
+        it("marks defaults with is_default and preserves variant", function()
             local cfgs = meson.resolve_configurations(
                 meson.default_configurations("/tmp/x", {}), {})
             assert.is_true(cfgs.Debug.is_default)
+            assert.equals("Debug", cfgs.Debug.variant)
         end)
 
         it("merges user override on top and marks is_user", function()
@@ -72,15 +80,23 @@ describe("meson module", function()
             })
             assert.is_true(cfgs.Debug.is_user)
             assert.equals(3, cfgs.Debug.options.warning_level)
+            assert.equals("Debug", cfgs.Debug.variant)
         end)
 
-        it("adds new user configs not in defaults", function()
+        it("adds new user configs not in defaults (abstract unless variant given)", function()
             local cfgs = meson.resolve_configurations(
                 meson.default_configurations("/tmp/x", {}),
-                { configurations = { Custom = { buildtype = "plain" } } })
-            assert.is_not_nil(cfgs.Custom)
-            assert.equals("plain", cfgs.Custom.buildtype)
-            assert.is_true(cfgs.Custom.is_user)
+                { configurations = { CustomMixin = { options = { warning_level = 3 } } } })
+            assert.is_not_nil(cfgs.CustomMixin)
+            assert.is_nil(cfgs.CustomMixin.variant)  -- abstract
+            assert.is_true(cfgs.CustomMixin.is_user)
+        end)
+
+        it("user config inheriting from a default picks up the variant", function()
+            local cfgs = meson.resolve_configurations(
+                meson.default_configurations("/tmp/x", {}),
+                { configurations = { ["Debug-asan"] = { inherits = "Debug" } } })
+            assert.equals("Debug", cfgs["Debug-asan"].variant)
         end)
     end)
 
