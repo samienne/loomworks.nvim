@@ -277,7 +277,8 @@ may import from its own layer or any layer below it, never above.
 | `variables.lua` | Project variable validation and resolution. `resolve(project, configuration)` walks inheritance chain via object references, returns values with provenance (source Configuration object). Reserved name checking | Own state; mutate anything |
 | `operation.lua` | Operation class: tracks a user-initiated profile action. Watches ConfigUnit state changes to determine completion. Multiple Operations can coexist. Created by `Workspace:create_operation()`, cleaned up on completion via callback | Own state beyond what workspace provides; persist anything |
 | `workspace_view.lua` | View-model layer: orchestration logic for UI. Computes add/remove project context, tool detection caching, upgrade/downgrade previews, config set candidates. Config set create/edit/rename/delete context and execution. Orphan cleanup: stray build dir detection (top-down prune of `.nvim/build/`), orphaned config collection, bulk cleanup execution. Calls Workspace atomic mutations in sequence. No UI rendering — pure compute + execute | Render UI; own state; bypass Workspace methods |
-| `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
+| `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, Ninja+MSVC combos). GCC/Clang detection delegates to `compilers.lua`. Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
+| `compilers.lua` | Shared C/C++ compiler detection (gcc/clang via PATH probing, versioned binary names). Returns `{id, display, family, version, path, c_path, bin_dir, clangd_path}` per compiler so modules can pin `CC`/`CXX` and prepend runtime-DLL directories to `PATH`. Used by both `cmake_kits.lua` and `modules/meson.lua`. Process-lifetime cache; `clear_cache()` forces rescan | Know about any specific module |
 
 ### Data / IO Layer
 
@@ -292,6 +293,8 @@ may import from its own layer or any layer below it, never above.
 | `modules/init.lua` | Module registry, lazy loading, detection orchestration (`detect_all_types`, `scan_directory_async`) | Implement module logic |
 | `modules/cmake.lua` | CMake module: detect, validate, info (preset + loomworks config separation), default_configurations, resolve_configurations (inheritance model), resolve_options/resolve_options_with_sources (option merge with source tracking), resolve_variant_source, tasks (CMAKE_BUILD_TYPE auto-set, user -D options), inspect, detect_tools/detect_tools_async, parse_targets (target discovery), get_options (cache variables), map_variant. Static `has_keyed_tools = true`, `has_options = true` | Know about profiles, UI, or overseer |
 | `modules/harmony.lua` | Harmony/OpenHarmony module: detect (build-profile.json5), validate, info (product/module/target extraction from build-profile.json5 via Node.js JSON5 parsing), default_configurations (product × target × ABI cross product), resolve_build_dir (hvigor's external cmake build dir outside .nvim/build/), lsp_configs (emits clangd entry with SDK-bundled binary for native configs), tasks (ohpm install + hvigor sync + assembleHap), clean_tasks, inspect (staleness detection + build dir verification via native_work_dir.txt), detect_tools/detect_tools_async, kits_from_sdk, tool_label, map_variant. Device interface: `list_devices` (hdc list targets), `device_targets` (Run on device), `device_install` (hdc install), `device_launch` (hdc shell aa start), `device_log` (hdc hilog), `resolve_artifact` (HAP path), `resolve_launch_info` (bundle/ability from app.json5/module.json5). Static `has_keyed_tools = false`, `has_options = false`, `has_devices = true` | Anything beyond the module interface |
+| `modules/meson.lua` | Meson module: detect (meson.build), validate, info (defaults Debug/Release/RelWithDebInfo mapping to buildtype), resolve_configurations (inheritance on top of defaults), tasks (meson setup + compile; auto-picks --reconfigure on re-setup; -D option args; optional --cross-file), clean_tasks (meson compile --clean), parse_targets/parse_targets_async (via `meson introspect --targets`), get_options (via `meson introspect --buildoptions`, grouped by section), lsp_configs (clangd entry with build_dir as compile_commands_dir), inspect (meson.build / meson.options / meson_options.txt staleness), detect_tools/detect_tools_async (meson on PATH, then pip-user Scripts dir via Python sysconfig probe; non-keyed), create_test_unit (MesonTestUnit), map_variant. Static `has_keyed_tools = false`, `has_options = true` | Anything beyond the module interface |
+| `test_units/meson.lua` | MesonTestUnit: wraps `meson introspect --tests` for discovery, gtest framework probing via shared helper, direct-exe gtest XML runs for per-test results. Same runtime surface as CTestUnit | Know about the meson module internals |
 | `modules/typescript.lua` | TypeScript shim module (detect + validate + info + default_configurations + detect_tools_async + map_variant). Defaults always present, user configs merged on top. Static `has_keyed_tools = false`, `has_options = false` | Anything beyond the shim interface |
 | `progress/init.lua` | Parser registry mapping tool names to parser functions | Parse output itself |
 | `progress/ninja.lua` | Ninja `[n/m]` output parser | Know about other build tools |
@@ -699,7 +702,8 @@ loomworks.nvim/
 │   │   ├── deploy.lua                Deploy step resolution, freshness, execution
 │   │   ├── variables.lua             Project variable resolution + validation
 │   │   ├── operation.lua              Operation class (profile action tracking)
-│   │   ├── cmake_kits.lua             CMake tool detection
+│   │   ├── cmake_kits.lua             CMake tool detection (MSVC/VS; delegates gcc/clang)
+│   │   ├── compilers.lua               Shared C/C++ compiler detection (used by cmake_kits + meson)
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
 │   │   ├── overseer.lua               Overseer template provider + launching
 │   │   ├── lsp.lua                    LSP dispatch layer (re-exports integrations, generic get_status)
@@ -711,6 +715,7 @@ loomworks.nvim/
 │   │   │   ├── init.lua               Module registry, detection orchestration
 │   │   │   ├── cmake.lua              CMake module (full v1)
 │   │   │   ├── harmony.lua              Harmony/OpenHarmony module (full)
+│   │   │   ├── meson.lua              Meson module (full v1)
 │   │   │   └── typescript.lua         TypeScript shim
 │   │   ├── progress/
 │   │   │   ├── init.lua               Progress parser registry

@@ -5,6 +5,38 @@ they don't get lost.
 
 ---
 
+## MSVC toolchain support for the meson module
+
+Meson builds fine with MSVC (`cl.exe`) on the ninja backend, but only
+when invoked under an environment where `vcvarsall.bat` has run — that
+sets `INCLUDE`, `LIB`, `PATH`, etc. for the target architecture. The
+meson module's compiler detector (`lua/loomworks/compilers.lua`)
+currently only finds gcc/clang on PATH; `cmake_kits.lua` already has
+the MSVC + vcvarsall plumbing for cmake.
+
+To add MSVC-meson kits:
+
+- Extend `compilers.detect` (or a sibling `msvc_kits`-style helper) to
+  enumerate VS installations via `vswhere.exe`, the same way
+  `detect_msvc_kits` in `cmake_kits.lua` does.
+- When the picked tool carries a `vcvarsall` field, the meson module's
+  `tasks()` needs to wrap the configure / compile commands so they
+  run under the vcvarsall env. Easiest shape: generate a `cmd.exe /c
+  "call vcvarsall.bat arch && meson setup ..."` wrapper, the way
+  cmake currently does. The wrapper shape should live next to the
+  meson task builders, not inside `compose_task_env`, because it
+  changes the *command* shape, not just the environment.
+- `MesonTestUnit` should prepend MSVC redist DLL locations (the
+  per-arch directories under the installation's `VC/Redist/...`)
+  rather than a plain `compiler_bin_dir` — MSVC compilers don't ship
+  runtime DLLs next to `cl.exe`.
+
+Scope note: this is the reason `cmake` can pick "Ninja + MSVC" today
+but `meson` can't. Tracked separately from the gcc/clang support that
+already landed.
+
+---
+
 ## Strict separation of auto-generated vs user configurations
 
 Larger architectural rework of the configuration model. Replaces the

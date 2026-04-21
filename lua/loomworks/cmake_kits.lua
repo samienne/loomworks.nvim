@@ -112,67 +112,25 @@ local function find_sibling_clangd(compiler_path)
     return nil
 end
 
---- Detect C/C++ compilers in PATH.
+--- Detect C/C++ compilers in PATH. Delegates to the shared
+--- `loomworks.compilers` module, shaping the result into the
+--- `{path=...}` fields cmake_kits has historically used. Keeping the
+--- adapter thin makes the shared detector the single source of truth.
 --- @return { id: string, display: string, path: string, version: string, family: string, clangd_path: string|nil }[]
 local function detect_compilers()
-    local compilers = {}
-    local seen = {}
-
-    -- Candidate binary names: plain + versioned (gcc-13, clang++-19, etc.)
-    local candidates = {}
-    for _, base in ipairs({ "gcc", "g++", "clang", "clang++" }) do
-        candidates[#candidates + 1] = base
-        for v = 8, 25 do
-            candidates[#candidates + 1] = base .. "-" .. v
-        end
-    end
-
-    for _, name in ipairs(candidates) do
-        local path, version = probe_compiler(name)
-        if not path or not version then goto continue end
-        if seen[path] then goto continue end
-
-        local family
-        if name:match("^clang") then
-            family = "clang"
-        elseif name:match("^g[c%+]") then
-            family = "gcc"
-        end
-        if not family then goto continue end
-
-        -- Deduplicate by family+version (gcc and g++ report same version)
-        local compound_id = family .. "-" .. version
-        if seen[compound_id] then goto continue end
-        seen[compound_id] = true
-        seen[path] = true
-
-        -- For C compiler, try to find the C++ counterpart
-        local is_cpp = name:match("%+%+")
-        local cpp_path = path
-        if not is_cpp then
-            local cpp_name = name:gsub("^gcc", "g++"):gsub("^clang$", "clang++"):gsub("^clang%-(%d)", "clang++-%1")
-            local cpp_p = probe_compiler(cpp_name)
-            if cpp_p then cpp_path = cpp_p end
-        end
-
-        compilers[#compilers + 1] = {
-            id = compound_id,
-            display = family == "gcc" and ("GCC " .. version) or ("Clang " .. version),
-            path = cpp_path,
-            version = version,
-            family = family,
-            clangd_path = find_sibling_clangd(cpp_path),
+    local shared = require("loomworks.compilers").detect()
+    local out = {}
+    for _, c in ipairs(shared) do
+        out[#out + 1] = {
+            id = c.id,
+            display = c.display,
+            path = c.path,
+            version = c.version,
+            family = c.family,
+            clangd_path = c.clangd_path,
         }
-
-        ::continue::
     end
-
-    table.sort(compilers, function(a, b)
-        if a.family ~= b.family then return a.family < b.family end
-        return a.version > b.version
-    end)
-
-    return compilers
+    return out
 end
 
 --- Detect all available cmake build kits.
@@ -222,6 +180,13 @@ function M.detect()
 
     M._cached = kits
     return kits
+end
+
+--- Forward the shared compiler-cache clear so callers who already had
+--- `cmake_kits.clear_cache()` wired up continue to work.
+function M.clear_cache()
+    M._cached = nil
+    require("loomworks.compilers").clear_cache()
 end
 
 --- Detect MSVC installations asynchronously via vswhere.exe.
@@ -480,11 +445,6 @@ end
 function M.default_kit()
     local kits = M.detect()
     return kits[1]
-end
-
---- Clear cache (for testing or after PATH changes).
-function M.clear_cache()
-    M._cached = nil
 end
 
 return M

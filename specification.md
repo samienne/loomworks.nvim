@@ -182,9 +182,9 @@ a generator + compiler combination. Each module declares whether it has
 "keyed tools" — tools that produce distinct build artifacts requiring separate
 cache entries.
 
-- **Keyed tools** (cmake): cache key = `"variant:tool_key"` (e.g.,
-  `"Debug:ninja-gcc-12"`). Each generator+compiler produces different build
-  output.
+- **Keyed tools** (cmake, meson): cache key = `"variant:tool_key"` (e.g.,
+  `"Debug:ninja-gcc-12"`, `"Debug:gcc-14.2.0"`). Each generator+compiler (cmake)
+  or compiler (meson) produces different build output.
 - **Non-keyed tools** (harmony, typescript): cache key = `"variant"`. The tool
   does not affect the cache key.
 
@@ -363,7 +363,7 @@ UI or store device selections.
 | `depends_on` | Reserved for future cross-project dependencies (ignored in v1) |
 | `<type>` | Inner key determines project type; value is the type-specific config |
 
-The type key (`cmake`, `harmony`, `typescript`) is the only required field. Its
+The type key (`cmake`, `meson`, `harmony`, `typescript`) is the only required field. Its
 value is a table passed to the module as `type_config`.
 
 **CMake type_config fields**:
@@ -2539,7 +2539,8 @@ ConfigUnit
 TestUnit (interface — test_unit.lua)
 ├── CTestUnit (test_units/ctest.lua)  wraps ctest for cmake projects
 │   └── uses GTest helper for framework detection + source mapping
-├── MesonTestUnit (future)            wraps meson test
+├── MesonTestUnit (test_units/meson.lua)  wraps `meson introspect --tests`
+│   └── uses GTest helper; populates file/line from target sources
 └── GTestUnit (future)                direct gtest binary for launch targets
 
 GTest (gtest.lua — shared helper, not a TestUnit)
