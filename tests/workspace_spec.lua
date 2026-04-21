@@ -18,8 +18,13 @@ describe("workspace", function()
         end)
 
         it("uses provided path", function()
-            local root = workspace.resolve_root("/my/path", function(p) return p end)
-            assert.equals("/my/path", root)
+            -- Use a path that's already absolute on whichever platform the
+            -- tests run on. `resolve_root` runs `fnamemodify(:p)` on the
+            -- input, so a POSIX-style "/my/path" would resolve against cwd
+            -- on Windows.
+            local input = vim.fn.has("win32") == 1 and "C:/my/path" or "/my/path"
+            local root = workspace.resolve_root(input, function(p) return p end)
+            assert.equals(input, root)
         end)
     end)
 
