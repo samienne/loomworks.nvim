@@ -267,7 +267,7 @@ function MesonTestUnit:_probe_frameworks(entries, callback)
 
     local remaining = #targets
     for _, target in ipairs(targets) do
-        gtest.probe_async(target.executable, target.id, function(framework, test_list)
+        gtest.probe(target.executable, target.id, function(framework, test_list)
             self._framework_cache[target.executable] = framework or false
             if framework and test_list then
                 target.framework = framework
