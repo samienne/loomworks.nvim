@@ -81,6 +81,16 @@ function MesonTestUnit.new(config_unit)
     return self
 end
 
+--- Treat vim.NIL (JSON null) as Lua nil for a single field. vim.NIL
+--- is userdata and truthy in Lua, which poisons downstream overseer
+--- specs if passed through (e.g. `spec.cwd or fallback` keeps vim.NIL).
+--- @param v any
+--- @return any|nil
+local function denull(v)
+    if v == vim.NIL then return nil end
+    return v
+end
+
 --- Parse `meson introspect --tests` JSON into test entries.
 --- The JSON shape is a flat array of test descriptors:
 ---   { name, suite: [], cmd: [], workdir, env: {}, timeout, ... }
@@ -98,18 +108,27 @@ local function parse_meson_tests(json_str)
     local exec_specs = {}
 
     for _, test in ipairs(data) do
-        local name = test.name
+        local name = denull(test.name)
         if not name then goto continue end
 
-        local cmd = test.cmd
-        local exe = (type(cmd) == "table" and cmd[1]) or nil
+        local cmd = denull(test.cmd)
+        local exe = (type(cmd) == "table" and denull(cmd[1])) or nil
 
         if exe and not exec_specs[exe] then
+            -- Strip vim.NIL values from the env table so we don't
+            -- propagate them into the runtime environment.
+            local env_clean = {}
+            if type(test.env) == "table" then
+                for k, v in pairs(test.env) do
+                    local cv = denull(v)
+                    if cv ~= nil then env_clean[k] = tostring(cv) end
+                end
+            end
             exec_specs[exe] = {
                 cmd = cmd,
-                cwd = test.workdir,
-                env = type(test.env) == "table" and vim.deepcopy(test.env) or {},
-                timeout = tonumber(test.timeout) or nil,
+                cwd = denull(test.workdir),
+                env = env_clean,
+                timeout = tonumber(denull(test.timeout)) or nil,
             }
         end
 

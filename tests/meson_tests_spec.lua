@@ -92,6 +92,44 @@ describe("meson test integration", function()
             gtest.probe_sync = orig_probe
         end)
 
+        it("treats JSON null workdir as nil (vim.NIL must not leak)", function()
+            local gtest = require("loomworks.gtest")
+            local orig_probe = gtest.probe_sync
+            ---@diagnostic disable-next-line: duplicate-set-field
+            gtest.probe_sync = function() return nil, nil end
+
+            local json_null_workdir = [[
+[
+  {
+    "name": "basic",
+    "suite": ["project"],
+    "cmd": ["/build/test_basic"],
+    "workdir": null,
+    "env": null,
+    "timeout": null
+  }
+]
+]]
+            local orig_system = vim.system
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.system = function(_cmd, _opts)
+                return { wait = function() return { code = 0, stdout = json_null_workdir } end }
+            end
+
+            local unit = stub_config_unit("/build/App/Debug")
+            local tu = meson.create_test_unit(unit)
+            tu:discover()
+
+            local spec = tu._exec_specs["/build/test_basic"]
+            assert.is_not_nil(spec)
+            assert.is_nil(spec.cwd, "cwd must be Lua nil when JSON workdir is null")
+            assert.are.same({}, spec.env, "env must be empty table when JSON env is null")
+            assert.is_nil(spec.timeout)
+
+            vim.system = orig_system
+            gtest.probe_sync = orig_probe
+        end)
+
         it("captures workdir and env as exec_spec for each executable", function()
             local gtest = require("loomworks.gtest")
             local orig_probe = gtest.probe_sync
