@@ -277,7 +277,8 @@ may import from its own layer or any layer below it, never above.
 | `variables.lua` | Project variable validation and resolution. `resolve(project, configuration)` walks inheritance chain via object references, returns values with provenance (source Configuration object). Reserved name checking | Own state; mutate anything |
 | `operation.lua` | Operation class: tracks a user-initiated profile action. Watches ConfigUnit state changes to determine completion. Multiple Operations can coexist. Created by `Workspace:create_operation()`, cleaned up on completion via callback | Own state beyond what workspace provides; persist anything |
 | `workspace_view.lua` | View-model layer: orchestration logic for UI. Computes add/remove project context, tool detection caching, upgrade/downgrade previews, config set candidates. Config set create/edit/rename/delete context and execution. Orphan cleanup: stray build dir detection (top-down prune of `.nvim/build/`), orphaned config collection, bulk cleanup execution. Calls Workspace atomic mutations in sequence. No UI rendering — pure compute + execute | Render UI; own state; bypass Workspace methods |
-| `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, GCC/Clang via PATH probing, Ninja+MSVC combos). Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
+| `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, Ninja+MSVC combos). GCC/Clang detection delegates to `compilers.lua`. Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
+| `compilers.lua` | Shared C/C++ compiler detection (gcc/clang via PATH probing, versioned binary names). Returns `{id, display, family, version, path, c_path, bin_dir, clangd_path}` per compiler so modules can pin `CC`/`CXX` and prepend runtime-DLL directories to `PATH`. Used by both `cmake_kits.lua` and `modules/meson.lua`. Process-lifetime cache; `clear_cache()` forces rescan | Know about any specific module |
 
 ### Data / IO Layer
 
@@ -701,7 +702,8 @@ loomworks.nvim/
 │   │   ├── deploy.lua                Deploy step resolution, freshness, execution
 │   │   ├── variables.lua             Project variable resolution + validation
 │   │   ├── operation.lua              Operation class (profile action tracking)
-│   │   ├── cmake_kits.lua             CMake tool detection
+│   │   ├── cmake_kits.lua             CMake tool detection (MSVC/VS; delegates gcc/clang)
+│   │   ├── compilers.lua               Shared C/C++ compiler detection (used by cmake_kits + meson)
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
 │   │   ├── overseer.lua               Overseer template provider + launching
 │   │   ├── lsp.lua                    LSP dispatch layer (re-exports integrations, generic get_status)

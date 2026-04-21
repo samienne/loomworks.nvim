@@ -10,8 +10,11 @@
 --- * get_options: `meson introspect <dir> --buildoptions` (post-configure)
 --- * lsp_configs: emits a clangd entry using the build dir
 ---   (meson generates compile_commands.json automatically)
---- * Tools: non-keyed — single default tool (system meson). Machine file
----   support would land via a future kits mechanism.
+--- * Tools: keyed by compiler. Each detected C/C++ compiler produces
+---   a distinct tool entry so profiles can pin which toolchain meson
+---   uses (CC/CXX set at configure time, compiler bin dir prepended
+---   to PATH for builds and tests). MSVC support requires vcvarsall
+---   wrapping and is tracked in BACKLOG.md.
 ---
 --- Cross-compilation: user puts `machine_file` in the configuration's
 --- type_config overrides; `tasks()` passes `--cross-file <path>` to setup.
@@ -23,7 +26,7 @@ local uv = vim.uv or vim.loop
 local is_win = vim.fn.has("win32") == 1
 
 M.id = "meson"
-M.has_keyed_tools = false
+M.has_keyed_tools = true
 M.has_options = true
 M.languages = { "c++", "c" }
 
