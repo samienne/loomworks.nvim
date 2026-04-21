@@ -300,8 +300,20 @@ function MesonTestUnit:_probe_frameworks(entries, callback)
     end
 end
 
---- Common runner: produce { cmd, env, cwd, output_path } for a
---- gtest-compatible executable with filter + XML output.
+--- Find a test entry by id. Returns the first matching entry or nil.
+--- @param test_id string
+--- @return table|nil
+function MesonTestUnit:_entry(test_id)
+    if not self._entries then return nil end
+    for _, e in ipairs(self._entries) do
+        if e.id == test_id then return e end
+    end
+    return nil
+end
+
+--- Build a gtest-style run spec (filter + XML output) for a gtest
+--- executable. Adds gtest-specific CLI flags that require the target
+--- to actually be a gtest binary — caller must confirm framework first.
 --- @param exe string
 --- @param filter? string GTEST_FILTER value
 --- @return table|nil
@@ -330,60 +342,96 @@ function MesonTestUnit:_build_gtest_run(exe, filter)
     }
 end
 
+--- Build a plain run spec that invokes the test executable exactly as
+--- meson introspect reported it. Used for frameworks we don't have
+--- specific handling for (or opaque targets where the probe was
+--- inconclusive). No extra CLI flags, no structured result parsing.
+--- @param exe string
+--- @return table|nil
+function MesonTestUnit:_build_plain_run(exe)
+    local spec = self._exec_specs[exe]
+    if not spec then return nil end
+    return {
+        cmd = vim.deepcopy(spec.cmd),
+        env = vim.deepcopy(spec.env),
+        cwd = spec.cwd or self._build_dir,
+        output_path = nil,
+    }
+end
+
+--- Determine the detected framework for an entry, walking up to parent.
+--- @param entry table|nil
+--- @return string|nil
+function MesonTestUnit:_framework_for(entry)
+    if not entry then return nil end
+    if entry.framework then return entry.framework end
+    if entry.parent then
+        local parent = self:_entry(entry.parent)
+        if parent and parent.framework then return parent.framework end
+    end
+    return nil
+end
+
 --- @param test_id string
 --- @param opts? table { gtest_filter? }
 --- @return table|nil
 function MesonTestUnit:test_command(test_id, opts)
     opts = opts or {}
 
-    local exe = nil
-    local parent_id = nil
-    if self._entries then
-        for _, e in ipairs(self._entries) do
-            if e.id == test_id then
-                exe = e.executable
-                parent_id = e.parent
-                break
-            end
-        end
-    end
-    if not exe and parent_id then
-        for _, e in ipairs(self._entries) do
-            if e.id == parent_id then
-                exe = e.executable
-                break
-            end
-        end
+    local entry = self:_entry(test_id)
+    if not entry then return nil end
+
+    local exe = entry.executable
+    if not exe and entry.parent then
+        local parent = self:_entry(entry.parent)
+        exe = parent and parent.executable or nil
     end
     if not exe then return nil end
 
-    local filter
-    local is_target = test_id:match("^target:")
-    if not is_target then
-        filter = opts.gtest_filter or (test_id:match("^test:(.+)$") or test_id)
-    elseif opts.gtest_filter then
-        filter = opts.gtest_filter
+    local framework = self:_framework_for(entry)
+
+    if framework == "gtest" then
+        local filter
+        local is_target = test_id:match("^target:")
+        if not is_target then
+            filter = opts.gtest_filter or (test_id:match("^test:(.+)$") or test_id)
+        elseif opts.gtest_filter then
+            filter = opts.gtest_filter
+        end
+        return self:_build_gtest_run(exe, filter)
     end
-    return self:_build_gtest_run(exe, filter)
+
+    -- Unknown framework — run the executable exactly as meson reported
+    -- it. No per-test filtering or XML capture.
+    return self:_build_plain_run(exe)
 end
 
 --- @param opts? table { filter? }
 --- @return table|nil
 function MesonTestUnit:test_command_all(opts)
     opts = opts or {}
-    local exe = nil
+    local entry, exe = nil, nil
     if self._entries then
         for _, e in ipairs(self._entries) do
-            if e.executable then exe = e.executable break end
+            if e.executable then
+                entry = e
+                exe = e.executable
+                break
+            end
         end
     end
     if not exe then return nil end
-    return self:_build_gtest_run(exe, opts.filter)
+
+    if self:_framework_for(entry) == "gtest" then
+        return self:_build_gtest_run(exe, opts.filter)
+    end
+    return self:_build_plain_run(exe)
 end
 
---- @param output_path string
+--- @param output_path string|nil
 --- @return table[]|nil
 function MesonTestUnit:parse_results(output_path)
+    if not output_path then return nil end  -- plain-run path has no structured results
     return gtest.parse_xml_results(output_path)
 end
 
