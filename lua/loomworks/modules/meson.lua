@@ -191,17 +191,36 @@ end
 -- Tool detection
 -- ---------------------------------------------------------------------------
 
---- Look up meson binary on PATH.
---- @return string|nil path absolute path or nil
+--- Locate meson as a command prefix array.
+--- Tries, in order:
+---   1. `meson` on PATH (the standard install)
+---   2. A `python` / `python3` with the `mesonbuild` module available
+---      (canonical way meson is installed via `pip install meson`)
+--- Returns the command prefix to invoke — e.g. `{ "/usr/bin/meson" }` or
+--- `{ "/usr/bin/python3", "-m", "mesonbuild" }`. Returns nil when neither
+--- form is available. Per the graceful-degradation policy, callers
+--- should refuse work with a clear "meson not available" message rather
+--- than trying to guess further.
+--- @return string[]|nil
 local function find_meson()
     local p = vim.fn.exepath("meson")
-    if p == "" then return nil end
-    return p
+    if p ~= "" then return { p } end
+
+    for _, py in ipairs({ "python", "python3" }) do
+        local pp = vim.fn.exepath(py)
+        if pp ~= "" then
+            vim.fn.system({ pp, "-m", "mesonbuild", "--version" })
+            if vim.v.shell_error == 0 then
+                return { pp, "-m", "mesonbuild" }
+            end
+        end
+    end
+    return nil
 end
 
 --- Detect available tools (sync).
---- Non-keyed: returns a single entry with the resolved meson path.
---- Returns empty if meson is not on PATH.
+--- Non-keyed: returns a single entry with the resolved meson command array.
+--- Returns empty if meson is not available by either path.
 --- @return { tool_data: table }[]
 function M.detect_tools()
     local meson = find_meson()
@@ -222,11 +241,20 @@ function M.tool_key(tool_data)
     return nil
 end
 
---- Display label for tool.
+--- Display label for tool. Indicates which resolution form won so
+--- users can see "where is meson coming from" in the status UI.
 --- @param tool_data table
 --- @return string|nil
 function M.tool_label(tool_data)
-    if tool_data.meson then
+    local cmd = tool_data and tool_data.meson
+    if type(cmd) == "table" then
+        if cmd[2] == "-m" and cmd[3] == "mesonbuild" then
+            return "meson (python -m mesonbuild)"
+        end
+        return "meson"
+    end
+    if type(cmd) == "string" and cmd ~= "" then
+        -- Backwards compat: a stored string path from pre-array caches
         return "meson"
     end
     return nil
@@ -244,17 +272,25 @@ end
 -- Task generation
 -- ---------------------------------------------------------------------------
 
---- Resolve the meson binary from tool_data or fall back to system meson.
---- Errors out if no meson is available — per degradation policy, we
+--- Resolve the meson command prefix from tool_data (array form).
+--- Falls through to a fresh find_meson if tool_data is empty. Errors
+--- out if neither form is available — per degradation policy, we
 --- refuse rather than silently fail later.
+--- Accepts legacy string form for backwards compatibility with caches
+--- written before the array form landed.
 --- @param tool_data table|nil
---- @return string
+--- @return string[] command prefix (copy; safe to mutate)
 local function resolve_meson(tool_data)
-    local cmd = tool_data and tool_data.meson or nil
-    if cmd and cmd ~= "" then return cmd end
+    local cmd = tool_data and tool_data.meson
+    if type(cmd) == "table" and cmd[1] then
+        return vim.list_extend({}, cmd)
+    end
+    if type(cmd) == "string" and cmd ~= "" then
+        return { cmd }
+    end
     local sys = find_meson()
-    if sys then return sys end
-    error("meson: no meson binary available (not found in tool_data or on PATH)")
+    if sys then return vim.list_extend({}, sys) end
+    error("meson: no meson binary available (not on PATH, and no python with mesonbuild module)")
 end
 
 --- Expand ${ENV_VAR} / ${var} patterns in a string.
@@ -310,7 +346,7 @@ function M.tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local config_info = project.configurations and project.configurations[active_config] or nil
     local env = project.env or {}
-    local meson_cmd = resolve_meson(project.tool_data)
+    local meson_prefix = resolve_meson(project.tool_data)
 
     -- Resolve build dir (default formula; no resolve_build_dir override).
     -- project.cached_build_dir is provided by core when a cached entry exists,
@@ -323,8 +359,12 @@ function M.tasks(project, active_config)
         or BUILDTYPE_BY_NAME[active_config]
         or "debug"
 
-    -- Build the setup command
-    local configure_cmd = { meson_cmd, "setup", build_dir, "--buildtype=" .. buildtype }
+    -- Build the setup command: <meson_prefix> setup <dir> --buildtype=X [...]
+    local configure_cmd = vim.list_extend({}, meson_prefix)
+    local insert_at = #configure_cmd  -- index of last prefix token (for --reconfigure insertion)
+    configure_cmd[#configure_cmd + 1] = "setup"
+    configure_cmd[#configure_cmd + 1] = build_dir
+    configure_cmd[#configure_cmd + 1] = "--buildtype=" .. buildtype
 
     -- Optional cross-compilation machine file
     if config_info and config_info.machine_file then
@@ -340,9 +380,11 @@ function M.tasks(project, active_config)
         configure_cmd[#configure_cmd + 1] = opt
     end
 
-    -- Reconfigure if the build dir already exists (idempotent setup)
+    -- Reconfigure if the build dir already exists (idempotent setup).
+    -- Insert --reconfigure right after the `setup` subcommand so it works
+    -- for both plain meson and `python -m mesonbuild` invocations.
     local reconfigure_cmd = vim.list_extend({}, configure_cmd)
-    table.insert(reconfigure_cmd, 4, "--reconfigure")
+    table.insert(reconfigure_cmd, insert_at + 2, "--reconfigure")
 
     local configuration_key = project.configuration_key or active_config
     local cached_tool_data = project.tool_data
@@ -375,11 +417,11 @@ function M.tasks(project, active_config)
     tasks[#tasks + 1] = {
         name = project.name .. ": build " .. active_config,
         builder = function()
-            return {
-                cmd = { meson_cmd, "compile", "-C", build_dir },
-                cwd = abs_path,
-                env = env,
-            }
+            local cmd = vim.list_extend({}, meson_prefix)
+            cmd[#cmd + 1] = "compile"
+            cmd[#cmd + 1] = "-C"
+            cmd[#cmd + 1] = build_dir
+            return { cmd = cmd, cwd = abs_path, env = env }
         end,
         loomworks = {
             project_key = project.name,
@@ -402,7 +444,7 @@ end
 function M.clean_tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local env = project.env or {}
-    local meson_cmd = resolve_meson(project.tool_data)
+    local meson_prefix = resolve_meson(project.tool_data)
     local build_dir = project.cached_build_dir
         or (project.workspace_root .. "/.nvim/build/" .. project.name .. "/" .. active_config)
     local configuration_key = project.configuration_key or active_config
@@ -411,11 +453,12 @@ function M.clean_tasks(project, active_config)
         {
             name = project.name .. ": clean",
             builder = function()
-                return {
-                    cmd = { meson_cmd, "compile", "-C", build_dir, "--clean" },
-                    cwd = abs_path,
-                    env = env,
-                }
+                local cmd = vim.list_extend({}, meson_prefix)
+                cmd[#cmd + 1] = "compile"
+                cmd[#cmd + 1] = "-C"
+                cmd[#cmd + 1] = build_dir
+                cmd[#cmd + 1] = "--clean"
+                return { cmd = cmd, cwd = abs_path, env = env }
             end,
             loomworks = {
                 project_key = project.name,
@@ -440,12 +483,16 @@ end
 
 --- Run `meson introspect <subcommand>` and parse the JSON reply.
 --- Returns nil on failure.
---- @param meson_cmd string
+--- @param meson_prefix string[] resolved command prefix (e.g. {"meson"} or {"python","-m","mesonbuild"})
 --- @param build_dir string
 --- @param subcommand string e.g. "--targets", "--buildoptions"
 --- @return any|nil
-local function run_introspect(meson_cmd, build_dir, subcommand)
-    local out = vim.fn.system({ meson_cmd, "introspect", build_dir, subcommand })
+local function run_introspect(meson_prefix, build_dir, subcommand)
+    local cmd = vim.list_extend({}, meson_prefix)
+    cmd[#cmd + 1] = "introspect"
+    cmd[#cmd + 1] = build_dir
+    cmd[#cmd + 1] = subcommand
+    local out = vim.fn.system(cmd)
     if vim.v.shell_error ~= 0 then return nil end
     local ok, data = pcall(vim.json.decode, out)
     if not ok then return nil end
@@ -470,10 +517,10 @@ end
 function M.parse_targets(ctx)
     local build_dir = ctx and ctx.build_dir
     if not build_dir then return nil end
-    local meson_cmd = find_meson()
-    if not meson_cmd then return nil end
+    local meson_prefix = find_meson()
+    if not meson_prefix then return nil end
 
-    local raw = run_introspect(meson_cmd, build_dir, "--targets")
+    local raw = run_introspect(meson_prefix, build_dir, "--targets")
     if type(raw) ~= "table" then return nil end
 
     local normalize = build_dir:gsub("\\", "/")
@@ -526,10 +573,10 @@ end
 --- @return table|nil options tree
 function M.get_options(build_dir, config)
     if not build_dir then return nil end
-    local meson_cmd = find_meson()
-    if not meson_cmd then return nil end
+    local meson_prefix = find_meson()
+    if not meson_prefix then return nil end
 
-    local raw = run_introspect(meson_cmd, build_dir, "--buildoptions")
+    local raw = run_introspect(meson_prefix, build_dir, "--buildoptions")
     if type(raw) ~= "table" then return nil end
 
     local SECTION_ORDER = { "user", "core", "base", "compiler", "directory", "test" }
