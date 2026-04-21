@@ -248,14 +248,40 @@ local function find_meson()
     return nil
 end
 
---- Detect available tools (sync).
---- Non-keyed: returns a single entry with the resolved meson command array.
---- Returns empty if meson is not available by either path.
+--- Detect available tools (sync). Meson itself is a script — the
+--- variable that actually matters for reproducible builds is the
+--- compiler. Returns one entry per detected C/C++ compiler so the
+--- profile UI lets the user pick a specific toolchain instead of
+--- deferring to whatever meson auto-probes at configure time.
+---
+--- Returns empty when either meson or a compiler isn't available; per
+--- the degradation policy we surface a missing toolchain rather than
+--- silently guessing.
 --- @return { tool_data: table }[]
 function M.detect_tools()
     local meson = find_meson()
     if not meson then return {} end
-    return { { tool_data = { meson = meson } } }
+
+    local compilers = require("loomworks.compilers").detect()
+    if #compilers == 0 then return {} end
+
+    local tools = {}
+    for _, c in ipairs(compilers) do
+        tools[#tools + 1] = {
+            tool_data = {
+                meson = meson,
+                compiler_id = c.id,
+                compiler_display = c.display,
+                compiler_path = c.path,
+                compiler_c_path = c.c_path,
+                compiler_bin_dir = c.bin_dir,
+                compiler_family = c.family,
+                compiler_version = c.version,
+                clangd_path = c.clangd_path,
+            },
+        }
+    end
+    return tools
 end
 
 --- Detect available tools (async variant for consistency with interface).
@@ -264,31 +290,47 @@ function M.detect_tools_async(callback)
     callback(M.detect_tools())
 end
 
---- Cache key suffix from tool_data. Non-keyed → nil.
+--- Clear the shared compiler detection cache so the next
+--- `detect_tools` call re-scans PATH. Called by core's rescan flow.
+function M.invalidate_tools()
+    require("loomworks.compilers").clear_cache()
+end
+
+--- Cache key suffix from tool_data. The compiler_id pins the
+--- toolchain identity so cache entries survive across meson binary
+--- upgrades but get invalidated when the user picks a different
+--- compiler.
 --- @param tool_data table
 --- @return string|nil
 function M.tool_key(tool_data)
-    return nil
+    return tool_data and tool_data.compiler_id or nil
 end
 
---- Display label for tool. The resolved meson path lives in
---- tool_data.meson[1] for users who want to inspect where it came from.
+--- Display label for tool. Shows the compiler identity (that's what
+--- the user is actually choosing between). The resolved meson path
+--- lives in tool_data.meson[1] for users who want to inspect it.
 --- @param tool_data table
 --- @return string|nil
 function M.tool_label(tool_data)
-    local cmd = tool_data and tool_data.meson
+    if not tool_data then return nil end
+    if tool_data.compiler_display then return tool_data.compiler_display end
+    -- Legacy non-keyed cache entries written before compiler pinning landed
+    local cmd = tool_data.meson
     if type(cmd) == "table" and cmd[1] then return "meson" end
-    -- Backwards compat: a stored string path from pre-array caches
     if type(cmd) == "string" and cmd ~= "" then return "meson" end
     return nil
 end
 
---- Compare two meson tool_data objects. Always true (single default tool).
+--- Compare two meson tool_data objects by compiler identity. Two
+--- tools are the same iff they point at the same compiler binary;
+--- meson binary churn doesn't change toolchain identity.
 --- @param a table
 --- @param b table
 --- @return boolean
 function M.tools_match(a, b)
-    return true
+    if a == nil and b == nil then return true end
+    if a == nil or b == nil then return false end
+    return (a.compiler_path or "") == (b.compiler_path or "")
 end
 
 -- ---------------------------------------------------------------------------
@@ -357,6 +399,48 @@ local function build_option_args(project, active_config)
     return args
 end
 
+--- Compose the task env so it pins the chosen compiler.
+---
+--- Configure step: meson reads CC/CXX when it first probes compilers.
+--- If we don't set them, meson picks whatever is first on PATH and
+--- bakes that identity into the build dir — defeating the point of
+--- letting the user choose a toolchain.
+---
+--- Build / clean / test steps: on Windows the compiler's bin dir
+--- must be on PATH so the generated binaries can find their runtime
+--- DLLs (libstdc++-6.dll, libgcc_s_seh-1.dll, vcruntime140.dll, ...).
+--- Without this the binary hangs in the loader with
+--- STATUS_ENTRYPOINT_NOT_FOUND when a wrong-version DLL is picked up
+--- from elsewhere on PATH.
+---
+--- Base env from the project (currently `env = tool_data.env` which
+--- is mostly empty) is preserved; CC/CXX/PATH keys win.
+--- @param base_env table<string, string>
+--- @param tool_data table|nil
+--- @return table<string, string>
+local function compose_task_env(base_env, tool_data)
+    local env = {}
+    for k, v in pairs(base_env or {}) do env[k] = v end
+    if type(tool_data) ~= "table" then return env end
+
+    if tool_data.compiler_c_path and env.CC == nil then
+        env.CC = tool_data.compiler_c_path
+    end
+    if tool_data.compiler_path and env.CXX == nil then
+        env.CXX = tool_data.compiler_path
+    end
+
+    local bin_dir = tool_data.compiler_bin_dir
+    if bin_dir and bin_dir ~= "" then
+        local is_win = vim.fn.has("win32") == 1
+        local sep = is_win and ";" or ":"
+        local existing = env.PATH or env.Path or os.getenv("PATH") or ""
+        env.PATH = bin_dir .. (existing ~= "" and (sep .. existing) or "")
+        if is_win then env.Path = nil end
+    end
+    return env
+end
+
 --- Return overseer task templates for a project.
 --- Produces:
 ---   * configure: `meson setup <build_dir> --buildtype=X [--cross-file=...] -Dkey=value ...`
@@ -368,7 +452,7 @@ end
 function M.tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local config_info = project.configurations and project.configurations[active_config] or nil
-    local env = project.env or {}
+    local env = compose_task_env(project.env or {}, project.tool_data)
     local meson_prefix = resolve_meson(project.tool_data)
 
     -- Resolve build dir (default formula; no resolve_build_dir override).
@@ -466,7 +550,7 @@ end
 --- @return table[] tasks
 function M.clean_tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
-    local env = project.env or {}
+    local env = compose_task_env(project.env or {}, project.tool_data)
     local meson_prefix = resolve_meson(project.tool_data)
     local build_dir = project.cached_build_dir
         or (project.workspace_root .. "/.nvim/build/" .. project.name .. "/" .. active_config)

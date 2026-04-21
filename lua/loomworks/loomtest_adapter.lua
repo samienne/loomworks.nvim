@@ -157,6 +157,7 @@ local function create_adapter()
 
                     local lw_overseer = require("loomworks.overseer")
                     local spec = lw_overseer.build_spec_for(unit, target_id)
+                    M._log_spec("ensure_built target=" .. tostring(target_id), unit, spec)
                     if not spec or not spec.cmd then callback(false); return end
 
                     local build_task = overseer.new_task({
@@ -181,7 +182,9 @@ local function create_adapter()
         run = function(test_id, opts)
             local unit, tu = M._find_test_unit(test_id)
             if not tu then return nil end
-            return tu:test_command(test_id, opts)
+            local spec = tu:test_command(test_id, opts)
+            M._log_spec("run " .. test_id, unit, spec)
+            return spec
         end,
 
         run_all = function(opts)
@@ -194,7 +197,9 @@ local function create_adapter()
                 if unit then
                     local tus = unit:test_units()
                     if #tus > 0 then
-                        return tus[1]:test_command_all(opts)
+                        local spec = tus[1]:test_command_all(opts)
+                        M._log_spec("run_all", unit, spec)
+                        return spec
                     end
                 end
             end
@@ -284,6 +289,34 @@ local function create_adapter()
     }
 end
 
+--- Log a spec returned to loomtest. Writes to the loomworks log so
+--- diagnostics for test launches and subsequent build calls line up in
+--- a single file. env values are withheld; only keys are recorded.
+--- @param label string caller context (e.g. "run test:Foo.Bar")
+--- @param unit loomworks.ConfigUnit|nil
+--- @param spec table|nil
+function M._log_spec(label, unit, spec)
+    local ws = unit and unit._workspace
+    local core = ws and ws._core
+    local log = core and core._deps and core._deps.log
+    if not log then return end
+    if not spec then
+        log:warn("loomtest spec %s: nil", label)
+        return
+    end
+    local env_keys = {}
+    if type(spec.env) == "table" then
+        for k in pairs(spec.env) do env_keys[#env_keys + 1] = k end
+        table.sort(env_keys)
+    end
+    log:debug("loomtest spec %s: cmd=%s cwd=%s env_keys=[%s] output_path=%s",
+        label,
+        vim.inspect(spec.cmd),
+        tostring(spec.cwd),
+        table.concat(env_keys, ","),
+        tostring(spec.output_path))
+end
+
 --- Find the TestUnit that owns a test ID.
 --- @param test_id string
 --- @return loomworks.ConfigUnit|nil, loomworks.TestUnit|nil
@@ -332,6 +365,20 @@ function M.setup()
                 loomtest.refresh()
             end
         end, 200)
+    end)
+
+    -- Refresh after a build completes. A first build typically runs
+    -- right after configure, and configure has already triggered a
+    -- discovery that saw the meson test list before the binary was
+    -- linked. The framework probe skipped that binary (ENOENT), so
+    -- individual test cases aren't in the tree yet. When the build
+    -- finishes, workspace emits `tests_invalidated`; re-running
+    -- discovery then picks up the binary and probes it properly.
+    lw.on("tests_invalidated", function()
+        vim.defer_fn(function()
+            local ok, loomtest = pcall(require, "loomtest")
+            if ok then loomtest.refresh() end
+        end, 100)
     end)
 
     -- Register immediately if workspace is already loaded

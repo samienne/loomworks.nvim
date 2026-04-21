@@ -81,6 +81,19 @@ function MesonTestUnit.new(config_unit)
     return self
 end
 
+--- Reach the logger through the owning workspace's core deps. Silently
+--- no-ops when any link is missing (e.g. during isolated unit tests
+--- where the ConfigUnit stub has no workspace back-reference).
+--- @param self loomworks.MesonTestUnit
+--- @return loomworks.Logger|nil
+local function logger(self)
+    local cu = self._config_unit
+    local ws = cu and cu._workspace
+    local core = ws and ws._core
+    local deps = core and core._deps
+    return deps and deps.log or nil
+end
+
 --- Treat vim.NIL (JSON null) as Lua nil for a single field. vim.NIL
 --- is userdata and truthy in Lua, which poisons downstream overseer
 --- specs if passed through (e.g. `spec.cwd or fallback` keeps vim.NIL).
@@ -89,6 +102,78 @@ end
 local function denull(v)
     if v == vim.NIL then return nil end
     return v
+end
+
+--- Normalize a Windows path to a single separator style. Meson emits
+--- paths with mixed `/` and `\` — Windows APIs handle that, but some
+--- downstream tools (and human eyeballs reading the log) don't. We
+--- standardize on `\` on Windows because that's what every Windows
+--- shell and tool accepts without surprises; on POSIX we just return
+--- the path unchanged.
+--- @param p any
+--- @return any
+local function normalize_path(p)
+    if type(p) ~= "string" or p == "" then return p end
+    if vim.fn.has("win32") ~= 1 then return p end
+    return (p:gsub("/", "\\"))
+end
+
+--- Build an env table for a test run.
+---
+--- On Windows the binary's DLL dependencies come from three distinct
+--- places and we need all three on PATH with the right priority:
+---
+--- 1. The compiler's bin directory (e.g. `C:\mingw64\bin`) — source
+---    of the C/C++ runtime DLLs (libstdc++-6.dll, libgcc_s_seh-1.dll,
+---    or the MSVC redist). HIGHEST priority: if a wrong-version
+---    runtime is picked up from elsewhere on PATH the binary hangs in
+---    the loader with STATUS_ENTRYPOINT_NOT_FOUND.
+--- 2. `extra_paths` reported by `meson introspect --tests` — the
+---    project's own shared libraries.
+--- 3. The current process env's PATH — everything else the binary or
+---    its subprocesses might need.
+---
+--- Windows cmd.exe pseudo-variables whose name starts with "=" (e.g.
+--- "=::", "=C:") track per-drive cwd state for cmd.exe and confuse
+--- libuv's env-block formatter, so they are filtered out.
+--- @param base_env table per-test env from meson introspect
+--- @param extra_paths string[]
+--- @param compiler_bin_dir string|nil toolchain bin dir (for runtime DLLs)
+--- @return table<string, string>
+local function compose_env(base_env, extra_paths, compiler_bin_dir)
+    local env = {}
+    local current = vim.fn.environ()
+    if type(current) == "table" then
+        for k, v in pairs(current) do
+            if type(k) == "string" and k:sub(1, 1) ~= "=" then
+                env[k] = v
+            end
+        end
+    end
+    for k, v in pairs(base_env or {}) do env[k] = v end
+
+    local is_win = vim.fn.has("win32") == 1
+    local sep = is_win and ";" or ":"
+
+    -- Build the prefix: compiler bin dir FIRST (for runtime DLLs),
+    -- then extra_paths (for project's shared libs). Both are
+    -- prepended so they take priority over whatever was inherited.
+    local prefix_parts = {}
+    if compiler_bin_dir and compiler_bin_dir ~= "" then
+        prefix_parts[#prefix_parts + 1] = compiler_bin_dir
+    end
+    if extra_paths and #extra_paths > 0 then
+        for _, p in ipairs(extra_paths) do
+            prefix_parts[#prefix_parts + 1] = p
+        end
+    end
+    if #prefix_parts > 0 then
+        local existing = env.PATH or env.Path or ""
+        env.PATH = table.concat(prefix_parts, sep)
+            .. (existing ~= "" and (sep .. existing) or "")
+        if is_win then env.Path = nil end
+    end
+    return env
 end
 
 --- Parse `meson introspect --tests` JSON into test entries.
@@ -111,8 +196,15 @@ local function parse_meson_tests(json_str)
         local name = denull(test.name)
         if not name then goto continue end
 
-        local cmd = denull(test.cmd)
-        local exe = (type(cmd) == "table" and denull(cmd[1])) or nil
+        local cmd_raw = denull(test.cmd)
+        local cmd
+        if type(cmd_raw) == "table" then
+            cmd = {}
+            for i, part in ipairs(cmd_raw) do
+                cmd[i] = normalize_path(denull(part)) or ""
+            end
+        end
+        local exe = (type(cmd) == "table" and cmd[1] ~= "" and cmd[1]) or nil
 
         if exe and not exec_specs[exe] then
             -- Strip vim.NIL values from the env table so we don't
@@ -132,13 +224,13 @@ local function parse_meson_tests(json_str)
                 for _, p in ipairs(test.extra_paths) do
                     local cp = denull(p)
                     if type(cp) == "string" and cp ~= "" then
-                        extra_paths[#extra_paths + 1] = cp
+                        extra_paths[#extra_paths + 1] = normalize_path(cp)
                     end
                 end
             end
             exec_specs[exe] = {
                 cmd = cmd,
-                cwd = denull(test.workdir),
+                cwd = normalize_path(denull(test.workdir)),
                 env = env_clean,
                 extra_paths = extra_paths,
                 timeout = tonumber(denull(test.timeout)) or nil,
@@ -207,13 +299,21 @@ function MesonTestUnit:discover()
     local cmd = self:_introspect_cmd()
     if not cmd then return nil end
 
+    local log = logger(self)
+    if log then log:debug("meson test discover: %s", table.concat(cmd, " ")) end
+
     local result = vim.system(cmd, { text = true, timeout = 10000 }):wait()
-    if result.code ~= 0 or not result.stdout then return nil end
+    if result.code ~= 0 or not result.stdout then
+        if log then log:warn("meson test discover failed: code=%s stderr=%s",
+            tostring(result.code), tostring(result.stderr or "")) end
+        return nil
+    end
 
     local entries, exec_specs = parse_meson_tests(result.stdout)
     if not entries then return nil end
 
     self._exec_specs = exec_specs or {}
+    self:_log_exec_specs(log)
 
     self:_probe_frameworks_sync(entries)
 
@@ -248,6 +348,7 @@ function MesonTestUnit:discover_async(callback)
                     return
                 end
                 self_ref._exec_specs = exec_specs or {}
+                self_ref:_log_exec_specs(logger(self_ref))
 
                 self_ref:_probe_frameworks(entries, function()
                     self_ref._entries = entries
@@ -258,19 +359,66 @@ function MesonTestUnit:discover_async(callback)
     )
 end
 
+--- Read the toolchain's bin directory from the owning ConfigUnit's
+--- tool_data, if the meson module populated it. Returns nil for
+--- legacy non-keyed caches so we degrade to the old behaviour.
+--- @return string|nil
+function MesonTestUnit:_compiler_bin_dir()
+    local td = self._config_unit and self._config_unit._tool_data
+    if type(td) == "table" and type(td.compiler_bin_dir) == "string" then
+        return td.compiler_bin_dir
+    end
+    return nil
+end
+
+--- Build probe opts (env + cwd) for a target executable, so gtest
+--- probing inherits the same DLL / rpath paths meson prepared for the
+--- test. Without this, probing a Windows binary whose DLLs live in the
+--- build tree will hang in the loader and time out.
+--- @param exe string executable path
+--- @return { env: table<string,string>, cwd: string }
+function MesonTestUnit:_probe_opts_for(exe)
+    local spec = self._exec_specs[exe] or {}
+    return {
+        env = compose_env(spec.env, spec.extra_paths, self:_compiler_bin_dir()),
+        cwd = spec.cwd or self._build_dir,
+    }
+end
+
 --- Probe targets without a declared framework for gtest (sync).
+---
+--- Skips (without caching) any entry whose executable doesn't exist
+--- yet. This lets discovery run the moment `meson introspect --tests`
+--- has data — typically right after configure — without the probe
+--- trying to spawn a binary that hasn't been built yet (which would
+--- fail with ENOENT). The next discovery pass, invalidated after a
+--- successful build via `record_task_result`, retries the probe.
+---
 --- @param entries table[]
 function MesonTestUnit:_probe_frameworks_sync(entries)
+    local log = logger(self)
     for _, e in ipairs(entries) do
         if not e.parent and not e.framework and e.executable then
             local cached = self._framework_cache[e.executable]
             if cached == nil then
-                local framework, test_list = gtest.probe_sync(e.executable, e.id)
-                self._framework_cache[e.executable] = framework or false
-                if framework and test_list then
-                    e.framework = framework
-                    for _, t in ipairs(test_list) do
-                        entries[#entries + 1] = t
+                if not uv.fs_stat(e.executable) then
+                    if log then
+                        log:debug("meson gtest probe (sync) %s: skipped — binary not built yet",
+                            e.executable)
+                    end
+                else
+                    local framework, test_list, diag = gtest.probe_sync(
+                        e.executable, e.id, self:_probe_opts_for(e.executable))
+                    self._framework_cache[e.executable] = framework or false
+                    if log then
+                        log:debug("meson gtest probe (sync) %s: %s | %s",
+                            e.executable, framework or "not detected", diag or "")
+                    end
+                    if framework and test_list then
+                        e.framework = framework
+                        for _, t in ipairs(test_list) do
+                            entries[#entries + 1] = t
+                        end
                     end
                 end
             elseif cached and cached ~= false then
@@ -280,16 +428,25 @@ function MesonTestUnit:_probe_frameworks_sync(entries)
     end
 end
 
---- Probe targets async.
+--- Probe targets async. See `_probe_frameworks_sync` for the
+--- rationale behind the fs_stat guard.
 --- @param entries table[]
 --- @param callback fun()
 function MesonTestUnit:_probe_frameworks(entries, callback)
+    local log = logger(self)
     local targets = {}
     for _, e in ipairs(entries) do
         if not e.parent and not e.framework and e.executable then
             local cached = self._framework_cache[e.executable]
             if cached == nil then
-                targets[#targets + 1] = e
+                if not uv.fs_stat(e.executable) then
+                    if log then
+                        log:debug("meson gtest probe %s: skipped — binary not built yet",
+                            e.executable)
+                    end
+                else
+                    targets[#targets + 1] = e
+                end
             elseif cached and cached ~= false then
                 e.framework = cached
             end
@@ -299,8 +456,12 @@ function MesonTestUnit:_probe_frameworks(entries, callback)
 
     local remaining = #targets
     for _, target in ipairs(targets) do
-        gtest.probe(target.executable, target.id, function(framework, test_list)
+        gtest.probe(target.executable, target.id, self:_probe_opts_for(target.executable), function(framework, test_list, diag)
             self._framework_cache[target.executable] = framework or false
+            if log then
+                log:debug("meson gtest probe %s: %s | %s",
+                    target.executable, framework or "not detected", diag or "")
+            end
             if framework and test_list then
                 target.framework = framework
                 for _, t in ipairs(test_list) do
@@ -313,33 +474,27 @@ function MesonTestUnit:_probe_frameworks(entries, callback)
     end
 end
 
---- Build an env table for a test run that includes the current process
---- environment (so Windows DLL loader has SystemRoot/SYSTEM paths) and
---- prepends meson's extra_paths to PATH. Returns a fresh table.
---- @param base_env table any per-test env from meson introspect
---- @param extra_paths string[]
---- @return table<string, string>
-local function compose_env(base_env, extra_paths)
-    local env = {}
-    -- Inherit current env so the process has SystemRoot, USERPROFILE,
-    -- etc. Without this on Windows, CreateProcess with a non-nil env
-    -- may get a child that can't even load kernel32.
-    local current = vim.fn.environ()
-    if type(current) == "table" then
-        for k, v in pairs(current) do env[k] = v end
+--- Log a terse summary of each discovered exec spec (cmd, cwd, env
+--- keys, extra_paths) at DEBUG level. Env values are not logged to
+--- keep sensitive material (PATH, tokens) out of the on-disk log.
+--- @param log loomworks.Logger|nil
+function MesonTestUnit:_log_exec_specs(log)
+    if not log then return end
+    for exe, spec in pairs(self._exec_specs) do
+        local env_keys = {}
+        for k in pairs(spec.env or {}) do env_keys[#env_keys + 1] = k end
+        table.sort(env_keys)
+        log:debug("meson exec_spec for %s: cmd=%s cwd=%s timeout=%s env_keys=[%s] extra_paths=%d",
+            exe,
+            vim.inspect(spec.cmd),
+            tostring(spec.cwd),
+            tostring(spec.timeout),
+            table.concat(env_keys, ","),
+            spec.extra_paths and #spec.extra_paths or 0)
+        if spec.extra_paths and #spec.extra_paths > 0 then
+            log:debug("  extra_paths: %s", table.concat(spec.extra_paths, " | "))
+        end
     end
-    -- Per-test env overrides
-    for k, v in pairs(base_env or {}) do env[k] = v end
-    -- Prepend meson's extra_paths to PATH (Windows DLL / POSIX rpath)
-    if extra_paths and #extra_paths > 0 then
-        local is_win = vim.fn.has("win32") == 1
-        local sep = is_win and ";" or ":"
-        local existing = env.PATH or env.Path or ""
-        local joined = table.concat(extra_paths, sep)
-        env.PATH = joined .. (existing ~= "" and (sep .. existing) or "")
-        if is_win then env.Path = nil end  -- avoid dual PATH/Path keys on Windows
-    end
-    return env
 end
 
 --- Find a test entry by id. Returns the first matching entry or nil.
@@ -364,7 +519,7 @@ function MesonTestUnit:_build_gtest_run(exe, filter)
     if not spec then return nil end
 
     local cmd = vim.deepcopy(spec.cmd)
-    local env = compose_env(spec.env, spec.extra_paths)
+    local env = compose_env(spec.env, spec.extra_paths, self:_compiler_bin_dir())
     if filter then
         env.GTEST_FILTER = filter
     end
@@ -376,12 +531,20 @@ function MesonTestUnit:_build_gtest_run(exe, filter)
     local xml = nvim_dir .. "/gtest_results.xml"
     cmd[#cmd + 1] = "--gtest_output=xml:" .. xml
 
-    return {
+    local result = {
         cmd = cmd,
         env = env,
         cwd = spec.cwd or self._build_dir,
         output_path = xml,
     }
+    local log = logger(self)
+    if log then
+        log:debug("meson gtest run: cmd=%s cwd=%s path_len=%d filter=%s",
+            vim.inspect(result.cmd), tostring(result.cwd),
+            #(env.PATH or ""), tostring(filter))
+        log:debug("meson gtest run PATH=%s", env.PATH or "")
+    end
+    return result
 end
 
 --- Build a plain run spec that invokes the test executable exactly as
@@ -393,12 +556,20 @@ end
 function MesonTestUnit:_build_plain_run(exe)
     local spec = self._exec_specs[exe]
     if not spec then return nil end
-    return {
+    local env = compose_env(spec.env, spec.extra_paths, self:_compiler_bin_dir())
+    local result = {
         cmd = vim.deepcopy(spec.cmd),
-        env = compose_env(spec.env, spec.extra_paths),
+        env = env,
         cwd = spec.cwd or self._build_dir,
         output_path = nil,
     }
+    local log = logger(self)
+    if log then
+        log:debug("meson plain run: cmd=%s cwd=%s path_len=%d",
+            vim.inspect(result.cmd), tostring(result.cwd), #(env.PATH or ""))
+        log:debug("meson plain run PATH=%s", env.PATH or "")
+    end
+    return result
 end
 
 --- Determine the detected framework for an entry, walking up to parent.

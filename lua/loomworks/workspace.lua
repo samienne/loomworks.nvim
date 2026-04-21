@@ -1848,8 +1848,14 @@ function Workspace:record_task_result(result)
         if success then
             config_unit.state_value = "built"
             config_unit.last_built = now
-            -- Invalidate test cache (test binaries rebuilt)
+            -- Invalidate test cache (test binaries rebuilt). Emit
+            -- `tests_invalidated` so the loomtest adapter can refresh
+            -- its view — without this, a pre-build discovery that saw
+            -- a missing binary (and therefore couldn't probe for the
+            -- test framework) stays stale until the user navigates
+            -- away and back.
             config_unit:invalidate_tests()
+            self._core._deps.events.emit("tests_invalidated", config_unit)
         else
             config_unit.state_value = "failed_build"
         end

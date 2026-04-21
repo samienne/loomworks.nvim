@@ -1,6 +1,15 @@
 local MesonTestUnit = require("loomworks.test_units.meson")
 local meson = require("loomworks.modules.meson")
 
+--- Paths reported by `meson introspect --tests` get normalized by the
+--- test unit: on Windows forward slashes become backslashes. Assertions
+--- that key into `_exec_specs` need the same transform so the fixtures
+--- remain portable across OSes.
+local function norm(p)
+    if vim.fn.has("win32") ~= 1 then return p end
+    return (p:gsub("/", "\\"))
+end
+
 --- Minimal stub ConfigUnit for MesonTestUnit construction.
 local function stub_config_unit(build_dir)
     return {
@@ -120,7 +129,7 @@ describe("meson test integration", function()
             local tu = meson.create_test_unit(unit)
             tu:discover()
 
-            local spec = tu._exec_specs["/build/test_basic"]
+            local spec = tu._exec_specs[norm("/build/test_basic")]
             assert.is_not_nil(spec)
             assert.is_nil(spec.cwd, "cwd must be Lua nil when JSON workdir is null")
             assert.are.same({}, spec.env, "env must be empty table when JSON env is null")
@@ -140,9 +149,9 @@ describe("meson test integration", function()
             local tu = meson.create_test_unit(unit)
             tu:discover()
 
-            local spec = tu._exec_specs["/build/test_basic"]
+            local spec = tu._exec_specs[norm("/build/test_basic")]
             assert.is_not_nil(spec)
-            assert.equals("/src", spec.cwd)
+            assert.equals(norm("/src"), spec.cwd)
             assert.equals("world", spec.env.HELLO)
             assert.equals(30, spec.timeout)
 

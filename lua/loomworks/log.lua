@@ -29,7 +29,7 @@ function M.new(opts)
     opts = opts or {}
     local self = setmetatable({}, Logger)
     self._path = opts.path
-    self._level = opts.level or M.INFO
+    self._level = opts.level or M.DEBUG
     self._entries = {}
     self._capture = opts.capture or false
     return self

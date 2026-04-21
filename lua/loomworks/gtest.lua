@@ -101,27 +101,68 @@ local function output_looks_like_gtest(output)
     return false
 end
 
+--- Build vim.system opts for a probe invocation.
+--- @param opts? { env?: table<string, string>, cwd?: string }
+--- @return table
+local function probe_opts(opts)
+    local o = { text = true, timeout = 5000 }
+    if opts then
+        if opts.env then o.env = opts.env end
+        if opts.cwd then o.cwd = opts.cwd end
+    end
+    return o
+end
+
+--- Summarise a vim.system result so callers can log *why* a probe
+--- failed. Captures exit code, a head of stdout and stderr, and
+--- indicates whether the output looked like gtest format.
+--- @param result table vim.system completion result
+--- @return string diag
+local function summarise_result(result)
+    local function head(s, n)
+        s = s or ""
+        s = s:gsub("\r", "")
+        if #s > n then s = s:sub(1, n) .. "..." end
+        return s:gsub("\n", "\\n")
+    end
+    return string.format("code=%s stdout[%d]=%q stderr[%d]=%q",
+        tostring(result.code),
+        #(result.stdout or ""), head(result.stdout, 200),
+        #(result.stderr or ""), head(result.stderr, 200))
+end
+
 --- Probe an executable to detect if it's a gtest binary.
 --- Async: calls callback with results.
 --- @param executable string absolute path to the test binary
 --- @param target_id string the target id for parenting discovered tests
---- @param callback fun(framework: string|nil, test_list: table[]|nil)
-function M.probe(executable, target_id, callback)
+--- @param opts_or_cb table|fun(framework: string|nil, test_list: table[]|nil)
+---        When a table: `{ env?, cwd? }`. When a function: legacy
+---        signature `(executable, target_id, callback)`.
+--- @param callback? fun(framework: string|nil, test_list: table[]|nil)
+function M.probe(executable, target_id, opts_or_cb, callback)
+    local opts
+    if type(opts_or_cb) == "function" then
+        callback = opts_or_cb
+        opts = nil
+    else
+        opts = opts_or_cb
+    end
     vim.system(
         { executable, "--gtest_list_tests" },
-        { text = true, timeout = 5000 },
+        probe_opts(opts),
         function(result)
             vim.schedule(function()
+                local diag = summarise_result(result)
                 if result.code ~= 0 or not result.stdout then
-                    callback(nil, nil)
+                    callback(nil, nil, diag)
                     return
                 end
                 if not output_looks_like_gtest(result.stdout) then
-                    callback(nil, nil)
+                    callback(nil, nil, diag)
                     return
                 end
                 local entries = M.parse_list_tests(result.stdout, executable, target_id)
-                callback("gtest", entries)
+                callback("gtest", entries, diag)
             end)
         end
     )
@@ -130,21 +171,23 @@ end
 --- Synchronous version of probe.
 --- @param executable string
 --- @param target_id string
+--- @param opts? { env?: table<string, string>, cwd?: string }
 --- @return string|nil framework, table[]|nil test_list
-function M.probe_sync(executable, target_id)
+function M.probe_sync(executable, target_id, opts)
     local result = vim.system(
         { executable, "--gtest_list_tests" },
-        { text = true, timeout = 5000 }
+        probe_opts(opts)
     ):wait()
 
+    local diag = summarise_result(result)
     if result.code ~= 0 or not result.stdout then
-        return nil, nil
+        return nil, nil, diag
     end
     if not output_looks_like_gtest(result.stdout) then
-        return nil, nil
+        return nil, nil, diag
     end
     local entries = M.parse_list_tests(result.stdout, executable, target_id)
-    return "gtest", entries
+    return "gtest", entries, diag
 end
 
 --- Scan source files for gtest macros to find source locations.

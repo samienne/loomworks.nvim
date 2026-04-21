@@ -218,20 +218,36 @@ describe("meson module", function()
     end)
 
     describe("tool_key / tool_label / tools_match", function()
-        it("tool_key is nil (non-keyed)", function()
+        local td_gcc = {
+            meson = { "/usr/bin/meson" },
+            compiler_id = "gcc-14.2.0",
+            compiler_display = "GCC 14.2.0",
+            compiler_path = "/usr/bin/g++",
+        }
+        local td_clang = {
+            meson = { "/usr/bin/meson" },
+            compiler_id = "clang-18.1.8",
+            compiler_display = "Clang 18.1.8",
+            compiler_path = "/usr/bin/clang++",
+        }
+
+        it("tool_key is compiler_id (keyed by toolchain identity)", function()
+            assert.equals("gcc-14.2.0", meson.tool_key(td_gcc))
             assert.is_nil(meson.tool_key({}))
         end)
 
-        it("tool_label reports 'meson' for direct binary", function()
-            assert.equals("meson", meson.tool_label({ meson = { "/usr/bin/meson" } }))
+        it("tool_label reports the compiler display", function()
+            assert.equals("GCC 14.2.0", meson.tool_label(td_gcc))
         end)
 
-        it("tool_label tolerates legacy string form from older caches", function()
+        it("tool_label falls back to 'meson' for legacy non-keyed data", function()
+            assert.equals("meson", meson.tool_label({ meson = { "/usr/bin/meson" } }))
             assert.equals("meson", meson.tool_label({ meson = "/usr/bin/meson" }))
         end)
 
-        it("tools_match always true for non-keyed module", function()
-            assert.is_true(meson.tools_match({}, { meson = { "/other/bin/meson" } }))
+        it("tools_match is true iff compiler_path matches", function()
+            assert.is_true(meson.tools_match(td_gcc, td_gcc))
+            assert.is_false(meson.tools_match(td_gcc, td_clang))
         end)
     end)
 
