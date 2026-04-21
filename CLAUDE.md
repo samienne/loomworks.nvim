@@ -346,7 +346,8 @@ These are implementation-specific details not covered by the spec or architectur
 - `meson` — full implementation (detection, default Debug/Release/RelWithDebInfo
   configs mapping to buildtype, setup+compile+clean tasks, introspect-based
   parse_targets and get_options, clangd via lsp_configs with auto-generated
-  compile_commands.json, cross-file machine file support)
+  compile_commands.json, cross-file machine file support, loomtest integration
+  via MesonTestUnit using `meson introspect --tests` + gtest probing)
 - `typescript` — shim (shows project exists, no build functionality)
 
 **Deferred (not in v1):**

@@ -660,6 +660,21 @@ function M.get_options(build_dir, config)
 end
 
 -- ---------------------------------------------------------------------------
+-- Test integration
+-- ---------------------------------------------------------------------------
+
+--- Create a MesonTestUnit for test discovery and execution.
+--- Returns nil when the ConfigUnit has no resolved build directory
+--- yet — test discovery needs a configured build dir.
+--- @param config_unit loomworks.ConfigUnit
+--- @return loomworks.MesonTestUnit|nil
+function M.create_test_unit(config_unit)
+    if not config_unit:build_dir() then return nil end
+    local MesonTestUnit = require("loomworks.test_units.meson")
+    return MesonTestUnit.new(config_unit)
+end
+
+-- ---------------------------------------------------------------------------
 -- LSP integration
 -- ---------------------------------------------------------------------------
 
