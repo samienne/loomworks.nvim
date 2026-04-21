@@ -1,0 +1,191 @@
+--- loomworks/compilers.lua — Native C/C++ compiler detection.
+---
+--- Shared by modules that need to pin a compiler toolchain (cmake,
+--- meson). Each discovered compiler is a stable toolchain identity
+--- that callers can persist on a profile's tool_data and later resolve
+--- back into concrete paths (compiler binary, bin directory for
+--- runtime DLLs, sibling clangd). Detection is cached for the lifetime
+--- of the nvim process; call `clear_cache()` before re-scanning.
+
+local M = {}
+
+--- @class loomworks.CompilerToolchain
+--- @field id string unique identifier (e.g. "gcc-14.2.0", "clang-18.1.8")
+--- @field display string human-readable (e.g. "GCC 14.2.0")
+--- @field family "gcc"|"clang" compiler family
+--- @field version string dotted version string
+--- @field path string absolute path to the C++ driver (g++/clang++)
+--- @field c_path string absolute path to the C driver (gcc/clang)
+--- @field bin_dir string directory containing the driver (and its
+---        runtime DLLs on Windows — the key reason callers want this)
+--- @field clangd_path string|nil sibling clangd, if present
+
+local uv = vim.uv or vim.loop
+
+--- @type loomworks.CompilerToolchain[]|nil
+M._cached = nil
+
+--- Run a command synchronously via vim.fn.system.
+--- @param cmd string[]
+--- @return string|nil trimmed stdout, or nil on non-zero exit
+local function run(cmd)
+    local result = vim.fn.system(cmd)
+    if vim.v.shell_error ~= 0 then return nil end
+    return vim.trim(result)
+end
+
+--- Extract a dotted version from `--version` output.
+--- @param output string|nil
+--- @return string|nil
+local function parse_version(output)
+    if not output then return nil end
+    return output:match("(%d+%.%d+%.%d+)") or output:match("(%d+%.%d+)")
+end
+
+--- Probe a candidate compiler binary by name. Returns absolute path
+--- and version if it exists and reports a version. Nil otherwise.
+--- @param name string
+--- @return string|nil path, string|nil version
+local function probe(name)
+    if vim.fn.executable(name) ~= 1 then return nil, nil end
+    local path = vim.fn.exepath(name)
+    if path == "" then return nil, nil end
+    local ver = parse_version(run({ path, "--version" }))
+    return path, ver
+end
+
+--- Find a clangd binary alongside a compiler driver.
+--- @param driver_path string
+--- @return string|nil
+local function sibling_clangd(driver_path)
+    local dir = driver_path:match("^(.+)[/\\][^/\\]+$")
+    if not dir then return nil end
+    for _, candidate in ipairs({ dir .. "/clangd", dir .. "/clangd.exe" }) do
+        if vim.fn.executable(candidate) == 1 or uv.fs_stat(candidate) then
+            return candidate
+        end
+    end
+    return nil
+end
+
+--- Derive the bin directory from a driver path. On Windows this is
+--- the dir the DLLs (libstdc++-6.dll etc.) live in and must be
+--- prepended to PATH when running binaries built by the compiler.
+--- @param driver_path string
+--- @return string
+local function bin_dir_of(driver_path)
+    return driver_path:match("^(.+)[/\\][^/\\]+$") or ""
+end
+
+--- Derive the sibling C driver path for a C++ driver (e.g. g++ → gcc).
+--- @param name string candidate name that matched (e.g. "g++-13")
+--- @param path string path that matched
+--- @return string path to the C driver (falls back to the C++ path)
+local function c_counterpart(name, path)
+    if not name:match("%+%+") then return path end
+    local c_name = name:gsub("g%+%+", "gcc"):gsub("clang%+%+", "clang")
+    local p = probe(c_name)
+    return p or path
+end
+
+--- Candidate binary names worth probing. Plain names + versioned
+--- variants. Kept narrow on purpose; exotic toolchains can be added
+--- when a user reports needing them.
+local function candidate_names()
+    local names = {}
+    for _, base in ipairs({ "g++", "gcc", "clang++", "clang" }) do
+        names[#names + 1] = base
+        for v = 8, 25 do
+            names[#names + 1] = base .. "-" .. v
+        end
+    end
+    return names
+end
+
+--- Detect all compilers available via PATH (sync). Caches the result
+--- for this nvim process.
+--- @return loomworks.CompilerToolchain[]
+function M.detect()
+    if M._cached then return M._cached end
+
+    local compilers = {}
+    local seen_id = {}
+    local seen_path = {}
+
+    for _, name in ipairs(candidate_names()) do
+        local path, version = probe(name)
+        if not path or not version then goto continue end
+        if seen_path[path] then goto continue end
+
+        local family
+        if name:match("^clang") then family = "clang"
+        elseif name:match("^g[c%+]") then family = "gcc" end
+        if not family then goto continue end
+
+        local id = family .. "-" .. version
+        if seen_id[id] then goto continue end
+        seen_id[id] = true
+        seen_path[path] = true
+
+        -- Ensure we store the C++ driver path (g++ / clang++).
+        -- If `name` matched the C driver, look for its C++ counterpart.
+        local is_cpp = name:match("%+%+") ~= nil
+        local cpp_path = path
+        if not is_cpp then
+            local cpp_name
+            if family == "gcc" then
+                cpp_name = name:gsub("^gcc", "g++")
+            else
+                cpp_name = name:gsub("^clang", "clang++")
+            end
+            local cp = probe(cpp_name)
+            if cp then cpp_path = cp end
+        end
+        local c_path = c_counterpart(name:match("%+%+") and name or name, cpp_path)
+
+        compilers[#compilers + 1] = {
+            id = id,
+            display = (family == "gcc" and "GCC " or "Clang ") .. version,
+            family = family,
+            version = version,
+            path = cpp_path,
+            c_path = c_path,
+            bin_dir = bin_dir_of(cpp_path),
+            clangd_path = sibling_clangd(cpp_path),
+        }
+
+        ::continue::
+    end
+
+    table.sort(compilers, function(a, b)
+        if a.family ~= b.family then return a.family < b.family end
+        return a.version > b.version
+    end)
+
+    M._cached = compilers
+    return compilers
+end
+
+--- Async variant. Uses the sync path since `vim.fn.system` for
+--- `--version` is fast and the scan runs at most once per nvim process.
+--- @param callback fun(compilers: loomworks.CompilerToolchain[])
+function M.detect_async(callback)
+    vim.schedule(function() callback(M.detect()) end)
+end
+
+--- Look up a compiler by id.
+--- @param id string
+--- @return loomworks.CompilerToolchain|nil
+function M.get_by_id(id)
+    for _, c in ipairs(M.detect()) do
+        if c.id == id then return c end
+    end
+    return nil
+end
+
+--- Clear the detection cache. Called by modules' `invalidate_tools`.
+function M.clear_cache()
+    M._cached = nil
+end
+
+return M
