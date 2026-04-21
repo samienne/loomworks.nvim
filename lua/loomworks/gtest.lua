@@ -72,6 +72,35 @@ function M.parse_list_tests(output, executable, target_id)
     return entries
 end
 
+--- Check whether the output of `--gtest_list_tests` looks like gtest.
+--- gtest often prints a header line such as
+--- "Running main() from .../gtest_main.cc" before the suite listing;
+--- skip non-listing lines until we find the first non-indented line
+--- ending in `.` (a suite marker) or conclude none exists.
+--- @param output string
+--- @return boolean
+local function output_looks_like_gtest(output)
+    if not output or output == "" then return false end
+    for raw in output:gmatch("[^\r\n]+") do
+        local line = raw:match("^(.-)%s*$")  -- rtrim
+        if line ~= "" then
+            -- A gtest suite line is non-indented and ends with "."
+            if not line:match("^%s") and line:match("^%S+%.$") then
+                return true
+            end
+            -- Known non-listing header lines we ignore:
+            --   "Running main() from ..." (printed by gtest_main.cc)
+            if line:match("^Running main") then
+                -- skip and keep scanning
+            elseif line:match("^%s") then
+                -- Indented line before any suite — not gtest format
+                return false
+            end
+        end
+    end
+    return false
+end
+
 --- Probe an executable to detect if it's a gtest binary.
 --- Async: calls callback with results.
 --- @param executable string absolute path to the test binary
@@ -87,9 +116,7 @@ function M.probe(executable, target_id, callback)
                     callback(nil, nil)
                     return
                 end
-                -- Validate it looks like gtest output (first line should be a suite)
-                local first_line = result.stdout:match("^([^\r\n]+)")
-                if not first_line or not first_line:match("^%S+%.$") then
+                if not output_looks_like_gtest(result.stdout) then
                     callback(nil, nil)
                     return
                 end
@@ -113,8 +140,7 @@ function M.probe_sync(executable, target_id)
     if result.code ~= 0 or not result.stdout then
         return nil, nil
     end
-    local first_line = result.stdout:match("^([^\r\n]+)")
-    if not first_line or not first_line:match("^%S+%.$") then
+    if not output_looks_like_gtest(result.stdout) then
         return nil, nil
     end
     local entries = M.parse_list_tests(result.stdout, executable, target_id)
