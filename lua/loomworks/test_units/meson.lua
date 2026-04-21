@@ -124,10 +124,23 @@ local function parse_meson_tests(json_str)
                     if cv ~= nil then env_clean[k] = tostring(cv) end
                 end
             end
+            -- Collect Windows DLL / POSIX rpath paths meson requires to
+            -- run the test. On Windows these MUST be prepended to PATH
+            -- or the binary hangs / fails in the DLL loader.
+            local extra_paths = {}
+            if type(test.extra_paths) == "table" then
+                for _, p in ipairs(test.extra_paths) do
+                    local cp = denull(p)
+                    if type(cp) == "string" and cp ~= "" then
+                        extra_paths[#extra_paths + 1] = cp
+                    end
+                end
+            end
             exec_specs[exe] = {
                 cmd = cmd,
                 cwd = denull(test.workdir),
                 env = env_clean,
+                extra_paths = extra_paths,
                 timeout = tonumber(denull(test.timeout)) or nil,
             }
         end
@@ -300,6 +313,35 @@ function MesonTestUnit:_probe_frameworks(entries, callback)
     end
 end
 
+--- Build an env table for a test run that includes the current process
+--- environment (so Windows DLL loader has SystemRoot/SYSTEM paths) and
+--- prepends meson's extra_paths to PATH. Returns a fresh table.
+--- @param base_env table any per-test env from meson introspect
+--- @param extra_paths string[]
+--- @return table<string, string>
+local function compose_env(base_env, extra_paths)
+    local env = {}
+    -- Inherit current env so the process has SystemRoot, USERPROFILE,
+    -- etc. Without this on Windows, CreateProcess with a non-nil env
+    -- may get a child that can't even load kernel32.
+    local current = vim.fn.environ()
+    if type(current) == "table" then
+        for k, v in pairs(current) do env[k] = v end
+    end
+    -- Per-test env overrides
+    for k, v in pairs(base_env or {}) do env[k] = v end
+    -- Prepend meson's extra_paths to PATH (Windows DLL / POSIX rpath)
+    if extra_paths and #extra_paths > 0 then
+        local is_win = vim.fn.has("win32") == 1
+        local sep = is_win and ";" or ":"
+        local existing = env.PATH or env.Path or ""
+        local joined = table.concat(extra_paths, sep)
+        env.PATH = joined .. (existing ~= "" and (sep .. existing) or "")
+        if is_win then env.Path = nil end  -- avoid dual PATH/Path keys on Windows
+    end
+    return env
+end
+
 --- Find a test entry by id. Returns the first matching entry or nil.
 --- @param test_id string
 --- @return table|nil
@@ -322,7 +364,7 @@ function MesonTestUnit:_build_gtest_run(exe, filter)
     if not spec then return nil end
 
     local cmd = vim.deepcopy(spec.cmd)
-    local env = vim.deepcopy(spec.env)
+    local env = compose_env(spec.env, spec.extra_paths)
     if filter then
         env.GTEST_FILTER = filter
     end
@@ -353,7 +395,7 @@ function MesonTestUnit:_build_plain_run(exe)
     if not spec then return nil end
     return {
         cmd = vim.deepcopy(spec.cmd),
-        env = vim.deepcopy(spec.env),
+        env = compose_env(spec.env, spec.extra_paths),
         cwd = spec.cwd or self._build_dir,
         output_path = nil,
     }
