@@ -141,6 +141,11 @@ function M.make_mock_workspace(overrides)
             get_overseer_task = function() return nil end,
             normalize = function(p) return p end,
             notify = function() end,
+            -- Silent capture-mode logger. Runtime code now calls `:debug`
+            -- (e.g. `Profile:_derive_key`) directly without guarding for
+            -- log presence — production always wires one via Core's
+            -- default deps, so tests need to as well.
+            log = require("loomworks.log").test(),
             io = { rm_rf_async = function(_, cb) cb(true, nil) end },
             schedule = function(fn) fn() end,
             now = function() return "2000-01-01T00:00:00Z" end,

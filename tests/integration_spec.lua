@@ -131,6 +131,7 @@ local function make_ws(config_overrides, user_overrides, cache_overrides, opts)
             schedule = function(fn) fn() end,
             clock = function() return 0 end,
             now = function() return "2000-01-01T00:00:00Z" end,
+            log = require("loomworks.log").test(),
         },
         _events_log = events_log,
     }
