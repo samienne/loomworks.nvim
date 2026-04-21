@@ -123,12 +123,43 @@ function M.build_spec_for(unit, target_id)
         cached_build_dir = unit:build_dir(),
     }
 
+    --- Validate spec types and coerce missing cwd to the workspace root.
+    --- overseer's new_task rejects userdata fields with opaque messages,
+    --- so normalize early and reject with a helpful one.
+    --- @param spec table|nil
+    --- @return table|nil normalized spec, string|nil err
+    local function normalize(spec)
+        if type(spec) ~= "table" or type(spec.cmd) ~= "table" then
+            return nil, "builder returned no cmd array"
+        end
+        for i, c in ipairs(spec.cmd) do
+            if type(c) ~= "string" then
+                return nil, ("cmd[%d] is %s, not string"):format(i, type(c))
+            end
+        end
+        -- cwd: coerce to string if sensible, else fall back to workspace root
+        if spec.cwd == nil or type(spec.cwd) ~= "string" or spec.cwd == "" then
+            spec.cwd = ws.root
+        end
+        if spec.env ~= nil and type(spec.env) ~= "table" then
+            spec.env = nil
+        end
+        return spec, nil
+    end
+
     -- Prefer a per-target build when possible
     if target_id and mod.build_target_task then
         local ok, task_def = pcall(mod.build_target_task, project_ctx, target_id)
         if ok and task_def and task_def.builder then
             local ok2, spec = pcall(task_def.builder)
-            if ok2 and spec and spec.cmd then return spec end
+            if ok2 then
+                local norm, err = normalize(spec)
+                if norm then return norm end
+                if err then
+                    vim.notify("loomworks: build_target_task spec invalid: " .. err,
+                        vim.log.levels.WARN)
+                end
+            end
         end
     end
 
@@ -139,7 +170,15 @@ function M.build_spec_for(unit, target_id)
     for _, t in ipairs(mod_tasks) do
         if t.loomworks and t.loomworks.action == "build" and t.builder then
             local ok2, spec = pcall(t.builder)
-            if ok2 and spec and spec.cmd then return spec end
+            if ok2 then
+                local norm, err = normalize(spec)
+                if norm then return norm end
+                if err then
+                    vim.notify("loomworks: build task spec invalid: " .. err,
+                        vim.log.levels.ERROR)
+                    return nil
+                end
+            end
         end
     end
     return nil
