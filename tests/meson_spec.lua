@@ -251,6 +251,76 @@ describe("meson module", function()
         end)
     end)
 
+    describe("parse_targets", function()
+        local orig_system
+
+        before_each(function()
+            orig_system = vim.fn.system
+        end)
+        after_each(function()
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.system = orig_system
+        end)
+
+        local SAMPLE = [[
+[
+  {
+    "name": "arrange_test",
+    "type": "executable",
+    "build_by_default": true,
+    "filename": ["/build/arrange_test"],
+    "target_sources": [
+      {
+        "language": "cpp",
+        "sources": [
+          "/src/arrange/test/constraint_test.cpp",
+          "/src/arrange/test/diff_test.cpp"
+        ]
+      },
+      { "language": null, "sources": [] }
+    ]
+  }
+]
+]]
+
+        it("flattens target_sources[*].sources into a single list", function()
+            local orig_exepath = vim.fn.exepath
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.exepath = function(n)
+                if n == "meson" then return "/fake/meson" end
+                return ""
+            end
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.system = function(cmd)
+                -- Only answer the introspect --targets call with our
+                -- fixture; anything else returns empty so we don't
+                -- pretend to be a meson binary for unrelated probes.
+                if type(cmd) == "table" then
+                    for _, a in ipairs(cmd) do
+                        if a == "--targets" then return SAMPLE end
+                    end
+                end
+                return ""
+            end
+
+            local targets = meson.parse_targets({ build_dir = "/build" })
+
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.exepath = orig_exepath
+
+            assert.is_not_nil(targets)
+            local t = targets.arrange_test
+            assert.is_not_nil(t)
+            assert.are.same(
+                {
+                    "/src/arrange/test/constraint_test.cpp",
+                    "/src/arrange/test/diff_test.cpp",
+                },
+                t.sources
+            )
+        end)
+    end)
+
     describe("inspect", function()
         it("flags meson.build modified since last configure", function()
             local tmp = make_tmp_dir()

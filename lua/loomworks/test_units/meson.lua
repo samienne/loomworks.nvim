@@ -316,6 +316,7 @@ function MesonTestUnit:discover()
     self:_log_exec_specs(log)
 
     self:_probe_frameworks_sync(entries)
+    self:_find_sources(entries)
 
     self._entries = entries
     return entries
@@ -351,6 +352,7 @@ function MesonTestUnit:discover_async(callback)
                 self_ref:_log_exec_specs(logger(self_ref))
 
                 self_ref:_probe_frameworks(entries, function()
+                    self_ref:_find_sources(entries)
                     self_ref._entries = entries
                     callback(entries)
                 end)
@@ -471,6 +473,49 @@ function MesonTestUnit:_probe_frameworks(entries, callback)
             remaining = remaining - 1
             if remaining == 0 then callback() end
         end)
+    end
+end
+
+--- Populate `file` + `line` on each discovered gtest entry by
+--- scanning the target's source files for TEST/TEST_F/TEST_P macros.
+---
+--- Matches the MesonTestUnit exe path to a parsed meson target by
+--- executable filename (with `.exe` stripped on Windows), reads the
+--- `sources` list that `modules/meson.parse_targets` attached to the
+--- target, and hands it off to the shared `gtest.find_source_locations`.
+--- Mirrors CTestUnit's `_find_sources`.
+--- @param entries table[]
+function MesonTestUnit:_find_sources(entries)
+    local unit = self._config_unit
+    if not unit or not unit.targets then return end
+
+    -- Map executable filename → target.sources
+    local sources_by_exe_name = {}
+    for _, target in pairs(unit.targets) do
+        if target.sources and target.artifact then
+            local art_name = vim.fn.fnamemodify(target.artifact, ":t")
+                :gsub("%.exe$", ""):lower()
+            sources_by_exe_name[art_name] = target.sources
+        end
+    end
+    if not next(sources_by_exe_name) then return end
+
+    -- Group gtest case entries by the executable they live in
+    local entries_by_exe = {}
+    for _, e in ipairs(entries) do
+        if e.framework == "gtest" and e.parent and e.executable then
+            local exe_name = vim.fn.fnamemodify(e.executable, ":t")
+                :gsub("%.exe$", ""):lower()
+            entries_by_exe[exe_name] = entries_by_exe[exe_name] or {}
+            table.insert(entries_by_exe[exe_name], e)
+        end
+    end
+
+    for exe_name, exe_entries in pairs(entries_by_exe) do
+        local sources = sources_by_exe_name[exe_name]
+        if sources and #sources > 0 then
+            gtest.find_source_locations(exe_entries, sources)
+        end
     end
 end
 

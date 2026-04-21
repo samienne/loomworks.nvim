@@ -648,6 +648,25 @@ function M.parse_targets(ctx)
                     entry.artifact = abs
                 end
             end
+
+            -- Flatten `target_sources[*].sources` into a single list of
+            -- absolute source paths. Callers (MesonTestUnit jump-to-test,
+            -- clangd lookups) want the whole compile unit list for the
+            -- target without caring about per-language grouping.
+            local sources = {}
+            if type(t.target_sources) == "table" then
+                for _, block in ipairs(t.target_sources) do
+                    if type(block.sources) == "table" then
+                        for _, s in ipairs(block.sources) do
+                            if type(s) == "string" and s ~= "" then
+                                sources[#sources + 1] = s
+                            end
+                        end
+                    end
+                end
+            end
+            if #sources > 0 then entry.sources = sources end
+
             result[t.name] = entry
         end
     end
