@@ -65,6 +65,7 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
             modules = { get = function(id) return mock_modules[id] end },
             notify = function() end,
             schedule = function(fn) fn() end,
+            log = require("loomworks.log").test(),
         },
         _events_log = events_log,
     }
