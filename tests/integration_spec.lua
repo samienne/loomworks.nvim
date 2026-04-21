@@ -50,8 +50,8 @@ local mock_modules = {
             return { configurations = configs }
         end,
     },
-    ets = {
-        id = "ets",
+    harmony = {
+        id = "harmony",
         has_keyed_tools = false,
         map_variant = function(variant_type, available_configs)
             for _, name in ipairs(available_configs) do
@@ -154,7 +154,7 @@ describe("config set lifecycle", function()
         local ws = make_ws({
             projects = {
                 App = { cmake = {} },
-                Frontend = { ets = {} },
+                Frontend = { harmony = {} },
             },
         })
 
@@ -214,7 +214,7 @@ describe("config set lifecycle", function()
             {
                 projects = {
                     App = { cmake = {} },
-                    Frontend = { ets = {} },
+                    Frontend = { harmony = {} },
                 },
                 configuration_sets = {
                     Debug = { App = "Debug", Frontend = "debug" },
@@ -289,7 +289,7 @@ describe("config set lifecycle", function()
         local ws = make_ws({
             projects = {
                 App = { cmake = {} },
-                Frontend = { ets = {} },
+                Frontend = { harmony = {} },
             },
             configuration_sets = {
                 Debug = { App = "Debug", Frontend = "debug" },
@@ -316,7 +316,7 @@ describe("profile lifecycle", function()
     it("create profile from config set without tools", function()
         local ws = make_ws(
             {
-                projects = { Frontend = { ets = {} } },
+                projects = { Frontend = { harmony = {} } },
                 configuration_sets = { Debug = { Frontend = "debug" } },
             },
             {
@@ -338,7 +338,7 @@ describe("profile lifecycle", function()
             {
                 projects = {
                     App = { cmake = {} },
-                    Frontend = { ets = {} },
+                    Frontend = { harmony = {} },
                 },
                 configuration_sets = {
                     Debug = { App = "Debug", Frontend = "debug" },
@@ -353,7 +353,7 @@ describe("profile lifecycle", function()
             {
                 configurations = {
                     ["App/Debug"] = { project_key = "App", config_key = "Debug", variant = "Debug", type = "cmake", state = "configured" },
-                    ["Frontend/debug"] = { project_key = "Frontend", config_key = "debug", variant = "debug", type = "ets", state = "configured" },
+                    ["Frontend/debug"] = { project_key = "Frontend", config_key = "debug", variant = "debug", type = "harmony", state = "configured" },
                 },
             }
         )
@@ -408,7 +408,7 @@ describe("profile lifecycle", function()
             {
                 projects = {
                     App = { cmake = {} },
-                    Frontend = { ets = {} },
+                    Frontend = { harmony = {} },
                 },
                 configuration_sets = {
                     Debug = { App = "Debug", Frontend = "debug" },
@@ -430,7 +430,7 @@ describe("profile lifecycle", function()
                         tool_key = "ninja-gcc", tool_data = { generator = "Ninja" },
                         state = "configured",
                     },
-                    ["Frontend/debug"] = { project_key = "Frontend", config_key = "debug", variant = "debug", type = "ets", state = "configured" },
+                    ["Frontend/debug"] = { project_key = "Frontend", config_key = "debug", variant = "debug", type = "harmony", state = "configured" },
                 },
             },
             {
@@ -447,14 +447,14 @@ describe("profile lifecycle", function()
         assert.equals(2, #pps)
 
         -- App (cmake) should have tool-qualified config key
-        -- Frontend (ets) should have bare config key
+        -- Frontend (harmony) should have bare config key
         for _, pp in ipairs(pps) do
             if pp._project.key == "App" then
                 assert.truthy(pp._config_unit:config_key():find("ninja%-gcc"),
                     "cmake project should have tool-qualified config key")
             elseif pp._project.key == "Frontend" then
                 assert.equals("debug", pp._config_unit:config_key(),
-                    "ets project should have bare config key")
+                    "harmony project should have bare config key")
             end
         end
     end)
@@ -464,7 +464,7 @@ describe("profile lifecycle", function()
             {
                 projects = {
                     App = { cmake = {} },
-                    Frontend = { ets = {} },
+                    Frontend = { harmony = {} },
                 },
                 configuration_sets = {
                     Debug = { App = "Debug", Frontend = "debug" },
@@ -482,7 +482,7 @@ describe("profile lifecycle", function()
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
-                        type = "ets", variant = "debug",
+                        type = "harmony", variant = "debug",
                     },
                 },
             },
@@ -539,7 +539,7 @@ end)
 describe("project lifecycle", function()
     pending("add project with mappings then remove with cleanup", function()
         local ws = make_ws({
-            projects = { Frontend = { ets = {} } },
+            projects = { Frontend = { harmony = {} } },
             configuration_sets = {
                 Debug = { Frontend = "debug" },
                 Release = { Frontend = "release" },
@@ -607,7 +607,7 @@ describe("project lifecycle", function()
 
     it("prepare_add_project_from_browser returns show_dialog when config sets exist", function()
         local ws = make_ws({
-            projects = { Frontend = { ets = {} } },
+            projects = { Frontend = { harmony = {} } },
             configuration_sets = { Debug = { Frontend = "debug" } },
         })
 
@@ -677,7 +677,7 @@ describe("profile upgrade and downgrade", function()
     pending("adding keyed-tool project upgrades profiles and creates skeletons", function()
         local ws = make_ws(
             {
-                projects = { Frontend = { ets = {} } },
+                projects = { Frontend = { harmony = {} } },
                 configuration_sets = {
                     Debug = { Frontend = "debug" },
                 },
@@ -692,7 +692,7 @@ describe("profile upgrade and downgrade", function()
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
-                        type = "ets", variant = "debug", state = "configured",
+                        type = "harmony", variant = "debug", state = "configured",
                     },
                 },
             }
@@ -738,7 +738,7 @@ describe("profile upgrade and downgrade", function()
         local ws = make_ws(
             {
                 projects = {
-                    Frontend = { ets = {} },
+                    Frontend = { harmony = {} },
                     App = { cmake = {} },
                 },
                 configuration_sets = {
@@ -758,7 +758,7 @@ describe("profile upgrade and downgrade", function()
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
-                        type = "ets", variant = "debug",
+                        type = "harmony", variant = "debug",
                     },
                     ["App/Debug:ninja-gcc-12"] = {
                         project_key = "App", config_key = "Debug:ninja-gcc-12",
@@ -845,7 +845,7 @@ describe("orphan lifecycle", function()
         -- A third cache entry is unreferenced (orphan from branch switch).
         local ws = make_ws(
             {
-                projects = { Frontend = { ets = {} } },
+                projects = { Frontend = { harmony = {} } },
                 configuration_sets = { Debug = { Frontend = "debug" } },
             },
             {
@@ -858,13 +858,13 @@ describe("orphan lifecycle", function()
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
-                        type = "ets", variant = "debug", state = "built",
+                        type = "harmony", variant = "debug", state = "built",
                         build_dir = "/root/.nvim/build/Frontend/debug",
                     },
                     -- Orphan: cache entry from a branch switch, no profile references it
                     ["Frontend/release"] = {
                         project_key = "Frontend", config_key = "release",
-                        type = "ets", variant = "release", state = "built",
+                        type = "harmony", variant = "release", state = "built",
                         build_dir = "/root/.nvim/build/Frontend/release",
                     },
                 },
@@ -904,7 +904,7 @@ describe("orphan lifecycle", function()
     pending("editing config set mappings can create orphans", function()
         local ws = make_ws(
             {
-                projects = { Frontend = { ets = {} } },
+                projects = { Frontend = { harmony = {} } },
                 configuration_sets = { Debug = { Frontend = "debug" } },
             },
             nil,
@@ -918,7 +918,7 @@ describe("orphan lifecycle", function()
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
-                        type = "ets", variant = "debug", state = "configured",
+                        type = "harmony", variant = "debug", state = "configured",
                     },
                 },
             }
@@ -1027,7 +1027,7 @@ describe("collect helpers", function()
     it("collect_clean_items gathers profile project data", function()
         local ws = make_ws(
             {
-                projects = { Frontend = { ets = {} } },
+                projects = { Frontend = { harmony = {} } },
                 configuration_sets = { Debug = { Frontend = "debug" } },
             },
             {
@@ -1039,7 +1039,7 @@ describe("collect helpers", function()
                 configurations = {
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
-                        type = "ets", variant = "debug", state = "built",
+                        type = "harmony", variant = "debug", state = "built",
                         build_dir = "/root/.nvim/build/Frontend/debug",
                     },
                 },
@@ -1095,7 +1095,7 @@ describe("config set rename", function()
             {
                 projects = {
                     App = { cmake = {} },
-                    Frontend = { ets = {} },
+                    Frontend = { harmony = {} },
                 },
                 configuration_sets = {
                     debug = { App = "Debug", Frontend = "debug" },
@@ -1118,7 +1118,7 @@ describe("config set rename", function()
                     },
                     ["Frontend/debug"] = {
                         project_key = "Frontend", config_key = "debug",
-                        type = "ets", variant = "debug",
+                        type = "harmony", variant = "debug",
                         state = "configured",
                     },
                 },
@@ -2262,7 +2262,7 @@ describe("end-to-end workspace setup", function()
         -- Add two projects
         local ok, err = wv.execute_add_project(ws, "App", "cmake", nil, { mappings = {} }, false)
         assert.is_true(ok)
-        ok, err = wv.execute_add_project(ws, "Frontend", "ets", nil, { mappings = {} }, false)
+        ok, err = wv.execute_add_project(ws, "Frontend", "harmony", nil, { mappings = {} }, false)
         assert.is_true(ok)
 
         -- Remerge so projects get Configuration objects from module defaults
@@ -2310,7 +2310,7 @@ describe("launch config lifecycle", function()
         local ws = make_ws({
             projects = {
                 App = { cmake = {} },
-                Frontend = { ets = {} },
+                Frontend = { harmony = {} },
             },
         })
 
@@ -2833,7 +2833,7 @@ describe("opaque keys", function()
         return make_ws({
             projects = {
                 ["proj-alpha"] = { cmake = {} },
-                ["proj-beta"] = { ets = {} },
+                ["proj-beta"] = { harmony = {} },
             },
             configuration_sets = {
                 ["set-x"] = { ["proj-alpha"] = "Debug", ["proj-beta"] = "debug" },
@@ -2857,7 +2857,7 @@ describe("opaque keys", function()
                 },
                 ["build/proj-beta/debug"] = {
                     project_key = "proj-beta", config_key = "debug",
-                    type = "ets", variant = "debug",
+                    type = "harmony", variant = "debug",
                     state = "configured",
                 },
             },
@@ -2874,7 +2874,7 @@ describe("opaque keys", function()
         assert.is_not_nil(h.find_project_in(ws:get_projects(), "proj-alpha"))
         assert.equals("cmake", h.find_project_in(ws:get_projects(), "proj-alpha").type)
         assert.is_not_nil(h.find_project_in(ws:get_projects(), "proj-beta"))
-        assert.equals("ets", h.find_project_in(ws:get_projects(), "proj-beta").type)
+        assert.equals("harmony", h.find_project_in(ws:get_projects(), "proj-beta").type)
     end)
 
     it("resolves active profile and its projects", function()
@@ -3048,11 +3048,11 @@ describe("two-layer merge", function()
     it("user project overrides shared project with same key", function()
         local ws = make_ws(
             { projects = { App = { cmake = {} } } },  -- shared
-            { projects = { App = { ets = {} } } }  -- user overrides type
+            { projects = { App = { harmony = {} } } }  -- user overrides type
         )
         local app = h.find_project_in(ws:get_projects(), "App")
         assert.is_not_nil(app)
-        assert.equals("ets", app.type)
+        assert.equals("harmony", app.type)
         assert.equals("user", app._source)
     end)
 

@@ -56,23 +56,23 @@ describe("module detection", function()
     end)
 
     -- -----------------------------------------------------------------
-    -- ets.detect
+    -- harmony.detect
     -- -----------------------------------------------------------------
-    describe("ets.detect", function()
-        local ets = require("loomworks.modules.ets")
+    describe("harmony.detect", function()
+        local harmony = require("loomworks.modules.harmony")
 
         it("returns marker for directory with build-profile.json5", function()
             local dir = tmpdir()
             write_raw(dir .. "/build-profile.json5", "{}")
 
-            local result = ets.detect(dir)
+            local result = harmony.detect(dir)
             assert.is_not_nil(result)
             assert.equals("build-profile.json5", result.marker)
         end)
 
         it("returns nil for empty directory", function()
             local dir = tmpdir()
-            assert.is_nil(ets.detect(dir))
+            assert.is_nil(harmony.detect(dir))
         end)
     end)
 
@@ -174,25 +174,32 @@ describe("module detection", function()
     end)
 
     -- -----------------------------------------------------------------
-    -- ets.map_variant
+    -- harmony.map_variant
+    --
+    -- Harmony's configs all default to `mode=debug` on the hvigor side,
+    -- so `map_variant("debug")` returns the first config and anything
+    -- else returns nil. Single-config projects take that one config
+    -- regardless of the requested variant type.
     -- -----------------------------------------------------------------
-    describe("ets.map_variant", function()
-        local ets = require("loomworks.modules.ets")
+    describe("harmony.map_variant", function()
+        local harmony = require("loomworks.modules.harmony")
 
-        it("maps debug to debug", function()
-            assert.equals("debug", ets.map_variant("debug", { "debug", "release" }))
+        it("maps debug to the first available config", function()
+            assert.equals("default",
+                harmony.map_variant("debug", { "default", "other" }))
         end)
 
-        it("maps release to release", function()
-            assert.equals("release", ets.map_variant("release", { "debug", "release" }))
+        it("returns nil for release", function()
+            assert.is_nil(harmony.map_variant("release", { "default", "other" }))
         end)
 
         it("returns nil for release_debug", function()
-            assert.is_nil(ets.map_variant("release_debug", { "debug", "release" }))
+            assert.is_nil(harmony.map_variant("release_debug", { "default", "other" }))
         end)
 
-        it("returns sole config for any variant", function()
-            assert.equals("only", ets.map_variant("debug", { "only" }))
+        it("returns the sole config for any variant (single-config fallback)", function()
+            assert.equals("only", harmony.map_variant("debug", { "only" }))
+            assert.equals("only", harmony.map_variant("release", { "only" }))
         end)
     end)
 
@@ -266,13 +273,13 @@ describe("module detection", function()
             assert.equals(0, #results)
         end)
 
-        it("detects ets project", function()
+        it("detects harmony project", function()
             local dir = tmpdir()
             write_raw(dir .. "/build-profile.json5", "{}")
 
             local results = modules.detect_all_types(dir)
             assert.equals(1, #results)
-            assert.equals("ets", results[1].type)
+            assert.equals("harmony", results[1].type)
         end)
     end)
 end)
