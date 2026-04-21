@@ -164,27 +164,6 @@ describe("meson module", function()
             assert.is_true(found)
         end)
 
-        it("configure command embeds full prefix for python-mode tool_data", function()
-            local py_project = vim.deepcopy(project)
-            py_project.tool_data = { meson = { "/usr/bin/python3", "-m", "mesonbuild" } }
-            local t = meson.tasks(py_project, "Debug")
-            local cmd = t[1].builder().cmd
-            assert.equals("/usr/bin/python3", cmd[1])
-            assert.equals("-m", cmd[2])
-            assert.equals("mesonbuild", cmd[3])
-            assert.equals("setup", cmd[4])
-        end)
-
-        it("build command embeds full prefix for python-mode tool_data", function()
-            local py_project = vim.deepcopy(project)
-            py_project.tool_data = { meson = { "/usr/bin/python3", "-m", "mesonbuild" } }
-            local t = meson.tasks(py_project, "Debug")
-            local cmd = t[2].builder().cmd
-            assert.equals("/usr/bin/python3", cmd[1])
-            assert.equals("mesonbuild", cmd[3])
-            assert.equals("compile", cmd[4])
-        end)
-
         it("passes -D options from type_config.options", function()
             local proj2 = vim.deepcopy(project)
             proj2.type_config = { options = { warning_level = "3" } }
@@ -245,12 +224,6 @@ describe("meson module", function()
 
         it("tool_label reports 'meson' for direct binary", function()
             assert.equals("meson", meson.tool_label({ meson = { "/usr/bin/meson" } }))
-        end)
-
-        it("tool_label indicates python fallback when pip install", function()
-            assert.equals(
-                "meson (python -m mesonbuild)",
-                meson.tool_label({ meson = { "/usr/bin/python3", "-m", "mesonbuild" } }))
         end)
 
         it("tool_label tolerates legacy string form from older caches", function()

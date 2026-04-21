@@ -191,27 +191,57 @@ end
 -- Tool detection
 -- ---------------------------------------------------------------------------
 
+--- Ask `python` where it installs scripts (both system and --user),
+--- look for a `meson` / `meson.exe` executable in those directories,
+--- and print the path to the first one found.
+---
+--- Uses sysconfig.get_path('scripts', scheme) with both the default
+--- system scheme and the per-user scheme ('nt_user' on Windows,
+--- 'posix_user' elsewhere). The user scheme is what `pip install --user`
+--- targets on Windows — e.g.
+--- `C:\Users\X\AppData\Roaming\Python\Python313\Scripts`, which
+--- `site.USER_BASE` alone doesn't reach.
+---
+--- Exit code 0 and a single line of stdout on success; non-zero on miss.
+local PY_FIND_MESON = [[
+import os,sys,sysconfig
+ds=[sysconfig.get_path('scripts')]
+try:
+    ds.append(sysconfig.get_path('scripts','nt_user' if os.name=='nt' else os.name+'_user'))
+except Exception:
+    pass
+for d in ds:
+    for n in ('meson','meson.exe'):
+        p=os.path.join(d,n)
+        if os.path.isfile(p):
+            print(p); sys.exit(0)
+sys.exit(1)
+]]
+
 --- Locate meson as a command prefix array.
 --- Tries, in order:
 ---   1. `meson` on PATH (the standard install)
----   2. A `python` / `python3` with the `mesonbuild` module available
----      (canonical way meson is installed via `pip install meson`)
---- Returns the command prefix to invoke — e.g. `{ "/usr/bin/meson" }` or
---- `{ "/usr/bin/python3", "-m", "mesonbuild" }`. Returns nil when neither
---- form is available. Per the graceful-degradation policy, callers
---- should refuse work with a clear "meson not available" message rather
---- than trying to guess further.
+---   2. A `meson` / `meson.exe` script inside a Python interpreter's
+---      system or user Scripts directory (pip install, with or without
+---      --user). Canonical install channel, especially on Windows.
+--- Returns `{ meson_path }` in both cases — meson scripts are
+--- self-contained and need no wrapper args. Returns nil when neither
+--- works. Per the graceful-degradation policy, callers should refuse
+--- rather than guess further.
 --- @return string[]|nil
 local function find_meson()
     local p = vim.fn.exepath("meson")
     if p ~= "" then return { p } end
 
-    for _, py in ipairs({ "python", "python3" }) do
+    for _, py in ipairs({ "python", "python3", "py" }) do
         local pp = vim.fn.exepath(py)
         if pp ~= "" then
-            vim.fn.system({ pp, "-m", "mesonbuild", "--version" })
+            local out = vim.fn.system({ pp, "-c", PY_FIND_MESON })
             if vim.v.shell_error == 0 then
-                return { pp, "-m", "mesonbuild" }
+                local path = vim.trim(out or "")
+                if path ~= "" and uv.fs_stat(path) then
+                    return { path }
+                end
             end
         end
     end
@@ -241,22 +271,15 @@ function M.tool_key(tool_data)
     return nil
 end
 
---- Display label for tool. Indicates which resolution form won so
---- users can see "where is meson coming from" in the status UI.
+--- Display label for tool. The resolved meson path lives in
+--- tool_data.meson[1] for users who want to inspect where it came from.
 --- @param tool_data table
 --- @return string|nil
 function M.tool_label(tool_data)
     local cmd = tool_data and tool_data.meson
-    if type(cmd) == "table" then
-        if cmd[2] == "-m" and cmd[3] == "mesonbuild" then
-            return "meson (python -m mesonbuild)"
-        end
-        return "meson"
-    end
-    if type(cmd) == "string" and cmd ~= "" then
-        -- Backwards compat: a stored string path from pre-array caches
-        return "meson"
-    end
+    if type(cmd) == "table" and cmd[1] then return "meson" end
+    -- Backwards compat: a stored string path from pre-array caches
+    if type(cmd) == "string" and cmd ~= "" then return "meson" end
     return nil
 end
 
@@ -290,7 +313,7 @@ local function resolve_meson(tool_data)
     end
     local sys = find_meson()
     if sys then return vim.list_extend({}, sys) end
-    error("meson: no meson binary available (not on PATH, and no python with mesonbuild module)")
+    error("meson: no meson binary available (not on PATH, and no python has it installed via pip)")
 end
 
 --- Expand ${ENV_VAR} / ${var} patterns in a string.
