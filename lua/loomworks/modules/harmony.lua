@@ -82,15 +82,43 @@ function M.validate(path, config)
     return { valid = true, warnings = warnings }
 end
 
+--- Cache of files we've already complained about this session, so the
+--- diagnostic notify fires at most once per file regardless of how
+--- many times default_configurations gets hit during merge.
+--- @type table<string, boolean>
+local _reported_parse_failures = {}
+
+--- Emit a one-time parse-failure notice. Intentionally visible (WARN)
+--- so it shows up in `:messages` and notification plugins — this is
+--- the single symptom that explains "my harmony project has no
+--- configurations" without reading the full log.
+--- @param file_path string
+--- @param reason string
+local function report_parse_failure(file_path, reason)
+    if _reported_parse_failures[file_path] then return end
+    _reported_parse_failures[file_path] = true
+    vim.notify(
+        "loomworks/harmony: could not parse " .. file_path .. " — " .. reason,
+        vim.log.levels.WARN)
+end
+
 --- Parse a JSON5 file using Node.js (strips comments/trailing commas).
+--- Returns `(data, err)` — `err` is nil on success, a short string
+--- describing the failure otherwise. Surfacing the reason means the
+--- caller can report it via the notify helper instead of swallowing
+--- silently and leaving the project with no configurations.
 --- @param file_path string absolute file path
 --- @param node_path string|nil path to node executable
---- @return table|nil parsed data
+--- @return table|nil data, string|nil err
 local function parse_json5(file_path, node_path)
     local node = node_path or vim.fn.exepath("node")
-    if not node or node == "" then return nil end
+    if not node or node == "" then
+        return nil, "no node binary (not on PATH and not in tool_data)"
+    end
 
-    if not uv.fs_stat(file_path) then return nil end
+    if not uv.fs_stat(file_path) then
+        return nil, "file not found on disk"
+    end
 
     local escaped_path = file_path:gsub("\\", "/"):gsub("'", "\\'")
     local script = [[
@@ -103,19 +131,36 @@ try{process.stdout.write(JSON.stringify(JSON.parse(c)))}
 catch(e){process.stderr.write(e.message);process.exit(1)}
 ]]
     local result = vim.fn.system({ node, "-e", script })
-    if vim.v.shell_error ~= 0 then return nil end
+    if vim.v.shell_error ~= 0 then
+        -- `result` holds stderr when shell_error != 0 in this path
+        -- (node writes the parse error there). Trim noise.
+        local snippet = (result or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if #snippet > 200 then snippet = snippet:sub(1, 200) .. "…" end
+        return nil, string.format("node exited %d: %s",
+            vim.v.shell_error, snippet ~= "" and snippet or "<no stderr>")
+    end
 
     local ok, data = pcall(vim.json.decode, result)
-    if not ok then return nil end
-    return data
+    if not ok then
+        return nil, "JSON decode error on node output"
+    end
+    return data, nil
 end
 
 --- Parse build-profile.json5 using Node.js (handles JSON5 syntax).
+--- Surfaces the failure reason to the user via `report_parse_failure`
+--- the first time a given file fails to parse so they can see why
+--- configurations aren't being auto-generated.
 --- @param project_path string absolute project path
 --- @param node_path string|nil path to node executable
 --- @return table|nil parsed data
 local function parse_build_profile(project_path, node_path)
-    return parse_json5(project_path .. "/build-profile.json5", node_path)
+    local file_path = project_path .. "/build-profile.json5"
+    local data, err = parse_json5(file_path, node_path)
+    if not data and err then
+        report_parse_failure(file_path, err)
+    end
+    return data
 end
 
 --- Extract module names from build-profile.json5.
@@ -188,8 +233,18 @@ end
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
 --- @return table<string, table>
+--- Reported-empty cache: same spirit as `_reported_parse_failures`.
+--- If the profile parses fine but yields no configs (e.g. no products
+--- declared), we still want to tell the user exactly once.
+--- @type table<string, boolean>
+local _reported_empty = {}
+
 function M.default_configurations(path, config)
-    local profile = parse_build_profile(path)
+    -- Honour a node path from tool_data (present once the SDK has
+    -- been resolved); fall back to PATH-exepath for callers that
+    -- invoke info() before tool resolution.
+    local node_path = config and config.tool_data and config.tool_data.node
+    local profile = parse_build_profile(path, node_path)
 
     if profile and profile.app and profile.app.products then
         local configs = {}
@@ -243,6 +298,23 @@ function M.default_configurations(path, config)
             ::next_product::
         end
         if next(configs) then return configs end
+
+        -- Parse succeeded but yielded nothing — no products, empty
+        -- targets, or target/product filters didn't overlap. Tell
+        -- the user once so a "phantom default config" doesn't look
+        -- mysterious.
+        if not _reported_empty[path] then
+            _reported_empty[path] = true
+            local n_products = (profile.app.products and #profile.app.products) or 0
+            local n_targets = #extract_targets(profile)
+            vim.notify(
+                string.format(
+                    "loomworks/harmony: %s: build-profile parsed OK but "
+                    .. "produced 0 configurations (products=%d targets=%d) "
+                    .. "— falling back to debug/release",
+                    path, n_products, n_targets),
+                vim.log.levels.WARN)
+        end
     end
 
     -- Fallback: simple debug/release
@@ -906,18 +978,23 @@ function M.resolve_launch_info(project_path, config_info, tool_data)
     local node = tool_data and tool_data.node
 
     -- Parse AppScope/app.json5 for bundleName
-    local app_data = parse_json5(project_path .. "/AppScope/app.json5", node)
-    if not app_data or not app_data.app or not app_data.app.bundleName then
+    local app_path = project_path .. "/AppScope/app.json5"
+    local app_data, app_err = parse_json5(app_path, node)
+    if not app_data then
+        if app_err then report_parse_failure(app_path, app_err) end
         return nil
     end
+    if not app_data.app or not app_data.app.bundleName then return nil end
     local bundle_name = app_data.app.bundleName
 
     -- Parse <module>/src/main/module.json5 for ability name
-    local module_data = parse_json5(
-        project_path .. "/" .. module_name .. "/src/main/module.json5", node)
-    if not module_data or not module_data.module then
+    local module_path = project_path .. "/" .. module_name .. "/src/main/module.json5"
+    local module_data, module_err = parse_json5(module_path, node)
+    if not module_data then
+        if module_err then report_parse_failure(module_path, module_err) end
         return nil
     end
+    if not module_data.module then return nil end
     local abilities = module_data.module.abilities
     if not abilities or #abilities == 0 then
         return nil
