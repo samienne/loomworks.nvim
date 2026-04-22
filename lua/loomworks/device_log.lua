@@ -47,6 +47,13 @@ local function sanitize(line)
     -- Other single-char escape sequences: ESC followed by one byte
     -- that isn't '[' or ']' (covers ESC(A, ESC=, ESC\, ...).
     line = line:gsub("\27[^%[%]]", "")
+    -- Headless CSI remnants: something upstream (overseer output
+    -- processing, neovim jobstart, or hdc itself) can eat the ESC
+    -- byte but leave the visible `[41;155H` tail. Strip the tail
+    -- too — require at least two digits in the parameter block so
+    -- legitimate bracketed content like `[a92ab178]` or `[0xABCD]`
+    -- doesn't match.
+    line = line:gsub("%[%??%d%d+[%d; ]*[A-Za-z]", "")
     -- Remove non-printable C0 controls except TAB, LF, CR, and DEL.
     line = line:gsub("[%z\1-\8\11-\12\14-\31\127]", "")
     -- Trailing CR (Windows-style line endings in a substream)

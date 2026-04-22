@@ -60,6 +60,30 @@ describe("device_log parser", function()
         assert.is_not_nil(r)
         assert.equals("MyTag", r.tag)
     end)
+
+    it("strips headless CSI remnants when the ESC byte is gone upstream", function()
+        -- Seen in the wild when hdc pipes a hilog that thinks its
+        -- stdout is a tty: overseer / neovim jobstart ate the ESC
+        -- byte but left the visible `[41;155H` prefix.
+        local line = "[41;155H04-21 16:14:16.478 43865 43865 I "
+            .. "A00F00/com.example.app/MyTag: hello"
+        local r = dl.parse_line(line)
+        assert.is_not_nil(r)
+        assert.equals(43865, r.pid)
+        assert.equals("MyTag", r.tag)
+        assert.equals("hello", r.msg)
+    end)
+
+    it("does NOT strip legitimate bracketed content like [a92ab178]", function()
+        -- Make sure the headless-CSI rule requires digits; hex IDs
+        -- inside square brackets show up in real log messages and
+        -- must survive.
+        local line = "04-21 16:14:16.478 43865 43865 I "
+            .. "A00F00/com.example.app/MyTag: [a92ab178] ok"
+        local r = dl.parse_line(line)
+        assert.is_not_nil(r)
+        assert.equals("[a92ab178] ok", r.msg)
+    end)
 end)
 
 describe("device_log _render (mirrors hilog format)", function()
