@@ -397,6 +397,68 @@ function LogView:_cycle_level()
     vim.notify("device log: min level = " .. (nxt or "off"))
 end
 
+--- Keymaps shown by `?`. Keep this list in sync with `_setup_keymaps`
+--- — it's rendered verbatim so the help overlay always matches the
+--- actually-bound keys.
+local HELP_ROWS = {
+    { "?",  "show this help" },
+    { "q",  "hide log view (stream keeps running)" },
+    { "cc", "clear buffer + ring" },
+    { "p",  "pause / resume render" },
+    { "cl", "cycle min level (off → I → W → E → off)" },
+    { "cf", "edit regex filter (empty to clear)" },
+}
+
+--- Show a small floating help overlay listing the buffer-local
+--- keymaps. Any keypress dismisses it.
+function LogView:_show_help()
+    local lines = { "loomworks device log" }
+    local key_col = 4
+    for _, row in ipairs(HELP_ROWS) do
+        key_col = math.max(key_col, #row[1])
+    end
+    for _, row in ipairs(HELP_ROWS) do
+        lines[#lines + 1] = string.format("  %-" .. key_col .. "s  %s",
+            row[1], row[2])
+    end
+
+    local width = 0
+    for _, l in ipairs(lines) do
+        if #l > width then width = #l end
+    end
+    width = width + 2
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].bufhidden = "wipe"
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modifiable = false
+
+    local win = vim.api.nvim_open_win(buf, false, {
+        relative = "cursor",
+        row = 1, col = 0,
+        width = width,
+        height = #lines,
+        style = "minimal",
+        border = "rounded",
+        focusable = false,
+        noautocmd = true,
+    })
+
+    -- Any cursor move / key press in the owning window closes the
+    -- help. Using CursorMoved covers `<Esc>` and arrow keys; a
+    -- BufLeave / WinLeave catches window switches.
+    local group = vim.api.nvim_create_augroup(
+        "loomworks_device_log_help_" .. win, { clear = true })
+    local function close()
+        pcall(vim.api.nvim_win_close, win, true)
+        pcall(vim.api.nvim_del_augroup_by_id, group)
+    end
+    vim.api.nvim_create_autocmd(
+        { "CursorMoved", "CursorMovedI", "BufLeave", "WinLeave", "InsertEnter" },
+        { group = group, buffer = self._buf, once = true, callback = close })
+end
+
 function LogView:_setup_keymaps()
     local buf = self._buf
     local function map(lhs, rhs, desc)
@@ -405,6 +467,7 @@ function LogView:_setup_keymaps()
         })
     end
 
+    map("?", function() self:_show_help() end, "loomworks: show device-log help")
     map("q", function() self:hide() end, "loomworks: hide device-log view")
     map("cc", function() self:clear() end, "loomworks: clear device-log")
     map("p", function()
@@ -485,9 +548,21 @@ function M.stop()
     _prefilter = nil
 end
 
-function M.toggle() if _view then _view:toggle() end end
-function M.show()   if _view then _view:show()   end end
-function M.hide()   if _view then _view:hide()   end end
+--- Toggle the log view window. Lazily materialises the view on
+--- first call so `<leader>wO` works before a device session has
+--- ever started — the buffer is just empty until something streams
+--- into it.
+function M.toggle()
+    ensure_view():toggle()
+end
+
+function M.show()
+    ensure_view():show()
+end
+
+function M.hide()
+    if _view then _view:hide() end
+end
 
 function M.set_filter(filter)
     if _view then _view:set_filter(filter) end
