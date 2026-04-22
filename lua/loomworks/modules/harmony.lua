@@ -811,27 +811,6 @@ function M.device_log_clear(tool_data, device_serial)
     }
 end
 
---- Pipe hilog through `cat` so the on-device hilog process doesn't
---- see an interactive tty on stdout. Without this, some hdc/hilog
---- combinations emit ANSI cursor-positioning sequences (`ESC[41;155H`)
---- to draw a grid UI — the raw stream becomes unparseable garbage.
---- The pipe is harmless on hilog builds that don't care about tty
---- state, so it stays on unconditionally.
---- @param tool_data table
---- @param device_serial string
---- @param extra_args string[] hilog flags (e.g. `{ "-P", "12345" }`)
---- @return string[] args for hdc
-local function hilog_shell_args(tool_data, device_serial, extra_args)
-    local hilog_cmd = "hilog"
-    for _, a in ipairs(extra_args or {}) do
-        -- Basic shell escaping: numeric PIDs and tags used so far
-        -- don't need quoting, but be cautious with anything a user
-        -- could inject later by quoting.
-        hilog_cmd = hilog_cmd .. " " .. a
-    end
-    return { "-t", device_serial, "shell", hilog_cmd .. " | cat" }
-end
-
 --- Return command spec for streaming device logs.
 ---
 --- Invokes `hdc shell hilog ...` rather than `hdc hilog ...`: the
@@ -853,18 +832,18 @@ end
 --- @return { cmd: string, args: string[] }
 function M.device_log(tool_data, device_serial, opts)
     opts = opts or {}
-    local extra = {}
+    local args = { "-t", device_serial, "shell", "hilog" }
     if opts.pid then
-        extra[#extra + 1] = "-P"
-        extra[#extra + 1] = tostring(opts.pid)
+        args[#args + 1] = "-P"
+        args[#args + 1] = tostring(opts.pid)
     end
     if opts.tag and opts.tag ~= "" then
-        extra[#extra + 1] = "-T"
-        extra[#extra + 1] = opts.tag
+        args[#args + 1] = "-T"
+        args[#args + 1] = opts.tag
     end
     return {
         cmd = tool_data.hdc,
-        args = hilog_shell_args(tool_data, device_serial, extra),
+        args = args,
     }
 end
 
