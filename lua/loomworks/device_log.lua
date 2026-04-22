@@ -117,29 +117,89 @@ function M.match_filter(filter, record)
     return true
 end
 
---- Build the default session prefilter: keep a record if it's for
---- the app's PID OR its proc column contains the bundle name.
+--- Does the hilog `proc` column refer to `bundle`?
 ---
---- The union is intentional. Runtime helpers (ArkUI workers, service
---- proxies spawned on the app's behalf) run under different PIDs but
---- still carry the bundle name in the proc column, so a strict PID
---- filter drops half the useful output. A proc-only filter, in turn,
---- misses lines from early in the app's lifetime before its proc
---- name has been set — the PID leg catches those.
---- @param opts { pid?: number, bundle?: string }
+--- Three cases:
+---   * exact match             `proc == bundle`
+---   * prefix + separator      `proc` starts with `bundle.` or
+---                             `bundle:` (sub-processes and service
+---                             helpers that live under the app, e.g.
+---                             `com.example.app.worker` or
+---                             `com.example.app:helper`)
+---   * left-truncation         HarmonyOS hilog truncates the proc
+---                             column to ~30 chars from the LEFT
+---                             for long bundle names. The proc seen
+---                             in the stream is a suffix of the
+---                             real bundle. Matches when
+---                             `bundle:sub(-#proc) == proc`.
+--- @param proc string|nil
+--- @param bundle string
+--- @return boolean
+local function proc_matches_bundle(proc, bundle)
+    if not proc or not bundle or bundle == "" then return false end
+    if proc == bundle then return true end
+    local n = #bundle
+    local prefix = proc:sub(1, n + 1)
+    if prefix == bundle .. "." or prefix == bundle .. ":" then
+        return true
+    end
+    if #bundle > #proc and bundle:sub(-#proc) == proc then
+        return true
+    end
+    return false
+end
+
+--- Build the session prefilter.
+---
+--- Modes:
+---   * `"strict"` (default) — keep a record only if **both** the PID
+---     is the app's PID AND the proc column matches the bundle.
+---     This is the DevEco "All logs of selected app" behaviour:
+---     drops system noise emitted by services that happen to run on
+---     adjacent PIDs, drops the kernel/helpers that aren't our app.
+---     If the launch resolved only one of pid/bundle, the prefilter
+---     degrades to whichever was available (still narrow enough).
+---   * `"app-related"` — keep if **either** side matches. Broader
+---     net for when the strict mode is hiding runtime-helper output
+---     the user wants to see.
+---   * `"all"` — no prefilter. For debugging the stream itself.
+---
+--- Regardless of mode, unparseable "raw" records always pass — hdc
+--- errors, kernel panics, and similar diagnostic lines stay visible.
+---
+--- @param opts { pid?: number, bundle?: string, mode?: "strict"|"app-related"|"all" }
 --- @return fun(record: table): boolean
 function M.make_prefilter(opts)
     opts = opts or {}
+    local mode = opts.mode or "strict"
     local pid = opts.pid
     local bundle = opts.bundle
+
+    if mode == "all" then
+        return function() return true end
+    end
+
+    if mode == "app-related" then
+        return function(record)
+            if not record then return false end
+            if record.raw then return true end
+            if pid and record.pid == pid then return true end
+            if bundle and proc_matches_bundle(record.proc, bundle) then
+                return true
+            end
+            return false
+        end
+    end
+
+    -- Default: strict — AND of whichever criteria are provided.
     return function(record)
         if not record then return false end
-        if record.raw then return true end  -- keep raw lines visible
-        if pid and record.pid == pid then return true end
-        if bundle and record.proc
-            and record.proc:find(bundle, 1, true) then
-            return true
-        end
+        if record.raw then return true end
+        local pid_ok = pid and record.pid == pid
+        local bundle_ok = bundle and proc_matches_bundle(record.proc, bundle)
+        if pid and bundle then return pid_ok and bundle_ok end
+        if pid then return pid_ok end
+        if bundle then return bundle_ok end
         return false
     end
 end

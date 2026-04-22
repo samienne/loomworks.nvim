@@ -94,32 +94,57 @@ describe("device_log match_filter", function()
     end)
 end)
 
-describe("device_log make_prefilter", function()
-    local pre = dl.make_prefilter({ pid = 100, bundle = "com.example.myapp" })
+describe("device_log make_prefilter — strict mode (default)", function()
+    local pre = dl.make_prefilter({
+        pid = 100,
+        bundle = "com.example.myapp",
+    })
 
-    it("keeps records matching the app pid", function()
-        assert.is_true(pre({
-            pid = 100, proc = "something.else", tag = "T", msg = "",
-            level = "I", time = "", tid = 0, domain = "",
-        }))
+    local function rec(pid, proc)
+        return { pid = pid, proc = proc, tag = "T", msg = "",
+                 level = "I", time = "", tid = 0, domain = "" }
+    end
+
+    it("keeps records with matching pid AND proc (exact)", function()
+        assert.is_true(pre(rec(100, "com.example.myapp")))
     end)
 
-    it("keeps records whose proc contains the bundle", function()
-        assert.is_true(pre({
-            pid = 999, proc = "com.example.myapp", tag = "T", msg = "",
-            level = "I", time = "", tid = 0, domain = "",
-        }))
-        assert.is_true(pre({
-            pid = 999, proc = "com.example.myapp.helper", tag = "T", msg = "",
-            level = "I", time = "", tid = 0, domain = "",
-        }))
+    it("keeps app sub-process helpers (bundle is prefix with . or :)", function()
+        assert.is_true(pre(rec(100, "com.example.myapp.worker")))
+        assert.is_true(pre(rec(100, "com.example.myapp:helper")))
     end)
 
-    it("drops records with neither pid nor proc match", function()
-        assert.is_false(pre({
-            pid = 999, proc = "com.other.app", tag = "T", msg = "",
-            level = "I", time = "", tid = 0, domain = "",
-        }))
+    it("keeps records where proc is a hilog left-truncation of bundle", function()
+        -- If the bundle is longer than the ~30-char proc column,
+        -- hilog drops leading characters. The proc seen in the
+        -- stream must be a suffix of the full bundle.
+        local long_pre = dl.make_prefilter({
+            pid = 50,
+            bundle = "com.company.product.verylongname",
+        })
+        assert.is_true(long_pre(rec(50, "ompany.product.verylongname")))
+    end)
+
+    it("drops records when only pid matches (system noise on our pid?)", function()
+        -- Strict mode: pid alone isn't enough. With bundle resolved,
+        -- the proc column MUST also match.
+        assert.is_false(pre(rec(100, "com.other.app")))
+    end)
+
+    it("drops records when only proc matches (different pid)", function()
+        -- Runtime helpers on a different pid that happen to log for
+        -- the same bundle: dropped in strict mode.
+        assert.is_false(pre(rec(999, "com.example.myapp")))
+    end)
+
+    it("drops records with proc that merely contains the bundle string", function()
+        -- Anti-test for the old loose substring behaviour.
+        assert.is_false(pre(rec(999, "xcom.example.myapp.suffix")))
+    end)
+
+    it("drops unrelated system services", function()
+        assert.is_false(pre(rec(43865, "om.huawei.hmos.aidataservice.1")))
+        assert.is_false(pre(rec(42843, "com.huawei.hmos.hsdr")))
     end)
 
     it("always keeps raw records (diagnostic passthrough)", function()
@@ -128,9 +153,44 @@ describe("device_log make_prefilter", function()
 
     it("matches nothing when pid and bundle are both unset", function()
         local empty = dl.make_prefilter({})
-        assert.is_false(empty({
-            pid = 1, proc = "whatever", tag = "T", msg = "",
-            level = "I", time = "", tid = 0, domain = "",
-        }))
+        assert.is_false(empty(rec(1, "whatever")))
+    end)
+
+    it("degrades to pid-only when bundle is missing", function()
+        local p = dl.make_prefilter({ pid = 100 })
+        assert.is_true(p(rec(100, "anything")))
+        assert.is_false(p(rec(101, "anything")))
+    end)
+end)
+
+describe("device_log make_prefilter — app-related mode", function()
+    local pre = dl.make_prefilter({
+        pid = 100,
+        bundle = "com.example.myapp",
+        mode = "app-related",
+    })
+
+    local function rec(pid, proc)
+        return { pid = pid, proc = proc, tag = "T", msg = "",
+                 level = "I", time = "", tid = 0, domain = "" }
+    end
+
+    it("keeps records matching pid OR proc (union)", function()
+        assert.is_true(pre(rec(100, "something.else")))
+        assert.is_true(pre(rec(999, "com.example.myapp")))
+    end)
+
+    it("drops records matching neither", function()
+        assert.is_false(pre(rec(999, "com.huawei.service")))
+    end)
+end)
+
+describe("device_log make_prefilter — all mode", function()
+    it("keeps everything", function()
+        local pre = dl.make_prefilter({ mode = "all" })
+        assert.is_true(pre({ pid = 1, proc = "x", tag = "",
+                             msg = "", level = "I", time = "",
+                             tid = 0, domain = "" }))
+        assert.is_true(pre({ raw = "garbage" }))
     end)
 end)
