@@ -83,6 +83,9 @@ local function start_device_log_view(target, device_serial, bundle, pid)
         name = target._project.key .. ": device logs (pid " .. pid .. ")",
         cmd = cmd,
         prefilter = device_log.make_prefilter({ pid = pid, bundle = bundle }),
+        banner = string.format(
+            "device-log session: %s  bundle=%s  pid=%d  (strict prefilter)",
+            target._project.key, bundle, pid),
         -- On the first launch in this nvim process, apply a sensible
         -- default soft filter so the user isn't drowning in V/D-level
         -- noise. On subsequent launches we preserve whatever filter

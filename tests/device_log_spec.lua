@@ -43,6 +43,23 @@ describe("device_log parser", function()
         assert.is_nil(dl.parse_line("garbage line with no timestamp"))
         assert.is_nil(dl.parse_line(nil))
     end)
+
+    it("strips leading UTF-8 BOM before parsing", function()
+        local line = "\xEF\xBB\xBF04-21 16:14:16.478 43865 43865 E "
+            .. "A00F00/myproc/MyTag: hi"
+        local r = dl.parse_line(line)
+        assert.is_not_nil(r)
+        assert.equals(43865, r.pid)
+        assert.equals("MyTag", r.tag)
+    end)
+
+    it("strips ANSI CSI escape sequences before parsing", function()
+        local line = "\27[32m04-21 16:14:16.478\27[0m 43865 43865 E "
+            .. "A00F00/myproc/MyTag: hi"
+        local r = dl.parse_line(line)
+        assert.is_not_nil(r)
+        assert.equals("MyTag", r.tag)
+    end)
 end)
 
 describe("device_log match_filter", function()

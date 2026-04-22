@@ -28,6 +28,23 @@ local M = {}
 -- Parser
 -- ---------------------------------------------------------------------------
 
+--- Strip ANSI CSI escape sequences and the UTF-8 BOM from a line.
+--- Some hdc builds prepend color or banner sequences to the first
+--- bytes of the stream; those would break a naive regex match and
+--- also render as garbage in the view.
+--- @param line string
+--- @return string
+local function sanitize(line)
+    if line:sub(1, 3) == "\xEF\xBB\xBF" then
+        line = line:sub(4)  -- UTF-8 BOM
+    end
+    -- ANSI CSI: ESC '[' ... 'm' (or similar final byte)
+    line = line:gsub("\27%[[%d;]*[a-zA-Z]", "")
+    -- Strip leading/trailing CR + whitespace
+    line = line:gsub("^[\r%s]+", ""):gsub("[\r%s]+$", "")
+    return line
+end
+
 --- Parse a single hilog line.
 ---
 --- Expected format:
@@ -43,6 +60,8 @@ local M = {}
 --- @return table|nil record { time, pid, tid, level, domain, proc?, tag, msg }
 function M.parse_line(line)
     if type(line) ~= "string" or line == "" then return nil end
+    line = sanitize(line)
+    if line == "" then return nil end
 
     local time, pid, tid, level, rest = line:match(
         "^(%d%d%-%d%d %d%d:%d%d:%d%d%.%d+)%s+(%d+)%s+(%d+)%s+([A-Z])%s+(.*)$")
@@ -322,16 +341,43 @@ function LogView:append_record(record)
     self:_append_line(record)
 end
 
---- Render a record to a display string. Raw lines pass through.
+--- Render a record to a display string. Shows everything we parsed
+--- EXCEPT the timestamp (the timestamp is mostly noise in an
+--- interactive tail — if you need it, the record's still in the
+--- ring buffer). Two variants: three-segment (`DOMAIN/PROC/TAG`) and
+--- two-segment (`DOMAIN/TAG`, proc unset).
+---
+--- Format:
+---   pid/tid LEVEL DOMAIN/PROC/TAG: msg
+---   pid/tid LEVEL DOMAIN/TAG: msg     (no proc)
+---
+--- Raw lines (parse failed, `header`=true banners, hdc errors) pass
+--- through untouched so they remain identifiable.
 --- @param record table
 --- @return string
 function LogView:_render(record)
     if record.raw then return record.raw end
+
+    local pid = record.pid or "?"
+    local tid = record.tid or "?"
+    local ids
+    if pid == tid then
+        ids = tostring(pid)
+    else
+        ids = pid .. "/" .. tid
+    end
+
+    local locator
+    if record.proc and record.proc ~= "" then
+        locator = string.format("%s/%s/%s",
+            record.domain or "?", record.proc, record.tag or "?")
+    else
+        locator = string.format("%s/%s",
+            record.domain or "?", record.tag or "?")
+    end
+
     return string.format("%s %s %s: %s",
-        record.time and record.time:sub(7) or "?",  -- HH:MM:SS.mmm only
-        record.level or "?",
-        record.tag or record.proc or "?",
-        record.msg or "")
+        ids, record.level or "?", locator, record.msg or "")
 end
 
 local LEVEL_HL = {
@@ -411,6 +457,17 @@ function LogView:clear()
     vim.api.nvim_buf_set_lines(self._buf, 0, -1, false, {})
     vim.api.nvim_buf_clear_namespace(self._buf, self._ns, 0, -1)
     vim.bo[self._buf].modifiable = false
+end
+
+--- Add a synthetic header record to the top of the ring + view.
+--- Used by `M.start` to stamp the session's prefilter onto the
+--- output — so the user knows which session/filter they're looking
+--- at without having to dig through loomworks.log.
+--- @param text string
+function LogView:_inject_header(text)
+    local rec = { raw = "── " .. text .. " ──" }
+    self._records[#self._records + 1] = rec
+    self:_append_line(rec)
 end
 
 function LogView:set_paused(paused)
@@ -616,7 +673,7 @@ end
 ---                                their `cl`/`cf` tuning persists
 ---                                across device-relaunches.
 ---
---- @param opts { cmd: string[], prefilter?: fun, soft_filter?: table, default_soft_filter?: table, name?: string, on_exit?: fun(code) }
+--- @param opts { cmd: string[], prefilter?: fun, soft_filter?: table, default_soft_filter?: table, name?: string, banner?: string, on_exit?: fun(code) }
 --- @return table|nil overseer task
 function M.start(opts)
     M.stop()
@@ -630,6 +687,13 @@ function M.start(opts)
         view:set_filter(opts.default_soft_filter)
     end
     view:clear()
+    -- A banner line at the top makes it obvious which session we're
+    -- looking at and — crucially — which prefilter we set when it
+    -- started. If lines are sneaking past, you can see immediately
+    -- whether the filter was set wrong or there's a parsing issue.
+    if opts.banner and opts.banner ~= "" then
+        view:_inject_header(opts.banner)
+    end
     view:show()
 
     local lw_overseer = require("loomworks.overseer")
