@@ -7,7 +7,17 @@ local KNOWN_TYPES = {}
 for _, id in ipairs(require("loomworks.modules").list()) do
     KNOWN_TYPES[id] = true
 end
-local NON_TYPE_KEYS = { path = true, depends_on = true, launch = true, variables = true }
+local NON_TYPE_KEYS = {
+    path = true,
+    depends_on = true,
+    launch = true,
+    variables = true,
+    deploy = true,  -- project-level deploy (pre-build phase). Missing
+                    -- this made config.validate reject any project that
+                    -- carried both a module type key AND a deploy dict
+                    -- with "multiple type keys" since the validator
+                    -- treated `deploy` as another module-type candidate.
+}
 
 --- Extract project type from the project definition table.
 --- Type is implicit from the inner key: {"cmake": {}} -> type = "cmake"
@@ -62,6 +72,7 @@ function M.normalize_projects(raw_projects)
             depends_on = def.depends_on,
             launch = def.launch,
             variables = def.variables,
+            deploy = def.deploy,
         }
     end
     return projects, nil
@@ -112,6 +123,16 @@ function M.validate(raw, root)
             end
         end
 
+        -- Validate project-level deploy definitions (same shape as
+        -- launch-level — `pre_build` distinguishes the phase).
+        if def.deploy then
+            local deploy_mod = require("loomworks.deploy")
+            local ok, deploy_err = deploy_mod.validate_deploy_definitions(def.deploy)
+            if not ok then
+                return nil, "project '" .. key .. "' deploy: " .. deploy_err
+            end
+        end
+
         -- Validate project-level variable declarations
         local project_variables = nil
         if def.variables then
@@ -144,6 +165,7 @@ function M.validate(raw, root)
             depends_on = def.depends_on,
             launch = def.launch,
             variables = project_variables,
+            deploy = def.deploy,
         }
     end
 
