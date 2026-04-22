@@ -272,6 +272,14 @@ local MAX_RECORDS = 5000
 --- to inspect something without immediately jumping back to the end.
 local AUTOSCROLL_SLACK = 3
 
+--- Flush cadence for batched buffer writes (ms). At high input rates
+--- (hundreds of hilog lines/sec) writing each record to the buffer
+--- synchronously grinds the UI across every buffer because each
+--- `nvim_buf_set_lines` / `nvim_win_set_cursor` triggers global
+--- redraw and every CursorMoved autocmd. Batching caps the render
+--- rate regardless of stream rate.
+local FLUSH_INTERVAL_MS = 80
+
 --- Create the singleton view. Lazy — nothing materialises until
 --- something calls `show()` or `append_record()`.
 --- @return table LogView
@@ -291,6 +299,11 @@ function LogView.new()
         _paused = false,
         _dropped = 0,
         _ns = vim.api.nvim_create_namespace("loomworks_device_log"),
+        -- Batching state
+        _pending = {},         -- records awaiting render
+        _flush_scheduled = false,
+        _needs_full_rerender = false,
+        _has_content = false,  -- tracks "first-line placeholder" state
     }, LogView)
     self:_setup_keymaps()
     return self
@@ -344,16 +357,18 @@ function LogView:is_visible()
     return self._win ~= nil and vim.api.nvim_win_is_valid(self._win)
 end
 
---- Push a parsed (or raw-fallback) record. Appends to the ring
---- buffer, drops the oldest when full, and appends to the visible
---- buffer iff the soft filter matches.
+--- Push a parsed (or raw-fallback) record.
+---
+--- Ring-buffer push is immediate (cheap Lua list op). Actual buffer
+--- rendering is deferred into a batched flush so we don't hammer
+--- nvim APIs on every incoming line — the UI-sluggishness symptom
+--- at high stream rates came from per-line `nvim_buf_set_lines` +
+--- `nvim_win_set_cursor` calls.
 --- @param record table
 function LogView:append_record(record)
     self._records[#self._records + 1] = record
 
     if #self._records > MAX_RECORDS then
-        -- Trim a batch at a time to avoid per-line table.remove
-        -- thrashing when the stream is firehose-level.
         local drop = #self._records - MAX_RECORDS
         local kept = {}
         for i = drop + 1, #self._records do
@@ -361,16 +376,86 @@ function LogView:append_record(record)
         end
         self._records = kept
         self._dropped = self._dropped + drop
-        -- Full re-render so the buffer stays in sync with the ring.
-        -- Cheap at this size; running the stream longer will keep
-        -- doing this incrementally.
+        -- Request a full rerender on next flush — cheaper to do one
+        -- rebuild per overflow than to try and trim the visible
+        -- buffer in sync with the ring in-place.
+        self._needs_full_rerender = true
+    end
+
+    self._pending[#self._pending + 1] = record
+    self:_schedule_flush()
+end
+
+--- Queue a flush if one isn't already pending. `vim.defer_fn` owns
+--- the timer lifecycle; a single dangling flush after the view is
+--- disposed is harmless (it finds empty pending + no buffer and
+--- returns).
+function LogView:_schedule_flush()
+    if self._flush_scheduled then return end
+    self._flush_scheduled = true
+    local self_ref = self
+    vim.defer_fn(function()
+        self_ref._flush_scheduled = false
+        self_ref:_flush()
+    end, FLUSH_INTERVAL_MS)
+end
+
+--- Process the pending queue: either a full rerender (if we
+--- overflowed the ring), or a batch append of all pending records
+--- that pass the soft filter.
+---
+--- We do ONE `nvim_buf_set_lines` call with the whole batch, ONE
+--- cursor move for auto-scroll, and extmarks grouped under a single
+--- modifiable window. That keeps nvim's event loop cost proportional
+--- to the flush rate (~12/sec) instead of the line rate (could be
+--- hundreds/sec during heavy app activity).
+function LogView:_flush()
+    if not vim.api.nvim_buf_is_valid(self._buf) then
+        self._pending = {}
+        return
+    end
+
+    if self._needs_full_rerender then
+        self._needs_full_rerender = false
+        self._pending = {}  -- the full rerender replays from _records
         self:_rerender()
         return
     end
 
-    if self._paused then return end
-    if not M.match_filter(self._filter, record) then return end
-    self:_append_line(record)
+    if self._paused or #self._pending == 0 then
+        return
+    end
+
+    local pending = self._pending
+    self._pending = {}
+
+    local lines = {}
+    local hl_records = {}
+    for _, rec in ipairs(pending) do
+        if M.match_filter(self._filter, rec) then
+            lines[#lines + 1] = self:_render(rec)
+            hl_records[#hl_records + 1] = rec
+        end
+    end
+    if #lines == 0 then return end
+
+    vim.bo[self._buf].modifiable = true
+    local start_line
+    if not self._has_content then
+        -- Fresh buffer has one placeholder blank line; replace it.
+        start_line = 0
+        vim.api.nvim_buf_set_lines(self._buf, 0, 1, false, lines)
+        self._has_content = true
+    else
+        start_line = vim.api.nvim_buf_line_count(self._buf)
+        vim.api.nvim_buf_set_lines(self._buf, start_line, start_line, false, lines)
+    end
+    for i, rec in ipairs(hl_records) do
+        self:_highlight(rec, start_line + i - 1)
+    end
+    vim.bo[self._buf].modifiable = false
+
+    self:_maybe_scroll()
 end
 
 --- Render a record to a display string.
@@ -441,27 +526,6 @@ function LogView:_highlight(record, line_idx)
     })
 end
 
-function LogView:_append_line(record)
-    local line = self:_render(record)
-    vim.bo[self._buf].modifiable = true
-
-    local n = vim.api.nvim_buf_line_count(self._buf)
-    -- Freshly created buffers have one empty line; replace it in
-    -- place to avoid a leading blank in the view.
-    local first = vim.api.nvim_buf_get_lines(self._buf, 0, 1, false)[1]
-    local is_empty = (n == 1 and (first == nil or first == ""))
-    if is_empty then
-        vim.api.nvim_buf_set_lines(self._buf, 0, 1, false, { line })
-        self:_highlight(record, 0)
-    else
-        vim.api.nvim_buf_set_lines(self._buf, n, n, false, { line })
-        self:_highlight(record, n)
-    end
-
-    vim.bo[self._buf].modifiable = false
-    self:_maybe_scroll()
-end
-
 --- Auto-follow only when the cursor is near the bottom. Lets the
 --- user scroll up to inspect something without being yanked back.
 function LogView:_maybe_scroll()
@@ -490,22 +554,26 @@ end
 
 function LogView:clear()
     self._records = {}
+    self._pending = {}
     self._dropped = 0
+    self._has_content = false
+    self._needs_full_rerender = false
     vim.bo[self._buf].modifiable = true
     vim.api.nvim_buf_set_lines(self._buf, 0, -1, false, {})
     vim.api.nvim_buf_clear_namespace(self._buf, self._ns, 0, -1)
     vim.bo[self._buf].modifiable = false
 end
 
---- Add a synthetic header record to the top of the ring + view.
---- Used by `M.start` to stamp the session's prefilter onto the
---- output — so the user knows which session/filter they're looking
---- at without having to dig through loomworks.log.
+--- Add a synthetic header record and flush immediately so it lands
+--- at the top of the view without waiting for the next batched
+--- flush. Headers happen once per session, so this one-off sync
+--- flush has no perf impact.
 --- @param text string
 function LogView:_inject_header(text)
     local rec = { header = "── " .. text .. " ──" }
     self._records[#self._records + 1] = rec
-    self:_append_line(rec)
+    self._pending[#self._pending + 1] = rec
+    self:_flush()
 end
 
 function LogView:set_paused(paused)
@@ -531,11 +599,13 @@ function LogView:_rerender()
     end
     if #lines == 0 then
         vim.api.nvim_buf_set_lines(self._buf, 0, -1, false, { "" })
+        self._has_content = false
     else
         vim.api.nvim_buf_set_lines(self._buf, 0, -1, false, lines)
         for i, rec in ipairs(hl_records) do
             self:_highlight(rec, i - 1)
         end
+        self._has_content = true
     end
 
     vim.bo[self._buf].modifiable = false
