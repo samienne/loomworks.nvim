@@ -355,12 +355,26 @@ local MAX_RECORDS = 5000
 local AUTOSCROLL_SLACK = 3
 
 --- Flush cadence for batched buffer writes (ms). At high input rates
---- (hundreds of hilog lines/sec) writing each record to the buffer
---- synchronously grinds the UI across every buffer because each
---- `nvim_buf_set_lines` / `nvim_win_set_cursor` triggers global
---- redraw and every CursorMoved autocmd. Batching caps the render
---- rate regardless of stream rate.
-local FLUSH_INTERVAL_MS = 80
+--- each buffer write fires TextChanged + CursorMoved (and every
+--- plugin subscribed to them) globally, so the render rate must be
+--- capped independent of input rate. 250 ms (~4 flushes/sec) still
+--- feels continuous to the eye and leaves plenty of headroom for
+--- other event-loop work.
+local FLUSH_INTERVAL_MS = 250
+
+--- Max records processed per flush. Prevents a single tick from
+--- blocking the main thread for too long when a burst arrives — the
+--- remainder flows into the next flush. Sized to keep a flush under
+--- a couple of ms on commodity hardware.
+local MAX_LINES_PER_FLUSH = 200
+
+--- Hard cap on the pending queue. When the stream produces records
+--- faster than we can flush (heavy app logging, slow nvim), oldest
+--- pending records start dropping at the append point — bounds
+--- memory and stops the queue from growing unboundedly if we're
+--- persistently behind. Dropped records are still counted and
+--- reported via the logger so the user knows there's a gap.
+local MAX_PENDING = 2000
 
 --- Create the singleton view. Lazy — nothing materialises until
 --- something calls `show()` or `append_record()`.
@@ -444,9 +458,13 @@ end
 ---
 --- Ring-buffer push is immediate (cheap Lua list op). Actual buffer
 --- rendering is deferred into a batched flush so we don't hammer
---- nvim APIs on every incoming line — the UI-sluggishness symptom
---- at high stream rates came from per-line `nvim_buf_set_lines` +
---- `nvim_win_set_cursor` calls.
+--- nvim APIs on every incoming line.
+---
+--- Backpressure: if the pending queue is already at `MAX_PENDING`,
+--- drop the oldest pending record (not the newest — we want the
+--- freshest tail visible). Keeps memory bounded when we're
+--- persistently behind and stops the queue from being an unbounded
+--- sink for bursty traffic.
 --- @param record table
 function LogView:append_record(record)
     self._records[#self._records + 1] = record
@@ -463,6 +481,15 @@ function LogView:append_record(record)
         -- rebuild per overflow than to try and trim the visible
         -- buffer in sync with the ring in-place.
         self._needs_full_rerender = true
+    end
+
+    if #self._pending >= MAX_PENDING then
+        -- Queue saturated: drop the oldest pending record. O(N)
+        -- table.remove is acceptable at this frequency — we only
+        -- hit this branch when we're already behind, and one
+        -- element shifts aren't the bottleneck in that regime.
+        table.remove(self._pending, 1)
+        self._pending_dropped = (self._pending_dropped or 0) + 1
     end
 
     self._pending[#self._pending + 1] = record
@@ -509,12 +536,21 @@ function LogView:_flush()
         return
     end
 
-    local pending = self._pending
-    self._pending = {}
+    -- Take at most MAX_LINES_PER_FLUSH records so the flush stays
+    -- bounded in time even when the queue is deep. Leftovers flow
+    -- into the next tick.
+    local take = math.min(#self._pending, MAX_LINES_PER_FLUSH)
+    local batch = {}
+    local remainder = {}
+    for i = 1, take do batch[i] = self._pending[i] end
+    for i = take + 1, #self._pending do
+        remainder[#remainder + 1] = self._pending[i]
+    end
+    self._pending = remainder
 
     local lines = {}
     local hl_records = {}
-    for _, rec in ipairs(pending) do
+    for _, rec in ipairs(batch) do
         -- Render first, then filter — so a regex-based soft filter
         -- can match the full rendered line rather than just `msg`.
         local rendered = M.render(rec, self._layout)
@@ -523,6 +559,32 @@ function LogView:_flush()
             hl_records[#hl_records + 1] = rec
         end
     end
+
+    -- If we dropped pending records to stay under the cap, tell the
+    -- user (via the loomworks logger) — silent drops would hide a
+    -- real problem. Emit once per flush regardless of drop count
+    -- so we don't spam the log file.
+    if self._pending_dropped and self._pending_dropped > 0 then
+        local ok_lw, lw = pcall(require, "loomworks")
+        if ok_lw then
+            local ws = lw.get_workspace()
+            local log = ws and ws._core and ws._core._deps
+                and ws._core._deps.log
+            if log then
+                log:warn("device_log: dropped %d pending lines (UI behind stream)",
+                    self._pending_dropped)
+            end
+        end
+        self._pending_dropped = 0
+    end
+
+    -- Schedule the next flush early when there's still a remainder
+    -- so we work down the queue promptly instead of waiting a full
+    -- interval.
+    if #self._pending > 0 then
+        self:_schedule_flush()
+    end
+
     if #lines == 0 then return end
 
     vim.bo[self._buf].modifiable = true
@@ -612,6 +674,7 @@ function LogView:clear()
     self._records = {}
     self._pending = {}
     self._dropped = 0
+    self._pending_dropped = 0
     self._has_content = false
     self._needs_full_rerender = false
     vim.bo[self._buf].modifiable = true
