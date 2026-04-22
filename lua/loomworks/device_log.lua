@@ -61,6 +61,17 @@ local function sanitize(line)
     return line
 end
 
+--- Expose the line sanitiser so streaming callers can clean a line
+--- up once and use the result for both parse AND the raw fallback
+--- (otherwise an unparseable line shows up in the view with its
+--- escape remnants still attached).
+--- @param line string
+--- @return string cleaned
+function M.sanitize_line(line)
+    if type(line) ~= "string" then return "" end
+    return sanitize(line)
+end
+
 --- Parse a single hilog line.
 ---
 --- Expected format:
@@ -69,19 +80,20 @@ end
 --- Some lines use a two-segment DOMAIN/TAG form (no PROC) — we fall
 --- back to that rather than dropping them.
 ---
---- Unparseable lines return nil; the caller is expected to keep them
---- as raw text so diagnostic output (hdc errors, kernel panics) isn't
---- silently swallowed.
+--- Returns `nil, cleaned_line` when the line couldn't be parsed; the
+--- caller is expected to keep that cleaned fallback visible as a
+--- raw record so buffering / streaming issues are obvious.
 --- @param line string
 --- @return table|nil record { time, pid, tid, level, domain, proc?, tag, msg }
+--- @return string|nil cleaned_line  sanitised form, for raw fallback
 function M.parse_line(line)
-    if type(line) ~= "string" or line == "" then return nil end
+    if type(line) ~= "string" or line == "" then return nil, "" end
     line = sanitize(line)
-    if line == "" then return nil end
+    if line == "" then return nil, "" end
 
     local time, pid, tid, level, rest = line:match(
         "^(%d%d%-%d%d %d%d:%d%d:%d%d%.%d+)%s+(%d+)%s+(%d+)%s+([A-Z])%s+(.*)$")
-    if not time then return nil end
+    if not time then return nil, line end
 
     -- Three-segment form: DOMAIN/PROC/TAG: msg
     local domain, proc, tag, msg = rest:match("^([^/%s]+)/([^/]+)/([^:]+):%s?(.*)$")
@@ -90,7 +102,7 @@ function M.parse_line(line)
         domain, tag, msg = rest:match("^([^/%s]+)/([^:]+):%s?(.*)$")
         proc = nil
     end
-    if not domain then return nil end
+    if not domain then return nil, line end
 
     return {
         time = time,
@@ -727,9 +739,15 @@ function M.start(opts)
         name = opts.name or "device logs",
         cmd = opts.cmd,
         on_line = function(line)
-            local rec = M.parse_line(line)
+            -- IMPORTANT: parse_line returns the sanitised form as its
+            -- second value on failure. Use that for the raw record —
+            -- falling back to the untouched input would leak escape
+            -- remnants (`[41;155H`, BEL, etc.) into the `[UNPARSED]`
+            -- lines.
+            local rec, cleaned = M.parse_line(line)
             if not rec then
-                rec = { raw = line }
+                if not cleaned or cleaned == "" then return end
+                rec = { raw = cleaned }
             end
             if _prefilter and not _prefilter(rec) then return end
             view:append_record(rec)

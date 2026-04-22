@@ -44,6 +44,19 @@ describe("device_log parser", function()
         assert.is_nil(dl.parse_line(nil))
     end)
 
+    it("returns the sanitised line as a second value on parse failure", function()
+        -- The streaming path falls back to the second return value
+        -- for its `{raw = ...}` record, so escape remnants must be
+        -- gone even when parse fails.
+        local _, cleaned = dl.parse_line("[41;155HClass")
+        assert.equals("Class", cleaned)
+    end)
+
+    it("returns empty string (not nil) when input is empty or all-escape", function()
+        local _, cleaned = dl.parse_line("[41;155H")
+        assert.equals("", cleaned)
+    end)
+
     it("strips leading UTF-8 BOM before parsing", function()
         local line = "\xEF\xBB\xBF04-21 16:14:16.478 43865 43865 E "
             .. "A00F00/myproc/MyTag: hi"
