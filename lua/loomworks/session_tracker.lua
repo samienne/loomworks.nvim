@@ -83,7 +83,13 @@ local function start_device_log_view(target, device_serial, bundle, pid)
         name = target._project.key .. ": device logs (pid " .. pid .. ")",
         cmd = cmd,
         prefilter = device_log.make_prefilter({ pid = pid, bundle = bundle }),
-        soft_filter = {},  -- all records through by default; user tunes via keymaps
+        -- On the first launch in this nvim process, apply a sensible
+        -- default soft filter so the user isn't drowning in V/D-level
+        -- noise. On subsequent launches we preserve whatever filter
+        -- they tuned with `cl` / `cf` — explicit soft_filter is NOT
+        -- passed, so device_log keeps the existing filter instead of
+        -- reapplying the default.
+        default_soft_filter = { level = "I" },
     })
 end
 

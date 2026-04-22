@@ -409,9 +409,31 @@ local HELP_ROWS = {
     { "cf", "edit regex filter (empty to clear)" },
 }
 
+--- Close the currently-open help overlay, if any.
+function LogView:_close_help()
+    if self._help_win and vim.api.nvim_win_is_valid(self._help_win) then
+        pcall(vim.api.nvim_win_close, self._help_win, true)
+    end
+    self._help_win = nil
+    if self._help_group then
+        pcall(vim.api.nvim_del_augroup_by_id, self._help_group)
+    end
+    self._help_group = nil
+end
+
 --- Show a small floating help overlay listing the buffer-local
---- keymaps. Any keypress dismisses it.
+--- keymaps. Toggles: pressing `?` again closes it. Also closes when
+--- the user leaves the log window. Deliberately does NOT listen for
+--- CursorMoved — the buffer's auto-scroll on new lines fires that
+--- event, which would snap the overlay shut every few milliseconds
+--- on a busy device.
 function LogView:_show_help()
+    -- Toggle semantics.
+    if self._help_win and vim.api.nvim_win_is_valid(self._help_win) then
+        self:_close_help()
+        return
+    end
+
     local lines = { "loomworks device log" }
     local key_col = 4
     for _, row in ipairs(HELP_ROWS) do
@@ -444,19 +466,16 @@ function LogView:_show_help()
         focusable = false,
         noautocmd = true,
     })
+    self._help_win = win
 
-    -- Any cursor move / key press in the owning window closes the
-    -- help. Using CursorMoved covers `<Esc>` and arrow keys; a
-    -- BufLeave / WinLeave catches window switches.
     local group = vim.api.nvim_create_augroup(
         "loomworks_device_log_help_" .. win, { clear = true })
-    local function close()
-        pcall(vim.api.nvim_win_close, win, true)
-        pcall(vim.api.nvim_del_augroup_by_id, group)
-    end
-    vim.api.nvim_create_autocmd(
-        { "CursorMoved", "CursorMovedI", "BufLeave", "WinLeave", "InsertEnter" },
-        { group = group, buffer = self._buf, once = true, callback = close })
+    self._help_group = group
+    -- Dismiss only on window leave. Buffer-level CursorMoved is
+    -- unusable here because of auto-scroll.
+    vim.api.nvim_create_autocmd({ "WinLeave", "BufLeave" },
+        { group = group, buffer = self._buf, once = true,
+          callback = function() self:_close_help() end })
 end
 
 function LogView:_setup_keymaps()
@@ -467,8 +486,21 @@ function LogView:_setup_keymaps()
         })
     end
 
-    map("?", function() self:_show_help() end, "loomworks: show device-log help")
-    map("q", function() self:hide() end, "loomworks: hide device-log view")
+    map("?", function() self:_show_help() end, "loomworks: toggle device-log help")
+    map("<Esc>", function()
+        -- Close the help overlay if it's showing; otherwise no-op
+        -- (let <Esc> do whatever the user's global mappings say).
+        if self._help_win and vim.api.nvim_win_is_valid(self._help_win) then
+            self:_close_help()
+        end
+    end, "loomworks: close device-log help overlay")
+    map("q", function()
+        if self._help_win and vim.api.nvim_win_is_valid(self._help_win) then
+            self:_close_help()
+            return
+        end
+        self:hide()
+    end, "loomworks: hide device-log view (or close help overlay)")
     map("cc", function() self:clear() end, "loomworks: clear device-log")
     map("p", function()
         self:set_paused(not self._paused)
@@ -508,14 +540,35 @@ end
 
 --- Start a new hilog stream. Disposes any previous stream first so
 --- the "one active session" invariant holds.
---- @param opts { cmd: string[], prefilter?: fun, soft_filter?: table, name?: string, on_exit?: fun(code) }
+---
+--- Soft filter handling (the user-tunable level / regex / tag
+--- filter):
+---   * `opts.soft_filter`        explicit override; always wins.
+---   * `opts.default_soft_filter` applied only on the first launch
+---                                within this nvim process (when the
+---                                view is lazily created). Session
+---                                tracker passes `{ level = "I" }`
+---                                here so fresh runs start readable
+---                                without drowning the user in
+---                                V/D-level noise.
+---   * Otherwise                 keep whatever filter the user had
+---                                dialed in across previous runs —
+---                                their `cl`/`cf` tuning persists
+---                                across device-relaunches.
+---
+--- @param opts { cmd: string[], prefilter?: fun, soft_filter?: table, default_soft_filter?: table, name?: string, on_exit?: fun(code) }
 --- @return table|nil overseer task
 function M.start(opts)
     M.stop()
     _prefilter = opts.prefilter
 
+    local view_existed = _view ~= nil
     local view = ensure_view()
-    view:set_filter(opts.soft_filter or {})
+    if opts.soft_filter ~= nil then
+        view:set_filter(opts.soft_filter)
+    elseif not view_existed and opts.default_soft_filter ~= nil then
+        view:set_filter(opts.default_soft_filter)
+    end
     view:clear()
     view:show()
 
