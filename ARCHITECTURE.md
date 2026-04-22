@@ -279,6 +279,7 @@ may import from its own layer or any layer below it, never above.
 | `workspace_view.lua` | View-model layer: orchestration logic for UI. Computes add/remove project context, tool detection caching, upgrade/downgrade previews, config set candidates. Config set create/edit/rename/delete context and execution. Orphan cleanup: stray build dir detection (top-down prune of `.nvim/build/`), orphaned config collection, bulk cleanup execution. Calls Workspace atomic mutations in sequence. No UI rendering — pure compute + execute | Render UI; own state; bypass Workspace methods |
 | `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, Ninja+MSVC combos). GCC/Clang detection delegates to `compilers.lua`. Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
 | `compilers.lua` | Shared C/C++ compiler detection (gcc/clang via PATH probing, versioned binary names). Returns `{id, display, family, version, path, c_path, bin_dir, clangd_path}` per compiler so modules can pin `CC`/`CXX` and prepend runtime-DLL directories to `PATH`. Used by both `cmake_kits.lua` and `modules/meson.lua`. Process-lifetime cache; `clear_cache()` forces rescan | Know about any specific module |
+| `device_log.lua` | Client-side device-log view: line parser (`MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: msg`), session prefilter (pid OR proc-contains-bundle, applied at receive), soft filter (level / regex / tag / pid, applied at render), ring buffer (5000 records), bottom-split scratch buffer with level-based extmark highlights. Singleton view, one stream at a time. Streaming task runs under `loomworks.overseer.run_streaming_task` (visible in overseer's task list, killable there) | Spawn subprocesses directly (overseer owns the process); persist filter state (in-memory only for v1) |
 
 ### Data / IO Layer
 
@@ -704,6 +705,7 @@ loomworks.nvim/
 │   │   ├── operation.lua              Operation class (profile action tracking)
 │   │   ├── cmake_kits.lua             CMake tool detection (MSVC/VS; delegates gcc/clang)
 │   │   ├── compilers.lua               Shared C/C++ compiler detection (used by cmake_kits + meson)
+│   │   ├── device_log.lua              Client-side device-log view (parser, filter, ring buffer, bottom-split)
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
 │   │   ├── overseer.lua               Overseer template provider + launching
 │   │   ├── lsp.lua                    LSP dispatch layer (re-exports integrations, generic get_status)

@@ -667,37 +667,11 @@ function LaunchTarget:device_resolve_pid(device_serial, bundle_name, opts)
     end)
 end
 
---- Start a long-running hilog stream for the device app. The session
---- tracker calls this right after a device launch succeeds and keeps
---- the returned task handle so it can dispose the stream when the
---- session ends. Output shows up in overseer's normal task-output
---- buffer, matching the UX of build tasks.
---- @param device_serial string
---- @param pid number|nil filter to this process (nil = unfiltered stream)
---- @return table|nil overseer task handle, or nil when the module
----         doesn't implement device_log or overseer is unavailable
-function LaunchTarget:device_log_start(device_serial, pid)
-    local ok_o, overseer = pcall(require, "overseer")
-    if not ok_o then return nil end
-
-    local mod = self._project and self._project._module and self._project._module.impl
-    if not mod or not mod.device_log then return nil end
-
-    local unit = self._config_unit
-    local td = unit and unit._tool_data or {}
-    local spec = mod.device_log(td, device_serial, { pid = pid })
-    if not spec or not spec.cmd then return nil end
-
-    local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
-    local suffix = pid and (" (pid " .. pid .. ")") or " (unfiltered)"
-    local task = overseer.new_task({
-        name = self._project.key .. ": device logs" .. suffix,
-        cmd = cmd,
-        components = { "default" },
-    })
-    task:start()
-    return task
-end
+-- Note: `device_log_start` used to live here. It was replaced by
+-- `session_tracker` driving `loomworks.device_log.start` directly —
+-- the log view + its overseer task now live in the device_log
+-- module so they can share a ring buffer and a dedicated split,
+-- rather than relying on overseer's default output-to-buffer view.
 
 -- ---------------------------------------------------------------------------
 -- Display

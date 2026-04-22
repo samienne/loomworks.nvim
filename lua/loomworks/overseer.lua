@@ -961,6 +961,70 @@ function M.run_cmd_task(opts)
     end)
 end
 
+--- Run a long-running streaming task: every line of stdout is
+--- forwarded to `opts.on_line` instead of displayed via overseer's
+--- default output buffer. The overseer task itself still exists
+--- (shows up in the task list, killable there) so the user has a
+--- unified "what's running" view, but actual rendering happens in a
+--- caller-owned surface (e.g. the device-log view).
+---
+--- Unlike `run_cmd_task` this does not return a Future — streaming
+--- tasks don't have a meaningful "done" value; the caller holds the
+--- task handle and tears it down when the owning session ends.
+---
+--- `on_complete(status)` fires when the task finishes (process exit,
+--- user-stop, or error) — useful for the caller to invalidate its
+--- own state, not for chaining.
+--- @param opts { name: string, cmd: string|string[], args?: string[], cwd?: string, env?: table, on_line: fun(line: string), on_complete?: fun(status: string) }
+--- @return table|nil overseer task handle
+function M.run_streaming_task(opts)
+    local ok, overseer = pcall(require, "overseer")
+    if not ok then
+        vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
+        return nil
+    end
+
+    local cmd = opts.cmd
+    if type(cmd) == "string" then cmd = { cmd } end
+    if opts.args then
+        cmd = vim.list_extend(vim.deepcopy(cmd), opts.args)
+    end
+
+    -- Minimal component set: we want the task lifecycle (on_start /
+    -- on_output_lines / on_complete hooks) but don't want the default
+    -- output-to-buffer rendering — the caller is rendering lines
+    -- somewhere else and duplicating them into a hidden task buffer
+    -- is wasted memory for a firehose log tail.
+    local task = overseer.new_task({
+        name = opts.name,
+        cmd = cmd,
+        cwd = opts.cwd,
+        env = opts.env,
+        components = { "on_output_summarize", "on_exit_set_status" },
+    })
+
+    task:subscribe("on_output_lines", function(_, lines)
+        for _, line in ipairs(lines or {}) do
+            if opts.on_line then
+                local ok_cb, err = pcall(opts.on_line, line)
+                if not ok_cb then
+                    vim.notify("loomworks: streaming on_line error: " .. tostring(err),
+                        vim.log.levels.WARN)
+                end
+            end
+        end
+    end)
+
+    if opts.on_complete then
+        task:subscribe("on_complete", function(_, status)
+            pcall(opts.on_complete, status)
+        end)
+    end
+
+    task:start()
+    return task
+end
+
 --- Launch a single task definition via overseer.
 --- Used by ConfigUnit:build_target for per-target builds.
 --- @param task_def table task definition with .builder and .loomworks

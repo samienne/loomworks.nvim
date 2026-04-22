@@ -1,0 +1,512 @@
+--- loomworks/device_log.lua — client-side device-log view.
+---
+--- hdc/hilog's on-device filter flags are unreliable across
+--- HarmonyOS releases, so we take the DevEco approach: receive the
+--- raw stream, parse each line into a structured record, and filter
+--- client-side. Two tiers of filtering keep memory bounded and the
+--- view interactive:
+---
+---   * session prefilter  applied at receive; dropped records are
+---                        gone. Default matches pid OR proc-contains
+---                        -bundle, so we catch both the app's main
+---                        process and any runtime helpers that log
+---                        under different PIDs but for the same app.
+---                        Immutable for the stream lifetime.
+---
+---   * soft filter        applied at render; fully interactive.
+---                        Changing it re-renders from the ring
+---                        buffer, no history lost.
+---
+--- The stream itself runs under overseer (task visible in the task
+--- list, killable the usual way) via `loomworks.overseer.run_streaming_task`
+--- which skips the default output-to-buffer component and forwards
+--- lines into this module.
+
+local M = {}
+
+-- ---------------------------------------------------------------------------
+-- Parser
+-- ---------------------------------------------------------------------------
+
+--- Parse a single hilog line.
+---
+--- Expected format:
+---   MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: message
+---
+--- Some lines use a two-segment DOMAIN/TAG form (no PROC) — we fall
+--- back to that rather than dropping them.
+---
+--- Unparseable lines return nil; the caller is expected to keep them
+--- as raw text so diagnostic output (hdc errors, kernel panics) isn't
+--- silently swallowed.
+--- @param line string
+--- @return table|nil record { time, pid, tid, level, domain, proc?, tag, msg }
+function M.parse_line(line)
+    if type(line) ~= "string" or line == "" then return nil end
+
+    local time, pid, tid, level, rest = line:match(
+        "^(%d%d%-%d%d %d%d:%d%d:%d%d%.%d+)%s+(%d+)%s+(%d+)%s+([A-Z])%s+(.*)$")
+    if not time then return nil end
+
+    -- Three-segment form: DOMAIN/PROC/TAG: msg
+    local domain, proc, tag, msg = rest:match("^([^/%s]+)/([^/]+)/([^:]+):%s?(.*)$")
+    if not domain then
+        -- Two-segment form: DOMAIN/TAG: msg
+        domain, tag, msg = rest:match("^([^/%s]+)/([^:]+):%s?(.*)$")
+        proc = nil
+    end
+    if not domain then return nil end
+
+    return {
+        time = time,
+        pid = tonumber(pid),
+        tid = tonumber(tid),
+        level = level,
+        domain = domain,
+        proc = proc,
+        tag = tag,
+        msg = msg or "",
+    }
+end
+
+-- ---------------------------------------------------------------------------
+-- Filtering
+-- ---------------------------------------------------------------------------
+
+--- Level ordering — records are "at or above" the requested minimum.
+local LEVEL_RANK = { V = 0, D = 1, I = 2, W = 3, E = 4, F = 5 }
+
+--- Apply a soft filter. AND semantics: every non-nil filter field must
+--- match. Filter fields are all optional.
+--- @param filter table { pid?, proc?, tag?, level?, regex? }
+--- @param record table
+--- @return boolean
+function M.match_filter(filter, record)
+    if not record then return false end
+    if record.raw then
+        -- Raw (unparseable) records — only regex applies, otherwise
+        -- they pass through so hdc errors and malformed lines stay
+        -- visible.
+        if filter.regex then
+            return record.raw:match(filter.regex) ~= nil
+        end
+        return true
+    end
+
+    if filter.pid and record.pid ~= filter.pid then return false end
+    if filter.proc then
+        if not record.proc or not record.proc:find(filter.proc, 1, true) then
+            return false
+        end
+    end
+    if filter.tag then
+        if not record.tag or not record.tag:find(filter.tag, 1, true) then
+            return false
+        end
+    end
+    if filter.level then
+        local r = LEVEL_RANK[record.level] or 0
+        local m = LEVEL_RANK[filter.level] or 0
+        if r < m then return false end
+    end
+    if filter.regex then
+        if not record.msg or not record.msg:match(filter.regex) then
+            return false
+        end
+    end
+    return true
+end
+
+--- Build the default session prefilter: keep a record if it's for
+--- the app's PID OR its proc column contains the bundle name.
+---
+--- The union is intentional. Runtime helpers (ArkUI workers, service
+--- proxies spawned on the app's behalf) run under different PIDs but
+--- still carry the bundle name in the proc column, so a strict PID
+--- filter drops half the useful output. A proc-only filter, in turn,
+--- misses lines from early in the app's lifetime before its proc
+--- name has been set — the PID leg catches those.
+--- @param opts { pid?: number, bundle?: string }
+--- @return fun(record: table): boolean
+function M.make_prefilter(opts)
+    opts = opts or {}
+    local pid = opts.pid
+    local bundle = opts.bundle
+    return function(record)
+        if not record then return false end
+        if record.raw then return true end  -- keep raw lines visible
+        if pid and record.pid == pid then return true end
+        if bundle and record.proc
+            and record.proc:find(bundle, 1, true) then
+            return true
+        end
+        return false
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- LogView (one buffer + one bottom split)
+-- ---------------------------------------------------------------------------
+
+local LogView = {}
+LogView.__index = LogView
+
+--- Max records kept in the ring buffer. ~1 MB of memory at typical
+--- line lengths; chosen to be bounded but large enough to span a
+--- typical debugging session.
+local MAX_RECORDS = 5000
+
+--- How close to the bottom the cursor must be for new lines to
+--- auto-follow. 3 gives the user some room to scroll up a few lines
+--- to inspect something without immediately jumping back to the end.
+local AUTOSCROLL_SLACK = 3
+
+--- Create the singleton view. Lazy — nothing materialises until
+--- something calls `show()` or `append_record()`.
+--- @return table LogView
+function LogView.new()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].bufhidden = "hide"
+    vim.bo[buf].swapfile = false
+    vim.bo[buf].filetype = "loomworks-device-log"
+    pcall(vim.api.nvim_buf_set_name, buf, "loomworks://device-log")
+
+    local self = setmetatable({
+        _buf = buf,
+        _win = nil,
+        _records = {},
+        _filter = {},
+        _paused = false,
+        _dropped = 0,
+        _ns = vim.api.nvim_create_namespace("loomworks_device_log"),
+    }, LogView)
+    self:_setup_keymaps()
+    return self
+end
+
+--- Show in a bottom split (focus returns to the previous window so
+--- the log view doesn't steal the cursor).
+--- @param opts? { height?: number }
+function LogView:show(opts)
+    opts = opts or {}
+    if self._win and vim.api.nvim_win_is_valid(self._win) then
+        vim.api.nvim_set_current_win(self._win)
+        return
+    end
+
+    local prev = vim.api.nvim_get_current_win()
+    vim.cmd("botright " .. (opts.height or 15) .. "split")
+    self._win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(self._win, self._buf)
+
+    vim.wo[self._win].number = false
+    vim.wo[self._win].relativenumber = false
+    vim.wo[self._win].signcolumn = "no"
+    vim.wo[self._win].wrap = false
+    vim.wo[self._win].winfixheight = true
+
+    if vim.api.nvim_win_is_valid(prev) then
+        vim.api.nvim_set_current_win(prev)
+    end
+
+    -- On first show, jump to the end so auto-follow is "on" right away.
+    self:_scroll_to_end(true)
+end
+
+function LogView:hide()
+    if self._win and vim.api.nvim_win_is_valid(self._win) then
+        vim.api.nvim_win_close(self._win, true)
+    end
+    self._win = nil
+end
+
+function LogView:toggle()
+    if self._win and vim.api.nvim_win_is_valid(self._win) then
+        self:hide()
+    else
+        self:show()
+    end
+end
+
+function LogView:is_visible()
+    return self._win ~= nil and vim.api.nvim_win_is_valid(self._win)
+end
+
+--- Push a parsed (or raw-fallback) record. Appends to the ring
+--- buffer, drops the oldest when full, and appends to the visible
+--- buffer iff the soft filter matches.
+--- @param record table
+function LogView:append_record(record)
+    self._records[#self._records + 1] = record
+
+    if #self._records > MAX_RECORDS then
+        -- Trim a batch at a time to avoid per-line table.remove
+        -- thrashing when the stream is firehose-level.
+        local drop = #self._records - MAX_RECORDS
+        local kept = {}
+        for i = drop + 1, #self._records do
+            kept[#kept + 1] = self._records[i]
+        end
+        self._records = kept
+        self._dropped = self._dropped + drop
+        -- Full re-render so the buffer stays in sync with the ring.
+        -- Cheap at this size; running the stream longer will keep
+        -- doing this incrementally.
+        self:_rerender()
+        return
+    end
+
+    if self._paused then return end
+    if not M.match_filter(self._filter, record) then return end
+    self:_append_line(record)
+end
+
+--- Render a record to a display string. Raw lines pass through.
+--- @param record table
+--- @return string
+function LogView:_render(record)
+    if record.raw then return record.raw end
+    return string.format("%s %s %s: %s",
+        record.time and record.time:sub(7) or "?",  -- HH:MM:SS.mmm only
+        record.level or "?",
+        record.tag or record.proc or "?",
+        record.msg or "")
+end
+
+local LEVEL_HL = {
+    F = "ErrorMsg",
+    E = "ErrorMsg",
+    W = "WarningMsg",
+    I = nil,
+    D = "Comment",
+    V = "Comment",
+}
+
+--- Overlay the level-based highlight on a freshly added line.
+function LogView:_highlight(record, line_idx)
+    if record.raw then return end
+    local hl = LEVEL_HL[record.level]
+    if not hl then return end
+    vim.api.nvim_buf_set_extmark(self._buf, self._ns, line_idx, 0, {
+        end_row = line_idx + 1,
+        end_col = 0,
+        hl_eol = true,
+        hl_group = hl,
+        priority = 100,
+    })
+end
+
+function LogView:_append_line(record)
+    local line = self:_render(record)
+    vim.bo[self._buf].modifiable = true
+
+    local n = vim.api.nvim_buf_line_count(self._buf)
+    -- Freshly created buffers have one empty line; replace it in
+    -- place to avoid a leading blank in the view.
+    local first = vim.api.nvim_buf_get_lines(self._buf, 0, 1, false)[1]
+    local is_empty = (n == 1 and (first == nil or first == ""))
+    if is_empty then
+        vim.api.nvim_buf_set_lines(self._buf, 0, 1, false, { line })
+        self:_highlight(record, 0)
+    else
+        vim.api.nvim_buf_set_lines(self._buf, n, n, false, { line })
+        self:_highlight(record, n)
+    end
+
+    vim.bo[self._buf].modifiable = false
+    self:_maybe_scroll()
+end
+
+--- Auto-follow only when the cursor is near the bottom. Lets the
+--- user scroll up to inspect something without being yanked back.
+function LogView:_maybe_scroll()
+    if not self:is_visible() then return end
+    local ok, cur = pcall(vim.api.nvim_win_get_cursor, self._win)
+    if not ok then return end
+    local n = vim.api.nvim_buf_line_count(self._buf)
+    if cur[1] >= n - AUTOSCROLL_SLACK then
+        self:_scroll_to_end(false)
+    end
+end
+
+function LogView:_scroll_to_end(force)
+    if not self:is_visible() then return end
+    local n = vim.api.nvim_buf_line_count(self._buf)
+    if n == 0 then return end
+    if force or true then
+        pcall(vim.api.nvim_win_set_cursor, self._win, { n, 0 })
+    end
+end
+
+function LogView:set_filter(filter)
+    self._filter = filter or {}
+    self:_rerender()
+end
+
+function LogView:clear()
+    self._records = {}
+    self._dropped = 0
+    vim.bo[self._buf].modifiable = true
+    vim.api.nvim_buf_set_lines(self._buf, 0, -1, false, {})
+    vim.api.nvim_buf_clear_namespace(self._buf, self._ns, 0, -1)
+    vim.bo[self._buf].modifiable = false
+end
+
+function LogView:set_paused(paused)
+    self._paused = paused
+end
+
+function LogView:is_paused()
+    return self._paused
+end
+
+function LogView:_rerender()
+    vim.bo[self._buf].modifiable = true
+    vim.api.nvim_buf_set_lines(self._buf, 0, -1, false, {})
+    vim.api.nvim_buf_clear_namespace(self._buf, self._ns, 0, -1)
+
+    local lines = {}
+    local hl_records = {}
+    for _, rec in ipairs(self._records) do
+        if M.match_filter(self._filter, rec) then
+            lines[#lines + 1] = self:_render(rec)
+            hl_records[#hl_records + 1] = rec
+        end
+    end
+    if #lines == 0 then
+        vim.api.nvim_buf_set_lines(self._buf, 0, -1, false, { "" })
+    else
+        vim.api.nvim_buf_set_lines(self._buf, 0, -1, false, lines)
+        for i, rec in ipairs(hl_records) do
+            self:_highlight(rec, i - 1)
+        end
+    end
+
+    vim.bo[self._buf].modifiable = false
+    self:_scroll_to_end(true)
+end
+
+--- Cycle min-level: off → I → W → E → off.
+function LogView:_cycle_level()
+    local order = { [false] = "I", I = "W", W = "E", E = false }
+    local cur = self._filter.level or false
+    local nxt = order[cur]
+    self._filter.level = nxt or nil
+    self:_rerender()
+    vim.notify("device log: min level = " .. (nxt or "off"))
+end
+
+function LogView:_setup_keymaps()
+    local buf = self._buf
+    local function map(lhs, rhs, desc)
+        vim.keymap.set("n", lhs, rhs, {
+            buffer = buf, silent = true, nowait = true, desc = desc,
+        })
+    end
+
+    map("q", function() self:hide() end, "loomworks: hide device-log view")
+    map("cc", function() self:clear() end, "loomworks: clear device-log")
+    map("p", function()
+        self:set_paused(not self._paused)
+        vim.notify("device log: " .. (self._paused and "paused" or "resumed"))
+    end, "loomworks: pause/resume device-log render")
+    map("cl", function() self:_cycle_level() end,
+        "loomworks: cycle device-log min level")
+    map("cf", function()
+        vim.ui.input({
+            prompt = "device log regex (empty to clear): ",
+            default = self._filter.regex or "",
+        }, function(input)
+            if input == nil then return end
+            self._filter.regex = (input ~= "" and input) or nil
+            self:_rerender()
+        end)
+    end, "loomworks: edit device-log regex filter")
+end
+
+-- ---------------------------------------------------------------------------
+-- Public API (singleton stream + view)
+-- ---------------------------------------------------------------------------
+
+--- @type table|nil singleton LogView
+local _view = nil
+
+--- @type table|nil overseer task for the current stream
+local _task = nil
+
+--- @type fun(record: table): boolean|nil
+local _prefilter = nil
+
+local function ensure_view()
+    if not _view then _view = LogView.new() end
+    return _view
+end
+
+--- Start a new hilog stream. Disposes any previous stream first so
+--- the "one active session" invariant holds.
+--- @param opts { cmd: string[], prefilter?: fun, soft_filter?: table, name?: string, on_exit?: fun(code) }
+--- @return table|nil overseer task
+function M.start(opts)
+    M.stop()
+    _prefilter = opts.prefilter
+
+    local view = ensure_view()
+    view:set_filter(opts.soft_filter or {})
+    view:clear()
+    view:show()
+
+    local lw_overseer = require("loomworks.overseer")
+    _task = lw_overseer.run_streaming_task({
+        name = opts.name or "device logs",
+        cmd = opts.cmd,
+        on_line = function(line)
+            local rec = M.parse_line(line)
+            if not rec then
+                rec = { raw = line }
+            end
+            if _prefilter and not _prefilter(rec) then return end
+            view:append_record(rec)
+        end,
+        on_complete = function(status)
+            if opts.on_exit then opts.on_exit(status) end
+        end,
+    })
+    return _task
+end
+
+--- Stop the current stream. Safe to call when nothing's running.
+function M.stop()
+    if _task then
+        pcall(function() _task:stop() end)
+        pcall(function() _task:dispose() end)
+        _task = nil
+    end
+    _prefilter = nil
+end
+
+function M.toggle() if _view then _view:toggle() end end
+function M.show()   if _view then _view:show()   end end
+function M.hide()   if _view then _view:hide()   end end
+
+function M.set_filter(filter)
+    if _view then _view:set_filter(filter) end
+end
+
+function M.clear()
+    if _view then _view:clear() end
+end
+
+function M.is_running() return _task ~= nil end
+function M.task() return _task end
+
+--- Test-only: reset module singletons between spec runs.
+function M._reset_for_tests()
+    M.stop()
+    _view = nil
+end
+
+-- Expose LogView for tests.
+M._LogView = LogView
+
+return M

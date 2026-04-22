@@ -31,15 +31,126 @@ local function is_active_running()
     end
 end
 
---- Tear down the device-log stream attached to the run, if any.
---- Stop first (sends SIGTERM via overseer), then dispose. Swallow
---- errors — this is cleanup and overseer state varies across nvim
---- builds / task lifecycles.
-local function stop_log_task()
-    if not _active_run or not _active_run.log_task then return end
-    pcall(function() _active_run.log_task:stop() end)
-    pcall(function() _active_run.log_task:dispose() end)
-    _active_run.log_task = nil
+--- Clear the device's hilog buffer before a fresh launch so the
+--- device-log view doesn't mix in stale entries from previous
+--- sessions. Best-effort: a clear failure doesn't fail the launch.
+--- Runs synchronously (it's one quick RPC to hdc).
+--- @param target loomworks.LaunchTarget
+--- @param device_serial string
+local function clear_device_log(target, device_serial)
+    local mod = target._project and target._project._module
+        and target._project._module.impl
+    if not mod or not mod.device_log_clear then return end
+    local td = target._config_unit and target._config_unit._tool_data or {}
+    local spec = mod.device_log_clear(td, device_serial)
+    if not spec or not spec.cmd then return end
+    local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
+    pcall(function()
+        vim.system(cmd, { text = true, timeout = 3000 }):wait()
+    end)
+end
+
+--- Start the device-log view + streaming task for the active run.
+--- Composes the module's `device_log` cmd spec and hands it to the
+--- device_log module, which owns the view, ring buffer, and the
+--- streaming overseer task. The task handle is kept inside
+--- device_log, not on the active run record — session_tracker just
+--- asks device_log to stop during teardown.
+--- @param target loomworks.LaunchTarget
+--- @param device_serial string
+--- @param bundle string
+--- @param pid number
+local function start_device_log_view(target, device_serial, bundle, pid)
+    local mod = target._project and target._project._module
+        and target._project._module.impl
+    if not mod or not mod.device_log then return end
+    local td = target._config_unit and target._config_unit._tool_data or {}
+
+    -- Ask for the raw stream (no device-side filter flags — we parse
+    -- and filter client-side where it's reliable).
+    local spec = mod.device_log(td, device_serial, {})
+    if not spec or not spec.cmd then return end
+    local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
+
+    -- Clear stale hilog buffer right before starting the stream so
+    -- we don't show entries from a previous run, but AFTER the
+    -- device_launch completed so any launch-time logs the app has
+    -- already emitted are still on the device and will stream in.
+    clear_device_log(target, device_serial)
+
+    local device_log = require("loomworks.device_log")
+    device_log.start({
+        name = target._project.key .. ": device logs (pid " .. pid .. ")",
+        cmd = cmd,
+        prefilter = device_log.make_prefilter({ pid = pid, bundle = bundle }),
+        soft_filter = {},  -- all records through by default; user tunes via keymaps
+    })
+end
+
+--- Start a periodic pidof poll for auto-stop when the app exits on
+--- device. Two consecutive empty results = app is gone; tear the
+--- session down the same way a user-initiated stop would.
+---
+--- 3s cadence is long enough that hdc RTT isn't a burden but short
+--- enough that users see the session clean up promptly. Two misses
+--- before closing smooths over a transient shell hiccup or a brief
+--- respawn.
+--- @param target loomworks.LaunchTarget
+--- @param device_serial string
+--- @param bundle string
+local function start_pidof_poll(target, device_serial, bundle)
+    local uv = vim.uv or vim.loop
+    local timer = uv.new_timer()
+    if not timer then return end
+
+    local consecutive_misses = 0
+    local function tick()
+        if not _active_run or _active_run.target ~= target then
+            pcall(function() timer:stop(); timer:close() end)
+            return
+        end
+        target:device_resolve_pid(device_serial, bundle,
+            { tries = 1, interval_ms = 0 })
+            :next(function(pid)
+                if not _active_run or _active_run.target ~= target then
+                    pcall(function() timer:stop(); timer:close() end)
+                    return
+                end
+                if pid then
+                    consecutive_misses = 0
+                else
+                    consecutive_misses = consecutive_misses + 1
+                    if consecutive_misses >= 2 then
+                        pcall(function() timer:stop(); timer:close() end)
+                        _active_run.pidof_timer = nil
+                        vim.notify(
+                            "loomworks: device app exited, closing log stream",
+                            vim.log.levels.INFO)
+                        local device_log = require("loomworks.device_log")
+                        pcall(device_log.stop)
+                        _active_run = nil
+                    end
+                end
+            end)
+    end
+
+    timer:start(3000, 3000, vim.schedule_wrap(tick))
+    _active_run.pidof_timer = timer
+end
+
+--- Tear down the device-log session attached to the run, if any:
+--- the pidof poll timer, the hilog streaming task, and the soft
+--- binding between the session and the log view. Swallow errors —
+--- this is cleanup and timer / task state varies with lifecycle.
+local function stop_log_session()
+    if not _active_run then return end
+    if _active_run.pidof_timer then
+        pcall(function() _active_run.pidof_timer:stop() end)
+        pcall(function() _active_run.pidof_timer:close() end)
+        _active_run.pidof_timer = nil
+    end
+    local ok, device_log = pcall(require, "loomworks.device_log")
+    if ok then pcall(device_log.stop) end
 end
 
 --- Stop the active run.
@@ -50,7 +161,7 @@ local function stop_run()
         require("loomworks.fidget").fail(_active_run.fidget_handle, "stopped")
         _active_run.fidget_handle = nil
     end
-    stop_log_task()
+    stop_log_session()
     if _active_run.mode == "launch" then
         if _active_run.target:is_running() then
             _active_run.target:stop()
@@ -190,22 +301,25 @@ local function start_run(target, mode)
                         started_at = os.clock(),
                         device_serial = device_serial,
                     }
-                    -- Kick off the log stream asynchronously. Don't
-                    -- block the fidget handle on it — the launch
-                    -- already succeeded; a log stream that fails to
-                    -- attach is a notification, not a chain failure.
+                    -- Kick off the log view asynchronously. The
+                    -- launch already succeeded; a log stream that
+                    -- fails to attach is a notification, not a
+                    -- chain failure.
+                    --
+                    -- We do NOT trust hdc/hilog's on-device filter
+                    -- flags (they're inconsistent across releases)
+                    -- — device_log parses the raw stream client-side
+                    -- and applies a prefilter {pid, bundle} with
+                    -- union semantics, catching both the app's main
+                    -- process and any runtime helper that logs under
+                    -- a different PID but for the same app.
                     local info = target:device_launch_info()
                     local bundle = info and info.bundle_name
                     if bundle then
                         target:device_resolve_pid(device_serial, bundle)
                             :next(function(pid)
-                                -- Session may have been stopped or
-                                -- superseded by the time PID lookup
-                                -- returns; only attach to the current
-                                -- run.
                                 if not _active_run
-                                    or _active_run.target ~= target
-                                    or _active_run.log_task then
+                                    or _active_run.target ~= target then
                                     return
                                 end
                                 if not pid then
@@ -214,8 +328,11 @@ local function start_run(target, mode)
                                         vim.log.levels.WARN)
                                     return
                                 end
-                                _active_run.log_task =
-                                    target:device_log_start(device_serial, pid)
+                                _active_run.device_pid = pid
+                                _active_run.device_bundle = bundle
+                                _active_run.device_serial = device_serial
+                                start_device_log_view(target, device_serial, bundle, pid)
+                                start_pidof_poll(target, device_serial, bundle)
                             end)
                             :catch(function(err)
                                 vim.notify(
