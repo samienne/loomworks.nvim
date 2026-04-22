@@ -995,11 +995,21 @@ function M.run_streaming_task(opts)
     -- output-to-buffer rendering — the caller is rendering lines
     -- somewhere else and duplicating them into a hidden task buffer
     -- is wasted memory for a firehose log tail.
+    --
+    -- `use_terminal = false` is CRITICAL for log tailing. Overseer's
+    -- default jobstart strategy runs the process under a pty sized
+    -- to the current nvim window, which hard-wraps long stdout lines
+    -- at `vim.o.columns - 4` and emits ANSI cursor-positioning
+    -- sequences between records. For hilog output — lines routinely
+    -- >200 chars — that turns every record into two or three
+    -- fragments, none of which parse. A non-terminal jobstart uses
+    -- a plain stdout pipe and gives us raw newline-separated output.
     local task = overseer.new_task({
         name = opts.name,
         cmd = cmd,
         cwd = opts.cwd,
         env = opts.env,
+        strategy = { "jobstart", use_terminal = false },
         components = { "on_output_summarize", "on_exit_set_status" },
     })
 
