@@ -28,20 +28,29 @@ local M = {}
 -- Parser
 -- ---------------------------------------------------------------------------
 
---- Strip ANSI CSI escape sequences and the UTF-8 BOM from a line.
---- Some hdc builds prepend color or banner sequences to the first
---- bytes of the stream; those would break a naive regex match and
---- also render as garbage in the view.
+--- Strip escape sequences, BOM, and stray control bytes from a line.
+--- hdc can prepend colour sequences, send BEL characters, or mix
+--- CRLF depending on the build — without sanitising, those leak
+--- into the parse regex (breaking it) or into the rendered buffer
+--- (showing up as weird glyphs).
 --- @param line string
 --- @return string
 local function sanitize(line)
+    -- UTF-8 BOM
     if line:sub(1, 3) == "\xEF\xBB\xBF" then
-        line = line:sub(4)  -- UTF-8 BOM
+        line = line:sub(4)
     end
-    -- ANSI CSI: ESC '[' ... 'm' (or similar final byte)
-    line = line:gsub("\27%[[%d;]*[a-zA-Z]", "")
-    -- Strip leading/trailing CR + whitespace
-    line = line:gsub("^[\r%s]+", ""):gsub("[\r%s]+$", "")
+    -- ANSI CSI: ESC '[' [params] final-byte
+    line = line:gsub("\27%[[%d;?]*[@-~]", "")
+    -- OSC sequences: ESC ']' ... (terminated by BEL or ST)
+    line = line:gsub("\27%][^\7\27]*[\7\27]", "")
+    -- Other single-char escape sequences: ESC followed by one byte
+    -- that isn't '[' or ']' (covers ESC(A, ESC=, ESC\, ...).
+    line = line:gsub("\27[^%[%]]", "")
+    -- Remove non-printable C0 controls except TAB, LF, CR, and DEL.
+    line = line:gsub("[%z\1-\8\11-\12\14-\31\127]", "")
+    -- Trailing CR (Windows-style line endings in a substream)
+    line = line:gsub("\r+$", "")
     return line
 end
 
@@ -102,10 +111,14 @@ local LEVEL_RANK = { V = 0, D = 1, I = 2, W = 3, E = 4, F = 5 }
 --- @return boolean
 function M.match_filter(filter, record)
     if not record then return false end
+    if record.header then
+        -- Session banners are loomworks-generated; always show.
+        return true
+    end
     if record.raw then
-        -- Raw (unparseable) records — only regex applies, otherwise
-        -- they pass through so hdc errors and malformed lines stay
-        -- visible.
+        -- Raw (unparseable) records stay visible by default so
+        -- parser/buffering problems are immediately obvious. Only
+        -- an active regex filter may hide them.
         if filter.regex then
             return record.raw:match(filter.regex) ~= nil
         end
@@ -201,7 +214,7 @@ function M.make_prefilter(opts)
     if mode == "app-related" then
         return function(record)
             if not record then return false end
-            if record.raw then return true end
+            if record.header or record.raw then return true end
             if pid and record.pid == pid then return true end
             if bundle and proc_matches_bundle(record.proc, bundle) then
                 return true
@@ -213,7 +226,7 @@ function M.make_prefilter(opts)
     -- Default: strict — AND of whichever criteria are provided.
     return function(record)
         if not record then return false end
-        if record.raw then return true end
+        if record.header or record.raw then return true end
         local pid_ok = pid and record.pid == pid
         local bundle_ok = bundle and proc_matches_bundle(record.proc, bundle)
         if pid and bundle then return pid_ok and bundle_ok end
@@ -341,32 +354,27 @@ function LogView:append_record(record)
     self:_append_line(record)
 end
 
---- Render a record to a display string. Shows everything we parsed
---- EXCEPT the timestamp (the timestamp is mostly noise in an
---- interactive tail — if you need it, the record's still in the
---- ring buffer). Two variants: three-segment (`DOMAIN/PROC/TAG`) and
---- two-segment (`DOMAIN/TAG`, proc unset).
+--- Render a record to a display string.
 ---
---- Format:
----   pid/tid LEVEL DOMAIN/PROC/TAG: msg
----   pid/tid LEVEL DOMAIN/TAG: msg     (no proc)
+--- Parsed records are reconstructed into the original hilog line
+--- format (timestamp, pid, tid, level, DOMAIN/PROC/TAG: msg) so you
+--- can diff the view against the raw stream and tell at a glance
+--- whether parsing dropped or mangled any fields.
 ---
---- Raw lines (parse failed, `header`=true banners, hdc errors) pass
---- through untouched so they remain identifiable.
+--- Three record shapes:
+---   * header  — session banner injected by `M.start`
+---   * raw     — unparseable line; marked `[UNPARSED]` so any
+---               streaming / buffering issue shows up immediately
+---   * parsed  — real hilog record
+---
 --- @param record table
 --- @return string
 function LogView:_render(record)
-    if record.raw then return record.raw end
+    if record.header then return record.header end
+    if record.raw then return "[UNPARSED] " .. record.raw end
 
-    local pid = record.pid or "?"
-    local tid = record.tid or "?"
-    local ids
-    if pid == tid then
-        ids = tostring(pid)
-    else
-        ids = pid .. "/" .. tid
-    end
-
+    local pid = record.pid or 0
+    local tid = record.tid or pid
     local locator
     if record.proc and record.proc ~= "" then
         locator = string.format("%s/%s/%s",
@@ -376,8 +384,9 @@ function LogView:_render(record)
             record.domain or "?", record.tag or "?")
     end
 
-    return string.format("%s %s %s: %s",
-        ids, record.level or "?", locator, record.msg or "")
+    return string.format("%s %5d %5d %s %s: %s",
+        record.time or "??-?? ??:??:??.???",
+        pid, tid, record.level or "?", locator, record.msg or "")
 end
 
 local LEVEL_HL = {
@@ -389,10 +398,20 @@ local LEVEL_HL = {
     V = "Comment",
 }
 
---- Overlay the level-based highlight on a freshly added line.
+--- Overlay highlight on a line. Three colour channels:
+---   * header    → Title (stands out at the top)
+---   * raw       → ErrorMsg (any unparsed line should be visible —
+---                 it's a parser/buffering problem, not a normal log)
+---   * parsed    → per-level (E/F red, W yellow, D/V dim, I default)
 function LogView:_highlight(record, line_idx)
-    if record.raw then return end
-    local hl = LEVEL_HL[record.level]
+    local hl
+    if record.header then
+        hl = "Title"
+    elseif record.raw then
+        hl = "ErrorMsg"
+    else
+        hl = LEVEL_HL[record.level]
+    end
     if not hl then return end
     vim.api.nvim_buf_set_extmark(self._buf, self._ns, line_idx, 0, {
         end_row = line_idx + 1,
@@ -465,7 +484,7 @@ end
 --- at without having to dig through loomworks.log.
 --- @param text string
 function LogView:_inject_header(text)
-    local rec = { raw = "── " .. text .. " ──" }
+    local rec = { header = "── " .. text .. " ──" }
     self._records[#self._records + 1] = rec
     self:_append_line(rec)
 end
