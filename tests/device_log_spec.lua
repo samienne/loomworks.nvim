@@ -99,46 +99,62 @@ describe("device_log parser", function()
     end)
 end)
 
-describe("device_log _render (mirrors hilog format)", function()
-    -- The LogView:_render method is an instance method, but it only
-    -- touches `self` for buffer/window access on highlight/append —
-    -- _render itself is pure. Exercise it via a thin stand-in that
-    -- calls the method with a fake self.
-    local LogView = dl._LogView
-    local function render(rec)
-        return LogView._render({}, rec)  -- `self` unused in _render
-    end
+describe("device_log M.render", function()
+    local sample = {
+        time = "04-21 16:14:16.478",
+        pid = 43865, tid = 43865, level = "E",
+        domain = "A00F00", proc = "com.example.app", tag = "MyTag",
+        msg = "boom",
+    }
 
-    it("reconstructs three-segment format with right-aligned pid/tid", function()
-        local rec = {
-            time = "04-21 16:14:16.478",
-            pid = 43865, tid = 43865, level = "E",
-            domain = "A00F00", proc = "com.example.app", tag = "MyTag",
-            msg = "boom",
-        }
-        assert.equals(
-            "04-21 16:14:16.478 43865 43865 E A00F00/com.example.app/MyTag: boom",
-            render(rec))
+    describe("verbose layout", function()
+        it("reconstructs the full hilog line (three-segment)", function()
+            assert.equals(
+                "04-21 16:14:16.478 43865 43865 E A00F00/com.example.app/MyTag: boom",
+                dl.render(sample, "verbose"))
+        end)
+
+        it("reconstructs two-segment format (no proc)", function()
+            local r = {
+                time = "04-10 15:08:15.076",
+                pid = 0, tid = 0, level = "I",
+                domain = "I00000", tag = "HiLog",
+                msg = "========Zeroth log of type: init",
+            }
+            assert.equals(
+                "04-10 15:08:15.076     0     0 I I00000/HiLog: ========Zeroth log of type: init",
+                dl.render(r, "verbose"))
+        end)
     end)
 
-    it("reconstructs two-segment format (no proc)", function()
-        local rec = {
-            time = "04-10 15:08:15.076",
-            pid = 0, tid = 0, level = "I",
-            domain = "I00000", tag = "HiLog",
-            msg = "========Zeroth log of type: init",
-        }
-        assert.equals(
-            "04-10 15:08:15.076     0     0 I I00000/HiLog: ========Zeroth log of type: init",
-            render(rec))
+    describe("compact layout (default)", function()
+        it("drops date, tid, and domain", function()
+            assert.equals(
+                "16:14:16.478 43865 E com.example.app/MyTag: boom",
+                dl.render(sample))
+            assert.equals(
+                "16:14:16.478 43865 E com.example.app/MyTag: boom",
+                dl.render(sample, "compact"))
+        end)
+
+        it("collapses to TAG alone when proc is missing", function()
+            local r = {
+                time = "04-10 15:08:15.076",
+                pid = 0, tid = 0, level = "I",
+                domain = "I00000", tag = "HiLog",
+                msg = "init",
+            }
+            assert.equals("15:08:15.076 0 I HiLog: init", dl.render(r))
+        end)
     end)
 
     it("marks unparsed records with [UNPARSED]", function()
-        assert.equals("[UNPARSED] garbage", render({ raw = "garbage" }))
+        assert.equals("[UNPARSED] garbage", dl.render({ raw = "garbage" }))
     end)
 
     it("renders headers verbatim", function()
-        assert.equals("── session start ──", render({ header = "── session start ──" }))
+        assert.equals("── session start ──",
+            dl.render({ header = "── session start ──" }))
     end)
 end)
 
@@ -176,10 +192,21 @@ describe("device_log match_filter", function()
         assert.is_false(dl.match_filter({ level = "E" }, sample))
     end)
 
-    it("regex matches against msg", function()
+    it("regex defaults to matching against msg when no rendered passed", function()
         assert.is_true(dl.match_filter({ regex = "hello" }, sample))
         assert.is_true(dl.match_filter({ regex = "^hello" }, sample))
         assert.is_false(dl.match_filter({ regex = "^goodbye" }, sample))
+    end)
+
+    it("regex matches against rendered line when one is passed", function()
+        -- When the caller pre-renders (the LogView does), regex
+        -- targets the full rendered string — "what you see is what
+        -- you grep". Matches fields that wouldn't otherwise be in
+        -- `msg` (pid, tag, level).
+        local rendered = dl.render(sample, "compact")
+        assert.is_true(dl.match_filter({ regex = "MainTag" }, sample, rendered))
+        assert.is_true(dl.match_filter({ regex = "43865" }, sample, rendered))
+        assert.is_false(dl.match_filter({ regex = "00000" }, sample, rendered))
     end)
 
     it("raw records pass through except for regex", function()

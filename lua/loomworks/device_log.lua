@@ -125,10 +125,18 @@ local LEVEL_RANK = { V = 0, D = 1, I = 2, W = 3, E = 4, F = 5 }
 
 --- Apply a soft filter. AND semantics: every non-nil filter field must
 --- match. Filter fields are all optional.
+---
+--- The optional `rendered` argument anchors `filter.regex` to the
+--- full rendered line (what the user sees). Callers that haven't
+--- rendered yet can omit it — regex then falls back to `record.msg`
+--- on parsed records (keeps the old narrower behaviour for
+--- non-view callers / tests).
+---
 --- @param filter table { pid?, proc?, tag?, level?, regex? }
 --- @param record table
+--- @param rendered? string  rendered form of `record` — regex target
 --- @return boolean
-function M.match_filter(filter, record)
+function M.match_filter(filter, record, rendered)
     if not record then return false end
     if record.header then
         -- Session banners are loomworks-generated; always show.
@@ -139,7 +147,8 @@ function M.match_filter(filter, record)
         -- parser/buffering problems are immediately obvious. Only
         -- an active regex filter may hide them.
         if filter.regex then
-            return record.raw:match(filter.regex) ~= nil
+            local text = rendered or record.raw
+            return text:match(filter.regex) ~= nil
         end
         return true
     end
@@ -161,9 +170,8 @@ function M.match_filter(filter, record)
         if r < m then return false end
     end
     if filter.regex then
-        if not record.msg or not record.msg:match(filter.regex) then
-            return false
-        end
+        local text = rendered or record.msg or ""
+        if not text:match(filter.regex) then return false end
     end
     return true
 end
@@ -256,6 +264,80 @@ function M.make_prefilter(opts)
 end
 
 -- ---------------------------------------------------------------------------
+-- Rendering (pure — shared by view appends, re-renders, and regex
+-- filtering so the "what you see is what you grep" contract holds
+-- regardless of which caller produced the rendered string).
+-- ---------------------------------------------------------------------------
+
+--- Reconstruct a record verbosely: matches the raw hilog line
+--- format 1:1 so it can be diffed against the source stream.
+---   MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: msg
+--- @param record table
+--- @return string
+local function render_verbose(record)
+    local pid = record.pid or 0
+    local tid = record.tid or pid
+    local locator
+    if record.proc and record.proc ~= "" then
+        locator = string.format("%s/%s/%s",
+            record.domain or "?", record.proc, record.tag or "?")
+    else
+        locator = string.format("%s/%s",
+            record.domain or "?", record.tag or "?")
+    end
+    return string.format("%s %5d %5d %s %s: %s",
+        record.time or "??-?? ??:??:??.???",
+        pid, tid, record.level or "?", locator, record.msg or "")
+end
+
+--- Compact layout: drop the date, drop tid, drop the domain — the
+--- three fields that are either constant within a session or
+--- duplicate adjacent ones in practice. What's left is what you
+--- actually read at a glance.
+---   HH:MM:SS.mmm PID LEVEL PROC/TAG: msg
+---   HH:MM:SS.mmm PID LEVEL TAG: msg       (no proc)
+--- @param record table
+--- @return string
+local function render_compact(record)
+    local t = record.time or ""
+    local sp = t:find(" ")
+    local time = sp and t:sub(sp + 1) or t
+    local locator
+    if record.proc and record.proc ~= "" then
+        locator = string.format("%s/%s", record.proc, record.tag or "?")
+    else
+        locator = record.tag or "?"
+    end
+    return string.format("%s %d %s %s: %s",
+        time, record.pid or 0, record.level or "?", locator, record.msg or "")
+end
+
+--- Render a record to a display string.
+---
+--- Module-level (rather than a LogView method) so match_filter and
+--- programmatic callers — not just the view — can compute the same
+--- rendered form. That's the anchor for full-line regex filtering:
+--- the string the user sees is the same one the regex matches.
+---
+--- Three record shapes:
+---   * header  — session banner injected by `M.start`
+---   * raw     — unparseable line; marked `[UNPARSED]`
+---   * parsed  — real hilog record, laid out per `layout`
+---
+--- @param record table
+--- @param layout? "compact"|"verbose" (default "compact")
+--- @return string
+function M.render(record, layout)
+    if not record then return "" end
+    if record.header then return record.header end
+    if record.raw then return "[UNPARSED] " .. record.raw end
+    if layout == "verbose" then
+        return render_verbose(record)
+    end
+    return render_compact(record)
+end
+
+-- ---------------------------------------------------------------------------
 -- LogView (one buffer + one bottom split)
 -- ---------------------------------------------------------------------------
 
@@ -296,6 +378,7 @@ function LogView.new()
         _win = nil,
         _records = {},
         _filter = {},
+        _layout = "compact",   -- "compact" | "verbose"; cV toggles
         _paused = false,
         _dropped = 0,
         _ns = vim.api.nvim_create_namespace("loomworks_device_log"),
@@ -432,8 +515,11 @@ function LogView:_flush()
     local lines = {}
     local hl_records = {}
     for _, rec in ipairs(pending) do
-        if M.match_filter(self._filter, rec) then
-            lines[#lines + 1] = self:_render(rec)
+        -- Render first, then filter — so a regex-based soft filter
+        -- can match the full rendered line rather than just `msg`.
+        local rendered = M.render(rec, self._layout)
+        if M.match_filter(self._filter, rec, rendered) then
+            lines[#lines + 1] = rendered
             hl_records[#hl_records + 1] = rec
         end
     end
@@ -458,40 +544,10 @@ function LogView:_flush()
     self:_maybe_scroll()
 end
 
---- Render a record to a display string.
----
---- Parsed records are reconstructed into the original hilog line
---- format (timestamp, pid, tid, level, DOMAIN/PROC/TAG: msg) so you
---- can diff the view against the raw stream and tell at a glance
---- whether parsing dropped or mangled any fields.
----
---- Three record shapes:
----   * header  — session banner injected by `M.start`
----   * raw     — unparseable line; marked `[UNPARSED]` so any
----               streaming / buffering issue shows up immediately
----   * parsed  — real hilog record
----
---- @param record table
---- @return string
-function LogView:_render(record)
-    if record.header then return record.header end
-    if record.raw then return "[UNPARSED] " .. record.raw end
-
-    local pid = record.pid or 0
-    local tid = record.tid or pid
-    local locator
-    if record.proc and record.proc ~= "" then
-        locator = string.format("%s/%s/%s",
-            record.domain or "?", record.proc, record.tag or "?")
-    else
-        locator = string.format("%s/%s",
-            record.domain or "?", record.tag or "?")
-    end
-
-    return string.format("%s %5d %5d %s %s: %s",
-        record.time or "??-?? ??:??:??.???",
-        pid, tid, record.level or "?", locator, record.msg or "")
-end
+-- `LogView:_render` intentionally removed — use `M.render(record,
+-- self._layout)` instead. Rendering is layout-dependent, and both
+-- the view and match_filter need to agree on the output form for
+-- full-line regex matching to work.
 
 local LEVEL_HL = {
     F = "ErrorMsg",
@@ -592,8 +648,9 @@ function LogView:_rerender()
     local lines = {}
     local hl_records = {}
     for _, rec in ipairs(self._records) do
-        if M.match_filter(self._filter, rec) then
-            lines[#lines + 1] = self:_render(rec)
+        local rendered = M.render(rec, self._layout)
+        if M.match_filter(self._filter, rec, rendered) then
+            lines[#lines + 1] = rendered
             hl_records[#hl_records + 1] = rec
         end
     end
@@ -631,7 +688,8 @@ local HELP_ROWS = {
     { "cc", "clear buffer + ring" },
     { "p",  "pause / resume render" },
     { "cl", "cycle min level (off → I → W → E → off)" },
-    { "cf", "edit regex filter (empty to clear)" },
+    { "cf", "edit regex filter (matches the full rendered line)" },
+    { "cV", "toggle compact / verbose layout" },
 }
 
 --- Close the currently-open help overlay, if any.
@@ -743,6 +801,11 @@ function LogView:_setup_keymaps()
             self:_rerender()
         end)
     end, "loomworks: edit device-log regex filter")
+    map("cV", function()
+        self._layout = (self._layout == "verbose") and "compact" or "verbose"
+        self:_rerender()
+        vim.notify("device log layout: " .. self._layout)
+    end, "loomworks: toggle compact/verbose device-log layout")
 end
 
 -- ---------------------------------------------------------------------------
@@ -857,6 +920,15 @@ end
 
 function M.set_filter(filter)
     if _view then _view:set_filter(filter) end
+end
+
+--- Programmatic layout control. Valid values: "compact", "verbose".
+--- @param layout "compact"|"verbose"
+function M.set_layout(layout)
+    if layout ~= "compact" and layout ~= "verbose" then return end
+    local view = ensure_view()
+    view._layout = layout
+    view:_rerender()
 end
 
 function M.clear()
