@@ -2948,10 +2948,29 @@ Return a command spec to launch the installed app on a device.
 `launch_info` is module-specific metadata (e.g., bundle name, ability name
 for harmony).
 
-**`device_log(tool_data, device_serial, filter?) → { cmd, args, env? }`**
+**`device_pid(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
 
-Return a command spec to stream device logs. Used for background log
-streaming independent of the launch chain.
+Return a command spec that, when run, prints the PID of a running app
+on the device. Used by the session tracker for two purposes: (1)
+initial PID discovery right after launch, and (2) periodic polling
+to detect when the app has exited so the log stream can be torn
+down automatically.
+
+**`device_log(tool_data, device_serial, opts?) → { cmd, args, env? }`**
+
+Return a command spec that streams device logs on stdout. `opts` is
+an optional hint table (e.g., `opts.pid` for device-side filtering),
+but the core `device_log` view does not rely on device-side filters
+— it parses and filters the stream client-side. Modules should
+expose whichever opts make sense; harmony currently accepts `pid`
+and `tag` as best-effort hints.
+
+**`device_log_clear(tool_data, device_serial) → { cmd, args, env? }`**
+
+Optional. Return a command spec that flushes the device's log
+buffer (for harmony: `hdc shell hilog -r`). Called by the session
+tracker right before starting a fresh stream so the view doesn't
+mix in stale entries. Best-effort — errors here are non-fatal.
 
 **`resolve_artifact(project_ctx, active_config) → string|nil`**
 
@@ -2985,6 +3004,25 @@ build → file-deploy → device-install → device-launch
    overseer as a tracked task. On failure, stop the chain with error.
 6. **Device launch**: call `resolve_launch_info()` then `device_launch()`.
    Execute via overseer.
+7. **Log stream** (best-effort):
+   a. Resolve the launched app's PID via `device_pid()` (polled
+      briefly — `aa start` returns before the process is up).
+   b. Clear the device log buffer via `device_log_clear()` (when
+      the module provides it) so stale entries don't show up in
+      the view.
+   c. Start `device_log()` as a streaming task and hand its lines
+      to the `loomworks.device_log` module, which parses each line,
+      applies a session prefilter (PID OR proc-contains-bundle,
+      union semantics), writes matches to a ring buffer, and
+      renders filtered entries into a bottom-split scratch buffer.
+   d. Start a periodic pidof poll (~3 s) on the session tracker.
+      When the PID is gone for two consecutive polls the session
+      tracker treats the app as exited, stops the log stream, and
+      clears the active run.
+
+   Failure at any step surfaces as a warning and does not fail the
+   launch chain — the app is already running, we just can't follow
+   its output this time.
 
 Device targets always use launch mode in v1 (no device debug).
 

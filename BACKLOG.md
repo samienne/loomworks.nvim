@@ -159,12 +159,30 @@ always use launch mode regardless of user input.
 
 ---
 
-## Device log streaming
+## Device log view — follow-ups
 
-The harmony module already implements `device_log()` returning a command
-spec for `hdc hilog`. Not wired into UI in v1. Could be a standalone
-action on the device status line — start a background overseer task,
-stream logs in a dedicated window.
+The device-log view (bottom-split, parsed + filtered client-side)
+lands with enough to be useful: session prefilter (pid OR
+proc-contains-bundle), soft filter (level / regex / tag / pid),
+ring buffer with auto-scroll, level-based highlights, auto-close on
+app exit via pidof polling. Known follow-ups:
+
+- **Persist soft filter per-project** — currently in-memory only;
+  moving to workspace config lets power users save a preferred
+  level or regex.
+- **Multi-session view** — one stream at a time today; a second
+  device launch stops the first log. If users need to tail two
+  apps concurrently, expose multiple views keyed by
+  `(serial, bundle)`.
+- **Save log to file** — simple `:w` action or a `SaveLog` keymap
+  that dumps the rendered buffer to `.nvim/device-log-<ts>.log`.
+- **Structured column view** — keep the render compact by default,
+  but offer a "full format" toggle that shows PID / proc / domain
+  columns aligned.
+- **Other modules** — the parser + view are harmony-shaped today
+  (hilog format). When cmake `run` output wants the same kind of
+  surface, factor the parser into a strategy and reuse view +
+  ring buffer.
 
 ---
 

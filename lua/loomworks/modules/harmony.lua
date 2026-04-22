@@ -781,13 +781,66 @@ function M.device_launch(tool_data, device_serial, launch_info)
     }
 end
 
---- Return command spec for streaming device logs.
+--- Resolve the PID of a running app on a device by bundle name.
+--- Executes `hdc -t <serial> shell pidof <bundle>`. `hdc` exits 0 even
+--- when pidof returns nothing, so the caller parses stdout for a
+--- numeric PID.
 --- @param tool_data table
 --- @param device_serial string
---- @param filter string|nil optional log filter
+--- @param bundle_name string
 --- @return { cmd: string, args: string[] }
-function M.device_log(tool_data, device_serial, filter)
-    local args = { "-t", device_serial, "hilog" }
+function M.device_pid(tool_data, device_serial, bundle_name)
+    return {
+        cmd = tool_data.hdc,
+        args = { "-t", device_serial, "shell", "pidof", bundle_name },
+    }
+end
+
+--- Return a command spec that flushes the device's hilog buffers
+--- (`hdc -t <serial> shell hilog -r`). Used right before starting a
+--- log stream for a fresh launch so the view doesn't mix in stale
+--- entries from previous sessions or unrelated system chatter.
+--- Best-effort: errors here are non-fatal.
+--- @param tool_data table
+--- @param device_serial string
+--- @return { cmd: string, args: string[] }
+function M.device_log_clear(tool_data, device_serial)
+    return {
+        cmd = tool_data.hdc,
+        args = { "-t", device_serial, "shell", "hilog", "-r" },
+    }
+end
+
+--- Return command spec for streaming device logs.
+---
+--- Invokes `hdc shell hilog ...` rather than `hdc hilog ...`: the
+--- top-level `hdc hilog` subcommand is a passthrough dumper that
+--- ignores filter flags, whereas `shell hilog` lets us apply filters
+--- on-device where they actually work.
+---
+--- Filters layered when provided:
+---   * `opts.pid`  → `-P <pid>` (filter by process id)
+---   * `opts.tag`  → `-T <tag>` (filter by hilog tag — for harmony
+---     apps the default is typically the bundle name)
+---
+--- Both are applied together. An unfiltered stream is unwatchable on
+--- a real device, so callers are expected to pass at least one.
+---
+--- @param tool_data table
+--- @param device_serial string
+--- @param opts? { pid?: number, tag?: string }
+--- @return { cmd: string, args: string[] }
+function M.device_log(tool_data, device_serial, opts)
+    opts = opts or {}
+    local args = { "-t", device_serial, "shell", "hilog" }
+    if opts.pid then
+        args[#args + 1] = "-P"
+        args[#args + 1] = tostring(opts.pid)
+    end
+    if opts.tag and opts.tag ~= "" then
+        args[#args + 1] = "-T"
+        args[#args + 1] = opts.tag
+    end
     return {
         cmd = tool_data.hdc,
         args = args,
