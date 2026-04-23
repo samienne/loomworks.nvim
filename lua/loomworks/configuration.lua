@@ -3,8 +3,43 @@
 --- Created from module.info() output + loomworks.json user overrides.
 --- Owned by Project._configurations registry.
 
+--- Build the canonical name for a configuration from a (prefix, base)
+--- pair. Prefixed canonical names take the form `prefix:base` and
+--- identify auto-generated configurations (module-emitted). User
+--- configurations are unprefixed — their canonical name is just the
+--- base name. Callers that already have a canonical string should
+--- use `split_canonical` to get the parts back.
+--- @param prefix string|nil  nil → user config
+--- @param base string
+--- @return string
+local function canonical(prefix, base)
+    if prefix and prefix ~= "" then
+        return prefix .. ":" .. base
+    end
+    return base
+end
+
+--- Inverse of `canonical`. Given the canonical name string, returns
+--- `(prefix, base)`. `prefix` is nil when the name contains no `:`
+--- (user config). The first `:` is the separator — prefixes don't
+--- themselves contain `:`, but base names may (defensive; we ban
+--- `:` in user-declared names separately).
+--- @param name string
+--- @return string|nil prefix, string base
+local function split_canonical(name)
+    local p, b = name:match("^([^:]+):(.+)$")
+    if p then return p, b end
+    return nil, name
+end
+
 --- @class loomworks.Configuration
---- @field name string configuration name (e.g., "Debug", "Debug-asan")
+--- @field name string canonical configuration name ("variant:Debug" for
+---        auto-gens, bare name for user configs)
+--- @field prefix string|nil tier prefix — nil for user configs,
+---        module-specified for auto-gens (e.g. "variant", "preset",
+---        "auto", or the module id as fallback)
+--- @field base_name string the bare name (portion after the prefix),
+---        for compact display and user interaction
 --- @field _project loomworks.Project back-reference
 --- @field _inherits loomworks.Configuration[] resolved base configuration references
 --- @field inherits_names string[] raw base config names (from module data)
@@ -22,18 +57,33 @@ Configuration.__index = Configuration
 
 --- Create a new Configuration.
 --- @param project loomworks.Project owning project
---- @param name string configuration name
+--- @param name string canonical configuration name
 --- @param data table configuration data from module.info()
 --- @return loomworks.Configuration
 function Configuration.new(project, name, data)
     local self = setmetatable({}, Configuration)
     self._project = project
     self.name = name
+    local prefix, base = split_canonical(name)
+    self.prefix = prefix
+    self.base_name = base
     self._removed = false
     self._intent = "local"
     self:_update(data)
     return self
 end
+
+--- True iff this configuration was emitted by the module (auto-gen),
+--- as opposed to declared in user.json / loomworks.json by the user.
+--- Auto-gens carry a prefix; user configs don't (ban on `:` in user
+--- names enforced at config.validate).
+--- @return boolean
+function Configuration:is_auto_gen()
+    return self.prefix ~= nil
+end
+
+Configuration.canonical = canonical
+Configuration.split_canonical = split_canonical
 
 --- Update configuration data in place (preserves table identity).
 --- @param data table configuration data from module.info()

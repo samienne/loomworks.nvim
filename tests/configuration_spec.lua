@@ -70,6 +70,52 @@ describe("Configuration", function()
         end)
     end)
 
+    describe("canonical / split_canonical", function()
+        it("joins prefix+base with `:`", function()
+            assert.equals("variant:Debug", Configuration.canonical("variant", "Debug"))
+            assert.equals("preset:debug-custom",
+                Configuration.canonical("preset", "debug-custom"))
+        end)
+
+        it("returns base alone when prefix is nil (user config)", function()
+            assert.equals("my-debug", Configuration.canonical(nil, "my-debug"))
+            assert.equals("my-debug", Configuration.canonical("", "my-debug"))
+        end)
+
+        it("splits canonical back into (prefix, base)", function()
+            local p, b = Configuration.split_canonical("variant:Debug")
+            assert.equals("variant", p)
+            assert.equals("Debug", b)
+        end)
+
+        it("returns (nil, name) when no `:` (user config)", function()
+            local p, b = Configuration.split_canonical("my-debug")
+            assert.is_nil(p)
+            assert.equals("my-debug", b)
+        end)
+    end)
+
+    describe("prefix + base_name derivation", function()
+        it("splits a prefixed canonical name", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "variant:Debug",
+                { variant = "Debug", is_default = true })
+            assert.equals("variant:Debug", cfg.name)
+            assert.equals("variant", cfg.prefix)
+            assert.equals("Debug", cfg.base_name)
+            assert.is_true(cfg:is_auto_gen())
+        end)
+
+        it("treats an unprefixed name as a user config", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "my-debug",
+                { is_user = true })
+            assert.is_nil(cfg.prefix)
+            assert.equals("my-debug", cfg.base_name)
+            assert.is_false(cfg:is_auto_gen())
+        end)
+    end)
+
     describe("is_abstract", function()
         it("returns true when no variant", function()
             local project = make_project()

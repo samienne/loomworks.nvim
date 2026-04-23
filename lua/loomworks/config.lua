@@ -133,6 +133,25 @@ function M.validate(raw, root)
             end
         end
 
+        -- User-declared configuration names cannot contain `:` —
+        -- that character is reserved as the tier separator for
+        -- auto-generated configs (e.g. `variant:Debug`,
+        -- `preset:debug-custom`). Collision-proofing the namespace
+        -- upfront removes a whole class of "user config shadows the
+        -- module's default" confusion that the strict-separation
+        -- design is meant to eliminate.
+        if type_config and type_config.configurations then
+            for cfg_name in pairs(type_config.configurations) do
+                if type(cfg_name) == "string" and cfg_name:find(":", 1, true) then
+                    return nil, "project '" .. key .. "' configuration '"
+                        .. cfg_name .. "': name contains ':' which is "
+                        .. "reserved for auto-generated configurations "
+                        .. "(prefix:name). Rename this configuration "
+                        .. "without ':'."
+                end
+            end
+        end
+
         -- Validate project-level variable declarations
         local project_variables = nil
         if def.variables then

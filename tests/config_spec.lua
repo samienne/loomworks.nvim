@@ -110,6 +110,34 @@ describe("config", function()
             assert.are.same({ "B" }, result.projects.A.depends_on)
         end)
 
+        it("rejects user-declared config names containing ':'", function()
+            -- `:` is the tier separator for auto-gen configs
+            -- (`variant:Debug`, `preset:debug-custom`). User names
+            -- must stay in the unprefixed namespace.
+            local json = vim.json.encode({
+                projects = {
+                    A = { cmake = { configurations = { ["foo:bar"] = {} } } },
+                },
+            })
+            local result, err = config.parse(json, "/fake/root")
+            assert.is_nil(result)
+            assert.matches("foo:bar", err)
+            assert.matches("reserved", err)
+        end)
+
+        it("accepts user config names without ':'", function()
+            local json = vim.json.encode({
+                projects = {
+                    A = { cmake = { configurations = {
+                        ["my-debug"] = { inherits = "variant:Debug" },
+                        ["Custom"] = {},
+                    } } },
+                },
+            })
+            local result = config.parse(json, "/fake/root")
+            assert.is_not_nil(result)
+        end)
+
         it("rejects project with multiple type keys", function()
             local json = vim.json.encode({
                 projects = {
