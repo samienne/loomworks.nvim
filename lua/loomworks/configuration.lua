@@ -51,6 +51,11 @@ end
 --- @field variables table<string, string>|nil variable overrides (name → value)
 --- @field role string|nil special role (e.g., "compile_commands")
 --- @field _removed boolean
+--- @field _source_missing boolean true when this Configuration exists as
+---        a skeleton — created because a config_set mapping,
+---        inherits reference, or similar pointed at its name, but
+---        no module-emitted `info()` entry nor user.json declaration
+---        currently backs it. Cleared when the backing reappears.
 --- @field _intent "local"|"shared"|"local+shared" intended publish state
 local Configuration = {}
 Configuration.__index = Configuration
@@ -170,6 +175,7 @@ function Configuration:_update(data)
     local generic = {
         is_default = true, is_user = true, from_preset = true,
         role = true, inherits = true, options = true, variables = true,
+        prefix = true, base_name = true,
     }
     for k, v in pairs(data) do
         if not generic[k] then
@@ -177,6 +183,14 @@ function Configuration:_update(data)
         end
     end
     self.module_config = module_config
+
+    -- A refresh that finds this config in module output OR user.json
+    -- proves it's backed — clear any lingering source-missing flag.
+    -- An ensure_configuration stub that never gets backed keeps the
+    -- flag (see Project:ensure_configuration).
+    if self.is_default or self.is_user or self.from_preset then
+        self._source_missing = false
+    end
 end
 
 --- Resolve inheritance references from the project's configuration registry.
@@ -190,6 +204,28 @@ function Configuration:_resolve_inherits()
             self._inherits[#self._inherits + 1] = base
         end
     end
+end
+
+--- Return the list of `inherits` base names that couldn't be
+--- resolved — the caller asked us to inherit from names that don't
+--- exist in the project's configuration registry. Empty list on
+--- success. The reference usually stayed valid until someone
+--- renamed (e.g. auto-gen became canonical-keyed) or removed the
+--- base config; orphaned names are actionable at the UI layer via
+--- rename / rebase.
+--- @return string[]
+function Configuration:unresolved_inherits_names()
+    local resolved = {}
+    for _, c in ipairs(self._inherits or {}) do
+        resolved[c.name] = true
+    end
+    local missing = {}
+    for _, name in ipairs(self.inherits_names or {}) do
+        if not resolved[name] then
+            missing[#missing + 1] = name
+        end
+    end
+    return missing
 end
 
 --- Check if this configuration is abstract (no variant — mixin only).
