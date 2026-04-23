@@ -5,6 +5,51 @@ they don't get lost.
 
 ---
 
+## Device log streaming: sluggishness persists after stream ends
+
+After a harmony device session ends, editor responsiveness stays
+degraded until the user manually disposes the hilog task via
+`:OverseerOpen`. Closing our device_log bottom-split doesn't fix
+it; `session_tracker.stop_run` already calls `task:stop()` +
+`task:dispose()` on tear-down, so either that path isn't firing
+or the dispose doesn't fully clean up.
+
+Candidate causes to investigate:
+
+- Overseer's JobstartStrategy still creates a hidden output buffer
+  even with `use_terminal = false`, and appends every stdout chunk
+  via `nvim_buf_set_lines`. Long sessions can produce
+  hundreds-of-thousands-of-line buffers. If any statusline /
+  winbar / autocmd pattern iterates listed buffers (or walks lines
+  in them), that buffer becomes a global toll until disposed.
+- Subscriptions registered via `task:subscribe("on_output_lines", ...)`
+  capture the device_log view closure. If overseer's bookkeeping
+  keeps the handler after complete, the closure stays pinned.
+- An event / autocmd on the task buffer might still fire after
+  process exit.
+
+Options if it comes up again:
+
+- **Auto-dispose on stream end.** When `on_complete` fires (or
+  when `device_log.stop` is called) schedule the task for
+  disposal. Users lose post-mortem raw-stream access but gain a
+  clean editor; our ring-buffered view already keeps the last
+  5000 parsed records for inspection.
+- **Truncate the overseer buffer periodically** to a rolling
+  window (keep memory bounded without disposing the task).
+- **Bypass overseer entirely** for the hilog invocation — spawn
+  via `vim.uv.spawn` with a pipe, read lines directly, expose
+  stop via `device_log.stop_session`. Loses the "one task list"
+  story for this task type but eliminates the buffer-growth
+  problem.
+
+Diagnostic first step when someone hits this: check the task's
+buffer line count during a sluggish session (`:OverseerOpen` →
+inspect the task's output buffer) to confirm the buffer-size
+hypothesis before changing anything.
+
+---
+
 ## MSVC toolchain support for the meson module
 
 Meson builds fine with MSVC (`cl.exe`) on the ninja backend, but only
