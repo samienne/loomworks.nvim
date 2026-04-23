@@ -78,10 +78,14 @@ end
 --- @param config table type_config from loomworks.json
 --- @return table<string, table>
 function M.default_configurations(path, config)
+    -- All defaults use the `variant:` prefix — these are compile-mode
+    -- built-ins, same as cmake's Debug/Release/RelWithDebInfo. The
+    -- `canonicalize` step in `info()` turns bare keys into
+    -- `variant:Debug` etc.
     return {
-        Debug          = { variant = "Debug",          buildtype = "debug" },
-        Release        = { variant = "Release",        buildtype = "release" },
-        RelWithDebInfo = { variant = "RelWithDebInfo", buildtype = "debugoptimized" },
+        Debug          = { prefix = "variant", variant = "Debug",          buildtype = "debug" },
+        Release        = { prefix = "variant", variant = "Release",        buildtype = "release" },
+        RelWithDebInfo = { prefix = "variant", variant = "RelWithDebInfo", buildtype = "debugoptimized" },
     }
 end
 
@@ -94,65 +98,48 @@ local function normalize_inherits(inherits)
     return inherits
 end
 
---- Resolve user overrides on top of defaults.
---- Mirrors cmake.resolve_configurations: user overrides win per-field,
---- user can add entirely new configurations. Inheritance propagates the
---- `variant` from the first base that has one; configs without a
---- variant-providing base remain abstract.
+--- Resolve defaults + user overrides into a canonical-keyed dict.
+---
+--- Auto-gens from `defaults` become `variant:Debug` etc. via the
+--- shared canonicalise step. User overrides from
+--- `config.configurations` land as standalone user configs (bare
+--- keys, no colon — `:` in user names is rejected at
+--- `config.validate`), following the strict auto-gen vs user tier
+--- separation: a user-declared "Debug" is NOT a silent override of
+--- `variant:Debug`, it's its own config that typically inherits
+--- from one.
+---
+--- Inheritance propagation: when a user config doesn't declare its
+--- own `variant`/`buildtype`, walk the first base in its `inherits`
+--- chain that does.
 --- @param defaults table<string, table>
---- @param config table type_config from loomworks.json (may have .configurations)
---- @return table<string, table>
+--- @param config table|nil type_config (may have `.configurations`)
+--- @return table<string, table> canonical-keyed dict
 function M.resolve_configurations(defaults, config)
-    local result = {}
+    local Configuration = require("loomworks.configuration")
+    local result = Configuration.canonicalize(
+        defaults, config and config.configurations, M.id)
 
-    -- Start with defaults (carry variant + buildtype)
-    for name, def in pairs(defaults) do
-        result[name] = {
-            variant = def.variant,
-            buildtype = def.buildtype,
-            is_default = true,
-        }
-    end
-
-    -- Apply user overrides/additions
-    if config and config.configurations then
-        for name, override in pairs(config.configurations) do
-            if not result[name] then
-                result[name] = {}
-            end
-            local cfg = result[name]
-
-            -- Inheritance: variant from first base that has one
-            local bases = normalize_inherits(override.inherits)
-            if #bases > 0 then
-                cfg.inherits = bases
-                for _, base_name in ipairs(bases) do
-                    local base = result[base_name]
-                    if base and base.variant then
-                        cfg.variant = base.variant
-                        -- Also inherit buildtype if child doesn't override
-                        if base.buildtype and not override.buildtype then
-                            cfg.buildtype = base.buildtype
-                        end
-                        break
+    -- Inheritance pass: propagate variant + buildtype from the
+    -- first base that provides them, so a user config that only
+    -- says `inherits = "variant:Debug"` ends up concrete.
+    for _, cfg in pairs(result) do
+        if cfg.is_user and cfg.inherits and not cfg.variant then
+            local bases = normalize_inherits(cfg.inherits)
+            for _, base_name in ipairs(bases) do
+                local base = result[base_name]
+                if base and base.variant then
+                    cfg.variant = base.variant
+                    if not cfg.buildtype and base.buildtype then
+                        cfg.buildtype = base.buildtype
                     end
+                    break
                 end
             end
-
-            -- Defaults that the user overrode keep their variant-from-name;
-            -- net-new user configs with no variant-providing base stay abstract.
-            if not cfg.variant and cfg.is_default then
-                cfg.variant = name
-            end
-
-            -- Copy through known module-specific fields
-            if override.buildtype then cfg.buildtype = override.buildtype end
-            if override.machine_file then cfg.machine_file = override.machine_file end
-            if override.options then cfg.options = override.options end
-            if override.variables then cfg.variables = override.variables end
-            if override.role then cfg.role = override.role end
-
-            cfg.is_user = true
+        end
+        -- Store normalised inherits array for downstream callers.
+        if cfg.inherits and type(cfg.inherits) == "string" then
+            cfg.inherits = { cfg.inherits }
         end
     end
 
@@ -168,6 +155,11 @@ function M.info(path, config)
     local configurations = M.resolve_configurations(defaults, config)
     return { configurations = configurations }
 end
+
+--- Tier prefix emitted for meson auto-gens (compile-mode variants).
+--- Declared so the merge layer can canonicalise even when a caller
+--- bypasses `info()` and reads `default_configurations` directly.
+M.default_config_prefix = "variant"
 
 --- Map a semantic variant type to a configuration name from available configs.
 --- @param variant_type string "debug"|"release"|"release_debug"

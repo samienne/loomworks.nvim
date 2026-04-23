@@ -85,6 +85,58 @@ end
 Configuration.canonical = canonical
 Configuration.split_canonical = split_canonical
 
+--- Canonicalise a module's configuration table.
+---
+--- Intended to be called from each module's `info()` to transform
+--- the auto-gen output of `default_configurations` into
+--- canonical-keyed form. Takes:
+---   * `auto_configs`  bare-keyed table of the module's auto-gens.
+---     Each entry may carry `prefix` in its data — if present, it
+---     wins. Otherwise the module's id is used as the prefix
+---     (harmony → "harmony:default-entry-arm64-v8a" when the module
+---     doesn't opt into "auto:").
+---   * `user_overrides` user.json / loomworks.json
+---     type_config.configurations dict. Keys must already be
+---     validated free of `:` (enforced in config.validate). Each
+---     entry becomes a standalone user config in the output, keyed
+---     by its bare name — it no longer silently shadows an auto-gen
+---     that happens to share a name, which was the whole point of
+---     the strict-separation design.
+---   * `module_id` string, used as the default prefix when an
+---     auto-gen entry has no explicit `prefix`.
+---
+--- Returns a canonical-keyed dict suitable for returning from
+--- `info()`: auto-gen keys look like `prefix:base`, user keys are
+--- bare.
+--- @param auto_configs table<string, table>
+--- @param user_overrides table<string, table>|nil
+--- @param module_id string
+--- @return table<string, table>
+function Configuration.canonicalize(auto_configs, user_overrides, module_id)
+    local result = {}
+    for name, cfg in pairs(auto_configs or {}) do
+        -- Shallow-copy so the module's defaults table isn't mutated
+        -- across calls (modules that cache their defaults otherwise
+        -- end up with stale `prefix`/`base_name` on re-merge).
+        local entry = {}
+        for k, v in pairs(cfg) do entry[k] = v end
+        local prefix = entry.prefix or module_id
+        entry.prefix = prefix
+        entry.base_name = name
+        entry.is_default = true  -- auto-gens are always defaults
+        result[canonical(prefix, name)] = entry
+    end
+    if user_overrides then
+        for name, override in pairs(user_overrides) do
+            local entry = {}
+            for k, v in pairs(override) do entry[k] = v end
+            entry.is_user = true
+            result[name] = entry
+        end
+    end
+    return result
+end
+
 --- Update configuration data in place (preserves table identity).
 --- @param data table configuration data from module.info()
 function Configuration:_update(data)
