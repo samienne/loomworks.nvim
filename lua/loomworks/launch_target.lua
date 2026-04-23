@@ -95,6 +95,28 @@ function LaunchTarget:build(on_complete)
     local future_mod = require("loomworks.future")
     local overseer = require("loomworks.overseer")
 
+    -- Guard: if the selected ConfigUnit points at an abstract
+    -- Configuration (no `variant` set on module_config — the state
+    -- we end up in when harmony's default_configurations couldn't
+    -- parse build-profile.json5 and the profile references a stub
+    -- user config), bail out with a specific error rather than
+    -- handing a no-op variant to the module and watching the chain
+    -- hang on a phantom task. A clear message beats a silent spinner.
+    if self._config_unit and self._config_unit._configuration
+        and self._config_unit._configuration.is_abstract
+        and self._config_unit._configuration:is_abstract() then
+        local cfg_name = self._config_unit._configuration.name or "?"
+        local proj_name = self._project and self._project.key or "?"
+        local err = string.format(
+            "configuration '%s' on project '%s' is abstract "
+            .. "(no variant resolved) — can't build. "
+            .. "Check module auto-detection (e.g. `:messages` for "
+            .. "harmony parse warnings).",
+            cfg_name, proj_name)
+        if on_complete then on_complete(false) end
+        return future_mod.rejected(err)
+    end
+
     local function build_self()
         if self._target then
             return self._target:build()
@@ -672,6 +694,38 @@ end
 -- the log view + its overseer task now live in the device_log
 -- module so they can share a ring buffer and a dedicated split,
 -- rather than relying on overseer's default output-to-buffer view.
+
+--- Stop the app on a device. Returns a Future.
+--- Delegates to the module's `device_stop` (harmony:
+--- `hdc shell aa force-stop -b <bundle>`). Session tracker calls
+--- this from `stop_run()` when it knows the active run is a
+--- device launch; it's fire-and-forget from the user's
+--- perspective — we don't block teardown on the RPC.
+--- @param device_serial string
+--- @param bundle_name string
+--- @return loomworks.Future
+function LaunchTarget:device_stop(device_serial, bundle_name)
+    local future_mod = require("loomworks.future")
+    local overseer = require("loomworks.overseer")
+
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_stop then
+        return future_mod.resolved(true)
+    end
+    local unit = self._config_unit
+    local td = unit and unit._tool_data or {}
+    local spec = mod.device_stop(td, device_serial, bundle_name)
+    if not spec or not spec.cmd then
+        return future_mod.resolved(true)
+    end
+
+    return overseer.run_cmd_task({
+        name = self._project.key .. ": stop on " .. device_serial,
+        cmd = spec.cmd,
+        args = spec.args,
+        check_output = spec.check_output,
+    })
+end
 
 -- ---------------------------------------------------------------------------
 -- Display

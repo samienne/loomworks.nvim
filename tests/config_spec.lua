@@ -271,5 +271,26 @@ describe("config", function()
             assert.are.same({ "Lib" }, projects.App.depends_on)
             assert.are.same({ test = {} }, projects.App.launch)
         end)
+
+        it("treats project-level `deploy` as non-type and preserves it", function()
+            -- Regression: `deploy` used to be missing from NON_TYPE_KEYS,
+            -- so a project with both `harmony` and `deploy` reported
+            -- "multiple type keys: deploy, harmony" and failed to load.
+            local projects, err = config.normalize_projects({
+                NativeDemo = {
+                    harmony = {},
+                    deploy = {
+                        ["${workspace_root}/entry/libs/arm64-v8a/"] = {
+                            { project = "Lib", target = "mylib", pre_build = true },
+                        },
+                    },
+                },
+            })
+            assert.is_nil(err)
+            assert.equals("harmony", projects.NativeDemo.type)
+            assert.is_not_nil(projects.NativeDemo.deploy)
+            assert.is_not_nil(projects.NativeDemo.deploy
+                ["${workspace_root}/entry/libs/arm64-v8a/"])
+        end)
     end)
 end)
