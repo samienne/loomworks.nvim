@@ -64,26 +64,37 @@ describe("meson module", function()
     end)
 
     describe("resolve_configurations", function()
-        it("marks defaults with is_default and preserves variant", function()
+        it("emits canonical `variant:Debug` keys for defaults", function()
             local cfgs = meson.resolve_configurations(
                 meson.default_configurations("/tmp/x", {}), {})
-            assert.is_true(cfgs.Debug.is_default)
-            assert.equals("Debug", cfgs.Debug.variant)
+            assert.is_not_nil(cfgs["variant:Debug"])
+            assert.is_true(cfgs["variant:Debug"].is_default)
+            assert.equals("Debug", cfgs["variant:Debug"].variant)
+            assert.equals("variant", cfgs["variant:Debug"].prefix)
         end)
 
-        it("merges user override on top and marks is_user", function()
+        it("user configs are standalone (NOT a silent override of variant:Debug)", function()
+            -- Strict separation: a user "Debug" is its own thing,
+            -- not a merge into `variant:Debug`. Old behaviour would
+            -- have collapsed them into one entry.
             local defaults = meson.default_configurations("/tmp/x", {})
             local cfgs = meson.resolve_configurations(defaults, {
                 configurations = {
                     Debug = { buildtype = "debug", options = { warning_level = 3 } },
                 },
             })
+            assert.is_not_nil(cfgs["variant:Debug"])
+            assert.is_true(cfgs["variant:Debug"].is_default)
+            assert.is_nil(cfgs["variant:Debug"].is_user)
+            assert.is_nil(cfgs["variant:Debug"].options)
+            -- User's Debug stands alone at the bare key
+            assert.is_not_nil(cfgs.Debug)
             assert.is_true(cfgs.Debug.is_user)
+            assert.is_nil(cfgs.Debug.prefix)
             assert.equals(3, cfgs.Debug.options.warning_level)
-            assert.equals("Debug", cfgs.Debug.variant)
         end)
 
-        it("adds new user configs not in defaults (abstract unless variant given)", function()
+        it("user config with no inherits is abstract (no variant)", function()
             local cfgs = meson.resolve_configurations(
                 meson.default_configurations("/tmp/x", {}),
                 { configurations = { CustomMixin = { options = { warning_level = 3 } } } })
@@ -92,11 +103,14 @@ describe("meson module", function()
             assert.is_true(cfgs.CustomMixin.is_user)
         end)
 
-        it("user config inheriting from a default picks up the variant", function()
+        it("user config inheriting from `variant:Debug` picks up its variant", function()
             local cfgs = meson.resolve_configurations(
                 meson.default_configurations("/tmp/x", {}),
-                { configurations = { ["Debug-asan"] = { inherits = "Debug" } } })
+                { configurations = {
+                    ["Debug-asan"] = { inherits = "variant:Debug" },
+                } })
             assert.equals("Debug", cfgs["Debug-asan"].variant)
+            assert.equals("debug", cfgs["Debug-asan"].buildtype)
         end)
     end)
 

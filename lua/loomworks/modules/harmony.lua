@@ -268,6 +268,7 @@ function M.default_configurations(path, config)
                     for _, abi in ipairs(abi_filters) do
                         local name = product.name .. "-" .. target.target_name .. "-" .. abi
                         configs[name] = {
+                            prefix = "auto",
                             variant = name,
                             product = product.name,
                             target = target.target_name,
@@ -282,6 +283,7 @@ function M.default_configurations(path, config)
                     -- Non-native project: no ABI suffix
                     local name = product.name .. "-" .. target.target_name
                     configs[name] = {
+                        prefix = "auto",
                         variant = name,
                         product = product.name,
                         target = target.target_name,
@@ -317,9 +319,20 @@ function M.default_configurations(path, config)
         end
     end
 
-    -- Fallback: simple debug/release
-    return { debug = { variant = "debug" }, release = { variant = "release" } }
+    -- Fallback: simple debug/release (prefix="auto" so the
+    -- canonical keys become `auto:debug` / `auto:release`).
+    return {
+        debug   = { prefix = "auto", variant = "debug" },
+        release = { prefix = "auto", variant = "release" },
+    }
 end
+
+--- Module-level prefix for harmony auto-gens. Harmony uses `auto:`
+--- (generic "auto-generated from project files") rather than a
+--- module-specific prefix — if there's ever a second source inside
+--- a harmony project it can pick its own prefix in the per-entry
+--- `prefix` field.
+M.default_config_prefix = "auto"
 
 --- Return what the module knows about the project.
 --- Mark configurations from user type_config as `is_user = true` so the UI
@@ -328,20 +341,15 @@ end
 --- @param config table type_config from loomworks.json
 --- @return table info
 function M.info(path, config)
-    local configurations = M.default_configurations(path, config)
-
-    if config.configurations then
-        for name, cfg in pairs(config.configurations) do
-            local merged = configurations[name] or {}
-            for k, v in pairs(cfg) do
-                merged[k] = v
-            end
-            merged.is_user = true
-            configurations[name] = merged
-        end
-    end
-
-    return { configurations = configurations }
+    local Configuration = require("loomworks.configuration")
+    local defaults = M.default_configurations(path, config)
+    -- Canonicalise: auto-gens become `auto:product-target-abi`,
+    -- user overrides (banned from containing ':') stand alone as
+    -- bare-keyed user configs.
+    return {
+        configurations = Configuration.canonicalize(
+            defaults, config and config.configurations, M.id),
+    }
 end
 
 --- Resolve the build directory for a harmony configuration.

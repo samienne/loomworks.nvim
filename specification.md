@@ -35,17 +35,44 @@ typescript, etc.). Projects are declared in `loomworks.json` and/or
 
 ### 1.3 Configuration
 
-Two kinds of configurations exist:
+Configurations live in two tiers, distinguished by canonical name
+shape. The tier decides who owns the entry and what actions are
+available on it.
 
-**Loomworks configurations** — managed by loomworks. Defaults auto-generated
-by the module (cmake: Debug, Release, RelWithDebInfo, MinSizeRel). Users
-can add custom configs with inheritance and options. Invoked via
-`cmake -S ... -B ... -D...`. Editable from the status page.
+**Auto-generated configurations** — emitted by the module from
+project sources (build-profile.json5, CMakePresets.json, CMakeLists'
+`CMAKE_CONFIGURATION_TYPES`, tsconfig variants). Canonical names take
+the form `prefix:base`, where the prefix is chosen by the module:
 
-**Preset configurations** — detected from CMakePresets.json at runtime.
-Invoked via `cmake --preset <name>`. Read-only from loomworks' perspective.
-Shown separately in the UI. Referenced in config set mappings with
-`preset:` prefix (e.g., `"App": "preset:Debug"`).
+  - `variant:` — built-in compile-mode variants (cmake/meson/typescript
+    Debug/Release/RelWithDebInfo/MinSizeRel, typescript `default`)
+  - `preset:` — CMakePresets.json entries (cmake)
+  - `auto:` — project-file-derived configs (harmony's
+    `auto:default-entry-arm64-v8a` from build-profile.json5)
+
+Auto-gen configs are read-only — their contents are regenerated from
+the module every load, never persisted. UI shows them in a dimmed
+colour.
+
+**User configurations** — declared by the user under
+`<type>.configurations.<name>` in loomworks.json / user.json.
+Canonical name is the bare name (no prefix, no `:`). A user config
+typically carries `inherits: "<prefix:base>"` pointing at an
+auto-gen to pick up a variant and extend it with options / toolchain
+overrides. UI shows them in the normal colour with edit/rename/delete
+actions.
+
+**Namespace rule**: user-declared configuration names MUST NOT
+contain `:` — that character is the tier separator. `config.validate`
+rejects names containing it with a specific error pointing the user
+to rename. A user config's `inherits:` reference, by contrast, uses
+the full canonical name — `inherits: "variant:Debug"`, not bare
+`"Debug"`.
+
+References (configuration_set mappings, inherits values, default
+target pointers) store the full canonical name verbatim. Orphan
+references — pointers at a name no live Configuration matches —
+render in yellow with a ⚠ badge and a rename/rebase action.
 
 Loomworks configuration fields in the workspace config:
 ```
@@ -69,11 +96,12 @@ the workspace config extend defaults (add options) rather than replace them.
 
 **Harmony configurations**: auto-generated from `build-profile.json5` as
 the cross product of products × module targets × ABI filters. Each
-configuration is named `<product>-<target>-<abi>` (e.g.,
-`default-default-arm64-v8a`, `ohos-default-armeabi-v7a`). Products and
-targets come from the build-profile; ABI filters come from the product's
-`externalNativeOptions.abiFilters`. Non-native projects (no ABI filters)
-use `<product>-<target>` without the ABI suffix.
+canonical name is `auto:<product>-<target>-<abi>` (e.g.,
+`auto:default-default-arm64-v8a`, `auto:ohos-default-armeabi-v7a`).
+Products and targets come from the build-profile; ABI filters come
+from the product's `externalNativeOptions.abiFilters`. Non-native
+projects (no ABI filters) use `auto:<product>-<target>` without the
+ABI suffix.
 
 Each harmony configuration stores: `product` (product name), `target`
 (build target name), `abi` (architecture string or nil), `mode`

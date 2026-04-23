@@ -165,14 +165,18 @@ function Project:get_configuration(name)
 end
 
 --- Get or create a Configuration domain object by name.
---- If no Configuration exists, creates a source-missing stub.
---- Used by sync_config_sets to ensure CS mappings always have Configuration objects.
+--- When no live Configuration exists, creates a source-missing
+--- stub — flagged with `_source_missing = true` so the UI can
+--- render it in the orphan colour and offer rename/rebase.
+--- Sync paths (sync_config_sets, inherits resolution) rely on
+--- this to keep references intact until the user fixes them.
 --- @param name string configuration name
 --- @return loomworks.Configuration
 function Project:ensure_configuration(name)
     local existing = self:get_configuration(name)
     if existing then return existing end
     local cfg = Configuration.new(self, name, {})
+    cfg._source_missing = true
     self._configurations[#self._configurations + 1] = cfg
     return cfg
 end

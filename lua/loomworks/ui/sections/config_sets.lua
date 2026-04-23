@@ -140,8 +140,15 @@ local function render_set_details(tree, cs, tool_entries, active_profile, lw)
         table.sort(sorted, function(a, b) return a.project.key < b.project.key end)
         for _, entry in ipairs(sorted) do
             local variant = entry.config.name
-            if entry.config._removed then
-                tree:leaf(entry.project.key .. " → " .. variant .. " (missing)", "DiagnosticWarn")
+            local cfg = entry.config
+            -- Orphan states, strongest first:
+            --   _removed        → underlying object was torn down
+            --   _source_missing → stub reference that no source backs
+            local is_orphan = cfg._removed or cfg._source_missing
+            if is_orphan then
+                local label = entry.project.key .. " → " .. variant
+                    .. " ⚠ missing"
+                tree:leaf(label, "WarningMsg")
             else
                 tree:leaf(entry.project.key .. " → " .. variant, "Comment")
             end

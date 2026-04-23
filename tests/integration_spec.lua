@@ -13,6 +13,11 @@ local wv = require("loomworks.workspace_view")
 local Workspace = workspace.Workspace
 
 --- Mock modules with info() returning detectable configurations.
+--- Under the prefix-namespacing design, modules emit canonical keys
+--- (prefix:base) for auto-gens. User overrides land as standalone
+--- bare-keyed entries; they are NOT silently merged into same-named
+--- auto-gens.
+local Configuration = require("loomworks.configuration")
 local mock_modules = {
     cmake = {
         id = "cmake",
@@ -24,7 +29,11 @@ local mock_modules = {
             return vim.deep_equal(a, b)
         end,
         default_configurations = function()
-            return { Debug = { variant = "Debug" }, Release = { variant = "Release" }, RelWithDebInfo = { variant = "RelWithDebInfo" } }
+            return {
+                Debug = { prefix = "variant", variant = "Debug" },
+                Release = { prefix = "variant", variant = "Release" },
+                RelWithDebInfo = { prefix = "variant", variant = "RelWithDebInfo" },
+            }
         end,
         map_variant = function(variant_type, available_configs)
             for _, name in ipairs(available_configs) do
@@ -36,18 +45,15 @@ local mock_modules = {
         tool_label = function(tool_data) return tool_data.display end,
         detect_tools_async = function(callback) callback({}) end,
         info = function(path, config)
-            local configs = {
-                Debug = { variant = "Debug", is_default = true },
-                Release = { variant = "Release", is_default = true },
-                RelWithDebInfo = { variant = "RelWithDebInfo", is_default = true },
+            local defaults = {
+                Debug = { prefix = "variant", variant = "Debug" },
+                Release = { prefix = "variant", variant = "Release" },
+                RelWithDebInfo = { prefix = "variant", variant = "RelWithDebInfo" },
             }
-            if config and config.configurations then
-                for name, data in pairs(config.configurations) do
-                    local base = configs[name] or { is_user = true }
-                    configs[name] = vim.tbl_extend("force", base, data)
-                end
-            end
-            return { configurations = configs }
+            return {
+                configurations = Configuration.canonicalize(
+                    defaults, config and config.configurations, "cmake"),
+            }
         end,
     },
     harmony = {
@@ -59,8 +65,15 @@ local mock_modules = {
             end
             return nil
         end,
-        info = function()
-            return { configurations = { debug = {}, release = {} } }
+        info = function(_, config)
+            local defaults = {
+                debug = { prefix = "auto", variant = "debug" },
+                release = { prefix = "auto", variant = "release" },
+            }
+            return {
+                configurations = Configuration.canonicalize(
+                    defaults, config and config.configurations, "harmony"),
+            }
         end,
     },
     typescript = {
@@ -72,8 +85,14 @@ local mock_modules = {
             end
             return nil
         end,
-        info = function()
-            return { configurations = { default = {} } }
+        info = function(_, config)
+            local defaults = {
+                default = { prefix = "variant", variant = "default" },
+            }
+            return {
+                configurations = Configuration.canonicalize(
+                    defaults, config and config.configurations, "typescript"),
+            }
         end,
     },
 }
@@ -167,8 +186,8 @@ describe("config set lifecycle", function()
         assert.is_not_nil(ctx.available_configs[frontend])
 
         local cs, err = wv.execute_create_config_set(ws, "Debug", {
-            [app] = app:get_configuration("Debug"),
-            [frontend] = frontend:get_configuration("debug"),
+            [app] = app:get_configuration("variant:Debug"),
+            [frontend] = frontend:get_configuration("auto:debug"),
         })
         assert.is_not_nil(cs)
         assert.is_not_nil(h.find_config_set_in(ws:get_config_sets(),"Debug"))
@@ -176,23 +195,23 @@ describe("config set lifecycle", function()
         -- 2. Edit: change Frontend mapping
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         assert.is_not_nil(edit_ctx)
-        assert.equals("Debug", edit_ctx.mappings[app].name)
-        assert.equals("debug", edit_ctx.mappings[frontend].name)
+        assert.equals("variant:Debug", edit_ctx.mappings[app].name)
+        assert.equals("auto:debug", edit_ctx.mappings[frontend].name)
 
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         ok = wv.execute_edit_config_set(cs, "Debug",
-            { [app] = app:get_configuration("Release"), [frontend] = frontend:get_configuration("release") },
+            { [app] = app:get_configuration("variant:Release"), [frontend] = frontend:get_configuration("auto:release") },
             edit_ctx.mappings)
         assert.is_true(ok)
         local debug_cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
-        assert.equals("Release", h.cs_mapping(debug_cs, "App"))
-        assert.equals("release", h.cs_mapping(debug_cs, "Frontend"))
+        assert.equals("variant:Release", h.cs_mapping(debug_cs, "App"))
+        assert.equals("auto:release", h.cs_mapping(debug_cs, "Frontend"))
 
         -- 3. Rename: Debug → Production
         cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         ok = wv.execute_edit_config_set(cs, "Production",
-            { [app] = app:get_configuration("Release"), [frontend] = frontend:get_configuration("release") },
+            { [app] = app:get_configuration("variant:Release"), [frontend] = frontend:get_configuration("auto:release") },
             edit_ctx.mappings)
         assert.is_true(ok)
         assert.is_nil(h.find_config_set_in(ws:get_config_sets(), "Debug"))
@@ -239,7 +258,7 @@ describe("config set lifecycle", function()
         local app = h.find_project_in(ws:get_projects(), "App")
         local frontend = h.find_project_in(ws:get_projects(), "Frontend")
         local ok = wv.execute_edit_config_set(cs, "Release",
-            { [app] = app:get_configuration("Debug"), [frontend] = frontend:get_configuration("debug") },
+            { [app] = app:get_configuration("variant:Debug"), [frontend] = frontend:get_configuration("auto:debug") },
             edit_ctx.mappings)
         assert.is_true(ok)
 
@@ -279,7 +298,7 @@ describe("config set lifecycle", function()
 
         local app = h.find_project_in(ws:get_projects(), "App")
         local cs, err = wv.execute_create_config_set(ws, "Debug", {
-            [app] = app:get_configuration("Debug"),
+            [app] = app:get_configuration("variant:Debug"),
         })
         assert.is_nil(cs)
         assert.is_not_nil(err)
@@ -300,7 +319,7 @@ describe("config set lifecycle", function()
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
-            { [app] = app:get_configuration("Debug") }, -- Frontend removed
+            { [app] = app:get_configuration("variant:Debug") }, -- Frontend removed
             edit_ctx.mappings)
         assert.is_true(ok)
         local debug_cs2 = h.find_config_set_in(ws:get_config_sets(), "Debug")
@@ -929,11 +948,11 @@ describe("orphan lifecycle", function()
         local cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         local ok = wv.execute_edit_config_set(cs, "Debug",
-            { [frontend] = frontend:get_configuration("release") },
+            { [frontend] = frontend:get_configuration("auto:release") },
             edit_ctx.mappings)
         assert.is_true(ok)
         local debug_cs3 = h.find_config_set_in(ws:get_config_sets(), "Debug")
-        assert.equals("release", h.cs_mapping(debug_cs3, "Frontend"))
+        assert.equals("auto:release", h.cs_mapping(debug_cs3, "Frontend"))
 
         -- Frontend/debug is now orphaned (profile references "release", not "debug")
         local orphans = ws:get_orphaned_configs()
@@ -1386,7 +1405,7 @@ describe("configuration rename propagation", function()
         })
 
         local project = h.find_project_in(ws:get_projects(), "App")
-        local debug_cfg = project:get_configuration("Debug")
+        local debug_cfg = project:get_configuration("variant:Debug")
         assert.is_not_nil(debug_cfg)
         debug_cfg.is_user = true
 
@@ -1463,7 +1482,7 @@ describe("configuration rename propagation", function()
         assert.equals("built", pps[1]._config_unit.state_value)
 
         -- Mark Debug as user-defined (in real usage, module.info() merges user configs)
-        local debug_cfg = project:get_configuration("Debug")
+        local debug_cfg = project:get_configuration("variant:Debug")
         assert.is_not_nil(debug_cfg, "Debug config should exist")
         debug_cfg.is_user = true
 
@@ -2272,8 +2291,8 @@ describe("end-to-end workspace setup", function()
         local app = h.find_project_in(ws:get_projects(), "App")
         local frontend = h.find_project_in(ws:get_projects(), "Frontend")
         local cs = wv.execute_create_config_set(ws, "Debug", {
-            [app] = app:get_configuration("Debug"),
-            [frontend] = frontend:get_configuration("debug"),
+            [app] = app:get_configuration("variant:Debug"),
+            [frontend] = frontend:get_configuration("auto:debug"),
         })
         assert.is_not_nil(cs)
 
@@ -2281,8 +2300,8 @@ describe("end-to-end workspace setup", function()
         local edit_ctx = wv.compute_edit_config_set_context(ws, "Debug")
         assert.is_not_nil(edit_ctx)
         assert.equals(2, #edit_ctx.projects)
-        assert.equals("Debug", edit_ctx.mappings[app].name)
-        assert.equals("debug", edit_ctx.mappings[frontend].name)
+        assert.equals("variant:Debug", edit_ctx.mappings[app].name)
+        assert.equals("auto:debug", edit_ctx.mappings[frontend].name)
 
         -- Remerge to derive profiles from the new config set
         ws:remerge()
@@ -2536,24 +2555,32 @@ describe("project configuration lifecycle", function()
     end)
 
     it("edits existing configuration options", function()
+        -- Under strict auto/user separation the user declares a
+        -- standalone config (bare name, no ':'); it's not a silent
+        -- override of `variant:Debug`. Options edits land on the
+        -- user config, which stays at its bare key.
         local ws = make_ws({
             projects = {
                 App = {
                     cmake = {
                         configurations = {
-                            Debug = { options = { ENABLE_TESTS = "ON" } },
+                            ["my-debug"] = {
+                                inherits = "variant:Debug",
+                                options = { ENABLE_TESTS = "ON" },
+                            },
                         },
                     },
                 },
             },
         })
 
-        local ok = wv.execute_save_configuration(h.find_project_in(ws:get_projects(), "App"), "Debug", "Debug", {
-            options = { ENABLE_TESTS = "OFF", VERBOSE = "ON" },
-        })
+        local ok = wv.execute_save_configuration(
+            h.find_project_in(ws:get_projects(), "App"),
+            "my-debug", "my-debug",
+            { options = { ENABLE_TESTS = "OFF", VERBOSE = "ON" } })
         assert.is_true(ok)
         local app = h.find_project_in(ws:get_projects(), "App")
-        local cfg = app:get_configuration("Debug")
+        local cfg = app:get_configuration("my-debug")
         assert.is_not_nil(cfg)
         assert.equals("OFF", cfg.options.ENABLE_TESTS)
         assert.equals("ON", cfg.options.VERBOSE)
@@ -2797,21 +2824,24 @@ describe("cmake options resolution", function()
 
     it("resolve_configurations: multi-inherit gets variant from first base with variant", function()
         local cmake_mod = require("loomworks.modules.cmake")
-        local defaults = { Debug = { variant = "Debug" }, Release = { variant = "Release" } }
+        -- Defaults carry `prefix = "variant"` so canonicalise turns
+        -- them into `variant:Debug` / `variant:Release`. User
+        -- configs reference those canonical names explicitly.
+        local defaults = {
+            Debug = { prefix = "variant", variant = "Debug" },
+            Release = { prefix = "variant", variant = "Release" },
+        }
         local config = {
             configurations = {
                 asan = { options = { ASAN = "ON" } },  -- mixin, no variant
-                ["Debug-ASAN"] = { inherits = { "Debug", "asan" } },
+                ["Debug-ASAN"] = { inherits = { "variant:Debug", "asan" } },
             },
         }
         local resolved = cmake_mod.resolve_configurations(defaults, config)
 
-        -- Debug-ASAN gets variant from Debug (first base with variant)
         assert.equals("Debug", resolved["Debug-ASAN"].variant)
-        -- asan has no variant (abstract mixin)
-        assert.is_nil(resolved["asan"].variant)
-        -- Debug is still a default
-        assert.equals("Debug", resolved["Debug"].variant)
+        assert.is_nil(resolved["asan"].variant)           -- abstract mixin
+        assert.equals("Debug", resolved["variant:Debug"].variant)
     end)
 end)
 
@@ -2836,7 +2866,10 @@ describe("opaque keys", function()
                 ["proj-beta"] = { harmony = {} },
             },
             configuration_sets = {
-                ["set-x"] = { ["proj-alpha"] = "Debug", ["proj-beta"] = "debug" },
+                ["set-x"] = {
+                    ["proj-alpha"] = "variant:Debug",
+                    ["proj-beta"] = "auto:debug",
+                },
             },
         }, {
             active_profile = "set-x:tool-7",
@@ -2847,16 +2880,21 @@ describe("opaque keys", function()
                 },
             },
         }, {
-            -- v7 build_dirs: keys match _compute_build_dir output
+            -- Build-dir keys carry the canonical configuration name
+            -- after prefix namespacing — `variant:Debug:tool-7`,
+            -- `auto:debug`. The system stores them as opaque strings;
+            -- the test still proves that lookup doesn't care what the
+            -- string looks like.
             build_dirs = {
-                ["build/proj-alpha/tool-7/Debug"] = {
-                    project_key = "proj-alpha", config_key = "Debug:tool-7",
+                ["build/proj-alpha/tool-7/variant:Debug"] = {
+                    project_key = "proj-alpha",
+                    config_key = "variant:Debug:tool-7",
                     type = "cmake", variant = "Debug", tool_key = "tool-7",
                     state = "built",
                     tool_data = { id = "tool-7", display = "Tool Seven", generator = "Ninja" },
                 },
-                ["build/proj-beta/debug"] = {
-                    project_key = "proj-beta", config_key = "debug",
+                ["build/proj-beta/auto:debug"] = {
+                    project_key = "proj-beta", config_key = "auto:debug",
                     type = "harmony", variant = "debug",
                     state = "configured",
                 },
@@ -2891,8 +2929,8 @@ describe("opaque keys", function()
         for _, pp in ipairs(pps) do
             variants[pp._project.key] = pp:variant_name()
         end
-        assert.equals("Debug", variants["proj-alpha"])
-        assert.equals("debug", variants["proj-beta"])
+        assert.equals("variant:Debug", variants["proj-alpha"])
+        assert.equals("auto:debug", variants["proj-beta"])
     end)
 
     it("ProfileProject references resolve correctly", function()
@@ -2909,7 +2947,7 @@ describe("opaque keys", function()
         local unit = pp_alpha._config_unit
         assert.is_not_nil(unit)
         assert.equals("built", unit.state_value)
-        assert.equals("/root/.nvim/build/proj-alpha/tool-7/Debug", unit.build_dir_value)
+        assert.equals("/root/.nvim/build/proj-alpha/tool-7/variant:Debug", unit.build_dir_value)
     end)
 
     it("ConfigUnit state resolves through arbitrary cache keys", function()
@@ -2926,18 +2964,18 @@ describe("opaque keys", function()
     it("Project:config_units_for_configuration finds units with arbitrary keys", function()
         local ws = make_opaque_ws()
         local proj = h.find_project_in(ws:get_projects(), "proj-alpha")
-        local cfg = proj:get_configuration("Debug")
+        local cfg = proj:get_configuration("variant:Debug")
         assert.is_not_nil(cfg)
         local units = proj:config_units_for_configuration(cfg)
         assert.equals(1, #units)
-        assert.equals("Debug:tool-7", units[1]:config_key())
+        assert.equals("variant:Debug:tool-7", units[1]:config_key())
     end)
 
     it("build_dir_refs track arbitrary cache entries", function()
         local ws = make_opaque_ws()
-        local refs = ws:get_build_dir_refs("/root/.nvim/build/proj-alpha/tool-7/Debug")
+        local refs = ws:get_build_dir_refs("/root/.nvim/build/proj-alpha/tool-7/variant:Debug")
         assert.equals(1, #refs)
-        assert.equals("Debug:tool-7", refs[1]:config_key())
+        assert.equals("variant:Debug:tool-7", refs[1]:config_key())
     end)
 
     it("config set mapping updates work with arbitrary project keys", function()
@@ -2946,12 +2984,12 @@ describe("opaque keys", function()
         assert.is_not_nil(cs)
 
         local proj = h.find_project_in(ws:get_projects(), "proj-alpha")
-        local release_cfg = proj:get_configuration("Release")
+        local release_cfg = proj:get_configuration("variant:Release")
         assert.is_not_nil(release_cfg)
         cs:update_mapping(proj, release_cfg)
 
         -- Verify mapping changed
-        assert.equals("Release", cs.mappings[proj].name)
+        assert.equals("variant:Release", cs.mappings[proj].name)
     end)
 
     it("save_configuration works on project with arbitrary keys", function()
@@ -3012,9 +3050,11 @@ describe("opaque keys", function()
         assert.is_not_nil(raw.projects["proj-alpha"])
         assert.is_not_nil(raw.projects["proj-beta"])
 
-        -- Config sets preserved
+        -- Config sets preserved — the canonical `variant:Debug`
+        -- round-trips through serialisation intact.
         assert.is_not_nil(raw.configuration_sets["set-x"])
-        assert.equals("Debug", raw.configuration_sets["set-x"]["proj-alpha"])
+        assert.equals("variant:Debug",
+            raw.configuration_sets["set-x"]["proj-alpha"])
     end)
 end)
 
@@ -3078,17 +3118,17 @@ describe("two-layer merge", function()
         local ws = make_ws(
             {
                 projects = { App = { cmake = {} } },
-                configuration_sets = { Debug = { App = "Debug" } },
+                configuration_sets = { Debug = { App = "variant:Debug" } },
             },
             {
-                configuration_sets = { Debug = { App = "Release" } },
+                configuration_sets = { Debug = { App = "variant:Release" } },
             }
         )
         local cs = h.find_config_set_in(ws:get_config_sets(), "Debug")
         assert.is_not_nil(cs)
         assert.equals("user", cs._source)
         -- The mapping should reflect the user override
-        assert.equals("Release", h.cs_mapping(cs, "App"))
+        assert.equals("variant:Release", h.cs_mapping(cs, "App"))
     end)
 
     it("serialize_config excludes user-sourced projects", function()

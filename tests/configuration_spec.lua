@@ -70,6 +70,102 @@ describe("Configuration", function()
         end)
     end)
 
+    describe("canonical / split_canonical", function()
+        it("joins prefix+base with `:`", function()
+            assert.equals("variant:Debug", Configuration.canonical("variant", "Debug"))
+            assert.equals("preset:debug-custom",
+                Configuration.canonical("preset", "debug-custom"))
+        end)
+
+        it("returns base alone when prefix is nil (user config)", function()
+            assert.equals("my-debug", Configuration.canonical(nil, "my-debug"))
+            assert.equals("my-debug", Configuration.canonical("", "my-debug"))
+        end)
+
+        it("splits canonical back into (prefix, base)", function()
+            local p, b = Configuration.split_canonical("variant:Debug")
+            assert.equals("variant", p)
+            assert.equals("Debug", b)
+        end)
+
+        it("returns (nil, name) when no `:` (user config)", function()
+            local p, b = Configuration.split_canonical("my-debug")
+            assert.is_nil(p)
+            assert.equals("my-debug", b)
+        end)
+    end)
+
+    describe("prefix + base_name derivation", function()
+        it("splits a prefixed canonical name", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "variant:Debug",
+                { variant = "Debug", is_default = true })
+            assert.equals("variant:Debug", cfg.name)
+            assert.equals("variant", cfg.prefix)
+            assert.equals("Debug", cfg.base_name)
+            assert.is_true(cfg:is_auto_gen())
+        end)
+
+        it("treats an unprefixed name as a user config", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "my-debug",
+                { is_user = true })
+            assert.is_nil(cfg.prefix)
+            assert.equals("my-debug", cfg.base_name)
+            assert.is_false(cfg:is_auto_gen())
+        end)
+    end)
+
+    describe("unresolved_inherits_names", function()
+        it("returns an empty list when all bases resolved", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "variant:Debug-asan",
+                { inherits = "variant:Debug" })
+            -- Simulate resolution: base Debug exists, got linked
+            cfg._inherits = { project:get_configuration("Debug") or {} }
+            cfg._inherits[1].name = "variant:Debug"
+            assert.are.same({}, cfg:unresolved_inherits_names())
+        end)
+
+        it("returns names that didn't resolve", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "my-mix",
+                { inherits = { "variant:Debug", "does-not-exist",
+                               "also-gone" } })
+            cfg._inherits = { { name = "variant:Debug" } }
+            assert.are.same({ "does-not-exist", "also-gone" },
+                cfg:unresolved_inherits_names())
+        end)
+
+        it("returns all names when nothing resolved", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "my-mix",
+                { inherits = "ghost" })
+            cfg._inherits = {}
+            assert.are.same({ "ghost" }, cfg:unresolved_inherits_names())
+        end)
+    end)
+
+    describe("_source_missing lifecycle", function()
+        it("is cleared when a module-emitted refresh arrives", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "variant:Debug",
+                { is_default = true, variant = "Debug" })
+            -- Stub state: config exists but neither default nor user
+            cfg._source_missing = true
+            cfg:_update({ is_default = true, variant = "Debug" })
+            assert.is_false(cfg._source_missing)
+        end)
+
+        it("stays set when a refresh has no backing (no is_default/is_user)", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "variant:Debug", {})
+            cfg._source_missing = true
+            cfg:_update({})  -- still no backing
+            assert.is_true(cfg._source_missing)
+        end)
+    end)
+
     describe("is_abstract", function()
         it("returns true when no variant", function()
             local project = make_project()

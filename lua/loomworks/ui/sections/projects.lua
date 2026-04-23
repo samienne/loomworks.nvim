@@ -605,12 +605,38 @@ return function(tree, ctx)
 
                         -- Abstract configs have no variant (mixin only)
                         local is_abstract = not cdata.variant
-                        local config_hl = is_abstract and "Comment"
-                                or cfg_group == "shared" and "Comment"
-                                or (config_has_running and "LoomworksRunning" or "LoomworksActionable")
+                        local is_auto_gen = cname_cfg and cname_cfg:is_auto_gen() or false
+                        local is_source_missing = cname_cfg
+                            and cname_cfg._source_missing or false
+                        local unresolved_inherits = cname_cfg
+                            and cname_cfg:unresolved_inherits_names() or {}
+                        local has_unresolved = #unresolved_inherits > 0
+
+                        -- Colour priorities, highest-visibility first:
+                        --   orphan (source-missing or unresolved-inherits) → WarningMsg
+                        --   auto-gen → Comment (dimmed — not user's thing to edit)
+                        --   shared tier → Comment (existing convention)
+                        --   abstract → Comment
+                        --   running → LoomworksRunning
+                        --   else   → LoomworksActionable
+                        local config_hl
+                        if is_source_missing or has_unresolved then
+                            config_hl = "WarningMsg"
+                        elseif is_auto_gen then
+                            config_hl = "Comment"
+                        elseif is_abstract or cfg_group == "shared" then
+                            config_hl = "Comment"
+                        elseif config_has_running then
+                            config_hl = "LoomworksRunning"
+                        else
+                            config_hl = "LoomworksActionable"
+                        end
 
                         local brief = {}
-                        if is_abstract then
+                        if is_source_missing then
+                            brief[#brief + 1] = "⚠ missing source"
+                        end
+                        if is_abstract and not is_source_missing then
                             brief[#brief + 1] = "abstract"
                         elseif cdata.variant and cdata.variant ~= cname then
                             brief[#brief + 1] = cdata.variant
@@ -618,7 +644,12 @@ return function(tree, ctx)
                         if cdata.inherits then
                             local inh = cdata.inherits
                             if type(inh) == "table" then inh = table.concat(inh, ", ") end
-                            brief[#brief + 1] = "inherits: " .. inh
+                            local inh_str = "inherits: " .. inh
+                            if has_unresolved then
+                                inh_str = inh_str .. " ⚠ unresolved: "
+                                    .. table.concat(unresolved_inherits, ", ")
+                            end
+                            brief[#brief + 1] = inh_str
                         end
                         if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
                         if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
