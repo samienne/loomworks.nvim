@@ -695,6 +695,38 @@ end
 -- module so they can share a ring buffer and a dedicated split,
 -- rather than relying on overseer's default output-to-buffer view.
 
+--- Stop the app on a device. Returns a Future.
+--- Delegates to the module's `device_stop` (harmony:
+--- `hdc shell aa force-stop -b <bundle>`). Session tracker calls
+--- this from `stop_run()` when it knows the active run is a
+--- device launch; it's fire-and-forget from the user's
+--- perspective — we don't block teardown on the RPC.
+--- @param device_serial string
+--- @param bundle_name string
+--- @return loomworks.Future
+function LaunchTarget:device_stop(device_serial, bundle_name)
+    local future_mod = require("loomworks.future")
+    local overseer = require("loomworks.overseer")
+
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_stop then
+        return future_mod.resolved(true)
+    end
+    local unit = self._config_unit
+    local td = unit and unit._tool_data or {}
+    local spec = mod.device_stop(td, device_serial, bundle_name)
+    if not spec or not spec.cmd then
+        return future_mod.resolved(true)
+    end
+
+    return overseer.run_cmd_task({
+        name = self._project.key .. ": stop on " .. device_serial,
+        cmd = spec.cmd,
+        args = spec.args,
+        check_output = spec.check_output,
+    })
+end
+
 -- ---------------------------------------------------------------------------
 -- Display
 -- ---------------------------------------------------------------------------

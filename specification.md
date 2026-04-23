@@ -2948,6 +2948,14 @@ Return a command spec to launch the installed app on a device.
 `launch_info` is module-specific metadata (e.g., bundle name, ability name
 for harmony).
 
+**`device_stop(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
+
+Return a command spec that force-stops the app on the device (for
+harmony: `hdc shell aa force-stop -b <bundle>`). Session tracker
+calls this from `stop()` when the active run is a device launch so
+`<S-F5>` (and other stop paths) actually terminate the on-device
+process rather than merely closing the local log stream.
+
 **`device_pid(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
 
 Return a command spec that, when run, prints the PID of a running app

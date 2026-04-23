@@ -172,7 +172,22 @@ local function stop_run()
     end
     stop_log_session()
     if _active_run.mode == "launch" then
-        if _active_run.target:is_running() then
+        -- Device launch: `<target>:stop()` only knows how to kill a
+        -- local process; the app is running on the device, so
+        -- delegate to the module's `device_stop` RPC (e.g. harmony
+        -- emits `hdc shell aa force-stop -b <bundle>`). Fire and
+        -- forget — failures are a notify-worthy warning, not a
+        -- reason to block teardown.
+        if _active_run.device_serial and _active_run.device_bundle then
+            local target = _active_run.target
+            local serial = _active_run.device_serial
+            local bundle = _active_run.device_bundle
+            target:device_stop(serial, bundle):catch(function(err)
+                vim.notify(
+                    "loomworks: device stop failed: " .. tostring(err),
+                    vim.log.levels.WARN)
+            end)
+        elseif _active_run.target:is_running() then
             _active_run.target:stop()
         end
     else

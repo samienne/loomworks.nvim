@@ -836,6 +836,24 @@ function M.device_install(tool_data, device_serial, artifact_path)
     }
 end
 
+--- Return command spec for stopping a running app on a device.
+--- Uses `aa force-stop -b <bundle>` — terminates the app process
+--- rather than relying on signals, matches DevEco's stop behaviour.
+--- @param tool_data table
+--- @param device_serial string
+--- @param bundle_name string
+--- @return { cmd: string, args: string[], check_output: function }
+function M.device_stop(tool_data, device_serial, bundle_name)
+    return {
+        cmd = tool_data.hdc,
+        args = {
+            "-t", device_serial, "shell", "aa", "force-stop",
+            "-b", bundle_name,
+        },
+        check_output = check_hdc_output,
+    }
+end
+
 --- Return command spec for launching an app on a device.
 --- @param tool_data table
 --- @param device_serial string
