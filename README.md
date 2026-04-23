@@ -295,6 +295,13 @@ and invokes `hdc install` and `hdc shell aa start` on the selected device.
 No explicit configuration is needed — the device targets are generated
 by the module from the active configuration.
 
+After launch, a device-log view opens at the bottom of the frame
+streaming `hdc hilog` output parsed and filtered to the running app
+(default filter: app PID AND proc matches bundle; interactive keymaps
+inside the view for level / regex / layout). `<S-F5>` force-stops the
+app on the device (`hdc shell aa force-stop`). Toggle the log view
+from anywhere with `<leader>wO`.
+
 ### Project variables
 
 Declare typed variables with defaults, override per configuration:
