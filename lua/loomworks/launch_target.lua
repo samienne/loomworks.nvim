@@ -127,23 +127,29 @@ function LaunchTarget:build(on_complete)
         end
     end
 
-    -- Collect ALL dependencies: explicit + deploy source projects
+    -- Collect ALL dependencies: explicit + deploy source projects.
+    -- Explicit `depends_on` entries use the active profile's mapping
+    -- (no config hint); deploy source entries may pin
+    -- `configuration:` in the descriptor so they can be built even
+    -- when the source project isn't part of the active profile.
     local all_deps = {}
     local seen = {}
     if self._project then
         if self._project.depends_on then
             for _, dep in ipairs(self._project.depends_on) do
-                if not seen[dep.key] then
-                    seen[dep.key] = true
-                    all_deps[#all_deps + 1] = dep
+                local key = dep.key .. "\0"
+                if not seen[key] then
+                    seen[key] = true
+                    all_deps[#all_deps + 1] = { project = dep, config_hint = nil }
                 end
             end
         end
         local deploy_deps = self:_deploy_source_projects()
-        for _, dep in ipairs(deploy_deps) do
-            if not seen[dep.key] then
-                seen[dep.key] = true
-                all_deps[#all_deps + 1] = dep
+        for _, entry in ipairs(deploy_deps) do
+            local key = entry.project.key .. "\0" .. (entry.config_hint or "")
+            if not seen[key] then
+                seen[key] = true
+                all_deps[#all_deps + 1] = entry
             end
         end
     end
@@ -160,7 +166,24 @@ function LaunchTarget:build(on_complete)
 end
 
 --- Build dependency projects sequentially. Returns a Future.
---- @param deps loomworks.Project[]
+---
+--- Each entry can be a Project or `{ project = Project, config_hint
+--- = string|nil }`. `config_hint` is used to resolve a ConfigUnit
+--- when the dep isn't part of the active profile (e.g. a deploy
+--- source that pinned its `configuration:` in the descriptor). A
+--- bare Project means "use the active profile's mapping for this
+--- project" and errors if the project isn't in the profile.
+---
+--- Build invocation is unconditional — we hand the build off to
+--- the module's build command (`cmake --build`, `ninja`, `hvigor`)
+--- and let the build system decide whether anything actually
+--- needs rebuilding. Short-circuiting on `state == "built"` would
+--- miss source-file changes (ConfigUnit's `is_stale` only watches
+--- options / module_config), and the build tool already handles
+--- the "nothing to do" case fast enough that invoking it
+--- unconditionally is cheaper than a stale-artifact correctness
+--- bug.
+--- @param deps (loomworks.Project | { project: loomworks.Project, config_hint: string|nil })[]
 --- @return loomworks.Future
 function LaunchTarget:_build_deps(deps)
     local future_mod = require("loomworks.future")
@@ -169,25 +192,66 @@ function LaunchTarget:_build_deps(deps)
     local overseer = require("loomworks.overseer")
     local chain = future_mod.resolved(true)
 
-    for _, dep in ipairs(deps) do
+    for _, raw in ipairs(deps) do
+        local dep, hint
+        if raw.project then
+            dep, hint = raw.project, raw.config_hint
+        else
+            dep, hint = raw, nil
+        end
         local captured_dep = dep
+        local captured_hint = hint
         chain = chain:next(function()
-            local pp = self._profile:project(captured_dep.key)
-            if not pp or not pp._config_unit then return true end
-
-            local unit = pp._config_unit
-            local state = unit:state()
-            local project_needs_refresh = unit._project and unit._project.needs_refresh
-            if state == "built" and not unit:is_stale() and not project_needs_refresh then
-                return true
+            local unit = self:_resolve_dep_config_unit(captured_dep, captured_hint)
+            if not unit then
+                return future_mod.rejected(string.format(
+                    "cannot resolve a configuration to build for "
+                    .. "dependency '%s' — either add it to the active "
+                    .. "profile's configuration_set, or pin "
+                    .. "`configuration:` in the deploy source descriptor",
+                    captured_dep.key))
             end
-
-            vim.notify("loomworks: building dependency " .. captured_dep.key, vim.log.levels.INFO)
+            vim.notify("loomworks: building dependency " .. captured_dep.key,
+                vim.log.levels.INFO)
             return overseer.run_configuration_action(unit, "build")
         end)
     end
 
     return chain
+end
+
+--- Resolve a ConfigUnit for a dependency project. Prefers the
+--- active profile's mapping for the project; falls back to the
+--- deploy descriptor's `configuration:` hint by searching the
+--- workspace's ConfigUnit registry for a match. Returns nil when
+--- neither route yields a unit — the caller treats that as a hard
+--- error with a clear message.
+--- @param project loomworks.Project
+--- @param config_hint string|nil canonical configuration name
+--- @return loomworks.ConfigUnit|nil
+function LaunchTarget:_resolve_dep_config_unit(project, config_hint)
+    -- 1. Preferred: the project is in the active profile.
+    local pp = self._profile:project(project.key)
+    if pp and pp._config_unit then return pp._config_unit end
+
+    -- 2. Pinned configuration in the deploy descriptor: find the
+    --    matching ConfigUnit (or create one) in the workspace.
+    if config_hint then
+        local ws = self._workspace
+        if ws and ws.find_config_unit then
+            local cfg = project:get_configuration(config_hint)
+            if cfg then
+                local unit = ws:find_config_unit(project, cfg, nil)
+                if unit then return unit end
+                -- No existing ConfigUnit for this combo — materialise one.
+                if ws.ensure_config_unit then
+                    return ws:ensure_config_unit(project, cfg, nil)
+                end
+            end
+        end
+    end
+
+    return nil
 end
 
 --- Collect the merged deploy dict (project-level + launch-level).
@@ -203,9 +267,13 @@ function LaunchTarget:_resolved_deploy()
     return merged
 end
 
---- Collect unique source projects from deploy steps that need building.
---- Includes both project-level and launch-level deploy sources.
---- @return loomworks.Project[]
+--- Collect source projects from deploy steps that need building,
+--- paired with any `configuration:` hint from the deploy source
+--- descriptor. De-dupes by (project, config_hint) — the same
+--- source project built against two different variants legitimately
+--- produces two build actions; the same project with no hint
+--- collapses to a single entry.
+--- @return { project: loomworks.Project, config_hint: string|nil }[]
 function LaunchTarget:_deploy_source_projects()
     local deploy = self:_resolved_deploy()
     if not deploy then return {} end
@@ -215,12 +283,18 @@ function LaunchTarget:_deploy_source_projects()
 
     for _, sources in pairs(deploy) do
         for _, src in ipairs(sources) do
-            if src.project and not seen[src.project] then
-                seen[src.project] = true
-                for _, p in pairs(self._workspace._projects) do
-                    if p.key == src.project and p ~= self._project then
-                        result[#result + 1] = p
-                        break
+            if src.project then
+                local key = src.project .. "\0" .. (src.configuration or "")
+                if not seen[key] then
+                    seen[key] = true
+                    for _, p in pairs(self._workspace._projects) do
+                        if p.key == src.project and p ~= self._project then
+                            result[#result + 1] = {
+                                project = p,
+                                config_hint = src.configuration,
+                            }
+                            break
+                        end
                     end
                 end
             end
