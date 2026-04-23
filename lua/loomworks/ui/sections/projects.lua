@@ -611,6 +611,12 @@ return function(tree, ctx)
                         local unresolved_inherits = cname_cfg
                             and cname_cfg:unresolved_inherits_names() or {}
                         local has_unresolved = #unresolved_inherits > 0
+                        local unresolved_set = {}
+                        for _, n in ipairs(unresolved_inherits) do
+                            unresolved_set[n] = true
+                        end
+                        local dependents = cname_cfg
+                            and cname_cfg:dependents() or {}
 
                         -- Colour priorities, highest-visibility first:
                         --   orphan (source-missing or unresolved-inherits) → WarningMsg
@@ -632,24 +638,42 @@ return function(tree, ctx)
                             config_hl = "LoomworksActionable"
                         end
 
+                        --- Format an inherits list inline with ⚠ prefixes
+                        --- on the names that didn't resolve.
+                        local function format_inherits(inh)
+                            local names = inh
+                            if type(names) == "string" then names = { names } end
+                            local parts = {}
+                            for _, n in ipairs(names) do
+                                parts[#parts + 1] = unresolved_set[n]
+                                    and ("⚠" .. n) or n
+                            end
+                            return table.concat(parts, ", ")
+                        end
+
+                        -- Brief-line tag order: missing source, abstract,
+                        -- inherits, used by. Each tag collapses to one
+                        -- parenthesised comma-separated group; the
+                        -- leading `⚠ ` badge only appears for
+                        -- warning-category states (missing source or
+                        -- any unresolved inherit) so problems stay
+                        -- visible even when the line overflows right.
                         local brief = {}
                         if is_source_missing then
-                            brief[#brief + 1] = "⚠ missing source"
+                            brief[#brief + 1] = "missing source"
                         end
-                        if is_abstract and not is_source_missing then
+                        if is_abstract then
                             brief[#brief + 1] = "abstract"
-                        elseif cdata.variant and cdata.variant ~= cname then
-                            brief[#brief + 1] = cdata.variant
                         end
                         if cdata.inherits then
-                            local inh = cdata.inherits
-                            if type(inh) == "table" then inh = table.concat(inh, ", ") end
-                            local inh_str = "inherits: " .. inh
-                            if has_unresolved then
-                                inh_str = inh_str .. " ⚠ unresolved: "
-                                    .. table.concat(unresolved_inherits, ", ")
+                            brief[#brief + 1] = "inherits: " .. format_inherits(cdata.inherits)
+                        end
+                        if #dependents > 0 then
+                            local dep_names = {}
+                            for _, d in ipairs(dependents) do
+                                dep_names[#dep_names + 1] = d.name
                             end
-                            brief[#brief + 1] = inh_str
+                            brief[#brief + 1] = "used by: " .. table.concat(dep_names, ", ")
                         end
                         if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
                         if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
@@ -657,13 +681,18 @@ return function(tree, ctx)
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
                         local cfg_modified_tag = ws and cname_cfg
                                 and ws:is_config_modified(proj, cname_cfg) and "+" or ""
+                        -- Leading ⚠ for warning states so the badge stays
+                        -- visible at the left edge even on long overflow
+                        -- lines where the tags would scroll out of view.
+                        local warn_prefix = (is_source_missing or has_unresolved)
+                            and "⚠ " or ""
 
                         local project = proj  -- capture for closure
                         local cfg_name = cname
                         local cfg_obj = cname_cfg
                         local has_user_entry = cfg_obj and cfg_obj.is_user or false
 
-                        ct:node(cfg_modified_tag .. cname .. brief_str, {
+                        ct:node(warn_prefix .. cfg_modified_tag .. cname .. brief_str, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
                             hl = config_hl,
@@ -685,10 +714,30 @@ return function(tree, ctx)
                                 tree:leaf("Abstract mixin — not directly buildable", "Comment")
                             end
 
-                            -- Configuration details
-                            if cdata.variant then
-                                tree:leaf("Variant: " .. cdata.variant, "Comment")
+                            -- Inherits: full list with ⚠ on unresolved names.
+                            if cdata.inherits then
+                                tree:leaf("Inherits: " .. format_inherits(cdata.inherits),
+                                    has_unresolved and "WarningMsg" or "Comment")
                             end
+
+                            -- Used by: direct dependents in this project.
+                            -- Includes stale references (`_source_missing`
+                            -- dependents) so the user sees every link the
+                            -- config files declare, not just what resolved.
+                            if #dependents > 0 then
+                                local dep_names = {}
+                                for _, d in ipairs(dependents) do
+                                    dep_names[#dep_names + 1] = d.name
+                                end
+                                tree:leaf("Used by: " .. table.concat(dep_names, ", "),
+                                    "Comment")
+                            end
+
+                            -- (Variant row intentionally omitted — the
+                            -- canonical name + inherits chain already
+                            -- convey the compile mode; showing it here
+                            -- was redundant with `variant:Debug`-style
+                            -- names.)
                             if cdata.toolchain then
                                 tree:leaf("Toolchain: " .. tostring(cdata.toolchain), "Comment")
                             end

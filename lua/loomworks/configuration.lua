@@ -228,6 +228,30 @@ function Configuration:unresolved_inherits_names()
     return missing
 end
 
+--- Return direct dependents — the other configurations in the
+--- same project whose `inherits` chain references this one by name.
+--- Uses the raw `inherits_names` so stale (`_source_missing`)
+--- dependents are still visible: their reference is part of
+--- user.json / loomworks.json and matters to the user even if the
+--- resolution didn't link up. `_removed` configs are excluded; the
+--- caller has already dropped those from the registry.
+--- @return loomworks.Configuration[]
+function Configuration:dependents()
+    if not self._project then return {} end
+    local result = {}
+    for _, cfg in ipairs(self._project:get_configurations()) do
+        if cfg ~= self and not cfg._removed then
+            for _, base_name in ipairs(cfg.inherits_names or {}) do
+                if base_name == self.name then
+                    result[#result + 1] = cfg
+                    break
+                end
+            end
+        end
+    end
+    return result
+end
+
 --- Check if this configuration is abstract (no variant — mixin only).
 --- @return boolean
 function Configuration:is_abstract()

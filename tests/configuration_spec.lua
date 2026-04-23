@@ -146,6 +146,56 @@ describe("Configuration", function()
         end)
     end)
 
+    describe("dependents", function()
+        local function project_with_configs(configs)
+            local ws = h.make_mock_workspace({})
+            local data = {
+                type = "cmake", path = "App", status = "unconfigured",
+                configurations = configs, cached_configurations = {},
+            }
+            return Project.new(ws, "App", data)
+        end
+
+        it("returns configs whose inherits_names includes this one", function()
+            local project = project_with_configs({
+                ["variant:Debug"] = { prefix = "variant", variant = "Debug" },
+                ["my-debug"] = { inherits = "variant:Debug" },
+                ["test-debug"] = { inherits = { "variant:Debug", "asan" } },
+                ["asan"] = {},  -- abstract mixin
+            })
+            local debug = project:get_configuration("variant:Debug")
+            local deps = debug:dependents()
+            table.sort(deps, function(a, b) return a.name < b.name end)
+            assert.equals(2, #deps)
+            assert.equals("my-debug", deps[1].name)
+            assert.equals("test-debug", deps[2].name)
+        end)
+
+        it("returns empty when nothing inherits from this config", function()
+            local project = project_with_configs({
+                ["variant:Debug"] = { prefix = "variant", variant = "Debug" },
+                ["variant:Release"] = { prefix = "variant", variant = "Release" },
+            })
+            local release = project:get_configuration("variant:Release")
+            assert.are.same({}, release:dependents())
+        end)
+
+        it("includes stale dependents (user's broken ref still shows up)", function()
+            -- Even though `my-debug` inherits from a name that doesn't
+            -- resolve, its intent to depend is real — the user wrote
+            -- it in loomworks.json. Showing it under the would-be
+            -- base (if the base ever materialises) helps the user see
+            -- the connection.
+            local project = project_with_configs({
+                ["variant:Debug"] = { prefix = "variant", variant = "Debug" },
+                ["my-debug"] = { inherits = "variant:Debug" },
+            })
+            local debug = project:get_configuration("variant:Debug")
+            assert.equals(1, #debug:dependents())
+            assert.equals("my-debug", debug:dependents()[1].name)
+        end)
+    end)
+
     describe("_source_missing lifecycle", function()
         it("is cleared when a module-emitted refresh arrives", function()
             local project = make_project()
