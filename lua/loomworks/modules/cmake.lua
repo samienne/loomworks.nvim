@@ -218,10 +218,19 @@ function M.default_configurations(path, config)
     local detected = detect_configs_from_cmakelists(path)
     local defaults = {}
     for _, name in ipairs(detected) do
-        defaults[name] = { variant = name }
+        -- All cmake built-in variants go under the `variant:` tier —
+        -- Debug, Release, RelWithDebInfo, MinSizeRel. Custom configs
+        -- declared with `CMAKE_CONFIGURATION_TYPES` in CMakeLists.txt
+        -- also end up here.
+        defaults[name] = { prefix = "variant", variant = name }
     end
     return defaults
 end
+
+--- Module-level prefix for cmake's compile-mode built-in variants
+--- (matches meson; used by callers that go through
+--- `default_configurations` directly).
+M.default_config_prefix = "variant"
 
 --- Normalize inherits to an array. Accepts string, array, or nil.
 --- @param inherits string|string[]|nil
@@ -239,77 +248,40 @@ end
 --- @param config table type_config from loomworks.json
 --- @return table<string, table> merged configurations
 function M.resolve_configurations(defaults, config)
-    local result = {}
+    local Configuration = require("loomworks.configuration")
+    local result = Configuration.canonicalize(
+        defaults, config and config.configurations, M.id)
 
-    -- Start with defaults
-    for name, def in pairs(defaults) do
-        result[name] = {
-            variant = def.variant,
-            is_default = true,
-        }
-    end
-
-    -- Apply user overrides/additions from loomworks.json
-    if config.configurations then
-        for name, override in pairs(config.configurations) do
-            if not result[name] then
-                result[name] = {}
-            end
-            local cfg = result[name]
-
-            -- Inheritance: variant from first base that has one
-            local bases = normalize_inherits(override.inherits)
-            if #bases > 0 then
-                cfg.inherits = bases
-                for _, base_name in ipairs(bases) do
-                    local base = result[base_name]
-                    if base and base.variant then
+    -- Second pass: propagate variant/toolchain/generator from the
+    -- first base in a user config's `inherits` chain that supplies
+    -- each field. Keeps user configs like
+    --   { inherits = "variant:Debug", options = {...} }
+    -- concrete after the canonicalise step turns their base into
+    -- the prefixed form.
+    for _, cfg in pairs(result) do
+        if cfg.inherits and type(cfg.inherits) == "string" then
+            cfg.inherits = { cfg.inherits }
+        end
+        if cfg.is_user and cfg.inherits then
+            for _, base_name in ipairs(cfg.inherits) do
+                local base = result[base_name]
+                if base then
+                    if not cfg.variant and base.variant then
                         cfg.variant = base.variant
-                        break
+                    end
+                    if not cfg.toolchain and base.toolchain then
+                        cfg.toolchain = base.toolchain
+                        cfg.toolchain_locked = base.toolchain_locked
+                    end
+                    if not cfg.generator and base.generator then
+                        cfg.generator = base.generator
                     end
                 end
             end
-
-            -- Defaults get variant from their name; custom configs without
-            -- a variant-providing base remain abstract (no variant)
-            if not cfg.variant and cfg.is_default then
-                cfg.variant = name
-            end
-
-            -- Toolchain/generator overrides (existing behavior)
-            if override.toolchain then
-                cfg.toolchain_locked = true
-                cfg.toolchain = override.toolchain
-            end
-            if override.generator then
-                cfg.generator = override.generator
-            end
-            if override.role then
-                cfg.role = override.role
-            end
-
-            -- Options
-            if override.options then
-                cfg.options = override.options
-            end
-
-            -- Variable overrides (generic, passed through to Configuration)
-            if override.variables then
-                cfg.variables = override.variables
-            end
-
-            -- Mark as user-defined if it's not a default being extended
-            if not cfg.is_default then
-                cfg.is_user = true
-            end
         end
-    end
-
-    -- Ensure default configs have a variant (user configs without a
-    -- variant-providing base are abstract mixins — no variant)
-    for name, cfg in pairs(result) do
-        if not cfg.variant and cfg.is_default then
-            cfg.variant = name
+        -- User overrides that declare their own toolchain lock it in
+        if cfg.toolchain and cfg.toolchain_locked == nil then
+            cfg.toolchain_locked = true
         end
     end
 
@@ -421,7 +393,9 @@ end
 --- @param config table type_config from loomworks.json
 --- @return loomworks.ModuleInfo
 function M.info(path, config)
-    -- Detect preset configurations (separate from loomworks-managed)
+    local Configuration = require("loomworks.configuration")
+    -- Detect preset configurations — these become canonical
+    -- `preset:<name>` entries in the configuration registry.
     local preset_configurations = {}
     local presets = load_presets(path)
     if presets then
@@ -429,7 +403,10 @@ function M.info(path, config)
             local has_toolchain = preset.toolchainFile ~= nil
                     or (preset.cacheVariables and preset.cacheVariables.CMAKE_TOOLCHAIN_FILE ~= nil)
 
-            preset_configurations[preset.name] = {
+            local canonical = Configuration.canonical("preset", preset.name)
+            preset_configurations[canonical] = {
+                prefix = "preset",
+                base_name = preset.name,
                 generator = preset.generator,
                 binary_dir = preset.binaryDir,
                 toolchain_locked = has_toolchain,
@@ -438,6 +415,7 @@ function M.info(path, config)
                             or (preset.cacheVariables and preset.cacheVariables.CMAKE_TOOLCHAIN_FILE))
                         or nil,
                 from_preset = true,
+                is_default = true,  -- auto-gens from CMakePresets.json
             }
         end
     end

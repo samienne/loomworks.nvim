@@ -169,18 +169,23 @@ end
 --- @param config table type_config from loomworks.json
 --- @return table<string, table>
 function M.default_configurations(path, config)
-    return { default = {} }
+    return { default = { prefix = "variant", variant = "default" } }
 end
 
+--- Module-level prefix for typescript auto-gens.
+M.default_config_prefix = "variant"
+
 function M.info(path, config)
-    local configurations = {}
+    local Configuration = require("loomworks.configuration")
+    local auto = {}
 
     -- Auto-detect defaults from tsconfig.*.json files
     local variants = scan_tsconfig_variants(path)
     if #variants > 0 then
         for _, name in ipairs(variants) do
             local tsconfig = "tsconfig." .. name .. ".json"
-            configurations[name] = {
+            auto[name] = {
+                prefix = "variant",
                 variant = name,
                 tsconfig = tsconfig,
                 outDir = read_outdir(path, tsconfig),
@@ -188,40 +193,34 @@ function M.info(path, config)
         end
     else
         -- Fallback: single default configuration using tsconfig.json
-        configurations["default"] = {
+        auto["default"] = {
+            prefix = "variant",
             variant = "default",
             tsconfig = "tsconfig.json",
             outDir = read_outdir(path, "tsconfig.json"),
         }
     end
 
-    -- Merge user overrides/additions on top
-    if config.configurations then
-        for name, cfg in pairs(config.configurations) do
-            local entry = type(cfg) == "table" and cfg or {}
-            local tsconfig = resolve_tsconfig(path, name, entry)
-            configurations[name] = configurations[name] or {}
-            configurations[name].tsconfig = tsconfig
-            configurations[name].outDir = tsconfig and read_outdir(path, tsconfig) or nil
-            -- Copy any extra fields from user config
-            for k, v in pairs(entry) do
-                if k ~= "tsconfig" then
-                    configurations[name][k] = v
-                end
-            end
-        end
+    -- Apply canonical prefix and collect user overrides.
+    local configurations = Configuration.canonicalize(
+        auto, config and config.configurations, M.id)
 
-        -- Resolve variant from inherits (same as cmake: first base with a variant)
-        for name, cfg in pairs(configurations) do
-            if not cfg.variant and cfg.inherits then
-                local bases = type(cfg.inherits) == "string"
-                    and { cfg.inherits } or cfg.inherits
-                for _, base_name in ipairs(bases) do
-                    local base = configurations[base_name]
-                    if base and base.variant then
-                        cfg.variant = base.variant
-                        break
-                    end
+    -- User overrides get their tsconfig path resolved (the generic
+    -- canonicalize doesn't know about that module-specific detail)
+    -- and their variant propagated from an inherits base.
+    for name, cfg in pairs(configurations) do
+        if cfg.is_user then
+            cfg.tsconfig = resolve_tsconfig(path, cfg.base_name or name, cfg)
+            cfg.outDir = cfg.tsconfig and read_outdir(path, cfg.tsconfig) or nil
+        end
+        if not cfg.variant and cfg.inherits then
+            local bases = type(cfg.inherits) == "string"
+                and { cfg.inherits } or cfg.inherits
+            for _, base_name in ipairs(bases) do
+                local base = configurations[base_name]
+                if base and base.variant then
+                    cfg.variant = base.variant
+                    break
                 end
             end
         end
