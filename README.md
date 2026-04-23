@@ -171,9 +171,12 @@ root. Override with `path` if the directory name differs:
   "MyProject": {
     "cmake": {
       "configurations": {
-        "Debug": {},
-        "Release": {},
+        "my-release": {
+          "inherits": "variant:Release",
+          "options": { "ENABLE_PROFILING": "ON" }
+        },
         "ohos-debug": {
+          "inherits": "variant:Debug",
           "toolchain": "${OHOS_NDK_HOME}/cmake/ohos.toolchain.cmake"
         }
       },
@@ -183,6 +186,13 @@ root. Override with `path` if the directory name differs:
 }
 ```
 
+- **Configuration name tiers**: module-emitted configs are canonical
+  `prefix:name` (cmake built-ins as `variant:Debug`/`variant:Release`,
+  CMakePresets entries as `preset:<name>`, harmony project configs as
+  `auto:<product>-<target>-<abi>`). User-declared configs go under any
+  name without `:` and typically use `inherits:` to extend an auto-gen.
+  Configs sharing a project's type can freely reference each other by
+  canonical name. The `:` ban on user names is enforced by validation.
 - **Toolchain paths**: use `${ENV_VAR}/path` (expanded at runtime). Absolute
   paths are forbidden in `loomworks.json` to keep it portable.
 - **`compile_commands_from`**: source `compile_commands.json` from another
@@ -195,8 +205,8 @@ Map configuration names across projects:
 ```json
 {
   "configuration_sets": {
-    "Debug":   { "ProjectA": "Debug",   "ProjectB": "development" },
-    "Release": { "ProjectA": "Release", "ProjectB": "production" }
+    "Debug":   { "ProjectA": "variant:Debug",   "ProjectB": "variant:development" },
+    "Release": { "ProjectA": "variant:Release", "ProjectB": "variant:production" }
   }
 }
 ```

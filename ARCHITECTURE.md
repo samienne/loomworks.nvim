@@ -559,6 +559,30 @@ fields (name, variant, inherits, options) from module-specific data
 within the project. ConfigUnit carries `_configuration` reference. Accessor:
 `unit:configuration()`, `pp:configuration()`.
 
+Configuration names are canonical, two-tier:
+
+- **Auto-gen configs** carry `prefix:base` canonical names
+  (`variant:Debug`, `preset:debug-custom`, `auto:default-entry-arm64-v8a`).
+  `prefix` is module-chosen (see each module's `default_configurations`
+  / `info()` for which prefixes it emits); `base_name` is the portion
+  after the separator. `Configuration:is_auto_gen()` returns true iff
+  `prefix ~= nil`.
+- **User configs** have bare names without `:`. `config.validate`
+  enforces the namespace rule.
+- `Configuration.canonicalize(auto_configs, user_overrides, module_id)`
+  is the shared transform each module calls from `info()` to produce
+  a canonical-keyed dict. Auto-gens without an explicit `prefix` field
+  fall back to the module id as prefix.
+
+Two orphan signals live on Configuration for the UI layer:
+`_source_missing` (this object is a stub created by
+`Project:ensure_configuration` because something referenced a name
+no live config backs; cleared on next `_update` that carries
+`is_default`/`is_user`/`from_preset`), and
+`unresolved_inherits_names()` (list of base names this config's
+`inherits` couldn't resolve). UI renders source-missing configs and
+unresolved inherits in `WarningMsg`.
+
 **ConfigurationSet** owns activation: `cs:activate(tool_entry)` finds or
 materializes a profile by property matching, never by computing a key.
 `cs:ensure_profile(tool_entry)` materializes without activating.
