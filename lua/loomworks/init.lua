@@ -82,7 +82,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -109,6 +109,14 @@ function M.setup(opts)
 
     -- Optional fidget.nvim integration for progress notifications (registers listeners, fast)
     require("loomworks.fidget").setup()
+
+    -- LSP: unless explicitly disabled (`opts.lsp == false`), install server
+    -- configs via vim.lsp.config. Defaults in; user may override per-server
+    -- via `opts.lsp = { clangd = {...} }` or disable with `lsp = false`.
+    if not (opts and opts.lsp == false) then
+        local lsp_opts = opts and type(opts.lsp) == "table" and opts.lsp or nil
+        require("loomworks.lsp").setup_servers(lsp_opts)
+    end
 
     -- Load workspace if root is specified (auto_load passes root explicitly)
     if opts and opts.root then

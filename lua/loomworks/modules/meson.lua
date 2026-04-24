@@ -786,19 +786,36 @@ function M.lsp_configs(project)
     if not ws then return {} end
     local root_dir = ws.root .. "/" .. (project.path or project.key)
 
-    local build_dir = project.cached and project.cached.build_dir or nil
+    -- Prefer the active profile's ProfileProject (robust in multi-tool profiles
+    -- where project.cached's variant+tool_key match can miss).
+    local build_dir = nil
+    local active_profile = ws.get_active_profile and ws:get_active_profile()
+    if active_profile then
+        local pp = active_profile:project(project.key)
+        if pp then build_dir = pp:build_dir() end
+    end
+    if not build_dir and project.cached then
+        build_dir = project.cached.build_dir
+    end
 
-    -- Binary override (project-level clangd) from type_config
+    -- Binary override: type_config.clangd wins, else tool_data.clangd_path
+    -- (set by the compilers detector when a matching clangd lives next to
+    -- the compiler — common for SDK toolchains).
     local tc = project.type_config or {}
     local binary = nil
+    local binary_required = false
     if type(tc.clangd) == "string" and tc.clangd ~= "" then
         binary = tc.clangd
+    elseif project.tool_data and project.tool_data.clangd_path then
+        binary = project.tool_data.clangd_path
+        binary_required = project.tool_data.clangd_required == true
     end
 
     return {
         {
             server = "clangd",
             binary = binary,
+            binary_required = binary_required,
             compile_commands_dir = build_dir,
             root_dir = root_dir,
         },

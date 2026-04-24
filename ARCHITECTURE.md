@@ -325,8 +325,8 @@ may import from its own layer or any layer below it, never above.
 | File | Owns | Must NOT do |
 |------|------|-------------|
 | `overseer.lua` | Template provider registration, task collection from modules, task launching with readiness checks and build dir lock acquisition, auto-configure-before-build, profile-level operations | Import core.lua directly; own state beyond task generation |
-| `lsp.lua` | Thin LSP dispatch layer. Re-exports clangd factories from `integrations/clangd.lua` for user config convenience. Provides generic `get_status()` that iterates modules' `lsp_configs()` entries and matches clients per server. No server-specific logic | Contain server-specific wiring (lives in `integrations/<server>.lua`) |
-| `integrations/clangd.lua` | clangd-specific wiring: cmd factory, root_dir factory, auto-restart on workspace/active set changes. Reads `server = "clangd"` entries from module `lsp_configs()` output | Reference specific modules; read `project.cmake` or other module-specific fields |
+| `lsp.lua` | LSP dispatch layer + plugin-style integration registry. On load, scans every runtime path for `integrations/lsp/*.lua` and requires each — integrations self-register via `register(server, M)`. Exposes generic `cmd(server, base)` / `root_dir(server, fallback)` factories, a `setup_servers(opts)` that installs enabled integrations via `vim.lsp.config` + `vim.lsp.enable`, buffer excludes (`default_excludes()` / `excluded(bufnr)` + `LspAttach` detach autocmd) applied uniformly across all managed integrations, and `get_status()` dispatching per-server status fields to integrations. No server-specific logic | Contain server-specific wiring (lives in `integrations/lsp/<server>.lua`) |
+| `integrations/lsp/clangd.lua` | clangd-specific wiring: `build_config(user_cfg)` for zero-config setup, function-based cmd + root_dir (resolve per-buffer: SDK clangd inside workspace, user base cmd outside), auto-restart on workspace/active set changes, capability auto-detection for blink.cmp/cmp_nvim_lsp, binary_required enforcement | Reference specific modules; read `project.cmake` or other module-specific fields |
 | `fidget.lua` | fidget.nvim progress handles for operations and tasks | Require fidget.nvim unconditionally (graceful no-op) |
 | `task_tracker.lua` | Overseer component bridging task lifecycle to ConfigUnit, cache recording, and build dir lock release on completion/dispose (idempotent) | Be imported by anything except overseer |
 | `lualine/components/loomworks.lua` | Winbar component showing active profile context for current buffer | Import core.lua; do anything beyond formatting |
@@ -732,9 +732,10 @@ loomworks.nvim/
 │   │   ├── device_log.lua              Client-side device-log view (parser, filter, ring buffer, bottom-split)
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
 │   │   ├── overseer.lua               Overseer template provider + launching
-│   │   ├── lsp.lua                    LSP dispatch layer (re-exports integrations, generic get_status)
+│   │   ├── lsp.lua                    LSP registry + dispatcher (runtime-path discovery, setup_servers, get_status)
 │   │   ├── integrations/
-│   │   │   └── clangd.lua             clangd integration (cmd/root_dir factories, auto-restart)
+│   │   │   └── lsp/
+│   │   │       └── clangd.lua         clangd integration (build_config, function-based cmd/root_dir, auto-restart)
 │   │   ├── fidget.lua                 fidget.nvim progress integration
 │   │   ├── config_editor.lua           Legacy JSON read-modify-write (not used at runtime)
 │   │   ├── modules/

@@ -2135,7 +2135,7 @@ type_config editor is rendered.
 Return LSP server configurations for this project. Each entry describes
 one LSP server the module wants attached to buffers under this project.
 Entries are **opaque to core** — only the server-specific integration
-(e.g. `lua/loomworks/integrations/clangd.lua`) parses the fields.
+(e.g. `lua/loomworks/integrations/lsp/clangd.lua`) parses the fields.
 
 Entry shape:
 
@@ -2144,6 +2144,7 @@ Entry shape:
 | `server` | Server name (e.g. `"clangd"`, `"ts_ls"`) — selects the integration |
 | `root_dir` | Absolute path used for root_dir matching and client scoping |
 | `binary` | (clangd) Override server executable; `${ENV_VAR}` expansion supported |
+| `binary_required` | (clangd) When `true` and `binary` is missing, refuse to start and surface an error. Use when stock PATH `clangd` would be actively wrong (e.g. SDK clangd required for platform headers) |
 | `compile_commands_dir` | (clangd) Absolute directory containing `compile_commands.json` |
 | `tsconfig` | (ts_ls) Absolute path to `tsconfig.json` |
 | _…per-server_ | Each integration documents its own fields |
@@ -3087,9 +3088,12 @@ The target picker collects from all three sources:
 
 LSP integration is split between a thin core dispatch layer
 (`lua/loomworks/lsp.lua`) and per-server integration files
-(`lua/loomworks/integrations/<server>.lua`). Core is module-agnostic:
+(`lua/loomworks/integrations/lsp/<server>.lua`). Core is module-agnostic:
 modules emit opaque `lsp_configs()` entries keyed by `server` name, and
-core routes them to the matching integration.
+core routes them to the matching integration. Integrations are discovered
+from every runtime path, so drop-in integrations (either in the user's
+own config or in a sibling plugin) register automatically alongside the
+built-in ones.
 
 ### 10.1 Module interface (§9.4 `lsp_configs`)
 
@@ -3105,41 +3109,129 @@ build directory inside the module, so the emitted entry's
 ### 10.2 Dispatch layer (`lsp.lua`)
 
 Responsibilities:
-- Load integrations on startup
-- Re-export integration-provided factory functions for user config
-  (`loomworks.lsp.clangd_cmd`, `loomworks.lsp.clangd_root_dir`)
-- Provide a generic `get_status()` that iterates all projects, calls each
-  module's `lsp_configs()`, and matches active LSP clients by root_dir
-  per server
+- **Discover and load integrations on startup.** `lsp.lua` scans every
+  runtime path for `lua/loomworks/integrations/lsp/*.lua` via
+  `vim.api.nvim_get_runtime_file` and requires each file. Each
+  integration self-registers by calling `require("loomworks.lsp").register(server, M)`.
+  This means integrations can live in the plugin itself, in the user's
+  own `~/.config/nvim/lua/loomworks/integrations/lsp/`, or in another
+  plugin on the runtime path — all three are discovered automatically.
+- **Expose generic factories** — `loomworks.lsp.cmd(server, base_cmd)`
+  and `loomworks.lsp.root_dir(server, fallback)` delegate to the
+  registered integration. Server-specific aliases like
+  `loomworks.lsp.clangd_cmd` / `loomworks.lsp.clangd_root_dir` are kept
+  as thin wrappers for back-compat.
+- **Wire integration listeners.** On startup, `lsp.lua` subscribes once
+  to `active_set_changed` and `workspace_changed` and fans out to every
+  integration's `on_active_set_changed` / `on_workspace_changed` hook.
+  Integrations don't register listeners themselves.
+- **Provide `get_status()`** iterating all projects, calling each
+  module's `lsp_configs()`, matching LSP clients by root_dir per server,
+  and delegating per-server status fields to each integration's
+  `status_extras(entry)` callback.
 
 Core never references specific LSP server names. Adding a new server
-means adding an integration file and updating any module that wants to
-emit entries for it.
+means adding an integration file — no changes to `lsp.lua`.
 
-### 10.3 clangd integration (`integrations/clangd.lua`)
+### 10.3 Integration contract
 
-Exposes two factory functions used in user nvim config:
+Each `integrations/lsp/<server>.lua` returns a table with these fields
+(all but `server` optional):
 
-- `cmd_factory(base_cmd)` returns a function for lspconfig's `cmd`
-  option. It looks up the clangd entry for the buffer's project, overrides
-  the binary if provided, and appends `--compile-commands-dir=<dir>` when
-  `compile_commands_dir` is set and the `compile_commands.json` file
-  actually exists.
-- `root_dir_factory(fallback)` returns a function for lspconfig's
-  `root_dir`. Returns `entry.root_dir` from the module's clangd entry when
-  available; otherwise calls `fallback`.
+| Field | Purpose |
+|-------|---------|
+| `server` | Server name (e.g. `"clangd"`) — must match `entry.server` |
+| `build_config(user_cfg) → table` | Returns the full `vim.lsp.config` payload. Called by `setup_servers()` — merges user overrides with integration defaults, installs function-based `cmd` and `root_dir` |
+| `default_enable` | `true` if this integration should be enabled when the user calls `setup({})` with no explicit `lsp` opt-in |
+| `cmd_factory(base_cmd) → fn` | Builds a `cmd` function — used by `build_config` and exposed for users who prefer lspconfig |
+| `root_dir_factory(fallback) → fn` | Builds a `root_dir` function — same pattern |
+| `get_resolved_cmd(root_dir) → string[]\|nil` | Last-resolved cmd args (status display) |
+| `status_extras(entry) → table` | Per-server fields merged into `extra` on the status page |
+| `on_active_set_changed()` | Called on profile/active-set change |
+| `on_workspace_changed()` | Called on workspace swap / first load |
 
-### 10.4 Automatic restarts
+The integration's module body calls
+`require("loomworks.lsp").register(name, M)` as its last action, then
+returns `M`. Discovery handles the rest.
 
-The clangd integration subscribes to `active_set_changed` and
-`workspace_changed` events. It restarts clangd clients when:
+### 10.4 Server installation (`setup_servers`)
 
-- Workspace is first loaded (pre-existing clients lack loomworks awareness)
-- Active set changes AND the resolved `binary` or `compile_commands_dir`
-  differs from the previous state for any project
+`loomworks.setup({ lsp = ... })` controls which servers loomworks
+installs via `vim.lsp.config` + `vim.lsp.enable`:
 
-Restarts are per-client and include a notification explaining what
-changed (new binary, new compile_commands_dir, or both).
+| `opts.lsp` | Behavior |
+|------------|----------|
+| unset or `{}` | Install every integration with `default_enable = true` using its own defaults; apply default buffer excludes |
+| `false` | Skip entirely — no `vim.lsp.config` calls; integrations still wrap clients that other code started |
+| `{ clangd = {...} }` | Install clangd; user fields (cmd, on_attach, capabilities, settings, …) merge with integration defaults |
+| `{ clangd = true }` | Install clangd with integration defaults |
+| `{ clangd = false }` | Skip clangd specifically |
+| `{ excludes = ... }` | Override default buffer excludes. See below |
+
+**Buffer excludes** apply uniformly to every integration loomworks
+manages — no language server handles `diffview://`, `fugitive://`,
+`quickfix`, etc. well, so loomworks suppresses attachment to those
+buffers before `root_dir` resolution and detaches any client that
+attaches via filetype match (via an `LspAttach` autocmd). Defaults:
+
+| Field | Default |
+|-------|---------|
+| `bufname_patterns` | `{ "^diffview://", "^fugitive://", "^octo://", "^gitsigns://", "^term://" }` |
+| `buftypes` | `{ "help", "quickfix", "prompt", "nofile", "terminal" }` |
+
+User override forms for `opts.lsp.excludes`:
+
+| Form | Behavior |
+|------|----------|
+| unset (no `excludes` key) | Use defaults |
+| `false` | Disable exclusion entirely |
+| `{ bufname_patterns = {...}, buftypes = {...} }` | Replace defaults wholesale |
+| `function(defaults) return ... end` | Receive a fresh copy of defaults, return the modified excludes (extend pattern) |
+
+`loomworks.lsp.default_excludes()` returns a fresh deep copy of the
+defaults so users can build extensions without touching internal state.
+`loomworks.lsp.excluded(bufnr)` returns whether a given buffer is
+excluded under the currently resolved excludes; integrations call this
+from their `root_dir_factory` so excluded buffers never get matched to a
+workspace project.
+
+The integration's `build_config(user_cfg)` always wraps `cmd` and
+`root_dir` with loomworks functions — the user's `cmd` becomes the
+base/fallback passed into `cmd_factory`. This lets a single nvim session
+transparently use the SDK clangd inside a workspace project and the
+user's stock clangd for buffers outside any workspace.
+
+Footgun: if the user calls `vim.lsp.config("clangd", { cmd = ... })`
+*after* `loomworks.setup`, their static cmd replaces loomworks' wrapping
+function. On `VimEnter`, loomworks compares the installed cmd against
+the currently-registered one; any mismatch triggers a single warning
+pointing the user at the fix.
+
+### 10.5 clangd integration
+
+Lives at `integrations/lsp/clangd.lua`. The wrapping `cmd` function
+resolves per-buffer: if the buffer's project matches a loomworks clangd
+entry, the entry's `binary` overrides the base cmd and
+`--compile-commands-dir=<dir>` is appended when the referenced
+`compile_commands.json` exists. When `entry.binary_required` is true and
+the binary is missing, the cmd function refuses to start rather than
+silently falling back to the base `clangd` — an error notification
+surfaces the problem.
+
+Buffers that don't match any project fall through to the base cmd passed
+into `cmd_factory` (the user's config from `loomworks.setup({ lsp.clangd })`,
+or integration defaults when unset). Same for `root_dir` — projects use
+their `entry.root_dir`, everything else falls through to a
+`vim.fs.root(bufnr, root_markers)` resolution.
+
+Capability detection: when user doesn't pass `capabilities` in their
+setup config, `build_config` auto-merges completion plugin capabilities
+(`blink.cmp` or `cmp_nvim_lsp` when installed) on top of the default LSP
+protocol capabilities.
+
+`on_active_set_changed` restarts clients whose resolved `binary` or
+`compile_commands_dir` changed. `on_workspace_changed` restarts all
+pre-existing clangd clients so they pick up loomworks-aware routing.
 
 ---
 

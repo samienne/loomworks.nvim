@@ -191,8 +191,11 @@ function P.query_capabilities(sdk, module_id)
         local hmos_native = path .. "/sdk/default/hms/native"
         local ohos_tc = ohos_native .. "/build/cmake/ohos.toolchain.cmake"
         local hmos_tc = hmos_native .. "/build/cmake/hmos.toolchain.cmake"
-        -- cmake_path is shared (from OpenHarmony SDK)
+        -- cmake_path and clangd are shared (from OpenHarmony SDK native/).
+        -- clangd is required here: the SDK-bundled clangd knows platform
+        -- headers that stock PATH-clangd cannot locate.
         local cmake_path = resolve_tool(ohos_native .. "/build-tools/cmake/bin/cmake", exe_exts)
+        local clangd_path = resolve_tool(ohos_native .. "/llvm/bin/clangd", exe_exts)
 
         local platforms = {}
         if uv.fs_stat(hmos_tc) then
@@ -232,6 +235,8 @@ function P.query_capabilities(sdk, module_id)
         return {
             platforms = platforms,
             cmake_path = cmake_path,
+            clangd_path = clangd_path,
+            clangd_required = true,
             sdk_display = P.display_name .. " " .. (sdk:sdk_version() or ""),
         }
     end

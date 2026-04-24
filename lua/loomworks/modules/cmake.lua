@@ -1001,6 +1001,8 @@ function M.kits_from_sdk(caps, sdk)
                 generator = "Ninja",
                 toolchain = platform.toolchain_file,
                 cmake_path = cmake_path,
+                clangd_path = caps.clangd_path,
+                clangd_required = caps.clangd_required or false,
                 extra_args = extra_args,
                 sdk_key = sdk.key,
             } }
@@ -1494,8 +1496,10 @@ function M.lsp_configs(project)
     if not ws then return {} end
     local root_dir = ws.root .. "/" .. (project.path or project.key)
 
-    -- Compile commands dir: either a referenced configuration's build dir
-    -- (compile_commands_from redirect) or the active config's build dir.
+    -- Compile commands dir, in order:
+    --   1. `compile_commands_from` redirect to a different configuration
+    --   2. Active profile's ProfileProject for this project (→ ConfigUnit build_dir)
+    --   3. `project.cached.build_dir` fallback (legacy active-config summary)
     local tc = project.type_config or {}
     local build_dir = nil
     if tc.compile_commands_from then
@@ -1508,22 +1512,49 @@ function M.lsp_configs(project)
             end
         end
     end
+    if not build_dir then
+        local active_profile = ws.get_active_profile and ws:get_active_profile()
+        if active_profile then
+            local pp = active_profile:project(project.key)
+            if pp then build_dir = pp:build_dir() end
+        end
+    end
     if not build_dir and project.cached then
         build_dir = project.cached.build_dir
     end
 
-    -- Binary: type_config.clangd (env-expanded) wins, else tool_data.clangd_path
+    -- Binary: type_config.clangd (env-expanded) wins, else active tool's
+    -- clangd_path. binary_required is set when the active tool (e.g. an SDK
+    -- kit) declares its clangd as non-optional.
+    --
+    -- Resolve the active tool freshly from the active profile rather than
+    -- relying on project.tool_data — for SDK-only profiles the latter is nil
+    -- (SDK tools are resolved lazily via Profile:tool_for()).
     local binary = nil
+    local binary_required = false
     if type(tc.clangd) == "string" and tc.clangd ~= "" then
         binary = tc.clangd
-    elseif project.tool_data and project.tool_data.clangd_path then
-        binary = project.tool_data.clangd_path
+    else
+        local tool_data = project.tool_data
+        if (not tool_data or not tool_data.clangd_path)
+                and ws.get_active_profile then
+            local active_profile = ws:get_active_profile()
+            if active_profile and active_profile.tool_for then
+                local tref = active_profile:tool_for(project.type)
+                tool_data = tref and tref.data or tool_data
+            end
+        end
+        if tool_data and tool_data.clangd_path then
+            binary = tool_data.clangd_path
+            binary_required = tool_data.clangd_required == true
+        end
     end
 
     return {
         {
             server = "clangd",
             binary = binary,
+            binary_required = binary_required,
             compile_commands_dir = build_dir,
             root_dir = root_dir,
         },
