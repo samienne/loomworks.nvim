@@ -443,6 +443,39 @@ require("loomworks").setup({
 })
 ```
 
+### Buffer excludes
+
+By default, loomworks skips LSP attachment to buffers that language
+servers generally can't handle (diffview, fugitive, octo, gitsigns,
+quickfix, help, nofile, terminal, …). Override:
+
+```lua
+-- Extend defaults:
+require("loomworks").setup({
+  lsp = {
+    excludes = function(defaults)
+      table.insert(defaults.bufname_patterns, "^my-plugin://")
+      return defaults
+    end,
+  },
+})
+
+-- Replace defaults entirely:
+require("loomworks").setup({
+  lsp = {
+    excludes = {
+      bufname_patterns = { "^only-this://" },
+      buftypes = {},
+    },
+  },
+})
+
+-- Disable entirely:
+require("loomworks").setup({ lsp = { excludes = false } })
+```
+
+Read the defaults programmatically with `require("loomworks.lsp").default_excludes()` — it returns a fresh deep copy.
+
 ### lspconfig / legacy path
 
 If you already use `nvim-lspconfig` and want to keep that flow:

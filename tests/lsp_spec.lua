@@ -333,4 +333,93 @@ describe("lsp", function()
             lw.get_projects = orig_gp
         end)
     end)
+
+    describe("excludes", function()
+        --- Create a scratch buffer with a given name and buftype.
+        --- Appends a monotonic counter to ensure names are unique per call
+        --- so tests don't collide with buffers left over from prior cases.
+        local buf_counter = 0
+        local function make_buf(name, buftype)
+            buf_counter = buf_counter + 1
+            local bufnr = vim.api.nvim_create_buf(false, true)
+            if name and name ~= "" then
+                vim.api.nvim_buf_set_name(bufnr, name .. ".buf" .. buf_counter)
+            end
+            if buftype then
+                vim.api.nvim_set_option_value("buftype", buftype, { buf = bufnr })
+            end
+            return bufnr
+        end
+
+        it("default_excludes returns a table with expected fields", function()
+            local d = lsp.default_excludes()
+            assert.equals("table", type(d.bufname_patterns))
+            assert.equals("table", type(d.buftypes))
+            assert.is_true(#d.bufname_patterns > 0)
+            assert.is_true(#d.buftypes > 0)
+        end)
+
+        it("default_excludes returns fresh copies so callers can mutate", function()
+            local a = lsp.default_excludes()
+            table.insert(a.bufname_patterns, "^mutated://")
+            local b = lsp.default_excludes()
+            for _, p in ipairs(b.bufname_patterns) do
+                assert.are_not.equal("^mutated://", p)
+            end
+        end)
+
+        it("excluded returns false before setup_servers resolves excludes", function()
+            -- Without setup_servers, no excludes applied.
+            lsp.setup_servers({ excludes = false })  -- explicit disable
+            local bufnr = make_buf("diffview:///abc", nil)
+            assert.is_false(lsp.excluded(bufnr))
+        end)
+
+        it("excluded matches default bufname_patterns after setup", function()
+            lsp.setup_servers({})  -- default excludes
+            local bufnr = make_buf("diffview:///a/b/file.cpp", nil)
+            assert.is_true(lsp.excluded(bufnr))
+        end)
+
+        it("excluded matches default buftypes", function()
+            lsp.setup_servers({})
+            local bufnr = make_buf("", "quickfix")
+            assert.is_true(lsp.excluded(bufnr))
+        end)
+
+        it("user override via function extends defaults", function()
+            lsp.setup_servers({
+                excludes = function(defaults)
+                    table.insert(defaults.bufname_patterns, "^custom://")
+                    return defaults
+                end,
+            })
+            local b1 = make_buf("custom:///x", nil)
+            assert.is_true(lsp.excluded(b1))
+            local b2 = make_buf("diffview:///y", nil)
+            -- defaults still apply because the function returned the (mutated) defaults
+            assert.is_true(lsp.excluded(b2))
+        end)
+
+        it("user override via plain table replaces defaults", function()
+            lsp.setup_servers({
+                excludes = { bufname_patterns = { "^only://" }, buftypes = {} },
+            })
+            local b1 = make_buf("only:///x", nil)
+            assert.is_true(lsp.excluded(b1))
+            local b2 = make_buf("diffview:///y", nil)
+            assert.is_false(lsp.excluded(b2))  -- default gone
+        end)
+
+        it("excludes = false disables exclusion entirely", function()
+            lsp.setup_servers({ excludes = false })
+            local bufnr = make_buf("diffview:///x", nil)
+            assert.is_false(lsp.excluded(bufnr))
+        end)
+
+        it("register rejects reserved server names", function()
+            local ok = pcall(lsp.register, "excludes", {})
+            assert.is_false(ok)
+        end)
+    end)
 end)

@@ -30,13 +30,106 @@ local normalize = vim.fs.normalize
 local _integrations = {}
 
 -- ---------------------------------------------------------------------------
+-- Buffer exclusion (applies to every integration uniformly)
+-- ---------------------------------------------------------------------------
+
+--- Default exclusion patterns. No language server handles these buffer
+--- types well — they're backed by non-file URIs or are scratch/UI buffers.
+--- @type { bufname_patterns: string[], buftypes: string[] }
+local DEFAULT_EXCLUDES = {
+    bufname_patterns = {
+        "^diffview://",
+        "^fugitive://",
+        "^octo://",
+        "^gitsigns://",
+        "^term://",
+    },
+    buftypes = {
+        "help", "quickfix", "prompt", "nofile", "terminal",
+    },
+}
+
+--- Resolved excludes applied to every integration. `false` = skip
+--- exclusion entirely. Set by `setup_servers()`.
+--- @type { bufname_patterns: string[], buftypes: string[] }|false|nil
+local _excludes = nil
+
+--- Return a fresh deep copy of the default exclusion table so callers
+--- can mutate it without affecting future calls.
+--- @return { bufname_patterns: string[], buftypes: string[] }
+function M.default_excludes()
+    return vim.deepcopy(DEFAULT_EXCLUDES)
+end
+
+--- Resolve the user's excludes opt into a final table (or false).
+--- @param opt table|function|false|nil
+--- @return { bufname_patterns: string[], buftypes: string[] }|false
+local function resolve_excludes(opt)
+    if opt == false then return false end
+    if opt == nil then return vim.deepcopy(DEFAULT_EXCLUDES) end
+    if type(opt) == "function" then
+        local result = opt(vim.deepcopy(DEFAULT_EXCLUDES))
+        return result or false
+    end
+    if type(opt) == "table" then
+        -- User-supplied table wholesale replaces defaults (missing fields
+        -- default to empty lists so the check doesn't error).
+        return {
+            bufname_patterns = opt.bufname_patterns or {},
+            buftypes = opt.buftypes or {},
+        }
+    end
+    return vim.deepcopy(DEFAULT_EXCLUDES)
+end
+
+--- Check whether a buffer should be excluded from LSP attachment.
+--- Consults the excludes resolved by `setup_servers()`.
+--- @param bufnr integer
+--- @return boolean
+function M.excluded(bufnr)
+    if _excludes == false or _excludes == nil then return false end
+    local buftype = vim.api.nvim_get_option_value("buftype", { buf = bufnr })
+    for _, bt in ipairs(_excludes.buftypes or {}) do
+        if buftype == bt then return true end
+    end
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    for _, pattern in ipairs(_excludes.bufname_patterns or {}) do
+        if name:match(pattern) then return true end
+    end
+    return false
+end
+
+--- Wire a single LspAttach autocmd that detaches excluded buffers from
+--- any managed integration. Idempotent — only registers once.
+local _exclude_autocmd_registered = false
+local function ensure_exclude_autocmd()
+    if _exclude_autocmd_registered then return end
+    _exclude_autocmd_registered = true
+    vim.api.nvim_create_autocmd("LspAttach", {
+        group = vim.api.nvim_create_augroup("loomworks.lsp.excludes", { clear = true }),
+        callback = function(args)
+            local client = vim.lsp.get_client_by_id(args.data.client_id)
+            if not client or not _integrations[client.name] then return end
+            if M.excluded(args.buf) then
+                vim.lsp.buf_detach_client(args.buf, client.id)
+            end
+        end,
+    })
+end
+
+-- ---------------------------------------------------------------------------
 -- Registry
 -- ---------------------------------------------------------------------------
+
+-- Reserved `lsp_opts` keys that must not collide with integration names.
+local RESERVED_SERVER_NAMES = { excludes = true }
 
 --- Register an LSP integration. Called by each integration file on load.
 --- @param server string
 --- @param integration loomworks.LspIntegration
 function M.register(server, integration)
+    assert(not RESERVED_SERVER_NAMES[server],
+        "loomworks.lsp: server name '" .. server .. "' is reserved")
     _integrations[server] = integration
 end
 
@@ -260,6 +353,12 @@ end
 --- @param lsp_opts table|nil
 function M.setup_servers(lsp_opts)
     lsp_opts = lsp_opts or {}
+
+    -- Resolve excludes and ensure the detach autocmd is wired.
+    _excludes = resolve_excludes(lsp_opts.excludes)
+    if _excludes ~= false then
+        ensure_exclude_autocmd()
+    end
 
     for server, integration in pairs(_integrations) do
         local user_cfg = lsp_opts[server]

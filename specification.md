@@ -3161,11 +3161,39 @@ installs via `vim.lsp.config` + `vim.lsp.enable`:
 
 | `opts.lsp` | Behavior |
 |------------|----------|
-| unset or `{}` | Install every integration with `default_enable = true` using its own defaults |
+| unset or `{}` | Install every integration with `default_enable = true` using its own defaults; apply default buffer excludes |
 | `false` | Skip entirely — no `vim.lsp.config` calls; integrations still wrap clients that other code started |
 | `{ clangd = {...} }` | Install clangd; user fields (cmd, on_attach, capabilities, settings, …) merge with integration defaults |
 | `{ clangd = true }` | Install clangd with integration defaults |
 | `{ clangd = false }` | Skip clangd specifically |
+| `{ excludes = ... }` | Override default buffer excludes. See below |
+
+**Buffer excludes** apply uniformly to every integration loomworks
+manages — no language server handles `diffview://`, `fugitive://`,
+`quickfix`, etc. well, so loomworks suppresses attachment to those
+buffers before `root_dir` resolution and detaches any client that
+attaches via filetype match (via an `LspAttach` autocmd). Defaults:
+
+| Field | Default |
+|-------|---------|
+| `bufname_patterns` | `{ "^diffview://", "^fugitive://", "^octo://", "^gitsigns://", "^term://" }` |
+| `buftypes` | `{ "help", "quickfix", "prompt", "nofile", "terminal" }` |
+
+User override forms for `opts.lsp.excludes`:
+
+| Form | Behavior |
+|------|----------|
+| unset (no `excludes` key) | Use defaults |
+| `false` | Disable exclusion entirely |
+| `{ bufname_patterns = {...}, buftypes = {...} }` | Replace defaults wholesale |
+| `function(defaults) return ... end` | Receive a fresh copy of defaults, return the modified excludes (extend pattern) |
+
+`loomworks.lsp.default_excludes()` returns a fresh deep copy of the
+defaults so users can build extensions without touching internal state.
+`loomworks.lsp.excluded(bufnr)` returns whether a given buffer is
+excluded under the currently resolved excludes; integrations call this
+from their `root_dir_factory` so excluded buffers never get matched to a
+workspace project.
 
 The integration's `build_config(user_cfg)` always wraps `cmd` and
 `root_dir` with loomworks functions — the user's `cmd` becomes the

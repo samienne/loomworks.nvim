@@ -1523,16 +1523,31 @@ function M.lsp_configs(project)
         build_dir = project.cached.build_dir
     end
 
-    -- Binary: type_config.clangd (env-expanded) wins, else tool_data.clangd_path.
-    -- binary_required is set when the active tool (e.g. an SDK kit) declares its
-    -- clangd as non-optional — default PATH clangd won't know the platform headers.
+    -- Binary: type_config.clangd (env-expanded) wins, else active tool's
+    -- clangd_path. binary_required is set when the active tool (e.g. an SDK
+    -- kit) declares its clangd as non-optional.
+    --
+    -- Resolve the active tool freshly from the active profile rather than
+    -- relying on project.tool_data — for SDK-only profiles the latter is nil
+    -- (SDK tools are resolved lazily via Profile:tool_for()).
     local binary = nil
     local binary_required = false
     if type(tc.clangd) == "string" and tc.clangd ~= "" then
         binary = tc.clangd
-    elseif project.tool_data and project.tool_data.clangd_path then
-        binary = project.tool_data.clangd_path
-        binary_required = project.tool_data.clangd_required == true
+    else
+        local tool_data = project.tool_data
+        if (not tool_data or not tool_data.clangd_path)
+                and ws.get_active_profile then
+            local active_profile = ws:get_active_profile()
+            if active_profile and active_profile.tool_for then
+                local tref = active_profile:tool_for(project.type)
+                tool_data = tref and tref.data or tool_data
+            end
+        end
+        if tool_data and tool_data.clangd_path then
+            binary = tool_data.clangd_path
+            binary_required = tool_data.clangd_required == true
+        end
     end
 
     return {

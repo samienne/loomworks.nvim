@@ -112,11 +112,15 @@ end
 
 --- Create a `root_dir` function for lspconfig that uses the loomworks
 --- project's clangd entry root_dir when the buffer's project has one.
---- Falls through to the provided fallback otherwise.
+--- Falls through to the provided fallback otherwise. Skips excluded
+--- buffers (see `loomworks.lsp.excluded`) before any resolution — this
+--- is the primary gate that keeps LSP off non-file buffers (diffview,
+--- fugitive, quickfix, ...).
 --- @param fallback? fun(bufnr: number, on_dir: fun(root: string))
 --- @return fun(bufnr: number, on_dir: fun(root: string))
 function M.root_dir_factory(fallback)
     return function(bufnr, on_dir)
+        if require("loomworks.lsp").excluded(bufnr) then return end
         local ok, lw = pcall(require, "loomworks")
         if ok then
             local project = lw.project_for_buf(bufnr)
@@ -165,10 +169,13 @@ end
 --- Build the full `vim.lsp.config` payload. Called by `loomworks.lsp.setup_servers()`
 --- when the user opts into loomworks-managed clangd (the default).
 ---
---- User's `cmd` becomes the fallback for buffers outside any workspace
+--- User's `cmd` becomes the fallback base for buffers outside any workspace
 --- project. Inside a workspace project, the profile's SDK clangd wins.
---- User's other fields (`on_attach`, `capabilities`, `settings`, …) pass
---- through unchanged.
+--- User's `root_dir` (if a function) becomes the fallback for buffers
+--- outside any workspace project — lets users keep custom rules like
+--- "skip diffview buffers". Defaults to `vim.fs.root(bufnr, root_markers)`.
+--- Other user fields (`on_attach`, `capabilities`, `settings`, `on_exit`, …)
+--- pass through unchanged.
 --- @param user_cfg table|nil user-supplied overrides
 --- @return table vim.lsp.config payload
 function M.build_config(user_cfg)
@@ -177,12 +184,16 @@ function M.build_config(user_cfg)
     local root_markers = user_cfg.root_markers or DEFAULT_ROOT_MARKERS
     local filetypes = user_cfg.filetypes or DEFAULT_FILETYPES
 
-    local config = vim.tbl_deep_extend("force", {}, user_cfg)
-    config.cmd = M.cmd_factory(base_cmd)
-    config.root_dir = M.root_dir_factory(function(bufnr, on_dir)
+    local user_root_dir = type(user_cfg.root_dir) == "function"
+        and user_cfg.root_dir or nil
+    local root_dir_fallback = user_root_dir or function(bufnr, on_dir)
         local r = vim.fs.root(bufnr, root_markers)
         if r then on_dir(r) end
-    end)
+    end
+
+    local config = vim.tbl_deep_extend("force", {}, user_cfg)
+    config.cmd = M.cmd_factory(base_cmd)
+    config.root_dir = M.root_dir_factory(root_dir_fallback)
     config.root_markers = root_markers
     config.filetypes = filetypes
     if not config.capabilities then

@@ -5,6 +5,38 @@ they don't get lost.
 
 ---
 
+## LSP auto-restart on crash (integration-declared)
+
+Generalize the clangd-specific restart loop that sami had in their personal
+config into an opt-in field on LSP integrations. Motivation: on very large
+codebases clangd routinely gets OOM-killed — the user wants it re-launched
+automatically, with `--j=<n>` halving on each SIGKILL so it settles into a
+memory budget the system can actually support.
+
+Proposed shape on integrations:
+
+```lua
+M.auto_restart = {
+    on_signals = { 9, 11 },         -- SIGKILL, SIGSEGV
+    on_sigkill_adapt_cmd = function(cmd, attempt_state)
+        -- mutate cmd (halve --j=N) and return the new cmd + updated state
+    end,
+}
+```
+
+`lsp.lua` would wire `on_exit` generically, call the integration's
+`on_sigkill_adapt_cmd` when present, and re-install via `vim.lsp.config` +
+`vim.lsp.enable`. Default for clangd: halve `--j=` on SIGKILL, reset to 12
+on SIGSEGV.
+
+Also consider an upper-bound restart count and a backoff so a truly-broken
+config doesn't hot-loop forever.
+
+User-facing: users can set `auto_restart = false` on a server to opt out;
+leaving it unset gets the integration's default behavior.
+
+---
+
 ## Device log streaming: sluggishness persists after stream ends
 
 After a harmony device session ends, editor responsiveness stays
