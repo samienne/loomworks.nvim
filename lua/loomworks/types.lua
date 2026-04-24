@@ -148,6 +148,18 @@
 --- @field cached boolean whether a materialized profile exists
 --- @field profile? loomworks.Profile resolved profile object (if cached)
 
+--- LSP config entry emitted by `module.lsp_configs(project)`.
+--- Core only inspects `server` to route the entry to the right
+--- integration; all other fields are server-specific and parsed by the
+--- integration. Fields below are the common ones used by built-in
+--- integrations — each integration documents its own additions.
+--- @class loomworks.LspConfigEntry
+--- @field server string                server name (e.g. "clangd")
+--- @field root_dir? string             absolute project-root path for client scoping
+--- @field binary? string               override server executable (env expansion supported)
+--- @field binary_required? boolean     refuse to start when `binary` is missing — use when stock PATH server would be actively wrong
+--- @field compile_commands_dir? string (clangd) directory containing compile_commands.json
+
 --- Merged project data from merge.merge().
 --- @class loomworks.MergedProjectData
 --- @field type string module type

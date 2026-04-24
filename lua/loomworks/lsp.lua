@@ -8,13 +8,15 @@
 --- The integration contract (all fields except `server` optional):
 ---
 ---   @class loomworks.LspIntegration
----   @field server string                                   -- must match entry.server
----   @field cmd_factory? fun(base_cmd: string[]): function  -- for user config
----   @field root_dir_factory? fun(fallback?): function      -- for user config
+---   @field server string                                        -- must match entry.server
+---   @field build_config? fun(user_cfg: table|nil): table        -- vim.lsp.config payload for setup_servers
+---   @field default_enable? boolean                              -- install on `setup({})` with no explicit lsp opt
+---   @field cmd_factory? fun(base_cmd: string[]): function       -- cmd function (used by build_config + lspconfig users)
+---   @field root_dir_factory? fun(fallback?): function           -- root_dir function (used by build_config + lspconfig users)
 ---   @field get_resolved_cmd? fun(root_dir: string): string[]|nil
----   @field status_extras? fun(entry: table): table         -- fields for status page
----   @field on_active_set_changed? fun()                    -- wired by lsp.lua
----   @field on_workspace_changed? fun()                     -- wired by lsp.lua
+---   @field status_extras? fun(entry: table): table              -- fields for status page
+---   @field on_active_set_changed? fun()                         -- wired by lsp.lua
+---   @field on_workspace_changed? fun()                          -- wired by lsp.lua
 ---
 --- Core routes by `entry.server` only — no server-specific branches.
 

@@ -72,9 +72,11 @@ end
 -- Integration contract — consumed by loomworks.lsp
 -- ---------------------------------------------------------------------------
 
---- Create a clangd `cmd` function for lspconfig that injects
---- --compile-commands-dir and optionally overrides the binary per project.
---- Falls back to `base_cmd` when loomworks has no data.
+--- Create a clangd `cmd` function (for `vim.lsp.config` or lspconfig)
+--- that injects --compile-commands-dir and optionally overrides the
+--- binary per project. Falls back to `base_cmd` when loomworks has no
+--- data. Used by `build_config` and re-exported for users who prefer
+--- to keep their own `vim.lsp.config` / `lspconfig` setup.
 --- @param base_cmd string[] e.g. { "clangd", "--background-index" }
 --- @return fun(dispatchers: table, config: vim.lsp.ClientConfig): vim.lsp.rpc.PublicClient
 function M.cmd_factory(base_cmd)
@@ -110,8 +112,9 @@ function M.cmd_factory(base_cmd)
     end
 end
 
---- Create a `root_dir` function for lspconfig that uses the loomworks
---- project's clangd entry root_dir when the buffer's project has one.
+--- Create a `root_dir` function (for `vim.lsp.config` or lspconfig)
+--- that uses the loomworks project's clangd entry root_dir when the
+--- buffer's project has one.
 --- Falls through to the provided fallback otherwise. Skips excluded
 --- buffers (see `loomworks.lsp.excluded`) before any resolution — this
 --- is the primary gate that keeps LSP off non-file buffers (diffview,
