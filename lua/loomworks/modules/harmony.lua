@@ -396,7 +396,9 @@ function M.lsp_configs(project)
     local build_dir = cached.build_dir
     if not build_dir then return {} end
 
-    -- Resolve SDK-bundled clangd
+    -- Resolve SDK-bundled clangd. Required: stock PATH clangd cannot find
+    -- the harmony platform headers, so we surface an error rather than
+    -- silently falling back.
     local tool_data = project.tool_data or {}
     local binary = nil
     if tool_data.deveco_home then
@@ -413,6 +415,7 @@ function M.lsp_configs(project)
         {
             server = "clangd",
             binary = binary,
+            binary_required = true,
             compile_commands_dir = build_dir,
             root_dir = build_dir,
         },

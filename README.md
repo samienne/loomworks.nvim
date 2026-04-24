@@ -393,29 +393,84 @@ Actions walk upward from the cursor to find the nearest actionable node.
 Pressing `b` on a detail line triggers the build action of the parent
 profile or configuration.
 
-## clangd Integration
+## clangd / LSP Integration
 
-loomworks can automatically configure clangd with the correct
-`compile_commands.json` directory for each project.
+loomworks ships a plugin-style LSP integration layer. By default, calling
+`require("loomworks").setup({})` auto-installs a clangd config via the
+native `vim.lsp.config` + `vim.lsp.enable` API — you don't need
+`nvim-lspconfig` or any other LSP plumbing for the common case.
 
-In your lspconfig setup:
+### Zero-config
 
 ```lua
-local lsp = require("loomworks.lsp")
+require("loomworks").setup({})
+-- clangd is now enabled with sensible defaults:
+--   cmd = { "clangd", "--background-index", "--clang-tidy", "--header-insertion=iwyu" }
+-- Inside a workspace project, the active profile's compile_commands_dir and
+-- (if the profile uses an SDK) the SDK-bundled clangd binary are used.
+-- Outside any workspace, the default cmd is used.
+```
 
+### Overriding the clangd config
+
+```lua
+require("loomworks").setup({
+  lsp = {
+    clangd = {
+      cmd = { "clangd", "--background-index", "-j=12" },
+      capabilities = require("blink.cmp").get_lsp_capabilities(),
+      on_attach = my_on_attach,
+      settings = { clangd = { fallbackFlags = { "-std=c++20" } } },
+    },
+  },
+})
+```
+
+Your `cmd` is used as the base/fallback — **inside a workspace project,
+the active profile's clangd binary (when the profile uses an SDK) still
+wins over your cmd[1]** and `--compile-commands-dir` is appended
+automatically. Outside the workspace, your cmd is used as-is.
+
+### Opt-outs
+
+```lua
+require("loomworks").setup({
+  lsp = false,                             -- disable LSP setup entirely
+})
+
+require("loomworks").setup({
+  lsp = { clangd = false },                -- skip only clangd
+})
+```
+
+### lspconfig / legacy path
+
+If you already use `nvim-lspconfig` and want to keep that flow:
+
+```lua
+require("loomworks").setup({ lsp = false })  -- don't let loomworks register clangd
+
+local lsp = require("loomworks.lsp")
 require("lspconfig").clangd.setup({
-  cmd = lsp.clangd_cmd({ "clangd", "--background-index", "-j=12" }),
+  cmd = lsp.clangd_cmd({ "clangd", "--background-index" }),
   root_dir = lsp.clangd_root_dir(),
 })
 ```
 
-- `clangd_cmd()` injects `--compile-commands-dir` based on the active
-  profile's build directory. Also overrides the clangd binary if a
-  project-specific one is configured.
-- `clangd_root_dir()` scopes clangd to the correct project directory within
-  the workspace.
-- clangd is automatically restarted when switching profiles if the
-  compile_commands_dir or binary has changed.
+### Adding a new LSP server
+
+Drop a file into your runtime path at
+`lua/loomworks/integrations/lsp/<server>.lua` following the integration
+contract in [specification.md §10.3](specification.md). Every plugin on
+`runtimepath` is scanned at startup, so no other wiring is needed.
+
+### Behavior
+
+- clangd restarts automatically when profile switches change the
+  `compile_commands_dir` or resolved binary.
+- SDK-provided clangd is required for SDK profiles (e.g. harmony); when
+  its binary is missing, loomworks refuses to start clangd rather than
+  falling back to a stock PATH clangd that can't find platform headers.
 
 ## Lualine Component
 

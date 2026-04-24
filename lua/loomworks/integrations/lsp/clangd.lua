@@ -1,18 +1,17 @@
---- loomworks/integrations/clangd.lua — clangd LSP integration.
+--- loomworks/integrations/lsp/clangd.lua — clangd LSP integration.
 ---
---- Implements all clangd-specific wiring: cmd factory (injects
+--- Implements clangd-specific wiring: cmd factory (injects
 --- --compile-commands-dir and binary override), root_dir factory,
---- auto-restart on profile/workspace changes.
+--- status extras, and active-set change detection for client restart.
 ---
---- This file is an LSP integration, not core. It reads opaque entries
---- produced by modules via `M.lsp_configs()` and filters for server="clangd".
---- Core never sees clangd specifics — it only routes configs to integrations
---- by `entry.server` name.
-
-local M = {}
+--- Self-registers with `loomworks.lsp` on load. Discovered automatically
+--- by the registry scanning `lua/loomworks/integrations/lsp/*.lua` across
+--- all runtime paths.
 
 local uv = vim.uv or vim.loop
 local normalize = vim.fs.normalize
+
+local M = { server = "clangd" }
 
 --- Resolved clangd command args keyed by normalized root_dir.
 --- Populated by the cmd wrapper, read by get_resolved_cmd().
@@ -22,49 +21,6 @@ local _resolved_cmd = {}
 --- State tracking for detecting when clangd needs restart on active_set_changed.
 --- @type table<string, { binary: string|nil, compile_commands_dir: string|nil }>
 local _client_state = {}
-
-local _listener_registered = false
-
---- Call a project's module.lsp_configs() and return the first clangd entry.
---- @param project loomworks.Project
---- @return table|nil clangd entry or nil if none declared
-local function clangd_entry_for_project(project)
-    if not project then return nil end
-    local mod = project._module and project._module.impl or nil
-    if not mod or not mod.lsp_configs then return nil end
-
-    local ok, entries = pcall(mod.lsp_configs, project)
-    if not ok or type(entries) ~= "table" then return nil end
-
-    for _, e in ipairs(entries) do
-        if e.server == "clangd" then return e end
-    end
-    return nil
-end
-
---- Locate the loomworks project for a clangd root_dir.
---- Each module's lsp_configs() sets entry.root_dir — we match against that.
---- @param root_dir string|nil absolute path (clangd root)
---- @return loomworks.Project|nil, loomworks.Workspace|nil, table|nil entry
-local function find_project_by_root(root_dir)
-    if not root_dir then return nil, nil, nil end
-
-    local ok, lw = pcall(require, "loomworks")
-    if not ok then return nil, nil, nil end
-
-    local ws = lw.get_workspace()
-    if not ws then return nil, nil, nil end
-
-    local target = normalize(root_dir)
-    for _, project in pairs(lw.get_projects()) do
-        local entry = clangd_entry_for_project(project)
-        if entry and entry.root_dir and normalize(entry.root_dir) == target then
-            return project, ws, entry
-        end
-    end
-
-    return nil, nil, nil
-end
 
 --- Expand ${ENV_VAR} patterns. Leaves unresolved refs unchanged.
 --- @param s string
@@ -86,8 +42,8 @@ local function resolve_binary(entry)
 end
 
 --- Resolve compile_commands_dir from an entry (verifies the .json exists).
---- @param entry table|nil clangd entry with optional `compile_commands_dir` field
---- @return string|nil absolute compile_commands directory
+--- @param entry table|nil
+--- @return string|nil
 local function resolve_compile_commands_dir(entry)
     if not entry or not entry.compile_commands_dir then return nil end
     local dir = entry.compile_commands_dir
@@ -95,8 +51,25 @@ local function resolve_compile_commands_dir(entry)
     return dir
 end
 
+--- Get the clangd entry for a project by asking the core for this server.
+--- @param project loomworks.Project
+--- @return table|nil
+local function entry_for(project)
+    local lsp = require("loomworks.lsp")
+    return lsp.entry_for_project(project, "clangd")
+end
+
+--- Find the clangd entry for a given root_dir by asking the core.
+--- @param root_dir string|nil
+--- @return loomworks.Project|nil project, table|nil entry
+local function find_by_root(root_dir)
+    if not root_dir then return nil, nil end
+    local lsp = require("loomworks.lsp")
+    return lsp.find_project_by_root("clangd", root_dir)
+end
+
 -- ---------------------------------------------------------------------------
--- Public factory functions (re-exported via lsp.lua for user config)
+-- Integration contract — consumed by loomworks.lsp
 -- ---------------------------------------------------------------------------
 
 --- Create a clangd `cmd` function for lspconfig that injects
@@ -107,10 +80,20 @@ end
 function M.cmd_factory(base_cmd)
     return function(dispatchers, config)
         local args = vim.list_extend({}, base_cmd)
-        local _, _, entry = find_project_by_root(config.root_dir)
+        local _, entry = find_by_root(config.root_dir)
 
         local bin = resolve_binary(entry)
-        if bin then args[1] = bin end
+        if bin then
+            args[1] = bin
+        elseif entry and entry.binary and entry.binary_required then
+            vim.schedule(function()
+                vim.notify(
+                    "loomworks.clangd: required binary not found: " .. entry.binary
+                    .. "\nlsp will not start for " .. (config.root_dir or "<unknown>"),
+                    vim.log.levels.ERROR)
+            end)
+            error("loomworks.clangd: binary_required and not found: " .. entry.binary)
+        end
 
         local dir = resolve_compile_commands_dir(entry)
         if dir then args[#args + 1] = "--compile-commands-dir=" .. dir end
@@ -138,7 +121,7 @@ function M.root_dir_factory(fallback)
         if ok then
             local project = lw.project_for_buf(bufnr)
             if project then
-                local entry = clangd_entry_for_project(project)
+                local entry = entry_for(project)
                 if entry and entry.root_dir then
                     on_dir(normalize(entry.root_dir))
                     return
@@ -149,28 +132,88 @@ function M.root_dir_factory(fallback)
     end
 end
 
---- Get the resolved command args for a root_dir (if available).
+--- Get resolved cmd args for a root_dir (used by status display).
 --- @param root_dir string normalized root directory
 --- @return string[]|nil
 function M.get_resolved_cmd(root_dir)
     return _resolved_cmd[root_dir]
 end
 
---- Get the clangd entry for a project (used by status display).
---- @param project loomworks.Project
---- @return table|nil entry { binary?, compile_commands_dir?, root_dir? }
-function M.entry_for(project)
-    return clangd_entry_for_project(project)
+--- Default base cmd args when the user doesn't provide one.
+local DEFAULT_CMD = { "clangd", "--background-index", "--clang-tidy",
+    "--header-insertion=iwyu" }
+local DEFAULT_FILETYPES = { "c", "cpp", "objc", "objcpp", "cuda" }
+local DEFAULT_ROOT_MARKERS = { ".clangd", ".clang-tidy", "compile_commands.json",
+    "compile_flags.txt", ".git" }
+
+--- Try to merge completion-plugin capabilities (cmp_nvim_lsp, blink.cmp)
+--- into the base lsp capabilities. Zero-config convenience.
+--- @return table
+local function detect_capabilities()
+    local caps = vim.lsp.protocol.make_client_capabilities()
+    local ok_blink, blink = pcall(require, "blink.cmp")
+    if ok_blink and blink.get_lsp_capabilities then
+        return blink.get_lsp_capabilities(caps)
+    end
+    local ok_cmp, cmp_nvim_lsp = pcall(require, "cmp_nvim_lsp")
+    if ok_cmp and cmp_nvim_lsp.default_capabilities then
+        return vim.tbl_deep_extend("force", caps, cmp_nvim_lsp.default_capabilities())
+    end
+    return caps
+end
+
+--- Build the full `vim.lsp.config` payload. Called by `loomworks.lsp.setup_servers()`
+--- when the user opts into loomworks-managed clangd (the default).
+---
+--- User's `cmd` becomes the fallback for buffers outside any workspace
+--- project. Inside a workspace project, the profile's SDK clangd wins.
+--- User's other fields (`on_attach`, `capabilities`, `settings`, …) pass
+--- through unchanged.
+--- @param user_cfg table|nil user-supplied overrides
+--- @return table vim.lsp.config payload
+function M.build_config(user_cfg)
+    user_cfg = user_cfg or {}
+    local base_cmd = user_cfg.cmd or DEFAULT_CMD
+    local root_markers = user_cfg.root_markers or DEFAULT_ROOT_MARKERS
+    local filetypes = user_cfg.filetypes or DEFAULT_FILETYPES
+
+    local config = vim.tbl_deep_extend("force", {}, user_cfg)
+    config.cmd = M.cmd_factory(base_cmd)
+    config.root_dir = M.root_dir_factory(function(bufnr, on_dir)
+        local r = vim.fs.root(bufnr, root_markers)
+        if r then on_dir(r) end
+    end)
+    config.root_markers = root_markers
+    config.filetypes = filetypes
+    if not config.capabilities then
+        config.capabilities = detect_capabilities()
+    end
+    return config
+end
+
+--- Should this integration be enabled by default when the user calls
+--- `loomworks.setup({})` without an explicit `lsp` config? Clangd is the
+--- flagship native-language server, so yes.
+M.default_enable = true
+
+--- Status-page extras for a clangd entry.
+--- @param entry table
+--- @return table
+function M.status_extras(entry)
+    return {
+        compile_commands_dir = entry.compile_commands_dir,
+        clangd_bin = entry.binary,
+        binary_required = entry.binary_required,
+    }
 end
 
 -- ---------------------------------------------------------------------------
 -- Auto-restart on profile/workspace changes
 -- ---------------------------------------------------------------------------
 
---- Find LSP clients matching a root_dir.
 --- @param root_dir string
 --- @return vim.lsp.Client[]
-local function find_clangd_clients(root_dir)
+local function find_clients(root_dir)
     local target = normalize(root_dir)
     local matches = {}
     for _, client in ipairs(vim.lsp.get_clients({ name = "clangd" })) do
@@ -181,9 +224,6 @@ local function find_clangd_clients(root_dir)
     return matches
 end
 
---- Stop clients and re-enable clangd so open buffers re-attach.
---- Clears resolved cmd cache for the affected root_dirs.
---- @param clients vim.lsp.Client[]
 local function restart_clients(clients)
     for _, client in ipairs(clients) do
         if client.root_dir then
@@ -195,14 +235,13 @@ local function restart_clients(clients)
 end
 
 --- Detect clangd state changes after a profile/active set change.
-local function on_active_set_changed()
+function M.on_active_set_changed()
     local ok, lw = pcall(require, "loomworks")
-    if not ok then return end
-    if not lw.get_workspace() then return end
+    if not ok or not lw.get_workspace() then return end
 
     local new_state = {}
     for _, project in pairs(lw.get_projects()) do
-        local entry = clangd_entry_for_project(project)
+        local entry = entry_for(project)
         if entry and entry.root_dir then
             local key = normalize(entry.root_dir)
             local new = {
@@ -214,7 +253,7 @@ local function on_active_set_changed()
             local prev = _client_state[key]
             if prev and (prev.binary ~= new.binary
                     or prev.compile_commands_dir ~= new.compile_commands_dir) then
-                local clients = find_clangd_clients(key)
+                local clients = find_clients(key)
                 if #clients > 0 then
                     local parts = {}
                     if new.compile_commands_dir ~= prev.compile_commands_dir then
@@ -236,25 +275,14 @@ end
 
 --- Restart all clangd clients when a workspace loads for the first time.
 --- Pre-existing clients were started without loomworks awareness.
-local function on_workspace_changed()
+function M.on_workspace_changed()
     local clients = vim.lsp.get_clients({ name = "clangd" })
     if #clients == 0 then return end
     vim.notify("loomworks: restarting " .. #clients .. " clangd client(s) for workspace integration")
     restart_clients(clients)
 end
 
---- Register listeners (idempotent). Called once on module load.
-local function ensure_listeners()
-    if _listener_registered then return end
-    _listener_registered = true
-
-    local ok, lw = pcall(require, "loomworks")
-    if ok then
-        lw.on("active_set_changed", function() vim.schedule(on_active_set_changed) end)
-        lw.on("workspace_changed", function() vim.schedule(on_workspace_changed) end)
-    end
-end
-
-ensure_listeners()
+-- Self-register with the core LSP registry.
+require("loomworks.lsp").register("clangd", M)
 
 return M
