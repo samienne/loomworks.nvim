@@ -315,7 +315,7 @@ The serial is stable across USB reconnections and emulator restarts.
 - Devices are **workspace-level** — they are physical hardware, shared
   across all profiles.
 - Devices are **runtime-only** — discovered on demand via the module's
-  `list_devices()` method (§9.10). Not persisted to cache or user.json.
+  `list_devices()` method (§12). Not persisted to cache or user.json.
 - Discovery is triggered by: (1) opening the device picker in UI,
   (2) attempting to launch a device-requiring target with no device
   selected, (3) explicit `scan_devices()` API call.
@@ -2800,157 +2800,9 @@ together.
 
 ### 9.10 Device Interface
 
-Modules that deploy to physical or emulated devices implement an optional
-device interface. The core system discovers device-capable modules and
-delegates all device operations to them — no module-specific knowledge in
-core.
-
-#### 9.10.1 Module properties and methods
-
-**Static property:**
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `has_devices` | `boolean` | `true` if this module's launch targets may require device deployment. Default `false` (omission = no device support). |
-
-**Methods** (all optional, only meaningful when `has_devices = true`):
-
-**`list_devices(tool_data, callback)`** *(async)*
-
-Enumerate connected devices. Calls `callback(devices)` where each device
-is `{ serial: string, display_name: string, state: string, properties: table }`.
-The module is responsible for running the device connector tool
-(e.g., `hdc list targets`) and parsing its output.
-
-**`device_targets(project_ctx, active_config) → table[]`**
-
-Return device launch target descriptors for the active configuration.
-Each descriptor has: `{ id: string, label: string, requires_device: boolean }`.
-These appear in the launch target picker alongside module targets (cmake
-executables) and command-type launches (loomworks.json). The module controls
-which configurations get device targets.
-
-Example return value:
-```lua
-{ { id = "run-device", label = "Run on device", requires_device = true } }
-```
-
-**`device_install(tool_data, device_serial, artifact_path) → { cmd, args, env? }`**
-
-Return an overseer-compatible command spec for installing an artifact onto
-a device. Does NOT execute the command — the core runs it via overseer.
-Always reinstalls (no freshness tracking).
-
-**`device_launch(tool_data, device_serial, launch_info) → { cmd, args, env? }`**
-
-Return a command spec to launch the installed app on a device.
-`launch_info` is module-specific metadata (e.g., bundle name, ability name
-for harmony).
-
-**`device_stop(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
-
-Return a command spec that force-stops the app on the device (for
-harmony: `hdc shell aa force-stop -b <bundle>`). Session tracker
-calls this from `stop()` when the active run is a device launch so
-`<S-F5>` (and other stop paths) actually terminate the on-device
-process rather than merely closing the local log stream.
-
-**`device_pid(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
-
-Return a command spec that, when run, prints the PID of a running app
-on the device. Used by the session tracker for two purposes: (1)
-initial PID discovery right after launch, and (2) periodic polling
-to detect when the app has exited so the log stream can be torn
-down automatically.
-
-**`device_log(tool_data, device_serial, opts?) → { cmd, args, env? }`**
-
-Return a command spec that streams device logs on stdout. `opts` is
-an optional hint table (e.g., `opts.pid` for device-side filtering),
-but the core `device_log` view does not rely on device-side filters
-— it parses and filters the stream client-side. Modules should
-expose whichever opts make sense; harmony currently accepts `pid`
-and `tag` as best-effort hints.
-
-**`device_log_clear(tool_data, device_serial) → { cmd, args, env? }`**
-
-Optional. Return a command spec that flushes the device's log
-buffer (for harmony: `hdc shell hilog -r`). Called by the session
-tracker right before starting a fresh stream so the view doesn't
-mix in stale entries. Best-effort — errors here are non-fatal.
-
-**`resolve_artifact(project_ctx, active_config) → string|nil`**
-
-Return the absolute path to the built artifact for device deployment.
-Module-specific knowledge of where the build system places output (e.g.,
-HAP file location for harmony).
-
-**`resolve_launch_info(project_path, config_info, tool_data) → table|nil`**
-
-Extract launch metadata from project files. For harmony: bundle name
-from `app.json5`, ability name from `module.json5`. Returns a table that
-is passed to `device_launch()` as `launch_info`.
-
-#### 9.10.2 Launch flow with devices
-
-The launch flow (§9.7) is extended when the target requires a device:
-
-```
-build → file-deploy → device-install → device-launch
-```
-
-1. **Build**: same as §9.7 — build dependencies, then build self.
-2. **File-deploy**: same as §9.8 — copy artifacts between projects.
-3. **Device check**: if `target:requires_device()` is false, proceed to
-   normal launch/debug (existing path, unchanged). Otherwise:
-4. **Device selection**: if the profile has no device serial, prompt with
-   `vim.ui.select` populated from `list_devices()`. On selection, persist
-   to profile.
-5. **Device install**: call `resolve_artifact()` to find the artifact
-   path, then `device_install()` to get the command spec. Execute via
-   overseer as a tracked task. On failure, stop the chain with error.
-6. **Device launch**: call `resolve_launch_info()` then `device_launch()`.
-   Execute via overseer.
-7. **Log stream** (best-effort):
-   a. Resolve the launched app's PID via `device_pid()` (polled
-      briefly — `aa start` returns before the process is up).
-   b. Clear the device log buffer via `device_log_clear()` (when
-      the module provides it) so stale entries don't show up in
-      the view.
-   c. Start `device_log()` as a streaming task and hand its lines
-      to the `loomworks.device_log` module, which parses each line,
-      applies a session prefilter (PID OR proc-contains-bundle,
-      union semantics), writes matches to a ring buffer, and
-      renders filtered entries into a bottom-split scratch buffer.
-   d. Start a periodic pidof poll (~3 s) on the session tracker.
-      When the PID is gone for two consecutive polls the session
-      tracker treats the app as exited, stops the log stream, and
-      clears the active run.
-
-   Failure at any step surfaces as a warning and does not fail the
-   launch chain — the app is already running, we just can't follow
-   its output this time.
-
-Device targets always use launch mode in v1 (no device debug).
-
-#### 9.10.3 LaunchTarget device support
-
-LaunchTarget gains a third target type alongside module targets and
-command-type launches:
-
-| Descriptor field | Target type | Source |
-|-----------------|-------------|--------|
-| `target` | Module target (cmake executable) | file-api discovery |
-| `launch` | Command launch | loomworks.json launch section |
-| `device_target` | Device target | module's `device_targets()` |
-
-The `device_target` field stores the target ID (e.g., `"run-device"`).
-`LaunchTarget:requires_device()` returns `true` when `_device_target` is set.
-
-The target picker collects from all three sources:
-1. Launch configs from projects (`project.launch` dict)
-2. Executable targets from `ConfigUnit.targets`
-3. Device targets from modules (`module.device_targets()`)
+Devices are now a first-class concern handled by §12 (Device Interface
+Contract). Modules opt in by setting `has_devices = true` and
+implementing the methods documented there.
 
 ---
 
@@ -3089,7 +2941,266 @@ contract above and document the per-server fields alongside.
 
 ---
 
-## 11. Winbar / Statusline Component
+## 11. SDK Provider Contract
+
+An SDK is a resolved platform installation (e.g., a HarmonyOS / OHOS
+SDK shipped inside DevEco Studio, an Android NDK, an embedded vendor
+toolchain) that supplies tools to one or more modules. SDK providers
+are pluggable: each provider lives at `lua/loomworks/sdks/<id>.lua`
+and registers itself by being required from `lua/loomworks/sdks/init.lua`
+or another runtime path file.
+
+### 11.1 Provider interface
+
+Each provider table exposes:
+
+| Field | Purpose |
+|-------|---------|
+| `id` | Provider identity (e.g., `"ohos"`) — stable across versions |
+| `display_name` | Human-readable name shown in pickers and status |
+| `detect_all() → { path, version }[]` | Enumerate installations on the host. Pure detection — no validation, no domain object creation |
+| `validate(path) → boolean` | Return whether a given path looks like a valid installation of this SDK type |
+| `create_sdk(key, path, version) → SDK` | Construct a `loomworks.SDK` domain object from a validated installation |
+| `query_capabilities(sdk, module_id) → table\|nil` | Return opaque capability data this SDK can offer to a given module, or `nil` if it has nothing for that module. `module_id == nil` returns the supported module ids array |
+
+### 11.2 SDK domain object
+
+`loomworks.SDK` (`lua/loomworks/sdk.lua`) wraps a resolved
+installation. Fields:
+
+| Field | Purpose |
+|-------|---------|
+| `key` | Identity key, persisted in user.json |
+| `_type` | Provider id |
+| `_version` | Detected version (or nil) |
+| `_path` | Resolved installation path |
+| `_resolved` | Whether the path is currently valid |
+| `_intent` | `"shared"` / `"local"` for the publish/working-copy model |
+| `_provider` | Back-reference to the provider table |
+
+`SDK:query(module_id)` delegates to the provider's
+`query_capabilities`. Returns `nil` when the SDK is unresolved or has
+nothing for that module.
+
+### 11.3 Capability shape
+
+Capability data is **opaque to core** — only the requesting module
+interprets it. A typical shape includes paths to platform tools
+(compilers, packagers, simulator binaries), toolchain files,
+architecture lists, and any flags that must be threaded into the
+module's task generation. Each provider documents its shape per
+module in its own spec file.
+
+### 11.4 Profile-level pinning
+
+A profile may pin an SDK by `key` in user.json. On reload, the SDK
+is resolved by `key` against the workspace's known providers. If the
+provider can no longer find the installation (e.g., DevEco moved or
+uninstalled), the profile renders as incomplete with a rebase
+action. No fallback guessing — incomplete profiles surface
+explicitly.
+
+When a profile has an SDK and a module asks for a tool, the resolver
+consults the SDK first via `SDK:query(module_id)`. If the SDK
+returns nil, the module falls through to host-tool detection. If
+neither yields a tool and the profile has no explicit override, the
+profile is incomplete.
+
+### 11.5 SDK provider implementations
+
+Each SDK provider documents its detection logic, validation rules,
+and per-module capability shape in its own spec file:
+
+- [`spec/sdks/ohos.md`](spec/sdks/ohos.md) — OpenHarmony /
+  HarmonyOS via DevEco Studio.
+
+Third-party providers follow the same shape: implement the contract
+above and document the per-module capability shape alongside.
+
+### 11.6 Future direction
+
+Profile-level SDK selection is partially implemented and tracked in
+BACKLOG.md. The current shape resolves SDK-supplied tools lazily on
+each `Profile:tool_for(module)` call rather than persisting them in
+the profile's `tools` dict. That keeps SDK refresh cheap (re-query on
+load) at the cost of slightly more code in the access path.
+
+---
+
+## 12. Device Interface Contract
+
+Devices are physical or emulated deployment targets (phones,
+simulators, embedded boards). Any module may opt in to device
+support; SDK providers may also expose devices in the future. Core
+discovers device-capable modules and routes all device operations
+through them — no per-module knowledge in core.
+
+### 12.1 Device domain object
+
+`loomworks.Device` (`lua/loomworks/device.lua`) is identified by
+its `serial` string. Runtime-only — not persisted in cache or
+user.json. Workspace owns `_devices` (serial → Device), populated on
+demand via `Workspace:scan_devices()`.
+
+Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `serial` | string | Stable device identifier |
+| `display_name` | string | Human-readable label |
+| `state` | string | `"online"` / `"offline"` |
+| `provider` | string | Module id that owns this device type |
+| `properties` | table | Provider-specific extras |
+
+### 12.2 Module opt-in
+
+**Static property:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `has_devices` | `boolean` | `true` if this module's launch targets may require device deployment. Default `false`. |
+
+**Methods** (all optional, only meaningful when `has_devices = true`):
+
+**`list_devices(tool_data, callback)`** *(async)*
+
+Enumerate connected devices. Calls `callback(devices)` where each
+device is `{ serial, display_name, state, properties }`. The module
+runs the device connector tool and parses its output.
+
+**`device_targets(project_ctx, active_config) → table[]`**
+
+Return device launch target descriptors for the active configuration.
+Each descriptor has `{ id, label, requires_device }`. These appear in
+the launch target picker alongside module targets and command-type
+launches.
+
+**`device_install(tool_data, device_serial, artifact_path) → { cmd, args, env? }`**
+
+Return an overseer-compatible command spec for installing an
+artifact onto a device. Does NOT execute the command — core runs it
+via overseer. Always reinstalls (no freshness tracking).
+
+**`device_launch(tool_data, device_serial, launch_info) → { cmd, args, env? }`**
+
+Return a command spec to launch the installed app on a device.
+`launch_info` is module-specific metadata produced by
+`resolve_launch_info()`.
+
+**`device_stop(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
+
+Return a command spec that force-stops the app on the device.
+Session tracker calls this from `stop()` when the active run is a
+device launch so stop paths actually terminate the on-device process
+rather than merely closing the local log stream.
+
+**`device_pid(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
+
+Return a command spec that, when run, prints the PID of a running
+app on the device. Used by the session tracker for two purposes:
+(1) initial PID discovery right after launch, and (2) periodic
+polling to detect when the app has exited so the log stream can be
+torn down automatically.
+
+**`device_log(tool_data, device_serial, opts?) → { cmd, args, env? }`**
+
+Return a command spec that streams device logs on stdout. `opts` is
+an optional hint table (e.g., `opts.pid` for device-side filtering),
+but the core `device_log` view does not rely on device-side filters
+— it parses and filters the stream client-side. Modules may expose
+whichever opts make sense.
+
+**`device_log_clear(tool_data, device_serial) → { cmd, args, env? }`**
+
+Optional. Return a command spec that flushes the device's log buffer.
+Called by the session tracker right before starting a fresh stream so
+the view doesn't mix in stale entries. Best-effort — errors here are
+non-fatal.
+
+**`resolve_artifact(project_ctx, active_config) → string|nil`**
+
+Return the absolute path to the built artifact for device deployment.
+Module-specific knowledge of where the build system places output.
+
+**`resolve_launch_info(project_path, config_info, tool_data) → table|nil`**
+
+Extract launch metadata from project files. Returns a table that is
+passed to `device_launch()` as `launch_info`. Shape is
+module-specific.
+
+### 12.3 Launch flow with devices
+
+The launch flow (§9.7) is extended when the target requires a device:
+
+```
+build → file-deploy → device-install → device-launch
+```
+
+1. **Build**: same as §9.7 — build dependencies, then build self.
+2. **File-deploy**: same as §9.8 — copy artifacts between projects.
+3. **Device check**: if `target:requires_device()` is false, proceed
+   to normal launch/debug (existing path, unchanged). Otherwise:
+4. **Device selection**: if the profile has no device serial, prompt
+   with `vim.ui.select` populated from `list_devices()`. On
+   selection, persist to profile.
+5. **Device install**: call `resolve_artifact()` to find the artifact
+   path, then `device_install()` to get the command spec. Execute via
+   overseer as a tracked task. On failure, stop the chain with error.
+6. **Device launch**: call `resolve_launch_info()` then
+   `device_launch()`. Execute via overseer.
+7. **Log stream** (best-effort):
+   a. Resolve the launched app's PID via `device_pid()` (polled
+      briefly — launch returns before the process is up).
+   b. Clear the device log buffer via `device_log_clear()` (when the
+      module provides it) so stale entries don't show up in the
+      view.
+   c. Start `device_log()` as a streaming task and hand its lines to
+      the `loomworks.device_log` module, which parses each line,
+      applies a session prefilter (PID OR proc-contains-bundle,
+      union semantics), writes matches to a ring buffer, and renders
+      filtered entries into a bottom-split scratch buffer.
+   d. Start a periodic pidof poll (~3 s) on the session tracker.
+      When the PID is gone for two consecutive polls the session
+      tracker treats the app as exited, stops the log stream, and
+      clears the active run.
+
+   Failure at any step surfaces as a warning and does not fail the
+   launch chain — the app is already running, we just can't follow
+   its output this time.
+
+Device targets always use launch mode in v1 (no device debug — see
+BACKLOG.md "Native device debug").
+
+### 12.4 LaunchTarget device support
+
+LaunchTarget supports three target types:
+
+| Descriptor field | Target type | Source |
+|-----------------|-------------|--------|
+| `target` | Module target (executable) | Module's `parse_targets` discovery |
+| `launch` | Command launch | loomworks.json launch section |
+| `device_target` | Device target | Module's `device_targets()` |
+
+The `device_target` field stores the target ID.
+`LaunchTarget:requires_device()` returns `true` when `_device_target`
+is set.
+
+The target picker collects from all three sources:
+1. Launch configs from projects (`project.launch` dict)
+2. Executable targets from `ConfigUnit.targets`
+3. Device targets from modules (`module.device_targets()`)
+
+### 12.5 Device interface implementations
+
+Devices are typically implemented inside the module that knows the
+relevant connector tool. See per-module specs:
+
+- [`spec/modules/harmony.md`](spec/modules/harmony.md) §6 —
+  HarmonyOS device interface via `hdc`.
+
+---
+
+## 13. Winbar / Statusline Component
 
 `lualine/components/loomworks.lua` provides a lualine component for
 winbar display.
@@ -3112,7 +3223,7 @@ spaces.
 
 ---
 
-## 12. Overseer Integration
+## 14. Overseer Integration
 
 ### 12.1 Task generation
 
@@ -3143,7 +3254,7 @@ All tasks wait for pending deletions before starting.
 
 ---
 
-## 13. Auto-load
+## 15. Auto-load
 
 ### 13.1 Configuration
 
@@ -3236,7 +3347,7 @@ when the user explicitly publishes (`:w`).
   directories. Opening Neovim in `workspace/src/` will not find
   `workspace/loomworks.json`. Use `:LoomworksInit` or `:cd` to the root.
 
-## 14. Neovim Commands
+## 16. Neovim Commands
 
 | Command | Args | Description |
 |---------|------|-------------|
@@ -3245,7 +3356,7 @@ when the user explicitly publishes (`:w`).
 
 ---
 
-## 15. Invariants
+## 17. Invariants
 
 1. **Cache is truth**: The cache reflects what exists on disk. It is never
    contradicted or overridden by config or user files.
