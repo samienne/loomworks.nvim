@@ -2677,9 +2677,9 @@ their non-debug equivalents (launch via overseer, test run via overseer).
 **Launch target debugging.** `LaunchTarget:debug()` mirrors `launch()`:
 same build → deploy chain, but the final step calls `debug.run(spec)`
 instead of `overseer.launch_run_task()`. Both command-type and module
-target paths are supported. The DAP adapter type is resolved from
-`user.json` `debug.adapters` mapping (module_type → adapter), with
-fallback defaults (cmake → codelldb).
+target paths are supported. The DAP adapter is resolved per language
+from `user.json` `debug.adapters` mapping, with per-language fallback
+defaults provided by the integrations.
 
 **Test debugging.** `loomtest.debug(test_id)` mirrors `loomtest.run()`:
 same resolution logic (test/suite/target), same build-before-run via
@@ -2696,7 +2696,12 @@ inline annotations, explorer).
 - `env` — environment variables
 - `adapter` — DAP adapter type (resolved by caller)
 - `extra` — adapter-specific fields merged into the DAP config
-  (e.g. `sourceMaps`, `runtimeExecutable` for pwa-node)
+
+The exact request shape per adapter (e.g., whether `program`/`args`
+are passed through unchanged or rewritten as `runtimeExecutable` +
+`program` + `args` for JS-style adapters) is adapter-specific. See
+[`spec/integrations/debug/`](spec/integrations/debug/) for the per-adapter
+contracts.
 
 Before launching, `debug.run()` checks that the adapter is registered
 in nvim-dap. If not, it shows a notification with Mason install hint
@@ -2706,37 +2711,31 @@ Optional `callbacks.on_terminated` registers a one-shot listener on the
 DAP session that fires on `event_terminated` or `event_exited` and
 auto-removes itself.
 
-**Adapter configuration** in `user.json`:
+**Adapter configuration** in `user.json` is keyed by language:
 ```json
 {
   "debug": {
     "adapters": {
-      "cmake": "codelldb",
+      "c++": "codelldb",
       "typescript": "pwa-node"
     }
   }
 }
 ```
 
-If omitted, defaults apply (cmake → codelldb, typescript → pwa-node).
+If omitted, the per-integration defaults apply.
 
-**TypeScript debugging.** For TypeScript command-type launch configs,
-the debug path sets `runtimeExecutable` to the command (node/ts-node),
-`program` to the entry point (first arg), and `sourceMaps = true`.
-This allows pwa-node to resolve TypeScript source maps automatically.
-
-**Adapter selection UI.** The status page shows a Debug Adapters section
-listing the current adapter per module type. Enter on an item opens a
-picker with known adapters showing installed/default/current status.
-Selection persists to `user.json` via `Workspace:set_debug_adapter()`.
-Known adapters: cmake (codelldb, cppdbg), typescript (pwa-node,
-pwa-chrome).
+**Adapter selection UI.** The status page shows a Debug Adapters
+section listing the current adapter per language. Enter on an item
+opens a picker with known adapters showing installed/default/current
+status. Selection persists to `user.json` via
+`Workspace:set_debug_adapter(language, adapter)`. Known adapters per
+language are reported by the integrations themselves.
 
 **Language-based adapter resolution.** Adapters are resolved per
 language, not per module type. Modules declare their supported
-languages (e.g., cmake → `"c++"`). The workspace-level
-`debug.adapters` mapping uses language keys. Backwards-compatible:
-accepts both language strings and legacy module type keys.
+languages via `M.languages`. The workspace-level `debug.adapters`
+mapping uses language keys.
 
 **Multi-adapter debugging.** A launch config can specify a `debug`
 array of language strings to attach multiple debuggers to the same
@@ -2783,6 +2782,21 @@ session end via per-session listeners.
 | `<leader>tF` | Run file tests |
 | `d` (loomtest explorer) | Debug selected test |
 | `r` (loomtest explorer) | Run selected test |
+
+**Debug adapter implementations.** Each adapter loomworks knows about
+documents its language coverage, request shape, and any
+adapter-specific transforms in its own spec file:
+
+- [`spec/integrations/debug/codelldb.md`](spec/integrations/debug/codelldb.md)
+  — native debugger (default for `c++`).
+- [`spec/integrations/debug/cppdbg.md`](spec/integrations/debug/cppdbg.md)
+  — alternative native debugger (Microsoft cpptools).
+- [`spec/integrations/debug/pwa-node.md`](spec/integrations/debug/pwa-node.md)
+  — Node.js / TypeScript (default for `typescript`).
+
+A pluggable backend registry mirroring the LSP design is on the
+BACKLOG; today `debug.lua` holds the dispatcher and adapter logic
+together.
 
 ### 9.10 Device Interface
 
@@ -2953,14 +2967,12 @@ built-in ones.
 
 ### 10.1 Module interface (§9.4 `lsp_configs`)
 
-Modules produce entries like
-`{ server = "clangd", root_dir = ..., compile_commands_dir = ..., binary = ... }`.
-Core only inspects the `server` field to dispatch; integrations parse the
-remaining fields. Modules may traverse core domain objects (Project,
-ConfigUnit) to resolve cross-configuration references — e.g. cmake's
-`compile_commands_from` redirect resolves to another cmake configuration's
-build directory inside the module, so the emitted entry's
-`compile_commands_dir` is already fully resolved.
+Modules produce entries shaped as `{ server = "...", root_dir = ...,
+<per-server fields>... }`. Core only inspects `server` to dispatch;
+integrations parse the remaining fields. Modules may traverse core
+domain objects (Project, ConfigUnit) to resolve cross-configuration
+references inside themselves, so paths emitted in the entry are
+fully resolved.
 
 ### 10.2 Dispatch layer (`lsp.lua`)
 
@@ -2974,9 +2986,9 @@ Responsibilities:
   plugin on the runtime path — all three are discovered automatically.
 - **Expose generic factories** — `loomworks.lsp.cmd(server, base_cmd)`
   and `loomworks.lsp.root_dir(server, fallback)` delegate to the
-  registered integration. Server-specific aliases like
-  `loomworks.lsp.clangd_cmd` / `loomworks.lsp.clangd_root_dir` are kept
-  as thin wrappers for back-compat.
+  registered integration. Server-specific aliases (e.g.,
+  `clangd_cmd`/`clangd_root_dir`) are kept as thin back-compat wrappers
+  in the relevant integration file.
 - **Wire integration listeners.** On startup, `lsp.lua` subscribes once
   to `active_set_changed` and `workspace_changed` and fans out to every
   integration's `on_active_set_changed` / `on_workspace_changed` hook.
@@ -2996,7 +3008,7 @@ Each `integrations/lsp/<server>.lua` returns a table with these fields
 
 | Field | Purpose |
 |-------|---------|
-| `server` | Server name (e.g. `"clangd"`) — must match `entry.server` |
+| `server` | Server name — must match `entry.server` |
 | `build_config(user_cfg) → table` | Returns the full `vim.lsp.config` payload. Called by `setup_servers()` — merges user overrides with integration defaults, installs function-based `cmd` and `root_dir` |
 | `default_enable` | `true` if this integration should be enabled when the user calls `setup({})` with no explicit `lsp` opt-in |
 | `cmd_factory(base_cmd) → fn` | Builds a `cmd` function — used by `build_config` and exposed for users who prefer lspconfig |
@@ -3019,9 +3031,9 @@ installs via `vim.lsp.config` + `vim.lsp.enable`:
 |------------|----------|
 | unset or `{}` | Install every integration with `default_enable = true` using its own defaults; apply default buffer excludes |
 | `false` | Skip entirely — no `vim.lsp.config` calls; integrations still wrap clients that other code started |
-| `{ clangd = {...} }` | Install clangd; user fields (cmd, on_attach, capabilities, settings, …) merge with integration defaults |
-| `{ clangd = true }` | Install clangd with integration defaults |
-| `{ clangd = false }` | Skip clangd specifically |
+| `{ <server> = {...} }` | Install `<server>`; user fields (cmd, on_attach, capabilities, settings, …) merge with integration defaults |
+| `{ <server> = true }` | Install `<server>` with integration defaults |
+| `{ <server> = false }` | Skip `<server>` specifically |
 | `{ excludes = ... }` | Override default buffer excludes. See below |
 
 **Buffer excludes** apply uniformly to every integration loomworks
@@ -3054,40 +3066,26 @@ workspace project.
 The integration's `build_config(user_cfg)` always wraps `cmd` and
 `root_dir` with loomworks functions — the user's `cmd` becomes the
 base/fallback passed into `cmd_factory`. This lets a single nvim session
-transparently use the SDK clangd inside a workspace project and the
-user's stock clangd for buffers outside any workspace.
+transparently use a workspace-resolved server inside a project and the
+user's stock server outside any project.
 
-Footgun: if the user calls `vim.lsp.config("clangd", { cmd = ... })`
+Footgun: if the user calls `vim.lsp.config("<server>", { cmd = ... })`
 *after* `loomworks.setup`, their static cmd replaces loomworks' wrapping
 function. On `VimEnter`, loomworks compares the installed cmd against
 the currently-registered one; any mismatch triggers a single warning
 pointing the user at the fix.
 
-### 10.5 clangd integration
+### 10.5 LSP integration implementations
 
-Lives at `integrations/lsp/clangd.lua`. The wrapping `cmd` function
-resolves per-buffer: if the buffer's project matches a loomworks clangd
-entry, the entry's `binary` overrides the base cmd and
-`--compile-commands-dir=<dir>` is appended when the referenced
-`compile_commands.json` exists. When `entry.binary_required` is true and
-the binary is missing, the cmd function refuses to start rather than
-silently falling back to the base `clangd` — an error notification
-surfaces the problem.
+Each integration shipped with loomworks documents its server-specific
+fields, lifecycle, and status display in its own spec file:
 
-Buffers that don't match any project fall through to the base cmd passed
-into `cmd_factory` (the user's config from `loomworks.setup({ lsp.clangd })`,
-or integration defaults when unset). Same for `root_dir` — projects use
-their `entry.root_dir`, everything else falls through to a
-`vim.fs.root(bufnr, root_markers)` resolution.
+- [`spec/integrations/lsp/clangd.md`](spec/integrations/lsp/clangd.md)
+  — clangd (C/C++/Objective-C/CUDA), with SDK-aware binary resolution
+  and per-buffer `compile_commands.json` routing.
 
-Capability detection: when user doesn't pass `capabilities` in their
-setup config, `build_config` auto-merges completion plugin capabilities
-(`blink.cmp` or `cmp_nvim_lsp` when installed) on top of the default LSP
-protocol capabilities.
-
-`on_active_set_changed` restarts clients whose resolved `binary` or
-`compile_commands_dir` changed. `on_workspace_changed` restarts all
-pre-existing clangd clients so they pick up loomworks-aware routing.
+Third-party integrations follow the same shape: implement the
+contract above and document the per-server fields alongside.
 
 ---
 
