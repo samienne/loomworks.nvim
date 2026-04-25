@@ -5,6 +5,28 @@ they don't get lost.
 
 ---
 
+## UI v2 redesign (in design phase)
+
+The current status-page UI evolved feature-by-feature and accumulated
+IA debt: one tree for all topics, dialog-heavy editing, modal traps,
+no visualization of cross-project relationships. Multi-project flows
+(deploy steps especially) are tedious to define and easy to get
+wrong.
+
+Design phase artifacts:
+
+- [`spec/v2-design-brief.md`](spec/v2-design-brief.md) — pain
+  inventory, capability wishes, directional ideas, constraints
+- [`spec/v2-design-scenarios.md`](spec/v2-design-scenarios.md) —
+  concrete user-flow scenarios to design against and (later) test
+  against
+
+Both are throwaway design inputs, intended to be consumed by a
+fresh-context design session. They die when v2 ships (or when the
+effort is dropped). Do not maintain them as living docs.
+
+---
+
 ## LSP auto-restart on crash (integration-declared)
 
 Generalize the clangd-specific restart loop that sami had in their personal
