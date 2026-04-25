@@ -698,8 +698,15 @@ Tests use the constructor injection pattern described in Design Principles §5.
 loomworks.nvim/
 ├── CLAUDE.md                          Project context for AI
 ├── ARCHITECTURE.md                    This file
-├── specification.md                   Behavioral specification
+├── specification.md                   Core behavioral specification
+├── spec/
+│   ├── ui.md                          Status page, highlights, winbar
+│   ├── modules/                       Per-module specs (cmake, harmony, meson, typescript)
+│   ├── integrations/lsp/              Per-LSP-server specs (clangd, …)
+│   ├── integrations/debug/            Per-DAP-adapter specs (codelldb, cppdbg, pwa-node, …)
+│   └── sdks/                          Per-SDK-provider specs (ohos, …)
 ├── README.md                          User-facing documentation
+├── BACKLOG.md                         Deferred features and design notes
 ├── lua/
 │   ├── loomworks/
 │   │   ├── init.lua                   Public API facade

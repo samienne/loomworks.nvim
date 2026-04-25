@@ -1,9 +1,50 @@
 # loomworks.nvim — Specification
 
 This document is the authoritative behavioral specification for loomworks.nvim.
-It defines *what* the system does — data model, state machines, UI behavior,
-and invariants — not how it is implemented. The implementation (code) and
-architecture (ARCHITECTURE.md) must conform to this specification.
+It defines *what* the system does — data model, state machines, integration
+contracts, and invariants — not how it is implemented. The implementation
+(code) and architecture (ARCHITECTURE.md) must conform to this specification.
+
+## Document layout
+
+This file is the **core specification**. It describes contracts and
+behavior that hold for any module, LSP integration, DAP integration,
+or SDK provider. It does not name specific modules, tools, compilers,
+or SDKs in normative prose — implementations are documented in
+sibling files under `spec/`:
+
+- [`spec/modules/`](spec/modules/) — per-module implementations (cmake,
+  harmony, meson, typescript)
+- [`spec/integrations/lsp/`](spec/integrations/lsp/) — per-LSP-server
+  integrations (clangd, …)
+- [`spec/integrations/debug/`](spec/integrations/debug/) — per-DAP-adapter
+  contracts (codelldb, cppdbg, pwa-node, …)
+- [`spec/sdks/`](spec/sdks/) — per-SDK-provider details (ohos, …)
+- [`spec/ui.md`](spec/ui.md) — the status page, highlight groups, and
+  winbar/statusline component
+
+Section numbers inside `spec/*.md` files are local to each file and
+restart at §1.
+
+## Where does this change go?
+
+| If the change is about… | Update… |
+|--|--|
+| What the data model means, the state machine, or core invariants | `specification.md` §1–§5, §15 |
+| What modules, LSP servers, DAP adapters, or SDK providers must implement to plug in | `specification.md` §8–§11 (the contract sections) |
+| Status page, highlight groups, winbar | [`spec/ui.md`](spec/ui.md) |
+| How a single shipping module does its thing internally | the matching file in [`spec/modules/`](spec/modules/) |
+| How a single LSP integration handles its server | the matching file in [`spec/integrations/lsp/`](spec/integrations/lsp/) |
+| How a single DAP adapter is invoked | the matching file in [`spec/integrations/debug/`](spec/integrations/debug/) |
+| How a single SDK provider detects, validates, and answers capability queries | the matching file in [`spec/sdks/`](spec/sdks/) |
+| Adding a new module, LSP server, DAP adapter, or SDK provider | a new file under the corresponding `spec/` subdirectory; touch core only if the contract itself needs a new field or hook |
+| A deferred / planned feature that is not yet implemented | [`BACKLOG.md`](BACKLOG.md), not core spec |
+
+**Naming rule for core**: core sections forbid module / tool / compiler /
+SDK / integration names in normative prose. Specific names may appear in
+fenced "example" blocks when they aid reasoning, but never as the
+authoritative description of behavior. The authoritative description
+belongs in the matching `spec/` file.
 
 ---
 
@@ -315,7 +356,7 @@ The serial is stable across USB reconnections and emulator restarts.
 - Devices are **workspace-level** — they are physical hardware, shared
   across all profiles.
 - Devices are **runtime-only** — discovered on demand via the module's
-  `list_devices()` method (§9.11). Not persisted to cache or user.json.
+  `list_devices()` method (§11). Not persisted to cache or user.json.
 - Discovery is triggered by: (1) opening the device picker in UI,
   (2) attempting to launch a device-requiring target with no device
   selected, (3) explicit `scan_devices()` API call.
@@ -1142,772 +1183,16 @@ indicate this restriction.
 
 ---
 
-## 6. UI — Status Page
-
-### 6.1 Layout
-
-The status page opens as a floating window (default 100 columns, 90%
-editor height). Window position and size can be configured via `setup()`
-options or overridden per `open()` call — the `win` table is passed
-directly to `Snacks.win`. The page contains these sections in order:
-
-1. **Header** — plugin version, workspace name, workspace root
-2. **Profiles** — all materialized and explicit profiles
-3. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
-4. **Configuration Sets** — declared sets with tool entries
-5. **Projects** — all projects with their configurations
-
-Sections are separated by blank lines. Each section has a title line.
-
-### 6.2 Tree Structure
-
-The status page uses a foldable tree widget with two-level nesting.
-
-**Node types**:
-- `leaf` — plain text line, no interaction. Accepts either `(text, hl)` or
-  a list of `{text, hl}` chunks for mixed highlights on one line.
-- `node` — foldable line with children, toggle via `<Tab>`
-- `item` — interactive line with actions, no folding
-- `group` — labeled sub-section that increases indentation. Accepts either
-  `(label, hl, children_fn)` or `(chunks, children_fn)` for mixed highlights.
-- `blank` — empty line for spacing
-
-**Fold characters**: `▶` (folded), `▼` (unfolded)
-
-**Spinner**: Braille animation (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`) at 80ms interval,
-shown when `spinning = true`. Replaces the status marker for running items.
-
-**Status markers**:
-| Status           | Marker |
-|------------------|--------|
-| unconfigured     | ○      |
-| configured       | ◆      |
-| built            | ✔      |
-| configure_failed | ✘      |
-| build_failed     | ✘      |
-| running/deleting | (spinner) |
-
-### 6.3 Keybindings
-
-| Key     | Action      | Behavior |
-|---------|-------------|----------|
-| `<Tab>` | toggle_fold | Toggle fold on the current node |
-| `<CR>`  | enter       | Open action picker on nearest actionable node |
-| `b`     | build       | Build (walks up to nearest node with `on_build`) |
-| `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
-| `o`     | options     | Show build options float (on configured project nodes) |
-| `t`     | task        | Open overseer task output for nearest config (float) |
-| `R`     | rebuild     | Clean + build (destructive, with confirmation) |
-| `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
-| `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
-| `N`     | init_workspace | Initialize workspace: create user.json in cwd |
-| `L`     | load        | Load workspace from cwd / rescan tools |
-| `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
-| `P`     | publish     | Toggle publish flag on nearest publishable item |
-| `U`     | delete_user | Delete user.json and reload (with confirmation) |
-| `:w`    | (write)     | Publish: write published items to loomworks.json |
-| `?`     | help        | Show help dialog |
-| `q`     | (close)     | Close the status page |
-
-**Action dispatch**: For `build`, `configure`, `rebuild`, `clean`, `delete`,
-`pin`, and `options`, the tree walks upward from the cursor line to find the
-nearest node that has the corresponding `on_<action>` callback. This means pressing
-`b` on a child detail line triggers the build action of the parent node.
-
-**Action picker (`<CR>`)**: The Enter key walks up to the nearest widget with
-`on_*` callbacks, collects all available actions, and opens `vim.ui.select`
-with the action list. The `enter` action label is context-dependent, set by
-the section renderer via the `enter_label` field on the widget:
-- Profile nodes: "Activate"
-- Config set tool entries: "Activate"
-- Project config/tool nodes: "Open task output"
-
-The picker is skipped (direct invoke) when:
-- The widget has `direct = true` (sentinel lines), OR
-- Only one action exists on the widget (no other actions to discover)
-
-**Sentinel lines**: Interactive `item` nodes that appear at the end of
-sections to provide discoverable create/add flows. Sentinels have
-`direct = true` on the widget, so Enter invokes `on_enter` immediately.
-- **Profiles section**: `▸ Create new profile` — opens the profile creation
-  multi-step picker (config set → tool → materialize). Shows "No projects
-  yet." when no projects exist.
-- **Projects section**: `▸ Add project` — opens the project browser float.
-
-**Destructive action highlighting**: `R`, `C`, `D`, `U`, `<C-n>` keys are
-highlighted with `DiagnosticWarn` in the help dialog.
-
-### 6.4 Action Hints
-
-Action hints show available keys close to the actionable items. Hints use
-`Comment` highlight. Format: `[key] label  [key] label  ...` — keys in
-brackets, separated by double spaces.
-
-**Header hint**: After the Root line, a `Comment` leaf shows global actions:
-`[?] help  [L] load  [<C-n>] reset`
-
-**Group header hints with `[t]`**: Profile project groups also include `[t] task output`.
-
-**Section title hints**: Some sections show a `Comment` hint line after the
-title listing available actions for top-level nodes.
-
-| Section | Hint line |
-|---------|-----------|
-| Profiles | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Orphaned Configurations | `[D] delete` (appended to title via chunks) |
-
-**Group header hints**: Inner groups that contain actionable items append a
-hint suffix to the group label. The label uses `LoomworksActionable` highlight
-and the suffix uses `Comment` highlight (via `group` with chunks).
-
-| Group label | Section | Hint suffix |
-|-------------|---------|-------------|
-| Projects: | Profiles | `[b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Tools: | Configuration Sets | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Configurations: | Projects | `[b] build  [c] configure  [p] pin  [o] options  [R] rebuild  [C] clean  [D] delete` |
-
-### 6.5 Profiles Section
-
-Shows all materialized (cached) and explicit profiles. Profiles only appear
-here when they exist in the cache or are declared in the config.
-
-**Profile node display** (all profiles use the same rendering):
-```
-{marker} {fold_char} {profile_key} [{tag}] ({status_label}) [{elapsed}] [— {op_message}]
-```
-
-Where:
-- `{tag}` = `[stale]` for orphaned profiles, `[explicit]` for declared
-  profiles, omitted otherwise
-- `{status_label}` = aggregate status from `Profile:status()` (e.g., "built",
-  "1 configuring, 1 failed build", "3 configured, 2 unconfigured")
-- `{elapsed}` = shown only when running (e.g., "1m23s")
-- `{op_message}` = last operation result (e.g., "built in 42s")
-
-All profiles are displayed identically. A profile with key `"Debug:ninja-gcc"`
-appears like any other
-profile; it simply has fewer projects when expanded.
-
-**Profile highlight rules**:
-| Condition | Highlight |
-|-----------|-----------|
-| Has active Operation + active | `LoomworksActive` |
-| Has active Operation + not active | `LoomworksRunning` |
-| Active (no operation) | `LoomworksActive` |
-| Failed status | `LoomworksFailed` |
-| Unconfigured | `LoomworksUnconfigured` |
-| Otherwise | `LoomworksConfigured` |
-
-Note: "Has active Operation" means this profile initiated the action.
-Profiles that share ConfigUnits with the initiating profile show spinners
-(from running ConfigUnit state) but not the orange highlight or timer.
-
-**Profile children** (when unfolded):
-- Set name (with warning if orphaned/stale) — only for set-based profiles
-- Tool label (with generator/compiler details)
-- Device selection (only when workspace has device-capable modules) —
-  shows `Device: <name> (<serial>)` (online), `Device: <serial> (offline)`
-  (offline/stale), or `Device: (none selected)`. `<CR>` opens device picker.
-- Last operation message
-- Projects sub-group:
-  - Each project: `project_key [module_type] → variant {progress}` with status highlight
-  - When unfolded: status, build dir, cmake details (generator, compiler)
-
-**Profile actions**:
-
-| Node type | `<CR>` | `b` | `c` | `t` | `R` | `C` | `D` |
-|-----------|--------|-----|-----|-----|-----|-----|-----|
-| Profile | activate | build all | configure all | — | clean+build all | clean all | delete with dialog |
-| Project under profile | open task output | build config | configure config | open task output | clean+build config | clean config | delete config with dialog |
-
-**Sentinel: Create new profile**
-
-After the profile list (or as sole content when empty), an interactive item:
-```
-▸ Create new profile
-```
-Enter opens the profile creation multi-step picker:
-
-1. **Pick configuration set**: Shows existing config sets from the
-   workspace config, plus auto-detected options from
-   `generate_default_config_sets()`. Auto-detected options are labeled
-   `"Name (auto-detected)"` with a mapping summary. Selecting an
-   auto-detected option writes it to user.json via
-   `add_configuration_set()` before continuing.
-
-2. **Pick tool** (skipped if module has no keyed tools, or only one tool
-   detected): Shows available tools from `detect_tools()`.
-
-3. **Materialize**: Calls `config_set:ensure_profile(tool_entry)` to
-   create the profile in cache. Auto-activates only when this is the
-   first profile in the workspace; otherwise just creates it.
-
-When no projects exist, the sentinel is replaced with:
-```
-No projects yet. Add projects first.
-```
-
-### 6.6 Orphaned Items Section
-
-Shows orphaned cached configurations and stray build directories. Visible
-when either type exists (hidden otherwise — the common case).
-
-**Title**: `Orphaned Items` with `Title` highlight.
-
-**Orphaned configurations**: cached configs with build state not referenced
-by any profile. Grouped by project key (sorted alphabetically). Each
-project is a foldable node; each config within is a foldable node showing
-the config key and its status.
-
-**Stray build directories**: directories under `{root}/.nvim/build/` not
-referenced by any cache entry. Detected via top-down pruning: the scan
-reports the highest-level directory whose entire subtree contains no cache
-entries. Directories that ARE cache entries (or parents of cache entries)
-are skipped. Shown as flat items with `(stray)` suffix.
-
-```
-Orphaned Items  [D] delete
-
-  ▶ App
-    ▶ Debug:ninja-gcc-12 (built)
-      Status: built
-      Build dir: .nvim/build/App/Debug
-  .nvim/build/OldProject (stray)
-  ▸ Clean all
-```
-
-**Highlight**: Project nodes use `LoomworksUnconfigured`. Config nodes use
-`resolve_config_status()` highlights. Stray dir items use
-`LoomworksUnconfigured`.
-
-**Actions**: `D` (delete) is mapped on config nodes and stray dir items.
-All other action keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned
-items cannot be built or configured. Deletion shows the standard
-confirmation dialog.
-
-**Sentinel: Clean all**
-
-After the last orphaned item:
-```
-▸ Clean all
-```
-Enter shows a confirmation dialog listing:
-- All orphaned cached configurations (with state and build dirs)
-- All stray build directories
-
-On confirm: deletes orphaned cache entries + build dirs via `_run_deletion`,
-then deletes stray build dirs. If nothing to clean, shows a notification.
-
-### 6.7 Configuration Sets Section
-
-Shows configuration sets from the merged config (loomworks.json + user.json).
-Only appears when sets exist.
-
-**Set node display**:
-```
-{fold_char} {modified_tag}{set_name}
-```
-
-Where `{modified_tag}` = "+" if the set is modified (see §2.4), empty
-otherwise. Shared-only sets (not in user.json) are dimmed (`Comment`).
-
-Highlighted with `LoomworksActive` if the active profile belongs to this set,
-otherwise `LoomworksActionable` (or `Comment` if shared-only).
-
-**Set node actions**:
-
-| Action | Behavior |
-|--------|----------|
-| `<CR>` | Action picker: Edit mappings, Create profile from set, Delete |
-| `D`    | Delete config set with confirmation dialog |
-
-**Config set editing** (`<CR>` on a set node):
-
-Opens a dedicated config set editor dialog. Shows each project in the
-workspace with its current variant mapping and available configurations
-(from module.info). The user can change each mapping via `vim.ui.select`
-or set it to "None" to remove the mapping. Accept (`y`) applies changes
-via `update_config_set_mapping()` for each changed mapping. Cancel (`q`)
-discards changes.
-
-Changed mappings may orphan existing cached configs (old variant no longer
-referenced). This is intentional — orphans are cleaned explicitly via the
-"Clean all orphaned items" action in the Orphaned Configurations section.
-
-**Config set deletion** (`D` on a set node):
-
-Shows a confirmation dialog listing:
-- Profiles that reference this set (will become orphaned-set)
-- Warning that cached configs will become orphaned
-
-On confirm: `remove_configuration_set()`. Profiles that referenced the set
-become orphaned_set. Cached configs for those profiles become orphaned. No
-immediate deletion of cache entries — the user cleans via "Clean all orphaned
-configs" in the Projects section.
-
-**Set children** (when unfolded):
-- Projects sub-group: `project_key → variant`
-- Tools sub-group (if keyed tools detected): one item per detected tool
-
-**Tool entry display**:
-```
-{marker} {tool_label} {suffix}
-```
-
-Where:
-- `{marker}` = status marker for the corresponding profile (if materialized)
-- `{suffix}` = status/progress info if materialized, empty if not
-- Highlight follows same rules as full profiles
-
-**Tool entry actions**:
-
-| Action | Materialized profile exists | No materialized profile |
-|--------|---------------------------|------------------------|
-| `<CR>` | activate | activate (materializes first) |
-| `b`    | build via profile | build via `run_profile_action` (materializes first) |
-| `c`    | configure via profile | configure via `run_profile_action` (materializes first) |
-| `R`    | rebuild via profile | nil (no-op) |
-| `C`    | clean via profile | nil (no-op) |
-| `D`    | delete profile with dialog | nil (no-op) |
-
-**Sentinel: Create configuration set**
-
-After the last config set, an interactive item:
-```
-▸ Create configuration set
-```
-Enter opens a picker with two kinds of options:
-
-1. **Auto-detected templates** — generated by `generate_default_config_sets()`
-   using `map_variant()` on all projects. Standard templates: "Debug" and
-   "Release". Each template pre-fills project→configuration mappings by
-   matching variant types across modules. Templates that match an existing
-   config set name are excluded.
-2. **Custom** — opens the config set editor dialog with empty mappings.
-   User enters a name and manually selects variant per project.
-
-Selecting a template creates the config set immediately with the
-pre-computed mappings. No editor dialog — the mappings are deterministic.
-
-This replaces the previous flow where all config sets started from the
-editor dialog.
-
-### 6.8 Projects Section
-
-Shows all projects from the active set, including orphaned projects. Projects
-are sorted alphabetically with orphaned projects at the end.
-
-**Project node display**:
-```
-{fold_char} {modified_tag}{project_key} [{type}] {orphan_tag} {refresh_tag}
-```
-
-Where:
-- `{modified_tag}` = "+" if any child or the project declaration is modified
-  (see §2.4), empty otherwise
-- `{orphan_tag}` = "(orphaned)" if in cache but not in config
-- `{refresh_tag}` = "!" if `needs_refresh` is true
-
-**Shared-only items** (exist only in loomworks.json, not in user.json) are
-displayed with `Comment` highlight (dimmed). Module-generated default
-configurations are also dimmed. Dimmed items become normal on first
-interaction (auto-copied to user.json).
-
-**Project children** (when unfolded):
-- Path
-- Refresh reasons (if any, with `!` prefix and `DiagnosticWarn` highlight)
-- Configurations sub-group
-
-**Configuration display** (keyed-tool modules like cmake):
-Each configuration shows its available tools:
-```
-{fold_char} {config_name} {brief}
-  {fold_char} {tool_label} {progress}     ← one per detected/cached tool
-    Status: {status}
-    Build dir: ...
-    Last configured: ...
-    Generator: ...
-    {fold_char} Targets ({total_count})       ← only when targets exist
-      {fold_char} {type_group} ({group_count})
-        {fold_char} {target_name}
-          Links: dep1, dep2
-```
-
-**Configuration display** (non-keyed modules):
-```
-{fold_char} {config_name} {brief}
-  {fold_char} Status: {status} {progress}
-    Build dir: ...
-    ...
-```
-
-**Targets sub-tree** (cmake projects, post-configure only):
-
-When a configuration has cached targets, a foldable "Targets (N)" node
-appears in the unfolded tool entry detail view, where N is the total
-target count. Targets are grouped by type under foldable sub-headers
-showing the group name and count (e.g., "Executables (2)"). Within each
-group, targets are sorted alphabetically by name. Targets with link
-dependencies can be unfolded to show `Links: dep1, dep2, ...` on a
-single line. Targets without dependencies are leaf nodes (no fold arrow).
-
-Type group labels and display order:
-1. `Executables`
-2. `Static Libraries`
-3. `Shared Libraries`
-4. `Module Libraries`
-5. `Object Libraries`
-6. `Interface Libraries`
-
-Only groups containing at least one target are shown.
-
-**Configuration actions** (at the tool/status level):
-
-| Action | Behavior |
-|--------|----------|
-| `D`    | Delete config with dialog |
-
-**Tool entry highlight rules** (keyed-tool modules):
-
-| Condition                       | Highlight              |
-|---------------------------------|------------------------|
-| Running                         | `LoomworksRunning`     |
-| Deleting                        | `LoomworksDeleting`    |
-| Active (matches active profile) | `LoomworksActive`      |
-| Failed                          | `LoomworksFailed`      |
-| Configured/Built (not active)   | `LoomworksConfigured`  |
-| Unconfigured                    | `LoomworksUnconfigured`|
-
-A tool entry is "active" when the active profile's tool_key matches the
-entry's tool_key and the configuration variant matches the project's active
-configuration.
-
-**Non-keyed module highlight rules** follow the same pattern but without
-tool_key matching — the entry is active when its variant matches the
-project's active configuration.
-
-**Launch configurations sub-group**
-
-After the configurations group, each non-orphaned project shows a
-"Launch:" group listing its launch configurations.
-
-Each launch config item shows `{name}  {command} {args}`. Actions:
-
-| Action | Behavior |
-|--------|----------|
-| `<CR>` | Edit launch config (opens launch editor dialog) |
-| `D`    | Delete launch config with confirmation |
-
-A "Add launch config" sentinel opens the launch editor for a new config.
-
-The **launch editor dialog** edits: name, command, args (space-separated),
-working directory, and environment variables (key=value pairs). Env vars
-can be added (`▸ Add variable`) and removed (`D`). Inline name validation
-prevents duplicates. Accepts with `y`, cancels with `q`.
-
-**Sentinel: Add project**
-
-After the last project (or as sole content when no projects exist), an
-interactive item:
-```
-▸ Add project
-```
-Enter opens the project browser float (Phase 1). Replaces the former `A`
-keybinding.
-
-
-### 6.9 Deletion Confirmation Dialog
-
-Shown for all delete operations (`D` key). Floating window centered in editor.
-
-**Content**:
-1. Title (e.g., "Delete profile: Debug:ninja-gcc-12")
-2. Running tasks that will be stopped (if any)
-3. Items that will be removed (`disposition = clean`)
-4. Items that will be reset (`disposition = reset`)
-5. Items that will be kept (`disposition = keep`, referenced by another
-   profile)
-6. Confirmation prompt
-
-**Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
-
-### 6.10 Nuke Confirmation Dialog
-
-Shown when `<C-n>` is pressed. Floating window centered in editor.
-
-**Content**:
-1. Title: "Reset workspace cache"
-2. List of paths that will be deleted:
-   - `<root>/.nvim/build/`
-   - `<root>/.nvim/loomworks.cache.json`
-3. Confirmation prompt
-
-**Root resolution**: Uses `ws.root` if a workspace is loaded, otherwise
-resolves from cwd via `workspace.resolve_root()`.
-
-**Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
-
-**Safety checks** (in `nuke_cache(root)`):
-1. Root must be an absolute path (rejects relative paths)
-2. `loomworks.json` must exist at the root (confirms it is a real workspace)
-3. Every path to delete is verified to be under `root/.nvim/` using
-   normalized path prefix checking (prevents directory traversal)
-
-If any check fails, the operation aborts with an error notification and
-no files are deleted. These checks are specific to the nuke operation —
-the general io layer does not restrict deletion paths, because normal
-config/profile deletion may delete build directories anywhere.
-
-### 6.11 Help Dialog
-
-Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
-`<C-n>`) have their key character highlighted with `DiagnosticWarn`.
-
-### 6.12 Options Float
-
-Triggered by `o` on a configuration or tool entry node in the Projects
-or Profiles section. Opens a floating window showing the project's build
-options for that configuration. Only available for configured projects
-with a cached build directory.
-
-**`Core:get_project_options(project_key, config_key) → (OptionGroup|Option)[]|nil`**
-
-Resolves the build directory from cache and delegates to the module's
-`get_options()`. Returns nil if the project is not configured or the
-module does not support options.
-
-The float uses a Tree widget with foldable groups. The module returns a
-tree of `OptionGroup` and `Option` nodes. Each group shows its label and
-child count. Each option shows `key = value`. BOOL values are highlighted
-(ON = green, OFF = dimmed). Options with helpstrings show them as
-children when unfolded. Options with choices show them in parentheses
-after the value. Fold/unfold with `<Tab>`.
-
-The float is read-only. Close with `q` or `<Esc>`.
-
-### 6.13 Project Browser
-
-The project browser is a float opened from the "Add project" sentinel line.
-It scans workspace subdirectories asynchronously and shows detected project
-types using each module's `detect()` method.
-
-**Layout**: Tree widget in a `Snacks.win` float. Title: "Add Project".
-
-**Entry display**: Each directory entry shows its name followed by detected
-type tags: `NativeDemo  [cmake: CMakeLists.txt]`. Directories matching
-multiple modules show all tags. Already-added projects show `✓` with
-`DiagnosticOk`. Directories with no detection show `Comment` highlight.
-
-**Async scanning**: On open, `modules.scan_directory_async()` scans the
-workspace root. On fold open, subdirectories are scanned lazily. Results
-are cached in a browser-local dict. Pending scans show "scanning...".
-
-**Filtered directories**: `.git`, `.nvim`, `.cache`, `.vs`, `.vscode`,
-`node_modules`, `build`, `out`, `__pycache__`, and all hidden directories
-(starting with `.`) are excluded from scanning.
-
-**Keybindings**:
-
-| Key     | Action  | Behavior |
-|---------|---------|----------|
-| `<CR>`  | enter   | Picker with Add/Remove by module type (see below) |
-| `d`     | remove  | Remove project from workspace (with confirmation) |
-| `r`     | refresh | Clear scan cache and re-scan |
-| `q`     | close   | Close the browser |
-
-**Project key derivation**:
-- Root-level directories: basename as key, `path` field omitted
-- Nested directories: relative path (with `/` → `_`) as key, explicit `path`
-  field
-
-**Enter picker**: Each browser entry has a context-dependent picker:
-- Unadded types show `Add [type]`
-- Already-added types show `Remove [type]`
-- Single add action: always shows picker (user confirms)
-- Mixed state: both add and remove options appear
-
-**Configuration mapping dialog**: When adding a project to a workspace
-that already has configuration sets, a mapping dialog opens instead of
-adding immediately.
-
-The dialog layout depends on the module type and workspace state:
-
-**Keyed module, no tool selected** — tool row first, no mappings:
-
-```
-  Add "lumets" [cmake]
-
-  Tool:  None ▸
-
-  Project will be added without configuration mappings.
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Keyed module, tool selected** — tool row first, then mappings:
-
-```
-  Add "lumets" [cmake]
-
-  Tool:  Ninja - GCC 12 ▸
-
-  Debug     Debug ▸
-  Release   Release ▸
-
-  Profiles to upgrade:
-    Debug → Debug:ninja-gcc-12
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Keyed module, tool inherited** — when existing profiles already have
-a tool (e.g. adding a second cmake project), the tool is inherited
-automatically. No tool row; mappings only:
-
-```
-  Add "NewLib" [cmake] — Map configurations
-
-  Debug     Debug ▸
-  Release   Release ▸
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Non-keyed module** — mappings only:
-
-```
-  Add "Frontend" [typescript] — Map configurations
-
-  Debug     development ▸
-  Release   production ▸
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-The profile upgrade preview shows only profiles whose config set has
-a non-None mapping for the new project.
-
-- Enter on a mapping row opens `vim.ui.select` with configurations + "None"
-- Enter on the tool row opens `vim.ui.select` with detected tools
-- `y` accepts: chains decomposed operations (see below)
-- `q`/Esc cancels: project is NOT added
-- Skipped when no config sets exist or project has no detectable configs
-- No success notifications — UI state changes are sufficient. Only
-  errors are shown via `vim.notify`.
-
-**Tool detection gating**: When the module has keyed tools, the project
-browser ensures tool detection has completed before opening the mapping
-dialog. If detection is still running, the dialog opens in the callback
-after detection completes.
-
-**Decomposed add-project operations**: On accept, the mapping dialog
-chains three atomic operations. Each operation saves to disk and
-remerges independently. Each intermediate state is valid — if the
-process crashes between steps, no data is lost or corrupted.
-
-1. `ws:add_project(key, type, path)` — adds the project entry to
-   user.json. Project shows as unmapped.
-2. For each config set with a non-nil mapping:
-   `ws:update_config_set_mapping(set, key, variant)` — adds one
-   mapping to one config set.
-3. If a tool was selected or inherited:
-   `ws:upgrade_profiles_for_tool(tool_entry)` — upgrades cached
-   no-tool profiles to keyed profiles (renames, adds tool fields,
-   creates skeleton cache entries). Extends existing keyed profiles
-   with skeleton entries for the new project.
-
-**Cache cleanup on removal**: The removal confirmation dialog shows all
-cached configurations for the project that will be deleted. Entries with
-build state (configured/built/failed) are listed with their build
-directories. Skeleton entries (unconfigured) are silently included.
-
-**Profile downgrade on removal**: When removing a project whose module
-has keyed tools, the project browser checks whether it is the last
-project of that module type. If so, the removal confirmation dialog also
-shows a profile rename preview.
-
-Example dialog (keyed project with cached configs):
-
-```
-  Remove project: lumets
-
-  This removes the project from the workspace (user.json and, on next
-  `:w`, from loomworks.json if published).
-
-  Will delete cached configurations:
-    lumets / Debug:ninja-gcc-12  (built)  .nvim/build/lumets/Debug
-    lumets / Release:ninja-gcc-12  (configured)  .nvim/build/lumets/Release
-
-  Profiles to rename:
-    Debug:ninja-gcc-12 → Debug
-    Release:ninja-gcc-12 → Release
-
-  Press y to confirm, q to cancel
-```
-
-After confirmation:
-1. `ws:remove_project(key)` removes the project from config and config sets.
-2. Cached configurations for the project are deleted (entries removed from
-   cache, build directories deleted asynchronously via safe deletion).
-3. `ws:downgrade_profiles_from_tool(mod_type)` strips tool suffixes from
-   affected profiles when the last keyed-module project is removed.
-
-This is not "auto-clean" — it is an explicit user action with a
-confirmation dialog showing exactly what will be deleted.
-
-**File mutation**: All changes write to `loomworks.user.json` via Workspace
-mutation methods. Each method saves and remerges independently. Published
-items are written to `loomworks.json` only on explicit `:w` (see §2.4).
-
-Available Workspace mutation methods:
-- `add_project(key, type, path?)` — add a project entry
-- `remove_project(key)` — remove project + clean up config sets
-- `update_config_set_mapping(set_name, project_key, variant)` — update
-  one mapping in a config set
-- `add_configuration_set(name, mappings)` — add a config set
-- `remove_configuration_set(name)` — remove a config set
-- `upgrade_profiles_for_tool(tool_entry)` — upgrade no-tool profiles
-  to keyed profiles; extend keyed profiles with new project entries
-- `downgrade_profiles_from_tool(mod_type)` — strip tool from profiles
-  when last project of a keyed-module type is removed
-- `compute_downgrade_preview(project_key)` — compute profile renames
-  that would occur if a project were removed (pure query, no mutation)
-
-### 6.14 Auto-refresh
-
-The status page refreshes automatically on these events:
-- `task_started`, `task_stopped`, `task_result`, `task_progress`
-- `deletion_started`, `deletion_completed`, `deletion_failed`
-- `active_set_changed`
-- `operation_started`, `operation_finished`
-
-Refreshes are coalesced via `vim.schedule` to avoid redundant redraws.
-
-An animation timer (80ms) runs when any node has `spinning = true`, providing
-smooth spinner animation for running/deleting states. The timer stops
-automatically when no spinners are active.
+## 6. UI
+
+User-facing UI behavior — the status page, highlight groups, and
+the winbar/statusline component — lives in
+[`spec/ui.md`](spec/ui.md). Cross-refs from elsewhere in core to
+specific UI behavior should target sections within that file.
 
 ---
 
-## 7. Highlight Groups
-
-| Group                  | Default link     | Usage |
-|------------------------|------------------|-------|
-| `LoomworksActive`     | `DiagnosticOk`   | Active profile, active set |
-| `LoomworksBuilt`      | `DiagnosticOk`   | Built configurations |
-| `LoomworksConfigured` | `DiagnosticInfo`  | Configured (not yet built) |
-| `LoomworksUnconfigured` | `Comment`      | Never configured |
-| `LoomworksFailed`     | `DiagnosticError` | Failed configure or build |
-| `LoomworksRunning`    | `DiagnosticWarn`  | Running tasks (non-active) |
-| `LoomworksDeleting`   | `DiagnosticError` | Deletion in progress |
-| `LoomworksUnknown`    | `DiagnosticWarn`  | Unknown state (partial deletion) |
-| `LoomworksActionable` | `Normal`          | Actionable items (sets, configs) |
-
-Users can override these by defining the highlight groups before plugin load.
-
----
-
-## 8. Events
+## 7. Events
 
 Events are the primary mechanism for cross-component communication.
 
@@ -1932,13 +1217,13 @@ conditions.
 
 ---
 
-## 9. Module Interface
+## 8. Module Interface
 
 A module is a handler for a project type. Modules implement a standard
 interface that the core system calls for project discovery, task generation,
 and staleness detection.
 
-### 9.1 Required methods
+### 8.1 Required methods
 
 **`detect(abs_path) → { marker }|nil`**
 
@@ -1946,19 +1231,16 @@ Detect whether a directory looks like a project of this module type. `abs_path`
 is the absolute directory path. Returns `{ marker = "filename" }` identifying
 the marker file that triggered detection, or `nil` if not detected.
 
-- **cmake**: checks for `CMakeLists.txt`
-- **typescript**: checks for `tsconfig.json` first, then `package.json` with
-  a `typescript` dependency
-- **harmony**: checks for `build-profile.json5`
-
 Used by the project browser for auto-detection. Lightweight check — no
-subprocess spawning, no deep file parsing.
+subprocess spawning, no deep file parsing. See per-module specs in
+[`spec/modules/`](spec/modules/) for the marker file each module uses.
 
 **`validate(path, config) → { valid, warnings[] }`**
 
 Check whether the project directory is valid for this module type. `path` is
 the absolute project directory. `config` is the type_config from the
-workspace config (the value of the `"cmake": {}` key).
+workspace config (the value of the module's type key, e.g. the dict under
+`"cmake"` or `"harmony"`).
 
 - Return `{ valid = false, warnings = {...} }` to reject
 - Return `{ valid = true, warnings = {...} }` with non-fatal warnings
@@ -2000,14 +1282,14 @@ Detect available tools for this module type asynchronously. Calls
 - `tool_data`: opaque table of tool properties (stored in cache)
 - Additional fields added by core: `tool_key`, `tool_label`
 
-Non-keyed modules (harmony, typescript) may call the callback
-immediately with a single entry containing empty `tool_data`.
+Non-keyed modules may call the callback immediately with a single
+entry containing empty `tool_data`.
 
-Modules that spawn subprocesses (e.g., cmake compiler detection)
-must use non-blocking APIs (libuv spawn or jobstart) and chain
-results sequentially to avoid flooding the OS with processes.
+Modules that spawn subprocesses (e.g., compiler detection) must use
+non-blocking APIs (libuv spawn or jobstart) and chain results
+sequentially to avoid flooding the OS with processes.
 
-### 9.2 Tool identity methods
+### 8.2 Tool identity methods
 
 These methods define how tools are compared and displayed:
 
@@ -2029,11 +1311,11 @@ detected tools against cached tools.
 **`has_keyed_tools`** (boolean, static property)
 
 Declares whether this module's tools produce distinct build artifacts
-requiring separate cache entries. `true` for cmake, `false`/nil for
-harmony and typescript. Used by merge to construct config keys without
-requiring tool detection to complete first.
+requiring separate cache entries. Used by merge to construct config keys
+without requiring tool detection to complete first. See per-module specs
+for which modules are keyed.
 
-### 9.3 Variant mapping
+### 8.3 Variant mapping
 
 **`map_variant(variant_type, available_configs) → string|nil`**
 
@@ -2046,13 +1328,9 @@ Variant types (defined by core, queried in order):
 - `"release"` — optimized production build
 - `"release_debug"` — optimized with debug info (optional)
 
-Each module knows its own naming conventions:
-
-| Module | debug | release | release_debug |
-|--------|-------|---------|---------------|
-| cmake | `"Debug"` (case-insensitive) | `"Release"` | `"RelWithDebInfo"` |
-| typescript | `"development"`, then `"default"` | `"production"`, then `"default"` | — |
-| harmony | first available config | — | — |
+Each module knows its own naming conventions. See the per-module specs
+in [`spec/modules/`](spec/modules/) for the exact mapping each one
+uses.
 
 **Single-config fallback**: If only one configuration exists, return it for
 any variant type (the project builds the same way regardless).
@@ -2060,7 +1338,7 @@ any variant type (the project builds the same way regardless).
 Returns `nil` when no matching configuration exists and the project has
 multiple configurations.
 
-### 9.4 Optional methods
+### 8.4 Optional methods
 
 **`progress_parser(project?, active_config?) → string|nil`**
 
@@ -2074,27 +1352,23 @@ Return the user-facing build options as a tree of groups and options.
 `OptionGroup` has `label` and `children` (nested groups or options).
 `Option` has `key`, `value`, `value_type` (`"bool"`, `"string"`, `"path"`,
 `"filepath"`), optional `helpstring`, and optional `choices`. `config` is
-the module's type_config from the workspace config (e.g., the cmake block).
+the module's type_config from the workspace config.
 
 Only options meaningful to the user are included — internal/computed
 variables are excluded. Returns nil if the project is not configured or
 has no options. Called on demand, not cached.
 
-The cmake module supports `option_groups` in its type_config to map
-variable name prefixes to group paths (e.g.,
-`"GFX": ["Media", "Graphics"]`). CMAKE_ prefixed variables are
-automatically separated into a "CMake Options" group.
+Modules may support module-specific grouping or filtering of options via
+their `type_config`. See per-module specs for details.
 
 **`resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data) → string`** *(optional)*
 
 Return the absolute path of the build directory for a given project
-configuration. Modules that use external build systems (e.g., harmony/hvigor)
-return paths outside `.nvim/build/` managed by the external tool. The path
-must be under `workspace_root` for deletion safety. If not implemented, the
-core uses the default formula: `{workspace_root}/.nvim/build/{project}/{config}`.
-
-The harmony module returns hvigor's cmake build directory:
-`{workspace_root}/{project_path}/{module}/.cxx/{product}/{target}/{mode}/{abi}/`
+configuration. Modules that use external build systems return paths
+outside `.nvim/build/` managed by the external tool. The path must be
+under `workspace_root` for deletion safety. If not implemented, the
+core uses the default formula:
+`{workspace_root}/.nvim/build/{project}/{config}`.
 
 **`invalidate_tools()`** *(optional)*
 
@@ -2114,21 +1388,14 @@ Field def shape:
 
 | Field | Purpose |
 |-------|---------|
-| `name` | Key in `type_config` (e.g. `"cmake_env"`) |
+| `name` | Key in `type_config` |
 | `label` | Section header shown in the UI |
 | `kind` | Editor type. Currently supported: `"env_dict"` (string→string dict of name/value pairs) |
 
-Example (harmony):
-
-```lua
-function M.editable_type_config_fields()
-    return { { name = "cmake_env", label = "Build environment", kind = "env_dict" } }
-end
-```
-
 The core UI uses `Project:save_type_config_field(name, value)` to persist
 edits. Modules need not implement this method; when absent, no generic
-type_config editor is rendered.
+type_config editor is rendered. See per-module specs for the fields each
+module exposes.
 
 **`lsp_configs(project) → LspConfigEntry[]`** *(optional)*
 
@@ -2137,25 +1404,20 @@ one LSP server the module wants attached to buffers under this project.
 Entries are **opaque to core** — only the server-specific integration
 (e.g. `lua/loomworks/integrations/lsp/clangd.lua`) parses the fields.
 
-Entry shape:
+Entry shape (core-defined fields):
 
 | Field | Purpose |
 |-------|---------|
-| `server` | Server name (e.g. `"clangd"`, `"ts_ls"`) — selects the integration |
+| `server` | Server name — selects the integration |
 | `root_dir` | Absolute path used for root_dir matching and client scoping |
-| `binary` | (clangd) Override server executable; `${ENV_VAR}` expansion supported |
-| `binary_required` | (clangd) When `true` and `binary` is missing, refuse to start and surface an error. Use when stock PATH `clangd` would be actively wrong (e.g. SDK clangd required for platform headers) |
-| `compile_commands_dir` | (clangd) Absolute directory containing `compile_commands.json` |
-| `tsconfig` | (ts_ls) Absolute path to `tsconfig.json` |
-| _…per-server_ | Each integration documents its own fields |
+| _…per-server_ | Each integration documents its own additional fields. See [`spec/integrations/lsp/`](spec/integrations/lsp/). |
 
 Modules with no LSP needs return `{}` (or omit the method). The module
 may traverse core domain objects (Project, ConfigUnit) to resolve
-references — e.g. cmake reading another configuration's build dir for
-`compile_commands_from` redirect.
+references.
 
-Core never reads entry contents beyond `server` — all interpretation is
-delegated to `lua/loomworks/integrations/<server>.lua`.
+Core never reads entry contents beyond `server` and `root_dir` — all
+other interpretation is delegated to the per-server integration.
 
 **`parse_targets(ctx) → targets?`** *(optional)*
 
@@ -2166,9 +1428,9 @@ successful configure task or during startup scan.
 
 `ctx` is a table with:
 - `build_dir` — absolute build directory (for modules that read build
-  output, e.g. cmake's file API)
+  output)
 - `project_path` — absolute project root path (for modules that read
-  source files, e.g. typescript reading package.json)
+  source files directly)
 - `config_name` — configuration variant name (for multi-config
   generators to select the correct reply)
 
@@ -2180,60 +1442,25 @@ Only project-owned build targets are included (executables and libraries).
 Imported, alias, and utility targets are excluded. Dependencies list only
 project-owned targets that this target links against.
 
-### 9.4 CMakePresets integration (cmake module)
+### 8.5 Module implementations
 
-The cmake module reads `CMakePresets.json` + `CMakeUserPresets.json` with
-full preset inheritance:
+Each module that ships with loomworks documents its implementation of
+this contract in its own spec file:
 
-- Each non-hidden configure preset becomes a loomworks configuration
-- Preset's `binaryDir` is used as the build directory (wins over defaults)
-- Preset's `toolchainFile` / `CMAKE_TOOLCHAIN_FILE` maps to
-  `toolchain_locked = true`
-- Debug/Release/RelWithDebInfo are auto-generated **only if no presets exist
-  and no configurations are declared in the workspace config**
-- Overrides in the `configurations` block add to or override
-  preset-derived configurations
+- [`spec/modules/cmake.md`](spec/modules/cmake.md) — cmake projects
+  (CMakePresets, file-api target discovery, ctest/gtest integration)
+- [`spec/modules/harmony.md`](spec/modules/harmony.md) — HarmonyOS /
+  OpenHarmony projects (build-profile.json5 configurations, hvigor
+  build dirs, hdc device interface)
+- [`spec/modules/meson.md`](spec/modules/meson.md) — meson projects
+  (introspect-driven discovery, per-compiler kits)
+- [`spec/modules/typescript.md`](spec/modules/typescript.md) — v1 stub
+  (project detection only, no build tasks)
 
-### 9.5 CMake File API integration (cmake module)
+Third-party modules follow the same shape: implement the contract above
+and document the implementation alongside.
 
-The cmake module uses CMake's file-based API (codemodel v2) to discover
-build targets after configure.
-
-**Query setup**: The query files
-`<build_dir>/.cmake/api/v1/query/codemodel-v2` and `cache-v2` are created
-before the configure task runs (in the task builder). These are empty
-markers — their presence tells CMake to write reply data on every
-configure. The codemodel reply provides targets; the cache reply provides
-build options.
-
-**Reply parsing**: After a successful configure, core calls
-`parse_targets(build_dir, config_name?)` on the module. The cmake module
-reads the codemodel reply from `<build_dir>/.cmake/api/v1/reply/`,
-extracts project-owned targets, and returns them. On startup, existing
-build directories are scanned asynchronously via `parse_targets_async`.
-
-**Target filtering**: Only project-owned build targets are included:
-- Executables (`EXECUTABLE`)
-- Static libraries (`STATIC_LIBRARY`)
-- Shared libraries (`SHARED_LIBRARY`)
-- Module libraries (`MODULE_LIBRARY`)
-- Object libraries (`OBJECT_LIBRARY`)
-- Interface libraries (`INTERFACE_LIBRARY`)
-
-Imported targets, alias targets, and utility targets (e.g., `install`,
-`uninstall`) are excluded.
-
-**Dependencies**: Link dependencies between project-owned targets are
-recorded. Dependencies on imported or external targets are excluded.
-
-**Storage**: Targets are runtime-only data stored on `ConfigUnit.targets`
-as `Target` objects (not persisted in cache). They are re-parsed from the
-file-api reply on startup (async) and after each successful configure
-(sync). The entire targets dict is replaced on every parse (not merged).
-Each `Target` object holds the target id, type, dependencies, artifact
-path, and a back-reference to its owning `ConfigUnit`.
-
-### 9.6 Per-target builds
+### 8.6 Per-target builds
 
 Each profile can have a **default target** — a single executable target
 that `build_target()` builds instead of the full project.
@@ -2254,19 +1481,20 @@ objects. No key-based lookups at runtime.
    published config setting. On selection, sets default and builds.
 3. If set but stale (target no longer exists): notify and show picker.
 4. If valid: `Target:build()` delegates to the module's
-   `build_target_task()` (e.g., cmake adds `--target <name>`).
+   `build_target_task()`.
 
 **Module interface**: `build_target_task(project_ctx, target_id)` returns
 an overseer task definition for building a single target. Falls back to
 full build if the module doesn't implement it.
 
-### 9.7 Target launching
+### 8.7 Target launching
 
 Each profile can have a default launch target — a configuration that
 defines how to run the project after building. Two types:
 
-**Module targets** (cmake executables): `Target:launch()` resolves the
-artifact path from the build directory and runs it via overseer.
+**Module targets** (executables discovered by the module's
+`parse_targets`): `Target:launch()` resolves the artifact path from
+the build directory and runs it via overseer.
 
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.
@@ -2320,7 +1548,7 @@ tasks and the most recent output available.
 }
 ```
 
-### 9.8 Deploy Steps
+### 8.8 Deploy Steps
 
 Deploy steps ensure build artifacts from one config unit are copied to the
 correct location before a launch target runs. They guarantee that the
@@ -2341,7 +1569,7 @@ flag: before the target is built (`pre_build: true`) or after
 (default, post-build). Pre-build steps let one project deposit files
 into another project's source tree so they are picked up by its build.
 
-#### 9.8.1 Syntax
+#### 8.8.1 Syntax
 
 Deploy steps are a dict keyed by destination path, with source descriptors
 as values:
@@ -2425,7 +1653,7 @@ Source fields use **no variable expansion** — `target` is a cmake target
 name resolved via the module, `path` is a literal relative path from the
 source config unit's build directory.
 
-#### 9.8.2 Source resolution
+#### 8.8.2 Source resolution
 
 At launch time, each deploy step resolves its source within the active
 profile's context:
@@ -2448,7 +1676,7 @@ profile's context:
 a specific error (e.g., "Deploy: NativeLib not in profile", "Deploy:
 target native_lib not found"). The launch does not proceed.
 
-#### 9.8.3 Freshness tracking
+#### 8.8.3 Freshness tracking
 
 The system tracks which source was last copied to each destination. This is
 necessary because mtime alone is insufficient — building Release after Debug
@@ -2489,7 +1717,7 @@ Deploy records are domain state — deserialized from cache.json into
 workspace-owned objects during remerge, serialized back on save. No raw
 cache data is retained.
 
-#### 9.8.4 Launch flow with deploy
+#### 8.8.4 Launch flow with deploy
 
 The launch flow (section 9.7) is extended with both deploy phases:
 
@@ -2511,7 +1739,7 @@ The launch flow (section 9.7) is extended with both deploy phases:
 Any failure in any step **blocks the chain** and notifies the user with
 a specific error. Deploy steps within a phase execute sequentially.
 
-#### 9.8.5 Cleanup on deletion/clean
+#### 8.8.5 Cleanup on deletion/clean
 
 When a config unit is deleted or cleaned (sections 4.6, 4.7):
 
@@ -2524,12 +1752,12 @@ When a config unit is deleted or cleaned (sections 4.6, 4.7):
 This ensures deployed artifacts do not outlive their source build
 directories.
 
-#### 9.8.6 Design for extension
+#### 8.8.6 Design for extension
 
 The deploy system is designed for further extension:
 
 **Cascade levels**: Project-level and launch-level deploy are
-implemented with the merge rules described in §9.8.1. A configuration
+implemented with the merge rules described in §8.8.1. A configuration
 level is reserved but not yet implemented:
 
 ```
@@ -2550,13 +1778,13 @@ explicit action field in the source descriptor.
 **user.json deploy**: Deploy steps live in user.json as part of the
 working copy. Published deploy steps are written to loomworks.json on `:w`.
 
-### 9.9 Test Integration
+### 8.9 Test Integration
 
 Loomworks provides test discovery, execution, and result reporting through
 a neotest adapter. ConfigUnit is the test interface — callers never interact
 with TestUnit or framework helpers directly.
 
-#### 9.9.1 Architecture
+#### 8.9.1 Architecture
 
 ```
 ConfigUnit
@@ -2566,22 +1794,18 @@ ConfigUnit
 └── run_tests()                   (delegates to all TestUnits)
 
 TestUnit (interface — test_unit.lua)
-├── CTestUnit (test_units/ctest.lua)  wraps ctest for cmake projects
-│   └── uses GTest helper for framework detection + source mapping
-├── MesonTestUnit (test_units/meson.lua)  wraps `meson introspect --tests`
-│   └── uses GTest helper; populates file/line from target sources
-└── GTestUnit (future)                direct gtest binary for launch targets
-
-GTest (gtest.lua — shared helper, not a TestUnit)
-├── probe(executable)             → detect framework, list tests
-├── probe_sync(executable)        → synchronous version
-├── parse_list_tests(output)      → parse --gtest_list_tests output
-├── find_source_locations(entries, sources) → file/line per test
-├── parse_xml_results(path)       → per-test pass/fail from JUnit XML
-└── build_filter(test_id)         → --gtest_filter string
+├── per-module TestUnits (see spec/modules/<mod>.md)
+└── shared framework helpers (e.g. gtest)
 ```
 
-#### 9.9.2 TestUnit interface
+The `TestUnit` interface is the seam: each module that supports tests
+implements one or more TestUnit subclasses (factory'd via the module's
+`create_test_unit(config_unit)`). Framework-specific helpers (e.g.,
+gtest binary probing) live alongside the module that introduced the
+need. See per-module specs in [`spec/modules/`](spec/modules/) for
+which TestUnits each module ships.
+
+#### 8.9.2 TestUnit interface
 
 TestUnit (`test_unit.lua`) is the base interface for test sources within
 a ConfigUnit. Each TestUnit represents one way to discover and run tests.
@@ -2621,90 +1845,7 @@ build/configure completes.
 
 Return cached entries without triggering discovery.
 
-#### 9.9.3 CTestUnit
-
-CTestUnit (`test_units/ctest.lua`) wraps ctest for cmake projects. One
-per ConfigUnit. Contains all ctest test targets — each target may have
-a different framework.
-
-**Discovery flow**:
-1. Run `ctest --test-dir <dir> -C <config> --show-only=json-v1`
-2. Parse JSON into test target entries
-3. For targets with `gtest_discover_tests()`: individual tests already
-   present in ctest output
-4. For `add_test()` targets: probe with GTest helper (`--gtest_list_tests`)
-   to detect framework and enumerate individual tests
-5. Map tests to source locations via GTest helper + cmake file-api data
-   (target → source files from codemodel reply)
-
-**CTestTestfile search**: When `CTestTestfile.cmake` is not at the build
-root (e.g., `enable_testing()` in a subdirectory), CTestUnit searches
-subdirectories depth-first (max depth 5, skipping `_deps`, `CMakeFiles`,
-`.cmake`).
-
-**`-C` flag**: Always passed (required for multi-config generators like
-MSVC, harmless for single-config like Ninja).
-
-**Execution**: Always through ctest to preserve test properties (env,
-timeout, working directory, fixtures):
-
-| Scenario | Command |
-|----------|---------|
-| Run all tests | `ctest --test-dir <dir> -C <cfg> --output-on-failure --output-junit <path>` |
-| Run specific test | `ctest --test-dir <dir> -C <cfg> -R ^<name>$ --output-on-failure --output-junit <path>` |
-| Individual gtest case (`add_test`) | Same + `GTEST_FILTER=Suite.Test` in env |
-
-#### 9.9.4 GTest helper
-
-GTest (`gtest.lua`) is a shared utility class containing all gtest-specific
-functionality. Not a TestUnit — used by CTestUnit and future TestUnits.
-
-**`parse_list_tests(output, executable, target_id) → TestEntry[]`**
-
-Parse `--gtest_list_tests` output. Strips `#` parameter suffixes.
-
-**`probe(executable, target_id, callback)`** /
-**`probe_sync(executable, target_id) → framework, entries`**
-
-Run `--gtest_list_tests` with 5s timeout. Validate output format
-(first line must be a suite ending with `.`). Returns `"gtest"` +
-entries, or nil.
-
-**`find_source_locations(test_entries, source_files)`**
-
-Scan source files for test macros to find file + line per test entry.
-Matches in priority order:
-
-1. **Exact match**: `suite.case` from macro matches test entry exactly
-2. **Parameterized (by_base)**: runtime name `Prefix/Suite.Case/N` →
-   extract base `Suite.Case` → match `TEST_P(Suite, Case)` in source
-3. **Fuzzy (by_case)**: match by case name only. Handles typed tests
-   (`TYPED_TEST` registers with different suite), fixture inheritance,
-   and custom macros with suite name transformations.
-
-**Macro patterns recognized**: Any identifier containing `TEST` followed
-by `(args)`. Covers: `TEST`, `TEST_F`, `TEST_P`, `UNIT_TEST`,
-`UNIT_TEST_F`, `UNIT_TEST_P`, `TYPED_TEST`, etc.
-
-**Multi-line support**: When `TEST_P(\n  suite, name, ...)`, the scanner
-accumulates lines until the first two arguments are found (max 5 lines).
-Handles both `TEST_P(suite, name)` on one line and `TEST_P(\nsuite, name)`
-across lines.
-
-**Source files**: Come from cmake file-api target detail (`sources` array
-with paths relative to codemodel `paths.source`). Paths are normalized
-via `vim.fn.fnamemodify(:p)` for consistent neotest matching.
-
-**`parse_xml_results(output_path) → TestResult[]|nil`**
-
-Parse JUnit XML output (ctest `--output-junit` format). Handles
-`<testcase>` with `<failure>`, `<skipped>`, `<error>` children.
-
-**`build_filter(test_id) → string`**
-
-Strip `test:` prefix from test ID for `--gtest_filter` value.
-
-#### 9.9.5 ConfigUnit test interface
+#### 8.9.3 ConfigUnit test interface
 
 ConfigUnit delegates all test operations to its TestUnit instances.
 TestUnits are created lazily on first `test_units()` or `discover_tests()`
@@ -2712,8 +1853,8 @@ call via the module's `create_test_unit(config_unit)` factory.
 
 **`config_unit:test_units() → TestUnit[]`**
 
-Returns the array of TestUnits. The cmake module returns `{ CTestUnit }`,
-others return `{}`.
+Returns the array of TestUnits the owning module created (empty if the
+module does not support tests).
 
 **`config_unit:discover_tests() → TestTree|nil`**
 
@@ -2754,7 +1895,7 @@ Same chain, runs all tests.
 | `message` | string\|nil | Last failure message |
 | `duration` | number\|nil | Last duration in milliseconds |
 
-#### 9.9.6 Neotest adapter
+#### 8.9.4 Neotest adapter
 
 The loomworks neotest adapter (`neotest/init.lua`) bridges ConfigUnit's
 test interface to neotest's adapter protocol. No framework-specific code
@@ -2765,8 +1906,8 @@ by scanning the filesystem for test files. The adapter uses cached test
 data to guide neotest's scanning:
 
 - `is_test_file(path)`: checks the cached test file set (files with
-  matched test entries). Falls back to `*_test.cpp` pattern when cache
-  is empty.
+  matched test entries). Falls back to a conservative filename pattern
+  when cache is empty.
 - `filter_dir(name, rel_path, root)`: checks the cached test directory
   set (directories that lead to test files). Returns false when cache is
   empty — neotest shows nothing until async discovery completes.
@@ -2792,15 +1933,15 @@ permanent hangs). Paths use `to_native()` for backslash conversion and
 `norm()` for forward-slash comparison. No `vim.fn` calls (these deadlock
 in nio context).
 
-**Execution** (`build_spec`): Finds the owning TestUnit via ConfigUnit,
-constructs ctest command. Checks ConfigUnit state and warns if project
-needs configuring.
+**Execution** (`build_spec`): Finds the owning TestUnit via ConfigUnit
+and asks it for the run command. Checks ConfigUnit state and warns if
+the project needs configuring.
 
 **Results** (`results`): Parses JUnit XML via TestUnit, maps results to
 neotest positions by matching test IDs. Assigns overall pass/fail to
 unmatched nodes.
 
-#### 9.9.7 Prerequisite chain
+#### 8.9.5 Prerequisite chain
 
 Test execution reuses the same cascading pattern as builds. ConfigUnit
 owns the chain — the caller requests the test and receives a Future:
@@ -2812,7 +1953,7 @@ owns the chain — the caller requests the test and receives a Future:
 Failure at any step stops the chain. Build directory operation queue
 (section 5.3) applies — test runs acquire a shared lock.
 
-#### 9.9.8 Debug integration
+#### 8.9.6 Debug integration
 
 Debug integration uses `debug.lua` as the single gateway to nvim-dap.
 When nvim-dap is not installed, all debug paths silently fall back to
@@ -2821,9 +1962,9 @@ their non-debug equivalents (launch via overseer, test run via overseer).
 **Launch target debugging.** `LaunchTarget:debug()` mirrors `launch()`:
 same build → deploy chain, but the final step calls `debug.run(spec)`
 instead of `overseer.launch_run_task()`. Both command-type and module
-target paths are supported. The DAP adapter type is resolved from
-`user.json` `debug.adapters` mapping (module_type → adapter), with
-fallback defaults (cmake → codelldb).
+target paths are supported. The DAP adapter is resolved per language
+from `user.json` `debug.adapters` mapping, with per-language fallback
+defaults provided by the integrations.
 
 **Test debugging.** `loomtest.debug(test_id)` mirrors `loomtest.run()`:
 same resolution logic (test/suite/target), same build-before-run via
@@ -2840,7 +1981,12 @@ inline annotations, explorer).
 - `env` — environment variables
 - `adapter` — DAP adapter type (resolved by caller)
 - `extra` — adapter-specific fields merged into the DAP config
-  (e.g. `sourceMaps`, `runtimeExecutable` for pwa-node)
+
+The exact request shape per adapter (e.g., whether `program`/`args`
+are passed through unchanged or rewritten as `runtimeExecutable` +
+`program` + `args` for JS-style adapters) is adapter-specific. See
+[`spec/integrations/debug/`](spec/integrations/debug/) for the per-adapter
+contracts.
 
 Before launching, `debug.run()` checks that the adapter is registered
 in nvim-dap. If not, it shows a notification with Mason install hint
@@ -2850,37 +1996,31 @@ Optional `callbacks.on_terminated` registers a one-shot listener on the
 DAP session that fires on `event_terminated` or `event_exited` and
 auto-removes itself.
 
-**Adapter configuration** in `user.json`:
+**Adapter configuration** in `user.json` is keyed by language:
 ```json
 {
   "debug": {
     "adapters": {
-      "cmake": "codelldb",
+      "c++": "codelldb",
       "typescript": "pwa-node"
     }
   }
 }
 ```
 
-If omitted, defaults apply (cmake → codelldb, typescript → pwa-node).
+If omitted, the per-integration defaults apply.
 
-**TypeScript debugging.** For TypeScript command-type launch configs,
-the debug path sets `runtimeExecutable` to the command (node/ts-node),
-`program` to the entry point (first arg), and `sourceMaps = true`.
-This allows pwa-node to resolve TypeScript source maps automatically.
-
-**Adapter selection UI.** The status page shows a Debug Adapters section
-listing the current adapter per module type. Enter on an item opens a
-picker with known adapters showing installed/default/current status.
-Selection persists to `user.json` via `Workspace:set_debug_adapter()`.
-Known adapters: cmake (codelldb, cppdbg), typescript (pwa-node,
-pwa-chrome).
+**Adapter selection UI.** The status page shows a Debug Adapters
+section listing the current adapter per language. Enter on an item
+opens a picker with known adapters showing installed/default/current
+status. Selection persists to `user.json` via
+`Workspace:set_debug_adapter(language, adapter)`. Known adapters per
+language are reported by the integrations themselves.
 
 **Language-based adapter resolution.** Adapters are resolved per
 language, not per module type. Modules declare their supported
-languages (e.g., cmake → `"c++"`). The workspace-level
-`debug.adapters` mapping uses language keys. Backwards-compatible:
-accepts both language strings and legacy module type keys.
+languages via `M.languages`. The workspace-level `debug.adapters`
+mapping uses language keys.
 
 **Multi-adapter debugging.** A launch config can specify a `debug`
 array of language strings to attach multiple debuggers to the same
@@ -2928,163 +2068,24 @@ session end via per-session listeners.
 | `d` (loomtest explorer) | Debug selected test |
 | `r` (loomtest explorer) | Run selected test |
 
-### 9.10 Device Interface
+**Debug adapter implementations.** Each adapter loomworks knows about
+documents its language coverage, request shape, and any
+adapter-specific transforms in its own spec file:
 
-Modules that deploy to physical or emulated devices implement an optional
-device interface. The core system discovers device-capable modules and
-delegates all device operations to them — no module-specific knowledge in
-core.
+- [`spec/integrations/debug/codelldb.md`](spec/integrations/debug/codelldb.md)
+  — native debugger (default for `c++`).
+- [`spec/integrations/debug/cppdbg.md`](spec/integrations/debug/cppdbg.md)
+  — alternative native debugger (Microsoft cpptools).
+- [`spec/integrations/debug/pwa-node.md`](spec/integrations/debug/pwa-node.md)
+  — Node.js / TypeScript (default for `typescript`).
 
-#### 9.10.1 Module properties and methods
-
-**Static property:**
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `has_devices` | `boolean` | `true` if this module's launch targets may require device deployment. Default `false` (omission = no device support). |
-
-**Methods** (all optional, only meaningful when `has_devices = true`):
-
-**`list_devices(tool_data, callback)`** *(async)*
-
-Enumerate connected devices. Calls `callback(devices)` where each device
-is `{ serial: string, display_name: string, state: string, properties: table }`.
-The module is responsible for running the device connector tool
-(e.g., `hdc list targets`) and parsing its output.
-
-**`device_targets(project_ctx, active_config) → table[]`**
-
-Return device launch target descriptors for the active configuration.
-Each descriptor has: `{ id: string, label: string, requires_device: boolean }`.
-These appear in the launch target picker alongside module targets (cmake
-executables) and command-type launches (loomworks.json). The module controls
-which configurations get device targets.
-
-Example return value:
-```lua
-{ { id = "run-device", label = "Run on device", requires_device = true } }
-```
-
-**`device_install(tool_data, device_serial, artifact_path) → { cmd, args, env? }`**
-
-Return an overseer-compatible command spec for installing an artifact onto
-a device. Does NOT execute the command — the core runs it via overseer.
-Always reinstalls (no freshness tracking).
-
-**`device_launch(tool_data, device_serial, launch_info) → { cmd, args, env? }`**
-
-Return a command spec to launch the installed app on a device.
-`launch_info` is module-specific metadata (e.g., bundle name, ability name
-for harmony).
-
-**`device_stop(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
-
-Return a command spec that force-stops the app on the device (for
-harmony: `hdc shell aa force-stop -b <bundle>`). Session tracker
-calls this from `stop()` when the active run is a device launch so
-`<S-F5>` (and other stop paths) actually terminate the on-device
-process rather than merely closing the local log stream.
-
-**`device_pid(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
-
-Return a command spec that, when run, prints the PID of a running app
-on the device. Used by the session tracker for two purposes: (1)
-initial PID discovery right after launch, and (2) periodic polling
-to detect when the app has exited so the log stream can be torn
-down automatically.
-
-**`device_log(tool_data, device_serial, opts?) → { cmd, args, env? }`**
-
-Return a command spec that streams device logs on stdout. `opts` is
-an optional hint table (e.g., `opts.pid` for device-side filtering),
-but the core `device_log` view does not rely on device-side filters
-— it parses and filters the stream client-side. Modules should
-expose whichever opts make sense; harmony currently accepts `pid`
-and `tag` as best-effort hints.
-
-**`device_log_clear(tool_data, device_serial) → { cmd, args, env? }`**
-
-Optional. Return a command spec that flushes the device's log
-buffer (for harmony: `hdc shell hilog -r`). Called by the session
-tracker right before starting a fresh stream so the view doesn't
-mix in stale entries. Best-effort — errors here are non-fatal.
-
-**`resolve_artifact(project_ctx, active_config) → string|nil`**
-
-Return the absolute path to the built artifact for device deployment.
-Module-specific knowledge of where the build system places output (e.g.,
-HAP file location for harmony).
-
-**`resolve_launch_info(project_path, config_info, tool_data) → table|nil`**
-
-Extract launch metadata from project files. For harmony: bundle name
-from `app.json5`, ability name from `module.json5`. Returns a table that
-is passed to `device_launch()` as `launch_info`.
-
-#### 9.10.2 Launch flow with devices
-
-The launch flow (§9.7) is extended when the target requires a device:
-
-```
-build → file-deploy → device-install → device-launch
-```
-
-1. **Build**: same as §9.7 — build dependencies, then build self.
-2. **File-deploy**: same as §9.8 — copy artifacts between projects.
-3. **Device check**: if `target:requires_device()` is false, proceed to
-   normal launch/debug (existing path, unchanged). Otherwise:
-4. **Device selection**: if the profile has no device serial, prompt with
-   `vim.ui.select` populated from `list_devices()`. On selection, persist
-   to profile.
-5. **Device install**: call `resolve_artifact()` to find the artifact
-   path, then `device_install()` to get the command spec. Execute via
-   overseer as a tracked task. On failure, stop the chain with error.
-6. **Device launch**: call `resolve_launch_info()` then `device_launch()`.
-   Execute via overseer.
-7. **Log stream** (best-effort):
-   a. Resolve the launched app's PID via `device_pid()` (polled
-      briefly — `aa start` returns before the process is up).
-   b. Clear the device log buffer via `device_log_clear()` (when
-      the module provides it) so stale entries don't show up in
-      the view.
-   c. Start `device_log()` as a streaming task and hand its lines
-      to the `loomworks.device_log` module, which parses each line,
-      applies a session prefilter (PID OR proc-contains-bundle,
-      union semantics), writes matches to a ring buffer, and
-      renders filtered entries into a bottom-split scratch buffer.
-   d. Start a periodic pidof poll (~3 s) on the session tracker.
-      When the PID is gone for two consecutive polls the session
-      tracker treats the app as exited, stops the log stream, and
-      clears the active run.
-
-   Failure at any step surfaces as a warning and does not fail the
-   launch chain — the app is already running, we just can't follow
-   its output this time.
-
-Device targets always use launch mode in v1 (no device debug).
-
-#### 9.10.3 LaunchTarget device support
-
-LaunchTarget gains a third target type alongside module targets and
-command-type launches:
-
-| Descriptor field | Target type | Source |
-|-----------------|-------------|--------|
-| `target` | Module target (cmake executable) | file-api discovery |
-| `launch` | Command launch | loomworks.json launch section |
-| `device_target` | Device target | module's `device_targets()` |
-
-The `device_target` field stores the target ID (e.g., `"run-device"`).
-`LaunchTarget:requires_device()` returns `true` when `_device_target` is set.
-
-The target picker collects from all three sources:
-1. Launch configs from projects (`project.launch` dict)
-2. Executable targets from `ConfigUnit.targets`
-3. Device targets from modules (`module.device_targets()`)
+A pluggable backend registry mirroring the LSP design is on the
+BACKLOG; today `debug.lua` holds the dispatcher and adapter logic
+together.
 
 ---
 
-## 10. LSP Integration
+## 9. LSP Integration
 
 LSP integration is split between a thin core dispatch layer
 (`lua/loomworks/lsp.lua`) and per-server integration files
@@ -3095,18 +2096,16 @@ from every runtime path, so drop-in integrations (either in the user's
 own config or in a sibling plugin) register automatically alongside the
 built-in ones.
 
-### 10.1 Module interface (§9.4 `lsp_configs`)
+### 9.1 Module interface (§8.4 `lsp_configs`)
 
-Modules produce entries like
-`{ server = "clangd", root_dir = ..., compile_commands_dir = ..., binary = ... }`.
-Core only inspects the `server` field to dispatch; integrations parse the
-remaining fields. Modules may traverse core domain objects (Project,
-ConfigUnit) to resolve cross-configuration references — e.g. cmake's
-`compile_commands_from` redirect resolves to another cmake configuration's
-build directory inside the module, so the emitted entry's
-`compile_commands_dir` is already fully resolved.
+Modules produce entries shaped as `{ server = "...", root_dir = ...,
+<per-server fields>... }`. Core only inspects `server` to dispatch;
+integrations parse the remaining fields. Modules may traverse core
+domain objects (Project, ConfigUnit) to resolve cross-configuration
+references inside themselves, so paths emitted in the entry are
+fully resolved.
 
-### 10.2 Dispatch layer (`lsp.lua`)
+### 9.2 Dispatch layer (`lsp.lua`)
 
 Responsibilities:
 - **Discover and load integrations on startup.** `lsp.lua` scans every
@@ -3118,9 +2117,9 @@ Responsibilities:
   plugin on the runtime path — all three are discovered automatically.
 - **Expose generic factories** — `loomworks.lsp.cmd(server, base_cmd)`
   and `loomworks.lsp.root_dir(server, fallback)` delegate to the
-  registered integration. Server-specific aliases like
-  `loomworks.lsp.clangd_cmd` / `loomworks.lsp.clangd_root_dir` are kept
-  as thin wrappers for back-compat.
+  registered integration. Server-specific aliases (e.g.,
+  `clangd_cmd`/`clangd_root_dir`) are kept as thin back-compat wrappers
+  in the relevant integration file.
 - **Wire integration listeners.** On startup, `lsp.lua` subscribes once
   to `active_set_changed` and `workspace_changed` and fans out to every
   integration's `on_active_set_changed` / `on_workspace_changed` hook.
@@ -3133,14 +2132,14 @@ Responsibilities:
 Core never references specific LSP server names. Adding a new server
 means adding an integration file — no changes to `lsp.lua`.
 
-### 10.3 Integration contract
+### 9.3 Integration contract
 
 Each `integrations/lsp/<server>.lua` returns a table with these fields
 (all but `server` optional):
 
 | Field | Purpose |
 |-------|---------|
-| `server` | Server name (e.g. `"clangd"`) — must match `entry.server` |
+| `server` | Server name — must match `entry.server` |
 | `build_config(user_cfg) → table` | Returns the full `vim.lsp.config` payload. Called by `setup_servers()` — merges user overrides with integration defaults, installs function-based `cmd` and `root_dir` |
 | `default_enable` | `true` if this integration should be enabled when the user calls `setup({})` with no explicit `lsp` opt-in |
 | `cmd_factory(base_cmd) → fn` | Builds a `cmd` function — used by `build_config` and exposed for users who prefer lspconfig |
@@ -3154,7 +2153,7 @@ The integration's module body calls
 `require("loomworks.lsp").register(name, M)` as its last action, then
 returns `M`. Discovery handles the rest.
 
-### 10.4 Server installation (`setup_servers`)
+### 9.4 Server installation (`setup_servers`)
 
 `loomworks.setup({ lsp = ... })` controls which servers loomworks
 installs via `vim.lsp.config` + `vim.lsp.enable`:
@@ -3163,9 +2162,9 @@ installs via `vim.lsp.config` + `vim.lsp.enable`:
 |------------|----------|
 | unset or `{}` | Install every integration with `default_enable = true` using its own defaults; apply default buffer excludes |
 | `false` | Skip entirely — no `vim.lsp.config` calls; integrations still wrap clients that other code started |
-| `{ clangd = {...} }` | Install clangd; user fields (cmd, on_attach, capabilities, settings, …) merge with integration defaults |
-| `{ clangd = true }` | Install clangd with integration defaults |
-| `{ clangd = false }` | Skip clangd specifically |
+| `{ <server> = {...} }` | Install `<server>`; user fields (cmd, on_attach, capabilities, settings, …) merge with integration defaults |
+| `{ <server> = true }` | Install `<server>` with integration defaults |
+| `{ <server> = false }` | Skip `<server>` specifically |
 | `{ excludes = ... }` | Override default buffer excludes. See below |
 
 **Buffer excludes** apply uniformly to every integration loomworks
@@ -3198,63 +2197,285 @@ workspace project.
 The integration's `build_config(user_cfg)` always wraps `cmd` and
 `root_dir` with loomworks functions — the user's `cmd` becomes the
 base/fallback passed into `cmd_factory`. This lets a single nvim session
-transparently use the SDK clangd inside a workspace project and the
-user's stock clangd for buffers outside any workspace.
+transparently use a workspace-resolved server inside a project and the
+user's stock server outside any project.
 
-Footgun: if the user calls `vim.lsp.config("clangd", { cmd = ... })`
+Footgun: if the user calls `vim.lsp.config("<server>", { cmd = ... })`
 *after* `loomworks.setup`, their static cmd replaces loomworks' wrapping
 function. On `VimEnter`, loomworks compares the installed cmd against
 the currently-registered one; any mismatch triggers a single warning
 pointing the user at the fix.
 
-### 10.5 clangd integration
+### 9.5 LSP integration implementations
 
-Lives at `integrations/lsp/clangd.lua`. The wrapping `cmd` function
-resolves per-buffer: if the buffer's project matches a loomworks clangd
-entry, the entry's `binary` overrides the base cmd and
-`--compile-commands-dir=<dir>` is appended when the referenced
-`compile_commands.json` exists. When `entry.binary_required` is true and
-the binary is missing, the cmd function refuses to start rather than
-silently falling back to the base `clangd` — an error notification
-surfaces the problem.
+Each integration shipped with loomworks documents its server-specific
+fields, lifecycle, and status display in its own spec file:
 
-Buffers that don't match any project fall through to the base cmd passed
-into `cmd_factory` (the user's config from `loomworks.setup({ lsp.clangd })`,
-or integration defaults when unset). Same for `root_dir` — projects use
-their `entry.root_dir`, everything else falls through to a
-`vim.fs.root(bufnr, root_markers)` resolution.
+- [`spec/integrations/lsp/clangd.md`](spec/integrations/lsp/clangd.md)
+  — clangd (C/C++/Objective-C/CUDA), with SDK-aware binary resolution
+  and per-buffer `compile_commands.json` routing.
 
-Capability detection: when user doesn't pass `capabilities` in their
-setup config, `build_config` auto-merges completion plugin capabilities
-(`blink.cmp` or `cmp_nvim_lsp` when installed) on top of the default LSP
-protocol capabilities.
-
-`on_active_set_changed` restarts clients whose resolved `binary` or
-`compile_commands_dir` changed. `on_workspace_changed` restarts all
-pre-existing clangd clients so they pick up loomworks-aware routing.
+Third-party integrations follow the same shape: implement the
+contract above and document the per-server fields alongside.
 
 ---
 
-## 11. Winbar / Statusline Component
+## 10. SDK Provider Contract
 
-`lualine/components/loomworks.lua` provides a lualine component for
-winbar display.
+An SDK is a resolved platform installation (e.g., a HarmonyOS / OHOS
+SDK shipped inside DevEco Studio, an Android NDK, an embedded vendor
+toolchain) that supplies tools to one or more modules. SDK providers
+are pluggable: each provider lives at `lua/loomworks/sdks/<id>.lua`
+and registers itself by being required from `lua/loomworks/sdks/init.lua`
+or another runtime path file.
 
-**Default display**: `{set_name} {join} {project}/{configuration}`
+### 10.1 Provider interface
 
-Where `{join}` defaults to `\u{e0b1}` (powerline thin right arrow) with
-spaces.
+Each provider table exposes:
 
-**Configurable via `show` option**: array of parts to display:
-- `"set_name"` — configuration set name
-- `"project"` — project key for current buffer
-- `"configuration"` — active configuration
-- `"tool_key"` — tool key (e.g., "ninja-gcc-12")
+| Field | Purpose |
+|-------|---------|
+| `id` | Provider identity (e.g., `"ohos"`) — stable across versions |
+| `display_name` | Human-readable name shown in pickers and status |
+| `detect_all() → { path, version }[]` | Enumerate installations on the host. Pure detection — no validation, no domain object creation |
+| `validate(path) → boolean` | Return whether a given path looks like a valid installation of this SDK type |
+| `create_sdk(key, path, version) → SDK` | Construct a `loomworks.SDK` domain object from a validated installation |
+| `query_capabilities(sdk, module_id) → table\|nil` | Return opaque capability data this SDK can offer to a given module, or `nil` if it has nothing for that module. `module_id == nil` returns the supported module ids array |
 
-**Returns empty** when:
-- No workspace loaded
-- No active profile
-- Current buffer is not in any project
+### 10.2 SDK domain object
+
+`loomworks.SDK` (`lua/loomworks/sdk.lua`) wraps a resolved
+installation. Fields:
+
+| Field | Purpose |
+|-------|---------|
+| `key` | Identity key, persisted in user.json |
+| `_type` | Provider id |
+| `_version` | Detected version (or nil) |
+| `_path` | Resolved installation path |
+| `_resolved` | Whether the path is currently valid |
+| `_intent` | `"shared"` / `"local"` for the publish/working-copy model |
+| `_provider` | Back-reference to the provider table |
+
+`SDK:query(module_id)` delegates to the provider's
+`query_capabilities`. Returns `nil` when the SDK is unresolved or has
+nothing for that module.
+
+### 10.3 Capability shape
+
+Capability data is **opaque to core** — only the requesting module
+interprets it. A typical shape includes paths to platform tools
+(compilers, packagers, simulator binaries), toolchain files,
+architecture lists, and any flags that must be threaded into the
+module's task generation. Each provider documents its shape per
+module in its own spec file.
+
+### 10.4 Profile-level pinning
+
+A profile may pin an SDK by `key` in user.json. On reload, the SDK
+is resolved by `key` against the workspace's known providers. If the
+provider can no longer find the installation (e.g., DevEco moved or
+uninstalled), the profile renders as incomplete with a rebase
+action. No fallback guessing — incomplete profiles surface
+explicitly.
+
+When a profile has an SDK and a module asks for a tool, the resolver
+consults the SDK first via `SDK:query(module_id)`. If the SDK
+returns nil, the module falls through to host-tool detection. If
+neither yields a tool and the profile has no explicit override, the
+profile is incomplete.
+
+### 10.5 SDK provider implementations
+
+Each SDK provider documents its detection logic, validation rules,
+and per-module capability shape in its own spec file:
+
+- [`spec/sdks/ohos.md`](spec/sdks/ohos.md) — OpenHarmony /
+  HarmonyOS via DevEco Studio.
+
+Third-party providers follow the same shape: implement the contract
+above and document the per-module capability shape alongside.
+
+### 10.6 Future direction
+
+Profile-level SDK selection is partially implemented and tracked in
+BACKLOG.md. The current shape resolves SDK-supplied tools lazily on
+each `Profile:tool_for(module)` call rather than persisting them in
+the profile's `tools` dict. That keeps SDK refresh cheap (re-query on
+load) at the cost of slightly more code in the access path.
+
+---
+
+## 11. Device Interface Contract
+
+Devices are physical or emulated deployment targets (phones,
+simulators, embedded boards). Any module may opt in to device
+support; SDK providers may also expose devices in the future. Core
+discovers device-capable modules and routes all device operations
+through them — no per-module knowledge in core.
+
+### 11.1 Device domain object
+
+`loomworks.Device` (`lua/loomworks/device.lua`) is identified by
+its `serial` string. Runtime-only — not persisted in cache or
+user.json. Workspace owns `_devices` (serial → Device), populated on
+demand via `Workspace:scan_devices()`.
+
+Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `serial` | string | Stable device identifier |
+| `display_name` | string | Human-readable label |
+| `state` | string | `"online"` / `"offline"` |
+| `provider` | string | Module id that owns this device type |
+| `properties` | table | Provider-specific extras |
+
+### 11.2 Module opt-in
+
+**Static property:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `has_devices` | `boolean` | `true` if this module's launch targets may require device deployment. Default `false`. |
+
+**Methods** (all optional, only meaningful when `has_devices = true`):
+
+**`list_devices(tool_data, callback)`** *(async)*
+
+Enumerate connected devices. Calls `callback(devices)` where each
+device is `{ serial, display_name, state, properties }`. The module
+runs the device connector tool and parses its output.
+
+**`device_targets(project_ctx, active_config) → table[]`**
+
+Return device launch target descriptors for the active configuration.
+Each descriptor has `{ id, label, requires_device }`. These appear in
+the launch target picker alongside module targets and command-type
+launches.
+
+**`device_install(tool_data, device_serial, artifact_path) → { cmd, args, env? }`**
+
+Return an overseer-compatible command spec for installing an
+artifact onto a device. Does NOT execute the command — core runs it
+via overseer. Always reinstalls (no freshness tracking).
+
+**`device_launch(tool_data, device_serial, launch_info) → { cmd, args, env? }`**
+
+Return a command spec to launch the installed app on a device.
+`launch_info` is module-specific metadata produced by
+`resolve_launch_info()`.
+
+**`device_stop(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
+
+Return a command spec that force-stops the app on the device.
+Session tracker calls this from `stop()` when the active run is a
+device launch so stop paths actually terminate the on-device process
+rather than merely closing the local log stream.
+
+**`device_pid(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
+
+Return a command spec that, when run, prints the PID of a running
+app on the device. Used by the session tracker for two purposes:
+(1) initial PID discovery right after launch, and (2) periodic
+polling to detect when the app has exited so the log stream can be
+torn down automatically.
+
+**`device_log(tool_data, device_serial, opts?) → { cmd, args, env? }`**
+
+Return a command spec that streams device logs on stdout. `opts` is
+an optional hint table (e.g., `opts.pid` for device-side filtering),
+but the core `device_log` view does not rely on device-side filters
+— it parses and filters the stream client-side. Modules may expose
+whichever opts make sense.
+
+**`device_log_clear(tool_data, device_serial) → { cmd, args, env? }`**
+
+Optional. Return a command spec that flushes the device's log buffer.
+Called by the session tracker right before starting a fresh stream so
+the view doesn't mix in stale entries. Best-effort — errors here are
+non-fatal.
+
+**`resolve_artifact(project_ctx, active_config) → string|nil`**
+
+Return the absolute path to the built artifact for device deployment.
+Module-specific knowledge of where the build system places output.
+
+**`resolve_launch_info(project_path, config_info, tool_data) → table|nil`**
+
+Extract launch metadata from project files. Returns a table that is
+passed to `device_launch()` as `launch_info`. Shape is
+module-specific.
+
+### 11.3 Launch flow with devices
+
+The launch flow (§8.7) is extended when the target requires a device:
+
+```
+build → file-deploy → device-install → device-launch
+```
+
+1. **Build**: same as §8.7 — build dependencies, then build self.
+2. **File-deploy**: same as §8.8 — copy artifacts between projects.
+3. **Device check**: if `target:requires_device()` is false, proceed
+   to normal launch/debug (existing path, unchanged). Otherwise:
+4. **Device selection**: if the profile has no device serial, prompt
+   with `vim.ui.select` populated from `list_devices()`. On
+   selection, persist to profile.
+5. **Device install**: call `resolve_artifact()` to find the artifact
+   path, then `device_install()` to get the command spec. Execute via
+   overseer as a tracked task. On failure, stop the chain with error.
+6. **Device launch**: call `resolve_launch_info()` then
+   `device_launch()`. Execute via overseer.
+7. **Log stream** (best-effort):
+   a. Resolve the launched app's PID via `device_pid()` (polled
+      briefly — launch returns before the process is up).
+   b. Clear the device log buffer via `device_log_clear()` (when the
+      module provides it) so stale entries don't show up in the
+      view.
+   c. Start `device_log()` as a streaming task and hand its lines to
+      the `loomworks.device_log` module, which parses each line,
+      applies a session prefilter (PID OR proc-contains-bundle,
+      union semantics), writes matches to a ring buffer, and renders
+      filtered entries into a bottom-split scratch buffer.
+   d. Start a periodic pidof poll (~3 s) on the session tracker.
+      When the PID is gone for two consecutive polls the session
+      tracker treats the app as exited, stops the log stream, and
+      clears the active run.
+
+   Failure at any step surfaces as a warning and does not fail the
+   launch chain — the app is already running, we just can't follow
+   its output this time.
+
+Device targets always use launch mode in v1 (no device debug — see
+BACKLOG.md "Native device debug").
+
+### 11.4 LaunchTarget device support
+
+LaunchTarget supports three target types:
+
+| Descriptor field | Target type | Source |
+|-----------------|-------------|--------|
+| `target` | Module target (executable) | Module's `parse_targets` discovery |
+| `launch` | Command launch | loomworks.json launch section |
+| `device_target` | Device target | Module's `device_targets()` |
+
+The `device_target` field stores the target ID.
+`LaunchTarget:requires_device()` returns `true` when `_device_target`
+is set.
+
+The target picker collects from all three sources:
+1. Launch configs from projects (`project.launch` dict)
+2. Executable targets from `ConfigUnit.targets`
+3. Device targets from modules (`module.device_targets()`)
+
+### 11.5 Device interface implementations
+
+Devices are typically implemented inside the module that knows the
+relevant connector tool. See per-module specs:
+
+- [`spec/modules/harmony.md`](spec/modules/harmony.md) §6 —
+  HarmonyOS device interface via `hdc`.
 
 ---
 
