@@ -315,7 +315,7 @@ The serial is stable across USB reconnections and emulator restarts.
 - Devices are **workspace-level** — they are physical hardware, shared
   across all profiles.
 - Devices are **runtime-only** — discovered on demand via the module's
-  `list_devices()` method (§9.11). Not persisted to cache or user.json.
+  `list_devices()` method (§9.10). Not persisted to cache or user.json.
 - Discovery is triggered by: (1) opening the device picker in UI,
   (2) attempting to launch a device-requiring target with no device
   selected, (3) explicit `scan_devices()` API call.
@@ -1946,19 +1946,16 @@ Detect whether a directory looks like a project of this module type. `abs_path`
 is the absolute directory path. Returns `{ marker = "filename" }` identifying
 the marker file that triggered detection, or `nil` if not detected.
 
-- **cmake**: checks for `CMakeLists.txt`
-- **typescript**: checks for `tsconfig.json` first, then `package.json` with
-  a `typescript` dependency
-- **harmony**: checks for `build-profile.json5`
-
 Used by the project browser for auto-detection. Lightweight check — no
-subprocess spawning, no deep file parsing.
+subprocess spawning, no deep file parsing. See per-module specs in
+[`spec/modules/`](spec/modules/) for the marker file each module uses.
 
 **`validate(path, config) → { valid, warnings[] }`**
 
 Check whether the project directory is valid for this module type. `path` is
 the absolute project directory. `config` is the type_config from the
-workspace config (the value of the `"cmake": {}` key).
+workspace config (the value of the module's type key, e.g. the dict under
+`"cmake"` or `"harmony"`).
 
 - Return `{ valid = false, warnings = {...} }` to reject
 - Return `{ valid = true, warnings = {...} }` with non-fatal warnings
@@ -2000,12 +1997,12 @@ Detect available tools for this module type asynchronously. Calls
 - `tool_data`: opaque table of tool properties (stored in cache)
 - Additional fields added by core: `tool_key`, `tool_label`
 
-Non-keyed modules (harmony, typescript) may call the callback
-immediately with a single entry containing empty `tool_data`.
+Non-keyed modules may call the callback immediately with a single
+entry containing empty `tool_data`.
 
-Modules that spawn subprocesses (e.g., cmake compiler detection)
-must use non-blocking APIs (libuv spawn or jobstart) and chain
-results sequentially to avoid flooding the OS with processes.
+Modules that spawn subprocesses (e.g., compiler detection) must use
+non-blocking APIs (libuv spawn or jobstart) and chain results
+sequentially to avoid flooding the OS with processes.
 
 ### 9.2 Tool identity methods
 
@@ -2029,9 +2026,9 @@ detected tools against cached tools.
 **`has_keyed_tools`** (boolean, static property)
 
 Declares whether this module's tools produce distinct build artifacts
-requiring separate cache entries. `true` for cmake, `false`/nil for
-harmony and typescript. Used by merge to construct config keys without
-requiring tool detection to complete first.
+requiring separate cache entries. Used by merge to construct config keys
+without requiring tool detection to complete first. See per-module specs
+for which modules are keyed.
 
 ### 9.3 Variant mapping
 
@@ -2046,13 +2043,9 @@ Variant types (defined by core, queried in order):
 - `"release"` — optimized production build
 - `"release_debug"` — optimized with debug info (optional)
 
-Each module knows its own naming conventions:
-
-| Module | debug | release | release_debug |
-|--------|-------|---------|---------------|
-| cmake | `"Debug"` (case-insensitive) | `"Release"` | `"RelWithDebInfo"` |
-| typescript | `"development"`, then `"default"` | `"production"`, then `"default"` | — |
-| harmony | first available config | — | — |
+Each module knows its own naming conventions. See the per-module specs
+in [`spec/modules/`](spec/modules/) for the exact mapping each one
+uses.
 
 **Single-config fallback**: If only one configuration exists, return it for
 any variant type (the project builds the same way regardless).
@@ -2074,27 +2067,23 @@ Return the user-facing build options as a tree of groups and options.
 `OptionGroup` has `label` and `children` (nested groups or options).
 `Option` has `key`, `value`, `value_type` (`"bool"`, `"string"`, `"path"`,
 `"filepath"`), optional `helpstring`, and optional `choices`. `config` is
-the module's type_config from the workspace config (e.g., the cmake block).
+the module's type_config from the workspace config.
 
 Only options meaningful to the user are included — internal/computed
 variables are excluded. Returns nil if the project is not configured or
 has no options. Called on demand, not cached.
 
-The cmake module supports `option_groups` in its type_config to map
-variable name prefixes to group paths (e.g.,
-`"GFX": ["Media", "Graphics"]`). CMAKE_ prefixed variables are
-automatically separated into a "CMake Options" group.
+Modules may support module-specific grouping or filtering of options via
+their `type_config`. See per-module specs for details.
 
 **`resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data) → string`** *(optional)*
 
 Return the absolute path of the build directory for a given project
-configuration. Modules that use external build systems (e.g., harmony/hvigor)
-return paths outside `.nvim/build/` managed by the external tool. The path
-must be under `workspace_root` for deletion safety. If not implemented, the
-core uses the default formula: `{workspace_root}/.nvim/build/{project}/{config}`.
-
-The harmony module returns hvigor's cmake build directory:
-`{workspace_root}/{project_path}/{module}/.cxx/{product}/{target}/{mode}/{abi}/`
+configuration. Modules that use external build systems return paths
+outside `.nvim/build/` managed by the external tool. The path must be
+under `workspace_root` for deletion safety. If not implemented, the
+core uses the default formula:
+`{workspace_root}/.nvim/build/{project}/{config}`.
 
 **`invalidate_tools()`** *(optional)*
 
@@ -2114,21 +2103,14 @@ Field def shape:
 
 | Field | Purpose |
 |-------|---------|
-| `name` | Key in `type_config` (e.g. `"cmake_env"`) |
+| `name` | Key in `type_config` |
 | `label` | Section header shown in the UI |
 | `kind` | Editor type. Currently supported: `"env_dict"` (string→string dict of name/value pairs) |
 
-Example (harmony):
-
-```lua
-function M.editable_type_config_fields()
-    return { { name = "cmake_env", label = "Build environment", kind = "env_dict" } }
-end
-```
-
 The core UI uses `Project:save_type_config_field(name, value)` to persist
 edits. Modules need not implement this method; when absent, no generic
-type_config editor is rendered.
+type_config editor is rendered. See per-module specs for the fields each
+module exposes.
 
 **`lsp_configs(project) → LspConfigEntry[]`** *(optional)*
 
@@ -2137,25 +2119,20 @@ one LSP server the module wants attached to buffers under this project.
 Entries are **opaque to core** — only the server-specific integration
 (e.g. `lua/loomworks/integrations/lsp/clangd.lua`) parses the fields.
 
-Entry shape:
+Entry shape (core-defined fields):
 
 | Field | Purpose |
 |-------|---------|
-| `server` | Server name (e.g. `"clangd"`, `"ts_ls"`) — selects the integration |
+| `server` | Server name — selects the integration |
 | `root_dir` | Absolute path used for root_dir matching and client scoping |
-| `binary` | (clangd) Override server executable; `${ENV_VAR}` expansion supported |
-| `binary_required` | (clangd) When `true` and `binary` is missing, refuse to start and surface an error. Use when stock PATH `clangd` would be actively wrong (e.g. SDK clangd required for platform headers) |
-| `compile_commands_dir` | (clangd) Absolute directory containing `compile_commands.json` |
-| `tsconfig` | (ts_ls) Absolute path to `tsconfig.json` |
-| _…per-server_ | Each integration documents its own fields |
+| _…per-server_ | Each integration documents its own additional fields. See [`spec/integrations/lsp/`](spec/integrations/lsp/). |
 
 Modules with no LSP needs return `{}` (or omit the method). The module
 may traverse core domain objects (Project, ConfigUnit) to resolve
-references — e.g. cmake reading another configuration's build dir for
-`compile_commands_from` redirect.
+references.
 
-Core never reads entry contents beyond `server` — all interpretation is
-delegated to `lua/loomworks/integrations/<server>.lua`.
+Core never reads entry contents beyond `server` and `root_dir` — all
+other interpretation is delegated to the per-server integration.
 
 **`parse_targets(ctx) → targets?`** *(optional)*
 
@@ -2166,9 +2143,9 @@ successful configure task or during startup scan.
 
 `ctx` is a table with:
 - `build_dir` — absolute build directory (for modules that read build
-  output, e.g. cmake's file API)
+  output)
 - `project_path` — absolute project root path (for modules that read
-  source files, e.g. typescript reading package.json)
+  source files directly)
 - `config_name` — configuration variant name (for multi-config
   generators to select the correct reply)
 
@@ -2180,58 +2157,23 @@ Only project-owned build targets are included (executables and libraries).
 Imported, alias, and utility targets are excluded. Dependencies list only
 project-owned targets that this target links against.
 
-### 9.4 CMakePresets integration (cmake module)
+### 9.5 Module implementations
 
-The cmake module reads `CMakePresets.json` + `CMakeUserPresets.json` with
-full preset inheritance:
+Each module that ships with loomworks documents its implementation of
+this contract in its own spec file:
 
-- Each non-hidden configure preset becomes a loomworks configuration
-- Preset's `binaryDir` is used as the build directory (wins over defaults)
-- Preset's `toolchainFile` / `CMAKE_TOOLCHAIN_FILE` maps to
-  `toolchain_locked = true`
-- Debug/Release/RelWithDebInfo are auto-generated **only if no presets exist
-  and no configurations are declared in the workspace config**
-- Overrides in the `configurations` block add to or override
-  preset-derived configurations
+- [`spec/modules/cmake.md`](spec/modules/cmake.md) — cmake projects
+  (CMakePresets, file-api target discovery, ctest/gtest integration)
+- [`spec/modules/harmony.md`](spec/modules/harmony.md) — HarmonyOS /
+  OpenHarmony projects (build-profile.json5 configurations, hvigor
+  build dirs, hdc device interface)
+- [`spec/modules/meson.md`](spec/modules/meson.md) — meson projects
+  (introspect-driven discovery, per-compiler kits)
+- [`spec/modules/typescript.md`](spec/modules/typescript.md) — v1 stub
+  (project detection only, no build tasks)
 
-### 9.5 CMake File API integration (cmake module)
-
-The cmake module uses CMake's file-based API (codemodel v2) to discover
-build targets after configure.
-
-**Query setup**: The query files
-`<build_dir>/.cmake/api/v1/query/codemodel-v2` and `cache-v2` are created
-before the configure task runs (in the task builder). These are empty
-markers — their presence tells CMake to write reply data on every
-configure. The codemodel reply provides targets; the cache reply provides
-build options.
-
-**Reply parsing**: After a successful configure, core calls
-`parse_targets(build_dir, config_name?)` on the module. The cmake module
-reads the codemodel reply from `<build_dir>/.cmake/api/v1/reply/`,
-extracts project-owned targets, and returns them. On startup, existing
-build directories are scanned asynchronously via `parse_targets_async`.
-
-**Target filtering**: Only project-owned build targets are included:
-- Executables (`EXECUTABLE`)
-- Static libraries (`STATIC_LIBRARY`)
-- Shared libraries (`SHARED_LIBRARY`)
-- Module libraries (`MODULE_LIBRARY`)
-- Object libraries (`OBJECT_LIBRARY`)
-- Interface libraries (`INTERFACE_LIBRARY`)
-
-Imported targets, alias targets, and utility targets (e.g., `install`,
-`uninstall`) are excluded.
-
-**Dependencies**: Link dependencies between project-owned targets are
-recorded. Dependencies on imported or external targets are excluded.
-
-**Storage**: Targets are runtime-only data stored on `ConfigUnit.targets`
-as `Target` objects (not persisted in cache). They are re-parsed from the
-file-api reply on startup (async) and after each successful configure
-(sync). The entire targets dict is replaced on every parse (not merged).
-Each `Target` object holds the target id, type, dependencies, artifact
-path, and a back-reference to its owning `ConfigUnit`.
+Third-party modules follow the same shape: implement the contract above
+and document the implementation alongside.
 
 ### 9.6 Per-target builds
 
@@ -2254,7 +2196,7 @@ objects. No key-based lookups at runtime.
    published config setting. On selection, sets default and builds.
 3. If set but stale (target no longer exists): notify and show picker.
 4. If valid: `Target:build()` delegates to the module's
-   `build_target_task()` (e.g., cmake adds `--target <name>`).
+   `build_target_task()`.
 
 **Module interface**: `build_target_task(project_ctx, target_id)` returns
 an overseer task definition for building a single target. Falls back to
@@ -2265,8 +2207,9 @@ full build if the module doesn't implement it.
 Each profile can have a default launch target — a configuration that
 defines how to run the project after building. Two types:
 
-**Module targets** (cmake executables): `Target:launch()` resolves the
-artifact path from the build directory and runs it via overseer.
+**Module targets** (executables discovered by the module's
+`parse_targets`): `Target:launch()` resolves the artifact path from
+the build directory and runs it via overseer.
 
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.
@@ -2566,20 +2509,16 @@ ConfigUnit
 └── run_tests()                   (delegates to all TestUnits)
 
 TestUnit (interface — test_unit.lua)
-├── CTestUnit (test_units/ctest.lua)  wraps ctest for cmake projects
-│   └── uses GTest helper for framework detection + source mapping
-├── MesonTestUnit (test_units/meson.lua)  wraps `meson introspect --tests`
-│   └── uses GTest helper; populates file/line from target sources
-└── GTestUnit (future)                direct gtest binary for launch targets
-
-GTest (gtest.lua — shared helper, not a TestUnit)
-├── probe(executable)             → detect framework, list tests
-├── probe_sync(executable)        → synchronous version
-├── parse_list_tests(output)      → parse --gtest_list_tests output
-├── find_source_locations(entries, sources) → file/line per test
-├── parse_xml_results(path)       → per-test pass/fail from JUnit XML
-└── build_filter(test_id)         → --gtest_filter string
+├── per-module TestUnits (see spec/modules/<mod>.md)
+└── shared framework helpers (e.g. gtest)
 ```
+
+The `TestUnit` interface is the seam: each module that supports tests
+implements one or more TestUnit subclasses (factory'd via the module's
+`create_test_unit(config_unit)`). Framework-specific helpers (e.g.,
+gtest binary probing) live alongside the module that introduced the
+need. See per-module specs in [`spec/modules/`](spec/modules/) for
+which TestUnits each module ships.
 
 #### 9.9.2 TestUnit interface
 
@@ -2621,89 +2560,6 @@ build/configure completes.
 
 Return cached entries without triggering discovery.
 
-#### 9.9.3 CTestUnit
-
-CTestUnit (`test_units/ctest.lua`) wraps ctest for cmake projects. One
-per ConfigUnit. Contains all ctest test targets — each target may have
-a different framework.
-
-**Discovery flow**:
-1. Run `ctest --test-dir <dir> -C <config> --show-only=json-v1`
-2. Parse JSON into test target entries
-3. For targets with `gtest_discover_tests()`: individual tests already
-   present in ctest output
-4. For `add_test()` targets: probe with GTest helper (`--gtest_list_tests`)
-   to detect framework and enumerate individual tests
-5. Map tests to source locations via GTest helper + cmake file-api data
-   (target → source files from codemodel reply)
-
-**CTestTestfile search**: When `CTestTestfile.cmake` is not at the build
-root (e.g., `enable_testing()` in a subdirectory), CTestUnit searches
-subdirectories depth-first (max depth 5, skipping `_deps`, `CMakeFiles`,
-`.cmake`).
-
-**`-C` flag**: Always passed (required for multi-config generators like
-MSVC, harmless for single-config like Ninja).
-
-**Execution**: Always through ctest to preserve test properties (env,
-timeout, working directory, fixtures):
-
-| Scenario | Command |
-|----------|---------|
-| Run all tests | `ctest --test-dir <dir> -C <cfg> --output-on-failure --output-junit <path>` |
-| Run specific test | `ctest --test-dir <dir> -C <cfg> -R ^<name>$ --output-on-failure --output-junit <path>` |
-| Individual gtest case (`add_test`) | Same + `GTEST_FILTER=Suite.Test` in env |
-
-#### 9.9.4 GTest helper
-
-GTest (`gtest.lua`) is a shared utility class containing all gtest-specific
-functionality. Not a TestUnit — used by CTestUnit and future TestUnits.
-
-**`parse_list_tests(output, executable, target_id) → TestEntry[]`**
-
-Parse `--gtest_list_tests` output. Strips `#` parameter suffixes.
-
-**`probe(executable, target_id, callback)`** /
-**`probe_sync(executable, target_id) → framework, entries`**
-
-Run `--gtest_list_tests` with 5s timeout. Validate output format
-(first line must be a suite ending with `.`). Returns `"gtest"` +
-entries, or nil.
-
-**`find_source_locations(test_entries, source_files)`**
-
-Scan source files for test macros to find file + line per test entry.
-Matches in priority order:
-
-1. **Exact match**: `suite.case` from macro matches test entry exactly
-2. **Parameterized (by_base)**: runtime name `Prefix/Suite.Case/N` →
-   extract base `Suite.Case` → match `TEST_P(Suite, Case)` in source
-3. **Fuzzy (by_case)**: match by case name only. Handles typed tests
-   (`TYPED_TEST` registers with different suite), fixture inheritance,
-   and custom macros with suite name transformations.
-
-**Macro patterns recognized**: Any identifier containing `TEST` followed
-by `(args)`. Covers: `TEST`, `TEST_F`, `TEST_P`, `UNIT_TEST`,
-`UNIT_TEST_F`, `UNIT_TEST_P`, `TYPED_TEST`, etc.
-
-**Multi-line support**: When `TEST_P(\n  suite, name, ...)`, the scanner
-accumulates lines until the first two arguments are found (max 5 lines).
-Handles both `TEST_P(suite, name)` on one line and `TEST_P(\nsuite, name)`
-across lines.
-
-**Source files**: Come from cmake file-api target detail (`sources` array
-with paths relative to codemodel `paths.source`). Paths are normalized
-via `vim.fn.fnamemodify(:p)` for consistent neotest matching.
-
-**`parse_xml_results(output_path) → TestResult[]|nil`**
-
-Parse JUnit XML output (ctest `--output-junit` format). Handles
-`<testcase>` with `<failure>`, `<skipped>`, `<error>` children.
-
-**`build_filter(test_id) → string`**
-
-Strip `test:` prefix from test ID for `--gtest_filter` value.
-
 #### 9.9.5 ConfigUnit test interface
 
 ConfigUnit delegates all test operations to its TestUnit instances.
@@ -2712,8 +2568,8 @@ call via the module's `create_test_unit(config_unit)` factory.
 
 **`config_unit:test_units() → TestUnit[]`**
 
-Returns the array of TestUnits. The cmake module returns `{ CTestUnit }`,
-others return `{}`.
+Returns the array of TestUnits the owning module created (empty if the
+module does not support tests).
 
 **`config_unit:discover_tests() → TestTree|nil`**
 
@@ -2765,8 +2621,8 @@ by scanning the filesystem for test files. The adapter uses cached test
 data to guide neotest's scanning:
 
 - `is_test_file(path)`: checks the cached test file set (files with
-  matched test entries). Falls back to `*_test.cpp` pattern when cache
-  is empty.
+  matched test entries). Falls back to a conservative filename pattern
+  when cache is empty.
 - `filter_dir(name, rel_path, root)`: checks the cached test directory
   set (directories that lead to test files). Returns false when cache is
   empty — neotest shows nothing until async discovery completes.
@@ -2792,9 +2648,9 @@ permanent hangs). Paths use `to_native()` for backslash conversion and
 `norm()` for forward-slash comparison. No `vim.fn` calls (these deadlock
 in nio context).
 
-**Execution** (`build_spec`): Finds the owning TestUnit via ConfigUnit,
-constructs ctest command. Checks ConfigUnit state and warns if project
-needs configuring.
+**Execution** (`build_spec`): Finds the owning TestUnit via ConfigUnit
+and asks it for the run command. Checks ConfigUnit state and warns if
+the project needs configuring.
 
 **Results** (`results`): Parses JUnit XML via TestUnit, maps results to
 neotest positions by matching test IDs. Assigns overall pass/fail to
