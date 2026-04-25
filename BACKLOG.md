@@ -186,25 +186,66 @@ cleanly.
 ## Pluggable debug adapter architecture
 
 `lua/loomworks/debug.lua` currently hardcodes behavior for nvim-dap and
-has static tables of known adapters per language (`codelldb`, `cppdbg`,
-`pwa-node`, etc.). To let third-party plugins add new debuggers
-(gdb-mi, rust-analyzer DAP, custom remote debuggers) without editing
-core, the debug layer should follow the same pattern as LSP integrations:
+has static tables of known adapters per language (`DEFAULT_ADAPTERS`,
+`KNOWN_ADAPTERS`, `JS_ADAPTERS`). To let new adapters plug in without
+editing core — and to give orchestration-heavy adapters (harmony
+lldb-server-over-hdc, future Ark CDP bridges) a clean home — mirror
+the LSP registry pattern.
 
-- Core `debug.lua` keeps a thin dispatcher and a registry of backends.
-- Each backend implementation lives in
-  `lua/loomworks/integrations/debug/<backend>.lua` (or an external
-  plugin path). Backends self-register for specific adapter/language
-  combinations.
-- Modules declare opaque `debug_configs(...)` entries the way they
-  already emit `lsp_configs` — core routes entries to the registered
-  backend by name.
+### Registry shape
 
-Retrofit would mirror the LSP refactor: define the entry shape, move
-nvim-dap wiring out of `debug.lua` into an integration file, and have
-`resolve_adapter` / `run` read from the registry rather than hardcoded
-tables. Deferred until we have a concrete second adapter to validate
-the design against.
+```
+lua/loomworks/debug.lua               — dispatcher + registry
+lua/loomworks/integrations/debug/codelldb.lua
+lua/loomworks/integrations/debug/cppdbg.lua
+lua/loomworks/integrations/debug/pwa_node.lua
+lua/loomworks/integrations/debug/harmony_lldb.lua   (once landed)
+```
+
+Each integration self-registers:
+
+```lua
+require("loomworks.debug").register("codelldb", M)
+```
+
+and exposes:
+
+- `M.languages = { "c++" }` — what language keys resolve to this adapter
+- `M.build_config(spec, workspace) -> dap_config` — shape the DAP
+  config (current `JS_ADAPTERS` transform for pwa-node lives here)
+- `M.setup(spec, callbacks) -> teardown_fn|nil` — optional pre-launch
+  orchestration (push lldb-server, `hdc fport`, etc.); returns a
+  teardown closure invoked on session end
+- `M.attach_pid_transform(spec, pid)` — optional, for multi-adapter
+  attach to a PID discovered from the primary session
+- `M.default_enable = true|false` — whether core auto-picks this
+  adapter for its language(s) when user hasn't overridden
+
+### Dispatcher changes
+
+- `M.run(spec, callbacks)` finds the integration by adapter name,
+  runs its `setup`, merges the returned config into `dap.run`, and
+  registers the teardown on `event_terminated` / `event_exited`.
+- `M.resolve_adapter(workspace, language)` reads from the registry
+  (iterate integrations whose `languages` contain the key, pick by
+  user override then `default_enable`) instead of hardcoded
+  `DEFAULT_ADAPTERS`.
+- `M.known_adapters(language)` / `M.known_languages()` become
+  registry queries. Status page (`ui/sections/debug.lua`) follows.
+
+### Forcing function
+
+The harmony native-device debug work is the natural second adapter
+that validates the design. Land this refactor first as a pure-internal
+branch (no behavior change; existing codelldb/cppdbg/pwa-node tests
+still pass), then build harmony_lldb.lua on top.
+
+### Out of scope here
+
+- Third-party plugin discovery (scanning rtp for integration files) —
+  follows the LSP pattern but can wait. First pass: hardcoded
+  `require()` list of built-in integrations, same as the original LSP
+  refactor's first cut.
 
 ## Streaming device scan into picker
 
@@ -227,12 +268,169 @@ Same treatment would benefit kit/SDK pickers and any other async source.
 
 ---
 
-## Device debug (attach to app on device)
+## Native device debug (HarmonyOS via lldb-server)
 
-Not in v1. HarmonyOS hdc supports remote debugging via `hdc jpid` +
-JDWP/LLDB forwarding. Would extend session_tracker's device path to
-support `mode = "debug"` for device targets. Currently device targets
-always use launch mode regardless of user input.
+Extend session_tracker's device path to support `mode = "debug"` for
+device targets — currently device targets always run in launch mode.
+Scope: **native C++ only** for v1. ArkTS step-through is a separate,
+much larger effort (see "ArkTS debugger via CDP" below).
+
+### Activation
+
+- HAP must be a debug build with `debuggable: true` in `module.json5`.
+  The harmony module's debug configurations set this already; this
+  needs to be confirmed empirically, not assumed.
+- Start-with-pause via `aa start -D -a <ability> -b <bundle>`, or
+  attach-to-running via the existing `M.device_pid` path.
+
+### Host tooling
+
+- `native/llvm/bin/lldb` resolved by `sdks/ohos.lua` (already present
+  for clangd resolution — same tree).
+- codelldb on host drives the remote session via `initCommands`.
+
+### Device tooling
+
+- `lldb-server` pushed from SDK to `/data/local/tmp/lldb-server` via
+  `hdc file send`, `hdc shell chmod +x`, then spawned as
+  `./lldb-server platform --server --listen *:<device_port>`.
+- Don't assume pre-installed. Always push so the version matches the
+  host lldb.
+
+### Transport
+
+- `hdc fport tcp:<host_port> tcp:<device_port>` per session. Release
+  on teardown.
+
+### codelldb config shape
+
+```
+initCommands = {
+  "platform select remote-linux",
+  "platform connect connect://localhost:<host_port>",
+}
+-- then one of:
+processCreateCommands = { "attach -p <pid>" }
+-- OR
+program = <local .so or HAP binary with symbols>
+```
+
+### Symbols + source maps
+
+- `settings set target.source-map <device-src> <host-src>` for each
+  cmake project in the active profile.
+- `settings set target.exec-search-paths <build_dir>` so unstripped
+  `.so` files are discovered.
+- Pending breakpoints (codelldb default) handle dlopen-time symbol
+  resolution for native .so files loaded by the app.
+
+### Teardown
+
+- Kill lldb-server on device (`hdc shell kill`).
+- Release `hdc fport`.
+- Normal codelldb session disposal via session_tracker.
+
+### Interface additions
+
+- `M.device_debug(tool_data, device_serial, launch_info, pid)` on
+  harmony module — returns `{ adapter, config, setup_cmds,
+  teardown_cmds }`.
+- `M.languages` on harmony gains `"c++"` (arkts stays non-debuggable
+  for now).
+- session_tracker: device-debug branch mirroring device-launch, wrapping
+  dap.run in setup → run → teardown.
+- `debug.lua` (or the new integration per pluggable refactor): support
+  for pre-launch shell-command orchestration and post-exit cleanup.
+
+### Dependencies
+
+- Cleanest path is to land the **Pluggable debug adapter architecture**
+  refactor first so `integrations/debug/harmony_lldb.lua` is the
+  natural home for all the orchestration. Otherwise `debug.lua` grows
+  an `if adapter == "harmony_lldb"` branch that has to be refactored
+  out anyway.
+
+### Empirical unknowns that need a device-in-hand spike
+
+- Does OH's `aa start -D` actually pause the process waiting for
+  attach, or just enable attachability?
+- What's the correct `lldb-server` binary to push from the SDK? Does
+  OH ship one or do we use the Android-style Linux ARM64 build?
+- Is `hdc fport` reliable enough for long-lived debug sessions, or do
+  we need to watchdog it?
+- Does the VM's JIT interfere with symbol resolution in the native
+  addon (`.node`-style libs)? Needs testing with a debug .so.
+
+---
+
+## ArkTS debugger via CDP (research findings)
+
+Research captured here so we don't re-do it. Separate, much larger
+effort than native device debug. Not on any near-term roadmap.
+
+### What we know
+
+- **Protocol is WebSocket + Chrome DevTools Protocol (CDP).** Not a
+  fully custom dialect. Standard domains (`Debugger`, `Runtime`,
+  `Profiler`) apply with Ark-specific additions.
+- **Server implementation is open source** at
+  `gitee.com/openharmony/arkcompiler_toolchain` under directories
+  `inspector/`, `tooling/`, `websocket/`. Readable, not
+  reverse-engineering.
+- **OH docs explicitly support multi-language debug** (ArkTS + native
+  C++ attached to the same process). DevEco uses this; we could too.
+- **Transport on device** is a local abstract UNIX socket, exposed to
+  host via `hdc fport tcp:<port> localabstract:<name>`. Socket name
+  appears to derive from bundle/PID — needs empirical confirmation.
+
+### What doesn't exist
+
+- **No public DAP adapter for ArkTS/Panda outside DevEco.** Not on
+  nvim-dap's wiki, not on VS Code marketplace (existing HarmonyOS VS
+  Code plugins are language-server/linting only), nothing on GitHub.
+  If we want this inside Neovim, we build it.
+
+### Three feasibility tiers, cheapest first
+
+1. **Chrome DevTools frontend direct-connect** (evening spike).
+   `hdc fport` the Ark inspector socket, open `chrome://inspect`,
+   point at `localhost:<port>`. If Ark's CDP subset is close enough
+   to V8, DevTools paints sources/breakpoints/watches. Solves the
+   "stop jumping to DevEco" pain at zero project cost. Debugger runs
+   in Chrome, not Neovim.
+
+2. **CDP-to-DAP bridge** (weeks, if tier 1 attaches but has gaps).
+   Small Go/Node process. Speaks CDP to the device, DAP to nvim-dap.
+   Protocol mapping reference is `vscode-js-debug` (does the
+   equivalent against V8). Still real work but not blind — the OH
+   source tells us what domains exist and which are stubs.
+
+3. **Full custom DAP adapter** (months, if tier 1 is rejected by
+   standard frontend). Build a from-scratch adapter against Ark's
+   CDP subset, including sourcemap handling (bytecode → `.ets`),
+   Ark-specific Runtime/Profiler domain quirks, and whatever the VM
+   doesn't implement from CDP.
+
+### Recommended first action whenever this comes up
+
+Spend one evening on tier 1 before committing to anything. The
+outcome tells you which tier you're in. Without that data, any
+estimate of the full cost is speculation.
+
+### Activation prerequisites for any tier
+
+- HAP built debuggable.
+- App launched with debug flag (`aa start -D` or the ArkTS-specific
+  equivalent). The exact flag set for ArkTS-debug is something only
+  hands-on testing can pin down.
+- VM debug feature compiled in — default on in debug builds of the
+  runtime, may not be on release device images.
+
+### Why this is stored, not planned
+
+User is presently fine using DevEco for ArkTS debug; the loss is
+only the cognitive cost of context-switching between editors. Not
+worth a months-long project to eliminate.
 
 ---
 

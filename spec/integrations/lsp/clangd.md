@@ -1,7 +1,7 @@
 # clangd LSP integration
 
 How the clangd integration implements the core LSP integration contract
-(`specification.md` §10). Lives at `lua/loomworks/integrations/lsp/clangd.lua`.
+(`specification.md` §9). Lives at `lua/loomworks/integrations/lsp/clangd.lua`.
 Section numbers in this file are local.
 
 ## 1. Server name
@@ -11,7 +11,7 @@ name to route their projects through this integration.
 
 ## 2. Per-server entry fields
 
-Beyond the core-defined `server` and `root_dir` fields (core §9.4
+Beyond the core-defined `server` and `root_dir` fields (core §8.4
 `lsp_configs`), this integration recognises:
 
 | Field | Purpose |

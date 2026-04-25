@@ -1,9 +1,50 @@
 # loomworks.nvim — Specification
 
 This document is the authoritative behavioral specification for loomworks.nvim.
-It defines *what* the system does — data model, state machines, UI behavior,
-and invariants — not how it is implemented. The implementation (code) and
-architecture (ARCHITECTURE.md) must conform to this specification.
+It defines *what* the system does — data model, state machines, integration
+contracts, and invariants — not how it is implemented. The implementation
+(code) and architecture (ARCHITECTURE.md) must conform to this specification.
+
+## Document layout
+
+This file is the **core specification**. It describes contracts and
+behavior that hold for any module, LSP integration, DAP integration,
+or SDK provider. It does not name specific modules, tools, compilers,
+or SDKs in normative prose — implementations are documented in
+sibling files under `spec/`:
+
+- [`spec/modules/`](spec/modules/) — per-module implementations (cmake,
+  harmony, meson, typescript)
+- [`spec/integrations/lsp/`](spec/integrations/lsp/) — per-LSP-server
+  integrations (clangd, …)
+- [`spec/integrations/debug/`](spec/integrations/debug/) — per-DAP-adapter
+  contracts (codelldb, cppdbg, pwa-node, …)
+- [`spec/sdks/`](spec/sdks/) — per-SDK-provider details (ohos, …)
+- [`spec/ui.md`](spec/ui.md) — the status page, highlight groups, and
+  winbar/statusline component
+
+Section numbers inside `spec/*.md` files are local to each file and
+restart at §1.
+
+## Where does this change go?
+
+| If the change is about… | Update… |
+|--|--|
+| What the data model means, the state machine, or core invariants | `specification.md` §1–§5, §15 |
+| What modules, LSP servers, DAP adapters, or SDK providers must implement to plug in | `specification.md` §8–§11 (the contract sections) |
+| Status page, highlight groups, winbar | [`spec/ui.md`](spec/ui.md) |
+| How a single shipping module does its thing internally | the matching file in [`spec/modules/`](spec/modules/) |
+| How a single LSP integration handles its server | the matching file in [`spec/integrations/lsp/`](spec/integrations/lsp/) |
+| How a single DAP adapter is invoked | the matching file in [`spec/integrations/debug/`](spec/integrations/debug/) |
+| How a single SDK provider detects, validates, and answers capability queries | the matching file in [`spec/sdks/`](spec/sdks/) |
+| Adding a new module, LSP server, DAP adapter, or SDK provider | a new file under the corresponding `spec/` subdirectory; touch core only if the contract itself needs a new field or hook |
+| A deferred / planned feature that is not yet implemented | [`BACKLOG.md`](BACKLOG.md), not core spec |
+
+**Naming rule for core**: core sections forbid module / tool / compiler /
+SDK / integration names in normative prose. Specific names may appear in
+fenced "example" blocks when they aid reasoning, but never as the
+authoritative description of behavior. The authoritative description
+belongs in the matching `spec/` file.
 
 ---
 
@@ -315,7 +356,7 @@ The serial is stable across USB reconnections and emulator restarts.
 - Devices are **workspace-level** — they are physical hardware, shared
   across all profiles.
 - Devices are **runtime-only** — discovered on demand via the module's
-  `list_devices()` method (§12). Not persisted to cache or user.json.
+  `list_devices()` method (§11). Not persisted to cache or user.json.
 - Discovery is triggered by: (1) opening the device picker in UI,
   (2) attempting to launch a device-requiring target with no device
   selected, (3) explicit `scan_devices()` API call.
@@ -1142,772 +1183,16 @@ indicate this restriction.
 
 ---
 
-## 6. UI — Status Page
-
-### 6.1 Layout
-
-The status page opens as a floating window (default 100 columns, 90%
-editor height). Window position and size can be configured via `setup()`
-options or overridden per `open()` call — the `win` table is passed
-directly to `Snacks.win`. The page contains these sections in order:
-
-1. **Header** — plugin version, workspace name, workspace root
-2. **Profiles** — all materialized and explicit profiles
-3. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
-4. **Configuration Sets** — declared sets with tool entries
-5. **Projects** — all projects with their configurations
-
-Sections are separated by blank lines. Each section has a title line.
-
-### 6.2 Tree Structure
-
-The status page uses a foldable tree widget with two-level nesting.
-
-**Node types**:
-- `leaf` — plain text line, no interaction. Accepts either `(text, hl)` or
-  a list of `{text, hl}` chunks for mixed highlights on one line.
-- `node` — foldable line with children, toggle via `<Tab>`
-- `item` — interactive line with actions, no folding
-- `group` — labeled sub-section that increases indentation. Accepts either
-  `(label, hl, children_fn)` or `(chunks, children_fn)` for mixed highlights.
-- `blank` — empty line for spacing
-
-**Fold characters**: `▶` (folded), `▼` (unfolded)
-
-**Spinner**: Braille animation (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`) at 80ms interval,
-shown when `spinning = true`. Replaces the status marker for running items.
-
-**Status markers**:
-| Status           | Marker |
-|------------------|--------|
-| unconfigured     | ○      |
-| configured       | ◆      |
-| built            | ✔      |
-| configure_failed | ✘      |
-| build_failed     | ✘      |
-| running/deleting | (spinner) |
-
-### 6.3 Keybindings
-
-| Key     | Action      | Behavior |
-|---------|-------------|----------|
-| `<Tab>` | toggle_fold | Toggle fold on the current node |
-| `<CR>`  | enter       | Open action picker on nearest actionable node |
-| `b`     | build       | Build (walks up to nearest node with `on_build`) |
-| `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
-| `o`     | options     | Show build options float (on configured project nodes) |
-| `t`     | task        | Open overseer task output for nearest config (float) |
-| `R`     | rebuild     | Clean + build (destructive, with confirmation) |
-| `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
-| `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
-| `N`     | init_workspace | Initialize workspace: create user.json in cwd |
-| `L`     | load        | Load workspace from cwd / rescan tools |
-| `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
-| `P`     | publish     | Toggle publish flag on nearest publishable item |
-| `U`     | delete_user | Delete user.json and reload (with confirmation) |
-| `:w`    | (write)     | Publish: write published items to loomworks.json |
-| `?`     | help        | Show help dialog |
-| `q`     | (close)     | Close the status page |
-
-**Action dispatch**: For `build`, `configure`, `rebuild`, `clean`, `delete`,
-`pin`, and `options`, the tree walks upward from the cursor line to find the
-nearest node that has the corresponding `on_<action>` callback. This means pressing
-`b` on a child detail line triggers the build action of the parent node.
-
-**Action picker (`<CR>`)**: The Enter key walks up to the nearest widget with
-`on_*` callbacks, collects all available actions, and opens `vim.ui.select`
-with the action list. The `enter` action label is context-dependent, set by
-the section renderer via the `enter_label` field on the widget:
-- Profile nodes: "Activate"
-- Config set tool entries: "Activate"
-- Project config/tool nodes: "Open task output"
-
-The picker is skipped (direct invoke) when:
-- The widget has `direct = true` (sentinel lines), OR
-- Only one action exists on the widget (no other actions to discover)
-
-**Sentinel lines**: Interactive `item` nodes that appear at the end of
-sections to provide discoverable create/add flows. Sentinels have
-`direct = true` on the widget, so Enter invokes `on_enter` immediately.
-- **Profiles section**: `▸ Create new profile` — opens the profile creation
-  multi-step picker (config set → tool → materialize). Shows "No projects
-  yet." when no projects exist.
-- **Projects section**: `▸ Add project` — opens the project browser float.
-
-**Destructive action highlighting**: `R`, `C`, `D`, `U`, `<C-n>` keys are
-highlighted with `DiagnosticWarn` in the help dialog.
-
-### 6.4 Action Hints
-
-Action hints show available keys close to the actionable items. Hints use
-`Comment` highlight. Format: `[key] label  [key] label  ...` — keys in
-brackets, separated by double spaces.
-
-**Header hint**: After the Root line, a `Comment` leaf shows global actions:
-`[?] help  [L] load  [<C-n>] reset`
-
-**Group header hints with `[t]`**: Profile project groups also include `[t] task output`.
-
-**Section title hints**: Some sections show a `Comment` hint line after the
-title listing available actions for top-level nodes.
-
-| Section | Hint line |
-|---------|-----------|
-| Profiles | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Orphaned Configurations | `[D] delete` (appended to title via chunks) |
-
-**Group header hints**: Inner groups that contain actionable items append a
-hint suffix to the group label. The label uses `LoomworksActionable` highlight
-and the suffix uses `Comment` highlight (via `group` with chunks).
-
-| Group label | Section | Hint suffix |
-|-------------|---------|-------------|
-| Projects: | Profiles | `[b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Tools: | Configuration Sets | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Configurations: | Projects | `[b] build  [c] configure  [p] pin  [o] options  [R] rebuild  [C] clean  [D] delete` |
-
-### 6.5 Profiles Section
-
-Shows all materialized (cached) and explicit profiles. Profiles only appear
-here when they exist in the cache or are declared in the config.
-
-**Profile node display** (all profiles use the same rendering):
-```
-{marker} {fold_char} {profile_key} [{tag}] ({status_label}) [{elapsed}] [— {op_message}]
-```
-
-Where:
-- `{tag}` = `[stale]` for orphaned profiles, `[explicit]` for declared
-  profiles, omitted otherwise
-- `{status_label}` = aggregate status from `Profile:status()` (e.g., "built",
-  "1 configuring, 1 failed build", "3 configured, 2 unconfigured")
-- `{elapsed}` = shown only when running (e.g., "1m23s")
-- `{op_message}` = last operation result (e.g., "built in 42s")
-
-All profiles are displayed identically. A profile with key `"Debug:ninja-gcc"`
-appears like any other
-profile; it simply has fewer projects when expanded.
-
-**Profile highlight rules**:
-| Condition | Highlight |
-|-----------|-----------|
-| Has active Operation + active | `LoomworksActive` |
-| Has active Operation + not active | `LoomworksRunning` |
-| Active (no operation) | `LoomworksActive` |
-| Failed status | `LoomworksFailed` |
-| Unconfigured | `LoomworksUnconfigured` |
-| Otherwise | `LoomworksConfigured` |
-
-Note: "Has active Operation" means this profile initiated the action.
-Profiles that share ConfigUnits with the initiating profile show spinners
-(from running ConfigUnit state) but not the orange highlight or timer.
-
-**Profile children** (when unfolded):
-- Set name (with warning if orphaned/stale) — only for set-based profiles
-- Tool label (with generator/compiler details)
-- Device selection (only when workspace has device-capable modules) —
-  shows `Device: <name> (<serial>)` (online), `Device: <serial> (offline)`
-  (offline/stale), or `Device: (none selected)`. `<CR>` opens device picker.
-- Last operation message
-- Projects sub-group:
-  - Each project: `project_key [module_type] → variant {progress}` with status highlight
-  - When unfolded: status, build dir, cmake details (generator, compiler)
-
-**Profile actions**:
-
-| Node type | `<CR>` | `b` | `c` | `t` | `R` | `C` | `D` |
-|-----------|--------|-----|-----|-----|-----|-----|-----|
-| Profile | activate | build all | configure all | — | clean+build all | clean all | delete with dialog |
-| Project under profile | open task output | build config | configure config | open task output | clean+build config | clean config | delete config with dialog |
-
-**Sentinel: Create new profile**
-
-After the profile list (or as sole content when empty), an interactive item:
-```
-▸ Create new profile
-```
-Enter opens the profile creation multi-step picker:
-
-1. **Pick configuration set**: Shows existing config sets from the
-   workspace config, plus auto-detected options from
-   `generate_default_config_sets()`. Auto-detected options are labeled
-   `"Name (auto-detected)"` with a mapping summary. Selecting an
-   auto-detected option writes it to user.json via
-   `add_configuration_set()` before continuing.
-
-2. **Pick tool** (skipped if module has no keyed tools, or only one tool
-   detected): Shows available tools from `detect_tools()`.
-
-3. **Materialize**: Calls `config_set:ensure_profile(tool_entry)` to
-   create the profile in cache. Auto-activates only when this is the
-   first profile in the workspace; otherwise just creates it.
-
-When no projects exist, the sentinel is replaced with:
-```
-No projects yet. Add projects first.
-```
-
-### 6.6 Orphaned Items Section
-
-Shows orphaned cached configurations and stray build directories. Visible
-when either type exists (hidden otherwise — the common case).
-
-**Title**: `Orphaned Items` with `Title` highlight.
-
-**Orphaned configurations**: cached configs with build state not referenced
-by any profile. Grouped by project key (sorted alphabetically). Each
-project is a foldable node; each config within is a foldable node showing
-the config key and its status.
-
-**Stray build directories**: directories under `{root}/.nvim/build/` not
-referenced by any cache entry. Detected via top-down pruning: the scan
-reports the highest-level directory whose entire subtree contains no cache
-entries. Directories that ARE cache entries (or parents of cache entries)
-are skipped. Shown as flat items with `(stray)` suffix.
-
-```
-Orphaned Items  [D] delete
-
-  ▶ App
-    ▶ Debug:ninja-gcc-12 (built)
-      Status: built
-      Build dir: .nvim/build/App/Debug
-  .nvim/build/OldProject (stray)
-  ▸ Clean all
-```
-
-**Highlight**: Project nodes use `LoomworksUnconfigured`. Config nodes use
-`resolve_config_status()` highlights. Stray dir items use
-`LoomworksUnconfigured`.
-
-**Actions**: `D` (delete) is mapped on config nodes and stray dir items.
-All other action keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned
-items cannot be built or configured. Deletion shows the standard
-confirmation dialog.
-
-**Sentinel: Clean all**
-
-After the last orphaned item:
-```
-▸ Clean all
-```
-Enter shows a confirmation dialog listing:
-- All orphaned cached configurations (with state and build dirs)
-- All stray build directories
-
-On confirm: deletes orphaned cache entries + build dirs via `_run_deletion`,
-then deletes stray build dirs. If nothing to clean, shows a notification.
-
-### 6.7 Configuration Sets Section
-
-Shows configuration sets from the merged config (loomworks.json + user.json).
-Only appears when sets exist.
-
-**Set node display**:
-```
-{fold_char} {modified_tag}{set_name}
-```
-
-Where `{modified_tag}` = "+" if the set is modified (see §2.4), empty
-otherwise. Shared-only sets (not in user.json) are dimmed (`Comment`).
-
-Highlighted with `LoomworksActive` if the active profile belongs to this set,
-otherwise `LoomworksActionable` (or `Comment` if shared-only).
-
-**Set node actions**:
-
-| Action | Behavior |
-|--------|----------|
-| `<CR>` | Action picker: Edit mappings, Create profile from set, Delete |
-| `D`    | Delete config set with confirmation dialog |
-
-**Config set editing** (`<CR>` on a set node):
-
-Opens a dedicated config set editor dialog. Shows each project in the
-workspace with its current variant mapping and available configurations
-(from module.info). The user can change each mapping via `vim.ui.select`
-or set it to "None" to remove the mapping. Accept (`y`) applies changes
-via `update_config_set_mapping()` for each changed mapping. Cancel (`q`)
-discards changes.
-
-Changed mappings may orphan existing cached configs (old variant no longer
-referenced). This is intentional — orphans are cleaned explicitly via the
-"Clean all orphaned items" action in the Orphaned Configurations section.
-
-**Config set deletion** (`D` on a set node):
-
-Shows a confirmation dialog listing:
-- Profiles that reference this set (will become orphaned-set)
-- Warning that cached configs will become orphaned
-
-On confirm: `remove_configuration_set()`. Profiles that referenced the set
-become orphaned_set. Cached configs for those profiles become orphaned. No
-immediate deletion of cache entries — the user cleans via "Clean all orphaned
-configs" in the Projects section.
-
-**Set children** (when unfolded):
-- Projects sub-group: `project_key → variant`
-- Tools sub-group (if keyed tools detected): one item per detected tool
-
-**Tool entry display**:
-```
-{marker} {tool_label} {suffix}
-```
-
-Where:
-- `{marker}` = status marker for the corresponding profile (if materialized)
-- `{suffix}` = status/progress info if materialized, empty if not
-- Highlight follows same rules as full profiles
-
-**Tool entry actions**:
-
-| Action | Materialized profile exists | No materialized profile |
-|--------|---------------------------|------------------------|
-| `<CR>` | activate | activate (materializes first) |
-| `b`    | build via profile | build via `run_profile_action` (materializes first) |
-| `c`    | configure via profile | configure via `run_profile_action` (materializes first) |
-| `R`    | rebuild via profile | nil (no-op) |
-| `C`    | clean via profile | nil (no-op) |
-| `D`    | delete profile with dialog | nil (no-op) |
-
-**Sentinel: Create configuration set**
-
-After the last config set, an interactive item:
-```
-▸ Create configuration set
-```
-Enter opens a picker with two kinds of options:
-
-1. **Auto-detected templates** — generated by `generate_default_config_sets()`
-   using `map_variant()` on all projects. Standard templates: "Debug" and
-   "Release". Each template pre-fills project→configuration mappings by
-   matching variant types across modules. Templates that match an existing
-   config set name are excluded.
-2. **Custom** — opens the config set editor dialog with empty mappings.
-   User enters a name and manually selects variant per project.
-
-Selecting a template creates the config set immediately with the
-pre-computed mappings. No editor dialog — the mappings are deterministic.
-
-This replaces the previous flow where all config sets started from the
-editor dialog.
-
-### 6.8 Projects Section
-
-Shows all projects from the active set, including orphaned projects. Projects
-are sorted alphabetically with orphaned projects at the end.
-
-**Project node display**:
-```
-{fold_char} {modified_tag}{project_key} [{type}] {orphan_tag} {refresh_tag}
-```
-
-Where:
-- `{modified_tag}` = "+" if any child or the project declaration is modified
-  (see §2.4), empty otherwise
-- `{orphan_tag}` = "(orphaned)" if in cache but not in config
-- `{refresh_tag}` = "!" if `needs_refresh` is true
-
-**Shared-only items** (exist only in loomworks.json, not in user.json) are
-displayed with `Comment` highlight (dimmed). Module-generated default
-configurations are also dimmed. Dimmed items become normal on first
-interaction (auto-copied to user.json).
-
-**Project children** (when unfolded):
-- Path
-- Refresh reasons (if any, with `!` prefix and `DiagnosticWarn` highlight)
-- Configurations sub-group
-
-**Configuration display** (keyed-tool modules like cmake):
-Each configuration shows its available tools:
-```
-{fold_char} {config_name} {brief}
-  {fold_char} {tool_label} {progress}     ← one per detected/cached tool
-    Status: {status}
-    Build dir: ...
-    Last configured: ...
-    Generator: ...
-    {fold_char} Targets ({total_count})       ← only when targets exist
-      {fold_char} {type_group} ({group_count})
-        {fold_char} {target_name}
-          Links: dep1, dep2
-```
-
-**Configuration display** (non-keyed modules):
-```
-{fold_char} {config_name} {brief}
-  {fold_char} Status: {status} {progress}
-    Build dir: ...
-    ...
-```
-
-**Targets sub-tree** (cmake projects, post-configure only):
-
-When a configuration has cached targets, a foldable "Targets (N)" node
-appears in the unfolded tool entry detail view, where N is the total
-target count. Targets are grouped by type under foldable sub-headers
-showing the group name and count (e.g., "Executables (2)"). Within each
-group, targets are sorted alphabetically by name. Targets with link
-dependencies can be unfolded to show `Links: dep1, dep2, ...` on a
-single line. Targets without dependencies are leaf nodes (no fold arrow).
-
-Type group labels and display order:
-1. `Executables`
-2. `Static Libraries`
-3. `Shared Libraries`
-4. `Module Libraries`
-5. `Object Libraries`
-6. `Interface Libraries`
-
-Only groups containing at least one target are shown.
-
-**Configuration actions** (at the tool/status level):
-
-| Action | Behavior |
-|--------|----------|
-| `D`    | Delete config with dialog |
-
-**Tool entry highlight rules** (keyed-tool modules):
-
-| Condition                       | Highlight              |
-|---------------------------------|------------------------|
-| Running                         | `LoomworksRunning`     |
-| Deleting                        | `LoomworksDeleting`    |
-| Active (matches active profile) | `LoomworksActive`      |
-| Failed                          | `LoomworksFailed`      |
-| Configured/Built (not active)   | `LoomworksConfigured`  |
-| Unconfigured                    | `LoomworksUnconfigured`|
-
-A tool entry is "active" when the active profile's tool_key matches the
-entry's tool_key and the configuration variant matches the project's active
-configuration.
-
-**Non-keyed module highlight rules** follow the same pattern but without
-tool_key matching — the entry is active when its variant matches the
-project's active configuration.
-
-**Launch configurations sub-group**
-
-After the configurations group, each non-orphaned project shows a
-"Launch:" group listing its launch configurations.
-
-Each launch config item shows `{name}  {command} {args}`. Actions:
-
-| Action | Behavior |
-|--------|----------|
-| `<CR>` | Edit launch config (opens launch editor dialog) |
-| `D`    | Delete launch config with confirmation |
-
-A "Add launch config" sentinel opens the launch editor for a new config.
-
-The **launch editor dialog** edits: name, command, args (space-separated),
-working directory, and environment variables (key=value pairs). Env vars
-can be added (`▸ Add variable`) and removed (`D`). Inline name validation
-prevents duplicates. Accepts with `y`, cancels with `q`.
-
-**Sentinel: Add project**
-
-After the last project (or as sole content when no projects exist), an
-interactive item:
-```
-▸ Add project
-```
-Enter opens the project browser float (Phase 1). Replaces the former `A`
-keybinding.
-
-
-### 6.9 Deletion Confirmation Dialog
-
-Shown for all delete operations (`D` key). Floating window centered in editor.
-
-**Content**:
-1. Title (e.g., "Delete profile: Debug:ninja-gcc-12")
-2. Running tasks that will be stopped (if any)
-3. Items that will be removed (`disposition = clean`)
-4. Items that will be reset (`disposition = reset`)
-5. Items that will be kept (`disposition = keep`, referenced by another
-   profile)
-6. Confirmation prompt
-
-**Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
-
-### 6.10 Nuke Confirmation Dialog
-
-Shown when `<C-n>` is pressed. Floating window centered in editor.
-
-**Content**:
-1. Title: "Reset workspace cache"
-2. List of paths that will be deleted:
-   - `<root>/.nvim/build/`
-   - `<root>/.nvim/loomworks.cache.json`
-3. Confirmation prompt
-
-**Root resolution**: Uses `ws.root` if a workspace is loaded, otherwise
-resolves from cwd via `workspace.resolve_root()`.
-
-**Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
-
-**Safety checks** (in `nuke_cache(root)`):
-1. Root must be an absolute path (rejects relative paths)
-2. `loomworks.json` must exist at the root (confirms it is a real workspace)
-3. Every path to delete is verified to be under `root/.nvim/` using
-   normalized path prefix checking (prevents directory traversal)
-
-If any check fails, the operation aborts with an error notification and
-no files are deleted. These checks are specific to the nuke operation —
-the general io layer does not restrict deletion paths, because normal
-config/profile deletion may delete build directories anywhere.
-
-### 6.11 Help Dialog
-
-Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
-`<C-n>`) have their key character highlighted with `DiagnosticWarn`.
-
-### 6.12 Options Float
-
-Triggered by `o` on a configuration or tool entry node in the Projects
-or Profiles section. Opens a floating window showing the project's build
-options for that configuration. Only available for configured projects
-with a cached build directory.
-
-**`Core:get_project_options(project_key, config_key) → (OptionGroup|Option)[]|nil`**
-
-Resolves the build directory from cache and delegates to the module's
-`get_options()`. Returns nil if the project is not configured or the
-module does not support options.
-
-The float uses a Tree widget with foldable groups. The module returns a
-tree of `OptionGroup` and `Option` nodes. Each group shows its label and
-child count. Each option shows `key = value`. BOOL values are highlighted
-(ON = green, OFF = dimmed). Options with helpstrings show them as
-children when unfolded. Options with choices show them in parentheses
-after the value. Fold/unfold with `<Tab>`.
-
-The float is read-only. Close with `q` or `<Esc>`.
-
-### 6.13 Project Browser
-
-The project browser is a float opened from the "Add project" sentinel line.
-It scans workspace subdirectories asynchronously and shows detected project
-types using each module's `detect()` method.
-
-**Layout**: Tree widget in a `Snacks.win` float. Title: "Add Project".
-
-**Entry display**: Each directory entry shows its name followed by detected
-type tags: `NativeDemo  [cmake: CMakeLists.txt]`. Directories matching
-multiple modules show all tags. Already-added projects show `✓` with
-`DiagnosticOk`. Directories with no detection show `Comment` highlight.
-
-**Async scanning**: On open, `modules.scan_directory_async()` scans the
-workspace root. On fold open, subdirectories are scanned lazily. Results
-are cached in a browser-local dict. Pending scans show "scanning...".
-
-**Filtered directories**: `.git`, `.nvim`, `.cache`, `.vs`, `.vscode`,
-`node_modules`, `build`, `out`, `__pycache__`, and all hidden directories
-(starting with `.`) are excluded from scanning.
-
-**Keybindings**:
-
-| Key     | Action  | Behavior |
-|---------|---------|----------|
-| `<CR>`  | enter   | Picker with Add/Remove by module type (see below) |
-| `d`     | remove  | Remove project from workspace (with confirmation) |
-| `r`     | refresh | Clear scan cache and re-scan |
-| `q`     | close   | Close the browser |
-
-**Project key derivation**:
-- Root-level directories: basename as key, `path` field omitted
-- Nested directories: relative path (with `/` → `_`) as key, explicit `path`
-  field
-
-**Enter picker**: Each browser entry has a context-dependent picker:
-- Unadded types show `Add [type]`
-- Already-added types show `Remove [type]`
-- Single add action: always shows picker (user confirms)
-- Mixed state: both add and remove options appear
-
-**Configuration mapping dialog**: When adding a project to a workspace
-that already has configuration sets, a mapping dialog opens instead of
-adding immediately.
-
-The dialog layout depends on the module type and workspace state:
-
-**Keyed module, no tool selected** — tool row first, no mappings:
-
-```
-  Add "lumets" [cmake]
-
-  Tool:  None ▸
-
-  Project will be added without configuration mappings.
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Keyed module, tool selected** — tool row first, then mappings:
-
-```
-  Add "lumets" [cmake]
-
-  Tool:  Ninja - GCC 12 ▸
-
-  Debug     Debug ▸
-  Release   Release ▸
-
-  Profiles to upgrade:
-    Debug → Debug:ninja-gcc-12
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Keyed module, tool inherited** — when existing profiles already have
-a tool (e.g. adding a second cmake project), the tool is inherited
-automatically. No tool row; mappings only:
-
-```
-  Add "NewLib" [cmake] — Map configurations
-
-  Debug     Debug ▸
-  Release   Release ▸
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Non-keyed module** — mappings only:
-
-```
-  Add "Frontend" [typescript] — Map configurations
-
-  Debug     development ▸
-  Release   production ▸
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-The profile upgrade preview shows only profiles whose config set has
-a non-None mapping for the new project.
-
-- Enter on a mapping row opens `vim.ui.select` with configurations + "None"
-- Enter on the tool row opens `vim.ui.select` with detected tools
-- `y` accepts: chains decomposed operations (see below)
-- `q`/Esc cancels: project is NOT added
-- Skipped when no config sets exist or project has no detectable configs
-- No success notifications — UI state changes are sufficient. Only
-  errors are shown via `vim.notify`.
-
-**Tool detection gating**: When the module has keyed tools, the project
-browser ensures tool detection has completed before opening the mapping
-dialog. If detection is still running, the dialog opens in the callback
-after detection completes.
-
-**Decomposed add-project operations**: On accept, the mapping dialog
-chains three atomic operations. Each operation saves to disk and
-remerges independently. Each intermediate state is valid — if the
-process crashes between steps, no data is lost or corrupted.
-
-1. `ws:add_project(key, type, path)` — adds the project entry to
-   user.json. Project shows as unmapped.
-2. For each config set with a non-nil mapping:
-   `ws:update_config_set_mapping(set, key, variant)` — adds one
-   mapping to one config set.
-3. If a tool was selected or inherited:
-   `ws:upgrade_profiles_for_tool(tool_entry)` — upgrades cached
-   no-tool profiles to keyed profiles (renames, adds tool fields,
-   creates skeleton cache entries). Extends existing keyed profiles
-   with skeleton entries for the new project.
-
-**Cache cleanup on removal**: The removal confirmation dialog shows all
-cached configurations for the project that will be deleted. Entries with
-build state (configured/built/failed) are listed with their build
-directories. Skeleton entries (unconfigured) are silently included.
-
-**Profile downgrade on removal**: When removing a project whose module
-has keyed tools, the project browser checks whether it is the last
-project of that module type. If so, the removal confirmation dialog also
-shows a profile rename preview.
-
-Example dialog (keyed project with cached configs):
-
-```
-  Remove project: lumets
-
-  This removes the project from the workspace (user.json and, on next
-  `:w`, from loomworks.json if published).
-
-  Will delete cached configurations:
-    lumets / Debug:ninja-gcc-12  (built)  .nvim/build/lumets/Debug
-    lumets / Release:ninja-gcc-12  (configured)  .nvim/build/lumets/Release
-
-  Profiles to rename:
-    Debug:ninja-gcc-12 → Debug
-    Release:ninja-gcc-12 → Release
-
-  Press y to confirm, q to cancel
-```
-
-After confirmation:
-1. `ws:remove_project(key)` removes the project from config and config sets.
-2. Cached configurations for the project are deleted (entries removed from
-   cache, build directories deleted asynchronously via safe deletion).
-3. `ws:downgrade_profiles_from_tool(mod_type)` strips tool suffixes from
-   affected profiles when the last keyed-module project is removed.
-
-This is not "auto-clean" — it is an explicit user action with a
-confirmation dialog showing exactly what will be deleted.
-
-**File mutation**: All changes write to `loomworks.user.json` via Workspace
-mutation methods. Each method saves and remerges independently. Published
-items are written to `loomworks.json` only on explicit `:w` (see §2.4).
-
-Available Workspace mutation methods:
-- `add_project(key, type, path?)` — add a project entry
-- `remove_project(key)` — remove project + clean up config sets
-- `update_config_set_mapping(set_name, project_key, variant)` — update
-  one mapping in a config set
-- `add_configuration_set(name, mappings)` — add a config set
-- `remove_configuration_set(name)` — remove a config set
-- `upgrade_profiles_for_tool(tool_entry)` — upgrade no-tool profiles
-  to keyed profiles; extend keyed profiles with new project entries
-- `downgrade_profiles_from_tool(mod_type)` — strip tool from profiles
-  when last project of a keyed-module type is removed
-- `compute_downgrade_preview(project_key)` — compute profile renames
-  that would occur if a project were removed (pure query, no mutation)
-
-### 6.14 Auto-refresh
-
-The status page refreshes automatically on these events:
-- `task_started`, `task_stopped`, `task_result`, `task_progress`
-- `deletion_started`, `deletion_completed`, `deletion_failed`
-- `active_set_changed`
-- `operation_started`, `operation_finished`
-
-Refreshes are coalesced via `vim.schedule` to avoid redundant redraws.
-
-An animation timer (80ms) runs when any node has `spinning = true`, providing
-smooth spinner animation for running/deleting states. The timer stops
-automatically when no spinners are active.
+## 6. UI
+
+User-facing UI behavior — the status page, highlight groups, and
+the winbar/statusline component — lives in
+[`spec/ui.md`](spec/ui.md). Cross-refs from elsewhere in core to
+specific UI behavior should target sections within that file.
 
 ---
 
-## 7. Highlight Groups
-
-| Group                  | Default link     | Usage |
-|------------------------|------------------|-------|
-| `LoomworksActive`     | `DiagnosticOk`   | Active profile, active set |
-| `LoomworksBuilt`      | `DiagnosticOk`   | Built configurations |
-| `LoomworksConfigured` | `DiagnosticInfo`  | Configured (not yet built) |
-| `LoomworksUnconfigured` | `Comment`      | Never configured |
-| `LoomworksFailed`     | `DiagnosticError` | Failed configure or build |
-| `LoomworksRunning`    | `DiagnosticWarn`  | Running tasks (non-active) |
-| `LoomworksDeleting`   | `DiagnosticError` | Deletion in progress |
-| `LoomworksUnknown`    | `DiagnosticWarn`  | Unknown state (partial deletion) |
-| `LoomworksActionable` | `Normal`          | Actionable items (sets, configs) |
-
-Users can override these by defining the highlight groups before plugin load.
-
----
-
-## 8. Events
+## 7. Events
 
 Events are the primary mechanism for cross-component communication.
 
@@ -1932,13 +1217,13 @@ conditions.
 
 ---
 
-## 9. Module Interface
+## 8. Module Interface
 
 A module is a handler for a project type. Modules implement a standard
 interface that the core system calls for project discovery, task generation,
 and staleness detection.
 
-### 9.1 Required methods
+### 8.1 Required methods
 
 **`detect(abs_path) → { marker }|nil`**
 
@@ -2004,7 +1289,7 @@ Modules that spawn subprocesses (e.g., compiler detection) must use
 non-blocking APIs (libuv spawn or jobstart) and chain results
 sequentially to avoid flooding the OS with processes.
 
-### 9.2 Tool identity methods
+### 8.2 Tool identity methods
 
 These methods define how tools are compared and displayed:
 
@@ -2030,7 +1315,7 @@ requiring separate cache entries. Used by merge to construct config keys
 without requiring tool detection to complete first. See per-module specs
 for which modules are keyed.
 
-### 9.3 Variant mapping
+### 8.3 Variant mapping
 
 **`map_variant(variant_type, available_configs) → string|nil`**
 
@@ -2053,7 +1338,7 @@ any variant type (the project builds the same way regardless).
 Returns `nil` when no matching configuration exists and the project has
 multiple configurations.
 
-### 9.4 Optional methods
+### 8.4 Optional methods
 
 **`progress_parser(project?, active_config?) → string|nil`**
 
@@ -2157,7 +1442,7 @@ Only project-owned build targets are included (executables and libraries).
 Imported, alias, and utility targets are excluded. Dependencies list only
 project-owned targets that this target links against.
 
-### 9.5 Module implementations
+### 8.5 Module implementations
 
 Each module that ships with loomworks documents its implementation of
 this contract in its own spec file:
@@ -2175,7 +1460,7 @@ this contract in its own spec file:
 Third-party modules follow the same shape: implement the contract above
 and document the implementation alongside.
 
-### 9.6 Per-target builds
+### 8.6 Per-target builds
 
 Each profile can have a **default target** — a single executable target
 that `build_target()` builds instead of the full project.
@@ -2202,7 +1487,7 @@ objects. No key-based lookups at runtime.
 an overseer task definition for building a single target. Falls back to
 full build if the module doesn't implement it.
 
-### 9.7 Target launching
+### 8.7 Target launching
 
 Each profile can have a default launch target — a configuration that
 defines how to run the project after building. Two types:
@@ -2263,7 +1548,7 @@ tasks and the most recent output available.
 }
 ```
 
-### 9.8 Deploy Steps
+### 8.8 Deploy Steps
 
 Deploy steps ensure build artifacts from one config unit are copied to the
 correct location before a launch target runs. They guarantee that the
@@ -2284,7 +1569,7 @@ flag: before the target is built (`pre_build: true`) or after
 (default, post-build). Pre-build steps let one project deposit files
 into another project's source tree so they are picked up by its build.
 
-#### 9.8.1 Syntax
+#### 8.8.1 Syntax
 
 Deploy steps are a dict keyed by destination path, with source descriptors
 as values:
@@ -2368,7 +1653,7 @@ Source fields use **no variable expansion** — `target` is a cmake target
 name resolved via the module, `path` is a literal relative path from the
 source config unit's build directory.
 
-#### 9.8.2 Source resolution
+#### 8.8.2 Source resolution
 
 At launch time, each deploy step resolves its source within the active
 profile's context:
@@ -2391,7 +1676,7 @@ profile's context:
 a specific error (e.g., "Deploy: NativeLib not in profile", "Deploy:
 target native_lib not found"). The launch does not proceed.
 
-#### 9.8.3 Freshness tracking
+#### 8.8.3 Freshness tracking
 
 The system tracks which source was last copied to each destination. This is
 necessary because mtime alone is insufficient — building Release after Debug
@@ -2432,7 +1717,7 @@ Deploy records are domain state — deserialized from cache.json into
 workspace-owned objects during remerge, serialized back on save. No raw
 cache data is retained.
 
-#### 9.8.4 Launch flow with deploy
+#### 8.8.4 Launch flow with deploy
 
 The launch flow (section 9.7) is extended with both deploy phases:
 
@@ -2454,7 +1739,7 @@ The launch flow (section 9.7) is extended with both deploy phases:
 Any failure in any step **blocks the chain** and notifies the user with
 a specific error. Deploy steps within a phase execute sequentially.
 
-#### 9.8.5 Cleanup on deletion/clean
+#### 8.8.5 Cleanup on deletion/clean
 
 When a config unit is deleted or cleaned (sections 4.6, 4.7):
 
@@ -2467,12 +1752,12 @@ When a config unit is deleted or cleaned (sections 4.6, 4.7):
 This ensures deployed artifacts do not outlive their source build
 directories.
 
-#### 9.8.6 Design for extension
+#### 8.8.6 Design for extension
 
 The deploy system is designed for further extension:
 
 **Cascade levels**: Project-level and launch-level deploy are
-implemented with the merge rules described in §9.8.1. A configuration
+implemented with the merge rules described in §8.8.1. A configuration
 level is reserved but not yet implemented:
 
 ```
@@ -2493,13 +1778,13 @@ explicit action field in the source descriptor.
 **user.json deploy**: Deploy steps live in user.json as part of the
 working copy. Published deploy steps are written to loomworks.json on `:w`.
 
-### 9.9 Test Integration
+### 8.9 Test Integration
 
 Loomworks provides test discovery, execution, and result reporting through
 a neotest adapter. ConfigUnit is the test interface — callers never interact
 with TestUnit or framework helpers directly.
 
-#### 9.9.1 Architecture
+#### 8.9.1 Architecture
 
 ```
 ConfigUnit
@@ -2520,7 +1805,7 @@ gtest binary probing) live alongside the module that introduced the
 need. See per-module specs in [`spec/modules/`](spec/modules/) for
 which TestUnits each module ships.
 
-#### 9.9.2 TestUnit interface
+#### 8.9.2 TestUnit interface
 
 TestUnit (`test_unit.lua`) is the base interface for test sources within
 a ConfigUnit. Each TestUnit represents one way to discover and run tests.
@@ -2560,7 +1845,7 @@ build/configure completes.
 
 Return cached entries without triggering discovery.
 
-#### 9.9.5 ConfigUnit test interface
+#### 8.9.3 ConfigUnit test interface
 
 ConfigUnit delegates all test operations to its TestUnit instances.
 TestUnits are created lazily on first `test_units()` or `discover_tests()`
@@ -2610,7 +1895,7 @@ Same chain, runs all tests.
 | `message` | string\|nil | Last failure message |
 | `duration` | number\|nil | Last duration in milliseconds |
 
-#### 9.9.6 Neotest adapter
+#### 8.9.4 Neotest adapter
 
 The loomworks neotest adapter (`neotest/init.lua`) bridges ConfigUnit's
 test interface to neotest's adapter protocol. No framework-specific code
@@ -2656,7 +1941,7 @@ the project needs configuring.
 neotest positions by matching test IDs. Assigns overall pass/fail to
 unmatched nodes.
 
-#### 9.9.7 Prerequisite chain
+#### 8.9.5 Prerequisite chain
 
 Test execution reuses the same cascading pattern as builds. ConfigUnit
 owns the chain — the caller requests the test and receives a Future:
@@ -2668,7 +1953,7 @@ owns the chain — the caller requests the test and receives a Future:
 Failure at any step stops the chain. Build directory operation queue
 (section 5.3) applies — test runs acquire a shared lock.
 
-#### 9.9.8 Debug integration
+#### 8.9.6 Debug integration
 
 Debug integration uses `debug.lua` as the single gateway to nvim-dap.
 When nvim-dap is not installed, all debug paths silently fall back to
@@ -2798,15 +2083,9 @@ A pluggable backend registry mirroring the LSP design is on the
 BACKLOG; today `debug.lua` holds the dispatcher and adapter logic
 together.
 
-### 9.10 Device Interface
-
-Devices are now a first-class concern handled by §12 (Device Interface
-Contract). Modules opt in by setting `has_devices = true` and
-implementing the methods documented there.
-
 ---
 
-## 10. LSP Integration
+## 9. LSP Integration
 
 LSP integration is split between a thin core dispatch layer
 (`lua/loomworks/lsp.lua`) and per-server integration files
@@ -2817,7 +2096,7 @@ from every runtime path, so drop-in integrations (either in the user's
 own config or in a sibling plugin) register automatically alongside the
 built-in ones.
 
-### 10.1 Module interface (§9.4 `lsp_configs`)
+### 9.1 Module interface (§8.4 `lsp_configs`)
 
 Modules produce entries shaped as `{ server = "...", root_dir = ...,
 <per-server fields>... }`. Core only inspects `server` to dispatch;
@@ -2826,7 +2105,7 @@ domain objects (Project, ConfigUnit) to resolve cross-configuration
 references inside themselves, so paths emitted in the entry are
 fully resolved.
 
-### 10.2 Dispatch layer (`lsp.lua`)
+### 9.2 Dispatch layer (`lsp.lua`)
 
 Responsibilities:
 - **Discover and load integrations on startup.** `lsp.lua` scans every
@@ -2853,7 +2132,7 @@ Responsibilities:
 Core never references specific LSP server names. Adding a new server
 means adding an integration file — no changes to `lsp.lua`.
 
-### 10.3 Integration contract
+### 9.3 Integration contract
 
 Each `integrations/lsp/<server>.lua` returns a table with these fields
 (all but `server` optional):
@@ -2874,7 +2153,7 @@ The integration's module body calls
 `require("loomworks.lsp").register(name, M)` as its last action, then
 returns `M`. Discovery handles the rest.
 
-### 10.4 Server installation (`setup_servers`)
+### 9.4 Server installation (`setup_servers`)
 
 `loomworks.setup({ lsp = ... })` controls which servers loomworks
 installs via `vim.lsp.config` + `vim.lsp.enable`:
@@ -2927,7 +2206,7 @@ function. On `VimEnter`, loomworks compares the installed cmd against
 the currently-registered one; any mismatch triggers a single warning
 pointing the user at the fix.
 
-### 10.5 LSP integration implementations
+### 9.5 LSP integration implementations
 
 Each integration shipped with loomworks documents its server-specific
 fields, lifecycle, and status display in its own spec file:
@@ -2941,7 +2220,7 @@ contract above and document the per-server fields alongside.
 
 ---
 
-## 11. SDK Provider Contract
+## 10. SDK Provider Contract
 
 An SDK is a resolved platform installation (e.g., a HarmonyOS / OHOS
 SDK shipped inside DevEco Studio, an Android NDK, an embedded vendor
@@ -2950,7 +2229,7 @@ are pluggable: each provider lives at `lua/loomworks/sdks/<id>.lua`
 and registers itself by being required from `lua/loomworks/sdks/init.lua`
 or another runtime path file.
 
-### 11.1 Provider interface
+### 10.1 Provider interface
 
 Each provider table exposes:
 
@@ -2963,7 +2242,7 @@ Each provider table exposes:
 | `create_sdk(key, path, version) → SDK` | Construct a `loomworks.SDK` domain object from a validated installation |
 | `query_capabilities(sdk, module_id) → table\|nil` | Return opaque capability data this SDK can offer to a given module, or `nil` if it has nothing for that module. `module_id == nil` returns the supported module ids array |
 
-### 11.2 SDK domain object
+### 10.2 SDK domain object
 
 `loomworks.SDK` (`lua/loomworks/sdk.lua`) wraps a resolved
 installation. Fields:
@@ -2982,7 +2261,7 @@ installation. Fields:
 `query_capabilities`. Returns `nil` when the SDK is unresolved or has
 nothing for that module.
 
-### 11.3 Capability shape
+### 10.3 Capability shape
 
 Capability data is **opaque to core** — only the requesting module
 interprets it. A typical shape includes paths to platform tools
@@ -2991,7 +2270,7 @@ architecture lists, and any flags that must be threaded into the
 module's task generation. Each provider documents its shape per
 module in its own spec file.
 
-### 11.4 Profile-level pinning
+### 10.4 Profile-level pinning
 
 A profile may pin an SDK by `key` in user.json. On reload, the SDK
 is resolved by `key` against the workspace's known providers. If the
@@ -3006,7 +2285,7 @@ returns nil, the module falls through to host-tool detection. If
 neither yields a tool and the profile has no explicit override, the
 profile is incomplete.
 
-### 11.5 SDK provider implementations
+### 10.5 SDK provider implementations
 
 Each SDK provider documents its detection logic, validation rules,
 and per-module capability shape in its own spec file:
@@ -3017,7 +2296,7 @@ and per-module capability shape in its own spec file:
 Third-party providers follow the same shape: implement the contract
 above and document the per-module capability shape alongside.
 
-### 11.6 Future direction
+### 10.6 Future direction
 
 Profile-level SDK selection is partially implemented and tracked in
 BACKLOG.md. The current shape resolves SDK-supplied tools lazily on
@@ -3027,7 +2306,7 @@ load) at the cost of slightly more code in the access path.
 
 ---
 
-## 12. Device Interface Contract
+## 11. Device Interface Contract
 
 Devices are physical or emulated deployment targets (phones,
 simulators, embedded boards). Any module may opt in to device
@@ -3035,7 +2314,7 @@ support; SDK providers may also expose devices in the future. Core
 discovers device-capable modules and routes all device operations
 through them — no per-module knowledge in core.
 
-### 12.1 Device domain object
+### 11.1 Device domain object
 
 `loomworks.Device` (`lua/loomworks/device.lua`) is identified by
 its `serial` string. Runtime-only — not persisted in cache or
@@ -3052,7 +2331,7 @@ Fields:
 | `provider` | string | Module id that owns this device type |
 | `properties` | table | Provider-specific extras |
 
-### 12.2 Module opt-in
+### 11.2 Module opt-in
 
 **Static property:**
 
@@ -3128,16 +2407,16 @@ Extract launch metadata from project files. Returns a table that is
 passed to `device_launch()` as `launch_info`. Shape is
 module-specific.
 
-### 12.3 Launch flow with devices
+### 11.3 Launch flow with devices
 
-The launch flow (§9.7) is extended when the target requires a device:
+The launch flow (§8.7) is extended when the target requires a device:
 
 ```
 build → file-deploy → device-install → device-launch
 ```
 
-1. **Build**: same as §9.7 — build dependencies, then build self.
-2. **File-deploy**: same as §9.8 — copy artifacts between projects.
+1. **Build**: same as §8.7 — build dependencies, then build self.
+2. **File-deploy**: same as §8.8 — copy artifacts between projects.
 3. **Device check**: if `target:requires_device()` is false, proceed
    to normal launch/debug (existing path, unchanged). Otherwise:
 4. **Device selection**: if the profile has no device serial, prompt
@@ -3171,7 +2450,7 @@ build → file-deploy → device-install → device-launch
 Device targets always use launch mode in v1 (no device debug — see
 BACKLOG.md "Native device debug").
 
-### 12.4 LaunchTarget device support
+### 11.4 LaunchTarget device support
 
 LaunchTarget supports three target types:
 
@@ -3190,7 +2469,7 @@ The target picker collects from all three sources:
 2. Executable targets from `ConfigUnit.targets`
 3. Device targets from modules (`module.device_targets()`)
 
-### 12.5 Device interface implementations
+### 11.5 Device interface implementations
 
 Devices are typically implemented inside the module that knows the
 relevant connector tool. See per-module specs:
@@ -3200,30 +2479,7 @@ relevant connector tool. See per-module specs:
 
 ---
 
-## 13. Winbar / Statusline Component
-
-`lualine/components/loomworks.lua` provides a lualine component for
-winbar display.
-
-**Default display**: `{set_name} {join} {project}/{configuration}`
-
-Where `{join}` defaults to `\u{e0b1}` (powerline thin right arrow) with
-spaces.
-
-**Configurable via `show` option**: array of parts to display:
-- `"set_name"` — configuration set name
-- `"project"` — project key for current buffer
-- `"configuration"` — active configuration
-- `"tool_key"` — tool key (e.g., "ninja-gcc-12")
-
-**Returns empty** when:
-- No workspace loaded
-- No active profile
-- Current buffer is not in any project
-
----
-
-## 14. Overseer Integration
+## 12. Overseer Integration
 
 ### 12.1 Task generation
 
@@ -3254,7 +2510,7 @@ All tasks wait for pending deletions before starting.
 
 ---
 
-## 15. Auto-load
+## 13. Auto-load
 
 ### 13.1 Configuration
 
@@ -3347,7 +2603,7 @@ when the user explicitly publishes (`:w`).
   directories. Opening Neovim in `workspace/src/` will not find
   `workspace/loomworks.json`. Use `:LoomworksInit` or `:cd` to the root.
 
-## 16. Neovim Commands
+## 14. Neovim Commands
 
 | Command | Args | Description |
 |---------|------|-------------|
@@ -3356,7 +2612,7 @@ when the user explicitly publishes (`:w`).
 
 ---
 
-## 17. Invariants
+## 15. Invariants
 
 1. **Cache is truth**: The cache reflects what exists on disk. It is never
    contradicted or overridden by config or user files.

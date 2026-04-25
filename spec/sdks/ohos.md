@@ -1,6 +1,6 @@
 # OpenHarmony / HarmonyOS SDK provider
 
-Implements the core SDK provider contract (`specification.md` §11)
+Implements the core SDK provider contract (`specification.md` §10)
 for the OpenHarmony / HarmonyOS toolchain shipped inside DevEco
 Studio. Lives at `lua/loomworks/sdks/ohos.lua`. Section numbers in
 this file are local.

@@ -2,14 +2,30 @@
 
 ## Authoritative Documents
 
-- **[specification.md](specification.md)** — Behavioral specification. Defines
-  *what* the system does: data model, state machines, UI behavior, invariants.
-  This is the single source of truth for behavior.
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Implementation architecture. Defines
-  *how* the system is built: layers, object model, data flow, file layout.
-- **[README.md](README.md)** — User-facing documentation. Setup, API, examples.
+- **[specification.md](specification.md)** — Core behavioral specification.
+  Defines *what* the system does at the contract level: data model, state
+  machines, module/LSP/DAP/SDK/device contracts, invariants. Contains no
+  module/tool/SDK names in normative prose.
+- **[spec/](spec/)** — Per-implementation specs that fulfil the core
+  contracts:
+  - [`spec/ui.md`](spec/ui.md) — status page, highlights, winbar
+  - [`spec/modules/`](spec/modules/) — cmake, harmony, meson, typescript
+  - [`spec/integrations/lsp/`](spec/integrations/lsp/) — clangd, …
+  - [`spec/integrations/debug/`](spec/integrations/debug/) — codelldb,
+    cppdbg, pwa-node, …
+  - [`spec/sdks/`](spec/sdks/) — ohos, …
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Implementation architecture.
+  Defines *how* the system is built: layers, object model, data flow,
+  file layout.
+- **[README.md](README.md)** — User-facing documentation. Setup, API,
+  examples.
 
-Do NOT duplicate content from these files in CLAUDE.md. Refer to them instead.
+When designing a new feature, pull in only the spec files relevant to the
+change. The "Where does this change go?" table at the top of
+specification.md guides which files apply for a given task.
+
+Do NOT duplicate content from these files in CLAUDE.md. Refer to them
+instead.
 
 ## Spec-First Development Workflow
 
@@ -277,7 +293,7 @@ These are implementation-specific details not covered by the spec or architectur
   `expand.launch_context()` after built-in variables (two-pass: variable
   value expanded using built-in context). Path-typed variables appear in
   deploy editor segment picker.
-- **Test integration** (spec §9.9): neotest adapter bridges ConfigUnit's test
+- **Test integration** (spec §8.9): neotest adapter bridges ConfigUnit's test
   interface to neotest. TestUnit (`test_unit.lua`) is the interface; CTestUnit
   (`test_units/ctest.lua`) wraps ctest. GTest helper (`gtest.lua`) handles
   framework detection, source scanning, XML parsing. ConfigUnit delegates to

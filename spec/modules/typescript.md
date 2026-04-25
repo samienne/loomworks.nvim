@@ -1,7 +1,7 @@
 # typescript module
 
 How the typescript module implements the core module contract
-(`specification.md` §9). Section numbers in this file are local.
+(`specification.md` §8). Section numbers in this file are local.
 
 ## 1. Detection and identity
 
@@ -24,7 +24,7 @@ Single-config fallback applies.
 
 In v1, the module is a **shim**: it reports project detection and
 participates in configuration sets, but does not provide build
-tasks of its own. Launch configs of `command` type (core §9.7) are
+tasks of its own. Launch configs of `command` type (core §8.7) are
 the primary way to run TypeScript entry points, typically via
 `node` with `${build_dir}` on `NODE_PATH`.
 

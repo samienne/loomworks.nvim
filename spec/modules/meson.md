@@ -1,7 +1,7 @@
 # meson module
 
 How the meson module implements the core module contract
-(`specification.md` §9). Section numbers in this file are local.
+(`specification.md` §8). Section numbers in this file are local.
 
 ## 1. Detection and identity
 
@@ -52,7 +52,7 @@ Uses `meson introspect --buildoptions` to surface user-facing options.
 
 ## 8. Test integration
 
-Implements the generic test interface (core §9.9) through a single
+Implements the generic test interface (core §8.9) through a single
 `MesonTestUnit` per `ConfigUnit`.
 
 ### 8.1 MesonTestUnit

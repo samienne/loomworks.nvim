@@ -1,7 +1,7 @@
 # harmony module
 
 How the harmony module implements the core module contract
-(`specification.md` §9). Section numbers in this file are local.
+(`specification.md` §8). Section numbers in this file are local.
 
 ## 1. Detection and identity
 

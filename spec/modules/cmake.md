@@ -1,7 +1,7 @@
 # cmake module
 
 How the cmake module implements the core module contract
-(`specification.md` §9). Section numbers in this file are local.
+(`specification.md` §8). Section numbers in this file are local.
 
 ## 1. Detection and identity
 
@@ -120,7 +120,7 @@ extend defaults (add options) rather than replace them.
 
 ## 8. Test integration
 
-The cmake module wires into the generic test interface (core §9.9)
+The cmake module wires into the generic test interface (core §8.9)
 through a single `CTestUnit` per `ConfigUnit`, plus a shared `GTest`
 helper.
 
