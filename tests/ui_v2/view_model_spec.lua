@@ -1978,6 +1978,162 @@ describe("ui v2 view model — rename_inspector_subject", function()
     end)
 end)
 
+describe("ui v2 view model — project type_config env editing", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    local function make_ws_with_env_module()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local proj = find_project(ws, "App")
+        -- Patch the project's module to declare an env_dict field.
+        proj._module = vim.tbl_extend("force", {}, proj._module or {}, {
+            editable_type_config_fields = function()
+                return { { name = "build_env", label = "Build environment", kind = "env_dict" } }
+            end,
+        })
+        proj.type_config = proj.type_config or {}
+        proj.type_config.build_env = { CC = "gcc", CXX = "g++" }
+        return ws, proj
+    end
+
+    it("project inspector exposes type_config env_dict entries as editable", function()
+        local ws, proj = make_ws_with_env_module()
+        local inspector = require("loomworks.ui.v2.view_model.inspector")
+        local insp = inspector.build(ws, { kind = "project", key = "App" })
+        assert.equals(1, #insp.type_config_fields)
+        local f = insp.type_config_fields[1]
+        assert.equals("build_env", f.name)
+        assert.equals("env_dict",  f.kind)
+        assert.equals(2, #f.entries)
+        local set = {}
+        for _, e in ipairs(f.entries) do set[e.key] = e.value end
+        assert.equals("gcc", set.CC)
+        assert.equals("g++", set.CXX)
+    end)
+
+    it("set_field on project_type_config_env updates the value", function()
+        local ws, proj = make_ws_with_env_module()
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "project_type_config_env",
+                         project_key = "App", field_name = "build_env", key = "CC" },
+            field_id = "type_config_env:build_env:CC",
+            value    = "clang",
+        })
+        assert.equals("clang", proj.type_config.build_env.CC)
+        assert.equals("g++",   proj.type_config.build_env.CXX)
+    end)
+
+    it("set_field with empty value removes the env entry", function()
+        local ws, proj = make_ws_with_env_module()
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "project_type_config_env",
+                         project_key = "App", field_name = "build_env", key = "CXX" },
+            field_id = "type_config_env:build_env:CXX",
+            value    = "",
+        })
+        assert.is_nil(proj.type_config.build_env and proj.type_config.build_env.CXX)
+    end)
+
+    it("add_item kind=project_type_config_env adds an empty key", function()
+        local ws, proj = make_ws_with_env_module()
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "project_type_config_env",
+            parent = { kind = "project_type_config",
+                       project_key = "App", field_name = "build_env" },
+            name   = "LDFLAGS",
+        })
+        assert.equals("", proj.type_config.build_env.LDFLAGS)
+    end)
+end)
+
+describe("ui v2 view model — profile default_target picker", function()
+    local function make_ws_with_launch()
+        return make_ws(
+            {
+                projects = {
+                    App = {
+                        typescript = {},
+                        launch = {
+                            debug = { command = "node", args = { "x" } },
+                            run   = { command = "node", args = { "y" } },
+                        },
+                    },
+                },
+                configuration_sets = { Debug = { App = "variant:default" } },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+    end
+
+    local function find_profile(ws, key)
+        for _, p in pairs(ws._profiles or {}) do
+            if p.key == key then return p end
+        end
+    end
+
+    it("default_target field is a picker over project.launch pairs + (none)", function()
+        local ws = make_ws_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")
+        local p = vm:presentation()
+        local field
+        for _, f in ipairs(p.inspector.editable_fields or {}) do
+            if f.id == "default_target" then field = f; break end
+        end
+        assert.is_not_nil(field)
+        assert.equals("picker", field.kind)
+        local set = {}
+        for _, c in ipairs(field.choices) do set[c] = true end
+        assert.is_true(set["App.debug"])
+        assert.is_true(set["App.run"])
+        assert.is_true(set["(none)"])
+    end)
+
+    it("set_field on profile_default_target sets the descriptor", function()
+        local ws = make_ws_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "profile_default_target", profile_key = "Debug" },
+            field_id = "default_target",
+            value    = "App.debug",
+        })
+        local profile = find_profile(ws, "Debug")
+        assert.is_table(profile._default_target_descriptor)
+        assert.equals("App",   profile._default_target_descriptor.project)
+        assert.equals("debug", profile._default_target_descriptor.launch)
+    end)
+
+    it("set_field with (none) clears the default target", function()
+        local ws = make_ws_with_launch()
+        local profile = find_profile(ws, "Debug")
+        profile._default_target_descriptor = { project = "App", launch = "debug" }
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "profile_default_target", profile_key = "Debug" },
+            field_id = "default_target",
+            value    = "(none)",
+        })
+        assert.is_nil(profile._default_target_descriptor)
+    end)
+
+    it("default_target_label reflects the current descriptor", function()
+        local ws = make_ws_with_launch()
+        local profile = find_profile(ws, "Debug")
+        profile._default_target_descriptor = { project = "App", launch = "run" }
+        local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")
+        local p = vm:presentation()
+        assert.equals("App.run", p.inspector.default_target_label)
+    end)
+end)
+
 describe("ui v2 view model — profile device pinning", function()
     local function make_ws_with_device()
         local ws = make_ws(

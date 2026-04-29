@@ -72,6 +72,60 @@ local function launch_block(project)
     return out
 end
 
+--- Read the module's editable_type_config_fields (when declared) and
+--- expand them into UI-friendly entries. v0 supports env_dict only;
+--- other kinds (string, path) are surfaced as text fields.
+--- @param project loomworks.Project
+--- @return table[]   { name, label, kind, entries|value, add, edits }
+local function type_config_fields_block(project)
+    local out = {}
+    local mod = project._module
+    if not mod or not mod.editable_type_config_fields then return out end
+    local fields = mod.editable_type_config_fields()
+    if type(fields) ~= "table" then return out end
+    local cfg = project.type_config or {}
+    for _, field in ipairs(fields) do
+        if field.kind == "env_dict" then
+            local entries = {}
+            local raw = cfg[field.name]
+            if type(raw) == "table" then
+                for k, v in pairs(raw) do
+                    entries[#entries + 1] = {
+                        key = k,
+                        value = tostring(v),
+                        edit = {
+                            id      = "type_config_env:" .. field.name .. ":" .. k,
+                            label   = field.label .. " — " .. k,
+                            value   = tostring(v),
+                            kind    = "string",
+                            subject = {
+                                kind         = "project_type_config_env",
+                                project_key  = project.key,
+                                field_name   = field.name,
+                                key          = k,
+                            },
+                        },
+                    }
+                end
+                table.sort(entries, function(a, b) return a.key < b.key end)
+            end
+            out[#out + 1] = {
+                name = field.name,
+                label = field.label,
+                kind  = field.kind,
+                entries = entries,
+                add = {
+                    kind   = "project_type_config_env",
+                    parent = { kind = "project_type_config", project_key = project.key,
+                               field_name = field.name },
+                    label  = "+ Add " .. field.label .. " entry",
+                },
+            }
+        end
+    end
+    return out
+end
+
 --- @param project loomworks.Project
 --- @return table[]
 local function variables_block(project)
@@ -117,6 +171,7 @@ function M.build(workspace, ref)
         set_membership = set_membership_block(workspace, project),
         launches = launch_block(project),
         variables = variables_block(project),
+        type_config_fields = type_config_fields_block(project),
         intent = project._intent or "local",
         publishable = true,
         -- Items the user can add into this project.

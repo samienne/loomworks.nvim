@@ -474,6 +474,38 @@ function ViewModel:_set_field(subject, field_id, value)
         local ok = proj:save_launch_config(subject.launch_name, updated)
         if ok then self:_notify() end
         return ok and true or false
+    elseif subject.kind == "project_type_config_env" then
+        local proj = find_project(ws, subject.project_key)
+        if not proj or not proj.save_type_config_field then return false end
+        local existing = (proj.type_config and proj.type_config[subject.field_name]) or {}
+        local updated = vim.deepcopy(existing)
+        if value == nil or value == "" then
+            updated[subject.key] = nil
+        else
+            updated[subject.key] = value
+        end
+        local ok = proj:save_type_config_field(subject.field_name, updated)
+        if ok then self:_notify() end
+        return ok and true or false
+    elseif subject.kind == "profile_default_target" then
+        local profile
+        for _, p in pairs(ws._profiles or {}) do
+            if p.key == subject.profile_key then profile = p; break end
+        end
+        if not profile then return false end
+        if value == nil or value == "" or value == "(none)" then
+            if profile.clear_default_target then profile:clear_default_target() end
+            self:_notify()
+            return true
+        end
+        -- Format produced by the picker: "project.launch"
+        local project_key, launch_name = value:match("^(.-)%.(.+)$")
+        if not project_key or not launch_name then return false end
+        local proj = find_project(ws, project_key)
+        if not proj or not profile.set_default_target then return false end
+        profile:set_default_target(proj, nil, launch_name)
+        self:_notify()
+        return true
     elseif subject.kind == "profile_device" then
         local profile
         for _, p in pairs(ws._profiles or {}) do
@@ -573,6 +605,9 @@ function ViewModel:_add_item(kind, parent, name, extra)
     if kind == "config_set_mapping" then
         return self:_add_config_set_mapping(parent, name, extra)
     end
+    if kind == "project_type_config_env" then
+        return self:_add_project_type_config_env(parent, name)
+    end
     -- Workspace-level adds: project, configuration set.
     if parent.kind == "workspace" then
         if kind == "project" then
@@ -665,6 +700,25 @@ function ViewModel:_add_launch_env(parent, key)
     local updated = vim.tbl_extend("force", {}, launch)
     updated.env = env
     local ok = proj:save_launch_config(parent.launch_name, updated)
+    if ok then self:_notify() end
+    return ok and true or false
+end
+
+--- Add a new key (with empty value) to a project's type_config env_dict.
+--- @param parent table  { kind = "project_type_config", project_key, field_name }
+--- @param key string
+--- @return boolean ok
+function ViewModel:_add_project_type_config_env(parent, key)
+    if parent.kind ~= "project_type_config" then return false end
+    local ws = self._workspace_provider()
+    if not ws then return false end
+    local proj = find_project(ws, parent.project_key)
+    if not proj or not proj.save_type_config_field then return false end
+    local existing = (proj.type_config and proj.type_config[parent.field_name]) or {}
+    if existing[key] ~= nil then return false end
+    local updated = vim.deepcopy(existing)
+    updated[key] = ""
+    local ok = proj:save_type_config_field(parent.field_name, updated)
     if ok then self:_notify() end
     return ok and true or false
 end

@@ -72,6 +72,37 @@ local function device_serial_choices(workspace)
     return out
 end
 
+--- All "project.launch" pairs reachable from a profile's project mappings.
+--- @param profile loomworks.Profile
+--- @return string[]
+local function default_target_choices(profile)
+    local out = { "(none)" }
+    for _, pp in ipairs(profile:projects()) do
+        local proj = pp._project
+        if proj then
+            local launches = proj._launch_configs or proj.launch
+            if type(launches) == "table" then
+                for name, _ in pairs(launches) do
+                    out[#out + 1] = proj.key .. "." .. name
+                end
+            end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+--- Render the current default_target descriptor as a "project.launch" string.
+--- @param profile loomworks.Profile
+--- @return string
+local function default_target_display(profile)
+    local d = profile._default_target_descriptor
+    if not d or not d.project then return "(none)" end
+    if d.launch then return d.project .. "." .. d.launch end
+    if d.target then return d.project .. "/" .. d.target end
+    return "(none)"
+end
+
 --- Build the profile inspector content.
 --- @param workspace loomworks.Workspace|nil
 --- @param ref { kind: "profile", key: string }
@@ -91,7 +122,19 @@ function M.build(workspace, ref)
     local label, _ = profile:status()
     local subject_ref = { kind = "profile", key = profile.key }
     local has_device_modules = workspace.has_device_modules and workspace:has_device_modules() or false
-    local editable_fields = {}
+    local editable_fields = {
+        {
+            id      = "default_target",
+            label   = "Default target",
+            value   = default_target_display(profile),
+            kind    = "picker",
+            choices = default_target_choices(profile),
+            subject = {
+                kind        = "profile_default_target",
+                profile_key = profile.key,
+            },
+        },
+    }
     if has_device_modules then
         editable_fields[#editable_fields + 1] = {
             id      = "device_serial",
@@ -118,6 +161,7 @@ function M.build(workspace, ref)
         mappings        = mappings_block(profile),
         device_serial   = device_serial(profile),
         device_editable = has_device_modules,
+        default_target_label = default_target_display(profile),
         editable_fields = editable_fields,
         intent          = profile._intent or "local",
         publishable     = true,

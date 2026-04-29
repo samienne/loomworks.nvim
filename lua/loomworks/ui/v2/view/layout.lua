@@ -313,6 +313,8 @@ function Layout:_handle_add(descriptor)
         prompt = "New arg value: "
     elseif descriptor.kind == "launch_env" then
         prompt = "New env variable name: "
+    elseif descriptor.kind == "project_type_config_env" then
+        prompt = "New env key: "
     else
         return
     end

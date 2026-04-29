@@ -166,6 +166,24 @@ local function render_project(insp, ctx)
         ctx:hl_last_line("LoomworksActionable")
     end
     ctx:add("")
+
+    -- Module-declared editable type_config fields (e.g. harmony's cmake_env).
+    for _, field in ipairs(insp.type_config_fields or {}) do
+        ctx:section(field.label .. "  (" .. tostring(#field.entries) .. ")")
+        if #field.entries == 0 then
+            ctx:comment("  (none)")
+        else
+            for _, e in ipairs(field.entries) do
+                ctx:add_editable(string.format("  %s = %s", e.key, e.value), e.edit)
+            end
+        end
+        if field.add then
+            ctx:add_creator("  " .. field.add.label, field.add)
+            ctx:hl_last_line("LoomworksActionable")
+        end
+        ctx:add("")
+    end
+
     if insp.publishable then
         ctx:add(pad_label("Published:", 14) .. tostring(insp.intent or "local"))
         ctx:hl_last_line("Identifier")
@@ -187,6 +205,15 @@ local function render_profile(insp, ctx)
     ctx:add(pad_label("Active:", 22) .. (insp.is_active and "yes" or "no"))
     if insp.is_active then ctx:hl_last_line("LoomworksActive") end
     ctx:add(pad_label("Status:", 22) .. (insp.status_label or ""))
+    do
+        local f
+        for _, ef in ipairs(insp.editable_fields or {}) do
+            if ef.id == "default_target" then f = ef; break end
+        end
+        ctx:add_editable(
+            pad_label("Default target:", 22) .. tostring(insp.default_target_label or "(none)"),
+            f)
+    end
     if insp.device_editable then
         local device_field
         for _, f in ipairs(insp.editable_fields or {}) do
