@@ -531,6 +531,29 @@ function ViewModel:_add_item(kind, parent, name, extra)
     if kind == "launch_env" then
         return self:_add_launch_env(parent, name)
     end
+    -- Workspace-level adds: project, configuration set.
+    if parent.kind == "workspace" then
+        if kind == "project" then
+            local proj_type = extra and extra.type or "cmake"
+            local proj, err = ws:add_project(name, proj_type, name)
+            if proj then
+                self._selection:pin({ kind = "project", key = proj.key })
+                self:_notify()
+                return true
+            end
+            ws._core._deps.notify("add project: " .. tostring(err), vim.log.levels.ERROR)
+            return false
+        elseif kind == "config_set" then
+            local cs, err = ws:add_configuration_set(name, {})
+            if cs then
+                self._selection:pin({ kind = "config_set", key = cs.name })
+                self:_notify()
+                return true
+            end
+            ws._core._deps.notify("add configuration set: " .. tostring(err), vim.log.levels.ERROR)
+            return false
+        end
+    end
 
     if parent.kind ~= "project" then return false end
     local proj = find_project(ws, parent.key)

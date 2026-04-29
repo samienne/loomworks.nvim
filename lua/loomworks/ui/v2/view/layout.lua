@@ -23,6 +23,7 @@ local activity_view  = require("loomworks.ui.v2.view.activity_view")
 --- @field _tabpage integer|nil
 --- @field _line_map table<integer, { section: integer, row: integer }>
 --- @field _section_line_map table<integer, string>
+--- @field _overview_add_map table<integer, table>
 --- @field _inspector_drill_map table<integer, table>
 --- @field _inspector_edit_map table<integer, table>
 --- @field _inspector_add_map table<integer, table>
@@ -49,6 +50,7 @@ function Layout.new(vm)
         _tabpage = nil,
         _line_map = {},
         _section_line_map = {},
+        _overview_add_map = {},
         _inspector_drill_map = {},
         _inspector_edit_map = {},
         _inspector_add_map = {},
@@ -264,6 +266,22 @@ function Layout:_handle_add(descriptor)
         self._vm:dispatch("open_wire_deploy_add", { parent = descriptor.parent })
         return
     end
+    -- Workspace-level adds with extra picker chains.
+    if descriptor.kind == "project" and descriptor.parent and descriptor.parent.kind == "workspace" then
+        self:_handle_add_project(descriptor)
+        return
+    end
+    if descriptor.kind == "config_set" and descriptor.parent and descriptor.parent.kind == "workspace" then
+        vim.ui.input({ prompt = "New configuration set name: " }, function(name)
+            if not name or name == "" then return end
+            self._vm:dispatch("add_item", {
+                kind   = descriptor.kind,
+                parent = descriptor.parent,
+                name   = name,
+            })
+        end)
+        return
+    end
     local prompt
     if descriptor.kind == "variable" then
         prompt = "New variable name: "
@@ -285,6 +303,31 @@ function Layout:_handle_add(descriptor)
             parent = descriptor.parent,
             name   = name,
         })
+    end)
+end
+
+--- Prompt for the data needed to add a project at the workspace level.
+--- Asks for name, then picks the type from registered modules.
+--- @param descriptor table { kind = "project", parent = { kind = "workspace" } }
+function Layout:_handle_add_project(descriptor)
+    vim.ui.input({ prompt = "New project name (also default path): " }, function(name)
+        if not name or name == "" then return end
+        local ok, modules = pcall(require, "loomworks.modules")
+        local types = ok and modules.list and modules.list() or {}
+        if #types == 0 then
+            self._vm:dispatch("add_item", {
+                kind = descriptor.kind, parent = descriptor.parent, name = name,
+                extra = { type = "cmake" },
+            })
+            return
+        end
+        vim.ui.select(types, { prompt = "Project type" }, function(t)
+            if not t then return end
+            self._vm:dispatch("add_item", {
+                kind = descriptor.kind, parent = descriptor.parent, name = name,
+                extra = { type = t },
+            })
+        end)
     end)
 end
 
@@ -334,13 +377,18 @@ function Layout:_toggle_current_section()
     end
 end
 
---- `<CR>` in overview: select the row under cursor if it's a selectable
---- item, or toggle the section if it's a section header / non-selectable
---- line inside a section. This makes `<CR>` the universal "open this"
---- key — items open in the inspector, sections open by expanding.
+--- `<CR>` in overview: triage the row under the cursor —
+---   1. add sentinel  → run the add flow
+---   2. selectable    → select + open inspector
+---   3. section line  → toggle expand/collapse
 function Layout:_select_or_toggle_under_cursor()
     if not valid_win(self._overview_win) then return end
     local row = vim.api.nvim_win_get_cursor(self._overview_win)[1]
+    local add = self._overview_add_map[row]
+    if add then
+        self:_handle_add(add)
+        return
+    end
     if self._line_map[row] then
         self._vm:dispatch("select_under_cursor")
         return
@@ -498,6 +546,7 @@ function Layout:close()
     self._tabpage = nil
     self._line_map = {}
     self._section_line_map = {}
+    self._overview_add_map = {}
     self._inspector_drill_map = {}
     self._inspector_edit_map = {}
     self._inspector_add_map = {}
@@ -583,10 +632,11 @@ function Layout:refresh()
     local ns = self:_namespace()
 
     -- Render overview
-    local lines, highlights, line_map, section_line_map =
+    local lines, highlights, line_map, section_line_map, add_line_map =
         overview_view.render(p.overview, p.selection)
     self._line_map = line_map
     self._section_line_map = section_line_map
+    self._overview_add_map = add_line_map or {}
     set_buf_content(self._overview_buf, lines, highlights,
         p.overview and p.overview.hint_bar, ns)
 

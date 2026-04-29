@@ -226,6 +226,11 @@ local function build_other_projects_section(workspace, active, section_state)
         count       = count,
         items       = items,
         selectable  = selectable,
+        add_action  = {
+            kind   = "project",
+            parent = { kind = "workspace" },
+            label  = "+ Add project",
+        },
     }
 end
 
@@ -261,6 +266,11 @@ local function build_config_sets_section(workspace, section_state)
         count       = count,
         items       = items,
         selectable  = selectable,
+        add_action  = {
+            kind   = "config_set",
+            parent = { kind = "workspace" },
+            label  = "+ Add configuration set",
+        },
     }
 end
 

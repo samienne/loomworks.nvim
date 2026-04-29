@@ -30,13 +30,14 @@ local function collapse_glyph(collapsed)
     return collapsed and "▶" or "▼"
 end
 
---- Rendering context — accumulates lines, highlights, and the two line maps.
+--- Rendering context — accumulates lines, highlights, and the line maps.
 local function new_ctx()
     local ctx = {
         lines = {},
         highlights = {},
         selectable_at_line = {},
         section_at_line = {},
+        add_at_line = {},
         section_idx = 0,
     }
 
@@ -45,6 +46,13 @@ local function new_ctx()
         local line_no = #self.lines
         if section_kind then self.section_at_line[line_no] = section_kind end
         if sel then self.selectable_at_line[line_no] = sel end
+    end
+
+    function ctx:add_creator(text, descriptor, section_kind)
+        self.lines[#self.lines + 1] = text or ""
+        local line_no = #self.lines
+        if section_kind then self.section_at_line[line_no] = section_kind end
+        if descriptor then self.add_at_line[line_no] = descriptor end
     end
 
     function ctx:hl(line_no, col_start, col_end, hl_group)
@@ -178,6 +186,10 @@ local function render_other_projects(section, ctx)
         ctx:add("  " .. item.key .. type_str,
             section.kind, { section = ctx.section_idx, row = i })
     end
+    if section.add_action then
+        ctx:add_creator("  " .. section.add_action.label, section.add_action, section.kind)
+        ctx:hl_last_line("LoomworksActionable")
+    end
 end
 
 local function render_config_sets(section, ctx)
@@ -189,6 +201,10 @@ local function render_config_sets(section, ctx)
         ctx:add(string.format("  %-32s (%d project%s)",
                 item.name, item.mapping_count or 0, item.mapping_count == 1 and "" or "s"),
             section.kind, { section = ctx.section_idx, row = i })
+    end
+    if section.add_action then
+        ctx:add_creator("  " .. section.add_action.label, section.add_action, section.kind)
+        ctx:hl_last_line("LoomworksActionable")
     end
 end
 
@@ -210,6 +226,7 @@ local RENDERERS = {
 --- @return table[] highlights        list of { line, col_start, col_end, hl_group }
 --- @return table<integer, { section: integer, row: integer }> selectable_at_line
 --- @return table<integer, string> section_at_line
+--- @return table<integer, table> add_at_line   line → "+ Add ..." descriptor
 function M.render(overview, selection)
     local ctx = new_ctx()
 
@@ -242,7 +259,8 @@ function M.render(overview, selection)
         end
     end
 
-    return ctx.lines, ctx.highlights, ctx.selectable_at_line, ctx.section_at_line
+    return ctx.lines, ctx.highlights,
+        ctx.selectable_at_line, ctx.section_at_line, ctx.add_at_line
 end
 
 return M

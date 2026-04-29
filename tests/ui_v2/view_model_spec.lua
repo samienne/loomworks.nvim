@@ -1853,6 +1853,93 @@ describe("ui v2 view model — launch args / env editing", function()
     end)
 end)
 
+describe("ui v2 view model — workspace-level add", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    it("add_item kind=project at workspace level creates a new project", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "project",
+            parent = { kind = "workspace" },
+            name   = "Helper",
+            extra  = { type = "cmake" },
+        })
+        assert.is_not_nil(find_project(ws, "Helper"))
+    end)
+
+    it("add_item kind=project pins the inspector to the new project", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "project",
+            parent = { kind = "workspace" },
+            name   = "NewProj",
+            extra  = { type = "cmake" },
+        })
+        local p = vm:presentation()
+        assert.equals("project", p.inspector.kind)
+        assert.equals("NewProj", p.inspector.subject)
+    end)
+
+    it("add_item kind=config_set at workspace level creates a new set", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "config_set",
+            parent = { kind = "workspace" },
+            name   = "MySet",
+        })
+        local found = false
+        for _, cs in pairs(ws._config_sets or {}) do
+            if cs.name == "MySet" then found = true; break end
+        end
+        assert.is_true(found)
+    end)
+
+    it("expanded other_projects + config_sets sections expose + Add sentinels", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "variant:Debug" } },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("toggle_section", { kind = "other_projects" })
+        vm:dispatch("toggle_section", { kind = "config_sets" })
+        local p = vm:presentation()
+
+        local function find_section(kind)
+            for _, s in ipairs(p.overview.sections) do
+                if s.kind == kind then return s end
+            end
+        end
+        local op = find_section("other_projects")
+        local cs = find_section("config_sets")
+        assert.is_not_nil(op.add_action)
+        assert.equals("project", op.add_action.kind)
+        assert.is_not_nil(cs.add_action)
+        assert.equals("config_set", cs.add_action.kind)
+    end)
+
+    it("overview view emits add_at_line for + Add project sentinel", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        vm:dispatch("toggle_section", { kind = "other_projects" })
+        local p = vm:presentation()
+        local overview_view = require("loomworks.ui.v2.view.overview_view")
+        local _, _, _, _, add_map = overview_view.render(p.overview, p.selection)
+        local has_add_project = false
+        for _, descriptor in pairs(add_map) do
+            if descriptor.kind == "project" and descriptor.parent
+                and descriptor.parent.kind == "workspace" then
+                has_add_project = true; break
+            end
+        end
+        assert.is_true(has_add_project)
+    end)
+end)
+
 describe("ui v2 view model — wire mode (deploy)", function()
     local function find_project(ws, key)
         for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
