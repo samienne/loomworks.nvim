@@ -23,7 +23,7 @@ local config = {
         margin = 2,            -- gap between the workbench and editor edges (number or {top,bottom,left,right})
         overview_width = 0.4,  -- proportion of viewport width
         activity_height = 0.25,
-        pane_gap = 1,          -- gap between panes
+        pane_gap = 0,          -- gap between panes (borders touch when 0)
         border = "rounded",
     },
 }

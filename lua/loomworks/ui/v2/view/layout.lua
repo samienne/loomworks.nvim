@@ -94,11 +94,60 @@ function Layout:is_open()
         and valid_win(self._activity_win)
 end
 
+--- Move focus to one of our panes by kind ("overview"|"inspector"|"activity").
+--- @param kind string
+function Layout:_focus_pane(kind)
+    local win
+    if kind == "overview"  then win = self._overview_win
+    elseif kind == "inspector" then win = self._inspector_win
+    elseif kind == "activity"  then win = self._activity_win end
+    if win and vim.api.nvim_win_is_valid(win) then
+        pcall(vim.api.nvim_set_current_win, win)
+    end
+end
+
+--- Cycle pane focus forward (overview → inspector → activity → overview).
+--- @param kind string  the current pane kind
+function Layout:_cycle_pane(kind, direction)
+    local order = { "overview", "inspector", "activity" }
+    local idx
+    for i, k in ipairs(order) do if k == kind then idx = i; break end end
+    if not idx then return end
+    local n = #order
+    local next_idx
+    if direction == "back" then
+        next_idx = ((idx - 2) % n) + 1
+    else
+        next_idx = (idx % n) + 1
+    end
+    self:_focus_pane(order[next_idx])
+end
+
 function Layout:_setup_keymaps(buf, kind)
     local function map(key, fn)
         vim.keymap.set("n", key, fn, { buffer = buf, nowait = true, silent = true })
     end
     map("q", function() self:close() end)
+
+    -- Pane navigation — keeps focus inside the workbench. Useful in float
+    -- mode where vim's default <C-w>w cycles into the underlying editor
+    -- window; in tabpage mode these stay consistent with vim's directional
+    -- semantics.
+    map("<Tab>",   function() self:_cycle_pane(kind, "forward") end)
+    map("<S-Tab>", function() self:_cycle_pane(kind, "back") end)
+    map("<C-w>w",  function() self:_cycle_pane(kind, "forward") end)
+    map("<C-w>W",  function() self:_cycle_pane(kind, "back") end)
+    if kind == "overview" then
+        map("<C-w>l", function() self:_focus_pane("inspector") end)
+        map("<C-w>j", function() self:_focus_pane("activity") end)
+    elseif kind == "inspector" then
+        map("<C-w>h", function() self:_focus_pane("overview") end)
+        map("<C-w>j", function() self:_focus_pane("activity") end)
+    elseif kind == "activity" then
+        map("<C-w>k", function() self:_focus_pane("overview") end)
+        map("<C-w>h", function() self:_focus_pane("overview") end)
+        map("<C-w>l", function() self:_focus_pane("inspector") end)
+    end
     if kind == "overview" then
         map("o",     function() self:_toggle_current_section() end)
         map("<CR>",  function() self:_select_or_toggle_under_cursor() end)
