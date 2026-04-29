@@ -108,7 +108,26 @@ function Layout:_setup_keymaps(buf, kind)
     elseif kind == "inspector" then
         map("<CR>", function() self:_drill_inspector_under_cursor() end)
         map("e",    function() self:_edit_inspector_under_cursor() end)
+        map("E",    function() self:_open_wire_form_for_subject() end)
         map("D",    function() self:_confirm_then_delete_inspector_subject() end)
+    end
+end
+
+--- Open wire-mode editor for the inspector's current subject when applicable.
+--- Currently supports deploy_step → wire_deploy.
+function Layout:_open_wire_form_for_subject()
+    local p = self._vm:presentation()
+    local insp = p.inspector
+    if not insp or insp.missing then return end
+    if insp.kind == "deploy_step" then
+        self._vm:dispatch("open_wire_deploy_edit", {
+            subject = {
+                kind = "deploy_step",
+                project_key = insp.project_key,
+                launch_name = insp.launch_name,
+                destination = insp.subject,
+            },
+        })
     end
 end
 
@@ -142,20 +161,31 @@ function Layout:_confirm_then_delete_inspector_subject()
 end
 
 --- Resolve the inspector cursor's line. If it points at an editable
---- field, prompt the user and dispatch set_field. Otherwise fall back
---- to cycling publish for the current subject.
+--- field, prompt (or toggle for booleans) and dispatch set_field.
+--- Otherwise fall back to cycling publish for the current subject.
 function Layout:_edit_inspector_under_cursor()
     if not valid_win(self._inspector_win) then return end
     local row = vim.api.nvim_win_get_cursor(self._inspector_win)[1]
     local field = self._inspector_edit_map[row]
     if field then
+        if field.kind == "boolean" then
+            -- Toggle directly without prompting.
+            local current = field.value
+            local was_true = current == true or current == "true" or current == "1"
+            self._vm:dispatch("set_field", {
+                subject  = field.subject,
+                field_id = field.id,
+                value    = (not was_true) and "true" or "false",
+            })
+            return
+        end
         local prompt = (field.label or field.id or "value") .. ": "
-        vim.ui.input({ prompt = prompt, default = field.value or "" }, function(input)
+        vim.ui.input({ prompt = prompt, default = tostring(field.value or "") }, function(input)
             if input == nil then return end -- cancelled
             self._vm:dispatch("set_field", {
-                subject = field.subject,
+                subject  = field.subject,
                 field_id = field.id,
-                value = input,
+                value    = input,
             })
         end)
         return
@@ -209,8 +239,17 @@ end
 --- Defaults are sensible; user can edit other fields with `e` afterward.
 --- @param descriptor table { kind, parent }
 function Layout:_handle_add(descriptor)
+    -- Wire-form commit actions emitted as sentinels with synthetic kinds.
+    if descriptor.kind == "wire_save" then
+        self._vm:dispatch("wire_save")
+        return
+    elseif descriptor.kind == "wire_cancel" then
+        self._vm:dispatch("wire_cancel")
+        return
+    end
     if descriptor.kind == "deploy_step" then
-        self:_handle_add_deploy_step(descriptor)
+        -- + Add deploy step now opens wire mode instead of chaining prompts.
+        self._vm:dispatch("open_wire_deploy_add", { parent = descriptor.parent })
         return
     end
     local prompt

@@ -468,6 +468,48 @@ local function render_deploy_step(insp, ctx)
     end
 end
 
+local function render_wire_deploy(insp, ctx)
+    ctx:title("Wire: " .. tostring(insp.subject))
+    ctx:add("")
+    if insp.missing then
+        ctx:comment("(form was closed)")
+        return
+    end
+
+    -- Find editable fields by id for in-order rendering.
+    local function field(id)
+        for _, f in ipairs(insp.editable_fields or {}) do
+            if f.id == id then return f end
+        end
+    end
+
+    ctx:section("Destination")
+    ctx:add_editable(pad_label("  pattern:", 16) .. tostring(insp.destination or ""), field("destination"))
+    if insp.resolved and insp.resolved ~= insp.destination then
+        ctx:comment(pad_label("  resolved:", 16) .. tostring(insp.resolved or ""))
+    end
+    ctx:add("")
+
+    ctx:section("Source")
+    ctx:add_editable(pad_label("  project:", 16) .. tostring(insp.source_project or ""), field("source_project"))
+    ctx:add_editable(pad_label("  target:", 16) .. tostring(insp.target or ""), field("target"))
+    ctx:add_editable(pad_label("  path:", 16) .. tostring(insp.path or ""), field("path"))
+    ctx:add_editable(pad_label("  configuration:", 16) .. tostring(insp.configuration or ""), field("configuration"))
+    ctx:add("")
+
+    ctx:section("Phase")
+    ctx:add_editable(pad_label("  pre-build:", 16) .. (insp.pre_build and "true" or "false"), field("pre_build"))
+    ctx:add("")
+
+    -- Commit actions — emitted as creator sentinels so <CR> activates them.
+    if insp.commit_actions then
+        for _, cm in ipairs(insp.commit_actions) do
+            ctx:add_creator("  " .. cm.label, { kind = cm.kind })
+            ctx:hl_last_line("LoomworksActionable")
+        end
+    end
+end
+
 local function render_empty(_, ctx)
     ctx:title("Inspector")
     ctx:add("")
@@ -490,6 +532,7 @@ local KIND_RENDERERS = {
     variable      = render_variable,
     device        = render_device,
     deploy_step   = render_deploy_step,
+    wire_deploy   = render_wire_deploy,
 }
 
 --- Render an inspector content table to lines + highlights + drill / edit / add maps.

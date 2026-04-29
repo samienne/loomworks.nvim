@@ -15,12 +15,14 @@ local kinds = {
     variable      = require("loomworks.ui.v2.view_model.inspector_kinds.variable"),
     device        = require("loomworks.ui.v2.view_model.inspector_kinds.device"),
     deploy_step   = require("loomworks.ui.v2.view_model.inspector_kinds.deploy_step"),
+    wire_deploy   = require("loomworks.ui.v2.view_model.inspector_kinds.wire_deploy"),
 }
 
 --- @param workspace loomworks.Workspace|nil
 --- @param ref table|nil   { kind, ...kind-specific fields... }
+--- @param extras? table   { wire_draft? }  passed to kinds that need it
 --- @return table
-function M.build(workspace, ref)
+function M.build(workspace, ref, extras)
     if not ref then
         return { kind = "empty", subject = nil, hint_bar = {} }
     end
@@ -32,6 +34,9 @@ function M.build(workspace, ref)
             ref_kind = ref.kind,
             hint_bar = {},
         }
+    end
+    if ref.kind == "wire_deploy" then
+        return kind_mod.build(workspace, ref, extras and extras.wire_draft)
     end
     return kind_mod.build(workspace, ref)
 end

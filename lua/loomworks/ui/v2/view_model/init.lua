@@ -55,6 +55,7 @@ function ViewModel.new(opts)
         _workspace_provider = opts.workspace_provider,
         _selection = Selection.new(),
         _section_state = {},
+        _wire_draft = nil,
         _subscribers = {},
         _event_handlers = {},
     }, ViewModel)
@@ -137,7 +138,7 @@ function ViewModel:presentation()
         ref = overview.ref_at(ov, c.section, c.row)
     end
 
-    local insp = inspector.build(ws, ref)
+    local insp = inspector.build(ws, ref, { wire_draft = self._wire_draft })
 
     ov.hint_bar = OVERVIEW_HINT_BASE
 
@@ -219,6 +220,16 @@ function ViewModel:dispatch(action, payload)
         self:_add_item(payload.kind, payload.parent, payload.name, payload.extra)
     elseif action == "delete_inspector_subject" then
         self:_delete_inspector_subject()
+    elseif action == "open_wire_deploy_add" then
+        assert(payload and payload.parent, "open_wire_deploy_add requires { parent }")
+        self:_open_wire_deploy_add(payload.parent)
+    elseif action == "open_wire_deploy_edit" then
+        assert(payload and payload.subject, "open_wire_deploy_edit requires { subject }")
+        self:_open_wire_deploy_edit(payload.subject)
+    elseif action == "wire_save" then
+        self:_wire_save()
+    elseif action == "wire_cancel" then
+        self:_wire_cancel()
     elseif action == "select_ref" then
         -- Place cursor onto a known ref (used by view after refresh to follow
         -- expansion changes).
@@ -424,6 +435,21 @@ function ViewModel:_set_field(subject, field_id, value)
         local ok = proj:save_variable(subject.var_name, updated)
         if ok then self:_notify() end
         return ok and true or false
+    elseif subject.kind == "wire_draft" then
+        if not self._wire_draft then return false end
+        local f = field_id  -- wire kinds use the field name as the id directly,
+                           -- but boolean fields might pass the toggle as "true"/"false"
+        if subject.field == "pre_build" then
+            -- Accept boolean directly, or coerce string.
+            if type(value) == "string" then
+                value = value:lower() == "true" or value == "1" or value:lower() == "yes"
+            end
+            self._wire_draft.pre_build = value and true or false
+        else
+            self._wire_draft[subject.field] = value
+        end
+        self:_notify()
+        return true
     elseif subject.kind == "configuration_option" then
         local proj = find_project(ws, subject.project_key)
         if not proj then return false end
@@ -493,6 +519,120 @@ function ViewModel:_add_item(kind, parent, name, extra)
         self:_notify()
     end
     return ok and true or false
+end
+
+--- Open wire mode in "add" form against a launch parent ref.
+--- @param parent table   { kind = "launch", project_key, launch_name }
+function ViewModel:_open_wire_deploy_add(parent)
+    if parent.kind ~= "launch" then return end
+    self._wire_draft = {
+        mode           = "add",
+        parent         = parent,
+        destination    = "",
+        source_project = "",
+        target         = "",
+        path           = "",
+        configuration  = "",
+        pre_build      = false,
+    }
+    self._selection:pin({ kind = "wire_deploy" })
+    self:_notify()
+end
+
+--- Open wire mode in "edit" form against an existing deploy_step subject ref.
+--- @param subject table  { kind = "deploy_step", project_key, launch_name, destination }
+function ViewModel:_open_wire_deploy_edit(subject)
+    local ws = self._workspace_provider()
+    if not ws then return end
+    local proj = find_project(ws, subject.project_key)
+    if not proj then return end
+    local launch = proj.launch and proj.launch[subject.launch_name]
+    if not launch or not launch.deploy then return end
+    local descriptor = launch.deploy[subject.destination]
+    if not descriptor then return end
+    -- v0 wire mode handles single-source descriptors. If the deploy step
+    -- is an array, treat the first element as the editable source — a
+    -- richer multi-source editor is a follow-up.
+    local source = descriptor[1] or descriptor
+    self._wire_draft = {
+        mode           = "edit",
+        parent         = {
+            kind = "launch",
+            project_key = subject.project_key,
+            launch_name = subject.launch_name,
+        },
+        existing       = subject,
+        destination    = subject.destination or "",
+        source_project = source.project or "",
+        target         = source.target or "",
+        path           = source.path or "",
+        configuration  = source.configuration or "",
+        pre_build      = source.pre_build == true,
+    }
+    self._selection:pin({ kind = "wire_deploy" })
+    self:_notify()
+end
+
+--- Persist the current wire draft back to the workspace, then close.
+--- @return boolean ok, string|nil error_reason
+function ViewModel:_wire_save()
+    local draft = self._wire_draft
+    if not draft then return false, "no active wire draft" end
+    if not draft.parent or draft.parent.kind ~= "launch" then return false, "missing parent" end
+    if draft.destination == "" then return false, "destination is empty" end
+    if draft.source_project == "" then return false, "source project is empty" end
+    if draft.target == "" and draft.path == "" then return false, "must set target or path" end
+
+    local ws = self._workspace_provider()
+    if not ws then return false, "no workspace" end
+    local proj = find_project(ws, draft.parent.project_key)
+    if not proj then return false, "project not found" end
+    local launch = proj.launch and proj.launch[draft.parent.launch_name]
+    if not launch then return false, "launch not found" end
+
+    local descriptor = { project = draft.source_project }
+    if draft.target ~= "" then descriptor.target = draft.target end
+    if draft.path ~= "" then descriptor.path = draft.path end
+    if draft.configuration and draft.configuration ~= "" then
+        descriptor.configuration = draft.configuration
+    end
+    if draft.pre_build then descriptor.pre_build = true end
+
+    local updated = vim.tbl_extend("force", {}, launch)
+    updated.deploy = vim.tbl_extend("force", {}, launch.deploy or {})
+    -- In edit mode, if the destination changed, drop the old key first.
+    if draft.mode == "edit" and draft.existing
+        and draft.existing.destination ~= draft.destination then
+        updated.deploy[draft.existing.destination] = nil
+    end
+    updated.deploy[draft.destination] = descriptor
+
+    local ok = proj:save_launch_config(draft.parent.launch_name, updated)
+    if ok then
+        self._wire_draft = nil
+        self._selection:pin({
+            kind = "deploy_step",
+            project_key = draft.parent.project_key,
+            launch_name = draft.parent.launch_name,
+            destination = draft.destination,
+        })
+        self:_notify()
+    end
+    return ok and true or false
+end
+
+--- Discard the current wire draft.
+function ViewModel:_wire_cancel()
+    if not self._wire_draft then return end
+    -- If editing an existing step, return focus to it; otherwise unpin.
+    local existing = self._wire_draft.existing
+    self._wire_draft = nil
+    if existing then
+        self._selection:pin(existing)
+    else
+        self._selection:unpin()
+    end
+    self:_notify()
 end
 
 --- Add a deploy step to a launch config.

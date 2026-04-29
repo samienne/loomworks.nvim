@@ -1688,6 +1688,221 @@ describe("ui v2 view model — delete_inspector_subject", function()
     end)
 end)
 
+describe("ui v2 view model — wire mode (deploy)", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    local function setup_with_launch()
+        return make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = { command = "node", args = { "x" } },
+                    },
+                },
+                NativeLib = { cmake = {} },
+            },
+        })
+    end
+
+    it("open_wire_deploy_add seeds an empty draft and pins inspector", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        local p = vm:presentation()
+        assert.equals("wire_deploy", p.inspector.kind)
+        assert.equals("add", p.inspector.mode)
+        assert.equals("", p.inspector.destination)
+        assert.equals("", p.inspector.source_project)
+        assert.is_false(p.inspector.pre_build)
+    end)
+
+    it("set_field on a wire_draft subject updates the draft, not the workspace", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "destination" },
+            field_id = "destination",
+            value    = "${build_dir}/native.node",
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "source_project" },
+            field_id = "source_project",
+            value    = "NativeLib",
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "target" },
+            field_id = "target",
+            value    = "native_lib",
+        })
+
+        -- Workspace untouched until save
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.launch.debug.deploy)
+
+        local p = vm:presentation()
+        assert.equals("${build_dir}/native.node", p.inspector.destination)
+        assert.equals("NativeLib", p.inspector.source_project)
+        assert.equals("native_lib", p.inspector.target)
+    end)
+
+    it("wire_save persists the draft and pins to the new deploy_step ref", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        for _, pair in ipairs({
+            { "destination", "${build_dir}/native.node" },
+            { "source_project", "NativeLib" },
+            { "target", "native_lib" },
+        }) do
+            vm:dispatch("set_field", {
+                subject  = { kind = "wire_draft", field = pair[1] },
+                field_id = pair[1],
+                value    = pair[2],
+            })
+        end
+
+        vm:dispatch("wire_save")
+
+        local proj = find_project(ws, "App")
+        local entry = proj.launch.debug.deploy["${build_dir}/native.node"]
+        assert.is_not_nil(entry)
+        assert.equals("NativeLib", entry.project)
+        assert.equals("native_lib", entry.target)
+
+        -- Inspector is now pinned to the freshly created deploy_step.
+        local p = vm:presentation()
+        assert.equals("deploy_step", p.inspector.kind)
+        assert.equals("${build_dir}/native.node", p.inspector.subject)
+    end)
+
+    it("wire_save with empty required fields does not persist", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("wire_save")
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.launch.debug.deploy)
+    end)
+
+    it("wire_cancel clears the draft and unpins (add mode)", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("wire_cancel")
+        local p = vm:presentation()
+        assert.is_not.equal("wire_deploy", p.inspector.kind)
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.launch.debug.deploy)
+    end)
+
+    it("open_wire_deploy_edit loads existing descriptor into draft", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            deploy = {
+                                ["${build_dir}/x"] = {
+                                    project = "B", target = "y", pre_build = true,
+                                },
+                            },
+                        },
+                    },
+                },
+                B = { cmake = {} },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_edit", {
+            subject = {
+                kind = "deploy_step", project_key = "App",
+                launch_name = "debug", destination = "${build_dir}/x",
+            },
+        })
+        local p = vm:presentation()
+        assert.equals("wire_deploy", p.inspector.kind)
+        assert.equals("edit", p.inspector.mode)
+        assert.equals("B", p.inspector.source_project)
+        assert.equals("y", p.inspector.target)
+        assert.is_true(p.inspector.pre_build)
+    end)
+
+    it("wire_save in edit mode replaces the existing entry, removing old when destination changes", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            deploy = {
+                                ["${build_dir}/x"] = { project = "B", target = "y" },
+                            },
+                        },
+                    },
+                },
+                B = { cmake = {} },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_edit", {
+            subject = {
+                kind = "deploy_step", project_key = "App",
+                launch_name = "debug", destination = "${build_dir}/x",
+            },
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "destination" },
+            field_id = "destination",
+            value    = "${build_dir}/new",
+        })
+        vm:dispatch("wire_save")
+
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.launch.debug.deploy["${build_dir}/x"])
+        assert.is_not_nil(proj.launch.debug.deploy["${build_dir}/new"])
+    end)
+
+    it("set_field with boolean value coerces strings (true/false) for pre_build", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "pre_build" },
+            field_id = "pre_build",
+            value    = "true",
+        })
+        local p = vm:presentation()
+        assert.is_true(p.inspector.pre_build)
+
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "pre_build" },
+            field_id = "pre_build",
+            value    = "false",
+        })
+        local q = vm:presentation()
+        assert.is_false(q.inspector.pre_build)
+    end)
+end)
+
 describe("ui v2 view model — events", function()
     it("emits a notification on subscribed events", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
