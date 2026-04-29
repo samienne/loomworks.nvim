@@ -216,55 +216,54 @@ describe("ui v2 view model — selection and inspector dispatch", function()
         return ws, make_vm(ws)
     end
 
-    it("default cursor (1,1) points at the active profile", function()
+    it("inspector is empty until select_under_cursor is dispatched", function()
         local _, vm = setup()
         local p = vm:presentation()
-        assert.equals("profile",       p.selection.effective_ref.kind)
-        assert.equals("Debug",         p.selection.effective_ref.key)
-        assert.equals("profile",       p.inspector.kind)
-        assert.equals("Debug",         p.inspector.subject)
+        -- No live cursor → inspector subject; the inspector starts empty.
+        assert.is_nil(p.selection.effective_ref)
+        assert.equals("empty", p.inspector.kind)
     end)
 
-    it("cursor_to a project row updates the inspector subject", function()
+    it("select_under_cursor opens the row under cursor in the inspector", function()
         local _, vm = setup()
-        -- The active profile card has selectable rows: [1]=profile, [2..]=projects.
-        vm:dispatch("cursor_to", { section = 1, row = 2 })
+        vm:dispatch("select_under_cursor")
         local p = vm:presentation()
-        assert.equals("project", p.selection.effective_ref.kind)
+        -- Default cursor is (1,1) — the active profile row.
+        assert.equals("profile", p.selection.effective_ref.kind)
+        assert.equals("Debug",   p.selection.effective_ref.key)
+        assert.equals("profile", p.inspector.kind)
+        assert.equals("Debug",   p.inspector.subject)
+    end)
+
+    it("cursor_to alone does not change the inspector subject", function()
+        local _, vm = setup()
+        vm:dispatch("select_under_cursor")  -- inspect Debug
+        local before = vm:presentation().inspector.subject
+        vm:dispatch("cursor_to", { section = 1, row = 2 })
+        local after = vm:presentation().inspector.subject
+        assert.equals(before, after,
+            "cursor movement must not change the inspector — only select_under_cursor does")
+    end)
+
+    it("select_under_cursor on a project row switches the inspector subject", function()
+        local _, vm = setup()
+        vm:dispatch("cursor_to", { section = 1, row = 2 })
+        vm:dispatch("select_under_cursor")
+        local p = vm:presentation()
         assert.equals("project", p.inspector.kind)
-        -- Either App or Frontend, depending on profile.projects() ordering.
         local subject = p.inspector.subject
         assert.is_true(subject == "App" or subject == "Frontend",
             "expected App or Frontend, got " .. tostring(subject))
     end)
 
-    it("toggle_pin freezes the inspector against subsequent cursor moves", function()
+    it("select_under_cursor on a non-selectable row leaves the prior selection", function()
         local _, vm = setup()
-        vm:dispatch("cursor_to", { section = 1, row = 2 })
-        local pinned_subject = vm:presentation().inspector.subject
-        vm:dispatch("toggle_pin")
-        assert.is_not_nil(vm:presentation().selection.pinned)
-
-        -- Move the cursor; inspector should NOT change.
-        vm:dispatch("cursor_to", { section = 1, row = 1 })
-        local p = vm:presentation()
-        assert.equals(pinned_subject, p.inspector.subject)
-
-        -- Toggle pin off; inspector should now follow cursor again.
-        vm:dispatch("toggle_pin")
-        assert.is_nil(vm:presentation().selection.pinned)
-        local q = vm:presentation()
-        assert.equals("Debug", q.inspector.subject)
-    end)
-
-    it("cursor on an unselectable row leaves inspector empty", function()
-        local _, vm = setup()
-        -- Section 2 is some collapsed section without selectable rows;
-        -- pointing the cursor at row 1 should yield no ref.
-        vm:dispatch("cursor_to", { section = 99, row = 1 })
-        local p = vm:presentation()
-        assert.is_nil(p.selection.effective_ref)
-        assert.equals("empty", p.inspector.kind)
+        vm:dispatch("select_under_cursor")  -- pick the active profile
+        local before = vm:presentation().inspector.subject
+        vm:dispatch("cursor_to", { section = 99, row = 1 })  -- unreachable section
+        vm:dispatch("select_under_cursor")
+        local after = vm:presentation().inspector.subject
+        assert.equals(before, after)
     end)
 end)
 
@@ -288,6 +287,7 @@ describe("ui v2 view model — inspector content", function()
         )
         local vm = make_vm(ws)
         vm:dispatch("cursor_to", { section = 1, row = 2 }) -- App row
+        vm:dispatch("select_under_cursor")
 
         local insp = vm:presentation().inspector
         assert.equals("project", insp.kind)
@@ -314,6 +314,7 @@ describe("ui v2 view model — inspector content", function()
             }
         )
         local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")  -- default cursor is the active profile row
         local insp = vm:presentation().inspector
         assert.equals("profile", insp.kind)
         assert.equals("Debug", insp.subject)
@@ -389,7 +390,7 @@ describe("ui v2 view model — section collapse/expand", function()
         assert.equals("Release", op.items[1].key)
     end)
 
-    it("cursor on an expanded config_set row dispatches to config_set inspector", function()
+    it("select_under_cursor on an expanded config_set row opens config_set inspector", function()
         local vm = make_vm(setup())
         vm:dispatch("toggle_section", { kind = "config_sets" })
         local p = vm:presentation()
@@ -399,6 +400,7 @@ describe("ui v2 view model — section collapse/expand", function()
             if s.kind == "config_sets" then cs_idx = i; break end
         end
         vm:dispatch("cursor_to", { section = cs_idx, row = 1 })
+        vm:dispatch("select_under_cursor")
         local q = vm:presentation()
         assert.equals("config_set", q.selection.effective_ref.kind)
         assert.equals("config_set", q.inspector.kind)
@@ -538,7 +540,8 @@ describe("ui v2 view model — hint bar", function()
         for _, h in ipairs(p.overview.hint_bar) do labels[h.key] = h.label end
         assert.equals("close", labels.q)
         assert.equals("toggle", labels.o)
-        assert.equals("pin", labels.p)
+        assert.equals("select", labels["<CR>"])
+        assert.equals("activate", labels.a)
     end)
 
     it("inspector kinds populate their own hint_bar", function()
@@ -553,6 +556,7 @@ describe("ui v2 view model — hint bar", function()
             }
         )
         local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")
         local p = vm:presentation()
         assert.is_table(p.inspector.hint_bar)
         assert.is_true(#p.inspector.hint_bar > 0)
@@ -949,8 +953,9 @@ describe("ui v2 view model — inspector drill-in", function()
     it("project inspector emits drill refs for configurations and launches", function()
         local ws = setup()
         local vm = make_vm(ws)
-        -- Move cursor to App project in active card.
+        -- Move cursor to App project in active card and select it.
         vm:dispatch("cursor_to", { section = 1, row = 2 })
+        vm:dispatch("select_under_cursor")
         local p = vm:presentation()
         assert.equals("project", p.inspector.kind)
 
@@ -972,10 +977,10 @@ describe("ui v2 view model — inspector drill-in", function()
         assert.equals("launch", launch_ref.kind)
     end)
 
-    it("drill_in pins inspector to the new ref", function()
+    it("drill_in sets inspector to the given ref regardless of cursor", function()
         local ws = setup()
         local vm = make_vm(ws)
-        vm:dispatch("cursor_to", { section = 1, row = 2 }) -- App project
+        vm:dispatch("cursor_to", { section = 1, row = 2 }) -- App project (no select)
 
         -- Drill into a configuration.
         vm:dispatch("drill_in", {
@@ -993,8 +998,8 @@ describe("ui v2 view model — inspector drill-in", function()
         assert.equals("configuration", q.inspector.kind)
         assert.equals("my-debug", q.inspector.subject)
 
-        -- Toggle pin off — inspector returns to overview-cursor selection.
-        vm:dispatch("toggle_pin")
+        -- Re-select via cursor — inspector follows the new cursor.
+        vm:dispatch("select_under_cursor")
         local r = vm:presentation()
         assert.equals("profile", r.inspector.kind)
     end)
@@ -1132,6 +1137,7 @@ describe("ui v2 view model — cycle_publish", function()
             }
         )
         local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")  -- inspect the active profile
         local profile = ws._active_profile
         assert.equals("local", profile._intent or "local")
 
@@ -1173,6 +1179,7 @@ describe("ui v2 view model — cycle_publish", function()
             }
         )
         local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")
         local p = vm:presentation()
         assert.is_true(p.inspector.publishable)
         assert.equals("local", p.inspector.intent)

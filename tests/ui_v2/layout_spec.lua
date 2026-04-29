@@ -150,6 +150,41 @@ describe("ui v2 layout — cursor navigation", function()
         layout:close()
     end)
 
+    it("first open seeds the inspector with the active profile via select_under_cursor", function()
+        local _, _, _, layout = make_setup()
+        layout:open()
+        local p = layout._vm:presentation()
+        -- The snap should have selected the first selectable, which is the
+        -- active profile row for a workspace with an active profile.
+        assert.is_not_nil(p.selection.pinned)
+        assert.equals("profile", p.inspector.kind)
+        layout:close()
+    end)
+
+    it("cursor movement in the overview does not change the inspector subject", function()
+        local _, vm, _, layout = make_setup()
+        layout:open()
+        local before = vm:presentation().inspector.subject
+
+        -- Move cursor onto another selectable line
+        local target_line
+        for line = 1, vim.api.nvim_buf_line_count(layout._overview_buf) do
+            local ref = layout._line_map[line]
+            if ref and not (vim.deep_equal(ref, layout._line_map[
+                vim.api.nvim_win_get_cursor(layout._overview_win)[1]])) then
+                target_line = line; break
+            end
+        end
+        if target_line then
+            vim.api.nvim_win_set_cursor(layout._overview_win, { target_line, 0 })
+            vim.wait(20)
+            local after = vm:presentation().inspector.subject
+            assert.equals(before, after,
+                "inspector subject must not follow the cursor (explicit select required)")
+        end
+        layout:close()
+    end)
+
     it("clamps cursor to last line when buffer shrinks below cursor row", function()
         local ws, vm, _, layout = make_setup()
         layout:open()

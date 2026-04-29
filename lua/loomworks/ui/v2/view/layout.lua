@@ -97,10 +97,10 @@ function Layout:_setup_keymaps(buf, kind)
         vim.keymap.set("n", key, fn, { buffer = buf, nowait = true, silent = true })
     end
     map("q", function() self:close() end)
-    map("p", function() self._vm:dispatch("toggle_pin") end)
     if kind == "overview" then
         map("o",     function() self:_toggle_current_section() end)
-        map("<CR>",  function() self._vm:dispatch("act_under_cursor", { action = "activate"  }) end)
+        map("<CR>",  function() self._vm:dispatch("select_under_cursor") end)
+        map("a",     function() self._vm:dispatch("act_under_cursor", { action = "activate"  }) end)
         map("b",     function() self._vm:dispatch("act_under_cursor", { action = "build"     }) end)
         map("c",     function() self._vm:dispatch("act_under_cursor", { action = "configure" }) end)
         map("D",     function() self:_confirm_then_dispatch("delete") end)
@@ -405,7 +405,10 @@ function Layout:open()
     self:_snap_to_first_selectable()
 end
 
---- Snap overview cursor to the first selectable row.
+--- Snap overview cursor to the first selectable row and seed the inspector.
+--- Without this, the inspector stays empty until the user presses <CR>;
+--- on first open we want it to show the active profile (the natural
+--- starting point of the workspace view).
 function Layout:_snap_to_first_selectable()
     if not valid_win(self._overview_win) then return end
     local first
@@ -416,8 +419,10 @@ function Layout:_snap_to_first_selectable()
         self._suppress_cursor = true
         pcall(vim.api.nvim_win_set_cursor, self._overview_win, { first, 0 })
         self._suppress_cursor = false
-        -- Drive an inspector update for the snapped cursor.
+        -- Sync the view model's cursor and explicitly select that row so
+        -- the inspector populates on first open.
         self:_on_cursor_moved()
+        self._vm:dispatch("select_under_cursor")
     end
 end
 

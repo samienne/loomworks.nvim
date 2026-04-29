@@ -109,17 +109,17 @@ local DEFAULT_COLLAPSED = {
 }
 
 --- Static hint bar for the overview pane.
---- We can make this selection-aware later (e.g. only show `o` when on
---- a collapsible section); for now it lists the global keys that work
---- anywhere in the pane.
+--- Cursor doesn't drive the inspector — `<CR>` selects the row under
+--- cursor and opens it in the inspector. Action keys (a/b/c/D/C)
+--- operate on whatever the cursor is on, regardless of inspector state.
 local OVERVIEW_HINT_BASE = {
-    { key = "<CR>",   label = "activate" },
+    { key = "<CR>",   label = "select" },
+    { key = "a",      label = "activate" },
     { key = "b",      label = "build" },
     { key = "c",      label = "configure" },
     { key = "D",      label = "delete" },
     { key = "C",      label = "clean" },
     { key = "o",      label = "toggle" },
-    { key = "p",      label = "pin" },
     { key = "q",      label = "close" },
 }
 
@@ -129,15 +129,10 @@ function ViewModel:presentation()
     local ws = self._workspace_provider()
     local ov = overview.build(ws, self._section_state)
 
-    -- Resolve effective ref: pin overrides cursor.
-    local ref
-    if self._selection:pinned() then
-        ref = self._selection:pinned()
-    else
-        local c = self._selection:cursor()
-        ref = overview.ref_at(ov, c.section, c.row)
-    end
-
+    -- Inspector subject is whatever has been explicitly selected (pinned).
+    -- Cursor movement no longer drives the inspector — selection is
+    -- explicit via `<CR>`/`select_under_cursor`.
+    local ref = self._selection:pinned()
     local insp = inspector.build(ws, ref, { wire_draft = self._wire_draft })
 
     ov.hint_bar = OVERVIEW_HINT_BASE
@@ -165,10 +160,13 @@ end
 --- @param payload? table
 function ViewModel:dispatch(action, payload)
     if action == "cursor_to" then
+        -- Cursor changes are visual-only and target action keys (b/c/D/C/a).
+        -- They no longer drive the inspector subject and skip the notify
+        -- loop to avoid re-rendering on every j/k.
         assert(payload and payload.section and payload.row, "cursor_to requires { section, row }")
         self._selection:cursor_to(payload.section, payload.row)
-        self:_notify()
-    elseif action == "pin" then
+    elseif action == "select_under_cursor" or action == "pin" then
+        -- Set inspector subject to whatever the cursor is on.
         local ws = self._workspace_provider()
         local ov = overview.build(ws, self._section_state)
         local c = self._selection:cursor()
@@ -181,6 +179,9 @@ function ViewModel:dispatch(action, payload)
         self._selection:unpin()
         self:_notify()
     elseif action == "toggle_pin" then
+        -- Legacy: toggle the explicit selection. Kept so callers using
+        -- the older name continue to work; cursor-driven flicker is no
+        -- longer the use case.
         if self._selection:pinned() then
             self._selection:unpin()
         else
