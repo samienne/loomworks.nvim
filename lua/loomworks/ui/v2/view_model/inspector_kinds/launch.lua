@@ -61,6 +61,29 @@ local function deploy_count(launch)
     return 0
 end
 
+--- Build drillable rows for each deploy step.
+--- @param launch table
+--- @param project_key string
+--- @param launch_name string
+--- @return table[]   { destination, ref }
+local function deploy_rows(launch, project_key, launch_name)
+    local out = {}
+    if type(launch.deploy) ~= "table" then return out end
+    for dest, _ in pairs(launch.deploy) do
+        out[#out + 1] = {
+            destination = dest,
+            ref = {
+                kind = "deploy_step",
+                project_key = project_key,
+                launch_name = launch_name,
+                destination = dest,
+            },
+        }
+    end
+    table.sort(out, function(a, b) return a.destination < b.destination end)
+    return out
+end
+
 --- @param launch table
 --- @return string[]
 local function debug_languages(launch)
@@ -111,11 +134,19 @@ function M.build(workspace, ref)
         env             = env_list(launch),
         debug           = debug_languages(launch),
         deploy_count    = deploy_count(launch),
+        deploy_steps    = deploy_rows(launch, project.key, ref.launch_name),
         editable_fields = {
             { id = "command",     label = "Command",
               value = launch.command,     kind = "string", subject = subject_ref },
             { id = "working_dir", label = "Working dir",
               value = launch.working_dir, kind = "string", subject = subject_ref },
+        },
+        add_actions = {
+            deploy_step = {
+                kind = "deploy_step",
+                parent = subject_ref,
+                label = "+ Add deploy step",
+            },
         },
         hint_bar        = {
             { key = "p",      label = "pin/unpin" },

@@ -25,6 +25,7 @@ local activity_view  = require("loomworks.ui.v2.view.activity_view")
 --- @field _section_line_map table<integer, string>
 --- @field _inspector_drill_map table<integer, table>
 --- @field _inspector_edit_map table<integer, table>
+--- @field _inspector_add_map table<integer, table>
 --- @field _unsubscribe (fun())|nil
 --- @field _refresh_scheduled boolean
 --- @field _autocmd_group integer|nil
@@ -50,6 +51,7 @@ function Layout.new(vm)
         _section_line_map = {},
         _inspector_drill_map = {},
         _inspector_edit_map = {},
+        _inspector_add_map = {},
         _unsubscribe = nil,
         _refresh_scheduled = false,
         _autocmd_group = nil,
@@ -106,6 +108,36 @@ function Layout:_setup_keymaps(buf, kind)
     elseif kind == "inspector" then
         map("<CR>", function() self:_drill_inspector_under_cursor() end)
         map("e",    function() self:_edit_inspector_under_cursor() end)
+        map("D",    function() self:_confirm_then_delete_inspector_subject() end)
+    end
+end
+
+--- Confirm + dispatch deletion of whatever the inspector is showing.
+function Layout:_confirm_then_delete_inspector_subject()
+    local p = self._vm:presentation()
+    local insp = p.inspector
+    if not insp or insp.kind == "empty" or insp.missing then return end
+    -- Limit to kinds the view model can delete.
+    local supported = {
+        deploy_step = true, variable = true, launch = true, configuration = true,
+    }
+    if not supported[insp.kind] then return end
+    local desc
+    if insp.kind == "deploy_step" then
+        desc = string.format("delete deploy step '%s' from %s.%s?",
+            insp.subject, insp.project_key, insp.launch_name)
+    elseif insp.kind == "variable" then
+        desc = string.format("delete variable '%s' from project '%s'?",
+            insp.subject, insp.project_key)
+    elseif insp.kind == "launch" then
+        desc = string.format("delete launch '%s' from project '%s'?",
+            insp.subject, insp.project_key)
+    elseif insp.kind == "configuration" then
+        desc = string.format("delete configuration '%s' from project '%s'?",
+            insp.subject, insp.project_key)
+    end
+    if vim.fn.confirm(desc, "&Yes\n&No", 2) == 1 then
+        self._vm:dispatch("delete_inspector_subject")
     end
 end
 
@@ -156,14 +188,85 @@ function Layout:_confirm_then_dispatch(action_name)
     end
 end
 
---- Drill into whatever ref is at the inspector cursor's current line.
+--- Drill into whatever ref is at the inspector cursor's current line, or
+--- trigger an Add flow if the line is an "+ Add ..." sentinel.
 function Layout:_drill_inspector_under_cursor()
     if not valid_win(self._inspector_win) then return end
     local row = vim.api.nvim_win_get_cursor(self._inspector_win)[1]
+    -- Add sentinels take precedence — they're not selectable refs.
+    local add = self._inspector_add_map[row]
+    if add then
+        self:_handle_add(add)
+        return
+    end
     local ref = self._inspector_drill_map[row]
     if ref then
         self._vm:dispatch("drill_in", { ref = ref })
     end
+end
+
+--- Prompt for the minimal info required and dispatch add_item.
+--- Defaults are sensible; user can edit other fields with `e` afterward.
+--- @param descriptor table { kind, parent }
+function Layout:_handle_add(descriptor)
+    if descriptor.kind == "deploy_step" then
+        self:_handle_add_deploy_step(descriptor)
+        return
+    end
+    local prompt
+    if descriptor.kind == "variable" then
+        prompt = "New variable name: "
+    elseif descriptor.kind == "launch" then
+        prompt = "New launch name: "
+    elseif descriptor.kind == "configuration" then
+        prompt = "New configuration name: "
+    else
+        return
+    end
+    vim.ui.input({ prompt = prompt }, function(name)
+        if not name or name == "" then return end
+        self._vm:dispatch("add_item", {
+            kind   = descriptor.kind,
+            parent = descriptor.parent,
+            name   = name,
+        })
+    end)
+end
+
+--- Chained prompts for adding a deploy step. Asks for destination,
+--- source project, and target/path. pre_build defaults to false; can be
+--- toggled via `e` later.
+--- @param descriptor table { kind = "deploy_step", parent }
+function Layout:_handle_add_deploy_step(descriptor)
+    vim.ui.input({ prompt = "Destination path (use ${build_dir}, ${project_path}, ...): " },
+    function(destination)
+        if not destination or destination == "" then return end
+        vim.ui.input({ prompt = "Source project key: " }, function(src_project)
+            if not src_project or src_project == "" then return end
+            vim.ui.input({ prompt = "Target name (or empty for path): " }, function(target)
+                if target == nil then return end
+                if target ~= "" then
+                    self._vm:dispatch("add_item", {
+                        kind   = descriptor.kind,
+                        parent = descriptor.parent,
+                        name   = destination,
+                        extra  = { source_project = src_project, target = target },
+                    })
+                    return
+                end
+                vim.ui.input({ prompt = "Source path (relative to source build dir): " },
+                function(path)
+                    if not path or path == "" then return end
+                    self._vm:dispatch("add_item", {
+                        kind   = descriptor.kind,
+                        parent = descriptor.parent,
+                        name   = destination,
+                        extra  = { source_project = src_project, path = path },
+                    })
+                end)
+            end)
+        end)
+    end)
 end
 
 --- Toggle the section currently under the overview cursor.
@@ -320,6 +423,7 @@ function Layout:close()
     self._section_line_map = {}
     self._inspector_drill_map = {}
     self._inspector_edit_map = {}
+    self._inspector_add_map = {}
 end
 
 function Layout:toggle()
@@ -425,10 +529,11 @@ function Layout:refresh()
     end
 
     -- Render inspector
-    local insp_lines, insp_highlights, insp_drill_map, insp_edit_map =
+    local insp_lines, insp_highlights, insp_drill_map, insp_edit_map, insp_add_map =
         inspector_view.render(p.inspector)
     self._inspector_drill_map = insp_drill_map or {}
     self._inspector_edit_map  = insp_edit_map  or {}
+    self._inspector_add_map   = insp_add_map   or {}
     -- Augment hint bar with dynamic actions valid for the current inspector.
     local insp_hint = vim.list_extend({}, (p.inspector and p.inspector.hint_bar) or {})
     local has_editable = next(self._inspector_edit_map) ~= nil
@@ -439,8 +544,14 @@ function Layout:refresh()
     elseif p.inspector and p.inspector.publishable then
         table.insert(insp_hint, 1, { key = "e", label = "cycle publish" })
     end
-    if next(self._inspector_drill_map) then
+    local has_drill = next(self._inspector_drill_map) ~= nil
+    local has_add   = next(self._inspector_add_map)   ~= nil
+    if has_drill and has_add then
+        table.insert(insp_hint, 1, { key = "<CR>", label = "drill / add" })
+    elseif has_drill then
         table.insert(insp_hint, 1, { key = "<CR>", label = "drill in" })
+    elseif has_add then
+        table.insert(insp_hint, 1, { key = "<CR>", label = "add" })
     end
     set_buf_content(self._inspector_buf, insp_lines, insp_highlights, insp_hint, ns)
 

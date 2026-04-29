@@ -27,6 +27,7 @@ local function new_ctx()
         highlights = {},
         selectable_at_line = {},
         editable_at_line   = {},
+        add_at_line        = {},
     }
 
     function ctx:add(text)
@@ -49,6 +50,16 @@ local function new_ctx()
         self:add(text)
         if field then
             self.editable_at_line[#self.lines] = field
+        end
+    end
+
+    --- Add an "+ Add X" sentinel line. <CR> on this line dispatches add_item.
+    --- @param text string
+    --- @param descriptor table { kind, parent }
+    function ctx:add_creator(text, descriptor)
+        self:add(text)
+        if descriptor then
+            self.add_at_line[#self.lines] = descriptor
         end
     end
 
@@ -108,6 +119,11 @@ local function render_project(insp, ctx)
             end
         end
     end
+    if insp.add_actions and insp.add_actions.configuration then
+        ctx:add_creator("  " .. insp.add_actions.configuration.label,
+            insp.add_actions.configuration)
+        ctx:hl_last_line("LoomworksActionable")
+    end
     ctx:add("")
 
     ctx:section("Configuration set membership")
@@ -128,6 +144,10 @@ local function render_project(insp, ctx)
             ctx:add_selectable("  " .. l.name, l.ref)
         end
     end
+    if insp.add_actions and insp.add_actions.launch then
+        ctx:add_creator("  " .. insp.add_actions.launch.label, insp.add_actions.launch)
+        ctx:hl_last_line("LoomworksActionable")
+    end
     ctx:add("")
 
     ctx:section("Variables  (" .. tostring(#insp.variables) .. ")")
@@ -140,6 +160,10 @@ local function render_project(insp, ctx)
                     v.name, "[" .. v.type .. "]", tostring(v.default or "")),
                 v.ref)
         end
+    end
+    if insp.add_actions and insp.add_actions.variable then
+        ctx:add_creator("  " .. insp.add_actions.variable.label, insp.add_actions.variable)
+        ctx:hl_last_line("LoomworksActionable")
     end
     ctx:add("")
     if insp.publishable then
@@ -276,7 +300,7 @@ local function render_configuration(insp, ctx)
         ctx:comment("  (none)")
     else
         for _, o in ipairs(insp.options) do
-            ctx:add(string.format("  %-22s = %s", o.key, o.value))
+            ctx:add_editable(string.format("  %-22s = %s", o.key, o.value), o.edit)
         end
     end
     if insp.publishable then
@@ -333,7 +357,19 @@ local function render_launch(insp, ctx)
     if #insp.debug > 0 then
         ctx:add("Debug languages: " .. table.concat(insp.debug, ", "))
     end
-    ctx:add(pad_label("Deploy steps:", 14) .. tostring(insp.deploy_count))
+    ctx:section("Deploy steps  (" .. tostring(insp.deploy_count) .. ")")
+    if insp.deploy_steps and #insp.deploy_steps > 0 then
+        for _, step in ipairs(insp.deploy_steps) do
+            ctx:add_selectable("  " .. step.destination, step.ref)
+        end
+    elseif insp.deploy_count == 0 then
+        ctx:comment("  (none)")
+    end
+    if insp.add_actions and insp.add_actions.deploy_step then
+        ctx:add_creator("  " .. insp.add_actions.deploy_step.label,
+            insp.add_actions.deploy_step)
+        ctx:hl_last_line("LoomworksActionable")
+    end
 end
 
 local function render_variable(insp, ctx)
@@ -456,17 +492,19 @@ local KIND_RENDERERS = {
     deploy_step   = render_deploy_step,
 }
 
---- Render an inspector content table to lines + highlights + drill + edit maps.
+--- Render an inspector content table to lines + highlights + drill / edit / add maps.
 --- @param inspector table
 --- @return string[] lines
 --- @return table[] highlights         { line, col_start, col_end, hl_group }
 --- @return table<integer, table> selectable_at_line   line → drill ref
 --- @return table<integer, table> editable_at_line     line → editable field descriptor
+--- @return table<integer, table> add_at_line          line → "+ Add ..." descriptor
 function M.render(inspector)
     local ctx = new_ctx()
     local fn = inspector and KIND_RENDERERS[inspector.kind] or render_unknown
     fn(inspector or {}, ctx)
-    return ctx.lines, ctx.highlights, ctx.selectable_at_line, ctx.editable_at_line
+    return ctx.lines, ctx.highlights,
+        ctx.selectable_at_line, ctx.editable_at_line, ctx.add_at_line
 end
 
 return M

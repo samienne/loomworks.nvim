@@ -1302,6 +1302,392 @@ describe("ui v2 view model — set_field on text fields", function()
     end)
 end)
 
+describe("ui v2 view model — configuration_option editing", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    it("set_field on a user configuration option updates and persists", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["my-debug"] = {
+                                inherits = "variant:Debug",
+                                options = { BUILD_TESTS = "OFF" },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+
+        vm:dispatch("set_field", {
+            subject  = {
+                kind = "configuration_option",
+                project_key = "App",
+                config_name = "my-debug",
+                option_key  = "BUILD_TESTS",
+            },
+            field_id = "option:BUILD_TESTS",
+            value    = "ON",
+        })
+
+        local cfg = find_project(ws, "App"):get_configuration("my-debug")
+        assert.equals("ON", cfg.options.BUILD_TESTS)
+    end)
+
+    it("set_field on an auto-gen configuration option does nothing", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },  -- only auto-gen Debug/Release exist
+            },
+        })
+        local vm = make_vm(ws)
+
+        local cfg = find_project(ws, "App"):get_configuration("variant:Debug")
+        assert.is_not_nil(cfg)
+        assert.is_false(cfg.is_user)
+
+        -- Attempting to edit an auto-gen option must not raise
+        vm:dispatch("set_field", {
+            subject  = {
+                kind = "configuration_option",
+                project_key = "App",
+                config_name = "variant:Debug",
+                option_key  = "BUILD_TESTS",
+            },
+            field_id = "option:BUILD_TESTS",
+            value    = "ON",
+        })
+        -- Original config remains unchanged
+        assert.is_nil((cfg.options or {}).BUILD_TESTS)
+    end)
+
+    it("clearing an option (empty value) removes it", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["my-debug"] = {
+                                inherits = "variant:Debug",
+                                options = { BUILD_TESTS = "ON", USE_LTO = "ON" },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+
+        vm:dispatch("set_field", {
+            subject  = {
+                kind = "configuration_option",
+                project_key = "App",
+                config_name = "my-debug",
+                option_key  = "BUILD_TESTS",
+            },
+            field_id = "option:BUILD_TESTS",
+            value    = "",
+        })
+
+        local cfg = find_project(ws, "App"):get_configuration("my-debug")
+        assert.is_nil(cfg.options.BUILD_TESTS)
+        assert.equals("ON", cfg.options.USE_LTO)
+    end)
+
+    it("inspector view emits editable_at_line for each user-config option", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["my-debug"] = {
+                                inherits = "variant:Debug",
+                                options = { BUILD_TESTS = "ON" },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+        local inspector = require("loomworks.ui.v2.view_model.inspector")
+        local insp = inspector.build(ws, {
+            kind = "configuration", project_key = "App", config_name = "my-debug",
+        })
+        local inspector_view = require("loomworks.ui.v2.view.inspector_view")
+        local _, _, _, edit_map = inspector_view.render(insp)
+        local found = false
+        for _, field in pairs(edit_map) do
+            if field.subject and field.subject.kind == "configuration_option" then
+                found = true
+                assert.equals("BUILD_TESTS", field.subject.option_key)
+                break
+            end
+        end
+        assert.is_true(found)
+    end)
+end)
+
+describe("ui v2 view model — add_item", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    it("add_item kind=variable creates the variable with defaults", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "variable",
+            parent = { kind = "project", key = "App" },
+            name   = "new_var",
+        })
+        local proj = find_project(ws, "App")
+        assert.is_not_nil(proj.variables and proj.variables.new_var)
+        assert.equals("string", proj.variables.new_var.type)
+        assert.equals("", proj.variables.new_var.default)
+    end)
+
+    it("add_item kind=launch creates a launch with empty command", function()
+        local ws = make_ws({ projects = { App = { typescript = {} } } })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "launch",
+            parent = { kind = "project", key = "App" },
+            name   = "newlaunch",
+        })
+        local proj = find_project(ws, "App")
+        assert.is_not_nil(proj.launch and proj.launch.newlaunch)
+        assert.equals("", proj.launch.newlaunch.command)
+    end)
+
+    it("add_item kind=configuration creates a user configuration inheriting a variant", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "configuration",
+            parent = { kind = "project", key = "App" },
+            name   = "my-debug",
+        })
+        local proj = find_project(ws, "App")
+        local cfg = proj:get_configuration("my-debug")
+        assert.is_not_nil(cfg)
+        assert.is_true(cfg.is_user)
+    end)
+
+    it("add_item pins the inspector to the freshly added item", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "variable",
+            parent = { kind = "project", key = "App" },
+            name   = "fresh",
+        })
+        local p = vm:presentation()
+        assert.is_not_nil(p.selection.pinned)
+        assert.equals("variable", p.selection.pinned.kind)
+        assert.equals("fresh",    p.selection.pinned.var_name)
+    end)
+
+    it("project inspector exposes + Add sentinels via the renderer", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local inspector = require("loomworks.ui.v2.view_model.inspector")
+        local insp = inspector.build(ws, { kind = "project", key = "App" })
+        local inspector_view = require("loomworks.ui.v2.view.inspector_view")
+        local _, _, _, _, add_map = inspector_view.render(insp)
+        local kinds_seen = {}
+        for _, descriptor in pairs(add_map) do kinds_seen[descriptor.kind] = true end
+        assert.is_true(kinds_seen.variable)
+        assert.is_true(kinds_seen.launch)
+        assert.is_true(kinds_seen.configuration)
+    end)
+end)
+
+describe("ui v2 view model — deploy_step add", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    it("add_item kind=deploy_step adds a target source descriptor", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = { debug = { command = "node", args = { "x" } } },
+                },
+                NativeLib = { cmake = {} },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind = "deploy_step",
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+            name = "${build_dir}/native.node",
+            extra = { source_project = "NativeLib", target = "native_lib" },
+        })
+
+        local proj = find_project(ws, "App")
+        local d = proj.launch.debug.deploy
+        assert.is_not_nil(d)
+        local entry = d["${build_dir}/native.node"]
+        assert.is_not_nil(entry)
+        assert.equals("NativeLib", entry.project)
+        assert.equals("native_lib", entry.target)
+    end)
+
+    it("add_item kind=deploy_step adds a path source descriptor", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = { debug = { command = "node" } },
+                },
+                B = { cmake = {} },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind = "deploy_step",
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+            name = "${build_dir}/file",
+            extra = { source_project = "B", path = "lib/x.so" },
+        })
+
+        local proj = find_project(ws, "App")
+        local entry = proj.launch.debug.deploy["${build_dir}/file"]
+        assert.equals("lib/x.so", entry.path)
+    end)
+
+    it("rejects when extra has neither target nor path", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = { debug = { command = "node" } },
+                },
+                NativeLib = { cmake = {} },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind = "deploy_step",
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+            name = "${build_dir}/x",
+            extra = { source_project = "NativeLib" },
+        })
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.launch.debug.deploy)
+    end)
+
+    it("launch inspector exposes deploy_steps refs and the + Add deploy step sentinel", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            deploy = {
+                                ["${build_dir}/x.so"] = { project = "B", path = "x.so" },
+                            },
+                        },
+                    },
+                },
+                B = { cmake = {} },
+            },
+        })
+        local inspector = require("loomworks.ui.v2.view_model.inspector")
+        local insp = inspector.build(ws, {
+            kind = "launch", project_key = "App", launch_name = "debug",
+        })
+        assert.equals(1, #insp.deploy_steps)
+        assert.equals("${build_dir}/x.so", insp.deploy_steps[1].destination)
+        assert.equals("deploy_step", insp.deploy_steps[1].ref.kind)
+        assert.is_not_nil(insp.add_actions and insp.add_actions.deploy_step)
+
+        local inspector_view = require("loomworks.ui.v2.view.inspector_view")
+        local _, _, drill_map, _, add_map = inspector_view.render(insp)
+        local has_step_ref = false
+        for _, ref in pairs(drill_map) do
+            if ref.kind == "deploy_step" then has_step_ref = true; break end
+        end
+        assert.is_true(has_step_ref)
+        local has_add = false
+        for _, descriptor in pairs(add_map) do
+            if descriptor.kind == "deploy_step" then has_add = true; break end
+        end
+        assert.is_true(has_add)
+    end)
+end)
+
+describe("ui v2 view model — delete_inspector_subject", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    it("deletes a deploy step from a launch config", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            deploy = {
+                                ["a"] = { project = "B", target = "x" },
+                                ["b"] = { project = "B", path = "y" },
+                            },
+                        },
+                    },
+                },
+                B = { cmake = {} },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", {
+            ref = { kind = "deploy_step", project_key = "App", launch_name = "debug", destination = "a" },
+        })
+        vm:dispatch("delete_inspector_subject")
+
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.launch.debug.deploy["a"])
+        assert.is_not_nil(proj.launch.debug.deploy["b"])
+    end)
+
+    it("deletes a variable", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {},
+                    variables = { x = { type = "string", default = "y" } },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", {
+            ref = { kind = "variable", project_key = "App", var_name = "x" },
+        })
+        vm:dispatch("delete_inspector_subject")
+
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.variables and proj.variables.x)
+    end)
+
+    it("does nothing when inspector is empty or missing", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        -- Pin to a non-existent item; inspector shows missing=true
+        vm:dispatch("drill_in", {
+            ref = { kind = "variable", project_key = "App", var_name = "ghost" },
+        })
+        vm:dispatch("delete_inspector_subject")
+        -- Should not raise; project state unchanged
+    end)
+end)
+
 describe("ui v2 view model — events", function()
     it("emits a notification on subscribed events", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })

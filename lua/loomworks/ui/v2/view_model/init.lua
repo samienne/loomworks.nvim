@@ -212,6 +212,13 @@ function ViewModel:dispatch(action, payload)
         -- payload = { subject = { kind, ... }, field_id = string, value = any }
         assert(payload and payload.subject and payload.field_id, "set_field requires subject + field_id")
         self:_set_field(payload.subject, payload.field_id, payload.value)
+    elseif action == "add_item" then
+        -- payload = { kind, parent, name, extra? }
+        assert(payload and payload.kind and payload.parent and payload.name,
+            "add_item requires { kind, parent, name }")
+        self:_add_item(payload.kind, payload.parent, payload.name, payload.extra)
+    elseif action == "delete_inspector_subject" then
+        self:_delete_inspector_subject()
     elseif action == "select_ref" then
         -- Place cursor onto a known ref (used by view after refresh to follow
         -- expansion changes).
@@ -416,6 +423,174 @@ function ViewModel:_set_field(subject, field_id, value)
         updated[field_id] = value
         local ok = proj:save_variable(subject.var_name, updated)
         if ok then self:_notify() end
+        return ok and true or false
+    elseif subject.kind == "configuration_option" then
+        local proj = find_project(ws, subject.project_key)
+        if not proj then return false end
+        local cfg = proj:get_configuration(subject.config_name)
+        if not cfg or not cfg.is_user then return false end
+
+        -- Build the user-override entry from the existing config and
+        -- mutate just the one option key.
+        local entry = cfg:serialize_user_override() or {}
+        local opts = entry.options and vim.deepcopy(entry.options) or {}
+        if value == nil or value == "" then
+            opts[subject.option_key] = nil
+        else
+            opts[subject.option_key] = value
+        end
+        entry.options = next(opts) and opts or nil
+
+        local ok = proj:save_configuration(subject.config_name, entry)
+        if ok then self:_notify() end
+        return ok and true or false
+    end
+    return false
+end
+
+--- Add a new item under a parent ref. Creates with sensible defaults so
+--- the user can edit individual fields with `e` afterward.
+--- @param kind "variable"|"launch"|"configuration"|"deploy_step"
+--- @param parent table  parent ref
+--- @param name string   the new item's name (for deploy_step: destination path)
+--- @param extra? table  kind-specific extra data
+--- @return boolean ok
+function ViewModel:_add_item(kind, parent, name, extra)
+    local ws = self._workspace_provider()
+    if not ws then return false end
+
+    -- deploy_step: parent is a launch ref; everything else: parent is project.
+    if kind == "deploy_step" then
+        return self:_add_deploy_step(parent, name, extra)
+    end
+
+    if parent.kind ~= "project" then return false end
+    local proj = find_project(ws, parent.key)
+    if not proj then return false end
+
+    local ok = false
+    if kind == "variable" then
+        ok = proj:save_variable(name, { type = "string", default = "" })
+    elseif kind == "launch" then
+        ok = proj:save_launch_config(name, { command = "", args = {} })
+    elseif kind == "configuration" then
+        local inherits
+        for _, cfg in ipairs(proj:get_configurations() or {}) do
+            if cfg.prefix == "variant" then inherits = cfg.name; break end
+        end
+        ok = proj:save_configuration(name, { inherits = inherits })
+    end
+    if ok then
+        local new_ref
+        if kind == "variable" then
+            new_ref = { kind = "variable", project_key = proj.key, var_name = name }
+        elseif kind == "launch" then
+            new_ref = { kind = "launch", project_key = proj.key, launch_name = name }
+        elseif kind == "configuration" then
+            new_ref = { kind = "configuration", project_key = proj.key, config_name = name }
+        end
+        if new_ref then self._selection:pin(new_ref) end
+        self:_notify()
+    end
+    return ok and true or false
+end
+
+--- Add a deploy step to a launch config.
+--- @param parent table   launch ref { kind, project_key, launch_name }
+--- @param destination string  the deploy step destination (the dict key)
+--- @param extra table   { source_project, target?, path?, pre_build? }
+--- @return boolean ok
+function ViewModel:_add_deploy_step(parent, destination, extra)
+    if parent.kind ~= "launch" then return false end
+    if not extra or not extra.source_project then return false end
+    if not extra.target and not extra.path then return false end
+
+    local ws = self._workspace_provider()
+    local proj = find_project(ws, parent.project_key)
+    if not proj then return false end
+    local launch = proj.launch and proj.launch[parent.launch_name]
+    if not launch then return false end
+
+    -- Build the source descriptor.
+    local descriptor = { project = extra.source_project }
+    if extra.target then descriptor.target = extra.target end
+    if extra.path   then descriptor.path   = extra.path end
+    if extra.configuration then descriptor.configuration = extra.configuration end
+    if extra.pre_build then descriptor.pre_build = true end
+
+    local updated = vim.tbl_extend("force", {}, launch)
+    updated.deploy = vim.tbl_extend("force", {}, launch.deploy or {})
+    updated.deploy[destination] = descriptor
+
+    local ok = proj:save_launch_config(parent.launch_name, updated)
+    if ok then
+        self._selection:pin({
+            kind = "deploy_step",
+            project_key = parent.project_key,
+            launch_name = parent.launch_name,
+            destination = destination,
+        })
+        self:_notify()
+    end
+    return ok and true or false
+end
+
+--- Delete the item the inspector is currently showing.
+--- Currently supports: deploy_step, variable, launch, configuration.
+--- @return boolean ok
+function ViewModel:_delete_inspector_subject()
+    local ws = self._workspace_provider()
+    if not ws then return false end
+    local p = self:presentation()
+    local insp = p.inspector
+    if not insp or insp.kind == "empty" or insp.missing then return false end
+
+    if insp.kind == "deploy_step" and not insp.launch_name then return false end
+    if insp.kind == "deploy_step" then
+        local proj = find_project(ws, insp.project_key)
+        if not proj then return false end
+        local launch = proj.launch and proj.launch[insp.launch_name]
+        if not launch or not launch.deploy then return false end
+        local updated = vim.tbl_extend("force", {}, launch)
+        updated.deploy = vim.tbl_extend("force", {}, launch.deploy)
+        updated.deploy[insp.subject] = nil
+        if not next(updated.deploy) then updated.deploy = nil end
+        local ok = proj:save_launch_config(insp.launch_name, updated)
+        if ok then
+            self._selection:unpin()
+            self:_notify()
+        end
+        return ok and true or false
+    elseif insp.kind == "variable" then
+        local proj = find_project(ws, insp.project_key)
+        if not proj or not proj.delete_variable then return false end
+        local ok = proj:delete_variable(insp.subject)
+        if ok then
+            self._selection:unpin()
+            self:_notify()
+        end
+        return ok and true or false
+    elseif insp.kind == "launch" then
+        local proj = find_project(ws, insp.project_key)
+        if not proj or not proj.launch then return false end
+        local updated_launches = vim.tbl_extend("force", {}, proj.launch)
+        updated_launches[insp.subject] = nil
+        proj.launch = next(updated_launches) and updated_launches or nil
+        proj:_mark_user_owned()
+        local ok = proj._workspace and proj._workspace:_save_user() or false
+        if ok then
+            self._selection:unpin()
+            self:_notify()
+        end
+        return ok and true or false
+    elseif insp.kind == "configuration" then
+        local proj = find_project(ws, insp.project_key)
+        if not proj or not proj.delete_configuration then return false end
+        local ok = proj:delete_configuration(insp.subject)
+        if ok then
+            self._selection:unpin()
+            self:_notify()
+        end
         return ok and true or false
     end
     return false

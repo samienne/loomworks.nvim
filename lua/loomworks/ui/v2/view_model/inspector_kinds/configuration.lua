@@ -30,12 +30,31 @@ local function inherits_chain(config)
 end
 
 --- @param config loomworks.Configuration
+--- @param subject_ref table  config inspector's subject ref (used to attach edit
+---                            descriptors to each option row)
 --- @return table[]
-local function options_block(config)
+local function options_block(config, subject_ref)
     local out = {}
     if type(config.options) == "table" then
         for k, v in pairs(config.options) do
-            out[#out + 1] = { key = k, value = tostring(v) }
+            local entry = { key = k, value = tostring(v) }
+            -- Only user configurations are editable directly. Auto-gen
+            -- options need a user override; that's a separate flow.
+            if config.is_user then
+                entry.edit = {
+                    id    = "option:" .. k,
+                    label = k,
+                    value = tostring(v),
+                    kind  = "string",
+                    subject = {
+                        kind        = "configuration_option",
+                        project_key = subject_ref.project_key,
+                        config_name = subject_ref.config_name,
+                        option_key  = k,
+                    },
+                }
+            end
+            out[#out + 1] = entry
         end
         table.sort(out, function(a, b) return a.key < b.key end)
     end
@@ -67,6 +86,11 @@ function M.build(workspace, ref)
         }
     end
 
+    local subject_ref = {
+        kind        = "configuration",
+        project_key = project.key,
+        config_name = cfg.name,
+    }
     return {
         kind             = "configuration",
         subject          = cfg.name,
@@ -81,7 +105,7 @@ function M.build(workspace, ref)
         role             = cfg.role,
         unresolved_inherits = cfg:unresolved_inherits_names() or {},
         inherits         = inherits_chain(cfg),
-        options          = options_block(cfg),
+        options          = options_block(cfg, subject_ref),
         intent           = cfg._intent or "local",
         publishable      = true,
         hint_bar         = {

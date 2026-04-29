@@ -106,6 +106,7 @@ function M.build(workspace, ref)
         }
     end
 
+    local subject_ref = { kind = "project", key = project.key }
     return {
         kind = "project",
         subject = project.key,
@@ -118,6 +119,12 @@ function M.build(workspace, ref)
         variables = variables_block(project),
         intent = project._intent or "local",
         publishable = true,
+        -- Items the user can add into this project.
+        add_actions = {
+            configuration = { kind = "configuration", parent = subject_ref, label = "+ Add user configuration" },
+            launch        = { kind = "launch",        parent = subject_ref, label = "+ Add launch" },
+            variable      = { kind = "variable",      parent = subject_ref, label = "+ Add variable" },
+        },
         hint_bar = {
             { key = "p",  label = "pin/unpin" },
             { key = "<C-w>w", label = "focus overview" },
