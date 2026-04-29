@@ -474,6 +474,42 @@ function ViewModel:_set_field(subject, field_id, value)
         local ok = proj:save_launch_config(subject.launch_name, updated)
         if ok then self:_notify() end
         return ok and true or false
+    elseif subject.kind == "profile_device" then
+        local profile
+        for _, p in pairs(ws._profiles or {}) do
+            if p.key == subject.profile_key then profile = p; break end
+        end
+        if not profile then return false end
+        if value == nil or value == "" or value == "(none)" then
+            if profile.clear_device then profile:clear_device() end
+        else
+            if profile.set_device then profile:set_device(value) end
+        end
+        self:_notify()
+        return true
+    elseif subject.kind == "config_set_mapping" then
+        -- Update or remove a project's variant mapping in a configuration set.
+        -- value == "" → remove mapping; otherwise set to the configuration matching the value.
+        local cs
+        for _, c in pairs(ws._config_sets or {}) do
+            if c.name == subject.set_name then cs = c; break end
+        end
+        if not cs or not cs.update_mapping then return false end
+
+        local proj = find_project(ws, subject.project_key)
+        if not proj then return false end
+
+        if value == nil or value == "" then
+            local ok = cs:update_mapping(proj, nil)
+            if ok then self:_notify() end
+            return ok and true or false
+        end
+        local new_cfg = proj:get_configuration(value)
+            or (proj.ensure_configuration and proj:ensure_configuration(value))
+        if not new_cfg then return false end
+        local ok = cs:update_mapping(proj, new_cfg)
+        if ok then self:_notify() end
+        return ok and true or false
     elseif subject.kind == "wire_draft" then
         if not self._wire_draft then return false end
         local f = field_id  -- wire kinds use the field name as the id directly,
@@ -533,6 +569,9 @@ function ViewModel:_add_item(kind, parent, name, extra)
     end
     if kind == "launch_env" then
         return self:_add_launch_env(parent, name)
+    end
+    if kind == "config_set_mapping" then
+        return self:_add_config_set_mapping(parent, name, extra)
     end
     -- Workspace-level adds: project, configuration set.
     if parent.kind == "workspace" then
@@ -626,6 +665,31 @@ function ViewModel:_add_launch_env(parent, key)
     local updated = vim.tbl_extend("force", {}, launch)
     updated.env = env
     local ok = proj:save_launch_config(parent.launch_name, updated)
+    if ok then self:_notify() end
+    return ok and true or false
+end
+
+--- Add a project mapping to a configuration set.
+--- @param parent table  { kind = "config_set", key = set_name }
+--- @param project_key string  the project being mapped
+--- @param extra table  { variant = canonical_name }
+--- @return boolean ok
+function ViewModel:_add_config_set_mapping(parent, project_key, extra)
+    if parent.kind ~= "config_set" then return false end
+    if not extra or not extra.variant then return false end
+    local ws = self._workspace_provider()
+    if not ws then return false end
+    local cs
+    for _, c in pairs(ws._config_sets or {}) do
+        if c.name == parent.key then cs = c; break end
+    end
+    if not cs or not cs.update_mapping then return false end
+    local proj = find_project(ws, project_key)
+    if not proj then return false end
+    local cfg = proj:get_configuration(extra.variant)
+        or (proj.ensure_configuration and proj:ensure_configuration(extra.variant))
+    if not cfg then return false end
+    local ok = cs:update_mapping(proj, cfg)
     if ok then self:_notify() end
     return ok and true or false
 end

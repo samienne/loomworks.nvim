@@ -60,6 +60,18 @@ local function device_serial(profile)
     return profile._device_serial
 end
 
+--- Sorted list of device serials in the workspace, prefixed with "(none)"
+--- so the user can clear the selection.
+--- @param workspace loomworks.Workspace
+--- @return string[]
+local function device_serial_choices(workspace)
+    local out = { "(none)" }
+    for _, d in ipairs(workspace:devices() or {}) do
+        out[#out + 1] = d.serial
+    end
+    return out
+end
+
 --- Build the profile inspector content.
 --- @param workspace loomworks.Workspace|nil
 --- @param ref { kind: "profile", key: string }
@@ -77,6 +89,22 @@ function M.build(workspace, ref)
     end
 
     local label, _ = profile:status()
+    local subject_ref = { kind = "profile", key = profile.key }
+    local has_device_modules = workspace.has_device_modules and workspace:has_device_modules() or false
+    local editable_fields = {}
+    if has_device_modules then
+        editable_fields[#editable_fields + 1] = {
+            id      = "device_serial",
+            label   = "Device",
+            value   = profile._device_serial or "",
+            kind    = "picker",
+            choices = device_serial_choices(workspace),
+            subject = {
+                kind        = "profile_device",
+                profile_key = profile.key,
+            },
+        }
+    end
     return {
         kind            = "profile",
         subject         = profile.key,
@@ -89,6 +117,8 @@ function M.build(workspace, ref)
         tools           = tools_block(profile),
         mappings        = mappings_block(profile),
         device_serial   = device_serial(profile),
+        device_editable = has_device_modules,
+        editable_fields = editable_fields,
         intent          = profile._intent or "local",
         publishable     = true,
         hint_bar        = {

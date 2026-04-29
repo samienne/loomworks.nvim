@@ -297,6 +297,11 @@ function Layout:_handle_add(descriptor)
         end)
         return
     end
+    if descriptor.kind == "config_set_mapping" and descriptor.parent
+        and descriptor.parent.kind == "config_set" then
+        self:_handle_add_config_set_mapping(descriptor)
+        return
+    end
     local prompt
     if descriptor.kind == "variable" then
         prompt = "New variable name: "
@@ -318,6 +323,56 @@ function Layout:_handle_add(descriptor)
             parent = descriptor.parent,
             name   = name,
         })
+    end)
+end
+
+--- Pick a project (from those not already mapped in the set), then a
+--- configuration variant from that project, and dispatch add_item.
+--- @param descriptor table { kind = "config_set_mapping", parent = { kind = "config_set", key = set_name } }
+function Layout:_handle_add_config_set_mapping(descriptor)
+    local ws_lib = require("loomworks")
+    local ws = ws_lib.get_workspace and ws_lib.get_workspace()
+    if not ws then return end
+    -- Build the set of project keys already mapped in this set.
+    local set
+    for _, c in pairs(ws._config_sets or {}) do
+        if c.name == descriptor.parent.key then set = c; break end
+    end
+    if not set then return end
+    local mapped = {}
+    for project, _ in pairs(set.mappings or {}) do mapped[project.key] = true end
+
+    local candidates = {}
+    for _, p in pairs(ws._projects or {}) do
+        if not mapped[p.key] then candidates[#candidates + 1] = p end
+    end
+    if #candidates == 0 then return end
+    table.sort(candidates, function(a, b) return a.key < b.key end)
+    local choice_keys = {}
+    for i, p in ipairs(candidates) do choice_keys[i] = p.key end
+
+    vim.ui.select(choice_keys, { prompt = "Project to map" }, function(project_key)
+        if not project_key then return end
+        local proj
+        for _, p in ipairs(candidates) do
+            if p.key == project_key then proj = p; break end
+        end
+        if not proj then return end
+        local cfg_choices = {}
+        for _, cfg in ipairs(proj:get_configurations() or {}) do
+            cfg_choices[#cfg_choices + 1] = cfg.name
+        end
+        if #cfg_choices == 0 then return end
+        table.sort(cfg_choices)
+        vim.ui.select(cfg_choices, { prompt = "Variant for " .. project_key }, function(variant)
+            if not variant then return end
+            self._vm:dispatch("add_item", {
+                kind   = descriptor.kind,
+                parent = descriptor.parent,
+                name   = project_key,
+                extra  = { variant = variant },
+            })
+        end)
     end)
 end
 

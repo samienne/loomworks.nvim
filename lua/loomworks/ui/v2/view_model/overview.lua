@@ -94,10 +94,15 @@ local function build_no_active_card()
     return {
         kind = "no_active_profile",
         collapsible = false,
-        actions = {
-            { label = "Add project from current directory", action = "add_project_here" },
-            { label = "Browse and add project",             action = "add_project_browse" },
-            { label = "palette: <leader>wp",                action = nil, hint = true },
+        creators = {
+            {
+                kind = "project",
+                parent = { kind = "workspace" },
+                label = "+ Add project",
+            },
+        },
+        hints = {
+            "Activate a configuration set to start a profile (palette: <leader>wp).",
         },
         selectable = {},
     }

@@ -105,9 +105,13 @@ local function render_no_active_card(section, ctx)
     ctx:add("No active profile.", section.kind)
     ctx:hl_last_line("Comment")
     ctx:add("", section.kind)
-    for _, action in ipairs(section.actions or {}) do
-        ctx:add("  " .. action.label, section.kind)
-        if action.hint then ctx:hl_last_line("Comment") end
+    for _, creator in ipairs(section.creators or {}) do
+        ctx:add_creator("  " .. creator.label, creator, section.kind)
+        ctx:hl_last_line("LoomworksActionable")
+    end
+    for _, hint in ipairs(section.hints or {}) do
+        ctx:add("  " .. hint, section.kind)
+        ctx:hl_last_line("Comment")
     end
 end
 

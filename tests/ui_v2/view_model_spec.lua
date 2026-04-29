@@ -1978,6 +1978,219 @@ describe("ui v2 view model — rename_inspector_subject", function()
     end)
 end)
 
+describe("ui v2 view model — profile device pinning", function()
+    local function make_ws_with_device()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "variant:Debug" } },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        -- Simulate a workspace with a device-capable module by overriding
+        -- has_device_modules + injecting a fake device.
+        ws.has_device_modules = function() return true end
+        ws._devices = {
+            ["SERIAL1"] = {
+                serial = "SERIAL1", display_name = "Test", provider = "harmony",
+                state = "online", properties = {},
+            },
+        }
+        return ws
+    end
+
+    it("device field appears as a picker when workspace has device modules", function()
+        local ws = make_ws_with_device()
+        local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")  -- profile inspector
+        local p = vm:presentation()
+        assert.is_true(p.inspector.device_editable)
+        local device_field
+        for _, f in ipairs(p.inspector.editable_fields or {}) do
+            if f.id == "device_serial" then device_field = f; break end
+        end
+        assert.is_not_nil(device_field)
+        assert.equals("picker", device_field.kind)
+        local set = {}
+        for _, c in ipairs(device_field.choices) do set[c] = true end
+        assert.is_true(set["SERIAL1"])
+        assert.is_true(set["(none)"])
+    end)
+
+    it("set_field on profile_device pins a device", function()
+        local ws = make_ws_with_device()
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "profile_device", profile_key = "Debug" },
+            field_id = "device_serial",
+            value    = "SERIAL1",
+        })
+        local profile
+        for _, p in pairs(ws._profiles or {}) do
+            if p.key == "Debug" then profile = p; break end
+        end
+        assert.equals("SERIAL1", profile._device_serial)
+    end)
+
+    it("set_field with (none) clears the pinned device", function()
+        local ws = make_ws_with_device()
+        local profile
+        for _, p in pairs(ws._profiles or {}) do
+            if p.key == "Debug" then profile = p; break end
+        end
+        profile._device_serial = "SERIAL1"
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "profile_device", profile_key = "Debug" },
+            field_id = "device_serial",
+            value    = "(none)",
+        })
+        assert.is_nil(profile._device_serial)
+    end)
+
+    it("device_editable is false when workspace has no device modules", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "variant:Debug" } },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")
+        local p = vm:presentation()
+        assert.is_not_true(p.inspector.device_editable)
+    end)
+end)
+
+describe("ui v2 view model — empty-state CTAs", function()
+    it("no_active_profile section emits an + Add project add_at_line entry", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        local p = vm:presentation()
+        local overview_view = require("loomworks.ui.v2.view.overview_view")
+        local _, _, _, _, add_map = overview_view.render(p.overview, p.selection)
+
+        local has_workspace_project_add = false
+        for _, descriptor in pairs(add_map) do
+            if descriptor.kind == "project" and descriptor.parent
+                and descriptor.parent.kind == "workspace" then
+                has_workspace_project_add = true; break
+            end
+        end
+        assert.is_true(has_workspace_project_add,
+            "no-active-profile state should expose a + Add project sentinel")
+    end)
+end)
+
+describe("ui v2 view model — config_set_mapping", function()
+    local function find_set(ws, name)
+        for _, c in pairs(ws._config_sets or {}) do
+            if c.name == name then return c end
+        end
+    end
+
+    it("set_field on a config_set_mapping changes the variant for that project", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {
+                    configurations = { ["asan"] = { inherits = "variant:Debug" } },
+                } },
+            },
+            configuration_sets = { Debug = { App = "variant:Debug" } },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "config_set_mapping",
+                         set_name = "Debug", project_key = "App" },
+            field_id = "mapping:App",
+            value    = "asan",
+        })
+        local cs = find_set(ws, "Debug")
+        local cfg
+        for project, c in pairs(cs.mappings) do
+            if project.key == "App" then cfg = c; break end
+        end
+        assert.equals("asan", cfg.name)
+    end)
+
+    it("empty value removes the project mapping", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                Helper = { cmake = {} },
+            },
+            configuration_sets = {
+                Debug = { App = "variant:Debug", Helper = "variant:Debug" },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "config_set_mapping",
+                         set_name = "Debug", project_key = "Helper" },
+            field_id = "mapping:Helper",
+            value    = "",
+        })
+        local cs = find_set(ws, "Debug")
+        local has_helper = false
+        for project, _ in pairs(cs.mappings) do
+            if project.key == "Helper" then has_helper = true; break end
+        end
+        assert.is_false(has_helper)
+    end)
+
+    it("add_item kind=config_set_mapping adds a new project to the set", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {} },
+                NewOne = { cmake = {} },
+            },
+            configuration_sets = { Debug = { App = "variant:Debug" } },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "config_set_mapping",
+            parent = { kind = "config_set", key = "Debug" },
+            name   = "NewOne",
+            extra  = { variant = "variant:Release" },
+        })
+        local cs = find_set(ws, "Debug")
+        local mapped
+        for project, c in pairs(cs.mappings) do
+            if project.key == "NewOne" then mapped = c; break end
+        end
+        assert.is_not_nil(mapped)
+        assert.equals("variant:Release", mapped.name)
+    end)
+
+    it("set inspector exposes editable picker fields per mapping with project's configs", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = {
+                    configurations = { ["asan"] = { inherits = "variant:Debug" } },
+                } },
+            },
+            configuration_sets = { Debug = { App = "variant:Debug" } },
+        })
+        local inspector = require("loomworks.ui.v2.view_model.inspector")
+        local insp = inspector.build(ws, { kind = "config_set", key = "Debug" })
+        assert.equals(1, #insp.mappings)
+        local m = insp.mappings[1]
+        assert.is_not_nil(m.edit)
+        assert.equals("picker", m.edit.kind)
+        assert.is_table(m.edit.choices)
+        local set = {}
+        for _, n in ipairs(m.edit.choices) do set[n] = true end
+        assert.is_true(set["asan"])
+    end)
+end)
+
 describe("ui v2 view model — workspace-level add", function()
     local function find_project(ws, key)
         for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end

@@ -31,6 +31,17 @@ local function profiles_using(workspace, cs)
     return out
 end
 
+--- @param project loomworks.Project
+--- @return string[]
+local function project_configuration_names(project)
+    local out = {}
+    for _, cfg in ipairs(project:get_configurations() or {}) do
+        out[#out + 1] = cfg.name
+    end
+    table.sort(out)
+    return out
+end
+
 --- @param cs loomworks.ConfigurationSet
 --- @return table[]
 local function mappings_block(cs)
@@ -44,6 +55,18 @@ local function mappings_block(cs)
                 project_key = project.key,
                 config_name = config.name,
             } or nil,
+            edit = {
+                id      = "mapping:" .. project.key,
+                label   = project.key,
+                value   = config and config.name or "",
+                kind    = "picker",
+                choices = project_configuration_names(project),
+                subject = {
+                    kind        = "config_set_mapping",
+                    set_name    = cs.name,
+                    project_key = project.key,
+                },
+            },
         }
     end
     table.sort(out, function(a, b) return a.project_key < b.project_key end)
@@ -63,6 +86,7 @@ function M.build(workspace, ref)
             hint_bar = {},
         }
     end
+    local subject_ref = { kind = "config_set", key = cs.name }
     return {
         kind         = "config_set",
         subject      = cs.name,
@@ -71,6 +95,13 @@ function M.build(workspace, ref)
         used_by      = profiles_using(workspace, cs),
         intent       = cs._intent or "local",
         publishable  = true,
+        add_actions  = {
+            mapping = {
+                kind   = "config_set_mapping",
+                parent = subject_ref,
+                label  = "+ Add mapping",
+            },
+        },
         hint_bar     = {
             { key = "p",      label = "pin/unpin" },
             { key = "<C-w>w", label = "focus overview" },

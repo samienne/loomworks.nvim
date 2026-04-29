@@ -187,7 +187,15 @@ local function render_profile(insp, ctx)
     ctx:add(pad_label("Active:", 22) .. (insp.is_active and "yes" or "no"))
     if insp.is_active then ctx:hl_last_line("LoomworksActive") end
     ctx:add(pad_label("Status:", 22) .. (insp.status_label or ""))
-    if insp.device_serial then
+    if insp.device_editable then
+        local device_field
+        for _, f in ipairs(insp.editable_fields or {}) do
+            if f.id == "device_serial" then device_field = f; break end
+        end
+        ctx:add_editable(
+            pad_label("Device:", 22) .. (insp.device_serial or "(none)"),
+            device_field)
+    elseif insp.device_serial then
         ctx:add(pad_label("Device:", 22) .. insp.device_serial)
     end
     ctx:add("")
@@ -232,10 +240,19 @@ local function render_config_set(insp, ctx)
         ctx:comment("  (none)")
     else
         for _, m in ipairs(insp.mappings) do
-            ctx:add_selectable(
+            -- Editable: e changes the variant; <CR> drills into the
+            -- configuration. The renderer can only attach one descriptor
+            -- per line, so prefer the edit descriptor (more useful in the
+            -- mapping table); the drill ref is exposed via the inspector
+            -- content for any callers that want it.
+            ctx:add_editable(
                 string.format("  %-16s → %s", m.project_key, m.variant_name or "—"),
-                m.config_ref)
+                m.edit)
         end
+    end
+    if insp.add_actions and insp.add_actions.mapping then
+        ctx:add_creator("  " .. insp.add_actions.mapping.label, insp.add_actions.mapping)
+        ctx:hl_last_line("LoomworksActionable")
     end
     ctx:add("")
     if #insp.used_by > 0 then
