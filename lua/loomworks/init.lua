@@ -47,6 +47,8 @@ local function setup_keymaps(opts)
     map("n", "<leader>ww", function() M.toggle() end, { desc = "Loomworks info" })
     map("n", "<leader>wW", function() require("loomworks.ui.v2").toggle() end,
         { desc = "Loomworks v2 UI (preview)" })
+    map("n", "<leader>wp", function() require("loomworks.ui.v2.palette").open() end,
+        { desc = "Loomworks command palette (v2)" })
     map("n", "<leader>wb", function() M.build_target() end, { desc = "Build default target" })
     map("n", "<leader>wB", function() M.build_profile() end, { desc = "Build active profile" })
     map("n", "<leader>wr", function() M.debug_target() end, { desc = "Debug target" })

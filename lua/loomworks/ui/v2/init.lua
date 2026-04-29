@@ -45,4 +45,14 @@ function M.is_open()
     return layout and layout:is_open() or false
 end
 
+--- Internal accessor for the palette and other call sites that need to
+--- dispatch into the view model (e.g. drill_in to focus an item).
+--- Constructs the view model lazily so the palette can dispatch even
+--- when the layout has never been opened.
+--- @return loomworks.uiv2.ViewModel|nil
+function M._view_model_for_palette()
+    ensure()
+    return view_model
+end
+
 return M
