@@ -185,6 +185,30 @@ describe("ui v2 layout — cursor navigation", function()
         layout:close()
     end)
 
+    it("CR on a collapsed section header expands it (like o)", function()
+        local _, vm, _, layout = make_setup()
+        layout:open()
+        -- Find the line where the "Other profiles" section header lives.
+        local op_line
+        for line, kind in pairs(layout._section_line_map) do
+            if kind == "other_profiles" and not layout._line_map[line] then
+                op_line = line; break
+            end
+        end
+        assert.is_not_nil(op_line, "expected an Other profiles header line")
+        assert.is_true(vm:section_collapsed("other_profiles"))
+
+        -- Simulate <CR> by moving the cursor and calling the handler.
+        layout._suppress_cursor = true
+        vim.api.nvim_win_set_cursor(layout._overview_win, { op_line, 0 })
+        layout._suppress_cursor = false
+        layout:_select_or_toggle_under_cursor()
+
+        assert.is_false(vm:section_collapsed("other_profiles"),
+            "CR on a collapsed section header should expand it")
+        layout:close()
+    end)
+
     it("clamps cursor to last line when buffer shrinks below cursor row", function()
         local ws, vm, _, layout = make_setup()
         layout:open()

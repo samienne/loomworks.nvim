@@ -99,7 +99,7 @@ function Layout:_setup_keymaps(buf, kind)
     map("q", function() self:close() end)
     if kind == "overview" then
         map("o",     function() self:_toggle_current_section() end)
-        map("<CR>",  function() self._vm:dispatch("select_under_cursor") end)
+        map("<CR>",  function() self:_select_or_toggle_under_cursor() end)
         map("a",     function() self._vm:dispatch("act_under_cursor", { action = "activate"  }) end)
         map("b",     function() self._vm:dispatch("act_under_cursor", { action = "build"     }) end)
         map("c",     function() self._vm:dispatch("act_under_cursor", { action = "configure" }) end)
@@ -312,6 +312,23 @@ end
 function Layout:_toggle_current_section()
     if not valid_win(self._overview_win) then return end
     local row = vim.api.nvim_win_get_cursor(self._overview_win)[1]
+    local section_kind = self._section_line_map[row]
+    if section_kind then
+        self._vm:dispatch("toggle_section", { kind = section_kind })
+    end
+end
+
+--- `<CR>` in overview: select the row under cursor if it's a selectable
+--- item, or toggle the section if it's a section header / non-selectable
+--- line inside a section. This makes `<CR>` the universal "open this"
+--- key — items open in the inspector, sections open by expanding.
+function Layout:_select_or_toggle_under_cursor()
+    if not valid_win(self._overview_win) then return end
+    local row = vim.api.nvim_win_get_cursor(self._overview_win)[1]
+    if self._line_map[row] then
+        self._vm:dispatch("select_under_cursor")
+        return
+    end
     local section_kind = self._section_line_map[row]
     if section_kind then
         self._vm:dispatch("toggle_section", { kind = section_kind })

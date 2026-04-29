@@ -539,8 +539,8 @@ describe("ui v2 view model — hint bar", function()
         local labels = {}
         for _, h in ipairs(p.overview.hint_bar) do labels[h.key] = h.label end
         assert.equals("close", labels.q)
-        assert.equals("toggle", labels.o)
-        assert.equals("select", labels["<CR>"])
+        assert.equals("toggle section", labels.o)
+        assert.equals("select / toggle", labels["<CR>"])
         assert.equals("activate", labels.a)
     end)
 

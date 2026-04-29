@@ -113,13 +113,13 @@ local DEFAULT_COLLAPSED = {
 --- cursor and opens it in the inspector. Action keys (a/b/c/D/C)
 --- operate on whatever the cursor is on, regardless of inspector state.
 local OVERVIEW_HINT_BASE = {
-    { key = "<CR>",   label = "select" },
+    { key = "<CR>",   label = "select / toggle" },
     { key = "a",      label = "activate" },
     { key = "b",      label = "build" },
     { key = "c",      label = "configure" },
     { key = "D",      label = "delete" },
     { key = "C",      label = "clean" },
-    { key = "o",      label = "toggle" },
+    { key = "o",      label = "toggle section" },
     { key = "q",      label = "close" },
 }
 
