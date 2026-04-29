@@ -516,48 +516,36 @@ function Layout:_on_cursor_moved()
     end
 end
 
-function Layout:open()
+--- Open the workbench. `opts.layout` selects "tabpage" (default) or
+--- "float". Float configuration (margins, sizes, border) is read from
+--- `opts.float`.
+--- @param opts? { layout?: "tabpage"|"float", float?: table }
+function Layout:open(opts)
     if self:is_open() then
         vim.api.nvim_set_current_win(self._overview_win)
         return
     end
+    opts = opts or {}
 
-    -- Open in a new tab so we don't disturb existing layouts.
-    vim.cmd("tabnew")
-    self._tabpage = vim.api.nvim_get_current_tabpage()
-
-    -- Replace the empty buffer of the new tab with our overview buffer.
+    -- Buffers are created up front so both modes share the same set.
     self._overview_buf = vim.api.nvim_create_buf(false, true)
     set_buf_options(self._overview_buf, "loomworks://overview")
-    self._overview_win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(self._overview_win, self._overview_buf)
-    set_win_options(self._overview_win)
-
-    -- Vertical split for inspector on the right.
-    vim.cmd("rightbelow vsplit")
-    self._inspector_win = vim.api.nvim_get_current_win()
     self._inspector_buf = vim.api.nvim_create_buf(false, true)
     set_buf_options(self._inspector_buf, "loomworks://inspector")
-    vim.api.nvim_win_set_buf(self._inspector_win, self._inspector_buf)
-    set_win_options(self._inspector_win)
-
-    -- Bottom-spanning horizontal split for the activity strip.
-    vim.cmd("botright split")
-    self._activity_win = vim.api.nvim_get_current_win()
     self._activity_buf = vim.api.nvim_create_buf(false, true)
     set_buf_options(self._activity_buf, "loomworks://activity")
-    vim.api.nvim_win_set_buf(self._activity_win, self._activity_buf)
-    set_win_options(self._activity_win)
-    -- Keep the strip compact: ~25% of viewport height, capped at 12 lines.
-    local strip_h = math.min(12, math.max(6, math.floor(vim.o.lines * 0.25)))
-    pcall(vim.api.nvim_win_set_height, self._activity_win, strip_h)
 
-    -- Width split for the top: focus overview, set ~40/60.
-    vim.api.nvim_set_current_win(self._overview_win)
-    local total = vim.o.columns
-    local target = math.floor(total * 0.40)
-    if target > 20 then
-        pcall(vim.api.nvim_win_set_width, self._overview_win, target)
+    if opts.layout == "float" then
+        local ok, err = self:_open_floats(opts.float or {})
+        if not ok then
+            -- _open_floats only fails *before* creating any windows, so the
+            -- pre-created buffers are still valid; reuse them in tabpage mode.
+            vim.notify("loomworks v2: float layout unavailable (" .. tostring(err)
+                .. "), falling back to tabpage", vim.log.levels.WARN)
+            self:_open_tabpage()
+        end
+    else
+        self:_open_tabpage()
     end
 
     self:_setup_keymaps(self._overview_buf, "overview")
@@ -572,6 +560,126 @@ function Layout:open()
     -- overview (typically the active-profile row). Without this the cursor
     -- lands on the workspace-name header which is not selectable.
     self:_snap_to_first_selectable()
+end
+
+--- Open the workbench as a tabpage with three split windows.
+function Layout:_open_tabpage()
+    vim.cmd("tabnew")
+    self._tabpage = vim.api.nvim_get_current_tabpage()
+
+    -- Replace the empty buffer of the new tab with our overview buffer.
+    self._overview_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(self._overview_win, self._overview_buf)
+    set_win_options(self._overview_win)
+
+    -- Vertical split for inspector on the right.
+    vim.cmd("rightbelow vsplit")
+    self._inspector_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(self._inspector_win, self._inspector_buf)
+    set_win_options(self._inspector_win)
+
+    -- Bottom-spanning horizontal split for the activity strip.
+    vim.cmd("botright split")
+    self._activity_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(self._activity_win, self._activity_buf)
+    set_win_options(self._activity_win)
+    local strip_h = math.min(12, math.max(6, math.floor(vim.o.lines * 0.25)))
+    pcall(vim.api.nvim_win_set_height, self._activity_win, strip_h)
+
+    -- Width split for the top: focus overview, set ~40/60.
+    vim.api.nvim_set_current_win(self._overview_win)
+    local total = vim.o.columns
+    local target = math.floor(total * 0.40)
+    if target > 20 then
+        pcall(vim.api.nvim_win_set_width, self._overview_win, target)
+    end
+end
+
+--- Normalise a margin spec to a four-sided table.
+--- @param margin number|table|nil
+--- @return { top: integer, bottom: integer, left: integer, right: integer }
+local function normalise_margin(margin)
+    if type(margin) == "number" then
+        return { top = margin, bottom = margin, left = margin, right = margin }
+    end
+    if type(margin) == "table" then
+        return {
+            top    = margin.top    or 0,
+            bottom = margin.bottom or 0,
+            left   = margin.left   or 0,
+            right  = margin.right  or 0,
+        }
+    end
+    return { top = 2, bottom = 2, left = 2, right = 2 }
+end
+
+--- Open the workbench as three floating windows. Returns false + reason
+--- when the viewport is too small for the configured layout.
+--- @param float_opts table
+--- @return boolean ok, string? reason
+function Layout:_open_floats(float_opts)
+    local margin   = normalise_margin(float_opts.margin)
+    local border   = float_opts.border or "rounded"
+    local ow_prop  = float_opts.overview_width or 0.4
+    local ah_prop  = float_opts.activity_height or 0.25
+    local pane_gap = float_opts.pane_gap or 1
+
+    -- Borders take 2 cols/rows total per window. Subtract from inner sizes.
+    local border_pad = (border ~= "none" and border ~= nil and border ~= "") and 2 or 0
+
+    local viewport_w = vim.o.columns - margin.left - margin.right
+    -- Account for cmdline (cmdheight) + statusline (1) below the editor area.
+    local chrome_below = (vim.o.cmdheight or 1) + 1
+    local viewport_h = vim.o.lines - margin.top - margin.bottom - chrome_below
+
+    if viewport_w < 40 or viewport_h < 12 then
+        return false, "viewport too small"
+    end
+
+    local activity_outer_h = math.floor(viewport_h * ah_prop)
+    local top_outer_h      = viewport_h - activity_outer_h - pane_gap
+    local overview_outer_w = math.floor(viewport_w * ow_prop)
+    local inspector_outer_w = viewport_w - overview_outer_w - pane_gap
+
+    local overview_inner_w  = overview_outer_w  - border_pad
+    local inspector_inner_w = inspector_outer_w - border_pad
+    local top_inner_h       = top_outer_h       - border_pad
+    local activity_inner_w  = viewport_w        - border_pad
+    local activity_inner_h  = activity_outer_h  - border_pad
+
+    if overview_inner_w < 12 or inspector_inner_w < 12
+        or top_inner_h < 4 or activity_inner_h < 3 then
+        return false, "viewport too small for chosen proportions"
+    end
+
+    local function open_float(buf, row, col, w, h, title)
+        return vim.api.nvim_open_win(buf, false, {
+            relative  = "editor",
+            row       = row,
+            col       = col,
+            width     = w,
+            height    = h,
+            border    = border,
+            style     = "minimal",
+            title     = title and (" " .. title .. " ") or nil,
+            title_pos = title and "left" or nil,
+        })
+    end
+
+    self._overview_win = open_float(self._overview_buf,
+        margin.top, margin.left, overview_inner_w, top_inner_h, "Overview")
+    self._inspector_win = open_float(self._inspector_buf,
+        margin.top, margin.left + overview_outer_w + pane_gap,
+        inspector_inner_w, top_inner_h, "Inspector")
+    self._activity_win = open_float(self._activity_buf,
+        margin.top + top_outer_h + pane_gap, margin.left,
+        activity_inner_w, activity_inner_h, "Activity")
+
+    set_win_options(self._overview_win)
+    set_win_options(self._inspector_win)
+    set_win_options(self._activity_win)
+    vim.api.nvim_set_current_win(self._overview_win)
+    return true
 end
 
 --- Snap overview cursor to the first selectable row and seed the inspector.
@@ -604,18 +712,24 @@ function Layout:close()
         pcall(vim.api.nvim_del_augroup_by_id, self._autocmd_group)
         self._autocmd_group = nil
     end
-    -- Close the entire tabpage (this disposes both windows).
+    -- Tabpage mode: close the whole tabpage (disposes its windows).
+    -- Float mode: close each floating window individually.
     if self._tabpage and vim.api.nvim_tabpage_is_valid(self._tabpage) then
         local current = vim.api.nvim_get_current_tabpage()
         if current == self._tabpage then
             pcall(vim.cmd, "tabclose")
         else
-            -- Find tab number and close it
             for i, tp in ipairs(vim.api.nvim_list_tabpages()) do
                 if tp == self._tabpage then
                     pcall(vim.cmd, i .. "tabclose")
                     break
                 end
+            end
+        end
+    else
+        for _, win in ipairs({ self._overview_win, self._inspector_win, self._activity_win }) do
+            if win and vim.api.nvim_win_is_valid(win) then
+                pcall(vim.api.nvim_win_close, win, true)
             end
         end
     end
@@ -640,8 +754,9 @@ function Layout:close()
     self._inspector_add_map = {}
 end
 
-function Layout:toggle()
-    if self:is_open() then self:close() else self:open() end
+--- @param opts? table  passed to open() when toggling on
+function Layout:toggle(opts)
+    if self:is_open() then self:close() else self:open(opts) end
 end
 
 function Layout:schedule_refresh()

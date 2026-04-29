@@ -13,6 +13,35 @@ local view_model = nil
 --- @type loomworks.uiv2.Layout|nil
 local layout = nil
 
+--- User-tunable configuration. Set via `require("loomworks.ui.v2").setup({...})`.
+--- @class loomworks.uiv2.Config
+--- @field layout? "tabpage"|"float"
+--- @field float? loomworks.uiv2.FloatConfig
+local config = {
+    layout = "tabpage",
+    float = {
+        margin = 2,            -- gap between the workbench and editor edges (number or {top,bottom,left,right})
+        overview_width = 0.4,  -- proportion of viewport width
+        activity_height = 0.25,
+        pane_gap = 1,          -- gap between panes
+        border = "rounded",
+    },
+}
+
+--- Apply user configuration. Subsequent open()/toggle() calls will use the new
+--- settings; existing windows are not retroactively updated.
+--- @param opts loomworks.uiv2.Config
+function M.setup(opts)
+    if not opts then return end
+    config = vim.tbl_deep_extend("force", config, opts)
+end
+
+--- Returns a copy of the current config (test/debug helper).
+--- @return loomworks.uiv2.Config
+function M._config()
+    return vim.deepcopy(config)
+end
+
 local function ensure()
     if view_model and layout then return end
     local ViewModel = require("loomworks.ui.v2.view_model")
@@ -28,7 +57,7 @@ end
 
 function M.open()
     ensure()
-    layout:open()
+    layout:open(config)
 end
 
 function M.close()
@@ -37,7 +66,7 @@ end
 
 function M.toggle()
     ensure()
-    layout:toggle()
+    if layout:is_open() then layout:close() else layout:open(config) end
 end
 
 --- @return boolean

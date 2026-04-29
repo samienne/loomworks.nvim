@@ -209,6 +209,39 @@ describe("ui v2 layout — cursor navigation", function()
         layout:close()
     end)
 
+    it("opens in float layout when configured and viewport is large enough", function()
+        local _, vm, _, layout = make_setup()
+        -- Make sure the editor area is roomy enough for floats.
+        local saved_lines, saved_cols = vim.o.lines, vim.o.columns
+        vim.o.lines = math.max(saved_lines, 40)
+        vim.o.columns = math.max(saved_cols, 160)
+
+        layout:open({ layout = "float" })
+        -- All three pane buffers should be valid.
+        assert.is_true(vim.api.nvim_buf_is_valid(layout._overview_buf))
+        assert.is_true(vim.api.nvim_buf_is_valid(layout._inspector_buf))
+        assert.is_true(vim.api.nvim_buf_is_valid(layout._activity_buf))
+        -- And no tabpage was created (float mode reuses the current tab).
+        assert.is_nil(layout._tabpage)
+        layout:close()
+
+        vim.o.lines, vim.o.columns = saved_lines, saved_cols
+    end)
+
+    it("falls back to tabpage when float viewport is too small", function()
+        local _, vm, _, layout = make_setup()
+        local saved_lines, saved_cols = vim.o.lines, vim.o.columns
+        vim.o.lines = 10
+        vim.o.columns = 30
+
+        layout:open({ layout = "float" })
+        -- Tabpage path took over; tabpage handle should be set.
+        assert.is_not_nil(layout._tabpage)
+        layout:close()
+
+        vim.o.lines, vim.o.columns = saved_lines, saved_cols
+    end)
+
     it("clamps cursor to last line when buffer shrinks below cursor row", function()
         local ws, vm, _, layout = make_setup()
         layout:open()
