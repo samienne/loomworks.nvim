@@ -1886,6 +1886,123 @@ describe("ui v2 view model — wire mode (deploy)", function()
         assert.is_not_nil(proj.launch.debug.deploy["${build_dir}/new"])
     end)
 
+    it("source_project field is a picker with workspace project keys", function()
+        local ws = make_ws({
+            projects = {
+                App = { typescript = {}, launch = { debug = { command = "x" } } },
+                NativeLib = { cmake = {} },
+                Helper    = { cmake = {} },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        local p = vm:presentation()
+        local source_field
+        for _, f in ipairs(p.inspector.editable_fields) do
+            if f.id == "source_project" then source_field = f; break end
+        end
+        assert.is_not_nil(source_field)
+        assert.equals("picker", source_field.kind)
+        assert.is_table(source_field.choices)
+        local set = {}
+        for _, k in ipairs(source_field.choices) do set[k] = true end
+        assert.is_true(set.App)
+        assert.is_true(set.NativeLib)
+        assert.is_true(set.Helper)
+    end)
+
+    it("configuration choices reflect the chosen source project", function()
+        local ws = make_ws({
+            projects = {
+                App = { typescript = {}, launch = { debug = { command = "x" } } },
+                NativeLib = {
+                    cmake = {
+                        configurations = { ["asan"] = { inherits = "variant:Debug" } },
+                    },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        -- Initially no source_project — configuration choices should be empty.
+        local p1 = vm:presentation()
+        local cfg_field
+        for _, f in ipairs(p1.inspector.editable_fields) do
+            if f.id == "configuration" then cfg_field = f; break end
+        end
+        assert.is_table(cfg_field.choices)
+        assert.equals(0, #cfg_field.choices)
+
+        -- Set source_project; configuration choices should populate.
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "source_project" },
+            field_id = "source_project",
+            value    = "NativeLib",
+        })
+        local p2 = vm:presentation()
+        for _, f in ipairs(p2.inspector.editable_fields) do
+            if f.id == "configuration" then cfg_field = f; break end
+        end
+        assert.is_true(#cfg_field.choices > 0,
+            "configuration picker should show NativeLib's configs after selecting it")
+        local set = {}
+        for _, c in ipairs(cfg_field.choices) do set[c] = true end
+        assert.is_true(set["asan"], "user config asan should be a choice")
+    end)
+
+    it("inspector resolves destination ${...} variables when active profile is present", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App = { typescript = {}, launch = { debug = { command = "x" } } },
+                    NativeLib = { cmake = {} },
+                },
+                configuration_sets = {
+                    Debug = { App = "variant:default", NativeLib = "variant:Debug" },
+                },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "destination" },
+            field_id = "destination",
+            value    = "${workspace_root}/dist/${variant}/native.node",
+        })
+        local p = vm:presentation()
+        -- workspace_root is /root and variant for App in Debug set is "variant:default"
+        assert.is_truthy(p.inspector.resolved:find("/root/dist/"),
+            "expected workspace_root expanded; got " .. tostring(p.inspector.resolved))
+        assert.is_truthy(p.inspector.resolved:find("/native.node$"))
+    end)
+
+    it("inspector falls back to raw destination when no active profile", function()
+        local ws = make_ws({
+            projects = { App = { typescript = {}, launch = { debug = { command = "x" } } } },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "destination" },
+            field_id = "destination",
+            value    = "${workspace_root}/x",
+        })
+        local p = vm:presentation()
+        assert.equals("${workspace_root}/x", p.inspector.resolved)
+    end)
+
     it("set_field with boolean value coerces strings (true/false) for pre_build", function()
         local ws = setup_with_launch()
         local vm = make_vm(ws)

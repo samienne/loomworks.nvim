@@ -179,6 +179,18 @@ function Layout:_edit_inspector_under_cursor()
             })
             return
         end
+        if field.kind == "picker" and type(field.choices) == "table" and #field.choices > 0 then
+            local prompt = "Pick " .. (field.label or field.id or "value")
+            vim.ui.select(field.choices, { prompt = prompt }, function(choice)
+                if choice == nil then return end -- cancelled
+                self._vm:dispatch("set_field", {
+                    subject  = field.subject,
+                    field_id = field.id,
+                    value    = choice,
+                })
+            end)
+            return
+        end
         local prompt = (field.label or field.id or "value") .. ": "
         vim.ui.input({ prompt = prompt, default = tostring(field.value or "") }, function(input)
             if input == nil then return end -- cancelled
