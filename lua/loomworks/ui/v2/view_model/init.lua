@@ -56,6 +56,8 @@ function ViewModel.new(opts)
         _selection = Selection.new(),
         _section_state = {},
         _wire_draft = nil,
+        _recent_results = {},   -- ring buffer of completed task results (newest first)
+        _recent_results_max = opts.recent_results_max or 10,
         _subscribers = {},
         _event_handlers = {},
     }, ViewModel)
@@ -71,6 +73,27 @@ function ViewModel.new(opts)
             events = events_mod, event = ev, fn = on_event,
         }
     end
+
+    -- Separate handler for task_result that records completion details into
+    -- the recent-results ring buffer. The `on_event` handler above already
+    -- triggers a refresh; this one captures the payload.
+    local function on_task_result(result)
+        if type(result) ~= "table" then return end
+        table.insert(self._recent_results, 1, {
+            project_key       = result.project_key,
+            configuration_key = result.configuration_key,
+            action            = result.action,
+            success           = result.success and true or false,
+            variant           = result.variant,
+        })
+        while #self._recent_results > self._recent_results_max do
+            table.remove(self._recent_results)
+        end
+    end
+    events_mod.on("task_result", on_task_result)
+    self._event_handlers[#self._event_handlers + 1] = {
+        events = events_mod, event = "task_result", fn = on_task_result,
+    }
 
     return self
 end
@@ -137,7 +160,7 @@ function ViewModel:presentation()
 
     ov.hint_bar = OVERVIEW_HINT_BASE
 
-    local act = activity.build(ws)
+    local act = activity.build(ws, self._recent_results)
     act.hint_bar = {
         { key = "<C-w>k",  label = "focus overview" },
         { key = "q",       label = "close" },

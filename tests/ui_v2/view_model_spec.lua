@@ -2766,6 +2766,81 @@ describe("ui v2 view model — wire mode (deploy)", function()
     end)
 end)
 
+describe("ui v2 view model — recent results buffer", function()
+    it("captures task_result events into recent buffer (newest first)", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local events = fake_events()
+        local ViewModel = require("loomworks.ui.v2.view_model")
+        local vm = ViewModel.new({
+            workspace_provider = function() return ws end,
+            events = events,
+        })
+        events.emit("task_result", {
+            project_key = "App", configuration_key = "Debug",
+            action = "build", success = true,
+        })
+        events.emit("task_result", {
+            project_key = "App", configuration_key = "Debug",
+            action = "configure", success = false,
+        })
+        local p = vm:presentation()
+        assert.equals(2, p.activity.recent_count)
+        -- Newest first
+        assert.equals("configure", p.activity.recent[1].action)
+        assert.is_false(p.activity.recent[1].success)
+        assert.equals("build", p.activity.recent[2].action)
+        assert.is_true(p.activity.recent[2].success)
+    end)
+
+    it("recent buffer caps at the configured maximum", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local events = fake_events()
+        local ViewModel = require("loomworks.ui.v2.view_model")
+        local vm = ViewModel.new({
+            workspace_provider = function() return ws end,
+            events = events,
+            recent_results_max = 3,
+        })
+        for i = 1, 5 do
+            events.emit("task_result", {
+                project_key = "App", configuration_key = "C" .. i,
+                action = "build", success = true,
+            })
+        end
+        local p = vm:presentation()
+        assert.equals(3, p.activity.recent_count)
+        -- Newest entries kept
+        assert.equals("C5", p.activity.recent[1].configuration_key)
+        assert.equals("C4", p.activity.recent[2].configuration_key)
+        assert.equals("C3", p.activity.recent[3].configuration_key)
+    end)
+
+    it("activity_view renders recent results with success/failure marks", function()
+        local activity_view = require("loomworks.ui.v2.view.activity_view")
+        local lines, _ = activity_view.render({
+            has_workspace = true,
+            running_count = 0,
+            running       = {},
+            recent_count  = 2,
+            recent = {
+                { project_key = "A", configuration_key = "Debug",
+                  action = "build", success = false },
+                { project_key = "B", configuration_key = "Release",
+                  action = "configure", success = true },
+            },
+        })
+        local saw_recent_header, saw_fail, saw_ok = false, false, false
+        for _, line in ipairs(lines) do
+            if line:find("Recent") then saw_recent_header = true end
+            if line:find("✗") and line:find("A") then saw_fail = true end
+            if line:find("✓") and line:find("B") then saw_ok = true end
+        end
+        assert.is_true(saw_recent_header)
+        assert.is_true(saw_fail)
+        assert.is_true(saw_ok)
+    end)
+end)
+
 describe("ui v2 view model — events", function()
     it("emits a notification on subscribed events", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })

@@ -42,10 +42,15 @@ local function row_from_unit(unit)
 end
 
 --- @param workspace loomworks.Workspace|nil
+--- @param recent_results table[]|nil   newest-first list of TaskResult-like tables
 --- @return table presentation tree
-function M.build(workspace)
+function M.build(workspace, recent_results)
     if not workspace then
-        return { running = {}, running_count = 0, has_workspace = false }
+        return {
+            running = {}, running_count = 0,
+            recent = {},  recent_count = 0,
+            has_workspace = false,
+        }
     end
     local rows = {}
     for _, unit in pairs(workspace._config_units or {}) do
@@ -57,9 +62,12 @@ function M.build(workspace)
         if a.project_key ~= b.project_key then return a.project_key < b.project_key end
         return a.config_key < b.config_key
     end)
+    local recent = recent_results or {}
     return {
         running       = rows,
         running_count = #rows,
+        recent        = recent,
+        recent_count  = #recent,
         has_workspace = true,
     }
 end

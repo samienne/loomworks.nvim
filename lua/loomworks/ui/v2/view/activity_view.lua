@@ -72,20 +72,35 @@ function M.render(activity)
         ctx:add("")
         ctx:add("  no running tasks")
         ctx:hl_last_line("Comment")
-        return ctx.lines, ctx.highlights
+    else
+        for _, row in ipairs(activity.running or {}) do
+            local action = row.action or row.state or "?"
+            local subject = string.format("%s · %s", row.project_key, row.config_key)
+            local progress = fmt_progress(row)
+            local elapsed = fmt_elapsed(row.elapsed)
+            local message = row.message and ("  " .. row.message) or ""
+            local line = string.format("  %-9s %-40s %-12s %s%s",
+                action, subject, progress, elapsed, message)
+            ctx:add(line)
+            local hl = STATE_HL[row.state]
+            if hl then ctx:hl_last_line(hl) end
+        end
     end
 
-    for _, row in ipairs(activity.running or {}) do
-        local action = row.action or row.state or "?"
-        local subject = string.format("%s · %s", row.project_key, row.config_key)
-        local progress = fmt_progress(row)
-        local elapsed = fmt_elapsed(row.elapsed)
-        local message = row.message and ("  " .. row.message) or ""
-        local line = string.format("  %-9s %-40s %-12s %s%s",
-            action, subject, progress, elapsed, message)
-        ctx:add(line)
-        local hl = STATE_HL[row.state]
-        if hl then ctx:hl_last_line(hl) end
+    -- Recent results
+    if activity.recent_count and activity.recent_count > 0 then
+        ctx:add("")
+        ctx:add(string.format("Recent  (%d)", activity.recent_count))
+        ctx:hl_last_line("Identifier")
+        for _, r in ipairs(activity.recent or {}) do
+            local mark = r.success and "✓" or "✗"
+            local subject = string.format("%s · %s",
+                r.project_key or "?", r.configuration_key or "?")
+            local action = r.action or "?"
+            local line = string.format("  %s %-9s %s", mark, action, subject)
+            ctx:add(line)
+            ctx:hl_last_line(r.success and "LoomworksBuilt" or "LoomworksFailed")
+        end
     end
 
     return ctx.lines, ctx.highlights
