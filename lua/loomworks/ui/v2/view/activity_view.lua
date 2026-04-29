@@ -16,6 +16,9 @@ local STATE_HL = {
     build_failed     = "LoomworksFailed",
     unconfigured     = "LoomworksUnconfigured",
     unknown          = "LoomworksUnknown",
+    fresh            = "LoomworksBuilt",
+    stale            = "LoomworksUnknown",
+    pending          = "Comment",
 }
 
 local function fmt_elapsed(seconds)

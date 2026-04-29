@@ -70,6 +70,55 @@ local function source_rows(descriptor)
     return { descriptor }
 end
 
+--- Resolve a deploy destination against the launch project context.
+--- Returns nil when expansion can't be done.
+--- @param workspace loomworks.Workspace
+--- @param profile loomworks.Profile
+--- @param project loomworks.Project
+--- @param raw_destination string
+--- @return string|nil expanded
+local function resolve_destination(workspace, profile, project, raw_destination)
+    if not raw_destination or raw_destination == "" then return nil end
+    local ok_expand, expand = pcall(require, "loomworks.expand")
+    if not ok_expand then return raw_destination end
+    local ok_ctx, ctx = pcall(expand.launch_context, workspace, profile, project)
+    if not ok_ctx or not ctx then return raw_destination end
+    local ok_exp, expanded = pcall(expand.expand_string, raw_destination, ctx)
+    return ok_exp and expanded or raw_destination
+end
+
+--- Apply the workspace's path normaliser when available, otherwise identity.
+--- @param workspace loomworks.Workspace
+--- @param path string
+--- @return string
+local function normalize_path(workspace, path)
+    local n = workspace and workspace._core and workspace._core._deps
+        and workspace._core._deps.normalize
+    if type(n) == "function" then
+        local ok, result = pcall(n, path)
+        if ok and type(result) == "string" then return result end
+    end
+    return path
+end
+
+--- Compute the freshness state for a deploy step entry.
+--- v0: records[normalized_dest] present → "fresh", else → "pending".
+--- A real freshness check would compare source_build_dir / source_rel_path /
+--- source_mtime to the current source, which requires module-aware target
+--- resolution; deferred.
+--- @param workspace loomworks.Workspace
+--- @param profile loomworks.Profile
+--- @param launch_project loomworks.Project
+--- @param raw_destination string
+--- @return string state
+local function deploy_state(workspace, profile, launch_project, raw_destination)
+    local resolved = resolve_destination(workspace, profile, launch_project, raw_destination)
+    if not resolved then return "pending" end
+    local key = normalize_path(workspace, resolved)
+    local records = workspace._deploy_records or {}
+    return records[key] and "fresh" or "pending"
+end
+
 --- Build plan steps: build per project, pre-build deploy, post-build deploy, launch.
 --- @param workspace loomworks.Workspace
 --- @return table[]   { kind, label, state, ... }
@@ -107,6 +156,7 @@ local function build_plan_steps(workspace)
     if launch and type(launch.deploy) == "table" then
         local pre, post = {}, {}
         for dest, src in pairs(launch.deploy) do
+            local state = deploy_state(workspace, profile, target_project, dest)
             for _, source in ipairs(source_rows(src)) do
                 local entry = {
                     kind        = source.pre_build and "deploy_pre" or "deploy_post",
@@ -114,7 +164,7 @@ local function build_plan_steps(workspace)
                                   .. dest .. "  ←  " .. tostring(source.project or "?"),
                     destination = dest,
                     source      = source,
-                    state       = "pending",
+                    state       = state,
                 }
                 if source.pre_build then pre[#pre + 1] = entry
                 else                     post[#post + 1] = entry end

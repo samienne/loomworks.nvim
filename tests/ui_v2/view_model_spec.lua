@@ -2897,6 +2897,65 @@ describe("ui v2 view model — plan mode", function()
         assert.equals(1, kinds.launch)
     end)
 
+    it("plan mode marks deploy steps as fresh when a deploy_record exists", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App = {
+                        typescript = {},
+                        launch = {
+                            debug = {
+                                command = "node",
+                                deploy = {
+                                    ["${workspace_root}/dist/x.so"] = {
+                                        project = "B", path = "x.so",
+                                    },
+                                    ["${workspace_root}/dist/y.so"] = {
+                                        project = "B", path = "y.so",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    B = { cmake = {} },
+                },
+                configuration_sets = {
+                    Debug = { App = "variant:default", B = "variant:Debug" },
+                },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        for _, p in pairs(ws._profiles or {}) do
+            if p.key == "Debug" then
+                p._default_target_descriptor = { project = "App", launch = "debug" }
+            end
+        end
+        -- Pre-populate a deploy record for the first destination.
+        ws._deploy_records = {
+            ["/root/dist/x.so"] = {
+                source_build_dir = "build/B/Debug",
+                source_rel_path = "x.so",
+                source_mtime = "2026-01-01T00:00:00Z",
+            },
+        }
+
+        local vm = make_vm(ws)
+        vm:dispatch("toggle_activity_mode")
+        local p = vm:presentation()
+        local fresh_count, pending_count = 0, 0
+        for _, step in ipairs(p.activity.plan_steps) do
+            if step.kind == "deploy_post" then
+                if step.state == "fresh"   then fresh_count   = fresh_count   + 1 end
+                if step.state == "pending" then pending_count = pending_count + 1 end
+            end
+        end
+        assert.equals(1, fresh_count)
+        assert.equals(1, pending_count)
+    end)
+
     it("plan mode renders a profile_key when an active profile exists", function()
         local ws = make_ws(
             {
