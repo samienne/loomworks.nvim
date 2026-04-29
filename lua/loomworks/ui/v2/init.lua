@@ -18,7 +18,7 @@ local layout = nil
 --- @field layout? "tabpage"|"float"
 --- @field float? loomworks.uiv2.FloatConfig
 local config = {
-    layout = "tabpage",
+    layout = "float",
     float = {
         margin = 2,            -- gap between the workbench and editor edges (number or {top,bottom,left,right})
         overview_width = 0.4,  -- proportion of viewport width
