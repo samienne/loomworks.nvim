@@ -436,6 +436,41 @@ function ViewModel:_set_field(subject, field_id, value)
         local ok = proj:save_variable(subject.var_name, updated)
         if ok then self:_notify() end
         return ok and true or false
+    elseif subject.kind == "launch_arg" then
+        local proj = find_project(ws, subject.project_key)
+        if not proj then return false end
+        local launch = proj.launch and proj.launch[subject.launch_name]
+        if not launch then return false end
+        local args = vim.deepcopy(launch.args or {})
+        local idx = subject.index
+        if not idx or idx < 1 then return false end
+        if value == nil or value == "" then
+            -- Empty value removes the arg.
+            table.remove(args, idx)
+        else
+            args[idx] = value
+        end
+        local updated = vim.tbl_extend("force", {}, launch)
+        updated.args = (#args > 0) and args or nil
+        local ok = proj:save_launch_config(subject.launch_name, updated)
+        if ok then self:_notify() end
+        return ok and true or false
+    elseif subject.kind == "launch_env" then
+        local proj = find_project(ws, subject.project_key)
+        if not proj then return false end
+        local launch = proj.launch and proj.launch[subject.launch_name]
+        if not launch then return false end
+        local env = vim.deepcopy(launch.env or {})
+        if value == nil or value == "" then
+            env[subject.key] = nil
+        else
+            env[subject.key] = value
+        end
+        local updated = vim.tbl_extend("force", {}, launch)
+        updated.env = next(env) and env or nil
+        local ok = proj:save_launch_config(subject.launch_name, updated)
+        if ok then self:_notify() end
+        return ok and true or false
     elseif subject.kind == "wire_draft" then
         if not self._wire_draft then return false end
         local f = field_id  -- wire kinds use the field name as the id directly,
@@ -490,6 +525,12 @@ function ViewModel:_add_item(kind, parent, name, extra)
     if kind == "deploy_step" then
         return self:_add_deploy_step(parent, name, extra)
     end
+    if kind == "launch_arg" then
+        return self:_add_launch_arg(parent, name)
+    end
+    if kind == "launch_env" then
+        return self:_add_launch_env(parent, name)
+    end
 
     if parent.kind ~= "project" then return false end
     local proj = find_project(ws, parent.key)
@@ -519,6 +560,47 @@ function ViewModel:_add_item(kind, parent, name, extra)
         if new_ref then self._selection:pin(new_ref) end
         self:_notify()
     end
+    return ok and true or false
+end
+
+--- Append a new arg to a launch's args array.
+--- @param parent table  { kind = "launch", project_key, launch_name }
+--- @param value string  the arg value
+--- @return boolean ok
+function ViewModel:_add_launch_arg(parent, value)
+    if parent.kind ~= "launch" then return false end
+    local ws = self._workspace_provider()
+    local proj = find_project(ws, parent.project_key)
+    if not proj then return false end
+    local launch = proj.launch and proj.launch[parent.launch_name]
+    if not launch then return false end
+    local args = vim.deepcopy(launch.args or {})
+    args[#args + 1] = value
+    local updated = vim.tbl_extend("force", {}, launch)
+    updated.args = args
+    local ok = proj:save_launch_config(parent.launch_name, updated)
+    if ok then self:_notify() end
+    return ok and true or false
+end
+
+--- Add a new env entry to a launch (with an empty value the user can `e`-edit).
+--- @param parent table
+--- @param key string  env variable name
+--- @return boolean ok
+function ViewModel:_add_launch_env(parent, key)
+    if parent.kind ~= "launch" then return false end
+    local ws = self._workspace_provider()
+    local proj = find_project(ws, parent.project_key)
+    if not proj then return false end
+    local launch = proj.launch and proj.launch[parent.launch_name]
+    if not launch then return false end
+    local env = vim.deepcopy(launch.env or {})
+    if env[key] ~= nil then return false end -- already exists; edit instead
+    env[key] = ""
+    local updated = vim.tbl_extend("force", {}, launch)
+    updated.env = env
+    local ok = proj:save_launch_config(parent.launch_name, updated)
+    if ok then self:_notify() end
     return ok and true or false
 end
 

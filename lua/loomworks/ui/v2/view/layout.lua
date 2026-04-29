@@ -271,6 +271,10 @@ function Layout:_handle_add(descriptor)
         prompt = "New launch name: "
     elseif descriptor.kind == "configuration" then
         prompt = "New configuration name: "
+    elseif descriptor.kind == "launch_arg" then
+        prompt = "New arg value: "
+    elseif descriptor.kind == "launch_env" then
+        prompt = "New env variable name: "
     else
         return
     end

@@ -339,8 +339,12 @@ local function render_launch(insp, ctx)
         ctx:comment("  (none)")
     else
         for _, a in ipairs(insp.args) do
-            ctx:add("  " .. a)
+            ctx:add_editable("  " .. tostring(a.value), a.edit)
         end
+    end
+    if insp.add_actions and insp.add_actions.arg then
+        ctx:add_creator("  " .. insp.add_actions.arg.label, insp.add_actions.arg)
+        ctx:hl_last_line("LoomworksActionable")
     end
     ctx:add("")
 
@@ -349,8 +353,12 @@ local function render_launch(insp, ctx)
         ctx:comment("  (none)")
     else
         for _, e in ipairs(insp.env) do
-            ctx:add(string.format("  %s = %s", e.key, e.value))
+            ctx:add_editable(string.format("  %s = %s", e.key, tostring(e.value)), e.edit)
         end
+    end
+    if insp.add_actions and insp.add_actions.env then
+        ctx:add_creator("  " .. insp.add_actions.env.label, insp.add_actions.env)
+        ctx:hl_last_line("LoomworksActionable")
     end
     ctx:add("")
 

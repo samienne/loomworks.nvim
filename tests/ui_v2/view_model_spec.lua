@@ -509,7 +509,9 @@ describe("ui v2 view model — launch inspector", function()
         assert.equals("debug", insp.subject)
         assert.equals("App", insp.project_key)
         assert.equals("node", insp.command)
-        assert.same({ "app.js", "--port", "9229" }, insp.args)
+        local arg_values = {}
+        for i, a in ipairs(insp.args) do arg_values[i] = a.value end
+        assert.same({ "app.js", "--port", "9229" }, arg_values)
         assert.equals(1, #insp.env)
         assert.equals("NODE_ENV", insp.env[1].key)
         assert.equals("development", insp.env[1].value)
@@ -1692,6 +1694,162 @@ describe("ui v2 view model — delete_inspector_subject", function()
         })
         vm:dispatch("delete_inspector_subject")
         -- Should not raise; project state unchanged
+    end)
+end)
+
+describe("ui v2 view model — launch args / env editing", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    it("set_field on a launch_arg updates the indexed arg", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = { debug = { command = "node", args = { "old", "stay" } } },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "launch_arg", project_key = "App",
+                         launch_name = "debug", index = 1 },
+            field_id = "arg:1",
+            value    = "new",
+        })
+        local proj = find_project(ws, "App")
+        assert.same({ "new", "stay" }, proj.launch.debug.args)
+    end)
+
+    it("set_field with empty value on a launch_arg removes the entry", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = { debug = { command = "node", args = { "a", "b", "c" } } },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "launch_arg", project_key = "App",
+                         launch_name = "debug", index = 2 },
+            field_id = "arg:2",
+            value    = "",
+        })
+        local proj = find_project(ws, "App")
+        assert.same({ "a", "c" }, proj.launch.debug.args)
+    end)
+
+    it("add_item kind=launch_arg appends to the args array", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = { debug = { command = "node", args = { "first" } } },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "launch_arg",
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+            name   = "second",
+        })
+        local proj = find_project(ws, "App")
+        assert.same({ "first", "second" }, proj.launch.debug.args)
+    end)
+
+    it("set_field on a launch_env updates the value", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = { command = "node",
+                                  env = { NODE_ENV = "dev", DEBUG = "false" } },
+                    },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "launch_env", project_key = "App",
+                         launch_name = "debug", key = "DEBUG" },
+            field_id = "env:DEBUG",
+            value    = "true",
+        })
+        local proj = find_project(ws, "App")
+        assert.equals("true", proj.launch.debug.env.DEBUG)
+        assert.equals("dev",  proj.launch.debug.env.NODE_ENV)
+    end)
+
+    it("set_field with empty value on a launch_env removes the entry", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = { command = "node",
+                                  env = { NODE_ENV = "dev", DEBUG = "x" } },
+                    },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("set_field", {
+            subject  = { kind = "launch_env", project_key = "App",
+                         launch_name = "debug", key = "DEBUG" },
+            field_id = "env:DEBUG",
+            value    = "",
+        })
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.launch.debug.env.DEBUG)
+        assert.equals("dev", proj.launch.debug.env.NODE_ENV)
+    end)
+
+    it("add_item kind=launch_env adds a key with empty value to be edited", function()
+        local ws = make_ws({
+            projects = {
+                App = { typescript = {}, launch = { debug = { command = "node" } } },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("add_item", {
+            kind   = "launch_env",
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+            name   = "PATH",
+        })
+        local proj = find_project(ws, "App")
+        assert.equals("", proj.launch.debug.env.PATH)
+    end)
+
+    it("launch inspector emits editable_at_line for each arg and env entry", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = { command = "node", args = { "x" }, env = { K = "v" } },
+                    },
+                },
+            },
+        })
+        local inspector = require("loomworks.ui.v2.view_model.inspector")
+        local insp = inspector.build(ws, {
+            kind = "launch", project_key = "App", launch_name = "debug",
+        })
+        local inspector_view = require("loomworks.ui.v2.view.inspector_view")
+        local _, _, _, edit_map = inspector_view.render(insp)
+
+        local saw_arg, saw_env = false, false
+        for _, field in pairs(edit_map) do
+            if field.subject and field.subject.kind == "launch_arg" then saw_arg = true end
+            if field.subject and field.subject.kind == "launch_env" then saw_env = true end
+        end
+        assert.is_true(saw_arg)
+        assert.is_true(saw_env)
     end)
 end)
 

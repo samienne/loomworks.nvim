@@ -28,22 +28,55 @@ local function find_launch(project, launch_name)
 end
 
 --- @param launch table
---- @return table[]
-local function args_list(launch)
+--- @param subject_ref table  the launch's subject ref (project_key, launch_name)
+--- @return table[]   { value, edit }
+local function args_list(launch, subject_ref)
     local out = {}
     if type(launch.args) == "table" then
-        for i, a in ipairs(launch.args) do out[i] = tostring(a) end
+        for i, a in ipairs(launch.args) do
+            out[i] = {
+                value = tostring(a),
+                edit = {
+                    id    = "arg:" .. tostring(i),
+                    label = "Arg " .. tostring(i),
+                    value = tostring(a),
+                    kind  = "string",
+                    subject = {
+                        kind        = "launch_arg",
+                        project_key = subject_ref.project_key,
+                        launch_name = subject_ref.launch_name,
+                        index       = i,
+                    },
+                },
+            }
+        end
     end
     return out
 end
 
 --- @param launch table
---- @return table[]
-local function env_list(launch)
+--- @param subject_ref table
+--- @return table[]   { key, value, edit }
+local function env_list(launch, subject_ref)
     local out = {}
     if type(launch.env) == "table" then
         for k, v in pairs(launch.env) do
-            out[#out + 1] = { key = k, value = tostring(v) }
+            out[#out + 1] = {
+                key = k,
+                value = tostring(v),
+                edit = {
+                    id    = "env:" .. k,
+                    label = "Env " .. k,
+                    value = tostring(v),
+                    kind  = "string",
+                    subject = {
+                        kind        = "launch_env",
+                        project_key = subject_ref.project_key,
+                        launch_name = subject_ref.launch_name,
+                        key         = k,
+                    },
+                },
+            }
         end
         table.sort(out, function(a, b) return a.key < b.key end)
     end
@@ -130,8 +163,8 @@ function M.build(workspace, ref)
         missing         = false,
         command         = launch.command,
         working_dir     = launch.working_dir,
-        args            = args_list(launch),
-        env             = env_list(launch),
+        args            = args_list(launch, subject_ref),
+        env             = env_list(launch, subject_ref),
         debug           = debug_languages(launch),
         deploy_count    = deploy_count(launch),
         deploy_steps    = deploy_rows(launch, project.key, ref.launch_name),
@@ -142,6 +175,16 @@ function M.build(workspace, ref)
               value = launch.working_dir, kind = "string", subject = subject_ref },
         },
         add_actions = {
+            arg = {
+                kind = "launch_arg",
+                parent = subject_ref,
+                label = "+ Add arg",
+            },
+            env = {
+                kind = "launch_env",
+                parent = subject_ref,
+                label = "+ Add env var",
+            },
             deploy_step = {
                 kind = "deploy_step",
                 parent = subject_ref,
