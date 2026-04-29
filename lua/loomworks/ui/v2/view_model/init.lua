@@ -58,6 +58,7 @@ function ViewModel.new(opts)
         _wire_draft = nil,
         _recent_results = {},   -- ring buffer of completed task results (newest first)
         _recent_results_max = opts.recent_results_max or 10,
+        _activity_mode = opts.activity_mode or "live",  -- "live" | "plan"
         _subscribers = {},
         _event_handlers = {},
     }, ViewModel)
@@ -160,8 +161,9 @@ function ViewModel:presentation()
 
     ov.hint_bar = OVERVIEW_HINT_BASE
 
-    local act = activity.build(ws, self._recent_results)
+    local act = activity.build(ws, self._recent_results, self._activity_mode)
     act.hint_bar = {
+        { key = "m",       label = "mode (" .. (self._activity_mode == "plan" and "plan" or "live") .. ")" },
         { key = "<C-w>k",  label = "focus overview" },
         { key = "q",       label = "close" },
     }
@@ -214,6 +216,9 @@ function ViewModel:dispatch(action, payload)
             local ref = overview.ref_at(ov, c.section, c.row)
             if ref then self._selection:pin(ref) end
         end
+        self:_notify()
+    elseif action == "toggle_activity_mode" then
+        self._activity_mode = (self._activity_mode == "plan") and "live" or "plan"
         self:_notify()
     elseif action == "toggle_section" then
         assert(payload and payload.kind, "toggle_section requires { kind }")

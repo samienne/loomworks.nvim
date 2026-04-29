@@ -2766,6 +2766,135 @@ describe("ui v2 view model — wire mode (deploy)", function()
     end)
 end)
 
+describe("ui v2 view model — plan mode", function()
+    local function find_profile(ws, key)
+        for _, p in pairs(ws._profiles or {}) do if p.key == key then return p end end
+    end
+
+    it("toggle_activity_mode swaps between live and plan", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local vm = make_vm(ws)
+        assert.equals("live", vm:presentation().activity.mode)
+        vm:dispatch("toggle_activity_mode")
+        assert.equals("plan", vm:presentation().activity.mode)
+        vm:dispatch("toggle_activity_mode")
+        assert.equals("live", vm:presentation().activity.mode)
+    end)
+
+    it("plan mode shows a build step per project in the active profile", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App   = { cmake = {} },
+                    Helper = { cmake = {} },
+                },
+                configuration_sets = {
+                    Debug = { App = "variant:Debug", Helper = "variant:Debug" },
+                },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        local vm = make_vm(ws)
+        vm:dispatch("toggle_activity_mode")
+        local p = vm:presentation()
+        assert.equals("plan", p.activity.mode)
+        local build_count = 0
+        for _, step in ipairs(p.activity.plan_steps) do
+            if step.kind == "build" then build_count = build_count + 1 end
+        end
+        assert.equals(2, build_count)
+    end)
+
+    it("plan mode includes deploy steps split by phase + a launch step", function()
+        local ws = make_ws(
+            {
+                projects = {
+                    App = {
+                        typescript = {},
+                        launch = {
+                            debug = {
+                                command = "node",
+                                deploy = {
+                                    ["${build_dir}/native.node"] = {
+                                        project = "NativeLib", target = "native_lib",
+                                    },
+                                    ["${workspace_root}/lib/x.so"] = {
+                                        project = "NativeLib", path = "x.so", pre_build = true,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    NativeLib = { cmake = {} },
+                },
+                configuration_sets = {
+                    Debug = { App = "variant:default", NativeLib = "variant:Debug" },
+                },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+                default_target = { Debug = { project = "App", launch = "debug" } },
+            }
+        )
+        local profile = find_profile(ws, "Debug")
+        profile._default_target_descriptor = { project = "App", launch = "debug" }
+        local vm = make_vm(ws)
+        vm:dispatch("toggle_activity_mode")
+        local p = vm:presentation()
+        local kinds = {}
+        for _, step in ipairs(p.activity.plan_steps) do
+            kinds[step.kind] = (kinds[step.kind] or 0) + 1
+        end
+        assert.is_true((kinds.deploy_pre  or 0) >= 1)
+        assert.is_true((kinds.deploy_post or 0) >= 1)
+        assert.equals(1, kinds.launch)
+    end)
+
+    it("plan mode renders a profile_key when an active profile exists", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "variant:Debug" } },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        local vm = make_vm(ws)
+        vm:dispatch("toggle_activity_mode")
+        local p = vm:presentation()
+        assert.equals("Debug", p.activity.profile_key)
+    end)
+
+    it("activity_view renders plan-mode rows with state glyphs", function()
+        local activity_view = require("loomworks.ui.v2.view.activity_view")
+        local lines, _ = activity_view.render({
+            mode          = "plan",
+            has_workspace = true,
+            profile_key   = "Debug",
+            plan_steps = {
+                { kind = "build", label = "App (build)", state = "built" },
+                { kind = "build", label = "Other (build)", state = "configure_failed" },
+                { kind = "launch", label = "Launch App.debug", state = "pending" },
+            },
+        })
+        local has_app, has_other, has_launch = false, false, false
+        for _, l in ipairs(lines) do
+            if l:find("App %(build%)") then has_app = true end
+            if l:find("Other %(build%)") then has_other = true end
+            if l:find("Launch App.debug") then has_launch = true end
+        end
+        assert.is_true(has_app)
+        assert.is_true(has_other)
+        assert.is_true(has_launch)
+    end)
+end)
+
 describe("ui v2 view model — recent results buffer", function()
     it("captures task_result events into recent buffer (newest first)", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })

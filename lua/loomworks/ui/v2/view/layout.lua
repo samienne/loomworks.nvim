@@ -113,6 +113,8 @@ function Layout:_setup_keymaps(buf, kind)
         map("E",    function() self:_open_wire_form_for_subject() end)
         map("D",    function() self:_confirm_then_delete_inspector_subject() end)
         map("R",    function() self:_rename_inspector_subject_prompt() end)
+    elseif kind == "activity" then
+        map("m",    function() self._vm:dispatch("toggle_activity_mode") end)
     end
 end
 
