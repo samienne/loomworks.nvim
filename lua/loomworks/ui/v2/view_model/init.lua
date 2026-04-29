@@ -321,6 +321,12 @@ function ViewModel:resolve_action_target()
         end
     elseif ref.kind == "orphan_config" then
         return { kind = "orphan_config", target = ref.key, profile = nil }
+    elseif ref.kind == "config_set" then
+        for _, cs in pairs(ws._config_sets or {}) do
+            if cs.name == ref.key then
+                return { kind = "config_set", target = cs, profile = nil }
+            end
+        end
     end
     return nil
 end
@@ -357,6 +363,13 @@ function ViewModel:_dispatch_action_at_cursor(action_name)
         elseif t.kind == "orphan_config" then
             self:_delete_orphan(t.target)
             return true
+        elseif t.kind == "config_set" then
+            local ws = self._workspace_provider()
+            if ws and ws.remove_configuration_set then
+                ws:remove_configuration_set(t.target)
+                self:_notify()
+                return true
+            end
         end
     elseif action_name == "clean" then
         if t.kind == "profile" and t.target.clean then
@@ -987,6 +1000,28 @@ function ViewModel:_delete_inspector_subject()
             self:_notify()
         end
         return ok and true or false
+    elseif insp.kind == "config_set" then
+        local cs
+        for _, c in pairs(ws._config_sets or {}) do
+            if c.name == insp.subject then cs = c; break end
+        end
+        if not cs or not ws.remove_configuration_set then return false end
+        local ok = ws:remove_configuration_set(cs)
+        if ok then
+            self._selection:unpin()
+            self:_notify()
+        end
+        return ok and true or false
+    elseif insp.kind == "profile" then
+        local profile
+        for _, p in pairs(ws._profiles or {}) do
+            if p.key == insp.subject then profile = p; break end
+        end
+        if not profile or not profile.delete then return false end
+        profile:delete()
+        self._selection:unpin()
+        self:_notify()
+        return true
     end
     return false
 end

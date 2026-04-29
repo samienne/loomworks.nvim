@@ -157,7 +157,12 @@ function Layout:_confirm_then_delete_inspector_subject()
     if not insp or insp.kind == "empty" or insp.missing then return end
     -- Limit to kinds the view model can delete.
     local supported = {
-        deploy_step = true, variable = true, launch = true, configuration = true,
+        deploy_step   = true,
+        variable      = true,
+        launch        = true,
+        configuration = true,
+        config_set    = true,
+        profile       = true,
     }
     if not supported[insp.kind] then return end
     local desc
@@ -173,6 +178,11 @@ function Layout:_confirm_then_delete_inspector_subject()
     elseif insp.kind == "configuration" then
         desc = string.format("delete configuration '%s' from project '%s'?",
             insp.subject, insp.project_key)
+    elseif insp.kind == "config_set" then
+        desc = string.format("delete configuration set '%s'? (profiles using it become stale)",
+            insp.subject)
+    elseif insp.kind == "profile" then
+        desc = string.format("delete profile '%s'? (clears its cached configs)", insp.subject)
     end
     if vim.fn.confirm(desc, "&Yes\n&No", 2) == 1 then
         self._vm:dispatch("delete_inspector_subject")
@@ -240,6 +250,10 @@ function Layout:_confirm_then_dispatch(action_name)
         desc = string.format("%s config %s/%s?", action_name, pkey, ckey)
     elseif target.kind == "orphan_config" then
         desc = string.format("delete orphaned cache entry '%s'?", tostring(target.target))
+    elseif target.kind == "config_set" then
+        if action_name ~= "delete" then return end
+        desc = string.format("delete configuration set '%s'? (profiles using it become stale)",
+            target.target.name)
     else
         return
     end

@@ -1685,6 +1685,49 @@ describe("ui v2 view model — delete_inspector_subject", function()
         assert.is_nil(proj.variables and proj.variables.x)
     end)
 
+    it("deletes a configuration set", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = {
+                Debug   = { App = "variant:Debug" },
+                Release = { App = "variant:Release" },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", { ref = { kind = "config_set", key = "Debug" } })
+        vm:dispatch("delete_inspector_subject")
+
+        local has_debug, has_release = false, false
+        for _, cs in pairs(ws._config_sets or {}) do
+            if cs.name == "Debug"   then has_debug = true   end
+            if cs.name == "Release" then has_release = true end
+        end
+        assert.is_false(has_debug)
+        assert.is_true(has_release)
+    end)
+
+    it("act_under_cursor delete on a config_set ref removes the set", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} } },
+            configuration_sets = { Debug = { App = "variant:Debug" } },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("toggle_section", { kind = "config_sets" })
+        local p = vm:presentation()
+        local cs_idx
+        for i, s in ipairs(p.overview.sections) do
+            if s.kind == "config_sets" then cs_idx = i; break end
+        end
+        vm:dispatch("cursor_to", { section = cs_idx, row = 1 })
+        vm:dispatch("act_under_cursor", { action = "delete" })
+
+        local has_debug = false
+        for _, cs in pairs(ws._config_sets or {}) do
+            if cs.name == "Debug" then has_debug = true; break end
+        end
+        assert.is_false(has_debug)
+    end)
+
     it("does nothing when inspector is empty or missing", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
         local vm = make_vm(ws)
