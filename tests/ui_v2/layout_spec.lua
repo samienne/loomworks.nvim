@@ -242,6 +242,30 @@ describe("ui v2 layout — cursor navigation", function()
         vim.o.lines, vim.o.columns = saved_lines, saved_cols
     end)
 
+    it("VimResized reflows the float layout to the new viewport", function()
+        local _, _, _, layout = make_setup()
+        local saved_lines, saved_cols = vim.o.lines, vim.o.columns
+        vim.o.lines = 40
+        vim.o.columns = 160
+
+        layout:open({ layout = "float", float = { margin = 2, pane_gap = 0 } })
+        assert.is_true(vim.api.nvim_win_is_valid(layout._overview_win))
+        local before_w = vim.api.nvim_win_get_config(layout._overview_win).width
+
+        -- Resize the editor and fire VimResized.
+        vim.o.columns = 200
+        vim.cmd("doautocmd VimResized")
+        vim.wait(50)
+
+        local after_w = vim.api.nvim_win_get_config(layout._overview_win).width
+        assert.is_true(after_w > before_w,
+            "overview width should grow after viewport widens, got " ..
+            tostring(before_w) .. " → " .. tostring(after_w))
+
+        layout:close()
+        vim.o.lines, vim.o.columns = saved_lines, saved_cols
+    end)
+
     it("clamps cursor to last line when buffer shrinks below cursor row", function()
         local ws, vm, _, layout = make_setup()
         layout:open()

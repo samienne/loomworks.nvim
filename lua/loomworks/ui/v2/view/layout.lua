@@ -27,6 +27,7 @@ local activity_view  = require("loomworks.ui.v2.view.activity_view")
 --- @field _inspector_drill_map table<integer, table>
 --- @field _inspector_edit_map table<integer, table>
 --- @field _inspector_add_map table<integer, table>
+--- @field _float_opts table|nil  saved when float mode opens, used by VimResized
 --- @field _unsubscribe (fun())|nil
 --- @field _refresh_scheduled boolean
 --- @field _autocmd_group integer|nil
@@ -54,6 +55,7 @@ function Layout.new(vm)
         _inspector_drill_map = {},
         _inspector_edit_map = {},
         _inspector_add_map = {},
+        _float_opts = nil,
         _unsubscribe = nil,
         _refresh_scheduled = false,
         _autocmd_group = nil,
@@ -554,6 +556,16 @@ function Layout:_install_cursor_autocmd()
         buffer = self._overview_buf,
         callback = function() self:close() end,
     })
+    -- Reflow floats when the editor is resized. No-op for tabpage mode
+    -- (the saved _float_opts is nil there).
+    vim.api.nvim_create_autocmd("VimResized", {
+        group = self._autocmd_group,
+        callback = function()
+            if self:is_open() and self._float_opts then
+                vim.schedule(function() self:_reflow_floats() end)
+            end
+        end,
+    })
 end
 
 function Layout:_on_cursor_moved()
@@ -662,27 +674,28 @@ local function normalise_margin(margin)
     return { top = 2, bottom = 2, left = 2, right = 2 }
 end
 
---- Open the workbench as three floating windows. Returns false + reason
---- when the viewport is too small for the configured layout.
+--- Compute the per-pane window geometry from a float_opts table and the
+--- current viewport dimensions. Returned table has the shape used by
+--- nvim_open_win / nvim_win_set_config (relative, row, col, width, height,
+--- border, style, title, title_pos), one entry per pane.
 --- @param float_opts table
---- @return boolean ok, string? reason
-function Layout:_open_floats(float_opts)
+--- @return { overview: table, inspector: table, activity: table }|nil geometry
+--- @return string|nil reason  set when geometry can't be computed
+local function compute_float_geometry(float_opts)
     local margin   = normalise_margin(float_opts.margin)
     local border   = float_opts.border or "rounded"
     local ow_prop  = float_opts.overview_width or 0.4
     local ah_prop  = float_opts.activity_height or 0.25
-    local pane_gap = float_opts.pane_gap or 1
+    local pane_gap = float_opts.pane_gap or 0
 
-    -- Borders take 2 cols/rows total per window. Subtract from inner sizes.
     local border_pad = (border ~= "none" and border ~= nil and border ~= "") and 2 or 0
 
     local viewport_w = vim.o.columns - margin.left - margin.right
-    -- Account for cmdline (cmdheight) + statusline (1) below the editor area.
     local chrome_below = (vim.o.cmdheight or 1) + 1
     local viewport_h = vim.o.lines - margin.top - margin.bottom - chrome_below
 
     if viewport_w < 40 or viewport_h < 12 then
-        return false, "viewport too small"
+        return nil, "viewport too small"
     end
 
     local activity_outer_h = math.floor(viewport_h * ah_prop)
@@ -698,11 +711,11 @@ function Layout:_open_floats(float_opts)
 
     if overview_inner_w < 12 or inspector_inner_w < 12
         or top_inner_h < 4 or activity_inner_h < 3 then
-        return false, "viewport too small for chosen proportions"
+        return nil, "viewport too small for chosen proportions"
     end
 
-    local function open_float(buf, row, col, w, h, title)
-        return vim.api.nvim_open_win(buf, false, {
+    local function pane_config(row, col, w, h, title)
+        return {
             relative  = "editor",
             row       = row,
             col       = col,
@@ -710,25 +723,60 @@ function Layout:_open_floats(float_opts)
             height    = h,
             border    = border,
             style     = "minimal",
-            title     = title and (" " .. title .. " ") or nil,
-            title_pos = title and "left" or nil,
-        })
+            title     = " " .. title .. " ",
+            title_pos = "left",
+        }
     end
 
-    self._overview_win = open_float(self._overview_buf,
-        margin.top, margin.left, overview_inner_w, top_inner_h, "Overview")
-    self._inspector_win = open_float(self._inspector_buf,
-        margin.top, margin.left + overview_outer_w + pane_gap,
-        inspector_inner_w, top_inner_h, "Inspector")
-    self._activity_win = open_float(self._activity_buf,
-        margin.top + top_outer_h + pane_gap, margin.left,
-        activity_inner_w, activity_inner_h, "Activity")
+    return {
+        overview = pane_config(margin.top, margin.left,
+            overview_inner_w, top_inner_h, "Overview"),
+        inspector = pane_config(margin.top, margin.left + overview_outer_w + pane_gap,
+            inspector_inner_w, top_inner_h, "Inspector"),
+        activity = pane_config(margin.top + top_outer_h + pane_gap, margin.left,
+            activity_inner_w, activity_inner_h, "Activity"),
+    }
+end
+
+--- Open the workbench as three floating windows. Returns false + reason
+--- when the viewport is too small for the configured layout.
+--- @param float_opts table
+--- @return boolean ok, string? reason
+function Layout:_open_floats(float_opts)
+    local geom, err = compute_float_geometry(float_opts)
+    if not geom then return false, err end
+
+    self._float_opts = float_opts  -- remembered for VimResized reflow
+    self._overview_win  = vim.api.nvim_open_win(self._overview_buf,  false, geom.overview)
+    self._inspector_win = vim.api.nvim_open_win(self._inspector_buf, false, geom.inspector)
+    self._activity_win  = vim.api.nvim_open_win(self._activity_buf,  false, geom.activity)
 
     set_win_options(self._overview_win)
     set_win_options(self._inspector_win)
     set_win_options(self._activity_win)
     vim.api.nvim_set_current_win(self._overview_win)
     return true
+end
+
+--- Reflow the floating windows after a viewport resize. Recomputes geometry
+--- from the saved float_opts and updates each window with nvim_win_set_config.
+--- No-op if floats are no longer valid or layout is tabpage.
+function Layout:_reflow_floats()
+    if not self._float_opts then return end
+    if not (valid_win(self._overview_win)
+        and valid_win(self._inspector_win)
+        and valid_win(self._activity_win)) then return end
+
+    local geom = compute_float_geometry(self._float_opts)
+    if not geom then
+        -- Viewport got too small after resize. Leave windows as-is rather
+        -- than tearing down — user can close manually if needed.
+        return
+    end
+
+    pcall(vim.api.nvim_win_set_config, self._overview_win,  geom.overview)
+    pcall(vim.api.nvim_win_set_config, self._inspector_win, geom.inspector)
+    pcall(vim.api.nvim_win_set_config, self._activity_win,  geom.activity)
 end
 
 --- Snap overview cursor to the first selectable row and seed the inspector.
@@ -801,6 +849,7 @@ function Layout:close()
     self._inspector_drill_map = {}
     self._inspector_edit_map = {}
     self._inspector_add_map = {}
+    self._float_opts = nil
 end
 
 --- @param opts? table  passed to open() when toggling on
