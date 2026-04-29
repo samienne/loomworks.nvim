@@ -221,6 +221,9 @@ function ViewModel:dispatch(action, payload)
         self:_add_item(payload.kind, payload.parent, payload.name, payload.extra)
     elseif action == "delete_inspector_subject" then
         self:_delete_inspector_subject()
+    elseif action == "rename_inspector_subject" then
+        assert(payload and payload.new_name, "rename_inspector_subject requires { new_name }")
+        self:_rename_inspector_subject(payload.new_name)
     elseif action == "open_wire_deploy_add" then
         assert(payload and payload.parent, "open_wire_deploy_add requires { parent }")
         self:_open_wire_deploy_add(payload.parent)
@@ -838,6 +841,76 @@ function ViewModel:_delete_inspector_subject()
             self:_notify()
         end
         return ok and true or false
+    end
+    return false
+end
+
+--- Rename the item the inspector is currently showing.
+--- Currently supports: configuration, launch, variable. Other kinds
+--- (project, config_set, profile) need atomic propagation across cache /
+--- profiles / sets and are deferred to a follow-up slice.
+--- @param new_name string
+--- @return boolean ok
+function ViewModel:_rename_inspector_subject(new_name)
+    local ws = self._workspace_provider()
+    if not ws or not new_name or new_name == "" then return false end
+    local p = self:presentation()
+    local insp = p.inspector
+    if not insp or insp.missing then return false end
+
+    if insp.kind == "configuration" then
+        local proj = find_project(ws, insp.project_key)
+        if not proj or not proj.rename_configuration then return false end
+        local ok, err = proj:rename_configuration(insp.subject, new_name, {})
+        if ok then
+            self._selection:pin({
+                kind = "configuration",
+                project_key = proj.key,
+                config_name = new_name,
+            })
+            self:_notify()
+            return true
+        end
+        ws._core._deps.notify("rename: " .. tostring(err), vim.log.levels.ERROR)
+        return false
+    elseif insp.kind == "launch" then
+        local proj = find_project(ws, insp.project_key)
+        if not proj or not proj.launch or not proj.launch[insp.subject] then return false end
+        if proj.launch[new_name] then return false end -- collision
+        local data = vim.deepcopy(proj.launch[insp.subject])
+        local updated = vim.tbl_extend("force", {}, proj.launch)
+        updated[new_name] = data
+        updated[insp.subject] = nil
+        proj.launch = updated
+        proj:_mark_user_owned()
+        local ok = proj._workspace and proj._workspace:_save_user() or false
+        if ok then
+            self._selection:pin({
+                kind = "launch",
+                project_key = proj.key,
+                launch_name = new_name,
+            })
+            self:_notify()
+        end
+        return ok and true or false
+    elseif insp.kind == "variable" then
+        local proj = find_project(ws, insp.project_key)
+        if not proj or not proj.variables or not proj.variables[insp.subject] then return false end
+        if proj.variables[new_name] then return false end -- collision
+        local decl = vim.deepcopy(proj.variables[insp.subject])
+        if not proj.delete_variable or not proj.save_variable then return false end
+        local del_ok = proj:delete_variable(insp.subject)
+        if not del_ok then return false end
+        local save_ok = proj:save_variable(new_name, decl)
+        if save_ok then
+            self._selection:pin({
+                kind = "variable",
+                project_key = proj.key,
+                var_name = new_name,
+            })
+            self:_notify()
+        end
+        return save_ok and true or false
     end
     return false
 end

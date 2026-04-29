@@ -1853,6 +1853,131 @@ describe("ui v2 view model — launch args / env editing", function()
     end)
 end)
 
+describe("ui v2 view model — rename_inspector_subject", function()
+    local function find_project(ws, key)
+        for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end
+    end
+
+    it("renames a launch and pins the inspector to the new name", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = { debug = { command = "node", args = { "x" } } },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", {
+            ref = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("rename_inspector_subject", { new_name = "develop" })
+
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.launch.debug)
+        assert.is_not_nil(proj.launch.develop)
+        assert.equals("node", proj.launch.develop.command)
+
+        local p = vm:presentation()
+        assert.equals("launch", p.inspector.kind)
+        assert.equals("develop", p.inspector.subject)
+    end)
+
+    it("renames a variable preserving its declaration", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {},
+                    variables = { old = { type = "path", default = "${project_path}/x" } },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", {
+            ref = { kind = "variable", project_key = "App", var_name = "old" },
+        })
+        vm:dispatch("rename_inspector_subject", { new_name = "renamed" })
+
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj.variables.old)
+        assert.is_not_nil(proj.variables.renamed)
+        assert.equals("path", proj.variables.renamed.type)
+        assert.equals("${project_path}/x", proj.variables.renamed.default)
+    end)
+
+    it("renames a user configuration and updates sibling inherits chain", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["base"]  = { inherits = "variant:Debug" },
+                            ["asan"]  = { inherits = "base" },
+                        },
+                    },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", {
+            ref = { kind = "configuration", project_key = "App", config_name = "base" },
+        })
+        vm:dispatch("rename_inspector_subject", { new_name = "main-base" })
+
+        local proj = find_project(ws, "App")
+        assert.is_nil(proj:get_configuration("base"))
+        assert.is_not_nil(proj:get_configuration("main-base"))
+        local asan = proj:get_configuration("asan")
+        local has_main_base = false
+        for _, n in ipairs(asan.inherits_names or {}) do
+            if n == "main-base" then has_main_base = true; break end
+        end
+        assert.is_true(has_main_base, "sibling inherits should follow the rename")
+    end)
+
+    it("rejects a rename collision with an existing name", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug   = { command = "x" },
+                        develop = { command = "y" },
+                    },
+                },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", {
+            ref = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("rename_inspector_subject", { new_name = "develop" })
+
+        local proj = find_project(ws, "App")
+        assert.is_not_nil(proj.launch.debug, "collision should leave debug intact")
+        assert.equals("y", proj.launch.develop.command)
+    end)
+
+    it("rename on unsupported kinds is a no-op", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "variant:Debug" } },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        local vm = make_vm(ws)
+        vm:dispatch("select_under_cursor")  -- profile inspector
+        local before = vm:presentation().inspector.subject
+        vm:dispatch("rename_inspector_subject", { new_name = "Different" })
+        local after = vm:presentation().inspector.subject
+        assert.equals(before, after)
+    end)
+end)
+
 describe("ui v2 view model — workspace-level add", function()
     local function find_project(ws, key)
         for _, p in pairs(ws._projects or {}) do if p.key == key then return p end end

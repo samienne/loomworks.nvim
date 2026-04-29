@@ -112,7 +112,22 @@ function Layout:_setup_keymaps(buf, kind)
         map("e",    function() self:_edit_inspector_under_cursor() end)
         map("E",    function() self:_open_wire_form_for_subject() end)
         map("D",    function() self:_confirm_then_delete_inspector_subject() end)
+        map("R",    function() self:_rename_inspector_subject_prompt() end)
     end
+end
+
+--- Prompt for a new name and rename the inspector subject.
+function Layout:_rename_inspector_subject_prompt()
+    local p = self._vm:presentation()
+    local insp = p.inspector
+    if not insp or insp.missing then return end
+    local supported = { configuration = true, launch = true, variable = true }
+    if not supported[insp.kind] then return end
+    vim.ui.input({ prompt = "Rename to: ", default = tostring(insp.subject or "") }, function(name)
+        if not name or name == "" then return end
+        if name == insp.subject then return end
+        self._vm:dispatch("rename_inspector_subject", { new_name = name })
+    end)
 end
 
 --- Open wire-mode editor for the inspector's current subject when applicable.
