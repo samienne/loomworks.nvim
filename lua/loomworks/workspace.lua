@@ -3643,6 +3643,129 @@ function Workspace:remove_project(project)
     return true
 end
 
+--- Rename a project. Updates the project's key + path (when path defaulted),
+--- profile mappings keyed by the project key string, and ConfigUnit ids.
+--- ConfigurationSet.mappings is keyed by Project object reference so it
+--- doesn't need rebuilding. Persists user.json + cache atomically; rolls
+--- back on save failure.
+--- @param project loomworks.Project
+--- @param new_key string
+--- @return boolean ok, string|nil err
+function Workspace:rename_project(project, new_key)
+    if project._removed then
+        return false, "project '" .. project.key .. "' not found"
+    end
+    if new_key == project.key then return true end
+    for _, p in pairs(self._projects) do
+        if p ~= project and p.key == new_key then
+            return false, "key '" .. new_key .. "' already in use"
+        end
+    end
+    local existing_keys = {}
+    for _, p in pairs(self._projects) do
+        if p ~= project then existing_keys[#existing_keys + 1] = p.key end
+    end
+    local valid, verr = M.validate_path_name(new_key, existing_keys)
+    if not valid then return false, "invalid project key: " .. verr end
+
+    local old_key = project.key
+    local old_path = project.path
+
+    -- Mutate domain objects.
+    project.key = new_key
+    if project.path == old_key then project.path = new_key end
+
+    for _, profile in pairs(self._profiles) do
+        if profile.mappings and profile.mappings[old_key] ~= nil then
+            profile.mappings[new_key] = profile.mappings[old_key]
+            profile.mappings[old_key] = nil
+        end
+    end
+
+    for _, unit in pairs(self._config_units) do
+        if unit._init_project_key == old_key then
+            unit._init_project_key = new_key
+        end
+        if unit._project == project then
+            local config_key = unit:config_key() or unit.id:match(".+/(.+)$") or ""
+            unit.id = new_key .. "/" .. config_key
+        end
+    end
+
+    local ok, err = self:_save_user()
+    if not ok then
+        -- Rollback
+        project.key = old_key
+        project.path = old_path
+        for _, profile in pairs(self._profiles) do
+            if profile.mappings and profile.mappings[new_key] ~= nil then
+                profile.mappings[old_key] = profile.mappings[new_key]
+                profile.mappings[new_key] = nil
+            end
+        end
+        for _, unit in pairs(self._config_units) do
+            if unit._init_project_key == new_key then
+                unit._init_project_key = old_key
+            end
+            if unit._project == project then
+                local config_key = unit:config_key() or unit.id:match(".+/(.+)$") or ""
+                unit.id = old_key .. "/" .. config_key
+            end
+        end
+        return false, err
+    end
+    self:_save_cache()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Rename a configuration set. Updates the cs.name and any profile that
+--- references the set by name; profile keys are derived from the set name
+--- so they get re-derived automatically.
+--- @param cs loomworks.ConfigurationSet
+--- @param new_name string
+--- @return boolean ok, string|nil err
+function Workspace:rename_configuration_set(cs, new_name)
+    if cs._removed then
+        return false, "configuration set '" .. cs.name .. "' not found"
+    end
+    if new_name == cs.name then return true end
+    for _, other in pairs(self._config_sets) do
+        if other ~= cs and other.name == new_name then
+            return false, "configuration set '" .. new_name .. "' already exists"
+        end
+    end
+    local valid, verr = M.validate_path_name(new_name)
+    if not valid then return false, "invalid set name: " .. verr end
+
+    local old_name = cs.name
+    cs.name = new_name
+
+    -- Profiles reference the set by name on _configuration_set_name.
+    -- The profile key derives from set name + tools, so re-derive after.
+    for _, profile in pairs(self._profiles) do
+        if profile._configuration_set_name == old_name then
+            profile._configuration_set_name = new_name
+            if profile._derive_key then profile:_derive_key() end
+        end
+    end
+
+    local ok, err = self:_save_user()
+    if not ok then
+        cs.name = old_name
+        for _, profile in pairs(self._profiles) do
+            if profile._configuration_set_name == new_name then
+                profile._configuration_set_name = old_name
+                if profile._derive_key then profile:_derive_key() end
+            end
+        end
+        return false, err
+    end
+    self:_save_cache()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
 --- Add a configuration set to the workspace.
 --- @param name string configuration set name
 --- @param mappings table<string, string> project_key → variant
