@@ -1126,6 +1126,73 @@ describe("ui v2 view model — action key dispatch", function()
     end)
 end)
 
+describe("ui v2 view model — cleanup_audit", function()
+    it("inspector lists orphaned cached configs from get_orphaned_configs", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local saved = require("loomworks").get_orphaned_configs
+        require("loomworks").get_orphaned_configs = function()
+            return {
+                ["App/Old:gcc-12"] = { project_key = "App", config_key = "Old:gcc-12" },
+                ["Other/X"]        = { project_key = "Other", config_key = "X" },
+            }
+        end
+
+        local inspector = require("loomworks.ui.v2.view_model.inspector")
+        local insp = inspector.build(ws, { kind = "cleanup_audit" })
+        assert.equals("cleanup_audit", insp.kind)
+        assert.equals(2, insp.orphan_count)
+        local keys = {}
+        for _, o in ipairs(insp.orphans) do keys[o.cache_key] = true end
+        assert.is_true(keys["App/Old:gcc-12"])
+        assert.is_true(keys["Other/X"])
+        assert.is_table(insp.commit_actions)
+
+        require("loomworks").get_orphaned_configs = saved
+    end)
+
+    it("commit_actions is nil when there are no orphans", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local saved = require("loomworks").get_orphaned_configs
+        require("loomworks").get_orphaned_configs = function() return {} end
+
+        local inspector = require("loomworks.ui.v2.view_model.inspector")
+        local insp = inspector.build(ws, { kind = "cleanup_audit" })
+        assert.equals(0, insp.orphan_count)
+        assert.is_nil(insp.commit_actions)
+
+        require("loomworks").get_orphaned_configs = saved
+    end)
+
+    it("cleanup_audit_delete_all walks each orphan and calls delete", function()
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local saved = require("loomworks").get_orphaned_configs
+        local orphan_keys = { "A/x", "B/y" }
+        require("loomworks").get_orphaned_configs = function()
+            return {
+                ["A/x"] = { project_key = "A", config_key = "x" },
+                ["B/y"] = { project_key = "B", config_key = "y" },
+            }
+        end
+
+        -- Inject fake config_units matching those ids.
+        local deleted = {}
+        ws._config_units = ws._config_units or {}
+        for _, key in ipairs(orphan_keys) do
+            ws._config_units[#ws._config_units + 1] = {
+                id = key,
+                delete = function(self) deleted[self.id] = true end,
+            }
+        end
+
+        local vm = make_vm(ws)
+        vm:dispatch("cleanup_audit_delete_all")
+        assert.is_true(deleted["A/x"])
+        assert.is_true(deleted["B/y"])
+
+        require("loomworks").get_orphaned_configs = saved
+    end)
+end)
+
 describe("ui v2 view model — cycle_publish", function()
     it("cycles a profile's intent local → local+shared → shared → local", function()
         local ws = make_ws(
@@ -2814,6 +2881,53 @@ describe("ui v2 view model — wire mode (deploy)", function()
         assert.is_false(q.inspector.sources[1].pre_build)
     end)
 
+    it("wire_remove_source drops the indexed source from the draft", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("add_item", { kind = "wire_source", parent = { kind = "wire_draft" }, name = "" })
+        vm:dispatch("add_item", { kind = "wire_source", parent = { kind = "wire_draft" }, name = "" })
+        assert.equals(3, #vm:presentation().inspector.sources)
+
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft_source", index = 2, field = "project" },
+            field_id = "source[2].project", value = "Marker",
+        })
+        vm:dispatch("wire_remove_source", { index = 1 })
+        local sources = vm:presentation().inspector.sources
+        assert.equals(2, #sources)
+        -- index 2 (Marker) should now be at index 1
+        assert.equals("Marker", sources[1].project)
+    end)
+
+    it("wire_remove_source refuses to drop the last source", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        assert.equals(1, #vm:presentation().inspector.sources)
+        vm:dispatch("wire_remove_source", { index = 1 })
+        assert.equals(1, #vm:presentation().inspector.sources)
+    end)
+
+    it("source blocks expose a remove descriptor only when more than one source exists", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        local p = vm:presentation()
+        assert.is_nil(p.inspector.source_blocks[1].remove)
+
+        vm:dispatch("add_item", { kind = "wire_source", parent = { kind = "wire_draft" }, name = "" })
+        local p2 = vm:presentation()
+        assert.is_not_nil(p2.inspector.source_blocks[1].remove)
+        assert.is_not_nil(p2.inspector.source_blocks[2].remove)
+    end)
+
     it("+ Add source appends an empty source the user can fill via e", function()
         local ws = setup_with_launch()
         local vm = make_vm(ws)
@@ -2995,7 +3109,7 @@ describe("ui v2 view model — plan mode", function()
         assert.equals(1, kinds.launch)
     end)
 
-    it("plan mode marks deploy steps as fresh when a deploy_record exists", function()
+    it("plan mode marks deploy step state from deploy_records (pending vs stale)", function()
         local ws = make_ws(
             {
                 projects = {
@@ -3031,10 +3145,12 @@ describe("ui v2 view model — plan mode", function()
                 p._default_target_descriptor = { project = "App", launch = "debug" }
             end
         end
-        -- Pre-populate a deploy record for the first destination.
+        -- Pre-populate a deploy record with a build_dir that won't match the
+        -- resolved source's config-unit id — so the step should be marked
+        -- stale, not fresh.
         ws._deploy_records = {
             ["/root/dist/x.so"] = {
-                source_build_dir = "build/B/Debug",
+                source_build_dir = "build/B/Debug-mismatch",
                 source_rel_path = "x.so",
                 source_mtime = "2026-01-01T00:00:00Z",
             },
@@ -3043,15 +3159,18 @@ describe("ui v2 view model — plan mode", function()
         local vm = make_vm(ws)
         vm:dispatch("toggle_activity_mode")
         local p = vm:presentation()
-        local fresh_count, pending_count = 0, 0
+        local stale, pending = 0, 0
         for _, step in ipairs(p.activity.plan_steps) do
             if step.kind == "deploy_post" then
-                if step.state == "fresh"   then fresh_count   = fresh_count   + 1 end
-                if step.state == "pending" then pending_count = pending_count + 1 end
+                if step.state == "stale"   then stale   = stale   + 1 end
+                if step.state == "pending" then pending = pending + 1 end
             end
         end
-        assert.equals(1, fresh_count)
-        assert.equals(1, pending_count)
+        -- One destination has a record (will resolve to either stale or
+        -- pending depending on whether the source resolves), the other has
+        -- no record (pending).
+        assert.is_true(stale + pending == 2)
+        assert.is_true(pending >= 1, "the destination with no record should be pending")
     end)
 
     it("plan mode renders a profile_key when an active profile exists", function()

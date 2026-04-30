@@ -142,12 +142,18 @@ function M.build(workspace, ref, draft)
 
     -- Per-source rows
     local sources = draft.sources or {}
+    local can_remove = #sources > 1
     local source_blocks = {}
     for i, source in ipairs(sources) do
         source_blocks[#source_blocks + 1] = {
-            index  = i,
-            source = source,
-            fields = source_fields(workspace, source, i),
+            index   = i,
+            source  = source,
+            fields  = source_fields(workspace, source, i),
+            remove  = can_remove and {
+                kind  = "wire_remove_source",
+                index = i,
+                label = "+ Remove source " .. tostring(i),
+            } or nil,
         }
         for _, f in ipairs(source_blocks[#source_blocks].fields) do
             editable_fields[#editable_fields + 1] = f

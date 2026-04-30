@@ -7,15 +7,16 @@
 local M = {}
 
 local kinds = {
-    project       = require("loomworks.ui.v2.view_model.inspector_kinds.project"),
-    profile       = require("loomworks.ui.v2.view_model.inspector_kinds.profile"),
-    config_set    = require("loomworks.ui.v2.view_model.inspector_kinds.config_set"),
-    configuration = require("loomworks.ui.v2.view_model.inspector_kinds.configuration"),
-    launch        = require("loomworks.ui.v2.view_model.inspector_kinds.launch"),
-    variable      = require("loomworks.ui.v2.view_model.inspector_kinds.variable"),
-    device        = require("loomworks.ui.v2.view_model.inspector_kinds.device"),
-    deploy_step   = require("loomworks.ui.v2.view_model.inspector_kinds.deploy_step"),
-    wire_deploy   = require("loomworks.ui.v2.view_model.inspector_kinds.wire_deploy"),
+    project        = require("loomworks.ui.v2.view_model.inspector_kinds.project"),
+    profile        = require("loomworks.ui.v2.view_model.inspector_kinds.profile"),
+    config_set     = require("loomworks.ui.v2.view_model.inspector_kinds.config_set"),
+    configuration  = require("loomworks.ui.v2.view_model.inspector_kinds.configuration"),
+    launch         = require("loomworks.ui.v2.view_model.inspector_kinds.launch"),
+    variable       = require("loomworks.ui.v2.view_model.inspector_kinds.variable"),
+    device         = require("loomworks.ui.v2.view_model.inspector_kinds.device"),
+    deploy_step    = require("loomworks.ui.v2.view_model.inspector_kinds.deploy_step"),
+    wire_deploy    = require("loomworks.ui.v2.view_model.inspector_kinds.wire_deploy"),
+    cleanup_audit  = require("loomworks.ui.v2.view_model.inspector_kinds.cleanup_audit"),
 }
 
 --- @param workspace loomworks.Workspace|nil

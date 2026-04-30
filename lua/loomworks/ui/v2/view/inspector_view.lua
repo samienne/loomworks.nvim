@@ -557,6 +557,10 @@ local function render_wire_deploy(insp, ctx)
             end
             ctx:add_editable(pad_label(short_label, 16) .. tostring(f.value or ""), f)
         end
+        if block.remove then
+            ctx:add_creator("  " .. block.remove.label, block.remove)
+            ctx:hl_last_line("LoomworksFailed")
+        end
         ctx:add("")
     end
 
@@ -571,6 +575,30 @@ local function render_wire_deploy(insp, ctx)
         for _, cm in ipairs(insp.commit_actions) do
             ctx:add_creator("  " .. cm.label, { kind = cm.kind })
             ctx:hl_last_line("LoomworksActionable")
+        end
+    end
+end
+
+local function render_cleanup_audit(insp, ctx)
+    ctx:title("Workspace cleanup")
+    ctx:add("")
+    if insp.missing then
+        ctx:comment("(no workspace)")
+        return
+    end
+    ctx:section(string.format("Orphaned cached configs  (%d)", insp.orphan_count or 0))
+    if (insp.orphan_count or 0) == 0 then
+        ctx:comment("  (none)")
+    else
+        for _, o in ipairs(insp.orphans or {}) do
+            ctx:add_selectable(string.format("  %-20s %s", o.project_key, o.config_key), o.ref)
+        end
+    end
+    if insp.commit_actions then
+        ctx:add("")
+        for _, action in ipairs(insp.commit_actions) do
+            ctx:add_creator("  " .. action.label, { kind = action.kind })
+            ctx:hl_last_line("LoomworksFailed")
         end
     end
 end
@@ -598,6 +626,7 @@ local KIND_RENDERERS = {
     device        = render_device,
     deploy_step   = render_deploy_step,
     wire_deploy   = render_wire_deploy,
+    cleanup_audit = render_cleanup_audit,
 }
 
 --- Render an inspector content table to lines + highlights + drill / edit / add maps.

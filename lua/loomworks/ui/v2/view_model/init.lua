@@ -262,6 +262,11 @@ function ViewModel:dispatch(action, payload)
         self:_wire_save()
     elseif action == "wire_cancel" then
         self:_wire_cancel()
+    elseif action == "wire_remove_source" then
+        assert(payload and payload.index, "wire_remove_source requires { index }")
+        self:_remove_wire_source(payload.index)
+    elseif action == "cleanup_audit_delete_all" then
+        self:_cleanup_audit_delete_all()
     elseif action == "select_ref" then
         -- Place cursor onto a known ref (used by view after refresh to follow
         -- expansion changes).
@@ -858,6 +863,20 @@ function ViewModel:_add_wire_source()
     return true
 end
 
+--- Remove the source at `index` from the wire draft. Refuses to remove
+--- the last remaining source — a deploy step needs at least one source.
+--- @param index integer
+--- @return boolean ok
+function ViewModel:_remove_wire_source(index)
+    local draft = self._wire_draft
+    if not draft or not draft.sources then return false end
+    if #draft.sources <= 1 then return false end
+    if not draft.sources[index] then return false end
+    table.remove(draft.sources, index)
+    self:_notify()
+    return true
+end
+
 --- Open wire mode in "add" form against a launch parent ref.
 --- @param parent table   { kind = "launch", project_key, launch_name }
 function ViewModel:_open_wire_deploy_add(parent)
@@ -1146,6 +1165,25 @@ function ViewModel:_rename_inspector_subject(new_name)
         return save_ok and true or false
     end
     return false
+end
+
+--- Delete every orphaned cached config currently listed by the workspace.
+--- Each orphan is removed via its ConfigUnit:delete (same path the
+--- per-row D in overview/cleanup uses).
+function ViewModel:_cleanup_audit_delete_all()
+    local ws = self._workspace_provider()
+    if not ws then return end
+    local lw = require("loomworks")
+    local raw = lw.get_orphaned_configs and lw.get_orphaned_configs() or {}
+    for cache_key, _ in pairs(raw or {}) do
+        for _, unit in pairs(ws._config_units or {}) do
+            if unit.id == cache_key and unit.delete then
+                unit:delete()
+                break
+            end
+        end
+    end
+    self:_notify()
 end
 
 --- Delete an orphan cached config by cache key.

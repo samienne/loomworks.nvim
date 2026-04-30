@@ -42,6 +42,10 @@ function M.build_entries()
         run = function() require("loomworks.ui.v2").toggle() end,
     }
     entries[#entries + 1] = {
+        label = "Workspace cleanup",
+        run = function() open_and_drill({ kind = "cleanup_audit" }) end,
+    }
+    entries[#entries + 1] = {
         label = "Rescan tools",
         run = function() lw.rescan_tools() end,
     }

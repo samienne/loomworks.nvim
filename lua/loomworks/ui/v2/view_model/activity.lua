@@ -101,22 +101,55 @@ local function normalize_path(workspace, path)
     return path
 end
 
---- Compute the freshness state for a deploy step entry.
---- v0: records[normalized_dest] present → "fresh", else → "pending".
---- A real freshness check would compare source_build_dir / source_rel_path /
---- source_mtime to the current source, which requires module-aware target
---- resolution; deferred.
+--- Compute the freshness state for a single (destination, source) pair.
+--- Compares the resolved source against the recorded deploy state.
+---   fresh    record present, source identity matches, destination exists
+---   stale    record present but source identity differs, or destination missing
+---   pending  no record / can't resolve the source
+--- mtime-level freshness is skipped — comparing mtimes is more I/O than a
+--- plan view should do, and the source-identity check catches the common
+--- "switched from Debug to Release" / "renamed target" cases.
 --- @param workspace loomworks.Workspace
 --- @param profile loomworks.Profile
 --- @param launch_project loomworks.Project
 --- @param raw_destination string
+--- @param source_def table   { project, target?, path?, configuration?, pre_build? }
 --- @return string state
-local function deploy_state(workspace, profile, launch_project, raw_destination)
-    local resolved = resolve_destination(workspace, profile, launch_project, raw_destination)
-    if not resolved then return "pending" end
-    local key = normalize_path(workspace, resolved)
-    local records = workspace._deploy_records or {}
-    return records[key] and "fresh" or "pending"
+local function deploy_state(workspace, profile, launch_project, raw_destination, source_def)
+    if not workspace or not profile or not launch_project then return "pending" end
+
+    local ok_mod, deploy = pcall(require, "loomworks.deploy")
+    if not ok_mod then
+        -- Fallback to existence-only check.
+        local resolved = resolve_destination(workspace, profile, launch_project, raw_destination)
+        if not resolved then return "pending" end
+        local key = normalize_path(workspace, resolved)
+        local records = workspace._deploy_records or {}
+        return records[key] and "fresh" or "pending"
+    end
+
+    local ok, resolved = pcall(deploy.resolve_deploy_step, raw_destination, source_def, {
+        workspace      = workspace,
+        profile        = profile,
+        launch_project = launch_project,
+    })
+    if not ok or not resolved then return "pending" end
+
+    local key = normalize_path(workspace, resolved.dest_path)
+    local record = (workspace._deploy_records or {})[key]
+    if not record then return "pending" end
+
+    if record.source_build_dir ~= resolved.source_build_dir_id then return "stale" end
+    if record.source_rel_path ~= resolved.source_rel_path then return "stale" end
+
+    -- Destination existence — a deleted destination implies the next launch
+    -- will copy again, so flag as stale.
+    if vim.uv and vim.uv.fs_stat then
+        local stat = vim.uv.fs_stat(resolved.dest_path)
+        if not stat then return "stale" end
+    end
+
+    return "fresh"
 end
 
 --- Build plan steps: build per project, pre-build deploy, post-build deploy, launch.
@@ -156,8 +189,8 @@ local function build_plan_steps(workspace)
     if launch and type(launch.deploy) == "table" then
         local pre, post = {}, {}
         for dest, src in pairs(launch.deploy) do
-            local state = deploy_state(workspace, profile, target_project, dest)
             for _, source in ipairs(source_rows(src)) do
+                local state = deploy_state(workspace, profile, target_project, dest, source)
                 local entry = {
                     kind        = source.pre_build and "deploy_pre" or "deploy_post",
                     label       = (source.pre_build and "pre-build " or "post-build ")

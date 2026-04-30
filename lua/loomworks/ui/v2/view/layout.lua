@@ -350,6 +350,14 @@ function Layout:_handle_add(descriptor)
             name   = "",  -- ignored; helper appends an empty source
         })
         return
+    elseif descriptor.kind == "wire_remove_source" then
+        self._vm:dispatch("wire_remove_source", { index = descriptor.index })
+        return
+    elseif descriptor.kind == "cleanup_audit_delete_all" then
+        if vim.fn.confirm("Delete ALL listed orphaned cached configs?", "&Yes\n&No", 2) == 1 then
+            self._vm:dispatch("cleanup_audit_delete_all")
+        end
+        return
     end
     if descriptor.kind == "deploy_step" then
         -- + Add deploy step now opens wire mode instead of chaining prompts.
