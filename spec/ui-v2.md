@@ -1,14 +1,19 @@
-# UI v2 — design draft
+# UI v2 — preview spec
 
-> **Status: design draft, not authoritative.** This file captures the v2
-> UI design as it converges. Companion to
-> [`v2-design-brief.md`](v2-design-brief.md) (requirements) and
-> [`v2-design-scenarios.md`](v2-design-scenarios.md) (user flows). The
-> current shipping UI is documented in [`ui.md`](ui.md); v2 does not
-> replace it until v2 ships.
+> **Status: implemented as preview, runs alongside v1.** v2 is opt-in
+> via `<leader>wW`; v1 (`<leader>ww`) is unchanged. This file documents
+> the implemented v2 design — what users actually see and interact
+> with. Once v2 has been validated in real-world use, it will be
+> promoted to default and `spec/ui.md` will be rewritten from this
+> document.
 >
-> When v2 ships, this file becomes the new `ui.md` and the brief +
-> scenarios are archived or deleted (see brief §9).
+> Companion docs:
+> [`v2-design-brief.md`](v2-design-brief.md) (original requirements) and
+> [`v2-design-scenarios.md`](v2-design-scenarios.md) (user flows). Both
+> retire when v2 ships as default.
+>
+> Code lives under `lua/loomworks/ui/v2/` (view model + view) with
+> tests under `tests/ui_v2/`.
 
 ---
 
@@ -43,8 +48,8 @@ existing model*, not the model itself.
 
 ### 2.1 Three persistent panes
 
-The UI is opened by a single command/keymap (default `<leader>wo`) and
-presents three docked panes:
+The UI is opened by a single keymap (default `<leader>wW` while v1 owns
+`<leader>ww`) and presents three docked panes:
 
 ```
 ┌───────────────────┬──────────────────────────────┐
@@ -72,19 +77,29 @@ The three panes are decoupled but coordinated:
 - The hint bar at the bottom of each pane reflects the actions valid
   for that pane's current focus.
 
-### 2.2 Compact mode
+### 2.2 Layout: float vs tabpage
 
-For viewports below a hard width threshold (~140 columns), or when the
-user prefers it, the UI collapses to a single buffer with mode-switched
-sections (overview · inspector · plan). This is functionally the same
-components in a different presentation; nothing is unavailable in
-compact mode.
+The workbench supports two layouts, configured via
+`require("loomworks.ui.v2").setup({ layout = ... })`:
 
-Compact mode is selected by:
+| `layout` | Behaviour |
+|--|--|
+| `"float"` (default) | Three floating windows over the current tab with a configurable margin from the editor edges. Borders touch (no gap between panes); the only breathing room is the outer margin. |
+| `"tabpage"` | Three split windows in a new tab. Useful on small displays or when the user prefers a dedicated tab. |
 
-- User config option (`docked` | `compact`) for the preferred default
-- Hard auto-fallback to compact when the viewport is too narrow for
-  three panes regardless of preference
+Float opts (under `setup({ float = {...} })`):
+
+| Field | Default | Purpose |
+|--|--|--|
+| `margin` | `2` | Gap between the workbench and editor edges. Number for symmetric padding or `{ top, bottom, left, right }`. |
+| `overview_width` | `0.4` | Proportion of viewport width allocated to the overview pane |
+| `activity_height` | `0.25` | Proportion of viewport height allocated to the activity strip |
+| `pane_gap` | `0` | Gap between panes (0 means borders touch) |
+| `border` | `"rounded"` | Per-pane border style |
+
+When the float viewport is too small for the chosen proportions the
+layout falls back to tabpage with a notification. Float mode reflows
+on `VimResized`; tabpage is self-managed.
 
 ### 2.3 Command palette
 
@@ -559,33 +574,51 @@ published flag, custom kit selection) happen on the profile inspector
 
 | Binding | Action |
 |--|--|
-| `<leader>wo` | Open the loomworks UI |
+| `<leader>wW` | Toggle the v2 workbench |
 | `<leader>wp` | Open the command palette |
-| `<leader>wb` | Build (default target if pinned, otherwise full profile) |
+| `<leader>wb` | Build (delegated to v1 facade — default target if pinned, otherwise full profile) |
 | `<leader>wB` | Build full profile (alternative) |
-| `<leader>wc` | Configure active profile |
+| `<leader>wc` | Configure active profile (v1 facade) |
 | `<leader>ws` | Switch profile (picker) |
 | `<leader>wr` | Run default target under debugger |
 | `<leader>wR` | Run default target without debugger |
-| `<leader>wd` | Device picker / device log |
-| `<leader>wx` | Stop running target |
-| `<leader>wj` | Inspect project owning current buffer |
 
-#### In the UI
+While v2 is in preview, the global build/configure/switch/run keys are
+the same as v1 — they operate on the active workspace and don't need a
+v2-specific equivalent.
 
-| Binding | Pane | Action |
-|--|--|--|
-| `<CR>` | overview | Drill into selection (open inspector) / activate as appropriate |
-| `j` / `h` / `l` | overview, inspector, strip | Navigate |
-| `o` | overview | Toggle section collapse |
-| `b` | overview | Build the focused profile |
-| `c` | overview | Configure the focused profile |
-| `D` | overview | Delete (profile / config / cleanup item) — confirm |
-| `C` | overview | Clean (profile / config) — confirm |
-| `p` | overview | Pin / unpin inspector to focused row |
-| `:w` | inspector | Save edits |
-| `:q` | inspector | Discard edits |
-| `<Tab>` | inspector | Next field |
+#### Overview pane
+
+| Binding | Action |
+|--|--|
+| `<CR>` | Select item / toggle section / trigger `+ Add` |
+| `a` | Activate profile under cursor |
+| `b` | Build the focused profile |
+| `c` | Configure the focused profile |
+| `D` | Delete (profile / config / cleanup item) — confirmed |
+| `C` | Clean (profile / config) — confirmed |
+| `o` | Toggle section under cursor |
+| `q` | Close the workbench |
+| `<Tab>` / `<S-Tab>` | Cycle pane focus |
+| `<C-w>w` / `<C-w>{h,j,k,l}` | Pane navigation (stays inside workbench in float mode) |
+
+#### Inspector pane
+
+| Binding | Action |
+|--|--|
+| `<CR>` | Drill into ref / trigger `+ Add` / commit wire-form sentinel |
+| `e` | Edit field at cursor (string / picker / boolean) or cycle publish intent |
+| `E` | Open wire form (deploy_step → wire_deploy) |
+| `D` | Delete inspector subject — confirmed |
+| `R` | Rename inspector subject — supported for project, configuration set, configuration, launch, variable |
+| `q` | Close the workbench |
+
+#### Activity strip
+
+| Binding | Action |
+|--|--|
+| `m` | Toggle live ↔ plan mode |
+| `q` | Close the workbench |
 
 Publish toggling moves to a field within the inspector (§4.3); there
 is no overview-level publish keybind. Mass publish is in the palette
@@ -667,26 +700,60 @@ expressible:
 
 ---
 
-## 10. Open questions / deferred decisions
+## 10. Resolved decisions
 
-The following are not blocking on the IA but need resolution before
+The following questions from the design phase have settled in the
 implementation:
 
-1. **Plan-row granularity for "build deps"**: collapsed to one row or
-   expanded per dep project. Decide via prototype testing.
-2. **Project-level deploy editing**: nested in the project inspector
-   or its own kind. Decide via prototype testing.
-3. **Compact-mode shape**: the exact mode-switch layout for
-   sub-threshold viewports. Could ride along with implementation.
-4. **`<S-K>` hover popup**: explicit hover binding for inspecting an
-   item without moving cursor / pinning. Defer until proven useful.
-5. **Concrete glyphs and highlight groups**: inherited semantically
-   from v1, refreshed at implementation time.
-6. **Modified indicator (`+`) bubbling**: keep the v1 bubble-up rule
-   (parent shows `+` if any child modified) — confirmed; details
-   on visual placement TBD.
-7. **Cleanup section default state**: collapsed with count badge
-   (current draft) vs expanded when items present. Lean: collapsed.
+1. **Selection model**: explicit. Cursor in overview is visual + drives
+   action-key targets. `<CR>` selects an item into the inspector;
+   cursor movement no longer flickers the inspector. (Original draft
+   was live-by-default with pin; reversed during implementation after
+   it felt noisy in practice.)
+2. **`<CR>` on a section header**: toggles expand/collapse — same as
+   `o`. The double binding is intentional ("Enter opens this thing").
+3. **Default layout**: float (three windows over the current tab,
+   2-cell margin from editor edges, 0 internal pane gap). Tabpage
+   layout remains available via `setup({ layout = "tabpage" })`.
+   Float falls back to tabpage automatically when the viewport is
+   too small.
+4. **VimResized**: float layout reflows on the autocmd; tabpage is
+   self-managed.
+5. **Plan-row granularity for "build deps"**: not yet shipped — v0
+   plan view emits one build row per project in the active profile
+   plus per-source rows for deploy and a single launch row.
+   Transitive dependency expansion is deferred.
+6. **Project-level deploy editing**: nested in the project inspector
+   (with project-level deploy fields). Multi-source descriptors round-
+   trip in wire mode.
+7. **Compact-mode shape**: not implemented as a separate mode —
+   tabpage already serves the small-display case.
+8. **`<S-K>` hover popup**: not added; not needed in practice.
+9. **Concrete glyphs and highlight groups**: state badges use v1's
+   highlight groups (`LoomworksActive`, `LoomworksBuilt`,
+   `LoomworksFailed`, `LoomworksRunning`, etc.). Glyphs follow Unicode
+   conventions (`✓`, `✗`, `⏳`, `⌫`, `▶`, `▼`).
+
+## 10.1 Known deferrals
+
+These are intentionally out of v0 and would benefit from a separate
+focused slice when needed:
+
+- **mtime-level deploy freshness**: the plan view checks source
+  identity (build_dir + relative path + destination existence) but
+  not file mtimes. Catches the common drift cases without I/O cost.
+- **Transitive build dependencies in plan view**: the current plan
+  emits one row per project participating in the active profile;
+  dependency edges between projects aren't visualised.
+- **Profile rename**: profile keys are derived from the configuration
+  set name + tool keys, not user-named. Rename the underlying set
+  (or change tools) to achieve the equivalent effect.
+- **Args-as-text-block edit**: each launch arg is currently edited as
+  a single string. Editing a multi-arg array in one shot (e.g. as
+  shell-style text) is not provided.
+- **Empty workspace `+ Initialize` CTA**: the empty-state card shows
+  add-project sentinels but doesn't provide a workspace bootstrap
+  action. `:LoomworksInit` handles the rare case.
 
 ---
 
@@ -712,7 +779,7 @@ and capabilities (§4):
 | Capability §4.7 — Inspector pattern | §4 |
 | Capability §4.8 — Discoverable advanced features | Palette (§2.3) |
 | Capability §4.9 — No regressions | §9 |
-| Capability §4.10 — Status page entry | `<leader>wo` (§7.1) |
+| Capability §4.10 — Status page entry | `<leader>wW` (§7.1) |
 
 Pain inventory cross-check:
 
@@ -732,14 +799,21 @@ Pain inventory cross-check:
 
 ## 12. Disposition
 
-When v2 ships:
+v2 is in preview alongside v1. To promote v2 to default:
 
-- This file replaces [`ui.md`](ui.md).
-- [`v2-design-brief.md`](v2-design-brief.md) and
-  [`v2-design-scenarios.md`](v2-design-scenarios.md) are archived or
-  deleted per their own disposition notes.
-- Pain points solved by v2 do not need to be remembered.
+1. Real-world validation: drive the workbench (`<leader>wW`) through
+   the daily-use flows (build / configure / activate / launch / debug)
+   on a non-trivial workspace for some period.
+2. Address any v0 deferrals from §10.1 that real use exposes as
+   blocking.
+3. Flip the default invocation: `<leader>ww` opens v2; v1 either moves
+   under `<leader>wW` (swap) or retires.
+4. Rewrite `spec/ui.md` from this document.
+5. Archive or delete [`v2-design-brief.md`](v2-design-brief.md) and
+   [`v2-design-scenarios.md`](v2-design-scenarios.md) per their own
+   disposition notes.
 
-If v2 does not ship:
+If v2 doesn't pan out:
 
-- Delete this file. The current `ui.md` remains authoritative.
+- Remove `lua/loomworks/ui/v2/`, `tests/ui_v2/`, the `<leader>wW` /
+  `<leader>wp` bindings, and this document. v1 is unchanged.

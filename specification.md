@@ -1038,6 +1038,58 @@ on disk, a numeric suffix is appended (`-2`, `-3`, ...) to ensure uniqueness.
 This preserves the existing build directory after rename until the user
 explicitly deletes and reconfigures.
 
+### 4.9 Project Rename Propagation
+
+When a project key is renamed (old_key → new_key), all references are
+updated atomically:
+
+1. **Project**: update `key` and (when `path` defaulted to the key)
+   `path` on the Project domain object.
+2. **Profile mappings**: each profile's resolved mappings dict is
+   keyed by project_key string; entries are rekeyed.
+3. **ConfigUnit ids**: each ConfigUnit registered under the project
+   has its `id` rekeyed from `old_key/config_key` to
+   `new_key/config_key`. `_init_project_key` follows.
+4. **ConfigurationSet mappings**: stored as `project_object → config_object`,
+   so the Project identity is preserved and no map rebuild is required.
+5. **user.json**: re-saved with the new key. **cache.json**: re-saved
+   so the rekeyed ConfigUnit ids land on disk.
+
+Build directories on disk are not renamed. Cache entries' `build_dir`
+fields preserve their absolute paths after rename — the existing build
+directory continues to be used. A subsequent delete + reconfigure
+yields a fresh directory under the new key per the module's path
+formula.
+
+Rename is rejected when:
+- The new key matches another existing project key (case-insensitive,
+  matching the case-collision rules under §4.6).
+- The new key fails `validate_path_name` (slashes, dots, sanitization
+  collision).
+
+On save failure, the rename rolls back: project.key, project.path,
+profile mappings, and ConfigUnit ids are restored.
+
+### 4.10 Configuration Set Rename Propagation
+
+When a configuration set is renamed (old_name → new_name):
+
+1. **Set**: update `cs.name`.
+2. **Profiles**: each profile with `_configuration_set_name == old_name`
+   is updated to `new_name`. The profile key (derived from
+   `set_name:tool_keys`) is re-derived.
+3. **user.json**: re-saved. **cache.json**: re-saved with the new
+   profile keys.
+
+Rename is rejected when the new name matches another existing set
+(case-insensitive) or fails `validate_path_name`. Rolls back on save
+failure.
+
+**Profile rename**: profile keys are derived from configuration set
+name + tool keys, not user-named. Profiles cannot be renamed
+directly; renaming the underlying set or changing the tool selection
+yields the equivalent re-derivation.
+
 ---
 
 ## 5. Task Execution
