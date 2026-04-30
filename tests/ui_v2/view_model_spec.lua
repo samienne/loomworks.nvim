@@ -2068,6 +2068,88 @@ describe("ui v2 view model — rename_inspector_subject", function()
         assert.equals("y", proj.launch.develop.command)
     end)
 
+    it("renames a project and updates profile mappings + ConfigUnit ids", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "variant:Debug" } },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", { ref = { kind = "project", key = "App" } })
+        vm:dispatch("rename_inspector_subject", { new_name = "MyApp" })
+
+        local renamed
+        for _, p in pairs(ws._projects or {}) do
+            if p.key == "MyApp" then renamed = p; break end
+        end
+        assert.is_not_nil(renamed)
+
+        -- Profile mapping should have switched key
+        local profile
+        for _, p in pairs(ws._profiles or {}) do
+            if p.key == "Debug" then profile = p; break end
+        end
+        assert.is_nil(profile.mappings.App)
+        assert.is_not_nil(profile.mappings.MyApp)
+
+        -- ConfigUnit id should reflect the new key
+        local saw_new = false
+        for _, unit in pairs(ws._config_units or {}) do
+            if unit._project == renamed and unit.id:match("^MyApp/") then
+                saw_new = true; break
+            end
+        end
+        assert.is_true(saw_new, "expected at least one config unit id to start with MyApp/")
+    end)
+
+    it("renames a configuration set and updates profile references", function()
+        local ws = make_ws(
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { Debug = { App = "variant:Debug" } },
+            },
+            {
+                active_profile = "Debug",
+                profiles = { Debug = { configuration_set = "Debug" } },
+            }
+        )
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", { ref = { kind = "config_set", key = "Debug" } })
+        vm:dispatch("rename_inspector_subject", { new_name = "DebugSet" })
+
+        local renamed
+        for _, cs in pairs(ws._config_sets or {}) do
+            if cs.name == "DebugSet" then renamed = cs; break end
+        end
+        assert.is_not_nil(renamed)
+
+        -- The profile's _configuration_set_name should follow
+        local profile
+        for _, p in pairs(ws._profiles or {}) do profile = p; break end
+        assert.equals("DebugSet", profile._configuration_set_name)
+    end)
+
+    it("project rename rejects a colliding key", function()
+        local ws = make_ws({
+            projects = { App = { cmake = {} }, Other = { cmake = {} } },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("drill_in", { ref = { kind = "project", key = "App" } })
+        vm:dispatch("rename_inspector_subject", { new_name = "Other" })
+
+        -- App should still exist (collision rejected).
+        local has_app = false
+        for _, p in pairs(ws._projects or {}) do
+            if p.key == "App" then has_app = true; break end
+        end
+        assert.is_true(has_app)
+    end)
+
     it("rename on unsupported kinds is a no-op", function()
         local ws = make_ws(
             {

@@ -1145,6 +1145,31 @@ function ViewModel:_rename_inspector_subject(new_name)
             self:_notify()
         end
         return ok and true or false
+    elseif insp.kind == "project" then
+        local proj = find_project(ws, insp.subject)
+        if not proj or not ws.rename_project then return false end
+        local ok, err = ws:rename_project(proj, new_name)
+        if ok then
+            self._selection:pin({ kind = "project", key = new_name })
+            self:_notify()
+            return true
+        end
+        ws._core._deps.notify("rename: " .. tostring(err), vim.log.levels.ERROR)
+        return false
+    elseif insp.kind == "config_set" then
+        local cs
+        for _, c in pairs(ws._config_sets or {}) do
+            if c.name == insp.subject then cs = c; break end
+        end
+        if not cs or not ws.rename_configuration_set then return false end
+        local ok, err = ws:rename_configuration_set(cs, new_name)
+        if ok then
+            self._selection:pin({ kind = "config_set", key = new_name })
+            self:_notify()
+            return true
+        end
+        ws._core._deps.notify("rename: " .. tostring(err), vim.log.levels.ERROR)
+        return false
     elseif insp.kind == "variable" then
         local proj = find_project(ws, insp.project_key)
         if not proj or not proj.variables or not proj.variables[insp.subject] then return false end

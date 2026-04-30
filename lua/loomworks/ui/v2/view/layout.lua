@@ -174,7 +174,10 @@ function Layout:_rename_inspector_subject_prompt()
     local p = self._vm:presentation()
     local insp = p.inspector
     if not insp or insp.missing then return end
-    local supported = { configuration = true, launch = true, variable = true }
+    local supported = {
+        configuration = true, launch = true, variable = true,
+        project = true, config_set = true,
+    }
     if not supported[insp.kind] then return end
     vim.ui.input({ prompt = "Rename to: ", default = tostring(insp.subject or "") }, function(name)
         if not name or name == "" then return end
