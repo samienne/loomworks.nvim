@@ -342,6 +342,14 @@ function Layout:_handle_add(descriptor)
     elseif descriptor.kind == "wire_cancel" then
         self._vm:dispatch("wire_cancel")
         return
+    elseif descriptor.kind == "wire_source" then
+        -- No prompt — just append an empty source the user can fill via `e`.
+        self._vm:dispatch("add_item", {
+            kind   = "wire_source",
+            parent = descriptor.parent or { kind = "wire_draft" },
+            name   = "",  -- ignored; helper appends an empty source
+        })
+        return
     end
     if descriptor.kind == "deploy_step" then
         -- + Add deploy step now opens wire mode instead of chaining prompts.

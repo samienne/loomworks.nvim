@@ -542,16 +542,29 @@ local function render_wire_deploy(insp, ctx)
     end
     ctx:add("")
 
-    ctx:section("Source")
-    ctx:add_editable(pad_label("  project:", 16) .. tostring(insp.source_project or ""), field("source_project"))
-    ctx:add_editable(pad_label("  target:", 16) .. tostring(insp.target or ""), field("target"))
-    ctx:add_editable(pad_label("  path:", 16) .. tostring(insp.path or ""), field("path"))
-    ctx:add_editable(pad_label("  configuration:", 16) .. tostring(insp.configuration or ""), field("configuration"))
-    ctx:add("")
+    -- One block per source.
+    for _, block in ipairs(insp.source_blocks or {}) do
+        local i = block.index
+        ctx:section(string.format("Source %d", i))
+        for _, f in ipairs(block.fields) do
+            local short_label
+            if f.subject.field == "project"       then short_label = "  project:"
+            elseif f.subject.field == "target"        then short_label = "  target:"
+            elseif f.subject.field == "path"          then short_label = "  path:"
+            elseif f.subject.field == "configuration" then short_label = "  configuration:"
+            elseif f.subject.field == "pre_build"     then short_label = "  pre-build:"
+            else                                            short_label = "  " .. f.subject.field .. ":"
+            end
+            ctx:add_editable(pad_label(short_label, 16) .. tostring(f.value or ""), f)
+        end
+        ctx:add("")
+    end
 
-    ctx:section("Phase")
-    ctx:add_editable(pad_label("  pre-build:", 16) .. (insp.pre_build and "true" or "false"), field("pre_build"))
-    ctx:add("")
+    if insp.add_actions and insp.add_actions.source then
+        ctx:add_creator("  " .. insp.add_actions.source.label, insp.add_actions.source)
+        ctx:hl_last_line("LoomworksActionable")
+        ctx:add("")
+    end
 
     -- Commit actions — emitted as creator sentinels so <CR> activates them.
     if insp.commit_actions then

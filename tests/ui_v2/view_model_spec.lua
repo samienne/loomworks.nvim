@@ -2496,7 +2496,7 @@ describe("ui v2 view model — wire mode (deploy)", function()
         })
     end
 
-    it("open_wire_deploy_add seeds an empty draft and pins inspector", function()
+    it("open_wire_deploy_add seeds an empty draft with one source and pins inspector", function()
         local ws = setup_with_launch()
         local vm = make_vm(ws)
         vm:dispatch("open_wire_deploy_add", {
@@ -2506,11 +2506,12 @@ describe("ui v2 view model — wire mode (deploy)", function()
         assert.equals("wire_deploy", p.inspector.kind)
         assert.equals("add", p.inspector.mode)
         assert.equals("", p.inspector.destination)
-        assert.equals("", p.inspector.source_project)
-        assert.is_false(p.inspector.pre_build)
+        assert.equals(1, #p.inspector.sources)
+        assert.equals("", p.inspector.sources[1].project)
+        assert.is_false(p.inspector.sources[1].pre_build)
     end)
 
-    it("set_field on a wire_draft subject updates the draft, not the workspace", function()
+    it("set_field on wire_draft / wire_draft_source subjects updates the draft", function()
         local ws = setup_with_launch()
         local vm = make_vm(ws)
         vm:dispatch("open_wire_deploy_add", {
@@ -2522,13 +2523,13 @@ describe("ui v2 view model — wire mode (deploy)", function()
             value    = "${build_dir}/native.node",
         })
         vm:dispatch("set_field", {
-            subject  = { kind = "wire_draft", field = "source_project" },
-            field_id = "source_project",
+            subject  = { kind = "wire_draft_source", index = 1, field = "project" },
+            field_id = "source[1].project",
             value    = "NativeLib",
         })
         vm:dispatch("set_field", {
-            subject  = { kind = "wire_draft", field = "target" },
-            field_id = "target",
+            subject  = { kind = "wire_draft_source", index = 1, field = "target" },
+            field_id = "source[1].target",
             value    = "native_lib",
         })
 
@@ -2538,8 +2539,8 @@ describe("ui v2 view model — wire mode (deploy)", function()
 
         local p = vm:presentation()
         assert.equals("${build_dir}/native.node", p.inspector.destination)
-        assert.equals("NativeLib", p.inspector.source_project)
-        assert.equals("native_lib", p.inspector.target)
+        assert.equals("NativeLib", p.inspector.sources[1].project)
+        assert.equals("native_lib", p.inspector.sources[1].target)
     end)
 
     it("wire_save persists the draft and pins to the new deploy_step ref", function()
@@ -2548,17 +2549,21 @@ describe("ui v2 view model — wire mode (deploy)", function()
         vm:dispatch("open_wire_deploy_add", {
             parent = { kind = "launch", project_key = "App", launch_name = "debug" },
         })
-        for _, pair in ipairs({
-            { "destination", "${build_dir}/native.node" },
-            { "source_project", "NativeLib" },
-            { "target", "native_lib" },
-        }) do
-            vm:dispatch("set_field", {
-                subject  = { kind = "wire_draft", field = pair[1] },
-                field_id = pair[1],
-                value    = pair[2],
-            })
-        end
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "destination" },
+            field_id = "destination",
+            value    = "${build_dir}/native.node",
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft_source", index = 1, field = "project" },
+            field_id = "source[1].project",
+            value    = "NativeLib",
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft_source", index = 1, field = "target" },
+            field_id = "source[1].target",
+            value    = "native_lib",
+        })
 
         vm:dispatch("wire_save")
 
@@ -2627,9 +2632,10 @@ describe("ui v2 view model — wire mode (deploy)", function()
         local p = vm:presentation()
         assert.equals("wire_deploy", p.inspector.kind)
         assert.equals("edit", p.inspector.mode)
-        assert.equals("B", p.inspector.source_project)
-        assert.equals("y", p.inspector.target)
-        assert.is_true(p.inspector.pre_build)
+        assert.equals(1, #p.inspector.sources)
+        assert.equals("B", p.inspector.sources[1].project)
+        assert.equals("y", p.inspector.sources[1].target)
+        assert.is_true(p.inspector.sources[1].pre_build)
     end)
 
     it("wire_save in edit mode replaces the existing entry, removing old when destination changes", function()
@@ -2668,7 +2674,7 @@ describe("ui v2 view model — wire mode (deploy)", function()
         assert.is_not_nil(proj.launch.debug.deploy["${build_dir}/new"])
     end)
 
-    it("source_project field is a picker with workspace project keys", function()
+    it("source #1 project field is a picker with workspace project keys", function()
         local ws = make_ws({
             projects = {
                 App = { typescript = {}, launch = { debug = { command = "x" } } },
@@ -2683,7 +2689,7 @@ describe("ui v2 view model — wire mode (deploy)", function()
         local p = vm:presentation()
         local source_field
         for _, f in ipairs(p.inspector.editable_fields) do
-            if f.id == "source_project" then source_field = f; break end
+            if f.id == "source[1].project" then source_field = f; break end
         end
         assert.is_not_nil(source_field)
         assert.equals("picker", source_field.kind)
@@ -2695,7 +2701,7 @@ describe("ui v2 view model — wire mode (deploy)", function()
         assert.is_true(set.Helper)
     end)
 
-    it("configuration choices reflect the chosen source project", function()
+    it("source #1 configuration choices reflect the chosen source project", function()
         local ws = make_ws({
             projects = {
                 App = { typescript = {}, launch = { debug = { command = "x" } } },
@@ -2710,24 +2716,24 @@ describe("ui v2 view model — wire mode (deploy)", function()
         vm:dispatch("open_wire_deploy_add", {
             parent = { kind = "launch", project_key = "App", launch_name = "debug" },
         })
-        -- Initially no source_project — configuration choices should be empty.
+        -- Initially no source project — configuration choices should be empty.
         local p1 = vm:presentation()
         local cfg_field
         for _, f in ipairs(p1.inspector.editable_fields) do
-            if f.id == "configuration" then cfg_field = f; break end
+            if f.id == "source[1].configuration" then cfg_field = f; break end
         end
         assert.is_table(cfg_field.choices)
         assert.equals(0, #cfg_field.choices)
 
-        -- Set source_project; configuration choices should populate.
+        -- Set the source project; configuration choices should populate.
         vm:dispatch("set_field", {
-            subject  = { kind = "wire_draft", field = "source_project" },
-            field_id = "source_project",
+            subject  = { kind = "wire_draft_source", index = 1, field = "project" },
+            field_id = "source[1].project",
             value    = "NativeLib",
         })
         local p2 = vm:presentation()
         for _, f in ipairs(p2.inspector.editable_fields) do
-            if f.id == "configuration" then cfg_field = f; break end
+            if f.id == "source[1].configuration" then cfg_field = f; break end
         end
         assert.is_true(#cfg_field.choices > 0,
             "configuration picker should show NativeLib's configs after selecting it")
@@ -2785,27 +2791,119 @@ describe("ui v2 view model — wire mode (deploy)", function()
         assert.equals("${workspace_root}/x", p.inspector.resolved)
     end)
 
-    it("set_field with boolean value coerces strings (true/false) for pre_build", function()
+    it("set_field with boolean value coerces strings (true/false) for source pre_build", function()
         local ws = setup_with_launch()
         local vm = make_vm(ws)
         vm:dispatch("open_wire_deploy_add", {
             parent = { kind = "launch", project_key = "App", launch_name = "debug" },
         })
         vm:dispatch("set_field", {
-            subject  = { kind = "wire_draft", field = "pre_build" },
-            field_id = "pre_build",
+            subject  = { kind = "wire_draft_source", index = 1, field = "pre_build" },
+            field_id = "source[1].pre_build",
             value    = "true",
         })
         local p = vm:presentation()
-        assert.is_true(p.inspector.pre_build)
+        assert.is_true(p.inspector.sources[1].pre_build)
 
         vm:dispatch("set_field", {
-            subject  = { kind = "wire_draft", field = "pre_build" },
-            field_id = "pre_build",
+            subject  = { kind = "wire_draft_source", index = 1, field = "pre_build" },
+            field_id = "source[1].pre_build",
             value    = "false",
         })
         local q = vm:presentation()
-        assert.is_false(q.inspector.pre_build)
+        assert.is_false(q.inspector.sources[1].pre_build)
+    end)
+
+    it("+ Add source appends an empty source the user can fill via e", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        assert.equals(1, #vm:presentation().inspector.sources)
+
+        vm:dispatch("add_item", {
+            kind = "wire_source", parent = { kind = "wire_draft" }, name = "",
+        })
+        assert.equals(2, #vm:presentation().inspector.sources)
+        assert.equals("", vm:presentation().inspector.sources[2].project)
+    end)
+
+    it("wire_save serialises N>1 sources as an array, N=1 as a single object", function()
+        local ws = setup_with_launch()
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_add", {
+            parent = { kind = "launch", project_key = "App", launch_name = "debug" },
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft", field = "destination" },
+            field_id = "destination",
+            value    = "${build_dir}/lib/",
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft_source", index = 1, field = "project" },
+            field_id = "source[1].project", value = "NativeLib",
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft_source", index = 1, field = "target" },
+            field_id = "source[1].target", value = "lib_a",
+        })
+        vm:dispatch("add_item", {
+            kind = "wire_source", parent = { kind = "wire_draft" }, name = "",
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft_source", index = 2, field = "project" },
+            field_id = "source[2].project", value = "NativeLib",
+        })
+        vm:dispatch("set_field", {
+            subject  = { kind = "wire_draft_source", index = 2, field = "path" },
+            field_id = "source[2].path", value = "extra.so",
+        })
+        vm:dispatch("wire_save")
+
+        local proj = find_project(ws, "App")
+        local entry = proj.launch.debug.deploy["${build_dir}/lib/"]
+        assert.is_not_nil(entry)
+        assert.is_not_nil(entry[1], "expected an array because N>1 sources")
+        assert.equals("NativeLib", entry[1].project)
+        assert.equals("lib_a",     entry[1].target)
+        assert.equals("NativeLib", entry[2].project)
+        assert.equals("extra.so",  entry[2].path)
+    end)
+
+    it("open_wire_deploy_edit loads an array descriptor as multi-source draft", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {},
+                    launch = {
+                        debug = {
+                            command = "node",
+                            deploy = {
+                                ["${build_dir}/lib/"] = {
+                                    { project = "B", target = "x" },
+                                    { project = "B", path = "y", pre_build = true },
+                                },
+                            },
+                        },
+                    },
+                },
+                B = { cmake = {} },
+            },
+        })
+        local vm = make_vm(ws)
+        vm:dispatch("open_wire_deploy_edit", {
+            subject = {
+                kind = "deploy_step", project_key = "App",
+                launch_name = "debug", destination = "${build_dir}/lib/",
+            },
+        })
+        local p = vm:presentation()
+        assert.equals(2, #p.inspector.sources)
+        assert.equals("B", p.inspector.sources[1].project)
+        assert.equals("x", p.inspector.sources[1].target)
+        assert.equals("y", p.inspector.sources[2].path)
+        assert.is_true(p.inspector.sources[2].pre_build)
     end)
 end)
 

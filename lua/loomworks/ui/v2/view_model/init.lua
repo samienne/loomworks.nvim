@@ -585,16 +585,20 @@ function ViewModel:_set_field(subject, field_id, value)
         return ok and true or false
     elseif subject.kind == "wire_draft" then
         if not self._wire_draft then return false end
-        local f = field_id  -- wire kinds use the field name as the id directly,
-                           -- but boolean fields might pass the toggle as "true"/"false"
+        self._wire_draft[subject.field] = value
+        self:_notify()
+        return true
+    elseif subject.kind == "wire_draft_source" then
+        if not self._wire_draft or not self._wire_draft.sources then return false end
+        local source = self._wire_draft.sources[subject.index]
+        if not source then return false end
         if subject.field == "pre_build" then
-            -- Accept boolean directly, or coerce string.
             if type(value) == "string" then
                 value = value:lower() == "true" or value == "1" or value:lower() == "yes"
             end
-            self._wire_draft.pre_build = value and true or false
+            source.pre_build = value and true or false
         else
-            self._wire_draft[subject.field] = value
+            source[subject.field] = value
         end
         self:_notify()
         return true
@@ -648,6 +652,9 @@ function ViewModel:_add_item(kind, parent, name, extra)
     end
     if kind == "project_type_config_env" then
         return self:_add_project_type_config_env(parent, name)
+    end
+    if kind == "wire_source" then
+        return self:_add_wire_source()
     end
     -- Workspace-level adds: project, configuration set.
     if parent.kind == "workspace" then
@@ -789,19 +796,79 @@ function ViewModel:_add_config_set_mapping(parent, project_key, extra)
     return ok and true or false
 end
 
+--- Normalise a raw deploy descriptor (single object or array) into an array
+--- of source rows the wire form can edit.
+--- @param descriptor any
+--- @return table[]
+local function descriptor_to_sources(descriptor)
+    if type(descriptor) ~= "table" then return {} end
+    if descriptor[1] ~= nil then
+        local out = {}
+        for i, src in ipairs(descriptor) do
+            out[i] = {
+                project       = src.project       or "",
+                target        = src.target        or "",
+                path          = src.path          or "",
+                configuration = src.configuration or "",
+                pre_build     = src.pre_build == true,
+            }
+        end
+        return out
+    end
+    return { {
+        project       = descriptor.project       or "",
+        target        = descriptor.target        or "",
+        path          = descriptor.path          or "",
+        configuration = descriptor.configuration or "",
+        pre_build     = descriptor.pre_build == true,
+    } }
+end
+
+--- Build the deploy descriptor (single object or array) that should be
+--- written back to launch.deploy[destination] from a sources array.
+--- Drops sources missing both project and target/path.
+--- @param sources table[]
+--- @return any|nil descriptor
+local function sources_to_descriptor(sources)
+    local cleaned = {}
+    for _, s in ipairs(sources or {}) do
+        if s.project and s.project ~= "" and ((s.target and s.target ~= "") or (s.path and s.path ~= "")) then
+            local out = { project = s.project }
+            if s.target ~= "" then out.target = s.target end
+            if s.path ~= ""   then out.path   = s.path   end
+            if s.configuration and s.configuration ~= "" then out.configuration = s.configuration end
+            if s.pre_build then out.pre_build = true end
+            cleaned[#cleaned + 1] = out
+        end
+    end
+    if #cleaned == 0 then return nil end
+    if #cleaned == 1 then return cleaned[1] end
+    return cleaned
+end
+
+--- Append an empty source to the wire draft.
+--- @return boolean ok
+function ViewModel:_add_wire_source()
+    if not self._wire_draft then return false end
+    self._wire_draft.sources = self._wire_draft.sources or {}
+    self._wire_draft.sources[#self._wire_draft.sources + 1] = {
+        project = "", target = "", path = "", configuration = "", pre_build = false,
+    }
+    self:_notify()
+    return true
+end
+
 --- Open wire mode in "add" form against a launch parent ref.
 --- @param parent table   { kind = "launch", project_key, launch_name }
 function ViewModel:_open_wire_deploy_add(parent)
     if parent.kind ~= "launch" then return end
     self._wire_draft = {
-        mode           = "add",
-        parent         = parent,
-        destination    = "",
-        source_project = "",
-        target         = "",
-        path           = "",
-        configuration  = "",
-        pre_build      = false,
+        mode        = "add",
+        parent      = parent,
+        destination = "",
+        sources     = {
+            { project = "", target = "", path = "", configuration = "", pre_build = false },
+        },
     }
     self._selection:pin({ kind = "wire_deploy" })
     self:_notify()
@@ -818,24 +885,16 @@ function ViewModel:_open_wire_deploy_edit(subject)
     if not launch or not launch.deploy then return end
     local descriptor = launch.deploy[subject.destination]
     if not descriptor then return end
-    -- v0 wire mode handles single-source descriptors. If the deploy step
-    -- is an array, treat the first element as the editable source — a
-    -- richer multi-source editor is a follow-up.
-    local source = descriptor[1] or descriptor
     self._wire_draft = {
-        mode           = "edit",
-        parent         = {
+        mode        = "edit",
+        parent      = {
             kind = "launch",
             project_key = subject.project_key,
             launch_name = subject.launch_name,
         },
-        existing       = subject,
-        destination    = subject.destination or "",
-        source_project = source.project or "",
-        target         = source.target or "",
-        path           = source.path or "",
-        configuration  = source.configuration or "",
-        pre_build      = source.pre_build == true,
+        existing    = subject,
+        destination = subject.destination or "",
+        sources     = descriptor_to_sources(descriptor),
     }
     self._selection:pin({ kind = "wire_deploy" })
     self:_notify()
@@ -848,8 +907,9 @@ function ViewModel:_wire_save()
     if not draft then return false, "no active wire draft" end
     if not draft.parent or draft.parent.kind ~= "launch" then return false, "missing parent" end
     if draft.destination == "" then return false, "destination is empty" end
-    if draft.source_project == "" then return false, "source project is empty" end
-    if draft.target == "" and draft.path == "" then return false, "must set target or path" end
+
+    local descriptor = sources_to_descriptor(draft.sources)
+    if not descriptor then return false, "must have at least one valid source" end
 
     local ws = self._workspace_provider()
     if not ws then return false, "no workspace" end
@@ -857,14 +917,6 @@ function ViewModel:_wire_save()
     if not proj then return false, "project not found" end
     local launch = proj.launch and proj.launch[draft.parent.launch_name]
     if not launch then return false, "launch not found" end
-
-    local descriptor = { project = draft.source_project }
-    if draft.target ~= "" then descriptor.target = draft.target end
-    if draft.path ~= "" then descriptor.path = draft.path end
-    if draft.configuration and draft.configuration ~= "" then
-        descriptor.configuration = draft.configuration
-    end
-    if draft.pre_build then descriptor.pre_build = true end
 
     local updated = vim.tbl_extend("force", {}, launch)
     updated.deploy = vim.tbl_extend("force", {}, launch.deploy or {})
