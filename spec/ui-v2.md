@@ -755,6 +755,83 @@ focused slice when needed:
   add-project sentinels but doesn't provide a workspace bootstrap
   action. `:LoomworksInit` handles the rare case.
 
+## 10.2 Real-world friction (post-merge)
+
+These notes are observed friction from using v2 alongside v1. They
+are not commitments — they're directions to consider when v2 is next
+revisited. Listed roughly by impact-to-effort.
+
+The headline observation: v1's single-tree IA is genuinely simpler
+for the daily loop (look at active profile → build → see result).
+v2's three-pane shape adds context-switching cost. v2's wins are in
+edit-time validation (deploy wire form, live preview), the plan
+view, and the always-visible activity strip — which v1 was bad at.
+The trade is real; v2 is not strictly better.
+
+### Concrete friction points
+
+- **Pane-jumping cost**. The most-common gripe. To inspect an item
+  the cursor is on, the user selects in overview, then `<Tab>`s to
+  the inspector to read or edit, then `<Tab>`s back to act. v1
+  collapses these into one cursor + h/l fold toggling. Two avenues:
+    1. Bring more inspector-side actions to the overview without
+       requiring focus shift. `e` / `E` / `R` from the overview
+       could route to the cursor's ref directly (the inspector's
+       subject is just a pinned ref — the cursor's ref is fine
+       too). The inspector still updates, but the user stays in
+       overview to act.
+    2. Auto-focus the inspector pane after dispatches that
+       genuinely need inspector interaction (drill, `+ Add` form).
+       Currently the user has to `<Tab>` over manually — annoying
+       when the form expects immediate input.
+
+- **Discoverability of per-item actions**. v1's per-item context menu
+  surfaces exactly which actions apply to the focused item. v2's
+  hint bar lists actions per *pane* — same row regardless of cursor
+  ref — so users have to remember which key applies to which kind.
+  A `?` (or `<C-Space>`) keybinding that pops a contextual menu of
+  every action valid for the cursor's ref would close the gap. Same
+  underlying actions, just better discovery.
+
+- **Mental-model gap for tree-style users**. v1 places everything
+  on one screen with foldable nesting. v2's three-pane shape adds
+  spatial structure that some users prefer and some don't. A third
+  layout option — tentatively `tree` — could keep the v2 view model
+  but render in-place expansion: project rows expand inline to show
+  their configurations / launches / variables / deploy steps with
+  the same edit affordances. Same model, two presentations. Bigger
+  effort than the other notes; warrants a focused slice.
+
+### Layout / real estate
+
+- **Activity strip always visible**. The bottom strip eats roughly a
+  quarter of vertical space at default proportions. For workspaces
+  where nothing is running and recent results aren't interesting,
+  that real estate is mostly empty. A `setup({ activity = "auto" })`
+  option that hides the strip until something runs (and auto-shows
+  on `task_started`) would reclaim the space without losing the
+  signal.
+
+- **Inspector for read-only kinds**. Some kinds (device, profile
+  when not editing default target / device pin) are pure reads.
+  Spending a pane on a read-only view is more cost than benefit.
+  Considered: collapse read-only inspectors into a smaller "side
+  card" attached to the overview row instead of a full pane.
+
+### Smaller observations
+
+- **Default float vs tabpage**. Float looks polished but the
+  multi-window context steals focus harder than tabpage in some
+  workflows (especially with mouse-clicking other windows). Per-
+  user preference; both options ship today and the choice is
+  reasonable for the user to make.
+
+- **Hint bar phrasing**. The dynamic part (`<CR> drill / add`,
+  `e edit / cycle publish`) gets long when many things apply.
+  Consider a single-purpose hint that shows the highest-priority
+  action only, with `?` revealing the rest (ties into the
+  context-menu note above).
+
 ---
 
 ## 11. Validation against brief
