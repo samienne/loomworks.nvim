@@ -6,7 +6,8 @@
 --- @field name string configuration set name
 --- @field mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
---- @field _intent "local"|"shared"|"local+shared" intended publish state
+--- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
+--- @field _removed_upstream? boolean transient session flag — was in old baseline but not in new
 local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 

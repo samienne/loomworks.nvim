@@ -56,7 +56,8 @@ end
 ---        inherits reference, or similar pointed at its name, but
 ---        no module-emitted `info()` entry nor user.json declaration
 ---        currently backs it. Cleared when the backing reappears.
---- @field _intent "local"|"shared"|"local+shared" intended publish state
+--- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
+--- @field _removed_upstream? boolean transient session flag — was in old baseline but not in new
 local Configuration = {}
 Configuration.__index = Configuration
 

@@ -160,7 +160,7 @@ end
 --- Runtime state:
 --- @field _operations loomworks.Operation[] active operations
 --- @field _last_operation { message: string, success: boolean }|nil
---- @field _intent "local"|"shared"|"local+shared" intended publish state
+--- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
 local Profile = {}
 Profile.__index = Profile
 

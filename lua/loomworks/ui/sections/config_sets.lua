@@ -404,9 +404,8 @@ return function(tree, ctx)
                 or "LoomworksActionable"
         local sname = cs.name
         local cs_modified = ws and ws:is_config_set_modified(cs) and "+" or ""
-        local pin_icon = group == "published" and cs._user_pinned and "\u{1f4cc} " or ""
 
-        t:node(cs_modified .. pin_icon .. cs.name, {
+        t:node(cs_modified .. cs.name, {
             fold_key = "set:" .. cs.name,
             hl = set_hl,
             enter_label = "Edit mappings",

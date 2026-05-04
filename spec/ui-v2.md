@@ -352,8 +352,9 @@ user configurations have edit/rename/delete actions.
 
 Shows the configuration set, tool, mappings (read-only — the source of
 truth is the set), default target, default launch, device serial,
-published flag. Mappings link to per-project context: `<CR>` on a
-mapping row opens the project inspector for that project.
+intent (cycle: local / local+shared / shared, see specification.md §2.4).
+Mappings link to per-project context: `<CR>` on a mapping row opens the
+project inspector for that project.
 
 #### 4.3.4 Launch config
 
@@ -550,7 +551,7 @@ through configuration set activation. There is no "Add pinned
 profile" entry in the palette.
 
 Profile-level edits (default target, default launch, device serial,
-published flag, custom kit selection) happen on the profile inspector
+intent, custom kit selection) happen on the profile inspector
 (§4.3.3) once the profile exists.
 
 ---
