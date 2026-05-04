@@ -985,6 +985,19 @@ function M.set_filter(filter)
     if _view then _view:set_filter(filter) end
 end
 
+--- Update only the soft-filter level on the active view, preserving
+--- any regex/tag/pid the user has tuned. No-op if no view exists.
+--- @param level "D"|"I"|"W"|"E"|"F"|nil  nil clears the level filter
+function M.set_level(level)
+    if not _view then return end
+    local cur = _view._filter or {}
+    local merged = vim.tbl_extend("force", {}, cur)
+    -- D is the most permissive — same as "no level filter" — so we
+    -- store it as nil to keep the cycle UX consistent with `_cycle_level`.
+    merged.level = (level == "D") and nil or level
+    _view:set_filter(merged)
+end
+
 --- Programmatic layout control. Valid values: "compact", "verbose".
 --- @param layout "compact"|"verbose"
 function M.set_layout(layout)

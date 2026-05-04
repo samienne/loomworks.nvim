@@ -312,27 +312,28 @@ inside the view for level / regex / layout). `<S-F5>` force-stops the
 app on the device (`hdc shell aa force-stop`). Toggle the log view
 from anywhere with `<leader>wO`.
 
-The hilog stream is invoked with `-L <level> -P <pid>` so only the
-app's own process emits, across all log types. This matches DevEco
-Studio's "All logs of selected App" behaviour and brings native
-`LOG_CORE` logs through alongside ArkTS `LOG_APP` traffic. The level
-defaults to `I` (info+) and can be set at setup or at runtime:
+The hilog stream is invoked with `-P <pid>` so only the app's own
+process emits, across all log types. This matches DevEco Studio's
+"All logs of selected App" behaviour and brings native `LOG_CORE`
+logs through alongside ArkTS `LOG_APP` traffic. Level filtering is
+done client-side on the ring buffer rather than via hilog's `-L`
+flag, because `-L` suppresses some native log paths in practice.
 
 ```lua
 require("loomworks").setup({
-  device_log_level = "W",          -- D | I | W | E | F (default: I)
+  device_log_level = "W",          -- soft filter level: D | I | W | E | F (default: I)
   device_log_strict_pid = false,   -- omit -P pid; let helper-PID logs through (default: true)
 })
 ```
 
 ```vim
-:LoomworksDeviceLogLevel W   " switches a running stream too
+:LoomworksDeviceLogLevel W   " retunes the live soft filter
 :LoomworksDeviceLogLevel     " query current level
 ```
 
-Tightening the level (e.g. `I` → `W`) takes effect on the next line.
-Loosening (e.g. `W` → `I`) only shows new output: lines emitted before
-the restart that didn't pass the old filter are not replayable.
+Changing the level re-renders the ring buffer against the new
+threshold, so loosening (`W` → `I`) recovers history. The hilog
+stream itself is not restarted.
 
 Set `device_log_strict_pid = false` if your app spawns helper
 processes whose logs you need; the client-side prefilter (pid OR

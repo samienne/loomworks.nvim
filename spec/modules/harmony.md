@@ -98,7 +98,7 @@ HarmonyOS device connector.
 | `device_launch` | `hdc -t <serial> shell aa start -a <ability> -b <bundle>` |
 | `device_stop` | `hdc -t <serial> shell aa force-stop -b <bundle>` |
 | `device_pid` | `hdc -t <serial> shell pidof <bundle>` |
-| `device_log` | `hdc -t <serial> shell hilog -L <level> [-P pid] [-T tag] [-t type]` (streaming) |
+| `device_log` | `hdc -t <serial> shell hilog [-P pid] [-T tag] [-t type]` (streaming) |
 | `device_log_clear` | `hdc -t <serial> shell hilog -r` |
 
 The `device_log` command is invoked through `shell hilog` (not the
@@ -106,15 +106,19 @@ top-level `hdc hilog` passthrough, which ignores filter flags). The
 filtering strategy mirrors what DevEco Studio surfaces as "All logs
 of selected App":
 
-- `-L <level>` — minimum log level (`D`/`I`/`W`/`E`/`F`). Default
-  `I`. Configurable at setup and at runtime (see §6.1.1 below).
 - `-P <pid>` — passed by the session tracker once the app's PID has
-  resolved. This is the primary volume reducer: it limits the stream
-  to the app's own process across **all log types**, which is what
-  the user actually wants when watching an app run. Native
-  HarmonyOS code that logs through `OH_LOG_Print(LOG_CORE, ...)`
-  comes through alongside ArkTS `LOG_APP` traffic, because both run
-  in the same process.
+  resolved. The primary volume reducer: it limits the stream to the
+  app's own process across **all log types**, which is what the
+  user actually wants when watching an app run. Native HarmonyOS
+  code that logs through `OH_LOG_Print(LOG_CORE, ...)` comes through
+  alongside ArkTS `LOG_APP` traffic, because both run in the same
+  process.
+- **No `-L <level>` at the device.** Hilog's `-L` flag interacts
+  badly with native log paths in practice — some native lines users
+  expect to see get suppressed even at `-L D`. Level filtering is
+  done entirely client-side via the soft filter on the ring buffer,
+  which is reliable, fast, and can be retuned live without
+  restarting the stream.
 - **No `-t <type>` filter by default**. Native log calls land on
   type `core`, not `app`, so restricting to `app` would silently
   drop half the stream. Callers may pass `opts.type` if they have a
@@ -125,28 +129,18 @@ as defense-in-depth and to catch transient PID changes. When the
 device honours `-P`, the prefilter is mostly redundant; when it
 doesn't, the prefilter remains the correctness backstop.
 
-#### 6.1.1 Hard-level changes mid-stream
+#### 6.1.1 Soft-level changes mid-stream
 
-Switching the hard log level (`-L`) requires restarting the hilog
-process: there is no control channel to retune a live process, and
-hilog flags are command-line args read at startup. The session
-tracker disposes the active stream and respawns it with the new
-flag. The client-side ring buffer is preserved across the restart;
-only the tail in flight during dispose/respawn (typically a few
-hundred ms) is lost.
+Setting the level via `loomworks.set_device_log_level(...)` or
+`:LoomworksDeviceLogLevel <D|I|W|E|F>` updates the **client-side
+soft filter** on the live view. The ring buffer re-renders against
+the new level; nothing is lost, no process is killed.
 
-The change is asymmetric:
-
-- **Stricter level** (e.g. `I` → `W`): instant — the new process
-  drops the now-excluded levels going forward.
-- **Looser level** (e.g. `W` → `I`): the new process picks up from
-  "now"; lines emitted *before* the restart that didn't pass the
-  old filter are not replayable. The user has to reproduce the
-  action to see them.
-
-The soft (client-side) filter is independent and operates on the
-ring buffer at render time, so loosening it recovers anything the
-hard filter let through.
+This makes loosening the level (`W` → `I`) genuinely recover
+history — every record in the ring buffer is reconsidered. The
+asymmetry that earlier hard-level filtering had is gone, since the
+hilog stream is unfiltered by level and every line that ever came
+through is in the buffer.
 
 #### 6.1.2 Helper-process logs (`device_log_strict_pid = false`)
 

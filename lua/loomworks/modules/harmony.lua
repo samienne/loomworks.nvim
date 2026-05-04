@@ -912,12 +912,15 @@ function M.device_log_clear(tool_data, device_serial)
     }
 end
 
---- Allowed hilog `-L` level values (D=debug, I=info, W=warn, E=error,
---- F=fatal). Default `I` is the conservative noise-cutter; setup or
---- :LoomworksDeviceLogLevel can override.
+--- Allowed log level values (D=debug, I=info, W=warn, E=error,
+--- F=fatal). Used by `loomworks.set_device_log_level` to validate
+--- caller input before the value is forwarded to the client-side
+--- soft filter. Hilog `-L` is no longer applied at the device because
+--- it interacts badly with native logging in practice (see
+--- spec/modules/harmony.md §6.1).
 M.HILOG_LEVELS = { D = true, I = true, W = true, E = true, F = true }
 
---- Default hilog hard-filter level when none is specified.
+--- Default soft-filter level when nothing is specified.
 M.HILOG_DEFAULT_LEVEL = "I"
 
 --- Allowed hilog `-t` (log type) values. Used to validate `opts.type`.
@@ -930,17 +933,16 @@ M.HILOG_TYPES = { app = true, init = true, core = true, kmsg = true }
 --- ignores filter flags, whereas `shell hilog` lets us apply filters
 --- on-device where they actually work.
 ---
---- Always passes `-L <level>` to keep low-priority chatter off the
---- wire. **Does not** pass `-t app` by default: native HarmonyOS code
---- often logs to `LOG_CORE`, which has type `core`, not `app`, and
---- restricting to `app` drops those lines (see spec/modules/harmony.md
---- §6.1). Volume reduction comes primarily from `-P <pid>` when the
---- caller knows the app's PID — that limits the stream to the app's
---- own process across all log types, matching DevEco Studio's
---- "All logs of selected App" behaviour.
+--- Volume reduction comes from `-P <pid>` when the caller knows the
+--- app's PID — that limits the stream to the app's own process across
+--- all log types, matching DevEco Studio's "All logs of selected App"
+--- behaviour. The hilog `-L` (level) flag is **not** applied at the
+--- device: in practice it suppresses some native log paths whose
+--- effective level isn't always what the caller expects, so we filter
+--- by level only on the client side via the soft filter (see
+--- spec/modules/harmony.md §6.1).
 ---
 --- Optional filters:
----   * `opts.level` → `-L <level>` (default: `I`). Invalid → default.
 ---   * `opts.pid`   → `-P <pid>` (filter by process id)
 ---   * `opts.type`  → `-t <type>` (`app`/`init`/`core`/`kmsg`); only
 ---     applied when explicitly requested. Invalid types are silently
@@ -949,18 +951,13 @@ M.HILOG_TYPES = { app = true, init = true, core = true, kmsg = true }
 ---
 --- @param tool_data table
 --- @param device_serial string
---- @param opts? { level?: string, pid?: number, type?: string, tag?: string }
+--- @param opts? { pid?: number, type?: string, tag?: string }
 --- @return { cmd: string, args: string[] }
 function M.device_log(tool_data, device_serial, opts)
     opts = opts or {}
-    local level = opts.level
-    if not (level and M.HILOG_LEVELS[level]) then
-        level = M.HILOG_DEFAULT_LEVEL
-    end
     local args = {
         "-t", device_serial,
         "shell", "hilog",
-        "-L", level,
     }
     if opts.type and M.HILOG_TYPES[opts.type] then
         args[#args + 1] = "-t"
