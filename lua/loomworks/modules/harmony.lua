@@ -920,6 +920,9 @@ M.HILOG_LEVELS = { D = true, I = true, W = true, E = true, F = true }
 --- Default hilog hard-filter level when none is specified.
 M.HILOG_DEFAULT_LEVEL = "I"
 
+--- Allowed hilog `-t` (log type) values. Used to validate `opts.type`.
+M.HILOG_TYPES = { app = true, init = true, core = true, kmsg = true }
+
 --- Return command spec for streaming device logs.
 ---
 --- Invokes `hdc shell hilog ...` rather than `hdc hilog ...`: the
@@ -927,22 +930,26 @@ M.HILOG_DEFAULT_LEVEL = "I"
 --- ignores filter flags, whereas `shell hilog` lets us apply filters
 --- on-device where they actually work.
 ---
---- Always passes `-t app -L <level>` so init/core/kmsg noise is
---- dropped at the source and low-priority lines never cross the wire.
---- These are treated as strict improvements when the device honours
---- them; the client-side prefilter still bounds what reaches the
---- view if a buggy hilog ignores either flag (see specification.md
---- §6.1 in spec/modules/harmony.md).
+--- Always passes `-L <level>` to keep low-priority chatter off the
+--- wire. **Does not** pass `-t app` by default: native HarmonyOS code
+--- often logs to `LOG_CORE`, which has type `core`, not `app`, and
+--- restricting to `app` drops those lines (see spec/modules/harmony.md
+--- §6.1). Volume reduction comes primarily from `-P <pid>` when the
+--- caller knows the app's PID — that limits the stream to the app's
+--- own process across all log types, matching DevEco Studio's
+--- "All logs of selected App" behaviour.
 ---
---- Optional filters layered when provided:
----   * `opts.level` → `-L <level>` overrides the default. One of
----     `D`/`I`/`W`/`E`/`F`. Invalid values fall back to the default.
+--- Optional filters:
+---   * `opts.level` → `-L <level>` (default: `I`). Invalid → default.
 ---   * `opts.pid`   → `-P <pid>` (filter by process id)
+---   * `opts.type`  → `-t <type>` (`app`/`init`/`core`/`kmsg`); only
+---     applied when explicitly requested. Invalid types are silently
+---     dropped rather than rejected so callers don't have to validate.
 ---   * `opts.tag`   → `-T <tag>` (filter by hilog tag)
 ---
 --- @param tool_data table
 --- @param device_serial string
---- @param opts? { level?: string, pid?: number, tag?: string }
+--- @param opts? { level?: string, pid?: number, type?: string, tag?: string }
 --- @return { cmd: string, args: string[] }
 function M.device_log(tool_data, device_serial, opts)
     opts = opts or {}
@@ -953,9 +960,12 @@ function M.device_log(tool_data, device_serial, opts)
     local args = {
         "-t", device_serial,
         "shell", "hilog",
-        "-t", "app",
         "-L", level,
     }
+    if opts.type and M.HILOG_TYPES[opts.type] then
+        args[#args + 1] = "-t"
+        args[#args + 1] = opts.type
+    end
     if opts.pid then
         args[#args + 1] = "-P"
         args[#args + 1] = tostring(opts.pid)

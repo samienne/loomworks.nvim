@@ -27,6 +27,15 @@ local task_output_win = {}
 --- @type "D"|"I"|"W"|"E"|"F"
 local device_log_level = "I"
 
+--- When true (the default), session_tracker passes `-P <pid>` to
+--- hilog so the stream is limited to the app's own process. Cuts
+--- volume dramatically and matches DevEco Studio's "All logs of
+--- selected App" behaviour. Set false in setup() if your app spawns
+--- helper processes whose logs you need; the client-side prefilter
+--- (pid OR proc-contains-bundle) then becomes the only PID guard.
+--- @type boolean
+local device_log_strict_pid = true
+
 --- Access the underlying core instance (for advanced use / testing).
 --- @return loomworks.Core
 function M._core()
@@ -93,7 +102,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, device_log_level?: "D"|"I"|"W"|"E"|"F" }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, device_log_level?: "D"|"I"|"W"|"E"|"F", device_log_strict_pid?: boolean }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -117,6 +126,9 @@ function M.setup(opts)
                     .. "' — must be one of D|I|W|E|F",
                 vim.log.levels.WARN)
         end
+    end
+    if opts and opts.device_log_strict_pid ~= nil then
+        device_log_strict_pid = opts.device_log_strict_pid and true or false
     end
 
     -- Configure log level
@@ -156,6 +168,11 @@ end
 --- @return "D"|"I"|"W"|"E"|"F"
 function M.get_device_log_level()
     return device_log_level
+end
+
+--- @return boolean true when session_tracker should pass -P pid to hilog
+function M.get_device_log_strict_pid()
+    return device_log_strict_pid
 end
 
 --- Set the on-device hilog level. If a device log stream is currently

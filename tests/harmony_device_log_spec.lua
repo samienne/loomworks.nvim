@@ -37,16 +37,26 @@ end
 describe("harmony.device_log", function()
     local tool_data = { hdc = "/usr/bin/hdc" }
 
-    it("emits hdc shell hilog -t app -L I by default", function()
+    it("emits hdc shell hilog -L I by default, no -t filter", function()
         local spec = harmony.device_log(tool_data, "SERIAL123", {})
         assert.equals("/usr/bin/hdc", spec.cmd)
         local s = args_to_str(spec.args)
         assert.is_truthy(s:find("-t SERIAL123"), "has device serial: " .. s)
         assert.is_truthy(s:find("shell hilog"), "invokes shell hilog: " .. s)
-        assert.equals("app", find_hilog_pair(spec.args, "-t"),
-            "always passes -t app to hilog (drops init/core/kmsg)")
         assert.equals("I", find_hilog_pair(spec.args, "-L"),
             "default hilog level is I")
+        assert.is_nil(find_hilog_pair(spec.args, "-t"),
+            "no -t type filter by default — native LOG_CORE traffic must pass through")
+    end)
+
+    it("applies -t when opts.type is given and valid", function()
+        local spec = harmony.device_log(tool_data, "S", { type = "app" })
+        assert.equals("app", find_hilog_pair(spec.args, "-t"))
+    end)
+
+    it("ignores invalid opts.type", function()
+        local spec = harmony.device_log(tool_data, "S", { type = "bogus" })
+        assert.is_nil(find_hilog_pair(spec.args, "-t"))
     end)
 
     it("respects opts.level when valid", function()
@@ -75,6 +85,14 @@ describe("harmony.device_log", function()
         local spec = harmony.device_log(tool_data, "S", { level = "I" })
         assert.is_false(contains(spec.args, "-P"))
         assert.is_false(contains(spec.args, "-T"))
+    end)
+end)
+
+describe("loomworks.set_device_log_strict_pid", function()
+    local lw = require("loomworks")
+
+    it("get_device_log_strict_pid defaults to true", function()
+        assert.is_true(lw.get_device_log_strict_pid())
     end)
 end)
 

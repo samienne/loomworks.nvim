@@ -312,14 +312,16 @@ inside the view for level / regex / layout). `<S-F5>` force-stops the
 app on the device (`hdc shell aa force-stop`). Toggle the log view
 from anywhere with `<leader>wO`.
 
-The hilog stream is invoked with `-t app -L <level>` so init/core/kmsg
-noise and lines below the configured level are dropped on the device
-before crossing the wire. The level defaults to `I` (info+) and can
-be set at setup or at runtime:
+The hilog stream is invoked with `-L <level> -P <pid>` so only the
+app's own process emits, across all log types. This matches DevEco
+Studio's "All logs of selected App" behaviour and brings native
+`LOG_CORE` logs through alongside ArkTS `LOG_APP` traffic. The level
+defaults to `I` (info+) and can be set at setup or at runtime:
 
 ```lua
 require("loomworks").setup({
-  device_log_level = "W",   -- D | I | W | E | F (default: I)
+  device_log_level = "W",          -- D | I | W | E | F (default: I)
+  device_log_strict_pid = false,   -- omit -P pid; let helper-PID logs through (default: true)
 })
 ```
 
@@ -331,6 +333,10 @@ require("loomworks").setup({
 Tightening the level (e.g. `I` → `W`) takes effect on the next line.
 Loosening (e.g. `W` → `I`) only shows new output: lines emitted before
 the restart that didn't pass the old filter are not replayable.
+
+Set `device_log_strict_pid = false` if your app spawns helper
+processes whose logs you need; the client-side prefilter (pid OR
+proc-contains-bundle) then becomes the only PID guard. Volume goes up.
 
 ### Project variables
 

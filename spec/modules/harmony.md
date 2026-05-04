@@ -98,25 +98,32 @@ HarmonyOS device connector.
 | `device_launch` | `hdc -t <serial> shell aa start -a <ability> -b <bundle>` |
 | `device_stop` | `hdc -t <serial> shell aa force-stop -b <bundle>` |
 | `device_pid` | `hdc -t <serial> shell pidof <bundle>` |
-| `device_log` | `hdc -t <serial> shell hilog -t app -L <level> [-P pid] [-T tag]` (streaming) |
+| `device_log` | `hdc -t <serial> shell hilog -L <level> [-P pid] [-T tag] [-t type]` (streaming) |
 | `device_log_clear` | `hdc -t <serial> shell hilog -r` |
 
 The `device_log` command is invoked through `shell hilog` (not the
-top-level `hdc hilog` passthrough, which ignores filter flags). Two
-filters are applied **on the device** before lines reach the parser:
+top-level `hdc hilog` passthrough, which ignores filter flags). The
+filtering strategy mirrors what DevEco Studio surfaces as "All logs
+of selected App":
 
-- `-t app` — restrict to app log type, dropping init / core / kmsg
-  noise that dominates volume on busy devices. Always passed.
 - `-L <level>` — minimum log level (`D`/`I`/`W`/`E`/`F`). Default
-  `I`. The level is configurable at setup and at runtime (see §6.1.1
-  below). On-device level filtering is treated as a *strict
-  improvement when honoured*: if a hilog build silently ignores `-L`,
-  the client-side soft filter still bounds what the user sees.
+  `I`. Configurable at setup and at runtime (see §6.1.1 below).
+- `-P <pid>` — passed by the session tracker once the app's PID has
+  resolved. This is the primary volume reducer: it limits the stream
+  to the app's own process across **all log types**, which is what
+  the user actually wants when watching an app run. Native
+  HarmonyOS code that logs through `OH_LOG_Print(LOG_CORE, ...)`
+  comes through alongside ArkTS `LOG_APP` traffic, because both run
+  in the same process.
+- **No `-t <type>` filter by default**. Native log calls land on
+  type `core`, not `app`, so restricting to `app` would silently
+  drop half the stream. Callers may pass `opts.type` if they have a
+  specific reason to filter.
 
-Optional `-P pid` and `-T tag` filters remain available to callers
-but are not used by default — the client-side prefilter is more
-permissive (matches `pid` OR `proc-contains-bundle`) and catches
-helper processes that share the bundle name under different PIDs.
+The client-side prefilter (pid OR proc-contains-bundle) still runs
+as defense-in-depth and to catch transient PID changes. When the
+device honours `-P`, the prefilter is mostly redundant; when it
+doesn't, the prefilter remains the correctness backstop.
 
 #### 6.1.1 Hard-level changes mid-stream
 
@@ -140,6 +147,17 @@ The change is asymmetric:
 The soft (client-side) filter is independent and operates on the
 ring buffer at render time, so loosening it recovers anything the
 hard filter let through.
+
+#### 6.1.2 Helper-process logs (`device_log_strict_pid = false`)
+
+Some apps spawn helper processes that emit hilog lines under a
+different PID but for the same bundle. With strict PID filtering
+on (the default), those lines are dropped on the device. Setting
+`device_log_strict_pid = false` at setup tells the session tracker
+to omit `-P` from the hilog command; the client-side prefilter (pid
+OR proc-contains-bundle) then becomes the only PID guard, and
+helper-process logs flow through. Volume increases — measurably on
+busy devices — so this is opt-in.
 
 `hdc` on Windows requires backslash-separated paths; the module
 normalises `/` → `\` for install artifact paths.

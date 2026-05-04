@@ -57,12 +57,20 @@ end
 --- device_log, not on the active run record — session_tracker just
 --- asks device_log to stop during teardown.
 ---
---- The device-side filter level (`hilog -L`) comes from
---- `loomworks.get_device_log_level()`. `-t app` is always passed via
---- the harmony module's device_log spec to drop init/core/kmsg
---- noise. We do NOT pass `-P pid` to hilog: the client-side prefilter
---- uses the more permissive (pid OR proc-contains-bundle) match so
---- helper processes that share the bundle name aren't lost.
+--- Filter strategy (matches DevEco Studio's "All logs of selected
+--- App" behaviour, see spec/modules/harmony.md §6.1):
+---   * `-L <level>` from `loomworks.get_device_log_level()`.
+---   * `-P <pid>` when `loomworks.get_device_log_strict_pid()` is
+---     true (default). This is the primary volume reducer — only
+---     the app's own process emits, across all log types, so native
+---     `LOG_CORE` traffic comes through alongside ArkTS `LOG_APP`.
+---     Helper processes that share the bundle name but log under a
+---     different PID are dropped; users who need them set
+---     `device_log_strict_pid = false` and rely on the client-side
+---     prefilter (pid OR proc-contains-bundle) instead.
+---   * No `-t <type>` filter: native code routinely logs to type
+---     `core`, so restricting to `app` would silently lose half the
+---     stream.
 ---
 --- @param target loomworks.LaunchTarget
 --- @param device_serial string
@@ -79,7 +87,11 @@ local function start_device_log_view(target, device_serial, bundle, pid, skip_cl
 
     local lw = require("loomworks")
     local level = lw.get_device_log_level and lw.get_device_log_level() or "I"
-    local spec = mod.device_log(td, device_serial, { level = level })
+    local strict_pid = lw.get_device_log_strict_pid
+        and lw.get_device_log_strict_pid() or false
+    local log_opts = { level = level }
+    if strict_pid then log_opts.pid = pid end
+    local spec = mod.device_log(td, device_serial, log_opts)
     if not spec or not spec.cmd then return end
     local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
 
@@ -92,13 +104,14 @@ local function start_device_log_view(target, device_serial, bundle, pid, skip_cl
     end
 
     local device_log = require("loomworks.device_log")
+    local pid_label = strict_pid and "-P " .. pid or "no -P (lenient)"
     device_log.start({
         name = target._project.key .. ": device logs (pid " .. pid .. ")",
         cmd = cmd,
         prefilter = device_log.make_prefilter({ pid = pid, bundle = bundle }),
         banner = string.format(
-            "device-log session: %s  bundle=%s  pid=%d  hilog -L %s  (strict prefilter)",
-            target._project.key, bundle, pid, level),
+            "device-log session: %s  bundle=%s  pid=%d  hilog -L %s %s  (strict prefilter)",
+            target._project.key, bundle, pid, level, pid_label),
         -- On the first launch in this nvim process, apply a sensible
         -- default soft filter so the user isn't drowning in V/D-level
         -- noise. On subsequent launches we preserve whatever filter
