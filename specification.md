@@ -105,10 +105,20 @@ actions.
 
 **Namespace rule**: user-declared configuration names MUST NOT
 contain `:` — that character is the tier separator. `config.validate`
-rejects names containing it with a specific error pointing the user
-to rename. A user config's `inherits:` reference, by contrast, uses
-the full canonical name — `inherits: "variant:Debug"`, not bare
-`"Debug"`.
+strips entries with `:` in their name on load and emits a one-shot
+warning, rather than failing the workspace open. (An older
+serialization bug wrote auto-gen entries into loomworks.json; failing
+to load would strand users with an unopenable workspace, so the
+parser is permissive on the way in. Auto-gens are filtered out on
+the way out — see §4.x serialization.) A user config's `inherits:`
+reference, by contrast, uses the full canonical name —
+`inherits: "variant:Debug"`, not bare `"Debug"`.
+
+**Auto-gens are never persisted to loomworks.json.** They regenerate
+from `module.info()` on every workspace load. Serialization
+(`Workspace:_serialize_project_shared`,
+`Workspace:_serialize_config_internal`) skips any Configuration
+where `is_auto_gen()` returns true.
 
 References (configuration_set mappings, inherits values, default
 target pointers) store the full canonical name verbatim. Orphan
