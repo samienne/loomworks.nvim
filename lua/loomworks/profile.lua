@@ -184,9 +184,24 @@ function Profile.new(workspace, data)
     local self = setmetatable({}, Profile)
     self._workspace = workspace
     self._removed = false
-    self._intent = "local"
+    -- _intent left nil; data_model.refresh assigns and then sticks
+    -- (specification.md §2.4). Mutation methods set it explicitly.
+    self._intent = nil
     if data then self:_apply(data) end
     return self
+end
+
+--- Mark this profile as in the user.json working copy.
+--- Called when any mutation is about to write to user.json. Profiles
+--- default to local intent (per spec §2.4 — profiles are personal by
+--- default), but a `shared` profile that's being used must be promoted
+--- to `local+shared` so its data lands in the working copy.
+function Profile:_mark_user_owned()
+    if self._intent == "shared" then
+        self._intent = "local+shared"
+    elseif self._intent == nil then
+        self._intent = "local"
+    end
 end
 
 --- Update all data fields in place (preserves table identity).
@@ -453,6 +468,19 @@ end
 function Profile:activate()
     self._workspace._active_profile = self
     self._workspace._active_profile_key = self.key
+    -- Implicit cascade on use (specification.md §2.4): activating a
+    -- profile materializes it and the items it transitively references
+    -- into the working copy.
+    self:_mark_user_owned()
+    if self._config_set_ref then
+        self._config_set_ref:_mark_user_owned()
+        for project, cfg in pairs(self._config_set_ref.mappings or {}) do
+            project:_mark_user_owned()
+            if cfg and cfg._mark_user_owned then
+                cfg:_mark_user_owned()
+            end
+        end
+    end
     self._workspace:_save_user()
     self._workspace:remerge()
 end

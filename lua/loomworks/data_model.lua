@@ -609,6 +609,10 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local intent_profiles = intent_overrides.profiles or {}
 
     --- Compute default intent from file presence.
+    --- Used only when an item has no prior intent — for newly-created objects
+    --- on first refresh. After that, intent is sticky (see specification.md
+    --- §2.4 "Intent stickiness"): explicit overrides win, then prior intent,
+    --- then default-from-presence as a last resort.
     local function default_intent(in_user, in_baseline)
         if in_user and in_baseline then return "local+shared" end
         if in_user then return "local" end
@@ -622,7 +626,9 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
             and shared_baseline.projects
             and shared_baseline.projects[p.key] ~= nil
         local in_user = user_project_keys[p.key] or false
-        p._intent = intent_projects[p.key] or default_intent(in_user, in_baseline)
+        p._intent = intent_projects[p.key]
+            or p._intent
+            or default_intent(in_user, in_baseline)
 
         -- Per-configuration _intent
         local prov = user_provenance[p.key] or {}
@@ -635,7 +641,9 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
             local cfg_in_user = prov.user_configs and prov.user_configs[cfg.name] or false
             local cfg_in_baseline = baseline_configs and baseline_configs[cfg.name] ~= nil or false
             local cfg_key = p.key .. "/" .. cfg.name
-            cfg._intent = intent_configs[cfg_key] or default_intent(cfg_in_user, cfg_in_baseline)
+            cfg._intent = intent_configs[cfg_key]
+                or cfg._intent
+                or default_intent(cfg_in_user, cfg_in_baseline)
         end
     end
     for _, cs in pairs(config_sets) do
@@ -644,7 +652,9 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
             and shared_baseline.configuration_sets
             and shared_baseline.configuration_sets[cs.name] ~= nil
         local in_user = user_cs_names[cs.name] or false
-        cs._intent = intent_sets[cs.name] or default_intent(in_user, in_baseline)
+        cs._intent = intent_sets[cs.name]
+            or cs._intent
+            or default_intent(in_user, in_baseline)
     end
     local user_profile_keys = deps.user_profile_keys or {}
     for _, prof in pairs(profiles) do
@@ -652,7 +662,9 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
             and shared_baseline.profiles
             and shared_baseline.profiles[prof.key] ~= nil
         local in_user = user_profile_keys[prof.key] or false
-        prof._intent = intent_profiles[prof.key] or default_intent(in_user, in_baseline)
+        prof._intent = intent_profiles[prof.key]
+            or prof._intent
+            or default_intent(in_user, in_baseline)
     end
 
     -- Resolve active profile from the active set name

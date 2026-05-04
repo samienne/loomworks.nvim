@@ -67,9 +67,11 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `N`     | init_workspace | Initialize workspace: create user.json in cwd |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
-| `P`     | publish     | Toggle publish flag on nearest publishable item |
+| `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
 | `U`     | delete_user | Delete user.json and reload (with confirmation) |
-| `:w`    | (write)     | Publish: write published items to loomworks.json |
+| `:w`    | (write)     | Publish: regenerate loomworks.json from working copy |
+| `:e`    | (edit)      | Reload from published baseline (refused if any divergence) |
+| `:e!`   | (force edit)| Force-revert workspace to baseline (preserves data, drops publication wishes for unmatched items) |
 | `?`     | help        | Show help dialog |
 | `q`     | (close)     | Close the status page |
 

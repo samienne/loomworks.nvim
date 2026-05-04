@@ -419,6 +419,22 @@ return function(tree, ctx)
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
                 end
             end,
+            on_publish_now = function()
+                if not ws then return end
+                local ok, err = ws:publish_one(cs)
+                if not ok then
+                    vim.notify("loomworks: publish failed: " ..
+                        (err or "unknown"), vim.log.levels.ERROR)
+                end
+            end,
+            on_revert_one = function()
+                if not ws then return end
+                local ok, err = ws:revert_one(cs)
+                if not ok then
+                    vim.notify("loomworks: revert failed: " ..
+                        (err or "unknown"), vim.log.levels.ERROR)
+                end
+            end,
             on_create = function()
                 local all_tool_entries = lw.get_tool_entries()
                 local is_first = not next(all_profiles)

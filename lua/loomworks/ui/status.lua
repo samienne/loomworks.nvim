@@ -45,6 +45,13 @@ local function render_fn(tree)
     tree:blank()
     tree:leaf("Workspace: " .. ws.name, "Type")
     tree:leaf("Root:      " .. ws.root, "Comment")
+    -- Banner: loomworks.json missing on disk (specification.md §2.4).
+    -- The workspace continues to function from user.json; :w will publish.
+    local config_path = ws.root .. "/loomworks.json"
+    if not (vim.uv or vim.loop).fs_stat(config_path) then
+        tree:leaf("⚠ loomworks.json not on disk — :w to publish",
+            "DiagnosticWarn")
+    end
     tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
     tree:blank()
 
@@ -123,6 +130,20 @@ local view = View.new({
         local ok, err = ws:publish()
         if not ok then
             vim.notify("loomworks: publish failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+        end
+    end,
+    on_revert = function()
+        local lw = require("loomworks")
+        local ws = lw.get_workspace()
+        if not ws then
+            vim.notify("loomworks: no workspace", vim.log.levels.WARN)
+            return
+        end
+        local ok, err = ws:revert_to_baseline()
+        if not ok then
+            vim.notify("loomworks: revert failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+        else
+            vim.notify("loomworks: reverted workspace to published baseline", vim.log.levels.INFO)
         end
     end,
     events = {

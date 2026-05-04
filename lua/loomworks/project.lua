@@ -42,7 +42,12 @@ function Project.new(workspace, key, data)
     self.key = key
     self._removed = false
     self._source = "shared"
-    self._intent = "local"
+    -- _intent is intentionally nil here. data_model.refresh assigns the
+    -- default from file presence on first sync, then preserves it across
+    -- subsequent remerges (specification.md §2.4 "Intent stickiness").
+    -- Mutation methods that create a project outside refresh (e.g.,
+    -- workspace.add_project) set _intent explicitly before saving.
+    self._intent = nil
     self._configurations = {}
     if data then self:_update(data) end
     return self
@@ -375,9 +380,11 @@ function Project:save_configuration(config_name, config_data)
             module_config = vim.deepcopy(existing.module_config),
         }
         existing:_update(clean)
+        existing:_mark_user_owned()  -- editing a shared cfg materializes it
         existing:_resolve_inherits()
     else
         local cfg = Configuration.new(self, config_name, clean)
+        cfg:_mark_user_owned()  -- new local config
         cfg:_resolve_inherits()
         self._configurations[#self._configurations + 1] = cfg
     end

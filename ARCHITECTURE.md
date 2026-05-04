@@ -113,8 +113,10 @@ simpler option.
 
 4. **Single source of truth.** Each piece of state lives in exactly one
    place. Runtime state (running, deleting, progress) → ConfigUnit.
-   Persistent build state → cache.json. Intent → loomworks.json. User
-   choices → user.json. If you find the same information stored in two
+   Persistent build state → cache.json. Working state and intent →
+   user.json (the runtime source of truth, see specification.md §2.2).
+   Published snapshot → loomworks.json (regenerated on `:w`, never read
+   directly at runtime). If you find the same information stored in two
    places, eliminate one.
 
 5. **Constructor injection for testability.** Core uses `Core.new(deps)`
