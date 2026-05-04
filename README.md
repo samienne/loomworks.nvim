@@ -312,6 +312,26 @@ inside the view for level / regex / layout). `<S-F5>` force-stops the
 app on the device (`hdc shell aa force-stop`). Toggle the log view
 from anywhere with `<leader>wO`.
 
+The hilog stream is invoked with `-t app -L <level>` so init/core/kmsg
+noise and lines below the configured level are dropped on the device
+before crossing the wire. The level defaults to `I` (info+) and can
+be set at setup or at runtime:
+
+```lua
+require("loomworks").setup({
+  device_log_level = "W",   -- D | I | W | E | F (default: I)
+})
+```
+
+```vim
+:LoomworksDeviceLogLevel W   " switches a running stream too
+:LoomworksDeviceLogLevel     " query current level
+```
+
+Tightening the level (e.g. `I` → `W`) takes effect on the next line.
+Loosening (e.g. `W` → `I`) only shows new output: lines emitted before
+the restart that didn't pass the old filter are not replayable.
+
 ### Project variables
 
 Declare typed variables with defaults, override per configuration:

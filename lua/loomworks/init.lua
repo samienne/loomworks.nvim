@@ -20,6 +20,13 @@ local auto_load_mode = "auto"
 --- @type table
 local task_output_win = {}
 
+--- On-device hilog level (`-L` flag). One of `D|I|W|E|F`. The harmony
+--- module passes this to `device_log()` so noisy debug lines never
+--- cross the wire. Configurable at setup or at runtime via
+--- :LoomworksDeviceLogLevel.
+--- @type "D"|"I"|"W"|"E"|"F"
+local device_log_level = "I"
+
 --- Access the underlying core instance (for advanced use / testing).
 --- @return loomworks.Core
 function M._core()
@@ -86,7 +93,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, device_log_level?: "D"|"I"|"W"|"E"|"F" }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -99,6 +106,17 @@ function M.setup(opts)
     end
     if opts and opts.task_output_win then
         task_output_win = opts.task_output_win
+    end
+    if opts and opts.device_log_level then
+        local harmony = require("loomworks.modules.harmony")
+        if harmony.HILOG_LEVELS and harmony.HILOG_LEVELS[opts.device_log_level] then
+            device_log_level = opts.device_log_level
+        else
+            vim.notify(
+                "loomworks: invalid device_log_level '" .. tostring(opts.device_log_level)
+                    .. "' — must be one of D|I|W|E|F",
+                vim.log.levels.WARN)
+        end
     end
 
     -- Configure log level
@@ -132,6 +150,34 @@ end
 --- @return string|false
 function M._auto_load_mode()
     return auto_load_mode
+end
+
+--- Get the current on-device hilog level.
+--- @return "D"|"I"|"W"|"E"|"F"
+function M.get_device_log_level()
+    return device_log_level
+end
+
+--- Set the on-device hilog level. If a device log stream is currently
+--- active, dispose it and respawn `hdc shell hilog` with the new
+--- `-L` flag. The change is asymmetric: stricter levels take effect
+--- immediately; looser levels only show new output (lines emitted
+--- before the restart that didn't pass the old filter are not
+--- replayable). See spec/modules/harmony.md §6.1.1.
+--- @param level "D"|"I"|"W"|"E"|"F"
+--- @return boolean ok, string|nil err
+function M.set_device_log_level(level)
+    local harmony = require("loomworks.modules.harmony")
+    if not (harmony.HILOG_LEVELS and harmony.HILOG_LEVELS[level]) then
+        return false, "invalid level '" .. tostring(level) ..
+            "' — must be one of D|I|W|E|F"
+    end
+    device_log_level = level
+    local ok, st = pcall(require, "loomworks.session_tracker")
+    if ok and st.restart_device_log then
+        st.restart_device_log()
+    end
+    return true
 end
 
 --- Get the merged active configuration set.
