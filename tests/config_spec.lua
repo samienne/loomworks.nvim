@@ -110,19 +110,29 @@ describe("config", function()
             assert.are.same({ "B" }, result.projects.A.depends_on)
         end)
 
-        it("rejects user-declared config names containing ':'", function()
+        it("strips user-declared config names containing ':' on load", function()
             -- `:` is the tier separator for auto-gen configs
             -- (`variant:Debug`, `preset:debug-custom`). User names
-            -- must stay in the unprefixed namespace.
+            -- must stay in the unprefixed namespace. Older plugin
+            -- versions had a bug that wrote auto-gens to
+            -- loomworks.json; rather than failing the load (which
+            -- would strand the user with an unopenable workspace),
+            -- the parser strips the offending entries with a warning
+            -- so the next `:w` can clean them up.
             local json = vim.json.encode({
                 projects = {
-                    A = { cmake = { configurations = { ["foo:bar"] = {} } } },
+                    A = { cmake = { configurations = {
+                        ["foo:bar"] = {},
+                        ["legit"] = {},
+                    } } },
                 },
             })
-            local result, err = config.parse(json, "/fake/root")
-            assert.is_nil(result)
-            assert.matches("foo:bar", err)
-            assert.matches("reserved", err)
+            local result = config.parse(json, "/fake/root")
+            assert.is_not_nil(result)
+            local cfgs = result.projects.A.type_config
+                and result.projects.A.type_config.configurations or {}
+            assert.is_nil(cfgs["foo:bar"], "colon-prefixed entry must be stripped")
+            assert.is_not_nil(cfgs["legit"], "valid entries are preserved")
         end)
 
         it("accepts user config names without ':'", function()

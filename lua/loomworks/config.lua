@@ -140,15 +140,35 @@ function M.validate(raw, root)
         -- upfront removes a whole class of "user config shadows the
         -- module's default" confusion that the strict-separation
         -- design is meant to eliminate.
+        --
+        -- We strip rather than error here. Older versions of the
+        -- plugin had a serialization bug that wrote auto-gens
+        -- (`auto:...`, `harmony:...`, etc.) into loomworks.json;
+        -- failing the load would leave users with a workspace that
+        -- can't open at all and needs manual editing. Stripping plus
+        -- a one-shot warning lets the workspace load, the next `:w`
+        -- cleans the file, and any genuine user-typed `:` is still
+        -- caught — just non-fatally.
         if type_config and type_config.configurations then
+            local stripped = {}
             for cfg_name in pairs(type_config.configurations) do
                 if type(cfg_name) == "string" and cfg_name:find(":", 1, true) then
-                    return nil, "project '" .. key .. "' configuration '"
-                        .. cfg_name .. "': name contains ':' which is "
-                        .. "reserved for auto-generated configurations "
-                        .. "(prefix:name). Rename this configuration "
-                        .. "without ':'."
+                    stripped[#stripped + 1] = cfg_name
                 end
+            end
+            if #stripped > 0 then
+                for _, name in ipairs(stripped) do
+                    type_config.configurations[name] = nil
+                end
+                vim.notify(
+                    "loomworks: project '" .. key
+                        .. "' loomworks.json contained reserved-prefix "
+                        .. "config names ("
+                        .. table.concat(stripped, ", ")
+                        .. ") — stripped on load. They were likely "
+                        .. "auto-generated entries written by an older "
+                        .. "version. Re-publish (`:w`) to clean the file.",
+                    vim.log.levels.WARN)
             end
         end
 

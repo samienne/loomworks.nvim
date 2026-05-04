@@ -1126,6 +1126,50 @@ describe("Core", function()
                 "App must be flagged removed-upstream (was in baseline, isn't now)")
         end)
 
+        it("publish drops auto-gen configurations from loomworks.json", function()
+            -- Auto-gens (configs with a `prefix:name` canonical key)
+            -- come from module.info() on every load. They must never
+            -- be persisted — otherwise stale entries pile up in
+            -- loomworks.json and the parser later trips on the
+            -- reserved `:` character.
+            local Configuration = require("loomworks.configuration")
+            local core = make_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { debug = { App = "development" } },
+                },
+                {
+                    active_profile = "debug",
+                    projects = {
+                        App = { typescript = { configurations = { development = {} } } },
+                    },
+                }
+            )
+            core:setup({ root = "/root" })
+
+            local app
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app = p; break end
+            end
+            assert.is_not_nil(app)
+            -- Inject a synthetic auto-gen with module data the bug would
+            -- have written to loomworks.json.
+            local autogen = Configuration.new(app, "auto:Debug", {
+                module_config = { variant = "Debug", generator = "Ninja" },
+                is_default = true,
+            })
+            autogen._intent = "shared"
+            app._configurations[#app._configurations + 1] = autogen
+            assert.is_true(autogen:is_auto_gen())
+
+            local raw = core._workspace:_serialize_config()
+            local cfgs = raw.projects["App"]
+                and raw.projects["App"].typescript
+                and raw.projects["App"].typescript.configurations or {}
+            assert.is_nil(cfgs["auto:Debug"],
+                "auto-gen must be filtered out of loomworks.json")
+        end)
+
         it("publish_one writes only the named item to loomworks.json", function()
             local core = make_core(
                 {

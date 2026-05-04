@@ -2581,16 +2581,24 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
             and vim.deepcopy(project.type_config) or {}
     local configs_dict = {}
     for _, cfg in ipairs(project._configurations) do
-        local should_publish
-        if publishable_configs then
-            should_publish = publishable_configs[cfg] or false
+        -- Auto-gens are emitted by the module on every load
+        -- (see Configuration:is_auto_gen / spec/modules). Persisting
+        -- them to loomworks.json is dead weight at best and a drift
+        -- hazard if the module's emitted set changes between sessions.
+        if cfg:is_auto_gen() then
+            -- skip
         else
-            should_publish = cfg._intent and cfg._intent ~= "local"
-        end
-        if should_publish then
-            local override = cfg:serialize_user_override()
-            if override then
-                configs_dict[cfg.name] = override
+            local should_publish
+            if publishable_configs then
+                should_publish = publishable_configs[cfg] or false
+            else
+                should_publish = cfg._intent and cfg._intent ~= "local"
+            end
+            if should_publish then
+                local override = cfg:serialize_user_override()
+                if override then
+                    configs_dict[cfg.name] = override
+                end
             end
         end
     end
@@ -3540,7 +3548,9 @@ function Workspace:_serialize_config_internal()
                     and vim.deepcopy(project.type_config) or {}
             local configs_dict = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._intent ~= "local" then
+                -- Skip module-emitted auto-gens; they regenerate on every
+                -- load and don't belong in the published baseline.
+                if not cfg:is_auto_gen() and cfg._intent ~= "local" then
                     local override = cfg:serialize_user_override()
                     if override then
                         configs_dict[cfg.name] = override
