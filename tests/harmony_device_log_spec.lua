@@ -37,44 +37,52 @@ end
 describe("harmony.device_log", function()
     local tool_data = { hdc = "/usr/bin/hdc" }
 
-    it("emits hdc shell hilog -t app -L I by default", function()
+    it("emits hdc shell hilog with no level/type filter by default", function()
         local spec = harmony.device_log(tool_data, "SERIAL123", {})
         assert.equals("/usr/bin/hdc", spec.cmd)
         local s = args_to_str(spec.args)
         assert.is_truthy(s:find("-t SERIAL123"), "has device serial: " .. s)
         assert.is_truthy(s:find("shell hilog"), "invokes shell hilog: " .. s)
-        assert.equals("app", find_hilog_pair(spec.args, "-t"),
-            "always passes -t app to hilog (drops init/core/kmsg)")
-        assert.equals("I", find_hilog_pair(spec.args, "-L"),
-            "default hilog level is I")
+        assert.is_nil(find_hilog_pair(spec.args, "-L"),
+            "no -L level filter — done client-side on the ring buffer")
+        assert.is_nil(find_hilog_pair(spec.args, "-t"),
+            "no -t type filter by default — native LOG_CORE traffic must pass through")
     end)
 
-    it("respects opts.level when valid", function()
-        local spec = harmony.device_log(tool_data, "S", { level = "W" })
-        assert.equals("W", find_hilog_pair(spec.args, "-L"))
+    it("applies -t when opts.type is given and valid", function()
+        local spec = harmony.device_log(tool_data, "S", { type = "app" })
+        assert.equals("app", find_hilog_pair(spec.args, "-t"))
     end)
 
-    it("falls back to default level on invalid input", function()
-        local spec = harmony.device_log(tool_data, "S", { level = "garbage" })
-        assert.equals(harmony.HILOG_DEFAULT_LEVEL, find_hilog_pair(spec.args, "-L"))
+    it("ignores invalid opts.type", function()
+        local spec = harmony.device_log(tool_data, "S", { type = "bogus" })
+        assert.is_nil(find_hilog_pair(spec.args, "-t"))
     end)
 
     it("appends -P pid when pid given", function()
-        local spec = harmony.device_log(tool_data, "S", { level = "I", pid = 4321 })
+        local spec = harmony.device_log(tool_data, "S", { pid = 4321 })
         assert.is_true(contains(spec.args, "-P"))
         assert.is_true(contains(spec.args, "4321"))
     end)
 
     it("appends -T tag when tag given", function()
-        local spec = harmony.device_log(tool_data, "S", { level = "I", tag = "MyTag" })
+        local spec = harmony.device_log(tool_data, "S", { tag = "MyTag" })
         assert.is_true(contains(spec.args, "-T"))
         assert.is_true(contains(spec.args, "MyTag"))
     end)
 
     it("does not append -P / -T when not given", function()
-        local spec = harmony.device_log(tool_data, "S", { level = "I" })
+        local spec = harmony.device_log(tool_data, "S", {})
         assert.is_false(contains(spec.args, "-P"))
         assert.is_false(contains(spec.args, "-T"))
+    end)
+end)
+
+describe("loomworks.set_device_log_strict_pid", function()
+    local lw = require("loomworks")
+
+    it("get_device_log_strict_pid defaults to true", function()
+        assert.is_true(lw.get_device_log_strict_pid())
     end)
 end)
 

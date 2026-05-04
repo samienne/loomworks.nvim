@@ -27,6 +27,15 @@ local task_output_win = {}
 --- @type "D"|"I"|"W"|"E"|"F"
 local device_log_level = "I"
 
+--- When true (the default), session_tracker passes `-P <pid>` to
+--- hilog so the stream is limited to the app's own process. Cuts
+--- volume dramatically and matches DevEco Studio's "All logs of
+--- selected App" behaviour. Set false in setup() if your app spawns
+--- helper processes whose logs you need; the client-side prefilter
+--- (pid OR proc-contains-bundle) then becomes the only PID guard.
+--- @type boolean
+local device_log_strict_pid = true
+
 --- Access the underlying core instance (for advanced use / testing).
 --- @return loomworks.Core
 function M._core()
@@ -93,7 +102,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, device_log_level?: "D"|"I"|"W"|"E"|"F" }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, device_log_level?: "D"|"I"|"W"|"E"|"F", device_log_strict_pid?: boolean }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -117,6 +126,9 @@ function M.setup(opts)
                     .. "' — must be one of D|I|W|E|F",
                 vim.log.levels.WARN)
         end
+    end
+    if opts and opts.device_log_strict_pid ~= nil then
+        device_log_strict_pid = opts.device_log_strict_pid and true or false
     end
 
     -- Configure log level
@@ -158,12 +170,16 @@ function M.get_device_log_level()
     return device_log_level
 end
 
---- Set the on-device hilog level. If a device log stream is currently
---- active, dispose it and respawn `hdc shell hilog` with the new
---- `-L` flag. The change is asymmetric: stricter levels take effect
---- immediately; looser levels only show new output (lines emitted
---- before the restart that didn't pass the old filter are not
---- replayable). See spec/modules/harmony.md §6.1.1.
+--- @return boolean true when session_tracker should pass -P pid to hilog
+function M.get_device_log_strict_pid()
+    return device_log_strict_pid
+end
+
+--- Set the device-log level. Applied as the **client-side soft
+--- filter** level: the live ring buffer re-renders without restarting
+--- hilog, so loosening the level recovers history that's already in
+--- the buffer (the hilog stream itself is unfiltered by level — see
+--- spec/modules/harmony.md §6.1).
 --- @param level "D"|"I"|"W"|"E"|"F"
 --- @return boolean ok, string|nil err
 function M.set_device_log_level(level)
@@ -173,10 +189,8 @@ function M.set_device_log_level(level)
             "' — must be one of D|I|W|E|F"
     end
     device_log_level = level
-    local ok, st = pcall(require, "loomworks.session_tracker")
-    if ok and st.restart_device_log then
-        st.restart_device_log()
-    end
+    local ok, dl = pcall(require, "loomworks.device_log")
+    if ok and dl.set_level then dl.set_level(level) end
     return true
 end
 
