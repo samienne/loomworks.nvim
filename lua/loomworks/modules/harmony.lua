@@ -912,6 +912,14 @@ function M.device_log_clear(tool_data, device_serial)
     }
 end
 
+--- Allowed hilog `-L` level values (D=debug, I=info, W=warn, E=error,
+--- F=fatal). Default `I` is the conservative noise-cutter; setup or
+--- :LoomworksDeviceLogLevel can override.
+M.HILOG_LEVELS = { D = true, I = true, W = true, E = true, F = true }
+
+--- Default hilog hard-filter level when none is specified.
+M.HILOG_DEFAULT_LEVEL = "I"
+
 --- Return command spec for streaming device logs.
 ---
 --- Invokes `hdc shell hilog ...` rather than `hdc hilog ...`: the
@@ -919,21 +927,35 @@ end
 --- ignores filter flags, whereas `shell hilog` lets us apply filters
 --- on-device where they actually work.
 ---
---- Filters layered when provided:
----   * `opts.pid`  → `-P <pid>` (filter by process id)
----   * `opts.tag`  → `-T <tag>` (filter by hilog tag — for harmony
----     apps the default is typically the bundle name)
+--- Always passes `-t app -L <level>` so init/core/kmsg noise is
+--- dropped at the source and low-priority lines never cross the wire.
+--- These are treated as strict improvements when the device honours
+--- them; the client-side prefilter still bounds what reaches the
+--- view if a buggy hilog ignores either flag (see specification.md
+--- §6.1 in spec/modules/harmony.md).
 ---
---- Both are applied together. An unfiltered stream is unwatchable on
---- a real device, so callers are expected to pass at least one.
+--- Optional filters layered when provided:
+---   * `opts.level` → `-L <level>` overrides the default. One of
+---     `D`/`I`/`W`/`E`/`F`. Invalid values fall back to the default.
+---   * `opts.pid`   → `-P <pid>` (filter by process id)
+---   * `opts.tag`   → `-T <tag>` (filter by hilog tag)
 ---
 --- @param tool_data table
 --- @param device_serial string
---- @param opts? { pid?: number, tag?: string }
+--- @param opts? { level?: string, pid?: number, tag?: string }
 --- @return { cmd: string, args: string[] }
 function M.device_log(tool_data, device_serial, opts)
     opts = opts or {}
-    local args = { "-t", device_serial, "shell", "hilog" }
+    local level = opts.level
+    if not (level and M.HILOG_LEVELS[level]) then
+        level = M.HILOG_DEFAULT_LEVEL
+    end
+    local args = {
+        "-t", device_serial,
+        "shell", "hilog",
+        "-t", "app",
+        "-L", level,
+    }
     if opts.pid then
         args[#args + 1] = "-P"
         args[#args + 1] = tostring(opts.pid)

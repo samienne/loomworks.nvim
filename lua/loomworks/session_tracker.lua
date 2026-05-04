@@ -56,27 +56,40 @@ end
 --- streaming overseer task. The task handle is kept inside
 --- device_log, not on the active run record — session_tracker just
 --- asks device_log to stop during teardown.
+---
+--- The device-side filter level (`hilog -L`) comes from
+--- `loomworks.get_device_log_level()`. `-t app` is always passed via
+--- the harmony module's device_log spec to drop init/core/kmsg
+--- noise. We do NOT pass `-P pid` to hilog: the client-side prefilter
+--- uses the more permissive (pid OR proc-contains-bundle) match so
+--- helper processes that share the bundle name aren't lost.
+---
 --- @param target loomworks.LaunchTarget
 --- @param device_serial string
 --- @param bundle string
 --- @param pid number
-local function start_device_log_view(target, device_serial, bundle, pid)
+--- @param skip_clear? boolean true when this is a restart with a new
+---   level — the existing on-device buffer is intact and we want
+---   the new stream to pick up recent context, not a wiped buffer
+local function start_device_log_view(target, device_serial, bundle, pid, skip_clear)
     local mod = target._project and target._project._module
         and target._project._module.impl
     if not mod or not mod.device_log then return end
     local td = target._config_unit and target._config_unit._tool_data or {}
 
-    -- Ask for the raw stream (no device-side filter flags — we parse
-    -- and filter client-side where it's reliable).
-    local spec = mod.device_log(td, device_serial, {})
+    local lw = require("loomworks")
+    local level = lw.get_device_log_level and lw.get_device_log_level() or "I"
+    local spec = mod.device_log(td, device_serial, { level = level })
     if not spec or not spec.cmd then return end
     local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
 
-    -- Clear stale hilog buffer right before starting the stream so
-    -- we don't show entries from a previous run, but AFTER the
-    -- device_launch completed so any launch-time logs the app has
-    -- already emitted are still on the device and will stream in.
-    clear_device_log(target, device_serial)
+    if not skip_clear then
+        -- Clear stale hilog buffer right before starting the stream so
+        -- we don't show entries from a previous run, but AFTER the
+        -- device_launch completed so any launch-time logs the app has
+        -- already emitted are still on the device and will stream in.
+        clear_device_log(target, device_serial)
+    end
 
     local device_log = require("loomworks.device_log")
     device_log.start({
@@ -84,8 +97,8 @@ local function start_device_log_view(target, device_serial, bundle, pid)
         cmd = cmd,
         prefilter = device_log.make_prefilter({ pid = pid, bundle = bundle }),
         banner = string.format(
-            "device-log session: %s  bundle=%s  pid=%d  (strict prefilter)",
-            target._project.key, bundle, pid),
+            "device-log session: %s  bundle=%s  pid=%d  hilog -L %s  (strict prefilter)",
+            target._project.key, bundle, pid, level),
         -- On the first launch in this nvim process, apply a sensible
         -- default soft filter so the user isn't drowning in V/D-level
         -- noise. On subsequent launches we preserve whatever filter
@@ -94,6 +107,21 @@ local function start_device_log_view(target, device_serial, bundle, pid)
         -- reapplying the default.
         default_soft_filter = { level = "I" },
     })
+end
+
+--- Restart the device-log stream of the current active run with the
+--- currently-configured hilog level. No-op if no launch run is
+--- active or it's not a device-backed target. The on-device hilog
+--- buffer is preserved across the restart (no `hilog -r`) so the new
+--- stream picks up recent context.
+function M.restart_device_log()
+    if not _active_run or _active_run.mode ~= "launch" then return end
+    local target = _active_run.target
+    local serial = _active_run.device_serial
+    local bundle = _active_run.device_bundle
+    local pid = _active_run.device_pid
+    if not (target and serial and bundle and pid) then return end
+    start_device_log_view(target, serial, bundle, pid, true)
 end
 
 --- Start a periodic pidof poll for auto-stop when the app exits on

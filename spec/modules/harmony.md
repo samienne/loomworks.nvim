@@ -98,8 +98,48 @@ HarmonyOS device connector.
 | `device_launch` | `hdc -t <serial> shell aa start -a <ability> -b <bundle>` |
 | `device_stop` | `hdc -t <serial> shell aa force-stop -b <bundle>` |
 | `device_pid` | `hdc -t <serial> shell pidof <bundle>` |
-| `device_log` | `hdc -t <serial> shell hilog` (streaming) |
+| `device_log` | `hdc -t <serial> shell hilog -t app -L <level> [-P pid] [-T tag]` (streaming) |
 | `device_log_clear` | `hdc -t <serial> shell hilog -r` |
+
+The `device_log` command is invoked through `shell hilog` (not the
+top-level `hdc hilog` passthrough, which ignores filter flags). Two
+filters are applied **on the device** before lines reach the parser:
+
+- `-t app` — restrict to app log type, dropping init / core / kmsg
+  noise that dominates volume on busy devices. Always passed.
+- `-L <level>` — minimum log level (`D`/`I`/`W`/`E`/`F`). Default
+  `I`. The level is configurable at setup and at runtime (see §6.1.1
+  below). On-device level filtering is treated as a *strict
+  improvement when honoured*: if a hilog build silently ignores `-L`,
+  the client-side soft filter still bounds what the user sees.
+
+Optional `-P pid` and `-T tag` filters remain available to callers
+but are not used by default — the client-side prefilter is more
+permissive (matches `pid` OR `proc-contains-bundle`) and catches
+helper processes that share the bundle name under different PIDs.
+
+#### 6.1.1 Hard-level changes mid-stream
+
+Switching the hard log level (`-L`) requires restarting the hilog
+process: there is no control channel to retune a live process, and
+hilog flags are command-line args read at startup. The session
+tracker disposes the active stream and respawns it with the new
+flag. The client-side ring buffer is preserved across the restart;
+only the tail in flight during dispose/respawn (typically a few
+hundred ms) is lost.
+
+The change is asymmetric:
+
+- **Stricter level** (e.g. `I` → `W`): instant — the new process
+  drops the now-excluded levels going forward.
+- **Looser level** (e.g. `W` → `I`): the new process picks up from
+  "now"; lines emitted *before* the restart that didn't pass the
+  old filter are not replayable. The user has to reproduce the
+  action to see them.
+
+The soft (client-side) filter is independent and operates on the
+ring buffer at render time, so loosening it recovers anything the
+hard filter let through.
 
 `hdc` on Windows requires backslash-separated paths; the module
 normalises `/` → `\` for install artifact paths.
