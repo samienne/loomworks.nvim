@@ -34,6 +34,7 @@ function View.new(opts)
         _win_opts = opts.win or {},
         _on_close = opts.on_close,
         _on_write = opts.on_write,
+        _on_revert = opts.on_revert,
         _is_modified = opts.is_modified,
         _lock_to_items = opts.lock_to_items or false,
         _filetype = opts.filetype or "loomworks",
@@ -126,6 +127,22 @@ function View:open(win_overrides)
             buffer = self._bufnr,
             callback = function()
                 on_write()
+                view:refresh()
+            end,
+        })
+    end
+    -- Set up BufReadCmd for :e / :e! support. Vim refuses :e on a modified
+    -- buffer (E37) and only fires this autocmd on :e!. The acwrite buffer's
+    -- modified flag mirrors `is_modified`, which returns true whenever the
+    -- workspace has any divergence from the published baseline. So this
+    -- handler runs only when the user said "yes, force-revert".
+    if self._on_revert and self._bufnr then
+        local on_revert = self._on_revert
+        local view = self
+        vim.api.nvim_create_autocmd("BufReadCmd", {
+            buffer = self._bufnr,
+            callback = function()
+                on_revert()
                 view:refresh()
             end,
         })

@@ -27,7 +27,8 @@ local Configuration = require("loomworks.configuration")
 --- @field _workspace loomworks.Workspace
 --- @field _removed boolean
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
---- @field _intent "local"|"shared"|"local+shared" intended publish state
+--- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
+--- @field _removed_upstream? boolean transient session flag — was in old baseline but not in new (cleared on publish, restart, or item removal)
 local Project = {}
 Project.__index = Project
 
@@ -42,7 +43,12 @@ function Project.new(workspace, key, data)
     self.key = key
     self._removed = false
     self._source = "shared"
-    self._intent = "local"
+    -- _intent is intentionally nil here. data_model.refresh assigns the
+    -- default from file presence on first sync, then preserves it across
+    -- subsequent remerges (specification.md §2.4 "Intent stickiness").
+    -- Mutation methods that create a project outside refresh (e.g.,
+    -- workspace.add_project) set _intent explicitly before saving.
+    self._intent = nil
     self._configurations = {}
     if data then self:_update(data) end
     return self
@@ -375,9 +381,11 @@ function Project:save_configuration(config_name, config_data)
             module_config = vim.deepcopy(existing.module_config),
         }
         existing:_update(clean)
+        existing:_mark_user_owned()  -- editing a shared cfg materializes it
         existing:_resolve_inherits()
     else
         local cfg = Configuration.new(self, config_name, clean)
+        cfg:_mark_user_owned()  -- new local config
         cfg:_resolve_inherits()
         self._configurations[#self._configurations + 1] = cfg
     end

@@ -23,6 +23,8 @@ local ACTION_ORDER = {
     { action = "move_up",   label = "Move up  <C-k>" },
     { action = "move_down", label = "Move down  <C-j>" },
     { action = "publish",   label = "Publish  P" },
+    { action = "publish_now", label = "Publish this item now" },
+    { action = "revert_one", label = "Revert this item to baseline" },
     { action = "rebuild",   label = "Rebuild (clean + build)" },
     { action = "clean",     label = "Clean" },
     { action = "delete",    label = "Delete  D" },

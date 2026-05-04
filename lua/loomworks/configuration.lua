@@ -56,7 +56,8 @@ end
 ---        inherits reference, or similar pointed at its name, but
 ---        no module-emitted `info()` entry nor user.json declaration
 ---        currently backs it. Cleared when the backing reappears.
---- @field _intent "local"|"shared"|"local+shared" intended publish state
+--- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
+--- @field _removed_upstream? boolean transient session flag — was in old baseline but not in new
 local Configuration = {}
 Configuration.__index = Configuration
 
@@ -73,7 +74,10 @@ function Configuration.new(project, name, data)
     self.prefix = prefix
     self.base_name = base
     self._removed = false
-    self._intent = "local"
+    -- _intent left nil; data_model.refresh assigns and then sticks
+    -- (specification.md §2.4). Mutation methods set it explicitly when
+    -- creating outside refresh.
+    self._intent = nil
     self:_update(data)
     return self
 end
@@ -85,6 +89,19 @@ end
 --- @return boolean
 function Configuration:is_auto_gen()
     return self.prefix ~= nil
+end
+
+--- Mark this configuration as in the user.json working copy.
+--- Called when any mutation is about to write to user.json. Implements
+--- the implicit cascade rule (specification.md §2.4): using a `shared`
+--- item materializes it into the working copy with intent local+shared.
+function Configuration:_mark_user_owned()
+    if self._intent == "shared" then
+        self._intent = "local+shared"
+    elseif self._intent == nil then
+        -- Newly created outside of refresh; mutation is the first sighting.
+        self._intent = "local"
+    end
 end
 
 Configuration.canonical = canonical

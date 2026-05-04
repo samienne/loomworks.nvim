@@ -2568,15 +2568,26 @@ function Workspace:_shared_config_from_objects()
     return self:_serialize_config_internal()
 end
 
---- Serialize a project for loomworks.json — only includes shared-intent configurations.
+--- Serialize a project for loomworks.json — only includes effectively-published
+--- configurations. When `publishable_configs` is provided, it is used as the
+--- authoritative set of configs to publish (handles transitive promotion via
+--- effective intent, specification.md §2.4). Otherwise falls back to
+--- per-config explicit intent.
 --- @param project loomworks.Project
+--- @param publishable_configs? table<loomworks.Configuration, boolean>
 --- @return table entry raw JSON-compatible project entry
-function Workspace:_serialize_project_shared(project)
+function Workspace:_serialize_project_shared(project, publishable_configs)
     local type_config = project.type_config
             and vim.deepcopy(project.type_config) or {}
     local configs_dict = {}
     for _, cfg in ipairs(project._configurations) do
-        if cfg._intent ~= "local" then
+        local should_publish
+        if publishable_configs then
+            should_publish = publishable_configs[cfg] or false
+        else
+            should_publish = cfg._intent and cfg._intent ~= "local"
+        end
+        if should_publish then
             local override = cfg:serialize_user_override()
             if override then
                 configs_dict[cfg.name] = override
@@ -2643,6 +2654,134 @@ function Workspace:_serialize_project(project)
     return entry
 end
 
+--- Compute the set of items that must be written to loomworks.json.
+--- An item is "publishable" when its explicit intent includes shared
+--- (`shared` or `local+shared`), OR when its effective intent is forced
+--- to include shared by a publishable parent (transitive promotion per
+--- specification.md §2.4 "Effective intent").
+---
+--- Currently, only `local+shared`/`shared` configuration sets propagate
+--- — they force the referenced project + configuration to also be
+--- published, regardless of the leaf's explicit intent. Profiles default
+--- to `local` so don't normally propagate; an explicitly published
+--- profile (`local+shared`) forces its set and the set's leaves.
+--- @return table { projects: table, config_sets: table, configs: table, profiles: table }
+---   each sub-table maps domain-object identity → true
+function Workspace:_publishable_to_shared()
+    local pub = { projects = {}, config_sets = {}, configs = {}, profiles = {} }
+
+    for _, p in pairs(self._projects) do
+        if not p.orphaned and p._intent and p._intent ~= "local" then
+            pub.projects[p] = true
+        end
+        for _, cfg in ipairs(p._configurations or {}) do
+            if cfg._intent and cfg._intent ~= "local" then
+                pub.configs[cfg] = true
+            end
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        if cs._intent and cs._intent ~= "local" then
+            pub.config_sets[cs] = true
+        end
+    end
+    for _, prof in pairs(self._profiles) do
+        if prof._intent and prof._intent ~= "local" then
+            pub.profiles[prof] = true
+        end
+    end
+
+    -- Transitive: a published config set forces its mapped projects and
+    -- configurations to be published too, so loomworks.json is internally
+    -- consistent (no dangling references).
+    for cs in pairs(pub.config_sets) do
+        for project, cfg in pairs(cs.mappings or {}) do
+            if not project.orphaned then
+                pub.projects[project] = true
+                if cfg then pub.configs[cfg] = true end
+            end
+        end
+    end
+
+    -- Transitive: a published profile forces its config set + mappings.
+    for prof in pairs(pub.profiles) do
+        local cs = prof._config_set_ref
+        if cs then
+            pub.config_sets[cs] = true
+            for project, cfg in pairs(cs.mappings or {}) do
+                if not project.orphaned then
+                    pub.projects[project] = true
+                    if cfg then pub.configs[cfg] = true end
+                end
+            end
+        end
+    end
+
+    return pub
+end
+
+--- Flag items that were present in the previous baseline but are absent
+--- from the current one, when the user still has them as effective
+--- local+shared. The flag is consumed by the UI to render a distinct
+--- "removed upstream" indicator (specification.md §2.4) and by the per-item
+--- conflict resolution actions.
+---
+--- The flag is transient: it sticks until the next external change either
+--- restores the item upstream (clears the flag) or until the user resolves
+--- the divergence via :w / :e / P / delete. Across Neovim restarts the
+--- flag is lost — the item simply renders with the regular `+` marker.
+--- @param old_baseline table|nil previous _shared_baseline content
+function Workspace:_mark_removed_upstream(old_baseline)
+    -- First clear the flag everywhere — recompute fresh.
+    for _, p in pairs(self._projects) do
+        p._removed_upstream = false
+        for _, cfg in ipairs(p._configurations or {}) do
+            cfg._removed_upstream = false
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        cs._removed_upstream = false
+    end
+
+    if not old_baseline then return end
+    local new_baseline = self._shared_baseline
+    local pub = self:_publishable_to_shared()
+
+    -- Projects in old but not new
+    local old_projects = old_baseline.projects or {}
+    local new_projects = new_baseline and new_baseline.projects or {}
+    for _, project in pairs(self._projects) do
+        if pub.projects[project] then
+            if old_projects[project.key] and not new_projects[project.key] then
+                project._removed_upstream = true
+            end
+        end
+        -- Configurations in old project but not new
+        local old_configs = old_projects[project.key]
+            and old_projects[project.key].type_config
+            and old_projects[project.key].type_config.configurations or {}
+        local new_configs = new_projects[project.key]
+            and new_projects[project.key].type_config
+            and new_projects[project.key].type_config.configurations or {}
+        for _, cfg in ipairs(project._configurations or {}) do
+            if pub.configs[cfg] and old_configs[cfg.name] and not new_configs[cfg.name] then
+                cfg._removed_upstream = true
+            end
+        end
+    end
+
+    -- Config sets in old but not new
+    local old_sets = old_baseline.configuration_sets or {}
+    local new_sets = new_baseline and new_baseline.configuration_sets or {}
+    for _, cs in pairs(self._config_sets) do
+        if pub.config_sets[cs] then
+            if old_sets[cs.name] and not new_sets[cs.name] then
+                cs._removed_upstream = true
+            end
+        end
+    end
+end
+
 --- Serialize workspace state to raw JSON-writable format for loomworks.json.
 --- Only includes shared-sourced items (excludes user-sourced projects/config_sets).
 --- Reads from domain objects (Project, ConfigurationSet, Profile).
@@ -2654,17 +2793,20 @@ function Workspace:_serialize_config()
         raw.name = self.name
     end
 
-    -- Projects: include shared-intent projects
+    local pub = self:_publishable_to_shared()
+
+    -- Projects: include those with effective intent shared (own intent
+    -- or transitively promoted by a published config set / profile).
     for _, project in pairs(self._projects) do
-        if not project.orphaned and project._intent ~= "local" then
-            raw.projects[project.key] = self:_serialize_project_shared(project)
+        if pub.projects[project] then
+            raw.projects[project.key] = self:_serialize_project_shared(project, pub.configs)
         end
     end
 
-    -- Configuration sets: include shared-intent
+    -- Configuration sets: include those publishable
     local sets = {}
     for _, cs in pairs(self._config_sets) do
-        if cs._intent ~= "local" then
+        if pub.config_sets[cs] then
             sets[cs.name] = cs:raw_mappings()
         end
     end
@@ -3040,6 +3182,321 @@ end
 --- Publish: write published items to loomworks.json, update baseline.
 --- Called from the status page :w handler.
 --- @return boolean ok, string|nil err
+--- Publish a single item to loomworks.json without regenerating the rest
+--- of the file (specification.md §2.4 "Per-item conflict resolution").
+--- Reads the existing loomworks.json content (if any), splices in the
+--- serialized form of the named item, and writes back. Other items
+--- present in loomworks.json are preserved verbatim.
+---
+--- Updates the published baseline for this one item. The item's `+`
+--- clears, but other items' indicators are unaffected.
+---
+--- @param item loomworks.Project|loomworks.ConfigurationSet|loomworks.Configuration
+--- @return boolean ok, string|nil err
+function Workspace:publish_one(item)
+    local path = M.paths(self.root).config
+    local existing = {}
+    local stat = (vim.uv or vim.loop).fs_stat(path)
+    if stat then
+        local content = self._core._deps.io.read_file(path)
+        if content then
+            local ok, parsed = pcall(vim.json.decode, content)
+            if ok and type(parsed) == "table" then
+                existing = parsed
+            end
+        end
+    end
+    existing.projects = existing.projects or {}
+
+    -- Effective publishability set so transitively-required dependents
+    -- get included alongside the named item.
+    local pub = self:_publishable_to_shared()
+
+    -- Determine item kind via duck-typing on key fields.
+    local Project = require("loomworks.project")
+    local ConfigurationSet = require("loomworks.configuration_set")
+    local Configuration = require("loomworks.configuration")
+
+    local function publish_project(p)
+        -- Mark as local+shared if not already
+        if p._intent == "local" or p._intent == nil then
+            p._intent = "local+shared"
+        end
+        existing.projects[p.key] = self:_serialize_project_shared(p, pub.configs)
+    end
+
+    local function publish_config_set(cs)
+        if cs._intent == "local" or cs._intent == nil then
+            cs._intent = "local+shared"
+        end
+        existing.configuration_sets = existing.configuration_sets or {}
+        existing.configuration_sets[cs.name] = cs:raw_mappings()
+        -- Cascade: mapped projects/configs need to be present
+        for project, cfg in pairs(cs.mappings or {}) do
+            if not project.orphaned then
+                if project._intent == "local" or project._intent == nil then
+                    project._intent = "local+shared"
+                end
+                existing.projects[project.key] =
+                    self:_serialize_project_shared(project, pub.configs)
+                if cfg and (cfg._intent == "local" or cfg._intent == nil) then
+                    cfg._intent = "local+shared"
+                end
+            end
+        end
+    end
+
+    local function publish_configuration(cfg)
+        if cfg._intent == "local" or cfg._intent == nil then
+            cfg._intent = "local+shared"
+        end
+        local project = cfg._project
+        if project then
+            existing.projects[project.key] =
+                self:_serialize_project_shared(project, pub.configs)
+        end
+    end
+
+    if getmetatable(item) == Project then
+        publish_project(item)
+    elseif getmetatable(item) == ConfigurationSet then
+        publish_config_set(item)
+    elseif getmetatable(item) == Configuration then
+        publish_configuration(item)
+    else
+        return false, "unsupported item type for publish_one"
+    end
+
+    if existing.projects and not next(existing.projects) then
+        existing.projects = nil
+    end
+
+    local ok, err = self._core._deps.io.write_json(path, existing)
+    if not ok then return false, err end
+    if self._tracker then
+        self._tracker:mark_written(path)
+    end
+
+    -- Update baseline for the named item only, so its `+` clears while
+    -- other items keep theirs.
+    self._shared_baseline = vim.deepcopy(existing)
+
+    -- Item-level removed-upstream flag clears.
+    if item._removed_upstream ~= nil then
+        item._removed_upstream = false
+    end
+
+    self:_save_user()
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Revert a single item's content to the published baseline
+--- (specification.md §2.4 "Per-item conflict resolution"). Intent is
+--- unchanged unless the item is flagged removed-upstream, in which case
+--- intent demotes to `local`. Other items are unaffected.
+---
+--- @param item loomworks.Project|loomworks.ConfigurationSet|loomworks.Configuration
+--- @return boolean ok, string|nil err
+function Workspace:revert_one(item)
+    local Project = require("loomworks.project")
+    local ConfigurationSet = require("loomworks.configuration_set")
+    local Configuration = require("loomworks.configuration")
+    local baseline = self._shared_baseline or {}
+    local mt = getmetatable(item)
+
+    if mt == Project then
+        if item._removed_upstream then
+            item._intent = "local"
+            item._removed_upstream = false
+            self:_save_user()
+            self._core._deps.events.emit("active_set_changed", self._active_set)
+            return true
+        end
+        local b = baseline.projects and baseline.projects[item.key]
+        if not b then
+            return false, "no baseline for project '" .. item.key .. "'"
+        end
+        -- Re-merge baseline content for this project into the working state.
+        local user_overlay = self:_user_config_from_objects()
+        if user_overlay.projects and user_overlay.projects[item.key] then
+            user_overlay.projects[item.key] = vim.deepcopy(b)
+        end
+        local user_data = vim.tbl_extend("force", self:_serialize_user(),
+            { projects = user_overlay.projects,
+              configuration_sets = user_overlay.configuration_sets,
+              profiles = user_overlay.profiles })
+        self:remerge(baseline, nil, user_data)
+        self:_save_user()
+        self._core._deps.events.emit("active_set_changed", self._active_set)
+        return true
+
+    elseif mt == ConfigurationSet then
+        if item._removed_upstream then
+            item._intent = "local"
+            item._removed_upstream = false
+            self:_save_user()
+            self._core._deps.events.emit("active_set_changed", self._active_set)
+            return true
+        end
+        local b = baseline.configuration_sets
+            and baseline.configuration_sets[item.name]
+        if not b then
+            return false, "no baseline for config set '" .. item.name .. "'"
+        end
+        local user_overlay = self:_user_config_from_objects()
+        if user_overlay.configuration_sets
+                and user_overlay.configuration_sets[item.name] then
+            user_overlay.configuration_sets[item.name] = vim.deepcopy(b)
+        end
+        local user_data = vim.tbl_extend("force", self:_serialize_user(),
+            { projects = user_overlay.projects,
+              configuration_sets = user_overlay.configuration_sets,
+              profiles = user_overlay.profiles })
+        self:remerge(baseline, nil, user_data)
+        self:_save_user()
+        self._core._deps.events.emit("active_set_changed", self._active_set)
+        return true
+
+    elseif mt == Configuration then
+        if item._removed_upstream then
+            item._intent = "local"
+            item._removed_upstream = false
+            self:_save_user()
+            self._core._deps.events.emit("active_set_changed", self._active_set)
+            return true
+        end
+        local project = item._project
+        if not project then
+            return false, "configuration has no project"
+        end
+        local b_proj = baseline.projects and baseline.projects[project.key]
+        local b_configs = b_proj and b_proj.type_config
+            and b_proj.type_config.configurations or {}
+        local b = b_configs[item.name]
+        if not b then
+            return false, "no baseline for configuration '" ..
+                project.key .. "/" .. item.name .. "'"
+        end
+        local user_overlay = self:_user_config_from_objects()
+        local user_proj = user_overlay.projects
+            and user_overlay.projects[project.key]
+        if user_proj and user_proj.type_config
+                and user_proj.type_config.configurations then
+            user_proj.type_config.configurations[item.name] = vim.deepcopy(b)
+        end
+        local user_data = vim.tbl_extend("force", self:_serialize_user(),
+            { projects = user_overlay.projects,
+              configuration_sets = user_overlay.configuration_sets,
+              profiles = user_overlay.profiles })
+        self:remerge(baseline, nil, user_data)
+        self:_save_user()
+        self._core._deps.events.emit("active_set_changed", self._active_set)
+        return true
+    end
+    return false, "unsupported item type for revert_one"
+end
+
+--- Revert the working copy to match the published baseline (`:e!` semantic).
+--- Per specification.md §2.4 "Reverting":
+---   - Items with effective intent including `shared` that exist in baseline:
+---     content reverts to baseline.
+---   - Items with effective intent including `shared` that are not in baseline
+---     (locally added or removed-upstream): intent demotes to `local` —
+---     publication wish is dropped, content preserved as a personal item.
+---   - Items with effective intent `local`: untouched.
+---   - All `+` and removed-upstream indicators clear.
+--- @return boolean ok, string|nil err
+function Workspace:revert_to_baseline()
+    local baseline = self._shared_baseline
+    local pub = self:_publishable_to_shared()
+
+    -- For items publishable but absent from baseline → demote to local.
+    -- For items publishable and present in baseline → content already mirrors
+    -- baseline once we re-run remerge with baseline as the user overlay.
+    -- The simplest faithful approach: walk items, demote unmatched, then
+    -- re-derive content from baseline merged with the demoted user.json.
+
+    -- Demote unmatched items to local.
+    local baseline_projects = baseline and baseline.projects or {}
+    local baseline_sets = baseline and baseline.configuration_sets or {}
+
+    for _, project in pairs(self._projects) do
+        if pub.projects[project] and not baseline_projects[project.key] then
+            project._intent = "local"
+        end
+        local baseline_configs = baseline_projects[project.key]
+            and baseline_projects[project.key].type_config
+            and baseline_projects[project.key].type_config.configurations or {}
+        for _, cfg in ipairs(project._configurations or {}) do
+            if pub.configs[cfg] and not baseline_configs[cfg.name] then
+                cfg._intent = "local"
+            end
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        if pub.config_sets[cs] and not baseline_sets[cs.name] then
+            cs._intent = "local"
+        end
+    end
+
+    -- Restore content for items publishable AND present in baseline by
+    -- re-running the merge with baseline as the shared config and the
+    -- (already-mutated) domain state as user overlay.
+    local user_overlay = self:_user_config_from_objects()
+    -- Drop user overrides for items that match baseline so content reverts
+    -- to baseline values.
+    if user_overlay.projects then
+        for pkey, user_proj in pairs(user_overlay.projects) do
+            local baseline_proj = baseline_projects[pkey]
+            if baseline_proj and user_proj.type_config
+                    and user_proj.type_config.configurations then
+                local b_configs = baseline_proj.type_config
+                    and baseline_proj.type_config.configurations or {}
+                for cname, _ in pairs(user_proj.type_config.configurations) do
+                    if b_configs[cname] then
+                        -- Replace with baseline content
+                        user_proj.type_config.configurations[cname] =
+                            vim.deepcopy(b_configs[cname])
+                    end
+                end
+            end
+        end
+    end
+    if user_overlay.configuration_sets then
+        for sname, _ in pairs(user_overlay.configuration_sets) do
+            if baseline_sets[sname] then
+                user_overlay.configuration_sets[sname] =
+                    vim.deepcopy(baseline_sets[sname])
+            end
+        end
+    end
+
+    -- Clear flags.
+    for _, p in pairs(self._projects) do
+        p._removed_upstream = false
+        for _, cfg in ipairs(p._configurations or {}) do
+            cfg._removed_upstream = false
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        cs._removed_upstream = false
+    end
+
+    -- Remerge with the demoted user overlay.
+    local user_data = vim.tbl_extend("force", self:_serialize_user(),
+        { projects = user_overlay.projects,
+          configuration_sets = user_overlay.configuration_sets,
+          profiles = user_overlay.profiles })
+    self:remerge(baseline or { projects = {} }, nil, user_data)
+
+    -- Persist working state.
+    self:_save_user()
+
+    self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
 function Workspace:publish()
     local ok, err = self:_save_config()
     if not ok then
@@ -3051,6 +3508,18 @@ function Workspace:publish()
 
     -- Update baseline to match what we just wrote
     self._shared_baseline = vim.deepcopy(self:_serialize_config_internal())
+
+    -- Removed-upstream flags are cleared after publish: items are now back
+    -- in the published baseline (specification.md §2.4).
+    for _, p in pairs(self._projects) do
+        p._removed_upstream = false
+        for _, cfg in ipairs(p._configurations or {}) do
+            cfg._removed_upstream = false
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        cs._removed_upstream = false
+    end
 
     -- Save user data too (to persist any flag changes)
     self:_save_user()
@@ -3811,6 +4280,16 @@ function Workspace:add_configuration_set(name, mappings)
     cs._source = "user"
     self._config_sets[#self._config_sets + 1] = cs
 
+    -- Implicit cascade on use (specification.md §2.4): adding a config set
+    -- materializes its referenced projects and configurations into the
+    -- working copy.
+    for project, cfg in pairs(resolved) do
+        project:_mark_user_owned()
+        if cfg and cfg._mark_user_owned then
+            cfg:_mark_user_owned()
+        end
+    end
+
     local ok, err = self:_save_user()
     if not ok then
         -- Rollback domain object
@@ -4332,22 +4811,31 @@ function Workspace:_on_file_changed(path, content)
         if data then
             local ok, val_err = self._core:_validate_projects(data.config, data.root)
             if ok then
+                -- Capture old baseline for removed-upstream detection
+                -- (specification.md §2.4 "Removed-upstream indicator").
+                local old_baseline = self._shared_baseline
                 -- Auto-update synced items: if user.json had items that matched
                 -- the old baseline, update them to match the new shared config
                 -- so they stay synced instead of showing spurious '+'.
-                local synced = false
                 if self._shared_baseline and data.user then
-                    synced = self:_auto_sync_user_projects(data.config, data.user)
+                    self:_auto_sync_user_projects(data.config, data.user)
                 end
                 -- Update workspace data fields in place
                 self.root = data.root
                 self.name = data.name
                 self:_scan_tools_async()
                 self:remerge(data.config, data.cache, data.user)
-                -- Persist synced user data to disk so changes survive restart
-                if synced then
-                    self:_save_user()
-                end
+                -- After remerge, _shared_baseline is the new baseline.
+                -- Detect items present in old baseline but not in new (and
+                -- effective local+shared in working copy) — flag as
+                -- removed-upstream.
+                self:_mark_removed_upstream(old_baseline)
+                -- Persist user.json after every baseline change so sticky
+                -- intent survives Neovim restarts (specification.md §2.4).
+                -- _serialize_user records any intent that differs from the
+                -- new baseline's default, including overrides that became
+                -- necessary because upstream removed an item.
+                self:_save_user()
                 self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
             else
                 self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)

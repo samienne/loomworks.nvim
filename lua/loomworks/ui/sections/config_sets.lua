@@ -404,9 +404,8 @@ return function(tree, ctx)
                 or "LoomworksActionable"
         local sname = cs.name
         local cs_modified = ws and ws:is_config_set_modified(cs) and "+" or ""
-        local pin_icon = group == "published" and cs._user_pinned and "\u{1f4cc} " or ""
 
-        t:node(cs_modified .. pin_icon .. cs.name, {
+        t:node(cs_modified .. cs.name, {
             fold_key = "set:" .. cs.name,
             hl = set_hl,
             enter_label = "Edit mappings",
@@ -417,6 +416,22 @@ return function(tree, ctx)
                 if ws then
                     ws:_save_user()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                end
+            end,
+            on_publish_now = function()
+                if not ws then return end
+                local ok, err = ws:publish_one(cs)
+                if not ok then
+                    vim.notify("loomworks: publish failed: " ..
+                        (err or "unknown"), vim.log.levels.ERROR)
+                end
+            end,
+            on_revert_one = function()
+                if not ws then return end
+                local ok, err = ws:revert_one(cs)
+                if not ok then
+                    vim.notify("loomworks: revert failed: " ..
+                        (err or "unknown"), vim.log.levels.ERROR)
                 end
             end,
             on_create = function()

@@ -6,7 +6,8 @@
 --- @field name string configuration set name
 --- @field mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
---- @field _intent "local"|"shared"|"local+shared" intended publish state
+--- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
+--- @field _removed_upstream? boolean transient session flag — was in old baseline but not in new
 local ConfigurationSet = {}
 ConfigurationSet.__index = ConfigurationSet
 
@@ -21,9 +22,26 @@ function ConfigurationSet.new(workspace, name, resolved_mappings)
     self.name = name
     self._removed = false
     self._source = "shared"
-    self._intent = "local"
+    -- _intent left nil; data_model.refresh assigns and then sticks
+    -- (specification.md §2.4). Mutation methods set it explicitly.
+    self._intent = nil
     self:_update(resolved_mappings)
     return self
+end
+
+--- Mark this configuration set as in the user.json working copy.
+--- Called when any mutation is about to write to user.json. Implements
+--- the implicit cascade rule (specification.md §2.4): using a `shared`
+--- item materializes it into the working copy with intent local+shared.
+function ConfigurationSet:_mark_user_owned()
+    if self._intent == "shared" then
+        self._intent = "local+shared"
+    elseif self._intent == nil then
+        self._intent = "local"
+    end
+    if self._source == "shared" then
+        self._source = "user"
+    end
 end
 
 --- Update mappings in place (preserves table identity).
@@ -75,7 +93,13 @@ function ConfigurationSet:update_mapping(project, configuration)
 
     local old = self.mappings[project]
     self.mappings[project] = configuration
-    if self._intent == "shared" then self._intent = "local+shared" end
+    -- Implicit cascade on use (specification.md §2.4): editing a set's
+    -- mapping materializes the set, the project, and the new config.
+    self:_mark_user_owned()
+    project:_mark_user_owned()
+    if configuration and configuration._mark_user_owned then
+        configuration:_mark_user_owned()
+    end
 
     local ok, err = ws:_save_user()
     if not ok then

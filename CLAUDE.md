@@ -178,16 +178,40 @@ These are implementation-specific details not covered by the spec or architectur
   mutations write to user.json (working copy). `publish()` writes published
   items to loomworks.json on explicit `:w`.
 - **Publish/working-copy model** (spec §2.4): user.json is the live working
-  state; loomworks.json is a published snapshot. Each publishable item
-  (project, config, config set, profile) has `_published` (should appear in
-  loomworks.json) and `_in_user_json` (has data from user.json) flags.
-  `_published` defaults from shared baseline presence; non-default values
-  persisted in user.json `published` dict. Modified indicator (`+`) computed
-  by comparing published state against `_shared_baseline`. `:w` on the status
-  buffer calls `Workspace:publish()`. `P` key toggles publish. Per-config
-  merge: projects from both files merge at the configuration/launch/variable
-  level (user wins per-key). External loomworks.json changes auto-sync items
-  that were synced with the old baseline.
+  state and runtime source of truth; loomworks.json is a published snapshot
+  regenerated on `:w` (never read at runtime). Each publishable item carries
+  one `_intent` field with three values: `local` (user.json only), `shared`
+  (loomworks.json only — cat-3 / dimmed), `local+shared` (both). Intent is
+  **sticky**: assigned once at item creation, preserved across remerges
+  thereafter; only explicit user action changes it. Constructors set
+  `_intent = nil`; `data_model.refresh` falls through to a default-from-presence
+  computation only when no prior value exists, so file-presence changes don't
+  silently flip the user's wish. `_serialize_user` persists intent overrides
+  whenever they differ from the current default; `_save_user` is called after
+  every external file change so stickiness survives Neovim restarts.
+  Effective intent (transitive): `Workspace:_publishable_to_shared()` walks
+  config-set → projects/configs and (published) profile → set → projects/configs
+  to compute the closure of items that must reach loomworks.json — used by
+  `_serialize_config` and `_serialize_project_shared`. Implicit cascade-on-use:
+  `_mark_user_owned` lives on Project/Configuration/ConfigurationSet/Profile
+  and is called by mutation paths (`Profile:activate`,
+  `ConfigurationSet:update_mapping`, `add_configuration_set`,
+  `Project:save_configuration`) so user.json self-containment holds without
+  manual pinning. Removed-upstream indicator: `_on_file_changed` snapshots the
+  old baseline before remerge, then `_mark_removed_upstream` flags items that
+  were in old baseline but not new (and have effective `local+shared`); flag
+  clears on `publish()`, `revert_one()`, or item deletion. `+` indicator
+  computed by comparing published state against `_shared_baseline`. `:w` on
+  the status buffer calls `Workspace:publish()` (full regen);
+  `:e!` calls `Workspace:revert_to_baseline()` (data-preserving — locally-added
+  items demote to `local`); BufReadCmd-driven, Vim's E37 handles `:e` refusal
+  on dirty buffer. Per-item resolution: `publish_one(item)` writes a partial
+  loomworks.json (preserves untouched entries), `revert_one(item)` resets a
+  single item to baseline. `P` key cycles intent through the three values.
+  Per-config merge: projects from both files merge at the
+  configuration/launch/variable level (user wins per-key). External
+  loomworks.json changes auto-sync items whose content matched the old
+  baseline; diverged items keep user version.
 - **workspace_view.lua**: View-model layer between UI and Workspace. Owns
   orchestration logic (add/remove project pipelines, tool detection caching,
   upgrade/downgrade previews, config set candidates). UI files call

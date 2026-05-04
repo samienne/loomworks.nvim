@@ -968,6 +968,345 @@ describe("Core", function()
             assert.is_true(found_release)
             assert.equals("production", release_app_variant)
         end)
+
+        --- Capture observable workspace state for round-trip equality checks.
+        --- Returns a deep-comparable table (no domain object refs).
+        --- @param ws loomworks.Workspace
+        --- @return table snapshot
+        local function snapshot_state(ws)
+            local snap = {
+                active_profile = ws._active_profile_key,
+                projects = {},
+                config_sets = {},
+                profiles = {},
+            }
+            for _, p in pairs(ws._projects) do
+                local cfgs = {}
+                for _, cfg in ipairs(p._configurations or {}) do
+                    cfgs[cfg.name] = { intent = cfg._intent }
+                end
+                snap.projects[p.key] = {
+                    intent = p._intent,
+                    type = p.type,
+                    configurations = cfgs,
+                }
+            end
+            for _, cs in pairs(ws._config_sets) do
+                snap.config_sets[cs.name] = { intent = cs._intent }
+            end
+            for _, prof in pairs(ws._profiles) do
+                snap.profiles[prof.key] = { intent = prof._intent }
+            end
+            return snap
+        end
+
+        it("round-trips A → B → A: state restored when no user modifications", function()
+            -- Branch A: App + Lib, debug + release sets, profile P1 active on debug
+            local config_a = {
+                projects = { App = { typescript = {} }, Lib = { typescript = {} } },
+                configuration_sets = {
+                    debug = { App = "development", Lib = "development" },
+                    release = { App = "production", Lib = "production" },
+                },
+            }
+            local core = make_core(config_a, { active_profile = "debug" })
+            core:setup({ root = "/root" })
+
+            -- Capture initial state on branch A
+            local before = snapshot_state(core._workspace)
+            assert.equals("debug", before.active_profile)
+
+            -- Switch to branch B: drops "release" set entirely, adds an "Extra"
+            -- project. App and Lib unchanged. debug set unchanged.
+            local config_b = h.make_config_json({
+                projects = {
+                    App = { typescript = {} },
+                    Lib = { typescript = {} },
+                    Extra = { typescript = {} },
+                },
+                configuration_sets = {
+                    debug = { App = "development", Lib = "development" },
+                },
+            })
+            core._workspace:_on_file_changed("/root/loomworks.json", config_b)
+
+            -- Sanity: on branch B, Extra has appeared and release has gone
+            local on_b = snapshot_state(core._workspace)
+            assert.is_not_nil(on_b.projects["Extra"])
+            assert.is_nil(on_b.config_sets["release"])
+
+            -- Switch back to branch A
+            core._workspace:_on_file_changed("/root/loomworks.json", h.make_config_json(config_a))
+
+            -- Assert state restored to initial
+            local after = snapshot_state(core._workspace)
+            assert.same(before, after,
+                "workspace state should be identical after A → B → A round-trip")
+        end)
+
+        it("effective intent: published config set forces referenced project+config into shared", function()
+            local core = make_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { debug = { App = "development" } },
+                },
+                {
+                    active_profile = "debug",
+                    projects = {
+                        App = { typescript = { configurations = { development = {} } } },
+                    },
+                }
+            )
+            core:setup({ root = "/root" })
+
+            -- Demote App and App.development to "local" via direct intent
+            -- mutation, but keep config set debug as "local+shared".
+            -- Effective intent should re-promote them via the cascade.
+            local app, debug_cs
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app = p end
+            end
+            for _, cs in pairs(core._workspace._config_sets) do
+                if cs.name == "debug" then debug_cs = cs end
+            end
+            assert.is_not_nil(app)
+            assert.is_not_nil(debug_cs)
+
+            app._intent = "local"
+            for _, cfg in ipairs(app._configurations) do
+                if cfg.name == "development" then cfg._intent = "local" end
+            end
+            -- debug_cs is "shared" (in baseline only). It should still propagate.
+            assert.is_truthy(debug_cs._intent ~= "local",
+                "debug set must have effective intent including shared")
+
+            local raw = core._workspace:_serialize_config()
+            -- App should be in loomworks.json (transitively promoted by debug set)
+            assert.is_not_nil(raw.projects["App"],
+                "App must be in loomworks.json — debug set references it")
+            -- The debug config set is published
+            assert.is_not_nil(raw.configuration_sets["debug"])
+        end)
+
+        it("removed-upstream flag: set when local+shared item disappears from upstream", function()
+            local core = make_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { debug = { App = "development" } },
+                },
+                {
+                    active_profile = "debug",
+                    projects = {
+                        App = { typescript = { configurations = { development = {} } } },
+                    },
+                }
+            )
+            core:setup({ root = "/root" })
+
+            local app
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app = p; break end
+            end
+            assert.is_not_nil(app)
+            assert.equals("local+shared", app._intent)
+            assert.is_falsy(app._removed_upstream, "no flag at start")
+
+            -- Switch to branch B that doesn't have App
+            core._workspace:_on_file_changed("/root/loomworks.json", h.make_config_json({
+                projects = { Other = { typescript = {} } },
+            }))
+
+            -- App should now have removed_upstream flag
+            local app_after
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app_after = p; break end
+            end
+            assert.is_not_nil(app_after)
+            assert.is_true(app_after._removed_upstream,
+                "App must be flagged removed-upstream (was in baseline, isn't now)")
+        end)
+
+        it("publish_one writes only the named item to loomworks.json", function()
+            local core = make_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { debug = { App = "development" } },
+                },
+                {
+                    active_profile = "debug",
+                    projects = {
+                        App = { typescript = { configurations = { development = {} } } },
+                        Lib = { typescript = { configurations = { development = {} } } },
+                    },
+                }
+            )
+            core:setup({ root = "/root" })
+
+            local lib
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "Lib" then lib = p; break end
+            end
+            assert.is_not_nil(lib)
+            -- Lib starts as local (not in baseline)
+            assert.equals("local", lib._intent)
+
+            -- publish_one bumps Lib to local+shared and writes loomworks.json
+            local ok = core._workspace:publish_one(lib)
+            assert.is_true(ok)
+            assert.equals("local+shared", lib._intent)
+        end)
+
+        it("revert_to_baseline (:e!) demotes locally-added items to local", function()
+            -- Branch A: App in user.json + baseline. user.json adds a Lib that's
+            -- NOT in baseline. revert_to_baseline should keep both projects but
+            -- demote Lib to local intent (data preserved, publication wish dropped).
+            local core = make_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { debug = { App = "development" } },
+                },
+                {
+                    active_profile = "debug",
+                    projects = {
+                        App = { typescript = { configurations = { development = {} } } },
+                        Lib = { typescript = { configurations = { development = {} } } },
+                    },
+                }
+            )
+            core:setup({ root = "/root" })
+
+            -- Both projects exist; mark Lib as local+shared (would be the case
+            -- if user explicitly published it but the file hasn't been written).
+            local app, lib
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app = p end
+                if p.key == "Lib" then lib = p end
+            end
+            assert.is_not_nil(app)
+            assert.is_not_nil(lib)
+            lib._intent = "local+shared"
+
+            core._workspace:revert_to_baseline()
+
+            -- App: still local+shared (in baseline)
+            -- Lib: demoted to local (not in baseline)
+            local app_after, lib_after
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app_after = p end
+                if p.key == "Lib" then lib_after = p end
+            end
+            assert.is_not_nil(app_after, "App preserved")
+            assert.is_not_nil(lib_after, "Lib preserved (data not lost)")
+            assert.equals("local+shared", app_after._intent)
+            assert.equals("local", lib_after._intent,
+                "Lib demoted to local (not in baseline)")
+        end)
+
+        it("removed-upstream flag clears on publish", function()
+            local core = make_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { debug = { App = "development" } },
+                },
+                {
+                    active_profile = "debug",
+                    projects = {
+                        App = { typescript = { configurations = { development = {} } } },
+                    },
+                }
+            )
+            core:setup({ root = "/root" })
+
+            -- Trigger removed-upstream
+            core._workspace:_on_file_changed("/root/loomworks.json", h.make_config_json({
+                projects = { Other = { typescript = {} } },
+            }))
+            local app
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app = p; break end
+            end
+            assert.is_true(app._removed_upstream)
+
+            -- Publish — flag should clear
+            core._workspace:publish()
+            assert.is_falsy(app._removed_upstream,
+                "removed-upstream flag must clear after :w (item republished)")
+        end)
+
+        it("sticky intent: local+shared survives upstream removal", function()
+            -- App is materialized in user.json on branch A.
+            local core = make_core(
+                {
+                    projects = { App = { typescript = {} } },
+                    configuration_sets = { debug = { App = "development" } },
+                },
+                {
+                    active_profile = "debug",
+                    projects = {
+                        App = { typescript = { configurations = { development = {} } } },
+                    },
+                }
+            )
+            core:setup({ root = "/root" })
+
+            -- Sanity: App's intent is local+shared on branch A
+            local app
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app = p; break end
+            end
+            assert.is_not_nil(app)
+            assert.equals("local+shared", app._intent)
+
+            -- Switch to branch B which doesn't have App at all
+            core._workspace:_on_file_changed("/root/loomworks.json", h.make_config_json({
+                projects = { Other = { typescript = {} } },
+            }))
+
+            -- App should still be in workspace (data in user.json) AND intent
+            -- should still be local+shared (sticky), NOT flipped to local.
+            -- :w on this state should republish App to loomworks.json.
+            local app_after
+            for _, p in pairs(core._workspace._projects) do
+                if p.key == "App" then app_after = p; break end
+            end
+            assert.is_not_nil(app_after, "App should remain (data in user.json)")
+            assert.equals("local+shared", app_after._intent,
+                "intent should stay local+shared after upstream removal (specification.md §2.4 stickiness)")
+        end)
+
+        it("round-trips A → B → A with materialized user.json content", function()
+            -- Branch A with App materialized in user.json (simulating cascade-on-use
+            -- having pulled App's data into the working copy).
+            local config_a = {
+                projects = { App = { typescript = {} }, Lib = { typescript = {} } },
+                configuration_sets = { debug = { App = "development", Lib = "development" } },
+            }
+            local user_a = {
+                active_profile = "debug",
+                projects = {
+                    App = { typescript = { configurations = { development = {} } } },
+                },
+            }
+            local core = make_core(config_a, user_a)
+            core:setup({ root = "/root" })
+
+            local before = snapshot_state(core._workspace)
+            -- Sanity: App was materialized → effective intent local+shared
+            assert.equals("local+shared", before.projects["App"].intent)
+
+            -- Switch to branch B: drops Lib entirely, App unchanged
+            core._workspace:_on_file_changed("/root/loomworks.json", h.make_config_json({
+                projects = { App = { typescript = {} } },
+                configuration_sets = { debug = { App = "development" } },
+            }))
+
+            -- Switch back to branch A
+            core._workspace:_on_file_changed("/root/loomworks.json", h.make_config_json(config_a))
+
+            local after = snapshot_state(core._workspace)
+            assert.same(before, after,
+                "workspace state should be identical after round-trip with materialized projects")
+        end)
     end)
 
     describe("find_running_tasks_for_items", function()

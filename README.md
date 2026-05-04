@@ -570,10 +570,13 @@ Available fields: `set_name`, `project`, `configuration`, `tool_key`,
 
 ```
 workspace-root/
-├── loomworks.json               Commit or gitignore, your choice
+├── loomworks.json               Published snapshot. Optional. Commit or gitignore, your choice.
+│                                Regenerated on :w from the working copy; never read at runtime.
 └── .nvim/
-    ├── loomworks.user.json      Always gitignored (active profile)
-    ├── loomworks.cache.json     Always gitignored (build state)
+    ├── loomworks.user.json      Always gitignored. Live working state and runtime
+    │                            source of truth (projects, config sets, profiles,
+    │                            active selection, intent overrides).
+    ├── loomworks.cache.json     Always gitignored (build state).
     └── build/
         ├── ProjectA/
         │   ├── Debug/
