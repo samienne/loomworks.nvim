@@ -8,6 +8,24 @@ local M = {}
 local fidget_progress
 local handles = {} -- keyed by profile_key or "task:<task_id>"
 
+--- Maximum visible width for fidget title/message text. Bounded
+--- here so an unusually long ninja step description, deploy path,
+--- or ad-hoc status string can't blow the popup out to the full
+--- terminal width. Set via `loomworks.setup({ progress_max_width = N })`.
+local progress_max_width = 60
+
+--- Truncate text to `progress_max_width` chars, adding an ellipsis
+--- when shortening. Operates on bytes — works correctly for ASCII
+--- which is what build tools emit; multi-byte text would just
+--- result in slightly off truncation, never a crash.
+--- @param s string|nil
+--- @return string|nil
+local function clip(s)
+    if s == nil then return nil end
+    if #s <= progress_max_width then return s end
+    return s:sub(1, progress_max_width - 1) .. "…"
+end
+
 local ACTION_TITLE = {
     configure = "Configuring",
     build = "Building",
@@ -26,8 +44,8 @@ local function create_handle(key, title, message)
     if handles[key] then return handles[key] end
 
     local handle = fidget_progress.handle.create({
-        title = message,
-        message = title,
+        title = clip(message),
+        message = clip(title),
         lsp_client = { name = "loomworks" },
     })
     handles[key] = handle
@@ -83,7 +101,13 @@ end
 
 --- Initialize fidget integration. Call from setup().
 --- No-op if fidget.nvim is not available.
-function M.setup()
+--- @param opts? { progress_max_width?: integer }
+function M.setup(opts)
+    if opts and type(opts.progress_max_width) == "number"
+            and opts.progress_max_width > 0 then
+        progress_max_width = math.floor(opts.progress_max_width)
+    end
+
     local ok, fp = pcall(require, "fidget.progress")
     if not ok then return end
     fidget_progress = fp
@@ -131,7 +155,7 @@ function M.setup()
         local handle = handles[key]
         if handle then
             handle:report({
-                message = data.message,
+                message = clip(data.message),
             })
             handle:finish()
             handles[key] = nil
@@ -147,7 +171,7 @@ function M.setup()
             if handle then
                 local action_label = data.action == "configure" and "configuring" or "building"
                 local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
-                handle:report({ message = pkey .. " " .. action_label })
+                handle:report({ message = clip(pkey .. " " .. action_label) })
             end
         else
             -- Standalone task (from Projects section)
@@ -172,9 +196,9 @@ function M.setup()
                 local pct = math.floor(p.current / p.total * 100)
                 local msg = pkey .. " [" .. p.current .. "/" .. p.total .. "]"
                 if p.message then msg = msg .. " " .. p.message end
-                handle:report({ message = msg, percentage = pct })
+                handle:report({ message = clip(msg), percentage = pct })
             elseif p.message then
-                handle:report({ message = pkey .. ": " .. p.message })
+                handle:report({ message = clip(pkey .. ": " .. p.message) })
             end
         end
     end)
@@ -205,7 +229,7 @@ end
 --- @param handle table|nil fidget handle
 --- @param message string
 function M.report(handle, message)
-    if handle then handle:report({ message = message }) end
+    if handle then handle:report({ message = clip(message) }) end
 end
 
 --- Finish a handle (nil-safe).
@@ -213,7 +237,7 @@ end
 --- @param message? string final message
 function M.finish(handle, message)
     if not handle then return end
-    if message then handle:report({ message = message }) end
+    if message then handle:report({ message = clip(message) }) end
     handle:finish()
 end
 
@@ -222,7 +246,7 @@ end
 --- @param message? string
 function M.fail(handle, message)
     if not handle then return end
-    if message then handle:report({ message = message }) end
+    if message then handle:report({ message = clip(message) }) end
     handle:cancel()
 end
 

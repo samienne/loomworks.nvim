@@ -102,7 +102,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, device_log_level?: "D"|"I"|"W"|"E"|"F", device_log_strict_pid?: boolean }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, device_log_level?: "D"|"I"|"W"|"E"|"F", device_log_strict_pid?: boolean, progress_max_width?: integer }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -142,7 +142,18 @@ function M.setup(opts)
     setup_keymaps(opts)
 
     -- Optional fidget.nvim integration for progress notifications (registers listeners, fast)
-    require("loomworks.fidget").setup()
+    local fidget_opts = nil
+    if opts and opts.progress_max_width ~= nil then
+        if type(opts.progress_max_width) == "number" and opts.progress_max_width > 0 then
+            fidget_opts = { progress_max_width = opts.progress_max_width }
+        else
+            vim.notify(
+                "loomworks: progress_max_width must be a positive integer; got "
+                    .. tostring(opts.progress_max_width),
+                vim.log.levels.WARN)
+        end
+    end
+    require("loomworks.fidget").setup(fidget_opts)
 
     -- LSP: unless explicitly disabled (`opts.lsp == false`), install server
     -- configs via vim.lsp.config. Defaults in; user may override per-server
