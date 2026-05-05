@@ -339,6 +339,27 @@ Set `device_log_strict_pid = false` if your app spawns helper
 processes whose logs you need; the client-side prefilter (pid OR
 proc-contains-bundle) then becomes the only PID guard. Volume goes up.
 
+### Progress notifications
+
+When fidget.nvim is installed, build/configure progress shows up
+as fidget popups. Two compaction passes keep the popup width
+reasonable on real-world projects:
+
+- Per-tool parsers compact known patterns. Ninja's `[N/M] Building
+  CXX object src/some/very/deep/path/file.cpp.o` is rendered as
+  `[N/M] Building CXX object file.cpp.o` — verb kept, path stripped
+  to basename.
+- All fidget messages are clipped to a max width as a safety net.
+  Default is 60 chars; configure with `progress_max_width`:
+
+```lua
+require("loomworks").setup({
+  progress_max_width = 80,   -- default: 60
+})
+```
+
+Clipping appends a `…` so it's visually obvious the line was cut.
+
 ### Project variables
 
 Declare typed variables with defaults, override per configuration:
