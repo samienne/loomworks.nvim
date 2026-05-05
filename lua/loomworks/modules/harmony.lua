@@ -816,17 +816,57 @@ function M.list_devices(tool_data, callback)
     })
 end
 
---- Detect hdc install failure from output.
---- hdc exits 0 even on errors, so we must parse output for [Fail].
+--- Detect hdc/hap-install failure from output.
+--- hdc exits 0 even on errors, so we must parse output. Two failure
+--- shapes occur in the wild:
+---   * Older `[Fail]` / `[F]` markers — emitted by some hdc subcommands.
+---   * `error: ...` lines (often with an accompanying `code:<N>`) —
+---     emitted by `hdc install` and the bundle-manager when signing,
+---     bundle layout, or device-side install validation rejects the HAP.
+--- The latter is what DevEco surfaces verbatim ("Install Failed:
+--- error: failed to install bundle. code:9568320 error: no signature
+--- file."). We match the same family and aggregate adjacent context
+--- lines so the caller surfaces the full reason rather than just the
+--- first matching token in isolation.
 --- @param lines string[]
 --- @return string|nil error message if failure detected
 local function check_hdc_output(lines)
-    for _, line in ipairs(lines) do
-        if line:match("%[Fail%]") or line:match("^%[F%]") then
-            return vim.trim(line)
+    --- @param s string
+    --- @return boolean
+    local function is_failure(s)
+        if s:match("%[Fail%]") or s:match("^%[F%]") then return true end
+        -- Case-insensitive `error:` prefix. Trim leading whitespace
+        -- because hdc occasionally pads with spaces.
+        local stripped = s:gsub("^%s+", "")
+        if stripped:lower():match("^error:") then return true end
+        return false
+    end
+
+    local hits = {}
+    for i, line in ipairs(lines) do
+        local trimmed = vim.trim(line)
+        if trimmed ~= "" and is_failure(trimmed) then
+            hits[#hits + 1] = trimmed
+            -- Pick up adjacent `code:<N>` and follow-up `error:` lines
+            -- (hdc emits the cause across multiple lines).
+            local j = i + 1
+            while j <= #lines do
+                local next_line = vim.trim(lines[j])
+                if next_line == "" then break end
+                local lower = next_line:lower()
+                if lower:match("^code:") or lower:match("^error:") then
+                    hits[#hits + 1] = next_line
+                    j = j + 1
+                else
+                    break
+                end
+            end
+            break
         end
     end
-    return nil
+
+    if #hits == 0 then return nil end
+    return table.concat(hits, " ")
 end
 
 --- Return command spec for installing a HAP on a device.

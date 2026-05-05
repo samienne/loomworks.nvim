@@ -158,9 +158,28 @@ normalises `/` → `\` for install artifact paths.
 
 ### 6.2 Failure detection
 
-`hdc` exits with status 0 even on failures. All device command specs
-include a `check_output` hook that scans stdout lines for `[Fail]`
-or `[F]` markers and surfaces a descriptive error.
+`hdc` exits with status 0 even on failures. Without output parsing,
+the build → deploy → install → launch chain falls through silently
+on a failed install and the device launches the previously-installed
+version of the app — the most confusing failure mode for the user.
+
+All device command specs include a `check_output` hook that scans
+stdout lines for two failure shapes:
+
+- **Legacy markers**: `[Fail]` anywhere on a line, or `[F]` at the
+  start of a line. Emitted by some older hdc subcommands.
+- **Modern install errors**: a line whose first non-whitespace token
+  (case-insensitively) is `error:`. Emitted by `hdc install` and the
+  device-side bundle manager when signing, layout, or validation
+  rejects the HAP — e.g. `error: failed to install bundle.`.
+
+When a failure line is found, the hook also pulls in any immediately
+following `code:<N>` and `error:` lines (without a blank-line break)
+and concatenates them into the surfaced error. This matches what
+DevEco Studio shows and gives a single actionable message instead of
+the first match in isolation. Example surfaced error:
+
+> `error: failed to install bundle. code:9568320 error: no signature file.`
 
 ### 6.3 `resolve_launch_info`
 
