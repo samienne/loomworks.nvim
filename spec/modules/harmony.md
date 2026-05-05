@@ -158,9 +158,36 @@ normalises `/` → `\` for install artifact paths.
 
 ### 6.2 Failure detection
 
-`hdc` exits with status 0 even on failures. All device command specs
-include a `check_output` hook that scans stdout lines for `[Fail]`
-or `[F]` markers and surfaces a descriptive error.
+`hdc` exits with status 0 even on failures. Without output parsing,
+the build → deploy → install → launch chain falls through silently
+on a failed install and the device launches the previously-installed
+version of the app — the most confusing failure mode for the user.
+
+All device command specs include a `check_output` hook that scans
+stdout lines. Each candidate line is normalised first by `clean()`
+which strips a leading `[INFO]`/`[WARN]`/`[ERROR]`/`[DEBUG]`-style
+log tag (3+ word chars between brackets, so legacy `[F]` survives)
+and then, if a `msg:` field is present, takes only the value of that
+field. The cleaned form is then matched against three failure shapes:
+
+- **Legacy markers**: raw line contains `[Fail]` anywhere, or starts
+  with `[F]`. Emitted by some older hdc subcommands.
+- **Plain `error:` lines**: cleaned form starts (case-insensitively)
+  with `error:`. Emitted by some hdc subcommands directly.
+- **`hdc install` `[INFO]`/`msg:` shape**: the wire format wraps the
+  bundle-manager rejection inside an [INFO]-tagged log line, e.g.
+  `[INFO]App install path:/data/local/tmp/foo.hap msg:error: failed
+  to install bundle.`. After `clean()` strips the tag and takes the
+  `msg:` value, the result starts with `error:` — caught by the same
+  rule as the plain shape.
+
+When a failure line is found, the hook aggregates immediately-following
+`code:<N>` and `error:` lines (also through `clean()`, so `[INFO]`-tagged
+continuations work) until a blank line breaks the block. The pieces
+are concatenated into the surfaced error — DevEco Studio's
+"Install Failed:" presentation, condensed onto one line. Example:
+
+> `error: failed to install bundle. code:9568320 error: no signature file.`
 
 ### 6.3 `resolve_launch_info`
 

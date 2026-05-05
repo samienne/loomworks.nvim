@@ -816,17 +816,89 @@ function M.list_devices(tool_data, callback)
     })
 end
 
---- Detect hdc install failure from output.
---- hdc exits 0 even on errors, so we must parse output for [Fail].
+--- Detect hdc/hap-install failure from output.
+--- hdc exits 0 even on errors, so we must parse output. Failure
+--- shapes seen in the wild:
+---   * Legacy `[Fail]` / `[F]` markers — older hdc subcommands.
+---   * `[INFO]App install path:... msg:error: failed to install
+---     bundle. code:9568320 error: no signature file.` — `hdc install`
+---     wraps the bundle-manager rejection in its [INFO]-tagged
+---     `key:value` log format. The reason proper lives in the `msg:`
+---     field; the rest of the line is install-path noise. This is
+---     what DevEco Studio extracts and shows as
+---     "Install Failed: error: ...".
+---   * Plain `error: ...` lines (some hdc subcommands skip the
+---     [INFO] tag and just emit the message).
+---
+--- We `clean()` each line before testing — strips a leading log
+--- tag like `[INFO]` and, if a `msg:` field is present, takes only
+--- the `msg:` value. Failure is then detected by either a legacy
+--- marker on the raw line, or `^error:` on the cleaned line. We
+--- aggregate adjacent `code:<N>` and follow-up `error:` continuation
+--- lines (also through `clean()`) so the surfaced error reads like
+--- DevEco's full reason rather than just the first matching token.
 --- @param lines string[]
 --- @return string|nil error message if failure detected
 local function check_hdc_output(lines)
-    for _, line in ipairs(lines) do
-        if line:match("%[Fail%]") or line:match("^%[F%]") then
-            return vim.trim(line)
+    --- Strip `[INFO]`/`[WARN]`/etc. log prefixes (3+ word chars to
+    --- avoid eating the `[F]` legacy marker), then if a `msg:`
+    --- field is present return its value — `[INFO]App install
+    --- path:/foo msg:error: bar` becomes `error: bar`. Otherwise
+    --- return the trimmed line.
+    --- @param line string
+    --- @return string
+    local function clean(line)
+        local s = vim.trim(line)
+        s = s:gsub("^%[%w%w%w+%]%s*", "")
+        local idx = s:lower():find("msg:", 1, true)
+        if idx then return s:sub(idx + 4) end
+        return s
+    end
+
+    --- @param raw string original line
+    --- @param cleaned string output of clean(raw)
+    --- @return boolean
+    local function is_failure(raw, cleaned)
+        if raw:match("%[Fail%]") or raw:match("^%[F%]") then return true end
+        if cleaned:lower():match("^error:") then return true end
+        return false
+    end
+
+    --- @param cleaned string
+    --- @return boolean
+    local function is_continuation(cleaned)
+        local lower = cleaned:lower()
+        if lower:match("^code:%d") then return true end
+        if lower:match("^error:") then return true end
+        return false
+    end
+
+    local hits = {}
+    for i, line in ipairs(lines) do
+        local trimmed = vim.trim(line)
+        if trimmed ~= "" then
+            local cleaned = clean(line)
+            if is_failure(trimmed, cleaned) then
+                hits[#hits + 1] = cleaned
+                local j = i + 1
+                while j <= #lines do
+                    local next_raw = vim.trim(lines[j])
+                    if next_raw == "" then break end
+                    local next_cleaned = clean(lines[j])
+                    if is_continuation(next_cleaned) then
+                        hits[#hits + 1] = next_cleaned
+                        j = j + 1
+                    else
+                        break
+                    end
+                end
+                break
+            end
         end
     end
-    return nil
+
+    if #hits == 0 then return nil end
+    return table.concat(hits, " ")
 end
 
 --- Return command spec for installing a HAP on a device.

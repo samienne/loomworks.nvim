@@ -2594,24 +2594,36 @@ Each descriptor has `{ id, label, requires_device }`. These appear in
 the launch target picker alongside module targets and command-type
 launches.
 
-**`device_install(tool_data, device_serial, artifact_path) → { cmd, args, env? }`**
+**`device_install(tool_data, device_serial, artifact_path) → { cmd, args, env?, check_output? }`**
 
 Return an overseer-compatible command spec for installing an
 artifact onto a device. Does NOT execute the command — core runs it
 via overseer. Always reinstalls (no freshness tracking).
 
-**`device_launch(tool_data, device_serial, launch_info) → { cmd, args, env? }`**
+`check_output(lines: string[]) → string|nil` is an optional failure
+detector. Some device connectors (notably `hdc`) exit with status 0
+even when an install is rejected by the device-side bundle manager;
+without parsing the output, the build → deploy → install → launch
+chain falls through silently and the device launches the
+previously-installed version of the app. Returning a non-nil string
+fails the install task and breaks the chain. Modules that wrap
+exit-code-honest connectors may omit this field.
+
+**`device_launch(tool_data, device_serial, launch_info) → { cmd, args, env?, check_output? }`**
 
 Return a command spec to launch the installed app on a device.
 `launch_info` is module-specific metadata produced by
-`resolve_launch_info()`.
+`resolve_launch_info()`. `check_output` follows the same contract
+as `device_install` — used to surface launch failures that the
+connector reports in stdout while exiting 0.
 
-**`device_stop(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
+**`device_stop(tool_data, device_serial, bundle_name) → { cmd, args, env?, check_output? }`**
 
 Return a command spec that force-stops the app on the device.
 Session tracker calls this from `stop()` when the active run is a
 device launch so stop paths actually terminate the on-device process
-rather than merely closing the local log stream.
+rather than merely closing the local log stream. `check_output`
+follows the same contract as `device_install`.
 
 **`device_pid(tool_data, device_serial, bundle_name) → { cmd, args, env? }`**
 
