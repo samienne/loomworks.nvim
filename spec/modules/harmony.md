@@ -164,20 +164,28 @@ on a failed install and the device launches the previously-installed
 version of the app — the most confusing failure mode for the user.
 
 All device command specs include a `check_output` hook that scans
-stdout lines for two failure shapes:
+stdout lines. Each candidate line is normalised first by `clean()`
+which strips a leading `[INFO]`/`[WARN]`/`[ERROR]`/`[DEBUG]`-style
+log tag (3+ word chars between brackets, so legacy `[F]` survives)
+and then, if a `msg:` field is present, takes only the value of that
+field. The cleaned form is then matched against three failure shapes:
 
-- **Legacy markers**: `[Fail]` anywhere on a line, or `[F]` at the
-  start of a line. Emitted by some older hdc subcommands.
-- **Modern install errors**: a line whose first non-whitespace token
-  (case-insensitively) is `error:`. Emitted by `hdc install` and the
-  device-side bundle manager when signing, layout, or validation
-  rejects the HAP — e.g. `error: failed to install bundle.`.
+- **Legacy markers**: raw line contains `[Fail]` anywhere, or starts
+  with `[F]`. Emitted by some older hdc subcommands.
+- **Plain `error:` lines**: cleaned form starts (case-insensitively)
+  with `error:`. Emitted by some hdc subcommands directly.
+- **`hdc install` `[INFO]`/`msg:` shape**: the wire format wraps the
+  bundle-manager rejection inside an [INFO]-tagged log line, e.g.
+  `[INFO]App install path:/data/local/tmp/foo.hap msg:error: failed
+  to install bundle.`. After `clean()` strips the tag and takes the
+  `msg:` value, the result starts with `error:` — caught by the same
+  rule as the plain shape.
 
-When a failure line is found, the hook also pulls in any immediately
-following `code:<N>` and `error:` lines (without a blank-line break)
-and concatenates them into the surfaced error. This matches what
-DevEco Studio shows and gives a single actionable message instead of
-the first match in isolation. Example surfaced error:
+When a failure line is found, the hook aggregates immediately-following
+`code:<N>` and `error:` lines (also through `clean()`, so `[INFO]`-tagged
+continuations work) until a blank line breaks the block. The pieces
+are concatenated into the surfaced error — DevEco Studio's
+"Install Failed:" presentation, condensed onto one line. Example:
 
 > `error: failed to install bundle. code:9568320 error: no signature file.`
 
