@@ -786,3 +786,49 @@ and a harmony project in the same profile should both use the same OHOS SDK.
 - Serialization: sdk_key in user.json profiles section
 - Status page: show SDK on profile, incomplete state
 
+---
+
+## UI v2: hardcoded "cmake" fallbacks
+
+Deferred from the incomplete-profile-policy work. UI v1 is the main
+interface; UI v2 is still under design. These should be cleaned up
+when UI v2 reaches active development, but are not blockers today.
+
+Three call sites silently default to `"cmake"` when the module list
+isn't available or zero modules are detected:
+
+- `lua/loomworks/ui/v2/palette.lua:124` —
+  `local types = ok and modules.list and modules.list() or { "cmake" }`
+- `lua/loomworks/ui/v2/view_model/init.lua:667` —
+  `local proj_type = extra and extra.type or "cmake"`
+- `lua/loomworks/ui/v2/view/layout.lua:478` —
+  `extra = { type = "cmake" }`
+
+Right behavior is to refuse the action with "no project types
+available — install or enable a module first" rather than committing
+the user to cmake. Will surface noisily once android lands and a user
+on a non-cmake codebase tries to add a project from UI v2.
+
+---
+
+## LSP UI: cmake-specific compile_commands hint
+
+Deferred from the incomplete-profile-policy work. Same rationale as
+above — UI v1 still mostly drives the experience.
+
+`lua/loomworks/ui/sections/lsp.lua:44`:
+
+```lua
+elseif entry.project_type == "cmake" then
+    tree:leaf("compile_commands_dir: (not found)", "DiagnosticWarn")
+end
+```
+
+Hardcodes a "compile_commands_dir not found" warning specifically for
+cmake projects. The right shape is for the module's `lsp_configs`
+emission to carry an opaque hint flag (e.g.
+`expected_compile_commands = true`) and the UI to render that
+flag generically. Other modules that ship clangd configs (harmony,
+meson) are already in the same position; the pattern just isn't
+formalised yet.
+

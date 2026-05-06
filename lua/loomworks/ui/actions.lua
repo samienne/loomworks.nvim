@@ -373,23 +373,37 @@ function M._create_profile_step2(cs, set_name, activate)
     local tool_entries = lw.get_tool_entries()
     local entries = tool_entries[set_name] or {}
 
-    if #entries == 0 then
-        -- No tools available — create profile without tools (will be incomplete for keyed modules)
-        local profile = wv.execute_create_profile(cs, nil, activate)
-        if profile and not activate then
-            vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
-        end
-        return
-    end
+    -- Always offer an explicit "no tool" pick. Two reasons:
+    --
+    --  1. Even when no tools are detected, the user may genuinely
+    --     want to create a profile without a tool (e.g., to share
+    --     the workspace via loomworks.json with collaborators on a
+    --     host that doesn't have the SDK installed). Silently
+    --     committing to "no tool" here used to hide that as an
+    --     accidental side-effect of detection failure.
+    --
+    --  2. The build path now refuses to start an incomplete
+    --     profile (Profile:assert_buildable). The picker
+    --     entry is the user's explicit opt-in to that state.
+    --
+    -- The synthetic entry has _none = true so execute_create_profile
+    -- can identify it and pass nil to the tool argument.
+    local picker_items = {}
+    for _, e in ipairs(entries) do picker_items[#picker_items + 1] = e end
+    picker_items[#picker_items + 1] = {
+        _none = true,
+        tool_label = "(no tool — incomplete profile)",
+    }
 
-    vim.ui.select(entries, {
+    vim.ui.select(picker_items, {
         prompt = "Select tool:",
         format_item = function(entry)
             return entry.tool_label or entry.tool_key or "(default)"
         end,
     }, function(choice)
         if not choice then return end
-        local profile = wv.execute_create_profile(cs, choice, activate)
+        local tool = choice._none and nil or choice
+        local profile = wv.execute_create_profile(cs, tool, activate)
         if profile and not activate then
             vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
         end
