@@ -11,12 +11,31 @@ local uv = vim.uv or vim.loop
 local is_win = vim.fn.has("win32") == 1
 
 --- Build hvigor environment variables from tool_data.
+---
+--- hvigor looks for the SDK path under different env-var names
+--- depending on the target the active configuration picks:
+---   * `DEVECO_SDK_HOME` — used when targeting HarmonyOS
+---     (DevEco Studio's native target).
+---   * `OHOS_BASE_SDK_HOME` — used when targeting OpenHarmony.
+--- We set both unconditionally. They point at the same SDK root
+--- and the relevant one for the active target gets picked up;
+--- the other is harmlessly ignored. Setting them at task time
+--- (rather than writing `local.properties` into the project)
+--- keeps loomworks read-only toward project files (CLAUDE.md
+--- principle) and avoids leaving artefacts behind in the user's
+--- workspace tree.
+---
+--- Without this, an OpenHarmony-targeting profile fails hvigor
+--- sync with: "Unable to find 'sdk.dir' in 'local.properties' or
+--- 'OHOS_BASE_SDK_HOME' in the system environment path."
 --- @param tool_data table
 --- @return table<string, string>
 local function hvigor_env(tool_data)
     local sep = is_win and ";" or ":"
     local env = {}
-    env.DEVECO_SDK_HOME = tool_data.deveco_home .. "/sdk"
+    local sdk_root = tool_data.deveco_home .. "/sdk"
+    env.DEVECO_SDK_HOME = sdk_root
+    env.OHOS_BASE_SDK_HOME = sdk_root
     if tool_data.node then
         local node_dir = tool_data.node:gsub("[/\\][^/\\]+$", "")
         env.NODE_HOME = node_dir

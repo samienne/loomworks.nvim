@@ -83,6 +83,24 @@ end
 `cmake_env` values are passed to hvigor's cmake as environment
 variables, with `${workspace_root}` expansion supported.
 
+### 5.1 SDK env vars passed to hvigor
+
+Every hvigor task invocation (configure / build / clean) carries
+**both** SDK-path environment variables, set to the same SDK root:
+
+- `DEVECO_SDK_HOME` — read by hvigor when targeting HarmonyOS
+  (DevEco Studio's native target).
+- `OHOS_BASE_SDK_HOME` — read by hvigor when targeting OpenHarmony.
+
+The harmony module sets both unconditionally so the right one for
+the active configuration's target gets picked up; the other is
+harmlessly ignored. Setting them at task-time (rather than writing
+`local.properties` into the project) keeps loomworks read-only
+toward project files. Without `OHOS_BASE_SDK_HOME`, an
+OpenHarmony-targeting profile fails hvigor sync with: *"Unable to
+find 'sdk.dir' in 'local.properties' or 'OHOS_BASE_SDK_HOME' in
+the system environment path."*
+
 ## 6. Device interface
 
 Implements the full device interface (core device contract; see
