@@ -52,6 +52,25 @@ end, {
   desc = "loomworks: get/set on-device hilog level (D|I|W|E|F)",
 })
 
+vim.api.nvim_create_user_command("LoomworksFidgetClear", function()
+  -- Recovery hatch for stuck fidget popups. The fidget integration
+  -- relies on event sequences (operation_finished, task_stopped, dap
+  -- event_initialized/event_terminated) firing in a specific order;
+  -- when something disrupts that order, a handle is orphaned and the
+  -- popup spins forever even after every overseer task has completed.
+  -- Cancels every tracked handle so the user can recover without
+  -- restarting Neovim.
+  local cleared = require("loomworks.fidget").clear()
+  if cleared == 0 then
+    vim.notify("loomworks: no fidget handles to clear", vim.log.levels.INFO)
+  else
+    vim.notify("loomworks: cleared " .. cleared .. " stuck fidget handle(s)",
+      vim.log.levels.INFO)
+  end
+end, {
+  desc = "loomworks: cancel any stuck fidget progress popups",
+})
+
 vim.api.nvim_create_user_command("LoomworksLog", function()
   local lw = require("loomworks")
   local ws = lw.get_workspace()

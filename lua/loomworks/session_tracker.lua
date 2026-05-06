@@ -228,6 +228,15 @@ local function stop_run()
 end
 
 --- Register dap listeners to finish fidget and clean up tracked run on session end.
+---
+--- The fidget handle was previously finished only on
+--- `event_initialized` (the happy path). If the dap session
+--- terminated or exited before initialising — adapter crashed,
+--- attach failed, debuggee died at startup — neither listener
+--- finished the handle and the popup spun forever, even after
+--- every overseer task had already completed. The `finished`
+--- flag plus the explicit finish in `on_end` close that gap:
+--- whichever event fires first wins, the second is a no-op.
 --- @param handle table fidget handle
 --- @param multi boolean multi-adapter run
 local function register_debug_listeners(handle, multi)
@@ -236,19 +245,27 @@ local function register_debug_listeners(handle, multi)
 
     local fidget = require("loomworks.fidget")
     local ts = tostring(os.clock())
+    local finished = false
 
-    -- Finish fidget on session initialized
+    local function finish_once(label)
+        if finished then return end
+        finished = true
+        fidget.finish(handle, label)
+    end
+
+    -- Finish fidget on session initialized (happy path)
     local init_key = "loomworks-tracker-init-" .. ts
     dap.listeners.after.event_initialized[init_key] = function()
         dap.listeners.after.event_initialized[init_key] = nil
         if _active_run and _active_run.fidget_handle == handle then
             _active_run.fidget_handle = nil
         end
-        local label = multi and "debugging (multi-adapter)" or "debugging"
-        fidget.finish(handle, label)
+        finish_once(multi and "debugging (multi-adapter)" or "debugging")
     end
 
-    -- Clean up tracked run on session end
+    -- Clean up tracked run on session end. Also finishes the
+    -- fidget handle if it wasn't already — covers the case where
+    -- a session terminates before initialisation.
     local term_key = "loomworks-tracker-term-" .. ts
     local function on_end()
         dap.listeners.before.event_terminated[term_key] = nil
@@ -262,6 +279,7 @@ local function register_debug_listeners(handle, multi)
             end
             _active_run = nil
         end
+        finish_once("debug session ended")
     end
     dap.listeners.before.event_terminated[term_key] = on_end
     dap.listeners.before.event_exited[term_key] = on_end
@@ -415,7 +433,12 @@ local function start_run(target, mode)
 
                     register_debug_listeners(handle, true)
 
-                    debug_mod.run(primary_spec, {
+                    -- `debug.run` returns false when dap is unavailable
+                    -- or the adapter isn't configured. Without this
+                    -- check the listeners we just registered would
+                    -- never fire (no session ever starts) and the
+                    -- fidget popup would spin forever.
+                    local started = debug_mod.run(primary_spec, {
                         on_pid = function(pid)
                             for i = 2, #adapters do
                                 local a = adapters[i]
@@ -431,6 +454,10 @@ local function start_run(target, mode)
                             end
                         end,
                     })
+                    if not started then
+                        fidget.fail(handle, "debug adapter not available")
+                        _active_run = nil
+                    end
                 else
                     -- Single adapter: delegate to LaunchTarget:debug()
                     target:debug()

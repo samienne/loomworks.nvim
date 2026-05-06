@@ -360,6 +360,12 @@ require("loomworks").setup({
 
 Clipping appends a `…` so it's visually obvious the line was cut.
 
+If a fidget popup gets stuck spinning after every overseer task has
+already completed (typically because a dap session terminated before
+initialising, or an adapter wasn't configured), `:LoomworksFidgetClear`
+cancels every outstanding handle so you can recover without
+restarting Neovim.
+
 ### Project variables
 
 Declare typed variables with defaults, override per configuration:

@@ -250,4 +250,28 @@ function M.fail(handle, message)
     handle:cancel()
 end
 
+--- Cancel and clear every tracked fidget handle.
+---
+--- Recovery hatch for cases where a handle has been orphaned —
+--- typically because an event sequence the integration relies on
+--- (operation_finished, task_stopped, dap event_initialized /
+--- event_terminated) didn't fire as expected, leaving the popup
+--- spinning forever after every overseer task has already
+--- completed. Bound to `:LoomworksFidgetClear`.
+---
+--- Returns the number of handles cleared so the command can give
+--- the user useful feedback rather than silently doing nothing.
+--- Safe to call when fidget.nvim is not loaded — returns 0.
+--- @return integer cleared
+function M.clear()
+    if not fidget_progress then return 0 end
+    local n = 0
+    for key, handle in pairs(handles) do
+        pcall(function() handle:cancel() end)
+        handles[key] = nil
+        n = n + 1
+    end
+    return n
+end
+
 return M
