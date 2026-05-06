@@ -683,13 +683,24 @@ function M.tasks(project, active_config)
         },
     }
 
-    -- Build tasks — always build only the active configuration
+    -- Build tasks — always build only the active configuration.
+    -- Multi-config generators (Visual Studio, Ninja Multi-Config) only
+    -- understand the underlying variant name (Debug, Release, ...) at
+    -- the `--config` flag, not the user's configuration key. A user-
+    -- declared config like `debug-with-addon` that inherits Debug must
+    -- be passed as `--config Debug`, otherwise msbuild rejects the
+    -- combination ("This project doesn't contain the Configuration
+    -- and Platform combination of debug-with-addon|x64..."). The task
+    -- name still uses `active_config` so the user sees their chosen
+    -- identity in the overseer task list and cache.
+    local build_variant = (config_info and config_info.variant) or active_config
+
     if multi_config then
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap({ cmake_cmd, "--build", build_dir, "--config", active_config }),
+                    cmd = wrap({ cmake_cmd, "--build", build_dir, "--config", build_variant }),
                     cwd = abs_path,
                     env = env,
                 }
@@ -753,8 +764,11 @@ function M.clean_tasks(project, active_config)
     local cmake_cmd = (kit and kit.cmake_path) or "cmake"
     local clean_cmd = { cmake_cmd, "--build", build_dir, "--target", "clean" }
     if multi_config then
+        -- Multi-config: --config takes the underlying variant, not the
+        -- user's configuration key. See M.tasks for the rationale.
+        local build_variant = (config_info and config_info.variant) or active_config
         clean_cmd[#clean_cmd + 1] = "--config"
-        clean_cmd[#clean_cmd + 1] = active_config
+        clean_cmd[#clean_cmd + 1] = build_variant
     end
 
     return {
@@ -799,8 +813,11 @@ function M.build_target_task(project, target_id)
     local cmake_cmd = (kit and kit.cmake_path) or "cmake"
     local cmd = { cmake_cmd, "--build", build_dir, "--target", target_id }
     if multi_config then
+        -- Multi-config: --config takes the underlying variant, not the
+        -- user's configuration key. See M.tasks for the rationale.
+        local build_variant = (config_info and config_info.variant) or active_config
         cmd[#cmd + 1] = "--config"
-        cmd[#cmd + 1] = active_config
+        cmd[#cmd + 1] = build_variant
     end
 
     return {
