@@ -111,6 +111,18 @@ Options merge depth-first left-to-right: project-wide → bases → own
 (later values override). Configs without a variant-providing base are
 abstract mixins — not directly buildable, only usable as bases.
 
+**Variant flows through to the build tool.** For multi-config
+generators (Visual Studio, Ninja Multi-Config), the cmake `--build`
+invocation passes `--config <variant>` — never the user-facing
+configuration name. msbuild/Xcode only know about the underlying
+variants (Debug, Release, RelWithDebInfo, MinSizeRel); a user
+configuration like `debug-with-addon` that inherits Debug must build
+with `--config Debug`, otherwise msbuild rejects the combination
+("This project doesn't contain the Configuration and Platform
+combination of debug-with-addon|x64..."). Display names, cache keys,
+and `configuration_key` retain the user-facing identity. The same
+rule applies to clean and target-specific build invocations.
+
 ## 7. Default configurations
 
 Always present, auto-generated from `CMAKE_CONFIGURATION_TYPES` in
