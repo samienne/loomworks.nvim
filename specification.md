@@ -2945,6 +2945,20 @@ when the user explicitly publishes (`:w`).
     remerges. The reference TO a stub (in `ConfigurationSet:raw_mappings`)
     IS preserved on save so the user's intent isn't silently cleaned up.
 
+    Stubs are also garbage-collected promptly when the last referrer
+    is removed: `ConfigurationSet:update_mapping` drops a stub from
+    the project's `_configurations` array if the change leaves it
+    with no remaining referrer (no other set mapping, no sibling
+    inherits chain). Without this, fixing a stale mapping in the UI
+    would leave the stub visible in the project's config list until
+    the next full remerge. Diagnostic surface deduplication: the
+    project-side `Configuration:diagnostic` for `_source_missing`
+    stubs is suppressed when a `ConfigurationSet` already covers
+    the same condition — the set-side message is more actionable
+    and the jump target lands on the broken mapping rather than the
+    stub. Sibling-inherits-only stubs (no set referrer) keep their
+    project-side diagnostic.
+
 11. **Cache version check**: On load, the cache version (`_meta.version`) is
     checked against the expected version. If the version is incompatible,
     setup refuses to load — the workspace stays nil, the cache file on disk
