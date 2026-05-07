@@ -417,11 +417,16 @@ automatically from your system.
 `:LoomworksInfo` opens a status page with the following sections:
 
 1. **Header** — plugin version, workspace name, root path
-2. **Profiles** — all materialized profiles with build status
-3. **Orphaned Items** — cached configs no longer referenced by any profile,
+2. **Diagnostics** — structural warnings/errors aggregated from across the
+   workspace (incomplete profiles, source-missing configurations, stale
+   `configuration_set` mappings, unresolved inherits chains). Hidden when
+   everything is healthy. Pressing `<CR>` on an entry jumps to the relevant
+   tree node, with `<C-o>`/`<C-i>` returning you back.
+3. **Profiles** — all materialized profiles with build status
+4. **Orphaned Items** — cached configs no longer referenced by any profile,
    plus stray build directories not tracked in cache (hidden when empty)
-4. **Configuration Sets** — declared sets with available tool entries
-5. **Projects** — all projects with their configurations and build state.
+5. **Configuration Sets** — declared sets with available tool entries
+6. **Projects** — all projects with their configurations and build state.
    CMake projects also show discovered build targets (grouped by type)
    after configure, including output paths and link dependencies.
 

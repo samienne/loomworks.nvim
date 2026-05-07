@@ -300,10 +300,27 @@ end
 function Project:_type_config_for_module()
     local tc = vim.deepcopy(self.type_config or {})
     local configs = {}
+    -- Only genuine user configs go into the user_overrides slot.
+    --
+    -- Skipping auto-gens here is critical: `Configuration.canonicalize`
+    -- (called inside `mod.info`) re-tags every entry it sees in
+    -- user_overrides as `is_user = true`. If we passed live auto-gens
+    -- in here, they'd flip on the next refresh from is_default to
+    -- is_user — which is what put `variant:Debug` etc. into the
+    -- "looks like a user config" state and silently disabled the
+    -- diagnostic gate.
+    --
+    -- Source-missing stubs are also skipped: they're identity-stable
+    -- references kept on the project to keep the data graph sound,
+    -- but they don't represent declared configuration data — feeding
+    -- them through `serialize_user_override` would materialise them
+    -- as user overrides on the next round.
     for _, cfg in ipairs(self._configurations) do
-        local override = cfg:serialize_user_override()
-        if override then
-            configs[cfg.name] = override
+        if not cfg:is_auto_gen() and not cfg._source_missing then
+            local override = cfg:serialize_user_override()
+            if override then
+                configs[cfg.name] = override
+            end
         end
     end
     if next(configs) then

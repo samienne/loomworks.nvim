@@ -30,6 +30,27 @@
 
 --- @alias loomworks.DeletionDisposition "clean"|"reset"|"keep"
 
+--- @alias loomworks.DiagnosticSeverity "warn"|"error"
+
+--- A structural diagnostic surfaced by `Workspace:diagnostics()`.
+--- Aggregated from per-domain-object `:diagnostic()` methods (Profile,
+--- Configuration, ConfigurationSet, ...).
+---
+--- The status-page Diagnostics section renders one entry per item.
+--- `target_fold_key` names a node elsewhere in the tree (typically
+--- the source object's own fold_key, but for source-missing configs
+--- it can be a referrer that uses the missing name) — the section's
+--- on_enter resolves it to a line and jumps. Entries without a
+--- target are informational only. The jump preserves `<C-o>`/`<C-i>`
+--- navigation by setting `m'` before moving the cursor.
+--- @class loomworks.Diagnostic
+--- @field severity loomworks.DiagnosticSeverity
+--- @field source string short label of where the diagnostic originates
+---     (e.g. `"Profile/Debug"`, `"Project/App/variant:default"`,
+---     `"ConfigurationSet/Debug"`)
+--- @field message string human-readable description, action-oriented when possible
+--- @field target_fold_key? string fold_key of the tree node to jump to on Enter
+
 -- ========================== Serialization Data Shapes ==========================
 -- These describe the JSON file formats (loomworks.json, cache.json, user.json).
 -- At runtime, domain objects own all state. These shapes are only used at

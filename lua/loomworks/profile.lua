@@ -684,22 +684,84 @@ function Profile:is_complete()
     return true
 end
 
---- Buildability gate: refuse to start configure/build/launch/debug
---- on an incomplete profile. Module-agnostic — `is_complete` already
---- iterates each project's module via the generic capability flags
---- (`has_keyed_tools`, `kits_from_sdk`), so adding a new module
---- (e.g. android) doesn't require touching this code path.
+--- Validity gate. Returns `(ok, reasons)`. A profile is invalid
+--- when:
+---   * is_complete() returns false (some project's module needs a
+---     tool/SDK that isn't resolved).
+---   * any of its referenced configurations are themselves invalid
+---     (source-missing stub, etc.) — the profile would fail mid-
+---     build with a confusing message.
+---   * its configuration_set (if pinned) is invalid.
 ---
---- Without this gate, the build chain proceeds with a nil tool_data,
---- the build dir resolves from a config name that may have fallen
---- back to a phantom Configuration, and the on-disk artefacts come
---- out malformed (`.nvim/build/<project>/default` shape).
+--- Operation methods (`:build`, `:configure`) refuse to run when
+--- not valid, surfacing the reasons.
+--- @return boolean ok, string[] reasons
+function Profile:is_valid()
+    local reasons = {}
+    if self._removed then
+        reasons[#reasons + 1] = "profile was removed from the registry"
+        return false, reasons
+    end
+    -- Tool/SDK completeness (existing is_complete predicate)
+    if not self:is_complete() then
+        local missing = {}
+        for _, pp in ipairs(self:projects()) do
+            local project = pp._project
+            if project and project._module then
+                local mod = project._module
+                local needs_tools = mod.has_keyed_tools
+                    or (mod.impl and mod.impl.kits_from_sdk)
+                if needs_tools and not self:tool_for(project.type) then
+                    missing[#missing + 1] = project.key
+                end
+            end
+        end
+        reasons[#reasons + 1] = "incomplete — no tool/SDK selected for: "
+            .. table.concat(missing, ", ")
+    end
+    -- Referenced ConfigurationSet validity
+    if self._config_set_ref and self._config_set_ref.is_valid then
+        local set_ok, set_reasons = self._config_set_ref:is_valid()
+        if not set_ok then
+            reasons[#reasons + 1] = "configuration set '"
+                .. self._config_set_ref.name .. "': "
+                .. table.concat(set_reasons, "; ")
+        end
+    end
+    return #reasons == 0, reasons
+end
+
+--- Return a structural diagnostic for this profile, or nil when
+--- valid. Thin formatter on top of `:is_valid()`.
+--- @return loomworks.Diagnostic|nil
+function Profile:diagnostic()
+    local ok, reasons = self:is_valid()
+    if ok then return nil end
+    return {
+        severity = "warn",
+        source = "Profile/" .. self.key,
+        message = "profile '" .. self.key .. "' is invalid: "
+            .. table.concat(reasons, "; "),
+        target_fold_key = "profile:" .. self.key,
+    }
+end
+
+--- Buildability gate: refuse to start configure/build/launch/debug
+--- on an invalid profile. Now folds into `:is_valid()` — that
+--- predicate covers both incompleteness (no tool/SDK) and stale
+--- references (invalid configurations / config set). Single check
+--- before the build chain runs.
+---
+--- Kept as a separate method so the (boolean, single-string)
+--- shape stays usable from call sites that just want "go / no-go
+--- + reason". Internally collapses the reasons list into one
+--- newline-separated message.
 --- @return boolean ok, string|nil err human-readable reason
 function Profile:assert_buildable()
-    if self:is_complete() then return true end
+    local ok, reasons = self:is_valid()
+    if ok then return true end
     return false, "profile '" .. self.key
-        .. "' is incomplete — assign a tool/SDK from the status page before "
-        .. "configuring, building, or launching"
+        .. "' is not buildable: " .. table.concat(reasons, "; ")
 end
 
 --- Check if this profile has any configured entries.

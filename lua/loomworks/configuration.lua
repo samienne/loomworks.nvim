@@ -275,6 +275,96 @@ function Configuration:is_abstract()
     return not self.module_config or self.module_config.variant == nil
 end
 
+--- Validity gate for build/configure/clean operations and UI
+--- enable-state. Returns `(ok, reasons)` where `reasons` is a list
+--- of human-readable strings explaining why the configuration is
+--- invalid. An empty list means valid.
+---
+--- Invalid states:
+---   * `_removed`: object was torn down by a previous sync.
+---     Continuing to act on it is a use-after-free in spirit.
+---   * `_source_missing`: a config_set or inherits chain referenced
+---     this canonical name, but no live source emits it. The stub
+---     exists so references stay graph-sound (branch-switch
+---     resilience) but it isn't buildable.
+---   * unresolved inherits: one or more bases don't resolve. The
+---     module's resolution would either skip or error mid-build.
+---
+--- Other things the UI surfaces inline (auto-gen dim, abstract
+--- "mixin only" tag) are NOT validity issues — auto-gens are
+--- fine, abstract is fine when used as a base. They're rendering
+--- distinctions, not gates.
+--- @return boolean ok, string[] reasons
+function Configuration:is_valid()
+    local reasons = {}
+    if self._removed then
+        reasons[#reasons + 1] = "configuration was removed from the project registry"
+    end
+    if self._source_missing then
+        reasons[#reasons + 1] = "configuration '" .. self.name
+            .. "' is referenced but not defined — fix the reference "
+            .. "or restore the configuration"
+    end
+    local unresolved = self:unresolved_inherits_names()
+    if #unresolved > 0 then
+        reasons[#reasons + 1] = "inherits from unknown bases: "
+            .. table.concat(unresolved, ", ")
+    end
+    return #reasons == 0, reasons
+end
+
+--- Return a structural diagnostic for this configuration, or nil
+--- when valid. Thin formatter on top of `:is_valid()` — keeps the
+--- diagnostic surface and the operation-gate in sync (one
+--- predicate, two views). Source-missing entries try to point the
+--- user at a referrer (config_set or sibling-with-inherits).
+--- @return loomworks.Diagnostic|nil
+function Configuration:diagnostic()
+    local ok, reasons = self:is_valid()
+    if ok then return nil end
+
+    local proj_key = self._project and self._project.key or "?"
+    local source = "Project/" .. proj_key .. "/" .. self.name
+
+    -- Pick a target_fold_key. For source-missing stubs, the most
+    -- useful jump target is a *referrer* (config_set with the
+    -- broken mapping, or a sibling that inherits the missing
+    -- name) — clicking the diagnostic takes the user to the place
+    -- that needs fixing. For other invalid states (unresolved
+    -- inherits, removed) we point at the config itself.
+    local target_fold_key = "config:" .. proj_key .. ":" .. self.name
+    if self._source_missing and self._project and self._project._workspace then
+        local ws = self._project._workspace
+        for _, cs in pairs(ws._config_sets or {}) do
+            if not cs._removed
+                and cs.mappings
+                and cs.mappings[self._project] == self then
+                target_fold_key = "set:" .. cs.name
+                goto found_referrer
+            end
+        end
+        for _, sib in ipairs(self._project._configurations or {}) do
+            if sib ~= self and not sib._removed then
+                for _, n in ipairs(sib.inherits_names or {}) do
+                    if n == self.name then
+                        target_fold_key = "config:" .. self._project.key .. ":" .. sib.name
+                        goto found_referrer
+                    end
+                end
+            end
+        end
+        ::found_referrer::
+    end
+
+    return {
+        severity = "warn",
+        source = source,
+        message = "configuration '" .. self.name .. "' on project '"
+            .. proj_key .. "' is invalid: " .. table.concat(reasons, "; "),
+        target_fold_key = target_fold_key,
+    }
+end
+
 --- Serialize the user-override portion for loomworks.json.
 --- Returns the entry that would appear under type_config.configurations[name].
 --- Returns nil for configs with no user customization. Includes default

@@ -1567,6 +1567,62 @@ function Workspace:_cleanup_orphaned_skeletons(raw_cache)
     end
 end
 
+--- Collect structural diagnostics across the workspace.
+---
+--- Walks the per-domain registries and asks each state-bearing
+--- object for its `:diagnostic()` (returning nil when in good
+--- shape). Items currently surfaced:
+---   * Profiles: incomplete (missing tool/SDK)
+---   * Configurations: source-missing or unresolved inherits
+---   * Configuration sets: stale mappings
+---
+--- Domain objects expose their own `:diagnostic()` so adding a new
+--- module (e.g. android) doesn't require touching this collector
+--- — the per-module shape stays in the per-class predicate.
+---
+--- Sorted by `(severity, source)` so the order is stable across
+--- calls and severities cluster.
+--- @return loomworks.Diagnostic[]
+function Workspace:diagnostics()
+    local result = {}
+
+    local function add(d)
+        if d then result[#result + 1] = d end
+    end
+
+    for _, profile in pairs(self._profiles) do
+        if not profile._removed and profile.diagnostic then
+            add(profile:diagnostic())
+        end
+    end
+    for _, project in pairs(self._projects) do
+        if not project.orphaned and project._configurations then
+            for _, cfg in ipairs(project._configurations) do
+                if not cfg._removed and cfg.diagnostic then
+                    add(cfg:diagnostic())
+                end
+            end
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        if not cs._removed and cs.diagnostic then
+            add(cs:diagnostic())
+        end
+    end
+
+    -- Severity ordering: error first, then warn. Within a
+    -- severity, alphabetical by source.
+    local sev_rank = { error = 1, warn = 2 }
+    table.sort(result, function(a, b)
+        local ra = sev_rank[a.severity] or 99
+        local rb = sev_rank[b.severity] or 99
+        if ra ~= rb then return ra < rb end
+        return a.source < b.source
+    end)
+
+    return result
+end
+
 --- Get orphaned BuildDirs: build directories with state not referenced by
 --- any ConfigUnit (and therefore not referenced by any profile).
 --- Orphaned BuildDirs are domain objects, not raw cache entries.
@@ -2585,7 +2641,12 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
         -- (see Configuration:is_auto_gen / spec/modules). Persisting
         -- them to loomworks.json is dead weight at best and a drift
         -- hazard if the module's emitted set changes between sessions.
-        if cfg:is_auto_gen() then
+        --
+        -- Source-missing stubs are kept in the configurations registry
+        -- to preserve identity across reference breakage (branch
+        -- switches), but writing them out would materialise a
+        -- phantom configuration. Skip those too.
+        if cfg:is_auto_gen() or cfg._source_missing then
             -- skip
         else
             local should_publish
@@ -2922,12 +2983,27 @@ function Workspace:_user_config_from_objects()
     local projects = {}
     for _, project in pairs(self._projects) do
         if project._intent ~= "shared" and not project.orphaned then
-            -- Serialize only user-owned configs within this project
+            -- Serialize only user-owned configs within this project.
+            --
+            -- Filter out auto-gens and source-missing stubs — same
+            -- rationale as `_serialize_user` and
+            -- `_type_config_for_module`. If we leak auto-gens into
+            -- the in-memory user_overlay, the next remerge passes
+            -- them to `mod.info` as user_overrides; `canonicalize`
+            -- then re-tags them with `is_user=true` and the
+            -- diagnostic gate goes silent because every config now
+            -- looks like a real user override (and stubs lose their
+            -- `_source_missing` flag via `_update`'s "is this
+            -- backed?" branch). This is the third sibling of the
+            -- "stop serialising auto-gens as user data" fix; this
+            -- one runs every remerge cycle, not just on save.
             local tc = project.type_config
                     and vim.deepcopy(project.type_config) or {}
             local configs_dict = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._intent ~= "shared" then
+                if cfg._intent ~= "shared"
+                    and not cfg:is_auto_gen()
+                    and not cfg._source_missing then
                     local override = cfg:serialize_user_override()
                     if override then
                         configs_dict[cfg.name] = override
@@ -3609,7 +3685,14 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
             and vim.deepcopy(project.type_config) or {}
     local configs_dict = {}
     for _, cfg in ipairs(project._configurations) do
-        if needed_config_names[cfg.name] then
+        -- Source-missing stubs are present in the configurations
+        -- registry to keep references graph-sound (preserves
+        -- identity across temporary breakage like branch switches),
+        -- but they MUST NOT be written to user.json — that would
+        -- materialise a phantom config the user didn't ask for. The
+        -- raw reference still survives via raw_mappings() on the
+        -- ConfigurationSet (or wherever the original referrer is).
+        if needed_config_names[cfg.name] and not cfg._source_missing then
             local override = cfg:serialize_user_override()
             if override then
                 configs_dict[cfg.name] = override
@@ -3722,7 +3805,9 @@ function Workspace:_serialize_user()
         if project._intent ~= "shared" and not project.orphaned then
             local user_configs = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._intent ~= "shared" and not cfg:is_auto_gen() then
+                if cfg._intent ~= "shared"
+                    and not cfg:is_auto_gen()
+                    and not cfg._source_missing then
                     user_configs[cfg.name] = true
                 end
             end

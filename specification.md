@@ -2920,6 +2920,31 @@ when the user explicitly publishes (`:w`).
     generation counter incremented on every remerge. Stale objects may have
     outdated data.
 
+11. **Validity is the operation gate**: Every state-bearing domain object
+    (Profile, Configuration, ConfigurationSet, LaunchTarget, ...) exposes
+    `:is_valid() → bool, string[]` returning a yes/no plus a list of
+    human-readable reasons (empty when valid). Build, configure, launch,
+    and debug operations refuse to run on an invalid target — the per-method
+    guards return early with an error citing the reasons. The same
+    predicate drives the status-page Diagnostics section (each invalid
+    object's `:diagnostic()` is a thin formatter on top of `:is_valid()`)
+    and the inline UI markers (e.g. `⚠ missing source`). One predicate,
+    three views — gate, diagnostic, indicator — guaranteed in sync.
+
+12. **Stubs preserve identity, not data**: Source-missing references
+    (configurations referenced from a config_set or inherits chain that
+    don't resolve to a live source) are kept as `_source_missing = true`
+    Configuration stubs in the project's registry. This preserves data-
+    graph soundness across temporary breakage (branch switches, in-flight
+    edits) — every reference always resolves to *some* object, so consumers
+    don't need nil handling. Stubs are filtered from every serialization
+    path (`_serialize_user`, `_serialize_project_partial`,
+    `_serialize_project_shared`, `_user_config_from_objects`,
+    `_type_config_for_module`) — they never reach `loomworks.json`,
+    `user.json`, or the in-memory user_overlay that drives subsequent
+    remerges. The reference TO a stub (in `ConfigurationSet:raw_mappings`)
+    IS preserved on save so the user's intent isn't silently cleaned up.
+
 11. **Cache version check**: On load, the cache version (`_meta.version`) is
     checked against the expected version. If the version is incompatible,
     setup refuses to load — the workspace stays nil, the cache file on disk

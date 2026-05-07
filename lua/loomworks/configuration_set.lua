@@ -81,6 +81,53 @@ function ConfigurationSet:raw_mappings()
     return raw
 end
 
+--- Validity gate. Returns `(ok, reasons)`. A configuration set
+--- is invalid when any of its mappings reference a config that's
+--- itself invalid (source-missing stub, removed, unresolved
+--- inherits) — operations driven by the set won't have a usable
+--- destination.
+---
+--- The set's own structural integrity (mappings dict exists,
+--- not _removed) is also checked.
+--- @return boolean ok, string[] reasons
+function ConfigurationSet:is_valid()
+    local reasons = {}
+    if self._removed then
+        reasons[#reasons + 1] = "configuration set was removed from the registry"
+        return false, reasons
+    end
+    local stale = {}
+    for project, config in pairs(self.mappings) do
+        if config._source_missing or config._removed then
+            stale[#stale + 1] = project.key .. " → " .. config.name
+        end
+    end
+    if #stale > 0 then
+        table.sort(stale)
+        reasons[#reasons + 1] = "stale mappings: " .. table.concat(stale, "; ")
+            .. " — fix the references in loomworks.json or user.json"
+    end
+    return #reasons == 0, reasons
+end
+
+--- Return a structural diagnostic for this configuration set, or
+--- nil when valid. Thin formatter on top of `:is_valid()`. Set-side
+--- view of stale mappings — the per-Configuration `:diagnostic()`
+--- gives the project-side view for the same condition.
+--- @return loomworks.Diagnostic|nil
+function ConfigurationSet:diagnostic()
+    if self._removed then return nil end
+    local ok, reasons = self:is_valid()
+    if ok then return nil end
+    return {
+        severity = "warn",
+        source = "ConfigurationSet/" .. self.name,
+        message = "configuration set '" .. self.name
+            .. "' is invalid: " .. table.concat(reasons, "; "),
+        target_fold_key = "set:" .. self.name,
+    }
+end
+
 --- Update a single project mapping in this configuration set.
 --- @param project loomworks.Project
 --- @param configuration loomworks.Configuration|nil Configuration object (nil to remove mapping)
