@@ -405,4 +405,55 @@ describe(":is_valid()", function()
         assert.is_true(found,
             "profile invalidity reasons should cite the bad set")
     end)
+
+    it("_type_config_for_module skips auto-gens to prevent is_user re-tagging",
+       function()
+        -- Regression: _type_config_for_module used to dump every
+        -- live config (auto-gens included) into tc.configurations
+        -- via serialize_user_override. canonicalize then re-tagged
+        -- them as is_user=true, flipping is_default off. After a
+        -- single _refresh_configurations call (triggered by any
+        -- UI mutation), all auto-gens looked like user configs —
+        -- which silently broke the diagnostic gate (is_valid had
+        -- no _source_missing flag to read because the stubs were
+        -- now classified as bona fide user configs).
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+        })
+        local app
+        for _, p in ipairs(ws._projects) do
+            if p.key == "App" then app = p; break end
+        end
+        local tc = app:_type_config_for_module()
+        local cfgs = tc.configurations or {}
+        -- Auto-gen `variant:default` must NOT appear in the
+        -- user_overrides slot, otherwise mod.info will re-tag it.
+        assert.is_nil(cfgs["variant:default"],
+            "auto-gen leaked into _type_config_for_module's user_overrides")
+    end)
+
+    it("source-missing stubs are also excluded from _type_config_for_module",
+       function()
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+            },
+        })
+        local app
+        for _, p in ipairs(ws._projects) do
+            if p.key == "App" then app = p; break end
+        end
+        local stub = app:get_configuration("ghost-config")
+        assert.is_not_nil(stub,
+            "expected source-missing stub in _configurations")
+        assert.is_true(stub._source_missing)
+
+        local tc = app:_type_config_for_module()
+        local cfgs = tc.configurations or {}
+        assert.is_nil(cfgs["ghost-config"],
+            "source-missing stub leaked into _type_config_for_module — "
+            .. "feeding it back to mod.info would materialise it as "
+            .. "a real user config on the next refresh")
+    end)
 end)
