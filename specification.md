@@ -114,16 +114,21 @@ the way out — see §4.x serialization.) A user config's `inherits:`
 reference, by contrast, uses the full canonical name —
 `inherits: "variant:Debug"`, not bare `"Debug"`.
 
-**Auto-gens are never persisted to loomworks.json.** They regenerate
-from `module.info()` on every workspace load. Serialization
-(`Workspace:_serialize_project_shared`,
-`Workspace:_serialize_config_internal`) skips any Configuration
-where `is_auto_gen()` returns true.
+**Auto-gens are never persisted to loomworks.json or user.json.**
+They regenerate from `module.info()` on every workspace load. Both
+serialization paths skip any Configuration where `is_auto_gen()`
+returns true: `_serialize_project_shared` and
+`_serialize_config_internal` for loomworks.json,
+`_serialize_user` for user.json. Persisting them in either file is
+dead weight at best and a drift hazard if the module's emitted set
+changes between sessions (e.g. a tsconfig.*.json file is added).
 
 References (configuration_set mappings, inherits values, default
 target pointers) store the full canonical name verbatim. Orphan
 references — pointers at a name no live Configuration matches —
-render in yellow with a ⚠ badge and a rename/rebase action.
+render in yellow with a ⚠ badge and a rename/rebase action, and
+emit a one-shot `vim.notify` warning at load time so the issue
+surfaces immediately rather than only on drill-down.
 
 Loomworks configuration fields in the workspace config:
 ```
