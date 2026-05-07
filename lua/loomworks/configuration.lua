@@ -316,49 +316,69 @@ end
 --- Return a structural diagnostic for this configuration, or nil
 --- when valid. Thin formatter on top of `:is_valid()` — keeps the
 --- diagnostic surface and the operation-gate in sync (one
---- predicate, two views). Source-missing entries try to point the
---- user at a referrer (config_set or sibling-with-inherits).
+--- predicate, two views).
+---
+--- Suppression rule: if the only reason this config is invalid is
+--- `_source_missing` AND a `ConfigurationSet` references it, return
+--- nil. The set's own `:diagnostic()` already surfaces the same
+--- condition with a more actionable fix-it ("fix the mapping in
+--- loomworks.json"), and emitting both was reading as a duplicate
+--- on the status page. The sibling-inherits case (a different
+--- config inheriting from this missing name) is *not* covered by
+--- any set diagnostic, so we keep the project-side surface for it.
 --- @return loomworks.Diagnostic|nil
 function Configuration:diagnostic()
     local ok, reasons = self:is_valid()
     if ok then return nil end
 
     local proj_key = self._project and self._project.key or "?"
-    local source = "Project/" .. proj_key .. "/" .. self.name
 
-    -- Pick a target_fold_key. For source-missing stubs, the most
-    -- useful jump target is a *referrer* (config_set with the
-    -- broken mapping, or a sibling that inherits the missing
-    -- name) — clicking the diagnostic takes the user to the place
-    -- that needs fixing. For other invalid states (unresolved
-    -- inherits, removed) we point at the config itself.
-    local target_fold_key = "config:" .. proj_key .. ":" .. self.name
+    -- Find referrer (if any) for both target-jump and dedup decisions.
+    local set_referrer = nil
+    local sibling_referrer = nil
     if self._source_missing and self._project and self._project._workspace then
         local ws = self._project._workspace
         for _, cs in pairs(ws._config_sets or {}) do
             if not cs._removed
                 and cs.mappings
                 and cs.mappings[self._project] == self then
-                target_fold_key = "set:" .. cs.name
-                goto found_referrer
+                set_referrer = cs
+                break
             end
         end
-        for _, sib in ipairs(self._project._configurations or {}) do
-            if sib ~= self and not sib._removed then
-                for _, n in ipairs(sib.inherits_names or {}) do
-                    if n == self.name then
-                        target_fold_key = "config:" .. self._project.key .. ":" .. sib.name
-                        goto found_referrer
+        if not set_referrer then
+            for _, sib in ipairs(self._project._configurations or {}) do
+                if sib ~= self and not sib._removed then
+                    for _, n in ipairs(sib.inherits_names or {}) do
+                        if n == self.name then
+                            sibling_referrer = sib
+                            break
+                        end
                     end
+                    if sibling_referrer then break end
                 end
             end
         end
-        ::found_referrer::
+    end
+
+    -- Dedup: if source_missing is the only invalidity AND a config_set
+    -- already covers it, skip — set-side diagnostic is enough.
+    if self._source_missing and set_referrer then
+        local only_source_missing = (#reasons == 1)
+        if only_source_missing then return nil end
+    end
+
+    -- Pick the jump target: referrer beats self for source-missing.
+    local target_fold_key = "config:" .. proj_key .. ":" .. self.name
+    if set_referrer then
+        target_fold_key = "set:" .. set_referrer.name
+    elseif sibling_referrer then
+        target_fold_key = "config:" .. proj_key .. ":" .. sibling_referrer.name
     end
 
     return {
         severity = "warn",
-        source = source,
+        source = "Project/" .. proj_key .. "/" .. self.name,
         message = "configuration '" .. self.name .. "' on project '"
             .. proj_key .. "' is invalid: " .. table.concat(reasons, "; "),
         target_fold_key = target_fold_key,

@@ -125,31 +125,35 @@ describe("Workspace:diagnostics", function()
             "expected an incomplete-profile diagnostic")
     end)
 
-    it("flags configurations with stale (source-missing) references", function()
-        -- Configuration_set maps to a variant the project doesn't
-        -- emit — sync_config_sets creates a `_source_missing` stub,
-        -- which `Configuration:diagnostic()` then surfaces.
+    it("flags inherits-only stub (no set covers it — project-side fires)",
+       function()
+        -- A user config inherits from a base name that doesn't
+        -- exist on the project. There's no config_set involved, so
+        -- the set-side diagnostic doesn't apply — the project-side
+        -- (Configuration:diagnostic) is the only way to surface it.
+        -- Test the fallback path that suppression doesn't disable.
         local ws = make_ws({
-            projects = { App = { typescript = {} } },
-            configuration_sets = {
-                Debug = { App = "ghost-config" },
+            projects = {
+                App = {
+                    typescript = {
+                        configurations = {
+                            ["my-debug"] = { inherits = "ghost-base" },
+                        },
+                    },
+                },
             },
         })
         local diags = ws:diagnostics()
         local found = false
         for _, d in ipairs(diags) do
-            if d.source:find("Project/App/ghost-config", 1, true) then
+            if d.source == "Project/App/my-debug" then
                 found = true
                 assert.equals("warn", d.severity)
-                assert.is_truthy(d.message:find("not defined", 1, true)
-                    or d.message:find("referenced", 1, true))
-                -- target_fold_key should point at the referrer
-                -- (the config_set that has the stale mapping).
-                assert.is_truthy(d.target_fold_key:find("set:Debug", 1, true))
+                assert.is_truthy(d.message:find("inherits from unknown", 1, true))
             end
         end
         assert.is_true(found,
-            "expected a source-missing diagnostic for the ghost config")
+            "expected unresolved-inherits diagnostic on my-debug")
     end)
 
     it("flags configuration sets with stale mappings (set-side view)", function()
@@ -482,6 +486,117 @@ describe(":is_valid()", function()
             "source-missing stub leaked into _type_config_for_module — "
             .. "feeding it back to mod.info would materialise it as "
             .. "a real user config on the next refresh")
+    end)
+
+    it("source-missing stub: project-side diagnostic suppressed when set covers it",
+       function()
+        -- Regression: both ConfigurationSet:diagnostic (set-side
+        -- view) and Configuration:diagnostic (project-side view)
+        -- fired for the same stale mapping, doubling up on the
+        -- status page. The set-side message is more actionable;
+        -- the project-side is suppressed when source_missing is the
+        -- only reason AND a set already references the stub.
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+            },
+        })
+        local diags = ws:diagnostics()
+        local set_count, proj_count = 0, 0
+        for _, d in ipairs(diags) do
+            if d.source:find("ConfigurationSet/", 1, true) then
+                set_count = set_count + 1
+            elseif d.source:find("Project/App/ghost-config", 1, true) then
+                proj_count = proj_count + 1
+            end
+        end
+        assert.equals(1, set_count, "set diagnostic should still fire")
+        assert.equals(0, proj_count,
+            "project-side diagnostic for the stub should be suppressed "
+            .. "when the set already covers it")
+    end)
+
+    it("update_mapping GCs orphaned source-missing stub from project",
+       function()
+        -- Regression: after the user fixed a stale config_set mapping
+        -- via update_mapping, the OLD stub stayed in
+        -- project._configurations (full remerge wasn't triggered).
+        -- The diagnostic kept firing until restart even though the
+        -- mapping was clean. update_mapping now drops stubs that no
+        -- referrer points at after the change.
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+            },
+        })
+        local app
+        for _, p in ipairs(ws._projects) do
+            if p.key == "App" then app = p; break end
+        end
+        local cs
+        for _, c in ipairs(ws._config_sets) do
+            if c.name == "Debug" then cs = c; break end
+        end
+        local stub = app:get_configuration("ghost-config")
+        assert.is_not_nil(stub,
+            "expected source-missing stub before update_mapping")
+
+        -- Replace stale mapping with valid auto-gen.
+        local valid = app:get_configuration("variant:default")
+        assert.is_not_nil(valid)
+        cs:update_mapping(app, valid)
+
+        -- Stub should be dropped from project's configurations.
+        local still_there = app:get_configuration("ghost-config")
+        assert.is_nil(still_there,
+            "orphaned stub should be GC'd from project after update_mapping")
+
+        -- And no diagnostic should fire for the stub anymore.
+        local diags = ws:diagnostics()
+        for _, d in ipairs(diags) do
+            assert.is_nil(d.source:find("ghost-config", 1, true),
+                "stub diagnostic still firing after GC: " .. d.source)
+        end
+    end)
+
+    it("update_mapping keeps stub when another set still references it",
+       function()
+        -- Defense: if two config_sets reference the same stale
+        -- name, fixing one shouldn't drop the stub — the other is
+        -- still holding it.
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+                Release = { App = "ghost-config" },
+            },
+        })
+        local app
+        for _, p in ipairs(ws._projects) do
+            if p.key == "App" then app = p; break end
+        end
+        local debug_cs, release_cs
+        for _, c in ipairs(ws._config_sets) do
+            if c.name == "Debug" then debug_cs = c
+            elseif c.name == "Release" then release_cs = c end
+        end
+        -- Both sets pointed at the same stub object initially.
+        local stub = app:get_configuration("ghost-config")
+        assert.is_not_nil(stub)
+
+        -- Fix only the Debug set.
+        local valid = app:get_configuration("variant:default")
+        debug_cs:update_mapping(app, valid)
+
+        -- Release still references the stub → it should remain.
+        local still_there = app:get_configuration("ghost-config")
+        assert.is_not_nil(still_there,
+            "stub was GC'd despite being referenced by Release set")
+        assert.equals(stub, still_there, "stub identity preserved")
+        -- Release set's mapping should still resolve to the stub.
+        assert.equals(stub, release_cs.mappings[app])
     end)
 
     it("LaunchTarget:is_valid is the unified gate (resolution + validity)",

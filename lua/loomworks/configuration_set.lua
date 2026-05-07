@@ -164,6 +164,47 @@ function ConfigurationSet:update_mapping(project, configuration)
             ws:_rebuild_profile_projects_for(profile)
         end
     end
+
+    -- GC: if the OLD mapping was a source-missing stub and nothing
+    -- else references it now, drop it from the project's
+    -- _configurations array. Without this the stub lingered until
+    -- the next full remerge (file change / restart) — keeping the
+    -- project's config list cluttered and the diagnostic firing
+    -- after the user already fixed the mapping.
+    if old and old ~= configuration and old._source_missing then
+        local still_referenced = false
+        for _, cs in pairs(ws._config_sets) do
+            if not cs._removed
+                and cs.mappings
+                and cs.mappings[project] == old then
+                still_referenced = true
+                break
+            end
+        end
+        if not still_referenced then
+            for _, cfg in ipairs(project._configurations) do
+                if cfg ~= old and not cfg._removed then
+                    for _, n in ipairs(cfg.inherits_names or {}) do
+                        if n == old.name then
+                            still_referenced = true
+                            break
+                        end
+                    end
+                    if still_referenced then break end
+                end
+            end
+        end
+        if not still_referenced then
+            old._removed = true
+            for i, cfg in ipairs(project._configurations) do
+                if cfg == old then
+                    table.remove(project._configurations, i)
+                    break
+                end
+            end
+        end
+    end
+
     ws:_sync_build_dir_refs()
     ws:_resolve_active_profile()
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
