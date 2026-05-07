@@ -75,6 +75,7 @@ system does (data model, state machines, UI behavior, invariants), see
     ui/helpers.lua ◄── shared formatting (progress, elapsed, status)
           |
     ui/sections/   ◄── pure rendering functions, one per section
+      diagnostics.lua
       profiles.lua
       orphaned.lua
       config_sets.lua
