@@ -496,14 +496,29 @@ function Profile:deactivate()
 end
 
 --- Build all projects in this profile via overseer.
+--- Refuses to start when the profile is incomplete — the build
+--- chain otherwise runs with nil tool_data and produces malformed
+--- on-disk artefacts. Module-agnostic via Profile:assert_buildable.
 --- @return loomworks.Future
 function Profile:build(opts)
+    local ok, err = self:assert_buildable()
+    if not ok then
+        return require("loomworks.future").rejected(err)
+    end
     return require("loomworks.overseer").run_profile_action(self, "build", opts)
 end
 
 --- Configure all projects in this profile via overseer.
+--- Same buildability gate as Profile:build — running configure on
+--- an incomplete profile is what produces the malformed build dirs
+--- in the first place (the artefacts are created by configure, not
+--- build).
 --- @return loomworks.Future
 function Profile:configure()
+    local ok, err = self:assert_buildable()
+    if not ok then
+        return require("loomworks.future").rejected(err)
+    end
     return require("loomworks.overseer").run_profile_action(self, "configure")
 end
 
@@ -667,6 +682,24 @@ function Profile:is_complete()
         ::next::
     end
     return true
+end
+
+--- Buildability gate: refuse to start configure/build/launch/debug
+--- on an incomplete profile. Module-agnostic — `is_complete` already
+--- iterates each project's module via the generic capability flags
+--- (`has_keyed_tools`, `kits_from_sdk`), so adding a new module
+--- (e.g. android) doesn't require touching this code path.
+---
+--- Without this gate, the build chain proceeds with a nil tool_data,
+--- the build dir resolves from a config name that may have fallen
+--- back to a phantom Configuration, and the on-disk artefacts come
+--- out malformed (`.nvim/build/<project>/default` shape).
+--- @return boolean ok, string|nil err human-readable reason
+function Profile:assert_buildable()
+    if self:is_complete() then return true end
+    return false, "profile '" .. self.key
+        .. "' is incomplete — assign a tool/SDK from the status page before "
+        .. "configuring, building, or launching"
 end
 
 --- Check if this profile has any configured entries.

@@ -95,6 +95,19 @@ function LaunchTarget:build(on_complete)
     local future_mod = require("loomworks.future")
     local overseer = require("loomworks.overseer")
 
+    -- Profile completeness gate. Defense-in-depth — session_tracker
+    -- already calls Profile:assert_buildable before invoking
+    -- target:build, but this protects callers that go straight to
+    -- target:build without that guard (e.g. status-page actions
+    -- that build a single target).
+    if self._profile then
+        local ok, err = self._profile:assert_buildable()
+        if not ok then
+            if on_complete then on_complete(false) end
+            return future_mod.rejected(err)
+        end
+    end
+
     -- Guard: if the selected ConfigUnit points at an abstract
     -- Configuration (no `variant` set on module_config — the state
     -- we end up in when harmony's default_configurations couldn't

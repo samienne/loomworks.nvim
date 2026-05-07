@@ -489,6 +489,20 @@ end
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
 function M.start(target, mode)
+    -- Refuse incomplete profiles upfront. Going further would have
+    -- the build chain run with a nil tool_data and produce malformed
+    -- on-disk artefacts (`.nvim/build/<project>/<bare-name>` shape).
+    -- Module-agnostic — Profile:assert_buildable iterates module
+    -- capability flags via Profile:is_complete.
+    local profile = target._profile
+    if profile then
+        local ok, err = profile:assert_buildable()
+        if not ok then
+            vim.notify("loomworks: " .. err, vim.log.levels.WARN)
+            return
+        end
+    end
+
     if is_active_running() then
         local name = _active_run.target:display_name()
         local running_mode = _active_run.mode == "debug" and "Debugging" or "Running"

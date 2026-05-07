@@ -468,6 +468,11 @@ function M.build_target()
         vim.notify("loomworks: no active profile", vim.log.levels.WARN)
         return
     end
+    local ok, err = profile:assert_buildable()
+    if not ok then
+        vim.notify("loomworks: " .. err, vim.log.levels.WARN)
+        return
+    end
 
     local function do_build(target)
         local fidget = require("loomworks.fidget")
@@ -511,6 +516,11 @@ function M.build_profile()
     local profile = M.get_active_profile()
     if not profile then
         vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+    local ok, err = profile:assert_buildable()
+    if not ok then
+        vim.notify("loomworks: " .. err, vim.log.levels.WARN)
         return
     end
     profile:build()
