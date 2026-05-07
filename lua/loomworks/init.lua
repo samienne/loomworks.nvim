@@ -577,6 +577,61 @@ function M.pick_profile()
     end)
 end
 
+--- Show an action picker for the current target line: "Build" runs
+--- the build chain, "Switch target" opens the target picker. When
+--- there's no current target or it's not resolvable, the action
+--- picker is skipped — only "Switch" makes sense in that state, so
+--- we go straight to the target picker.
+---
+--- "Build" route uses Profile:assert_buildable through the existing
+--- `M.build_target` flow, which surfaces the validity reasons via
+--- vim.notify if the target is invalid. Consistent with `<leader>wb`.
+--- @param profile? loomworks.Profile defaults to active profile
+function M.pick_target_action(profile)
+    profile = profile or M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+    local current = profile:default_target()
+    if not current or not current:is_valid() then
+        -- Nothing to build → straight to the target picker.
+        M.pick_target(profile)
+        return
+    end
+    vim.ui.select({ "Build", "Switch target" }, {
+        prompt = "Target: " .. current:display_name(),
+    }, function(choice)
+        if not choice then return end
+        if choice == "Build" then
+            M.build_target()
+        else
+            M.pick_target(profile)
+        end
+    end)
+end
+
+--- Open the target picker; persist the user's selection without
+--- starting a build. Used by the status-page action picker's
+--- "Switch target" branch and by callers that want the picker
+--- without the build-on-resolve behaviour of `M.build_target`.
+--- @param profile? loomworks.Profile defaults to active profile
+function M.pick_target(profile)
+    profile = profile or M.get_active_profile()
+    if not profile then
+        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
+        return
+    end
+    M._pick_target(profile, function(project, target_id)
+        if project and target_id then
+            profile:set_default_target(project, target_id)
+        end
+        -- The picker's "launch" / "device" / "clear" branches
+        -- already persist via `profile:set_default_target_*` and
+        -- emit `active_set_changed`. Nothing more to do.
+    end)
+end
+
 --- Show a picker for selecting a default target from the active profile.
 --- Includes "None" to clear and optionally "Default: X" if loomworks.json
 --- defines a default that the user has overridden.

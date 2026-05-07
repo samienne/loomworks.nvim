@@ -178,9 +178,18 @@ local function render_profile_details(tree, profile, lw)
     end
     tree:item(target_display, {
         hl = target_hl,
-        on_enter = function()
-            lw.build_target()
-        end,
+        -- `direct = true` skips the tree-level action menu when both
+        -- on_enter and on_build are present — otherwise the tree
+        -- shows its own "Activate / Build" prompt before our nested
+        -- "Build / Switch target" prompt, which doubles up.
+        direct = true,
+        -- Enter = action picker (Build / Switch target). When the
+        -- target is unset or invalid, the action picker drops to the
+        -- target picker directly since "Build" wouldn't apply.
+        on_enter = function() lw.pick_target_action() end,
+        -- `b` = direct build, skipping the action picker. Mirrors
+        -- the per-config `b` action in the Projects section.
+        on_build = function() lw.build_target() end,
     })
 
     local pps = profile:projects()
