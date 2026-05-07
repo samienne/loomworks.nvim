@@ -483,4 +483,48 @@ describe(":is_valid()", function()
             .. "feeding it back to mod.info would materialise it as "
             .. "a real user config on the next refresh")
     end)
+
+    it("LaunchTarget:is_valid is the unified gate (resolution + validity)",
+       function()
+        -- Regression: LaunchTarget had two `is_valid` definitions —
+        -- a domain-validity one (added with the diagnostics work) and
+        -- the older descriptor-resolution one. The second shadowed
+        -- the first. Now they're folded into a single tiered check.
+        local LaunchTarget = require("loomworks.launch_target").LaunchTarget
+            or require("loomworks.launch_target")
+
+        -- Stale descriptor (no target / launch_config / device id)
+        -- → tier-1 failure
+        local stale = setmetatable({
+            _profile = nil,
+            _config_unit = nil,
+            _target = nil,
+            _launch_config = nil,
+            _device_target_id = nil,
+        }, { __index = LaunchTarget })
+        local ok, reasons = stale:is_valid()
+        assert.is_false(ok)
+        assert.is_truthy(reasons[1]:find("no longer resolves", 1, true))
+
+        -- Resolved descriptor + valid profile/config → ok
+        local valid_target = setmetatable({
+            _target = { name = "fake" },
+            _profile = nil,
+            _config_unit = nil,
+        }, { __index = LaunchTarget })
+        assert.is_true(valid_target:is_valid())
+
+        -- Resolved descriptor + invalid profile → tier-2 failure
+        local prof_with_reasons = {
+            is_valid = function() return false, { "profile is incomplete" } end,
+        }
+        local invalid_profile_target = setmetatable({
+            _target = { name = "fake" },
+            _profile = prof_with_reasons,
+            _config_unit = nil,
+        }, { __index = LaunchTarget })
+        local ok2, r2 = invalid_profile_target:is_valid()
+        assert.is_false(ok2)
+        assert.equals("profile is incomplete", r2[1])
+    end)
 end)

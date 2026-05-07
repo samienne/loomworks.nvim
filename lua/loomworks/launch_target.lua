@@ -84,12 +84,49 @@ function LaunchTarget:__tostring()
     return "LaunchTarget(" .. project_name .. ": " .. (self._target_id or "?") .. ")"
 end
 
---- Validity gate. Aggregates the validity of everything this
---- target depends on — profile, configuration, config_set. Used
---- by `:build`, `:debug`, `:launch` to refuse work on a target
---- whose dependencies are in an invalid state.
+--- Validity gate. Three-tier check, in order — first failing tier
+--- short-circuits with its reason:
+---   1. Descriptor resolves (target / launch_config / device_target
+---      points at something concrete on the project / config_unit).
+---      A stale descriptor is the strongest possible invalidity —
+---      nothing else makes sense if the thing being targeted is
+---      gone.
+---   2. Profile is valid (is_complete, references a valid set, ...).
+---   3. Referenced configuration is valid (not source-missing,
+---      inherits resolve, ...).
+---
+--- Used by `:build`, `:debug`, `:launch` to refuse work on a
+--- target whose dependencies are in an invalid state. Same shape
+--- as the other domain-object validity gates: returns
+--- `(bool, string[])` where the list is human-readable reasons.
+--- Empty reasons → valid.
+---
+--- Truthy in `if x:is_valid() then` works the same as before
+--- (single-bool callers), so existing UI checks (e.g. "render
+--- this target as stale" via `not is_valid()`) still work — they
+--- now also flip on broader invalidity, which is consistent with
+--- the user-facing meaning ("can I act on this target?").
 --- @return boolean ok, string[] reasons
 function LaunchTarget:is_valid()
+    -- Tier 1: descriptor resolution
+    if self._launch_config then
+        -- Launch configs are valid as long as the descriptor is
+        -- present — no module-side resolution required.
+    elseif self._device_target_id then
+        if self._config_unit == nil then
+            return false, { "device target '" .. self._device_target_id
+                .. "' on project '"
+                .. (self._project and self._project.key or "?")
+                .. "' no longer resolves to a config unit" }
+        end
+    elseif self._target == nil then
+        return false, { "target descriptor on profile '"
+            .. (self._profile and self._profile.key or "?")
+            .. "' no longer resolves to a known launch config, "
+            .. "executable target, or device target" }
+    end
+
+    -- Tier 2: profile validity
     local reasons = {}
     if self._profile and self._profile.is_valid then
         local ok, prof_reasons = self._profile:is_valid()
@@ -97,6 +134,8 @@ function LaunchTarget:is_valid()
             for _, r in ipairs(prof_reasons) do reasons[#reasons + 1] = r end
         end
     end
+
+    -- Tier 3: configuration validity
     if self._config_unit and self._config_unit._configuration
         and self._config_unit._configuration.is_valid then
         local ok, cfg_reasons = self._config_unit._configuration:is_valid()
@@ -104,6 +143,7 @@ function LaunchTarget:is_valid()
             for _, r in ipairs(cfg_reasons) do reasons[#reasons + 1] = r end
         end
     end
+
     return #reasons == 0, reasons
 end
 
@@ -579,14 +619,6 @@ function LaunchTarget:_debug_target()
         cwd = build_dir,
         adapter = debug_mod.resolve_adapter(self._workspace, lang),
     })
-end
-
---- Check if this target is still valid.
---- @return boolean
-function LaunchTarget:is_valid()
-    if self._launch_config then return true end
-    if self._device_target_id then return self._config_unit ~= nil end
-    return self._target ~= nil
 end
 
 --- Check if this target has a build step.
