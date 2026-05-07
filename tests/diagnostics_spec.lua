@@ -432,6 +432,33 @@ describe(":is_valid()", function()
             "auto-gen leaked into _type_config_for_module's user_overrides")
     end)
 
+    it("_user_config_from_objects skips auto-gens (in-memory remerge cycle)",
+       function()
+        -- Regression: _user_config_from_objects iterates every
+        -- _configurations entry where `_intent ~= "shared"`. Auto-gens
+        -- get default_intent="local" (since they're not in either
+        -- JSON file), so they passed the intent filter and ended up
+        -- in the in-memory user_overlay. The next remerge passed
+        -- that overlay to mod.info as user_overrides; canonicalize
+        -- re-tagged every entry with is_user=true and the auto-gen
+        -- → user-config flip silently broke the diagnostic gate.
+        --
+        -- Sibling of the _serialize_user fix and the
+        -- _type_config_for_module fix; this third one runs every
+        -- remerge cycle, not just on save or refresh.
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+        })
+        local overlay = ws:_user_config_from_objects()
+        local cfgs = overlay.projects
+            and overlay.projects.App
+            and overlay.projects.App.type_config
+            and overlay.projects.App.type_config.configurations or {}
+        assert.is_nil(cfgs["variant:default"],
+            "auto-gen leaked into in-memory user_overlay — "
+            .. "next remerge will re-tag as is_user via canonicalize")
+    end)
+
     it("source-missing stubs are also excluded from _type_config_for_module",
        function()
         local ws = make_ws({

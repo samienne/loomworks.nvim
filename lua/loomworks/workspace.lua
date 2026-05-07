@@ -2983,12 +2983,27 @@ function Workspace:_user_config_from_objects()
     local projects = {}
     for _, project in pairs(self._projects) do
         if project._intent ~= "shared" and not project.orphaned then
-            -- Serialize only user-owned configs within this project
+            -- Serialize only user-owned configs within this project.
+            --
+            -- Filter out auto-gens and source-missing stubs — same
+            -- rationale as `_serialize_user` and
+            -- `_type_config_for_module`. If we leak auto-gens into
+            -- the in-memory user_overlay, the next remerge passes
+            -- them to `mod.info` as user_overrides; `canonicalize`
+            -- then re-tags them with `is_user=true` and the
+            -- diagnostic gate goes silent because every config now
+            -- looks like a real user override (and stubs lose their
+            -- `_source_missing` flag via `_update`'s "is this
+            -- backed?" branch). This is the third sibling of the
+            -- "stop serialising auto-gens as user data" fix; this
+            -- one runs every remerge cycle, not just on save.
             local tc = project.type_config
                     and vim.deepcopy(project.type_config) or {}
             local configs_dict = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._intent ~= "shared" then
+                if cfg._intent ~= "shared"
+                    and not cfg:is_auto_gen()
+                    and not cfg._source_missing then
                     local override = cfg:serialize_user_override()
                     if override then
                         configs_dict[cfg.name] = override
