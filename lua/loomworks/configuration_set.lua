@@ -81,6 +81,40 @@ function ConfigurationSet:raw_mappings()
     return raw
 end
 
+--- Return a structural diagnostic for this configuration set, or
+--- nil if all mappings resolve cleanly. Called by
+--- `Workspace:diagnostics()`.
+---
+--- We diagnose at the SET level (one entry listing all stale
+--- mappings) rather than at the per-Configuration level — the
+--- Configuration's own `:diagnostic()` already covers the case
+--- where the missing config exists as a `_source_missing` stub
+--- in its project, but that's a *project-side* view. The set-side
+--- view tells the user "this set has broken mappings", which is a
+--- different question with a different fix-it action (edit the
+--- set in user.json / loomworks.json vs. add the config back to
+--- the project).
+--- @return loomworks.Diagnostic|nil
+function ConfigurationSet:diagnostic()
+    if self._removed then return nil end
+    local stale = {}
+    for project, config in pairs(self.mappings) do
+        if config._source_missing or config._removed then
+            stale[#stale + 1] = project.key .. " → " .. config.name
+        end
+    end
+    if #stale == 0 then return nil end
+    table.sort(stale)
+    return {
+        severity = "warn",
+        source = "ConfigurationSet/" .. self.name,
+        message = "configuration set '" .. self.name
+            .. "' has stale mappings: " .. table.concat(stale, "; ")
+            .. " — fix the references in loomworks.json or user.json",
+        target_fold_key = "set:" .. self.name,
+    }
+end
+
 --- Update a single project mapping in this configuration set.
 --- @param project loomworks.Project
 --- @param configuration loomworks.Configuration|nil Configuration object (nil to remove mapping)

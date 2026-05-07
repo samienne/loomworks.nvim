@@ -275,6 +275,90 @@ function Configuration:is_abstract()
     return not self.module_config or self.module_config.variant == nil
 end
 
+--- Return a structural diagnostic for this configuration, or nil if
+--- it's in good shape. Called by `Workspace:diagnostics()`.
+---
+--- Two diagnostic conditions, both warns (not errors — the
+--- workspace stays loadable, the user just needs to fix
+--- references):
+---   * `_source_missing`: references the canonical name of an
+---     auto-gen the module no longer emits (or a user-named
+---     config that's been deleted but still referenced from a
+---     config_set / inherits chain).
+---   * unresolved inherits: one or more `inherits_names` don't
+---     resolve to a live Configuration in this project.
+---
+--- An abstract Configuration that's *only* used as a mixin (i.e.
+--- `dependents()` is non-empty and it's not the active config of
+--- a profile) is fine — that's what abstract means. We don't
+--- diagnose it. The status-page render layer flags it inline as
+--- "abstract" so the user sees what they declared.
+--- @return loomworks.Diagnostic|nil
+function Configuration:diagnostic()
+    local proj_key = self._project and self._project.key or "?"
+    local source = "Project/" .. proj_key .. "/" .. self.name
+
+    if self._source_missing then
+        -- Try to point the user at someone who's actually using
+        -- this stub. A config_set mapping is the most common
+        -- referrer; if none exists, fall back to a sibling config
+        -- that lists this name in its inherits chain. If neither
+        -- turns up the user is left with the diagnostic-only
+        -- entry, which is still better than silence.
+        local referrer_fold_key = nil
+        if self._project and self._project._workspace then
+            local ws = self._project._workspace
+            for _, cs in pairs(ws._config_sets or {}) do
+                if not cs._removed
+                    and cs.mappings
+                    and cs.mappings[self._project] == self then
+                    referrer_fold_key = "set:" .. cs.name
+                    break
+                end
+            end
+            if not referrer_fold_key then
+                for _, sib in ipairs(self._project._configurations or {}) do
+                    if sib ~= self and not sib._removed then
+                        for _, n in ipairs(sib.inherits_names or {}) do
+                            if n == self.name then
+                                referrer_fold_key = "config:"
+                                    .. self._project.key .. ":" .. sib.name
+                                break
+                            end
+                        end
+                        if referrer_fold_key then break end
+                    end
+                end
+            end
+        end
+
+        return {
+            severity = "warn",
+            source = source,
+            message = "configuration '" .. self.name
+                .. "' on project '" .. proj_key
+                .. "' is referenced but not defined — fix the reference "
+                .. "or restore the configuration",
+            target_fold_key = referrer_fold_key,
+        }
+    end
+
+    local unresolved = self:unresolved_inherits_names()
+    if #unresolved > 0 then
+        return {
+            severity = "warn",
+            source = source,
+            message = "configuration '" .. self.name
+                .. "' on project '" .. proj_key
+                .. "' inherits from unknown bases: "
+                .. table.concat(unresolved, ", "),
+            target_fold_key = "config:" .. proj_key .. ":" .. self.name,
+        }
+    end
+
+    return nil
+end
+
 --- Serialize the user-override portion for loomworks.json.
 --- Returns the entry that would appear under type_config.configurations[name].
 --- Returns nil for configs with no user customization. Includes default

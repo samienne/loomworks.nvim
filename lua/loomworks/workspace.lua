@@ -1567,6 +1567,62 @@ function Workspace:_cleanup_orphaned_skeletons(raw_cache)
     end
 end
 
+--- Collect structural diagnostics across the workspace.
+---
+--- Walks the per-domain registries and asks each state-bearing
+--- object for its `:diagnostic()` (returning nil when in good
+--- shape). Items currently surfaced:
+---   * Profiles: incomplete (missing tool/SDK)
+---   * Configurations: source-missing or unresolved inherits
+---   * Configuration sets: stale mappings
+---
+--- Domain objects expose their own `:diagnostic()` so adding a new
+--- module (e.g. android) doesn't require touching this collector
+--- — the per-module shape stays in the per-class predicate.
+---
+--- Sorted by `(severity, source)` so the order is stable across
+--- calls and severities cluster.
+--- @return loomworks.Diagnostic[]
+function Workspace:diagnostics()
+    local result = {}
+
+    local function add(d)
+        if d then result[#result + 1] = d end
+    end
+
+    for _, profile in pairs(self._profiles) do
+        if not profile._removed and profile.diagnostic then
+            add(profile:diagnostic())
+        end
+    end
+    for _, project in pairs(self._projects) do
+        if not project.orphaned and project._configurations then
+            for _, cfg in ipairs(project._configurations) do
+                if not cfg._removed and cfg.diagnostic then
+                    add(cfg:diagnostic())
+                end
+            end
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        if not cs._removed and cs.diagnostic then
+            add(cs:diagnostic())
+        end
+    end
+
+    -- Severity ordering: error first, then warn. Within a
+    -- severity, alphabetical by source.
+    local sev_rank = { error = 1, warn = 2 }
+    table.sort(result, function(a, b)
+        local ra = sev_rank[a.severity] or 99
+        local rb = sev_rank[b.severity] or 99
+        if ra ~= rb then return ra < rb end
+        return a.source < b.source
+    end)
+
+    return result
+end
+
 --- Get orphaned BuildDirs: build directories with state not referenced by
 --- any ConfigUnit (and therefore not referenced by any profile).
 --- Orphaned BuildDirs are domain objects, not raw cache entries.

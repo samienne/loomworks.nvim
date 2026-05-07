@@ -684,6 +684,34 @@ function Profile:is_complete()
     return true
 end
 
+--- Return a structural diagnostic for this profile, or nil if it's
+--- in good shape. Called by `Workspace:diagnostics()` to populate
+--- the status-page Diagnostics section. Module-agnostic — wraps
+--- the existing `is_complete` check rather than introducing a new
+--- predicate.
+--- @return loomworks.Diagnostic|nil
+function Profile:diagnostic()
+    if self:is_complete() then return nil end
+    local missing = {}
+    for _, pp in ipairs(self:projects()) do
+        local project = pp._project
+        if project and project._module then
+            local mod = project._module
+            local needs_tools = mod.has_keyed_tools or (mod.impl and mod.impl.kits_from_sdk)
+            if needs_tools and not self:tool_for(project.type) then
+                missing[#missing + 1] = project.key
+            end
+        end
+    end
+    return {
+        severity = "warn",
+        source = "Profile/" .. self.key,
+        message = "incomplete — no tool/SDK selected for: "
+            .. table.concat(missing, ", "),
+        target_fold_key = "profile:" .. self.key,
+    }
+end
+
 --- Buildability gate: refuse to start configure/build/launch/debug
 --- on an incomplete profile. Module-agnostic — `is_complete` already
 --- iterates each project's module via the generic capability flags
