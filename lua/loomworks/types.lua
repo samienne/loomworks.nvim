@@ -301,6 +301,9 @@
 --- @field project string project key for the buffer
 --- @field configuration? string active configuration name
 --- @field status? loomworks.ConfigUnitState current state
+--- @field diagnostic_severity? "warn"|"error" highest severity active in
+---     the workspace, nil when there are no diagnostics. Workspace-level
+---     (not buffer-scoped) — same value for every buffer in the workspace.
 
 --- Cached target info from module file-api parsing. Runtime-only.
 --- @class loomworks.CachedTarget

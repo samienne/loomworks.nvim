@@ -418,6 +418,21 @@ function M.buf_status(bufnr)
         end
     end
 
+    -- Workspace-level diagnostic summary for the winbar indicator.
+    -- Highest severity wins (error trumps warn). Nil when clean.
+    local diagnostic_severity = nil
+    local ws = core:get_workspace()
+    if ws and ws.diagnostics then
+        for _, d in ipairs(ws:diagnostics()) do
+            if d.severity == "error" then
+                diagnostic_severity = "error"
+                break
+            elseif d.severity == "warn" then
+                diagnostic_severity = "warn"
+            end
+        end
+    end
+
     return {
         profile_key = active_set.name,
         set_name = set_name,
@@ -425,6 +440,7 @@ function M.buf_status(bufnr)
         project = project.key,
         configuration = project.configuration,
         status = status,
+        diagnostic_severity = diagnostic_severity,
     }
 end
 
