@@ -2525,6 +2525,16 @@ returns nil, the module falls through to host-tool detection. If
 neither yields a tool and the profile has no explicit override, the
 profile is incomplete.
 
+**Incomplete profiles refuse build operations.** Configure, build,
+launch, and debug all gate on a buildability check at every entry
+point: an incomplete profile can be created, edited, persisted to
+loomworks.json, and shared with collaborators, but cannot be
+executed against. The error is module-agnostic and points the user
+at the status page to assign a tool/SDK. Without this gate the
+build chain runs with nil tool data, the build directory resolves
+from a config name that may have fallen back to a phantom
+Configuration, and on-disk artefacts come out malformed.
+
 ### 10.5 SDK provider implementations
 
 Each SDK provider documents its detection logic, validation rules,
