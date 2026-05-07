@@ -2641,7 +2641,12 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
         -- (see Configuration:is_auto_gen / spec/modules). Persisting
         -- them to loomworks.json is dead weight at best and a drift
         -- hazard if the module's emitted set changes between sessions.
-        if cfg:is_auto_gen() then
+        --
+        -- Source-missing stubs are kept in the configurations registry
+        -- to preserve identity across reference breakage (branch
+        -- switches), but writing them out would materialise a
+        -- phantom configuration. Skip those too.
+        if cfg:is_auto_gen() or cfg._source_missing then
             -- skip
         else
             local should_publish
@@ -3665,7 +3670,14 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
             and vim.deepcopy(project.type_config) or {}
     local configs_dict = {}
     for _, cfg in ipairs(project._configurations) do
-        if needed_config_names[cfg.name] then
+        -- Source-missing stubs are present in the configurations
+        -- registry to keep references graph-sound (preserves
+        -- identity across temporary breakage like branch switches),
+        -- but they MUST NOT be written to user.json — that would
+        -- materialise a phantom config the user didn't ask for. The
+        -- raw reference still survives via raw_mappings() on the
+        -- ConfigurationSet (or wherever the original referrer is).
+        if needed_config_names[cfg.name] and not cfg._source_missing then
             local override = cfg:serialize_user_override()
             if override then
                 configs_dict[cfg.name] = override
@@ -3778,7 +3790,9 @@ function Workspace:_serialize_user()
         if project._intent ~= "shared" and not project.orphaned then
             local user_configs = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._intent ~= "shared" and not cfg:is_auto_gen() then
+                if cfg._intent ~= "shared"
+                    and not cfg:is_auto_gen()
+                    and not cfg._source_missing then
                     user_configs[cfg.name] = true
                 end
             end

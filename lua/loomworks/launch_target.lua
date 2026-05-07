@@ -84,6 +84,40 @@ function LaunchTarget:__tostring()
     return "LaunchTarget(" .. project_name .. ": " .. (self._target_id or "?") .. ")"
 end
 
+--- Validity gate. Aggregates the validity of everything this
+--- target depends on — profile, configuration, config_set. Used
+--- by `:build`, `:debug`, `:launch` to refuse work on a target
+--- whose dependencies are in an invalid state.
+--- @return boolean ok, string[] reasons
+function LaunchTarget:is_valid()
+    local reasons = {}
+    if self._profile and self._profile.is_valid then
+        local ok, prof_reasons = self._profile:is_valid()
+        if not ok then
+            for _, r in ipairs(prof_reasons) do reasons[#reasons + 1] = r end
+        end
+    end
+    if self._config_unit and self._config_unit._configuration
+        and self._config_unit._configuration.is_valid then
+        local ok, cfg_reasons = self._config_unit._configuration:is_valid()
+        if not ok then
+            for _, r in ipairs(cfg_reasons) do reasons[#reasons + 1] = r end
+        end
+    end
+    return #reasons == 0, reasons
+end
+
+--- Single-string convenience wrapper around `:is_valid()` for
+--- call sites that just want go / no-go + reason. Mirrors the
+--- shape of `Profile:assert_buildable()`.
+--- @return boolean ok, string|nil err
+function LaunchTarget:assert_valid()
+    local ok, reasons = self:is_valid()
+    if ok then return true end
+    return false, "target '" .. tostring(self) .. "' is not buildable: "
+        .. table.concat(reasons, "; ")
+end
+
 --- Build this target, including dependencies.
 --- Builds dependency projects first (in order), then builds this target.
 --- @param on_complete? fun(success: boolean) called when build finishes
@@ -95,17 +129,13 @@ function LaunchTarget:build(on_complete)
     local future_mod = require("loomworks.future")
     local overseer = require("loomworks.overseer")
 
-    -- Profile completeness gate. Defense-in-depth — session_tracker
-    -- already calls Profile:assert_buildable before invoking
-    -- target:build, but this protects callers that go straight to
-    -- target:build without that guard (e.g. status-page actions
-    -- that build a single target).
-    if self._profile then
-        local ok, err = self._profile:assert_buildable()
-        if not ok then
-            if on_complete then on_complete(false) end
-            return future_mod.rejected(err)
-        end
+    -- Buildability gate via :is_valid(). Covers profile
+    -- incompleteness, invalid configurations (stubs, unresolved
+    -- inherits), and stale config_set mappings in one check.
+    local ok, err = self:assert_valid()
+    if not ok then
+        if on_complete then on_complete(false) end
+        return future_mod.rejected(err)
     end
 
     -- Guard: if the selected ConfigUnit points at an abstract
@@ -120,14 +150,14 @@ function LaunchTarget:build(on_complete)
         and self._config_unit._configuration:is_abstract() then
         local cfg_name = self._config_unit._configuration.name or "?"
         local proj_name = self._project and self._project.key or "?"
-        local err = string.format(
+        local abs_err = string.format(
             "configuration '%s' on project '%s' is abstract "
             .. "(no variant resolved) — can't build. "
             .. "Check module auto-detection (e.g. `:messages` for "
             .. "harmony parse warnings).",
             cfg_name, proj_name)
         if on_complete then on_complete(false) end
-        return future_mod.rejected(err)
+        return future_mod.rejected(abs_err)
     end
 
     local function build_self()

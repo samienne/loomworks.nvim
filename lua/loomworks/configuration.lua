@@ -275,88 +275,94 @@ function Configuration:is_abstract()
     return not self.module_config or self.module_config.variant == nil
 end
 
---- Return a structural diagnostic for this configuration, or nil if
---- it's in good shape. Called by `Workspace:diagnostics()`.
+--- Validity gate for build/configure/clean operations and UI
+--- enable-state. Returns `(ok, reasons)` where `reasons` is a list
+--- of human-readable strings explaining why the configuration is
+--- invalid. An empty list means valid.
 ---
---- Two diagnostic conditions, both warns (not errors — the
---- workspace stays loadable, the user just needs to fix
---- references):
----   * `_source_missing`: references the canonical name of an
----     auto-gen the module no longer emits (or a user-named
----     config that's been deleted but still referenced from a
----     config_set / inherits chain).
----   * unresolved inherits: one or more `inherits_names` don't
----     resolve to a live Configuration in this project.
+--- Invalid states:
+---   * `_removed`: object was torn down by a previous sync.
+---     Continuing to act on it is a use-after-free in spirit.
+---   * `_source_missing`: a config_set or inherits chain referenced
+---     this canonical name, but no live source emits it. The stub
+---     exists so references stay graph-sound (branch-switch
+---     resilience) but it isn't buildable.
+---   * unresolved inherits: one or more bases don't resolve. The
+---     module's resolution would either skip or error mid-build.
 ---
---- An abstract Configuration that's *only* used as a mixin (i.e.
---- `dependents()` is non-empty and it's not the active config of
---- a profile) is fine — that's what abstract means. We don't
---- diagnose it. The status-page render layer flags it inline as
---- "abstract" so the user sees what they declared.
+--- Other things the UI surfaces inline (auto-gen dim, abstract
+--- "mixin only" tag) are NOT validity issues — auto-gens are
+--- fine, abstract is fine when used as a base. They're rendering
+--- distinctions, not gates.
+--- @return boolean ok, string[] reasons
+function Configuration:is_valid()
+    local reasons = {}
+    if self._removed then
+        reasons[#reasons + 1] = "configuration was removed from the project registry"
+    end
+    if self._source_missing then
+        reasons[#reasons + 1] = "configuration '" .. self.name
+            .. "' is referenced but not defined — fix the reference "
+            .. "or restore the configuration"
+    end
+    local unresolved = self:unresolved_inherits_names()
+    if #unresolved > 0 then
+        reasons[#reasons + 1] = "inherits from unknown bases: "
+            .. table.concat(unresolved, ", ")
+    end
+    return #reasons == 0, reasons
+end
+
+--- Return a structural diagnostic for this configuration, or nil
+--- when valid. Thin formatter on top of `:is_valid()` — keeps the
+--- diagnostic surface and the operation-gate in sync (one
+--- predicate, two views). Source-missing entries try to point the
+--- user at a referrer (config_set or sibling-with-inherits).
 --- @return loomworks.Diagnostic|nil
 function Configuration:diagnostic()
+    local ok, reasons = self:is_valid()
+    if ok then return nil end
+
     local proj_key = self._project and self._project.key or "?"
     local source = "Project/" .. proj_key .. "/" .. self.name
 
-    if self._source_missing then
-        -- Try to point the user at someone who's actually using
-        -- this stub. A config_set mapping is the most common
-        -- referrer; if none exists, fall back to a sibling config
-        -- that lists this name in its inherits chain. If neither
-        -- turns up the user is left with the diagnostic-only
-        -- entry, which is still better than silence.
-        local referrer_fold_key = nil
-        if self._project and self._project._workspace then
-            local ws = self._project._workspace
-            for _, cs in pairs(ws._config_sets or {}) do
-                if not cs._removed
-                    and cs.mappings
-                    and cs.mappings[self._project] == self then
-                    referrer_fold_key = "set:" .. cs.name
-                    break
-                end
+    -- Pick a target_fold_key. For source-missing stubs, the most
+    -- useful jump target is a *referrer* (config_set with the
+    -- broken mapping, or a sibling that inherits the missing
+    -- name) — clicking the diagnostic takes the user to the place
+    -- that needs fixing. For other invalid states (unresolved
+    -- inherits, removed) we point at the config itself.
+    local target_fold_key = "config:" .. proj_key .. ":" .. self.name
+    if self._source_missing and self._project and self._project._workspace then
+        local ws = self._project._workspace
+        for _, cs in pairs(ws._config_sets or {}) do
+            if not cs._removed
+                and cs.mappings
+                and cs.mappings[self._project] == self then
+                target_fold_key = "set:" .. cs.name
+                goto found_referrer
             end
-            if not referrer_fold_key then
-                for _, sib in ipairs(self._project._configurations or {}) do
-                    if sib ~= self and not sib._removed then
-                        for _, n in ipairs(sib.inherits_names or {}) do
-                            if n == self.name then
-                                referrer_fold_key = "config:"
-                                    .. self._project.key .. ":" .. sib.name
-                                break
-                            end
-                        end
-                        if referrer_fold_key then break end
+        end
+        for _, sib in ipairs(self._project._configurations or {}) do
+            if sib ~= self and not sib._removed then
+                for _, n in ipairs(sib.inherits_names or {}) do
+                    if n == self.name then
+                        target_fold_key = "config:" .. self._project.key .. ":" .. sib.name
+                        goto found_referrer
                     end
                 end
             end
         end
-
-        return {
-            severity = "warn",
-            source = source,
-            message = "configuration '" .. self.name
-                .. "' on project '" .. proj_key
-                .. "' is referenced but not defined — fix the reference "
-                .. "or restore the configuration",
-            target_fold_key = referrer_fold_key,
-        }
+        ::found_referrer::
     end
 
-    local unresolved = self:unresolved_inherits_names()
-    if #unresolved > 0 then
-        return {
-            severity = "warn",
-            source = source,
-            message = "configuration '" .. self.name
-                .. "' on project '" .. proj_key
-                .. "' inherits from unknown bases: "
-                .. table.concat(unresolved, ", "),
-            target_fold_key = "config:" .. proj_key .. ":" .. self.name,
-        }
-    end
-
-    return nil
+    return {
+        severity = "warn",
+        source = source,
+        message = "configuration '" .. self.name .. "' on project '"
+            .. proj_key .. "' is invalid: " .. table.concat(reasons, "; "),
+        target_fold_key = target_fold_key,
+    }
 end
 
 --- Serialize the user-override portion for loomworks.json.

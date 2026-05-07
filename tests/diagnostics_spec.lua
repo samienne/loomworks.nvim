@@ -237,3 +237,172 @@ describe("Workspace:diagnostics", function()
         assert.are.same({}, ws:diagnostics())
     end)
 end)
+
+-- ===========================================================================
+-- :is_valid() — the predicate that operations gate on
+-- ===========================================================================
+
+describe(":is_valid()", function()
+    it("Configuration: source-missing stub is invalid", function()
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+            },
+        })
+        local app
+        for _, p in ipairs(ws._projects) do
+            if p.key == "App" then app = p; break end
+        end
+        local stub = app:get_configuration("ghost-config")
+        assert.is_not_nil(stub,
+            "expected source-missing stub to live on the project")
+        local ok, reasons = stub:is_valid()
+        assert.is_false(ok)
+        local found = false
+        for _, r in ipairs(reasons) do
+            if r:find("referenced but not defined", 1, true) then
+                found = true; break
+            end
+        end
+        assert.is_true(found, "reason should mention referenced-but-not-defined")
+    end)
+
+    it("Configuration: real auto-gen is valid", function()
+        local ws = make_ws({ projects = { App = { typescript = {} } } })
+        local app
+        for _, p in ipairs(ws._projects) do
+            if p.key == "App" then app = p; break end
+        end
+        local cfg = app:get_configuration("variant:default")
+        local ok, reasons = cfg:is_valid()
+        assert.is_true(ok)
+        assert.are.same({}, reasons)
+    end)
+
+    it("Configuration: unresolved inherits is invalid", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    typescript = {
+                        configurations = {
+                            ["my-debug"] = { inherits = "no-such-base" },
+                        },
+                    },
+                },
+            },
+        })
+        local app
+        for _, p in ipairs(ws._projects) do
+            if p.key == "App" then app = p; break end
+        end
+        local cfg = app:get_configuration("my-debug")
+        local ok = cfg:is_valid()
+        assert.is_false(ok)
+    end)
+
+    it("ConfigurationSet: stale mapping makes set invalid", function()
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+            },
+        })
+        local cs
+        for _, c in ipairs(ws._config_sets) do
+            if c.name == "Debug" then cs = c; break end
+        end
+        local ok, reasons = cs:is_valid()
+        assert.is_false(ok)
+        assert.is_truthy(reasons[1]:find("stale mappings", 1, true))
+    end)
+
+    it("ConfigurationSet: clean mappings → valid", function()
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "variant:default" },
+            },
+        })
+        local cs
+        for _, c in ipairs(ws._config_sets) do
+            if c.name == "Debug" then cs = c; break end
+        end
+        assert.is_true(cs:is_valid())
+    end)
+
+    it("source-missing stub is NOT written to user.json (no phantom)", function()
+        -- Stubs preserve identity across reference breakage but
+        -- must not materialise as on-disk configurations. The user
+        -- didn't declare them; writing them out would be a silent
+        -- creation of state.
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+            },
+        })
+        -- Force the project user-owned so it'd be a serialization
+        -- candidate (otherwise the project isn't reached at all).
+        local app
+        for _, p in ipairs(ws._projects) do
+            if p.key == "App" then app = p; break end
+        end
+        app:_mark_user_owned()
+
+        local user_data = ws:_serialize_user()
+        local cfgs = user_data.projects
+            and user_data.projects.App
+            and user_data.projects.App.typescript
+            and user_data.projects.App.typescript.configurations or {}
+        assert.is_nil(cfgs["ghost-config"],
+            "source-missing stub leaked into user.json — it must not be persisted")
+    end)
+
+    it("source-missing stub's REFERENCE in config_set IS preserved on save", function()
+        -- Distinct from the above: the *reference* to the missing
+        -- name (in the config_set) must round-trip on save —
+        -- otherwise we'd silently drop the user's intent. Only the
+        -- phantom config gets filtered, the mapping survives.
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+            },
+        })
+        local cs
+        for _, c in ipairs(ws._config_sets) do
+            if c.name == "Debug" then cs = c; break end
+        end
+        assert.is_not_nil(cs)
+        local raw = cs:raw_mappings()
+        assert.equals("ghost-config", raw.App,
+            "stale mapping dropped — would silently clean user's intent")
+    end)
+
+    it("Profile: invalid set propagates to profile invalidity", function()
+        local ws = make_ws({
+            projects = { App = { typescript = {} } },
+            configuration_sets = {
+                Debug = { App = "ghost-config" },
+            },
+            profiles = {
+                ["Debug:noop"] = { configuration_set = "Debug" },
+            },
+        })
+        local prof
+        for _, p in ipairs(ws._profiles) do
+            if p.key:find("Debug", 1, true) then prof = p; break end
+        end
+        assert.is_not_nil(prof)
+        local ok, reasons = prof:is_valid()
+        assert.is_false(ok,
+            "profile with stale config_set ref should be invalid")
+        local found = false
+        for _, r in ipairs(reasons) do
+            if r:find("configuration set", 1, true) then found = true; break end
+        end
+        assert.is_true(found,
+            "profile invalidity reasons should cite the bad set")
+    end)
+end)
