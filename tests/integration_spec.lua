@@ -2696,13 +2696,20 @@ describe("project configuration lifecycle", function()
     end)
 
     it("compute_edit_configuration_context marks defaults correctly", function()
+        -- Auto-gens carry the canonical `<prefix>:<name>` key after
+        -- canonicalize. is_default reads from the Configuration
+        -- object, so the lookup must use the canonical form. The
+        -- bare-name lookup that used to "work" here was the bug
+        -- that flagged user-created `default` configs as defaults
+        -- (see fix/configuration-name-collisions).
         local ws = make_ws({
             projects = { App = { cmake = {} } },
         })
 
-        local ctx = wv.compute_edit_configuration_context(h.find_project_in(ws:get_projects(), "App"), "Debug")
+        local ctx = wv.compute_edit_configuration_context(
+            h.find_project_in(ws:get_projects(), "App"), "variant:Debug")
         assert.is_not_nil(ctx)
-        assert.equals("Debug", ctx.name)
+        assert.equals("variant:Debug", ctx.name)
         assert.equals("Debug", ctx.variant)
         assert.is_true(ctx.is_default)
     end)

@@ -3709,13 +3709,20 @@ function Workspace:_serialize_user()
     end
     if next(config_sets) then data.configuration_sets = config_sets end
 
-    -- Projects: include items with local or local+shared intent
+    -- Projects: include items with local or local+shared intent.
+    -- Auto-gens are filtered out — they re-emit from the module on
+    -- every load, so persisting them to user.json is dead weight at
+    -- best and a drift hazard if the module's emitted set changes
+    -- between sessions (e.g. a tsconfig.*.json file is added or
+    -- removed). The loomworks.json path already filters; this path
+    -- was missed and was leaking `variant:default` /
+    -- `variant:Debug` into user.json.
     local projects = {}
     for _, project in pairs(self._projects) do
         if project._intent ~= "shared" and not project.orphaned then
             local user_configs = {}
             for _, cfg in ipairs(project._configurations) do
-                if cfg._intent ~= "shared" then
+                if cfg._intent ~= "shared" and not cfg:is_auto_gen() then
                     user_configs[cfg.name] = true
                 end
             end

@@ -214,6 +214,14 @@ end
 --- @param workspace table workspace reference for domain object constructors
 --- @param config table parsed config (loomworks.json)
 --- @return table[] config_sets array
+--- Once-per-session dedup for stale config_set mapping warnings.
+--- Keyed by `<set_name>|<project_key>|<variant>` so a remerge or
+--- file refresh doesn't repeat the notification. Cleared on
+--- workspace re-init by re-requiring the module — fresh load
+--- gets a fresh report.
+--- @type table<string, boolean>
+local _reported_stale_mappings = {}
+
 local function sync_config_sets(ctx, workspace, config)
     local defs = config.configuration_sets or {}
 
@@ -231,6 +239,27 @@ local function sync_config_sets(ctx, workspace, config)
             if project then
                 local cfg = project:get_configuration(variant)
                 if not cfg then
+                    -- Stale mapping: the configuration_set names a
+                    -- variant that no longer exists on the project
+                    -- (e.g. an old loomworks.json from before a
+                    -- canonical-prefix refactor, or a typo). We
+                    -- create a `_source_missing` stub so references
+                    -- don't break, but warn once so the user knows
+                    -- to clean up loomworks.json. Without this the
+                    -- stub propagated silently and produced
+                    -- malformed build dirs / phantom abstract
+                    -- configurations on the status page.
+                    local key = name .. "|" .. project_key .. "|" .. tostring(variant)
+                    if not _reported_stale_mappings[key] then
+                        _reported_stale_mappings[key] = true
+                        vim.notify(
+                            "loomworks: configuration_set '" .. name
+                                .. "' references unknown configuration '"
+                                .. tostring(variant) .. "' for project '"
+                                .. project_key
+                                .. "' — fix the mapping in loomworks.json or user.json",
+                            vim.log.levels.WARN)
+                    end
                     cfg = project:ensure_configuration(variant)
                 end
                 if cfg then

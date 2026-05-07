@@ -1241,7 +1241,17 @@ function M.compute_edit_configuration_context(project, config_name)
     end
     table.sort(available_configs)
 
-    -- Get existing config data from Configuration domain object
+    -- Get existing config data from Configuration domain object.
+    -- is_default must reflect the actual Configuration's is_default
+    -- flag (set by canonicalize for module-emitted auto-gens), NOT a
+    -- raw lookup against `defaults` keyed by bare auto-gen names.
+    -- The bare-name check used to flag a *user-created* config named
+    -- "default" as a default config — the dialog locked the name,
+    -- hid the inherits picker, and showed nothing editable. The
+    -- strict-prefix design made `variant:default` the canonical
+    -- auto-gen key; a user `default` is a separate Configuration
+    -- with `is_user = true` and `is_default = false`. The
+    -- Configuration object already encodes the right answer.
     local config_data = {}
     local is_default = false
     if config_name then
@@ -1249,7 +1259,7 @@ function M.compute_edit_configuration_context(project, config_name)
         if cfg_obj and cfg_obj.is_user then
             config_data = cfg_obj:serialize_user_override() or {}
         end
-        if defaults[config_name] then
+        if cfg_obj and cfg_obj.is_default then
             is_default = true
         end
     end
