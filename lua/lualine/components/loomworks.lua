@@ -4,13 +4,17 @@
 ---   { "loomworks" }                           -- default: debug > App/Debug [ninja-gcc-12]
 ---   { "loomworks", show = { "project" } }     -- just the project name
 ---
---- Available show fields: "set_name", "project", "configuration", "tool_key",
----                        "profile_key", "status"
+--- Available show fields: "diagnostics", "set_name", "project",
+---     "configuration", "tool_key", "profile_key", "status".
+--- "diagnostics" prepends a `⚠` (or `✗` for error severity) when the
+--- workspace has active diagnostics — same warning surface as the
+--- status-page Diagnostics section. Highlight uses DiagnosticWarn /
+--- DiagnosticError. Drop "diagnostics" from `show` to disable.
 
 local M = require("lualine.component"):extend()
 
 local default_options = {
-    show = { "set_name", "project", "configuration", "tool_key" },
+    show = { "diagnostics", "set_name", "project", "configuration", "tool_key" },
     join = " \u{e0b1} ",
 }
 
@@ -35,6 +39,19 @@ function M:update_status()
     if not status then return "" end
 
     local parts = {}
+
+    -- Diagnostics indicator: a single icon coloured by severity. Sits
+    -- before everything else so it stays visible if the rest of the
+    -- segment overflows / scrolls. Statusline highlight escapes
+    -- (`%#hl#text%*`) are interpreted by vim, so we render coloured
+    -- without any lualine-specific machinery.
+    if self._show.diagnostics and status.diagnostic_severity then
+        local hl = status.diagnostic_severity == "error"
+            and "DiagnosticError" or "DiagnosticWarn"
+        local icon = status.diagnostic_severity == "error"
+            and "\u{2717}" or "\u{26a0}"   -- ✗ or ⚠
+        parts[#parts + 1] = "%#" .. hl .. "#" .. icon .. "%*"
+    end
 
     -- Set name: "debug"
     if self._show.set_name and status.set_name then
