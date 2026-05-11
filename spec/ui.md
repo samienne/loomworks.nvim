@@ -186,10 +186,16 @@ Profiles that share ConfigUnits with the initiating profile show spinners
   device-capable module) — shows `Device: <name> (<serial>)` (online),
   `Device: <serial> (offline)` (offline/stale), or
   `Device: (none selected)`. `<CR>` opens device picker.
-- Last operation message
+- (The last-operation message is shown in the profile header line via
+  the `— <message>` suffix, not repeated here.)
 - Projects sub-group:
-  - Each project: `project_key [module_type] → variant {progress}` with status highlight
-  - When unfolded: status, build dir, cmake details (generator, compiler)
+  - Each project: `project_key [module_type] → variant (status) {progress}`
+    with status highlight. The `(status)` suffix mirrors the profile
+    header's `(status)` so the expansion doesn't need a separate
+    `Status:` leaf.
+  - When unfolded: build dir, tool label, targets. Generator/compiler
+    leaves are dropped — the tool label encodes both for cmake and
+    conveys the SDK display name for harmony.
 
 **Profile actions**:
 

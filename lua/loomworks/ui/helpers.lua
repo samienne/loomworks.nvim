@@ -150,33 +150,40 @@ function M.resolve_config_status_global(unit, cached)
 end
 
 --- Render cached configuration details as leaf lines.
+---
+--- Status is *not* rendered here — callers fold it into the parent
+--- node's header line (matching the profile-level "(status)" suffix)
+--- so the expansion doesn't repeat it.
 --- @param tree loomworks.Tree
---- @param config_status string
---- @param status_hl string
+--- @param config_status string (kept in the signature for call-site
+---   parity; currently unused after status moved to the parent header)
+--- @param status_hl string (likewise unused — see config_status)
 --- @param cached loomworks.CachedConfig|nil (deprecated, reads from unit when nil)
 --- @param fold_prefix? string prefix for foldable sub-nodes (e.g. "App:Debug:ninja-gcc-12")
 --- @param unit? loomworks.ConfigUnit for runtime-only data (targets) and first-class fields
 function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix, unit)
-    tree:leaf("Status: " .. config_status, status_hl)
-
     -- Read from cached table if provided, otherwise from ConfigUnit first-class fields
     local build_dir = cached and cached.build_dir or (unit and unit.build_dir_value)
-    local module_info = cached and cached.module_info or (unit and unit.module_info)
+    local tool_data = cached and cached.tool_data or (unit and unit._tool_data)
 
     if build_dir then
         tree:leaf("Build dir: " .. build_dir, "Comment")
     end
-    -- Module-specific cached fields (generator/compiler are cmake's shape; this
-    -- renders them when present. A future improvement would let the module
-    -- declare which fields to display).
-    if module_info then
-        if module_info.generator then
-            tree:leaf("Generator: " .. module_info.generator, "Comment")
-        end
-        if module_info.compiler then
-            tree:leaf("Compiler: " .. module_info.compiler, "Comment")
+
+    -- Single "Tool: <label>" line replaces the former Generator + Compiler
+    -- leaves. The module's `tool_label` already encodes both for cmake
+    -- ("Ninja - Clang 22.1.0") and conveys the SDK display name for
+    -- harmony — there's no information left in generator/compiler that
+    -- the label doesn't already carry.
+    if tool_data and unit and unit._project and unit._project._module then
+        local mod_impl = unit._project._module.impl
+        local label = mod_impl and mod_impl.tool_label
+            and mod_impl.tool_label(tool_data) or nil
+        if label then
+            tree:leaf("Tool: " .. label, "Comment")
         end
     end
+
     -- Targets from ConfigUnit (runtime, not cached)
     local targets = unit and unit.targets or nil
     if targets and next(targets) then

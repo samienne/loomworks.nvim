@@ -161,11 +161,9 @@ local function render_profile_details(tree, profile, lw)
         })
     end
 
-    local op = profile:operation()
-    if op and op.message then
-        local op_hl = op.success and "DiagnosticOk" or "DiagnosticError"
-        tree:leaf("Last: " .. op.message, op_hl)
-    end
+    -- (Last-operation message is already shown in the profile header
+    -- line — see the `display` assembly in the profiles section's main
+    -- render function — so we don't repeat it here.)
 
     -- Default target line
     local launch_target = profile:default_target()
@@ -211,7 +209,13 @@ local function render_profile_details(tree, profile, lw)
                 if pp:is_configuration_missing() then
                     variant_display = variant_display .. " (missing)"
                 end
-                tree:node(pp_pkey .. type_tag .. " → " .. variant_display .. progress_str, {
+                -- Status moves into the header line (parallel to the
+                -- profile-level "(status)" suffix), so the expansion
+                -- doesn't have to repeat it as a child leaf.
+                local status_suffix = config_status
+                    and (" (" .. config_status .. ")") or ""
+                tree:node(pp_pkey .. type_tag .. " → " .. variant_display
+                        .. status_suffix .. progress_str, {
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp_pkey,
                     spinning = is_spinning,
                     hl = pp:is_configuration_missing() and "DiagnosticWarn" or status_hl,
