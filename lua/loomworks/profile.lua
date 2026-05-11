@@ -606,6 +606,91 @@ function Profile:device()
     return self._workspace:find_device(self._device_serial)
 end
 
+--- Does this profile contain a project from a device-capable module?
+--- Used to gate the Device line in the UI per-profile (rather than
+--- per-workspace), so a mixed cmake+harmony workspace doesn't surface
+--- a meaningless Device row under its cmake profile.
+--- @return boolean
+function Profile:has_device_module()
+    for _, pp in ipairs(self:projects()) do
+        local project = pp._project
+        if project and project._module
+                and project._module.impl
+                and project._module.impl.has_devices then
+            return true
+        end
+    end
+    return false
+end
+
+--- Apply a toolchain selection for a given module. `entry` is one of the
+--- entries produced by `Workspace:available_toolchains(module)`, or `nil`
+--- to clear the selection.
+---
+--- Host entry: sets `_tools_raw[mod.id]` and clears the profile SDK.
+--- SDK kit entry: sets both `_tools_raw[mod.id]` (the specific kit) and
+--- the profile SDK. The shared `_sdk_key` reflects the SDK provenance
+--- and stays in sync — there is no longer a separate "pick the SDK"
+--- step decoupled from the kit.
+--- @param module loomworks.Module
+--- @param entry table|nil
+function Profile:set_toolchain(module, entry)
+    self._tools_raw = self._tools_raw or {}
+    self._tool_objects = nil   -- force tools_data() to read from _tools_raw
+
+    if entry == nil then
+        self._tools_raw[module.id] = nil
+        self._sdk = nil
+        self._sdk_key = nil
+    elseif entry.kind == "host" then
+        local tool = entry.tool
+        self._tools_raw[module.id] = {
+            key = tool.key,
+            data = tool.data,
+            label = tool.label,
+        }
+        self._sdk = nil
+        self._sdk_key = nil
+    elseif entry.kind == "sdk_kit" then
+        self._tools_raw[module.id] = {
+            key = entry.tool_key,
+            data = entry.tool_data,
+            label = entry.label,
+        }
+        self._sdk = entry.sdk
+        self._sdk_key = entry.sdk.key
+    end
+
+    if not next(self._tools_raw) then
+        self._tools_raw = nil
+    end
+
+    self:_derive_key()
+end
+
+--- Enumerate the unique Modules in this profile that need a tool/SDK
+--- selection (keyed-tool modules and/or SDK-consuming modules). Modules
+--- that don't carry a toolchain concept (typescript shim) are excluded.
+--- Used by the Toolchain section in the UI.
+--- @return loomworks.Module[]
+function Profile:tool_needing_modules()
+    local seen = {}
+    local result = {}
+    for _, pp in ipairs(self:projects()) do
+        local project = pp._project
+        if project and project._module then
+            local mod = project._module
+            local needs = mod.has_keyed_tools
+                or (mod.impl and mod.impl.kits_from_sdk)
+            if needs and not seen[mod] then
+                seen[mod] = true
+                result[#result + 1] = mod
+            end
+        end
+    end
+    return result
+end
+
 -- ---------------------------------------------------------------------------
 -- Operations (profile-level action tracking)
 -- ---------------------------------------------------------------------------

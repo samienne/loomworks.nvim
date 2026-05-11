@@ -15,63 +15,83 @@ local function render_profile_details(tree, profile, lw)
         tree:leaf("Set: " .. profile._config_set_ref.name, "Comment")
     end
 
-    -- SDK display
-    local sdk = profile:sdk()
-    if sdk then
-        tree:item("SDK: " .. sdk:display_name(), {
-            hl = sdk:is_resolved() and "Comment" or "DiagnosticWarn",
+    -- Toolchain: one line per tool-needing module. Combines what used
+    -- to be separate SDK and Tool entries plus the redundant
+    -- generator/compiler breakdown — the tool label already encodes
+    -- generator+compiler for cmake, and SDK provenance is implicit in
+    -- kit-derived tools.
+    local ws = profile._workspace
+    local needing = profile:tool_needing_modules()
+    local qualify = #needing > 1
+    for _, module in ipairs(needing) do
+        local prefix = qualify and ("Toolchain (" .. module.id .. ")") or "Toolchain"
+        local tool_ref = profile:tool_for(module.id)
+        local label, hl
+        if tool_ref and tool_ref.label then
+            label = tool_ref.label
+            hl = "Comment"
+        elseif tool_ref and tool_ref.key then
+            label = tool_ref.key
+            hl = "Comment"
+        elseif profile:sdk() and not profile:sdk():is_resolved() then
+            label = profile:sdk():display_name() .. " (unresolved)"
+            hl = "DiagnosticWarn"
+        else
+            label = "(none — incomplete)"
+            hl = "DiagnosticWarn"
+        end
+
+        tree:item(prefix .. ": " .. label, {
+            hl = hl,
+            direct = true,
+            enter_label = "Pick toolchain",
             on_enter = function()
-                -- Pick a different SDK
-                local ws = profile._workspace
-                local candidates = {}
-                for _, s in ipairs(ws:sdks()) do
-                    if s:is_resolved() then
-                        candidates[#candidates + 1] = s
-                    end
+                local entries = ws:available_toolchains(module)
+                if #entries == 0 then
+                    vim.notify(
+                        "loomworks: no toolchains available for "
+                        .. module.id .. ". Detect host tools or add an SDK.",
+                        vim.log.levels.INFO)
+                    return
                 end
-                candidates[#candidates + 1] = { key = nil, display_name = function() return "(none — host build)" end }
-                vim.ui.select(candidates, {
-                    prompt = "Select SDK for profile:",
-                    format_item = function(s)
-                        if s.key == nil then return "(none — host build)" end
-                        local mark = (sdk and s.key == sdk.key) and " (current)" or ""
-                        return s:display_name() .. mark
+
+                -- Append a "None" sentinel so the user can clear.
+                local items = vim.list_extend({}, entries)
+                items[#items + 1] = { kind = "none", label = "(none — clear selection)" }
+
+                local current = profile:tool_for(module.id)
+                local current_sdk_key = profile._sdk_key
+                vim.ui.select(items, {
+                    prompt = "Toolchain for " .. module.id .. ":",
+                    format_item = function(item)
+                        local is_current = false
+                        if item.kind == "host" then
+                            is_current = current and current.key == item.tool.key
+                                and not current_sdk_key
+                        elseif item.kind == "sdk_kit" then
+                            is_current = current and current.key == item.tool_key
+                                and current_sdk_key == item.sdk.key
+                        elseif item.kind == "none" then
+                            is_current = current == nil
+                        end
+                        local prefix_str
+                        if item.kind == "sdk_kit" then
+                            prefix_str = "[" .. item.sdk:display_name() .. "] "
+                        elseif item.kind == "host" then
+                            prefix_str = "[host] "
+                        else
+                            prefix_str = ""
+                        end
+                        return prefix_str .. item.label
+                            .. (is_current and " (current)" or "")
                     end,
                 }, function(choice)
                     if not choice then return end
-                    if choice.key == nil then
-                        profile:set_sdk(nil)
+                    if choice.kind == "none" then
+                        profile:set_toolchain(module, nil)
                     else
-                        profile:set_sdk(choice)
+                        profile:set_toolchain(module, choice)
                     end
-                    profile:_derive_key()
-                    ws:_save_user()
-                    ws:remerge()
-                end)
-            end,
-        })
-    else
-        tree:item("SDK: (none)", {
-            hl = "Comment",
-            on_enter = function()
-                local ws = profile._workspace
-                local candidates = {}
-                for _, s in ipairs(ws:sdks()) do
-                    if s:is_resolved() then
-                        candidates[#candidates + 1] = s
-                    end
-                end
-                if #candidates == 0 then
-                    vim.notify("loomworks: no SDKs available. Add one from the SDKs section.", vim.log.levels.INFO)
-                    return
-                end
-                vim.ui.select(candidates, {
-                    prompt = "Select SDK for profile:",
-                    format_item = function(s) return s:display_name() end,
-                }, function(choice)
-                    if not choice then return end
-                    profile:set_sdk(choice)
-                    profile:_derive_key()
                     ws:_save_user()
                     ws:remerge()
                 end)
@@ -79,26 +99,10 @@ local function render_profile_details(tree, profile, lw)
         })
     end
 
-    local tools_data = profile:tools_data()
-    if tools_data then
-        for mod_type, tool in pairs(tools_data) do
-            if tool.label then
-                tree:leaf("Tool: " .. tool.label, "Comment")
-            end
-            if tool.data then
-                if tool.data.generator then
-                    tree:leaf("Generator: " .. tool.data.generator, "Comment")
-                end
-                if tool.data.compiler_id then
-                    tree:leaf("Compiler: " .. tool.data.compiler_id, "Comment")
-                end
-            end
-        end
-    end
-
-    -- Device selection (only when workspace has device-capable modules)
-    local ws = profile._workspace
-    if ws:has_device_modules() then
+    -- Device selection: per-profile, gated on the profile actually
+    -- containing a device-capable module project. A cmake-only profile
+    -- in a workspace that also has harmony shouldn't show this row.
+    if profile:has_device_module() then
         local device = profile:device()
         local device_text, device_hl
         if device and device:is_online() then

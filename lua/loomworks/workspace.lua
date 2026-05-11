@@ -1057,6 +1057,73 @@ function Workspace:has_device_modules()
     return false
 end
 
+--- Enumerate available toolchain options for a given module within
+--- a profile context. Returns a flat list of entries the UI can render
+--- as a single picker. Each entry is one of:
+---   { kind = "host", tool = loomworks.Tool, label = string }
+---   { kind = "sdk_kit", sdk = loomworks.SDK, tool_data = table, label = string, tool_key = string|nil }
+--- Host entries come from the module's `_tools` registry, filtered to
+--- tools without `sdk_key` set (the SDK-derived tools also land in the
+--- registry when they're used). SDK entries are produced lazily by
+--- calling `kits_from_sdk` against each resolved SDK that exposes
+--- capabilities for the module type.
+--- @param module loomworks.Module
+--- @return table[]
+function Workspace:available_toolchains(module)
+    local entries = {}
+
+    -- Host tools: anything in the module's registry that doesn't
+    -- carry an `sdk_key` provenance marker.
+    for _, tool in pairs(module._tools) do
+        if not tool._removed
+                and tool.key
+                and not (tool.data and tool.data.sdk_key) then
+            entries[#entries + 1] = {
+                kind = "host",
+                tool = tool,
+                label = tool.label or tool.key,
+            }
+        end
+    end
+    table.sort(entries, function(a, b) return (a.label or "") < (b.label or "") end)
+
+    -- SDK kits: walk each resolved SDK, ask the module for its kits
+    -- against that SDK's capabilities. One picker entry per kit.
+    local sdk_entries = {}
+    if module.impl and module.impl.kits_from_sdk then
+        for _, sdk in ipairs(self:sdks()) do
+            if sdk:is_resolved() then
+                local caps = sdk:query(module.id)
+                if caps then
+                    local ok, kits = pcall(module.impl.kits_from_sdk, caps, sdk)
+                    if ok and kits then
+                        for _, kit in ipairs(kits) do
+                            local key = module.impl.tool_key
+                                and module.impl.tool_key(kit.tool_data) or nil
+                            local label = module.impl.tool_label
+                                and module.impl.tool_label(kit.tool_data) or key
+                            sdk_entries[#sdk_entries + 1] = {
+                                kind = "sdk_kit",
+                                sdk = sdk,
+                                tool_data = kit.tool_data,
+                                tool_key = key,
+                                label = label or "(kit)",
+                            }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(sdk_entries, function(a, b) return (a.label or "") < (b.label or "") end)
+
+    for _, e in ipairs(sdk_entries) do
+        entries[#entries + 1] = e
+    end
+
+    return entries
+end
+
 --- Scan for connected devices from all device-capable modules.
 --- Merges results into the _devices registry (identity-preserving).
 --- Calls callback(devices) when all modules have reported.
