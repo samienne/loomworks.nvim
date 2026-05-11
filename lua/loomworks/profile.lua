@@ -741,10 +741,10 @@ end
 function Profile:toolchain_identity()
     -- SDK kit path.
     if self._sdk then
-        -- Look for tool_data carrying platform/arch (cmake's `id`
-        -- encodes them; harmony's `kit_id` likewise). Either lets us
-        -- show the canonical `<platform> <version> <arch>` label.
         local label
+
+        -- 1. Tool_data with explicit platform/arch — the canonical
+        --    path. New picks always have these fields.
         if self._tools_raw then
             for _, ref in pairs(self._tools_raw) do
                 local td = ref and ref.data
@@ -754,9 +754,27 @@ function Profile:toolchain_identity()
                 end
             end
         end
+
+        -- 2. Legacy fallback: cmake tool_data stores the same shape
+        --    inside `display` ("HarmonyOS 6.0.1.251 arm64-v8a"); use
+        --    it directly so existing profiles read correctly until
+        --    the user next re-picks.
+        if not label and self._tools_raw then
+            for _, ref in pairs(self._tools_raw) do
+                local td = ref and ref.data
+                if td and td.id and td.display then
+                    label = td.display
+                    break
+                end
+            end
+        end
+
+        -- 3. Last resort — SDK display name. Loses the platform×arch
+        --    detail but at least identifies the SDK.
         if not label then
             label = self._sdk:display_name()
         end
+
         return {
             kind = "sdk_kit",
             sdk = self._sdk,

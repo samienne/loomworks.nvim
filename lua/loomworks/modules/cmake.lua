@@ -1022,6 +1022,13 @@ function M.kits_from_sdk(caps, sdk)
                 clangd_required = caps.clangd_required or false,
                 extra_args = extra_args,
                 sdk_key = sdk.key,
+                -- Explicit kit identity fields. The profile-level
+                -- Toolchain row reads these to render the canonical
+                -- `<platform> <version> <arch>` label without parsing
+                -- `id` or `display`.
+                platform = platform_name,
+                arch = arch,
+                sdk_version = sdk:sdk_version(),
             } }
         end
     end
