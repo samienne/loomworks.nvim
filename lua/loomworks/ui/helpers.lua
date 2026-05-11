@@ -164,25 +164,13 @@ end
 function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix, unit)
     -- Read from cached table if provided, otherwise from ConfigUnit first-class fields
     local build_dir = cached and cached.build_dir or (unit and unit.build_dir_value)
-    local tool_data = cached and cached.tool_data or (unit and unit._tool_data)
 
     if build_dir then
         tree:leaf("Build dir: " .. build_dir, "Comment")
     end
-
-    -- Single "Tool: <label>" line replaces the former Generator + Compiler
-    -- leaves. The module's `tool_label` already encodes both for cmake
-    -- ("Ninja - Clang 22.1.0") and conveys the SDK display name for
-    -- harmony — there's no information left in generator/compiler that
-    -- the label doesn't already carry.
-    if tool_data and unit and unit._project and unit._project._module then
-        local mod_impl = unit._project._module.impl
-        local label = mod_impl and mod_impl.tool_label
-            and mod_impl.tool_label(tool_data) or nil
-        if label then
-            tree:leaf("Tool: " .. label, "Comment")
-        end
-    end
+    -- The toolchain (generator/compiler/SDK kit) is shown once per
+    -- profile in the profile-level Toolchain row, so we don't repeat
+    -- it per config here.
 
     -- Targets from ConfigUnit (runtime, not cached)
     local targets = unit and unit.targets or nil

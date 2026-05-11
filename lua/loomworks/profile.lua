@@ -623,49 +623,164 @@ function Profile:has_device_module()
     return false
 end
 
---- Apply a toolchain selection for a given module. `entry` is one of the
---- entries produced by `Workspace:available_toolchains(module)`, or `nil`
---- to clear the selection.
+--- Apply a profile-level toolchain selection. `entry` is one of the
+--- entries produced by `Workspace:available_profile_toolchains(profile)`,
+--- or `nil` to clear everything.
 ---
---- Host entry: sets `_tools_raw[mod.id]` and clears the profile SDK.
---- SDK kit entry: sets both `_tools_raw[mod.id]` (the specific kit) and
---- the profile SDK. The shared `_sdk_key` reflects the SDK provenance
---- and stays in sync — there is no longer a separate "pick the SDK"
---- step decoupled from the kit.
---- @param module loomworks.Module
+--- The selection is applied to **every** tool-needing module in the
+--- profile in one shot:
+--- * Host entry — only sets `_tools_raw[<entry.module_id>]` (host
+---   tools are per-module by nature). Clears the SDK. Other modules
+---   keep what they had.
+--- * SDK kit entry — for each tool-needing module, calls the
+---   module's `kits_from_sdk` to materialize tool_data, then picks
+---   the kit whose identity matches the chosen `(sdk, platform, arch)`
+---   (matched on cmake's kit `id` or harmony's `kit_id` field, both
+---   of which encode the same triple). Stores per-module
+---   `_tools_raw[mod.id]`. Sets the shared SDK.
+--- * `nil` — clears `_tools_raw` and SDK entirely.
 --- @param entry table|nil
-function Profile:set_toolchain(module, entry)
-    self._tools_raw = self._tools_raw or {}
+function Profile:set_profile_toolchain(entry)
     self._tool_objects = nil   -- force tools_data() to read from _tools_raw
 
     if entry == nil then
-        self._tools_raw[module.id] = nil
+        self._tools_raw = nil
         self._sdk = nil
         self._sdk_key = nil
-    elseif entry.kind == "host" then
+        self:_derive_key()
+        return
+    end
+
+    if entry.kind == "host" then
+        self._tools_raw = self._tools_raw or {}
         local tool = entry.tool
-        self._tools_raw[module.id] = {
+        self._tools_raw[entry.module_id] = {
             key = tool.key,
             data = tool.data,
             label = tool.label,
         }
         self._sdk = nil
         self._sdk_key = nil
-    elseif entry.kind == "sdk_kit" then
-        self._tools_raw[module.id] = {
-            key = entry.tool_key,
-            data = entry.tool_data,
-            label = entry.label,
+        self:_derive_key()
+        return
+    end
+
+    if entry.kind == "sdk_kit" then
+        local sdk = entry.sdk
+        local expected_kit_id = sdk:sdk_type() .. "-"
+            .. entry.platform:lower():gsub("%s+", "-") .. "-" .. entry.arch
+
+        self._tools_raw = self._tools_raw or {}
+
+        for _, module in ipairs(self:tool_needing_modules()) do
+            local mod_impl = module.impl
+            if mod_impl and mod_impl.kits_from_sdk then
+                local caps = sdk:query(module.id)
+                if caps then
+                    local ok, kits = pcall(mod_impl.kits_from_sdk, caps, sdk)
+                    if ok and kits then
+                        -- Match by the composite kit id (cmake uses
+                        -- `id`; harmony uses `kit_id`). Both encode
+                        -- `<sdk_type>-<platform_lower>-<arch>`.
+                        local matched
+                        for _, kit in ipairs(kits) do
+                            local kid = kit.tool_data
+                                and (kit.tool_data.id or kit.tool_data.kit_id)
+                            if kid == expected_kit_id then
+                                matched = kit
+                                break
+                            end
+                        end
+                        -- Fallback: if the module doesn't fan out
+                        -- per-kit (e.g. an SDK with no per-arch
+                        -- toolchain), take the first kit.
+                        if not matched and kits[1] then
+                            matched = kits[1]
+                        end
+                        if matched then
+                            local td = matched.tool_data
+                            local tk = mod_impl.tool_key
+                                and mod_impl.tool_key(td) or nil
+                            local tl = mod_impl.tool_label
+                                and mod_impl.tool_label(td) or nil
+                            self._tools_raw[module.id] = {
+                                key = tk,
+                                data = td,
+                                label = tl,
+                            }
+                        end
+                    end
+                end
+            end
+        end
+
+        self._sdk = sdk
+        self._sdk_key = sdk.key
+        self:_derive_key()
+        return
+    end
+end
+
+--- Describe the profile's current toolchain selection as a flat
+--- identity. Used by the UI to render a single Toolchain row.
+---
+--- Returns one of:
+---   { kind = "sdk_kit", sdk = SDK, label = string, resolved = bool }
+---   { kind = "host", tools = { mod_id -> tool_ref }, label = string }
+---   { kind = "incomplete", label = string }
+---
+--- Resolution order:
+--- * If `_sdk` is set, that's the active kit. Label is derived from
+---   the cmake-side kit (the canonical platform×arch shape) if any
+---   tool-needing module's tool_data carries a `platform`/`arch`
+---   pair; otherwise falls back to the SDK display name.
+--- * Otherwise, if any tool-needing module has a tool_data, treat
+---   that as a host selection.
+--- * Otherwise, the profile is incomplete.
+--- @return table
+function Profile:toolchain_identity()
+    -- SDK kit path.
+    if self._sdk then
+        -- Look for tool_data carrying platform/arch (cmake's `id`
+        -- encodes them; harmony's `kit_id` likewise). Either lets us
+        -- show the canonical `<platform> <version> <arch>` label.
+        local label
+        if self._tools_raw then
+            for _, ref in pairs(self._tools_raw) do
+                local td = ref and ref.data
+                if td and td.platform and td.arch then
+                    label = self._sdk:kit_label(td.platform, td.arch)
+                    break
+                end
+            end
+        end
+        if not label then
+            label = self._sdk:display_name()
+        end
+        return {
+            kind = "sdk_kit",
+            sdk = self._sdk,
+            label = label,
+            resolved = self._sdk:is_resolved(),
         }
-        self._sdk = entry.sdk
-        self._sdk_key = entry.sdk.key
     end
 
-    if not next(self._tools_raw) then
-        self._tools_raw = nil
+    -- Host path.
+    if self._tools_raw and next(self._tools_raw) then
+        local labels = {}
+        for mod_id, ref in pairs(self._tools_raw) do
+            labels[#labels + 1] = (ref.label or ref.key or mod_id)
+                .. " [" .. mod_id .. "]"
+        end
+        table.sort(labels)
+        return {
+            kind = "host",
+            tools = self._tools_raw,
+            label = table.concat(labels, " + "),
+        }
     end
 
-    self:_derive_key()
+    return { kind = "incomplete", label = "(none — incomplete)" }
 end
 
 --- Enumerate the unique Modules in this profile that need a tool/SDK

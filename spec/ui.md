@@ -169,19 +169,21 @@ Profiles that share ConfigUnits with the initiating profile show spinners
 
 **Profile children** (when unfolded):
 - Set name (with warning if orphaned/stale) — only for set-based profiles
-- Toolchain — one row per tool-needing module (modules with keyed tools
-  or SDK capabilities; the typescript shim is excluded). Combines the
-  former SDK and Tool rows plus the redundant generator/compiler
-  breakdown into a single entry — the tool label already encodes
-  generator+compiler for cmake, and SDK provenance is implicit in
-  kit-derived tools. Row format `Toolchain: <label>` (or
-  `Toolchain (<module_id>): <label>` when the profile has more than one
-  tool-needing module). Label resolution: resolved tool label > tool
-  key > unresolved-SDK display > `(none — incomplete)`. `<CR>` opens
-  the unified toolchain picker (host tools from the module registry +
-  one entry per kit from each resolved SDK + `(none)` sentinel).
-  Picking writes `_tools_raw[mod_id]` and the profile's SDK atomically;
-  host selections clear the SDK.
+- Toolchain — a single profile-level row. A toolchain is one decision
+  (host tools or an SDK kit identity `(sdk, platform, arch)`) shared
+  across every tool-needing module in the profile. Row format
+  `Toolchain: <label>`. Label resolution: for SDK kits the canonical
+  shape is `<platform> <version> <arch>` ("HarmonyOS 6.0.1.251
+  arm64-v8a"); for host selections it's `<tool_label> [host/<mod_id>]`
+  per module; otherwise `(none — incomplete)`. `<CR>` opens the
+  unified picker — entries are host tools from each tool-needing
+  module's registry plus one entry per kit from each resolved SDK
+  (sourced from `SDK:kits()`), with a `(none)` sentinel.
+  Picking an SDK kit calls each tool-needing module's `kits_from_sdk`
+  with the chosen `(sdk, platform, arch)`, matches by the kit's
+  composite `id`/`kit_id`, and stores the per-module tool_data
+  atomically. Host picks set only the target module's `_tools_raw`
+  entry and clear the SDK.
 - Device selection (only when the profile contains a project from a
   device-capable module) — shows `Device: <name> (<serial>)` (online),
   `Device: <serial> (offline)` (offline/stale), or
@@ -193,9 +195,10 @@ Profiles that share ConfigUnits with the initiating profile show spinners
     with status highlight. The `(status)` suffix mirrors the profile
     header's `(status)` so the expansion doesn't need a separate
     `Status:` leaf.
-  - When unfolded: build dir, tool label, targets. Generator/compiler
-    leaves are dropped — the tool label encodes both for cmake and
-    conveys the SDK display name for harmony.
+  - When unfolded: build dir and targets only. Tool / generator /
+    compiler leaves are dropped — the toolchain is shown once per
+    profile in the profile-level Toolchain row, not repeated per
+    config.
 
 **Profile actions**:
 

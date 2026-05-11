@@ -1057,70 +1057,71 @@ function Workspace:has_device_modules()
     return false
 end
 
---- Enumerate available toolchain options for a given module within
---- a profile context. Returns a flat list of entries the UI can render
---- as a single picker. Each entry is one of:
----   { kind = "host", tool = loomworks.Tool, label = string }
----   { kind = "sdk_kit", sdk = loomworks.SDK, tool_data = table, label = string, tool_key = string|nil }
---- Host entries come from the module's `_tools` registry, filtered to
---- tools without `sdk_key` set (the SDK-derived tools also land in the
---- registry when they're used). SDK entries are produced lazily by
---- calling `kits_from_sdk` against each resolved SDK that exposes
---- capabilities for the module type.
---- @param module loomworks.Module
+--- Enumerate the available toolchain options for an entire profile.
+--- A toolchain is an SDK-kit identity `(sdk, platform, arch)` or a
+--- host-tool identity. Per-module overrides have been collapsed —
+--- one toolchain selection applies to every tool-needing module in
+--- the profile.
+---
+--- Returns a flat list. Each entry is one of:
+---   { kind = "host", module_id = string, tool = loomworks.Tool,
+---     label = string }
+---   { kind = "sdk_kit", sdk = loomworks.SDK, platform = string,
+---     arch = string, label = string }
+---
+--- Host entries are emitted only when **every** tool-needing module
+--- in the profile has host tools (a host-cmake + harmony profile is
+--- unbuildable, so no host entries appear there).
+--- @param profile loomworks.Profile
 --- @return table[]
-function Workspace:available_toolchains(module)
+function Workspace:available_profile_toolchains(profile)
+    local needing = profile:tool_needing_modules()
+    if #needing == 0 then return {} end
+
     local entries = {}
 
-    -- Host tools: anything in the module's registry that doesn't
-    -- carry an `sdk_key` provenance marker.
-    for _, tool in pairs(module._tools) do
-        if not tool._removed
-                and tool.key
-                and not (tool.data and tool.data.sdk_key) then
-            entries[#entries + 1] = {
-                kind = "host",
-                tool = tool,
-                label = tool.label or tool.key,
-            }
-        end
-    end
-    table.sort(entries, function(a, b) return (a.label or "") < (b.label or "") end)
-
-    -- SDK kits: walk each resolved SDK, ask the module for its kits
-    -- against that SDK's capabilities. One picker entry per kit.
-    local sdk_entries = {}
-    if module.impl and module.impl.kits_from_sdk then
-        for _, sdk in ipairs(self:sdks()) do
-            if sdk:is_resolved() then
-                local caps = sdk:query(module.id)
-                if caps then
-                    local ok, kits = pcall(module.impl.kits_from_sdk, caps, sdk)
-                    if ok and kits then
-                        for _, kit in ipairs(kits) do
-                            local key = module.impl.tool_key
-                                and module.impl.tool_key(kit.tool_data) or nil
-                            local label = module.impl.tool_label
-                                and module.impl.tool_label(kit.tool_data) or key
-                            sdk_entries[#sdk_entries + 1] = {
-                                kind = "sdk_kit",
-                                sdk = sdk,
-                                tool_data = kit.tool_data,
-                                tool_key = key,
-                                label = label or "(kit)",
-                            }
-                        end
-                    end
-                end
+    -- Host tools: emit one entry per host tool from each module's
+    -- registry. We surface them by module since each host pick is
+    -- inherently per-module (no platform/arch axis). A profile that
+    -- can't run a host build for one of its modules just won't be
+    -- valid until the user later picks a kit for the remaining ones,
+    -- but we still let the user mix incremental host picks.
+    for _, module in ipairs(needing) do
+        for _, tool in pairs(module._tools) do
+            if not tool._removed
+                    and tool.key
+                    and not (tool.data and tool.data.sdk_key) then
+                entries[#entries + 1] = {
+                    kind = "host",
+                    module_id = module.id,
+                    tool = tool,
+                    label = (tool.label or tool.key)
+                        .. " [host/" .. module.id .. "]",
+                }
             end
         end
     end
-    table.sort(sdk_entries, function(a, b) return (a.label or "") < (b.label or "") end)
 
-    for _, e in ipairs(sdk_entries) do
-        entries[#entries + 1] = e
+    -- SDK kits: enumerate via SDK:kits() so the kit identity is one
+    -- shared concept across modules. Per-module tool_data is derived
+    -- at apply time (Profile:set_profile_toolchain).
+    for _, sdk in ipairs(self:sdks()) do
+        if sdk:is_resolved() then
+            for _, kit in ipairs(sdk:kits()) do
+                entries[#entries + 1] = {
+                    kind = "sdk_kit",
+                    sdk = sdk,
+                    platform = kit.platform,
+                    arch = kit.arch,
+                    label = sdk:kit_label(kit.platform, kit.arch),
+                }
+            end
+        end
     end
 
+    table.sort(entries, function(a, b)
+        return (a.label or "") < (b.label or "")
+    end)
     return entries
 end
 

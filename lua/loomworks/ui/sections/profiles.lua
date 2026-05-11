@@ -15,72 +15,72 @@ local function render_profile_details(tree, profile, lw)
         tree:leaf("Set: " .. profile._config_set_ref.name, "Comment")
     end
 
-    -- Toolchain: one line per tool-needing module. Combines what used
-    -- to be separate SDK and Tool entries plus the redundant
-    -- generator/compiler breakdown — the tool label already encodes
-    -- generator+compiler for cmake, and SDK provenance is implicit in
-    -- kit-derived tools.
+    -- Toolchain: a single profile-level row. The toolchain is one
+    -- decision — host tools or an SDK kit identity (platform × arch) —
+    -- shared across every tool-needing module in the profile. The
+    -- picker offers kit identities (not per-module entries); applying
+    -- one writes per-module tool_data atomically.
     local ws = profile._workspace
     local needing = profile:tool_needing_modules()
-    local qualify = #needing > 1
-    for _, module in ipairs(needing) do
-        local prefix = qualify and ("Toolchain (" .. module.id .. ")") or "Toolchain"
-        local tool_ref = profile:tool_for(module.id)
-        local label, hl
-        if tool_ref and tool_ref.label then
-            label = tool_ref.label
-            hl = "Comment"
-        elseif tool_ref and tool_ref.key then
-            label = tool_ref.key
-            hl = "Comment"
-        elseif profile:sdk() and not profile:sdk():is_resolved() then
-            label = profile:sdk():display_name() .. " (unresolved)"
+    if #needing > 0 then
+        local id = profile:toolchain_identity()
+        local hl
+        if id.kind == "sdk_kit" and not id.resolved then
+            hl = "DiagnosticWarn"
+        elseif id.kind == "incomplete" then
             hl = "DiagnosticWarn"
         else
-            label = "(none — incomplete)"
-            hl = "DiagnosticWarn"
+            hl = "Comment"
         end
 
-        tree:item(prefix .. ": " .. label, {
+        tree:item("Toolchain: " .. id.label, {
             hl = hl,
             direct = true,
             enter_label = "Pick toolchain",
             on_enter = function()
-                local entries = ws:available_toolchains(module)
+                local entries = ws:available_profile_toolchains(profile)
                 if #entries == 0 then
                     vim.notify(
-                        "loomworks: no toolchains available for "
-                        .. module.id .. ". Detect host tools or add an SDK.",
+                        "loomworks: no toolchains available. Detect host"
+                        .. " tools or add an SDK.",
                         vim.log.levels.INFO)
                     return
                 end
 
-                -- Append a "None" sentinel so the user can clear.
                 local items = vim.list_extend({}, entries)
-                items[#items + 1] = { kind = "none", label = "(none — clear selection)" }
+                items[#items + 1] = { kind = "none",
+                    label = "(none — clear selection)" }
 
-                local current = profile:tool_for(module.id)
-                local current_sdk_key = profile._sdk_key
+                local cur_sdk_key = profile._sdk_key
                 vim.ui.select(items, {
-                    prompt = "Toolchain for " .. module.id .. ":",
+                    prompt = "Toolchain:",
                     format_item = function(item)
                         local is_current = false
-                        if item.kind == "host" then
-                            is_current = current and current.key == item.tool.key
-                                and not current_sdk_key
-                        elseif item.kind == "sdk_kit" then
-                            is_current = current and current.key == item.tool_key
-                                and current_sdk_key == item.sdk.key
+                        if item.kind == "sdk_kit" then
+                            local td_match = false
+                            if profile._tools_raw then
+                                for _, ref in pairs(profile._tools_raw) do
+                                    local td = ref and ref.data
+                                    if td and td.platform == item.platform
+                                            and td.arch == item.arch then
+                                        td_match = true
+                                        break
+                                    end
+                                end
+                            end
+                            is_current = cur_sdk_key == item.sdk.key and td_match
+                        elseif item.kind == "host" then
+                            local cur = profile:tool_for(item.module_id)
+                            is_current = not cur_sdk_key
+                                and cur and cur.key == item.tool.key
                         elseif item.kind == "none" then
-                            is_current = current == nil
+                            is_current = not cur_sdk_key
+                                and (not profile._tools_raw
+                                    or not next(profile._tools_raw))
                         end
-                        local prefix_str
+                        local prefix_str = ""
                         if item.kind == "sdk_kit" then
                             prefix_str = "[" .. item.sdk:display_name() .. "] "
-                        elseif item.kind == "host" then
-                            prefix_str = "[host] "
-                        else
-                            prefix_str = ""
                         end
                         return prefix_str .. item.label
                             .. (is_current and " (current)" or "")
@@ -88,9 +88,9 @@ local function render_profile_details(tree, profile, lw)
                 }, function(choice)
                     if not choice then return end
                     if choice.kind == "none" then
-                        profile:set_toolchain(module, nil)
+                        profile:set_profile_toolchain(nil)
                     else
-                        profile:set_toolchain(module, choice)
+                        profile:set_profile_toolchain(choice)
                     end
                     ws:_save_user()
                     ws:remerge()
