@@ -107,7 +107,7 @@ local function render_profile_details(tree, profile, lw)
             end
 
             tree:item("+ Add tool", {
-                hl = "LoomworksActionable",
+                hl = "LoomworksAdd",
                 direct = true,
                 on_enter = function()
                     local items = {}
@@ -229,7 +229,7 @@ local function render_profile_details(tree, profile, lw)
     local target_display, target_hl
     if launch_target and launch_target:is_valid() then
         target_display = "Target: " .. launch_target:display_name()
-        target_hl = "LoomworksActionable"
+        target_hl = "LoomworksTarget"
     elseif launch_target then
         target_display = "Target: " .. launch_target:display_name() .. " (stale)"
         target_hl = "DiagnosticWarn"
@@ -255,7 +255,7 @@ local function render_profile_details(tree, profile, lw)
 
     local pps = profile:projects()
     if #pps > 0 then
-        tree:group({{"Projects:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [t] task output  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
+        tree:group({{"Projects:  ", "LoomworksSection"}, {"[b] build  [c] configure  [t] task output  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
             for _, pp in ipairs(pps) do
                 local config_status, _status_hl, progress_str, is_spinning =
                         helpers.resolve_config_status(pp, nil)
@@ -435,7 +435,7 @@ return function(tree, ctx)
         tree:leaf("No projects yet. Add projects first.", "Comment")
     else
         tree:item("▸ Create new profile", {
-            hl = "LoomworksActionable",
+            hl = "LoomworksAdd",
             direct = true,
             on_enter = actions.create_profile(ctx),
         })

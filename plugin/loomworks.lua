@@ -40,6 +40,21 @@ hl(0, "LoomworksProfile",         { fg = _profile_fg, bold = true, default = tru
 hl(0, "LoomworksProfileInactive", { link = "LoomworksActionable",  default = true })
 hl(0, "LoomworksProject",         { fg = _project_fg,              default = true })
 
+-- Sub-section labels and sentinels inside an unfolded profile:
+-- distinct theme-aware accents so they don't all read as plain
+-- text (which is what `LoomworksActionable` defaults to and what
+-- inactive profile rows now use).
+--   * `LoomworksSection`  — group labels like "Projects:"
+--   * `LoomworksAdd`      — actionable sentinels ("+ Add tool",
+--                          "▸ Create new profile")
+--   * `LoomworksTarget`   — the "Target: <name>" row when a target
+--                          is selected
+-- Linked to common syntax groups so they track the colorscheme;
+-- the user can override any single one without touching the rest.
+hl(0, "LoomworksSection", { link = "Statement", default = true })
+hl(0, "LoomworksAdd",     { link = "Constant",  default = true })
+hl(0, "LoomworksTarget",  { link = "Type",      default = true })
+
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)
   local path = cmd.args ~= "" and cmd.args or nil
   require("loomworks").setup({ root = path })
