@@ -115,6 +115,7 @@ local view = View.new({
         ["<C-n>"] = "nuke",
         ["U"]     = "delete_user_prefs",
         ["?"]     = "help",
+        ["K"]     = "hover",
     },
     is_modified = function()
         local lw = require("loomworks")

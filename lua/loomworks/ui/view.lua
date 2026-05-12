@@ -274,6 +274,83 @@ function View:_dispatch(action)
             end
         end
     end
+    if result.hover then
+        self:_open_hover(result.hover)
+    end
+end
+
+--- Open a wrapping hover popup near the cursor with the given content.
+--- Content is a string or array of strings — each entry becomes a
+--- buffer line, and vim's `wrap` handles overflow. Closes on any
+--- subsequent keypress (Snacks's standard `keys.q` plus a one-shot
+--- autocmd on CursorMoved).
+--- @param content string|string[]
+function View:_open_hover(content)
+    if not self._snacks_win or not self._snacks_win:valid() then return end
+    local lines
+    if type(content) == "string" then
+        lines = vim.split(content, "\n", { plain = true })
+    elseif type(content) == "table" then
+        lines = content
+    else
+        return
+    end
+    if #lines == 0 then return end
+
+    -- Width: cap at min(80, available columns - 8). Height:
+    -- approximate wrapped-line count so the popup hugs its content.
+    local max_w = math.max(20, math.min(80, vim.o.columns - 8))
+    local wrapped = 0
+    for _, l in ipairs(lines) do
+        local len = vim.fn.strdisplaywidth(l)
+        wrapped = wrapped + math.max(1, math.ceil(len / max_w))
+    end
+    local h = math.min(wrapped, math.max(3, math.floor(vim.o.lines * 0.4)))
+
+    local hover_win = Snacks.win({
+        position = "float",
+        relative = "cursor",
+        row = 1,
+        col = 0,
+        width = max_w,
+        height = h,
+        border = "rounded",
+        wo = {
+            wrap = true,
+            linebreak = true,
+            cursorline = false,
+        },
+        bo = {
+            buftype = "nofile",
+            bufhidden = "wipe",
+            modifiable = false,
+            filetype = "loomworks_hover",
+        },
+        keys = {
+            q = "close",
+            ["<Esc>"] = "close",
+        },
+        enter = false,
+    })
+
+    -- Snacks creates the buffer lazily — set lines after open.
+    if hover_win and hover_win.buf then
+        vim.bo[hover_win.buf].modifiable = true
+        vim.api.nvim_buf_set_lines(hover_win.buf, 0, -1, false, lines)
+        vim.bo[hover_win.buf].modifiable = false
+    end
+
+    -- Close on next cursor move (mirrors LSP hover behaviour).
+    local group = vim.api.nvim_create_augroup("loomworks_hover_close", { clear = true })
+    vim.api.nvim_create_autocmd({ "CursorMoved", "BufLeave", "WinLeave" }, {
+        group = group,
+        once = true,
+        callback = function()
+            if hover_win and hover_win.valid and hover_win:valid() then
+                hover_win:close()
+            end
+        end,
+    })
 end
 
 --- Find the nearest actionable line to the given line.

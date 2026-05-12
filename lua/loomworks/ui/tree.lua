@@ -31,7 +31,7 @@ local ACTION_ORDER = {
 }
 
 --- Fields consumed by the tree builder for rendering only.
-local RENDER_KEYS = { hl = true, spinning = true, marker = true, marker_hl = true }
+local RENDER_KEYS = { hl = true, spinning = true, marker = true, marker_hl = true, hover = true }
 
 --- @class loomworks.Tree
 --- @field _render_fn fun(tree: loomworks.Tree)
@@ -172,6 +172,27 @@ function Tree:on_key(action, line)
             if choice then choice.callback() end
         end)
         return {}
+
+    elseif action == "hover" then
+        -- Return the raw content of the current line so the View can
+        -- show it in a wrapped popup. Strip leading indentation, fold
+        -- chars and markers — the user wants to read the *content*,
+        -- not look at structural decoration again. Widgets can opt
+        -- into richer hover content via a `hover` field on their
+        -- opts table (string or `fun(): string|string[]`).
+        local w = self.line_meta[line]
+        if w and w.hover then
+            local content = type(w.hover) == "function" and w.hover() or w.hover
+            if content then return { hover = content } end
+        end
+        local raw = self.lines[line] or ""
+        if raw == "" then return {} end
+        -- Strip leading spaces, fold char (▶/▼ + space), and marker
+        -- characters. The exact prefix shape varies (some rows have
+        -- markers, some don't, etc.) so a permissive strip.
+        local content = raw:gsub("^[%s▶▼]+", "")
+        content = content:gsub("^[○◐✓✗?⌫⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]%s*", "")
+        return { hover = content }
 
     elseif action == "create_workspace" then
         self:_create_workspace()
