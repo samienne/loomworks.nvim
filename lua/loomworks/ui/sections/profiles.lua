@@ -289,6 +289,25 @@ local function render_profile_details(tree, profile, lw)
                     on_delete = actions.delete_config(unit),
                     on_options = actions.show_options(unit),
                 }, function()
+                    -- Per-ConfigUnit tool(s): the specific tools
+                    -- this (project, configuration) is actually
+                    -- using out of the profile's array. For most
+                    -- profiles this is one tool; for multi-language
+                    -- configurations (e.g. cmake+rust) it's the
+                    -- set that covers the configuration's required
+                    -- languages.
+                    local cfg = pp._configuration
+                    if cfg and not cfg._removed and profile.tools_for then
+                        local tools = profile:tools_for(cfg)
+                        if #tools > 0 then
+                            local labels = {}
+                            for _, t in ipairs(tools) do
+                                labels[#labels + 1] = t.label or t.key or "?"
+                            end
+                            local kw = #tools == 1 and "Tool" or "Tools"
+                            tree:leaf(kw .. ": " .. table.concat(labels, ", "), "Comment")
+                        end
+                    end
                     helpers.render_cached_details(tree, config_status, status_hl, nil, nil, unit)
                 end)
             end
