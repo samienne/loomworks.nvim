@@ -754,8 +754,29 @@ function Profile:has_device_module()
     return false
 end
 
+--- Carry workspace state across a profile key change. Re-points the
+--- active profile reference (if it pointed at the old key) and
+--- emits `profile_renamed` so listeners (e.g. the status tree) can
+--- migrate fold state, cursor position, etc. tied to the old key.
+--- @param old_key string|nil
+function Profile:_after_key_rename(old_key)
+    if not old_key or old_key == self.key then return end
+    local ws = self._workspace
+    if not ws then return end
+    if ws._active_profile_key == old_key then
+        ws._active_profile_key = self.key
+    end
+    if ws._core and ws._core._deps and ws._core._deps.events then
+        ws._core._deps.events.emit("profile_renamed", {
+            old_key = old_key, new_key = self.key,
+        })
+    end
+end
+
 --- Append a tool key to the profile's tool list. No-op if already
---- present (the list is deduplicated). Re-derives the profile key.
+--- present (the list is deduplicated). Re-derives the profile key
+--- and signals the rename so UI fold state and active-profile state
+--- track the new identity.
 --- @param tool_key string
 function Profile:add_tool(tool_key)
     if not tool_key or tool_key == "" then return end
@@ -763,8 +784,10 @@ function Profile:add_tool(tool_key)
     for _, k in ipairs(self._tool_keys) do
         if k == tool_key then return end
     end
+    local old_key = self.key
     self._tool_keys[#self._tool_keys + 1] = tool_key
     self:_derive_key()
+    self:_after_key_rename(old_key)
 end
 
 --- Remove a tool key from the profile's tool list. No-op if absent.
@@ -773,9 +796,12 @@ end
 function Profile:remove_tool(tool_key)
     if not tool_key or not self._tool_keys then return end
     local kept = {}
+    local found = false
     for _, k in ipairs(self._tool_keys) do
-        if k ~= tool_key then kept[#kept + 1] = k end
+        if k ~= tool_key then kept[#kept + 1] = k else found = true end
     end
+    if not found then return end
+    local old_key = self.key
     self._tool_keys = #kept > 0 and kept or {}
     -- Re-derive SDK key from remaining tools (first tool with sdk_key wins).
     local new_sdk_key, new_sdk = nil, nil
@@ -796,6 +822,7 @@ function Profile:remove_tool(tool_key)
     self._sdk = new_sdk
     self._sdk_key = new_sdk_key
     self:_derive_key()
+    self:_after_key_rename(old_key)
 end
 
 --- Describe the profile's current toolchain selection as a list of

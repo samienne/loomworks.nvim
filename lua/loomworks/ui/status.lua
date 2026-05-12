@@ -158,8 +158,28 @@ local view = View.new({
         "active_set_changed",
         "operation_started",
         "operation_finished",
+        "profile_renamed",
     },
 })
+
+-- When a profile's key changes (e.g. user adds/removes a tool), the
+-- tree's fold state is still keyed by the OLD `profile:<key>`. Migrate
+-- it to the new key before the next refresh so the user doesn't see
+-- the profile they were editing suddenly collapse.
+do
+    local events = require("loomworks.events")
+    events.on("profile_renamed", function(payload)
+        if not payload or not payload.old_key or not payload.new_key then return end
+        if payload.old_key == payload.new_key then return end
+        local old_fk = "profile:" .. payload.old_key
+        local new_fk = "profile:" .. payload.new_key
+        local folds = tree._folds or {}
+        if folds[old_fk] ~= nil then
+            folds[new_fk] = folds[old_fk]
+            folds[old_fk] = nil
+        end
+    end)
+end
 
 -- ---------------------------------------------------------------------------
 -- Public API
