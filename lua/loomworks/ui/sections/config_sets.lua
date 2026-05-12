@@ -3,136 +3,17 @@
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
 
---- Resolve display state for a profile (status label, highlight, marker, suffix).
---- Shared by tool and no-tool entry renderers.
---- @param profile loomworks.Profile|nil
---- @param is_active boolean
---- @return string suffix, string hl, string|nil marker, boolean spinning
-local function resolve_profile_display(profile, is_active)
-    if not profile then
-        return "", "LoomworksUnconfigured", helpers.status_marker("unconfigured"), false
-    end
-
-    local profile_running = profile:is_running()
-    local already_configured = profile:is_configured()
-
-    if profile_running then
-        local status_label = select(1, profile:status())
-        local marker = helpers.status_marker(status_label)
-        local suffix = " (" .. status_label .. ")"
-        local pps = profile:projects()
-        local pct = helpers.aggregate_progress(pps)
-        if pct then suffix = suffix .. " " .. pct .. "%" end
-        suffix = suffix .. helpers.format_elapsed(profile:operation_elapsed())
-        local hl = is_active and "LoomworksActive" or "LoomworksRunning"
-        return suffix, hl, marker, true
-    elseif is_active then
-        local op = profile:operation()
-        local p_label = already_configured and select(1, profile:status()) or "unconfigured"
-        local marker = helpers.status_marker(p_label)
-        local suffix
-        if op and op.message then
-            suffix = " — " .. op.message
-        else
-            suffix = " (" .. p_label .. ")"
-        end
-        return suffix, "LoomworksActive", marker, false
-    elseif already_configured then
-        local p_label = select(1, profile:status())
-        local marker = helpers.status_marker(p_label)
-        local op = profile:operation()
-        local suffix
-        if op and op.message then
-            suffix = " — " .. op.message
-        else
-            suffix = " (" .. p_label .. ")"
-        end
-        local hl
-        if p_label == "failed_configure" or p_label == "failed_build"
-                or p_label:match("failed") then
-            hl = "LoomworksFailed"
-        else
-            hl = "LoomworksConfigured"
-        end
-        return suffix, hl, marker, false
-    else
-        return "", "LoomworksUnconfigured", helpers.status_marker("unconfigured"), false
-    end
-end
-
---- Render a single keyed-tool entry line within a config set.
---- @param tree loomworks.Tree
---- @param cs loomworks.ConfigurationSet
---- @param entry loomworks.ToolEntry
---- @param active_profile loomworks.Profile|nil
-local function render_tool_entry(tree, cs, entry, active_profile)
-    local profile = entry.profile or nil
-    local is_active = profile ~= nil and profile == active_profile
-    local suffix, hl, marker, spinning = resolve_profile_display(profile, is_active)
-    local display = entry.tool_label or entry.tool_key
-
-    tree:item(display .. suffix, {
-        marker = marker,
-        spinning = spinning,
-        hl = hl,
-        enter_label = "Activate",
-        on_enter = profile and actions.activate(profile)
-                or actions.activate_new(cs, entry),
-        on_build = profile and actions.build(profile)
-                or actions.build_new(cs, entry),
-        on_configure = profile and actions.configure(profile)
-                or actions.configure_new(cs, entry),
-        on_rebuild = profile and actions.rebuild(profile) or nil,
-        on_clean = profile and actions.clean(profile) or nil,
-        on_delete = profile and actions.delete_profile(profile) or nil,
-    })
-end
-
---- Render an actionable entry for a config set with no keyed tools.
---- Shows the set as directly activatable (no tool selection needed).
---- @param tree loomworks.Tree
---- @param cs loomworks.ConfigurationSet
---- @param profile loomworks.Profile|nil existing no-tool profile
---- @param active_profile loomworks.Profile|nil
-local function render_no_tool_entry(tree, cs, profile, active_profile)
-    local is_active = profile ~= nil and profile == active_profile
-    local suffix, hl, marker, spinning = resolve_profile_display(profile, is_active)
-
-    -- For no-tool entries, show status as the display text (no tool label prefix)
-    local display
-    if not profile then
-        display = "[Enter] activate  [b] build  [c] configure"
-    else
-        -- Strip leading space from suffix: " (built)" → "(built)"
-        display = suffix ~= "" and suffix:match("^%s*(.+)$") or "unconfigured"
-    end
-
-    tree:item(display, {
-        marker = marker,
-        spinning = spinning,
-        hl = hl,
-        enter_label = "Activate",
-        on_enter = profile and actions.activate(profile)
-                or actions.activate_new(cs, nil),
-        on_build = profile and actions.build(profile)
-                or actions.build_new(cs, nil),
-        on_configure = profile and actions.configure(profile)
-                or actions.configure_new(cs, nil),
-        on_rebuild = profile and actions.rebuild(profile) or nil,
-        on_clean = profile and actions.clean(profile) or nil,
-        on_delete = profile and actions.delete_profile(profile) or nil,
-    })
-end
-
 --- Render configuration set details when expanded.
 --- @param tree loomworks.Tree
 --- @param cs loomworks.ConfigurationSet
---- @param tool_entries loomworks.ToolEntry[]
---- @param active_profile loomworks.Profile|nil
---- @param lw table loomworks API
+--- @param tool_entries loomworks.ToolEntry[] (unused — kept in the
+---        signature so callers that still pass it don't break;
+---        profile creation now goes through the `Create profile from
+---        set` action on the set node directly)
+--- @param active_profile loomworks.Profile|nil (unused — see above)
+--- @param lw table loomworks API (unused)
 local function render_set_details(tree, cs, tool_entries, active_profile, lw)
-    local set_name = cs.name
-    tree:group("Projects:", "Comment", function()
+    tree:group("Projects:", "LoomworksSection", function()
         local sorted = {}
         for project, config in pairs(cs.mappings) do
             sorted[#sorted + 1] = { project = project, config = config }
@@ -146,27 +27,22 @@ local function render_set_details(tree, cs, tool_entries, active_profile, lw)
             --   _source_missing → stub reference that no source backs
             local is_orphan = cfg._removed or cfg._source_missing
             if is_orphan then
-                local label = entry.project.key .. " → " .. variant
-                    .. " ⚠ missing"
-                tree:leaf(label, "WarningMsg")
+                tree:leaf({
+                    { entry.project.key, "LoomworksProject" },
+                    { " → " .. variant .. " ⚠ missing", "WarningMsg" },
+                })
             else
-                tree:leaf(entry.project.key .. " → " .. variant, "Comment")
+                tree:leaf({
+                    { entry.project.key, "LoomworksProject" },
+                    { " → " .. variant, "Comment" },
+                })
             end
         end
     end)
 
-    if #tool_entries > 0 then
-        tree:group({{"Tools:  ", "LoomworksActionable"}, {"[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
-            for _, entry in ipairs(tool_entries) do
-                render_tool_entry(tree, cs, entry, active_profile)
-            end
-        end)
-    else
-        -- No keyed tools — render a single activatable entry for the set itself
-        local profile = cs:find_profile(nil)
-        render_no_tool_entry(tree, cs, profile, active_profile)
-    end
-
+    -- Trailing blank line gives unfolded config sets breathing room
+    -- before the next set or the `▸ Create configuration set` sentinel.
+    tree:blank()
 end
 
 --- Open the config set editor for an existing set.
@@ -447,7 +323,7 @@ return function(tree, ctx)
     end)
 
     tree:item("▸ Create configuration set", {
-        hl = "LoomworksActionable",
+        hl = "LoomworksAdd",
         direct = true,
         on_enter = create_config_set,
     })
