@@ -467,8 +467,22 @@ function Tree:node(text, opts, children_fn)
     local marker = opts.spinning and self:_spinner() or (opts.marker or "")
     local has_marker = marker ~= ""
     local slots = has_marker and 2 or 1
+    local text_is_chunks = type(text) == "table"
 
-    if has_marker and opts.marker_hl and opts.marker_hl ~= opts.hl then
+    if text_is_chunks then
+        -- Chunks form: row text comes in as `{{string, hl}, ...}`.
+        -- Marker (if any) and fold_char get their respective hls;
+        -- everything after is taken verbatim from the caller.
+        local chunks = {}
+        if has_marker then
+            chunks[#chunks + 1] = { marker, opts.marker_hl or opts.hl }
+        end
+        chunks[#chunks + 1] = { fold_char, opts.hl }
+        for _, c in ipairs(text) do
+            chunks[#chunks + 1] = c
+        end
+        self:_add_chunks(chunks, self:_make_widget(opts))
+    elseif has_marker and opts.marker_hl and opts.marker_hl ~= opts.hl then
         -- Split highlights: marker gets its own color, fold_char +
         -- text follow `opts.hl`. Lets severity icons stay red/yellow
         -- while the row text keeps its entity color (profile=green,

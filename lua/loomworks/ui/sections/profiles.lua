@@ -265,24 +265,35 @@ local function render_profile_details(tree, profile, lw)
                     and (" [" .. pp._project.type .. "]") or ""
                 local pp_pkey = pp._project and pp._project.key or "?"
                 local variant_display = pp:variant_name() or "?"
-                if pp:is_configuration_missing() then
-                    variant_display = variant_display .. " (missing)"
-                end
+                local missing_suffix = pp:is_configuration_missing()
+                    and " (missing)" or ""
                 -- Status moves into the header line (parallel to the
                 -- profile-level "(status)" suffix), so the expansion
                 -- doesn't have to repeat it as a child leaf.
                 local status_suffix = config_status
                     and (" (" .. config_status .. ")") or ""
-                -- Project rows: always blue. Severity is in the marker
-                -- icon's color, not the row text. Missing configurations
-                -- still surface a warn-colored marker via the status
-                -- "unconfigured"/missing mapping in helpers.
+                -- Severity is in the marker icon's color, not the row
+                -- text. Missing configurations still surface a
+                -- warn-colored marker via the status mapping.
                 local pp_marker = helpers.status_marker(config_status)
                 local pp_marker_hl = pp:is_configuration_missing()
                     and "DiagnosticWarn"
                     or helpers.status_marker_hl(config_status)
-                tree:node(pp_pkey .. type_tag .. " → " .. variant_display
-                        .. status_suffix .. progress_str, {
+                -- Row chunks mirror the config-set project row:
+                -- project key in blue, arrow + type tag + status in
+                -- Comment, variant in LoomworksVariant. Reads as the
+                -- same vocabulary across sections.
+                local row_chunks = {
+                    { pp_pkey, "LoomworksProject" },
+                    { type_tag, "Comment" },
+                    { " → ", "Comment" },
+                    { variant_display, "LoomworksVariant" },
+                }
+                if missing_suffix ~= "" then
+                    row_chunks[#row_chunks + 1] = { missing_suffix, "DiagnosticWarn" }
+                end
+                row_chunks[#row_chunks + 1] = { status_suffix .. progress_str, "Comment" }
+                tree:node(row_chunks, {
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp_pkey,
                     marker = pp_marker,
                     marker_hl = pp_marker_hl,
