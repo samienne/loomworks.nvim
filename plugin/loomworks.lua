@@ -18,32 +18,27 @@ hl(0, "LoomworksDeleting",     { link = "DiagnosticError", default = true })
 hl(0, "LoomworksUnknown",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksActionable",   { link = "Normal",          default = true })
 
--- Entity-color scheme: profiles are green, projects are blue. The
--- active profile uses a third, deliberately different hue —
--- typically `Title` (theme's section-heading color, varies by theme
--- but reliably distinct from green/blue). Falls back to `Keyword`
--- if a theme leaves Title undefined.
+-- Entity-color scheme:
+--   * Active profile  → `DiagnosticOk` green + bold (the "this is
+--     where you are" row, brightest and heaviest)
+--   * Inactive profile → `LoomworksActionable` (defaults to Normal),
+--     i.e. the same look as the `Projects:` label and other
+--     actionable text in the tree. Keeps inactive profiles
+--     readable without competing with the active green.
+--   * Project rows → `DiagnosticInfo` blue.
+-- Severity stays on the marker icon's color, never on the row text.
 local function _fg(name)
     local ok, h = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
     if not ok then return nil end
     return h.fg
 end
 
-local function _fg_chain(names, fallback)
-    for _, name in ipairs(names) do
-        local fg = _fg(name)
-        if fg then return fg end
-    end
-    return fallback
-end
+local _profile_fg = _fg("DiagnosticOk")   or "#5fd700"
+local _project_fg = _fg("DiagnosticInfo") or "#00afff"
 
-local _profile_fg        = _fg("DiagnosticOk")   or "#5fd700"
-local _profile_active_fg = _fg_chain({ "Keyword", "Title" }, "#d75fff")
-local _project_fg        = _fg("DiagnosticInfo") or "#00afff"
-
-hl(0, "LoomworksProfile",       { fg = _profile_fg,        default = true })
-hl(0, "LoomworksProfileActive", { fg = _profile_active_fg, default = true })
-hl(0, "LoomworksProject",       { fg = _project_fg,        default = true })
+hl(0, "LoomworksProfile",         { fg = _profile_fg, bold = true, default = true })
+hl(0, "LoomworksProfileInactive", { link = "LoomworksActionable",  default = true })
+hl(0, "LoomworksProject",         { fg = _project_fg,              default = true })
 
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)
   local path = cmd.args ~= "" and cmd.args or nil

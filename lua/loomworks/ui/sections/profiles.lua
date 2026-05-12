@@ -388,22 +388,19 @@ return function(tree, ctx)
             end
         end
 
-        -- Profile rows: the active profile carries the louder green
-        -- (`LoomworksProfile` = theme's `DiagnosticOk`). Inactive
-        -- profiles use the secondary hue
-        -- (`LoomworksProfileActive` — typically the theme's
-        -- `Keyword`/`Title` color) so they read as "still profiles,
-        -- not the focus" without dimming.
-        --
-        -- (The "Active" group name is now a misnomer — kept for
-        -- diff stability; we can rename after the palette settles.)
+        -- Profile rows: active profile gets bold green
+        -- (`LoomworksProfile`). Inactive profiles use
+        -- `LoomworksProfileInactive` — linked to `LoomworksActionable`
+        -- (Normal text), matching the `Projects:` label so inactive
+        -- profile rows read as plain interactive items rather than
+        -- competing with the active green.
         local hl
         if group == "shared" then
             hl = "Comment"
         elseif is_active then
             hl = "LoomworksProfile"
         else
-            hl = "LoomworksProfileActive"
+            hl = "LoomworksProfileInactive"
         end
 
         t:node(display, {
