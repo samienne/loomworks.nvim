@@ -54,6 +54,7 @@ hl(0, "LoomworksProject",         { fg = _project_fg,              default = tru
 hl(0, "LoomworksSection", { link = "Statement", default = true })
 hl(0, "LoomworksAdd",     { link = "Constant",  default = true })
 hl(0, "LoomworksTarget",  { link = "Comment",   default = true })
+hl(0, "LoomworksVariant", { link = "Type",      default = true })
 
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)
   local path = cmd.args ~= "" and cmd.args or nil

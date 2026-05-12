@@ -34,7 +34,8 @@ local function render_set_details(tree, cs, tool_entries, active_profile, lw)
             else
                 tree:leaf({
                     { entry.project.key, "LoomworksProject" },
-                    { " → " .. variant, "Comment" },
+                    { " → ", "Comment" },
+                    { variant, "LoomworksVariant" },
                 })
             end
         end
