@@ -31,7 +31,7 @@ local ACTION_ORDER = {
 }
 
 --- Fields consumed by the tree builder for rendering only.
-local RENDER_KEYS = { hl = true, spinning = true, marker = true }
+local RENDER_KEYS = { hl = true, spinning = true, marker = true, marker_hl = true }
 
 --- @class loomworks.Tree
 --- @field _render_fn fun(tree: loomworks.Tree)
@@ -464,17 +464,23 @@ function Tree:node(text, opts, children_fn)
     local folded = not self._folds[opts.fold_key]
     local fold_char = folded and "▶ " or "▼ "
 
-    local prefix
-    local slots
-    if opts.marker then
-        prefix = (opts.spinning and self:_spinner() or opts.marker) .. fold_char
-        slots = 2
-    else
-        prefix = opts.spinning and self:_spinner() or fold_char
-        slots = 1
-    end
+    local marker = opts.spinning and self:_spinner() or (opts.marker or "")
+    local has_marker = marker ~= ""
+    local slots = has_marker and 2 or 1
 
-    self:_add(self:_pad() .. prefix .. text, opts.hl, self:_make_widget(opts))
+    if has_marker and opts.marker_hl and opts.marker_hl ~= opts.hl then
+        -- Split highlights: marker gets its own color, fold_char +
+        -- text follow `opts.hl`. Lets severity icons stay red/yellow
+        -- while the row text keeps its entity color (profile=green,
+        -- project=blue).
+        self:_add_chunks({
+            { marker, opts.marker_hl },
+            { fold_char .. text, opts.hl },
+        }, self:_make_widget(opts))
+    else
+        local prefix = has_marker and (marker .. fold_char) or fold_char
+        self:_add(self:_pad() .. prefix .. text, opts.hl, self:_make_widget(opts))
+    end
 
     if not folded then
         local indent = slots + 1
@@ -489,8 +495,15 @@ end
 --- @param opts table
 function Tree:item(text, opts)
     if opts.spinning then self._needs_frame = true end
-    local prefix = opts.spinning and self:_spinner() or (opts.marker or "")
-    self:_add(self:_pad() .. prefix .. text, opts.hl, self:_make_widget(opts))
+    local marker = opts.spinning and self:_spinner() or (opts.marker or "")
+    if marker ~= "" and opts.marker_hl and opts.marker_hl ~= opts.hl then
+        self:_add_chunks({
+            { marker, opts.marker_hl },
+            { text, opts.hl },
+        }, self:_make_widget(opts))
+    else
+        self:_add(self:_pad() .. marker .. text, opts.hl, self:_make_widget(opts))
+    end
 end
 
 --- Add a labeled sub-section that increases indentation for its children.

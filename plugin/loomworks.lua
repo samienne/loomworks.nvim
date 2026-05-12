@@ -6,6 +6,8 @@ vim.g.loaded_loomworks = true
 
 -- Status highlight groups (default links, user can override)
 local hl = vim.api.nvim_set_hl
+
+-- Legacy status-as-color groups — still used by older sections.
 hl(0, "LoomworksActive",       { link = "DiagnosticOk",    default = true })
 hl(0, "LoomworksBuilt",        { link = "DiagnosticOk",    default = true })
 hl(0, "LoomworksConfigured",   { link = "DiagnosticInfo",  default = true })
@@ -13,8 +15,25 @@ hl(0, "LoomworksUnconfigured", { link = "Comment",         default = true })
 hl(0, "LoomworksFailed",       { link = "DiagnosticError", default = true })
 hl(0, "LoomworksRunning",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksDeleting",     { link = "DiagnosticError", default = true })
-hl(0, "LoomworksUnknown",     { link = "DiagnosticWarn",  default = true })
-hl(0, "LoomworksActionable",  { link = "Normal",         default = true })
+hl(0, "LoomworksUnknown",      { link = "DiagnosticWarn",  default = true })
+hl(0, "LoomworksActionable",   { link = "Normal",          default = true })
+
+-- New entity-color scheme: profiles are green, projects are blue.
+-- Status is conveyed by the leading marker icon's color, never by the
+-- row text. Active profile gets bold. We resolve fg from the system
+-- diagnostic groups so it tracks the user's colorscheme.
+local function _fg(name)
+    local ok, h = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
+    if not ok then return nil end
+    return h.fg
+end
+
+local _profile_fg = _fg("DiagnosticOk")   or "#5fd700"
+local _project_fg = _fg("DiagnosticInfo") or "#00afff"
+
+hl(0, "LoomworksProfile",       { fg = _profile_fg,              default = true })
+hl(0, "LoomworksProfileActive", { fg = _profile_fg, bold = true, default = true })
+hl(0, "LoomworksProject",       { fg = _project_fg,              default = true })
 
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)
   local path = cmd.args ~= "" and cmd.args or nil

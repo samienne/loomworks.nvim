@@ -257,7 +257,7 @@ local function render_profile_details(tree, profile, lw)
     if #pps > 0 then
         tree:group({{"Projects:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [t] task output  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
             for _, pp in ipairs(pps) do
-                local config_status, status_hl, progress_str, is_spinning =
+                local config_status, _status_hl, progress_str, is_spinning =
                         helpers.resolve_config_status(pp, nil)
 
                 local unit = pp._config_unit
@@ -273,11 +273,21 @@ local function render_profile_details(tree, profile, lw)
                 -- doesn't have to repeat it as a child leaf.
                 local status_suffix = config_status
                     and (" (" .. config_status .. ")") or ""
+                -- Project rows: always blue. Severity is in the marker
+                -- icon's color, not the row text. Missing configurations
+                -- still surface a warn-colored marker via the status
+                -- "unconfigured"/missing mapping in helpers.
+                local pp_marker = helpers.status_marker(config_status)
+                local pp_marker_hl = pp:is_configuration_missing()
+                    and "DiagnosticWarn"
+                    or helpers.status_marker_hl(config_status)
                 tree:node(pp_pkey .. type_tag .. " → " .. variant_display
                         .. status_suffix .. progress_str, {
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp_pkey,
+                    marker = pp_marker,
+                    marker_hl = pp_marker_hl,
                     spinning = is_spinning,
-                    hl = pp:is_configuration_missing() and "DiagnosticWarn" or status_hl,
+                    hl = "LoomworksProject",
                     enter_label = "Open task output",
                     on_enter = actions.open_task(unit),
                     on_task = actions.open_task(unit),
@@ -350,9 +360,9 @@ return function(tree, ctx)
         local profile_running = profile:is_running()
         local has_operation = profile:has_active_operation()
 
-        local status_label, status_hl = profile:status()
+        local status_label, _status_hl = profile:status()
         local marker = helpers.status_marker(status_label)
-        local hl
+        local marker_hl = helpers.status_marker_hl(status_label)
 
         local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
         local display = prof_modified .. profile.key
@@ -365,39 +375,37 @@ return function(tree, ctx)
 
         display = display .. " (" .. status_label .. ")"
         if has_operation then
-            hl = is_active and "LoomworksActive" or "LoomworksRunning"
             local pps = profile:projects()
             local pct = helpers.aggregate_progress(pps)
             if pct then
                 display = display .. " " .. pct .. "%"
             end
             display = display .. helpers.format_elapsed(profile:operation_elapsed())
-        elseif is_active then
-            hl = "LoomworksActive"
-            local op = profile:operation()
-            if op and op.message then
-                display = display .. " — " .. op.message
-            end
         else
-            if status_label == "failed_configure" or status_label == "failed_build"
-                    or status_label:match("failed") then
-                hl = "LoomworksFailed"
-            elseif status_label == "unconfigured" then
-                hl = "LoomworksUnconfigured"
-            else
-                hl = "LoomworksConfigured"
-            end
             local op = profile:operation()
             if op and op.message then
                 display = display .. " — " .. op.message
             end
         end
 
+        -- Profile rows: always green; bold when active. Shared-only
+        -- profiles (from loomworks.json with no local override) stay
+        -- in the dimmed Comment palette to match the publish UX.
+        local hl
+        if group == "shared" then
+            hl = "Comment"
+        elseif is_active then
+            hl = "LoomworksProfileActive"
+        else
+            hl = "LoomworksProfile"
+        end
+
         t:node(display, {
             fold_key = "profile:" .. profile.key,
             marker = marker,
+            marker_hl = marker_hl,
             spinning = profile_running or has_operation,
-            hl = group == "shared" and "Comment" or hl,
+            hl = hl,
             enter_label = "Activate",
             on_enter = actions.activate(profile),
             publish_label = helpers.intent_action_label(profile),

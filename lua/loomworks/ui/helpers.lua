@@ -80,12 +80,37 @@ M.STATUS_HL = {
 
 M.STATUS_ICON = {
     unconfigured     = "○",
-    configured       = "◆",
-    built            = "●",
-    failed_configure = "✘",
-    failed_build     = "✘",
+    configured       = "◐",
+    built            = "✓",
+    failed_configure = "✗",
+    failed_build     = "✗",
     unknown          = "?",
 }
+
+--- Marker color (separate from row text color). Mapped to the
+--- standard Diagnostic groups so the marker reads as severity
+--- independent of the row's entity color (profiles green,
+--- projects blue, etc.).
+M.STATUS_MARKER_HL = {
+    unconfigured     = "Comment",
+    configured       = "Comment",
+    built            = "DiagnosticOk",
+    failed_configure = "DiagnosticError",
+    failed_build     = "DiagnosticError",
+    deleting         = "DiagnosticError",
+    cleaning         = "DiagnosticError",
+    configuring      = "DiagnosticWarn",
+    building         = "DiagnosticWarn",
+    unknown          = "DiagnosticWarn",
+}
+
+--- Get the marker highlight group for a status. Falls back to
+--- `Comment` (calm) when the status is unknown to the table.
+--- @param status string
+--- @return string
+function M.status_marker_hl(status)
+    return M.STATUS_MARKER_HL[status] or "Comment"
+end
 
 --- Format a status label with its icon prefix.
 --- Running/deleting states use the spinner so no icon is added.
