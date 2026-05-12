@@ -37,106 +37,125 @@ local function render_profile_details(tree, profile, lw)
     local entries = profile:toolchain_entries()
 
     if #needing > 0 or #entries > 0 then
-        tree:leaf("Toolchain:", "LoomworksActionable")
-
+        -- Toolchain fold: collapsed shows a single summary row;
+        -- expanded reveals per-tool rows with add/remove.
+        -- Most profiles use a single tool that's already part of
+        -- the profile name, so the collapsed shape is the common
+        -- case — only widening when the user actually wants to
+        -- edit the list.
+        local summary_parts = {}
+        local any_unresolved = false
         for _, entry in ipairs(entries) do
-            local lang_suffix = ""
-            if #entry.languages > 0 then
-                lang_suffix = "  [" .. table.concat(entry.languages, ", ") .. "]"
-            end
-            local hl = entry.resolved and "Comment" or "DiagnosticWarn"
-            local label = entry.label .. lang_suffix
+            local part = entry.label
             if not entry.resolved then
-                label = label .. " (unresolved)"
+                part = part .. " (unresolved)"
+                any_unresolved = true
+            end
+            summary_parts[#summary_parts + 1] = part
+        end
+        local summary
+        if #summary_parts == 0 then
+            summary = "(none)"
+        else
+            summary = table.concat(summary_parts, " + ")
+        end
+        local header_hl = any_unresolved and "DiagnosticWarn" or "Comment"
+
+        tree:node("Toolchain: " .. summary, {
+            fold_key = "toolchain:" .. profile.key,
+            hl = header_hl,
+        }, function()
+            for _, entry in ipairs(entries) do
+                local lang_suffix = ""
+                if #entry.languages > 0 then
+                    lang_suffix = "  [" .. table.concat(entry.languages, ", ") .. "]"
+                end
+                local hl = entry.resolved and "Comment" or "DiagnosticWarn"
+                local label = entry.label .. lang_suffix
+                if not entry.resolved then
+                    label = label .. " (unresolved)"
+                end
+
+                tree:item(label, {
+                    hl = hl,
+                    direct = true,
+                    enter_label = "Tool actions",
+                    on_enter = function()
+                        local key = entry.key
+                        local actions = {
+                            { label = "Delete tool",
+                              do_it = function()
+                                  profile:remove_tool(key)
+                                  ws:_save_user()
+                                  ws:remerge()
+                              end },
+                            { label = "Cancel", do_it = function() end },
+                        }
+                        vim.ui.select(actions, {
+                            prompt = "Tool '" .. entry.label .. "':",
+                            format_item = function(a) return a.label end,
+                        }, function(choice)
+                            if choice and choice.do_it then choice.do_it() end
+                        end)
+                    end,
+                    on_delete = function()
+                        profile:remove_tool(entry.key)
+                        ws:_save_user()
+                        ws:remerge()
+                    end,
+                })
             end
 
-            tree:item("  " .. label, {
-                hl = hl,
+            tree:item("+ Add tool", {
+                hl = "LoomworksActionable",
                 direct = true,
-                enter_label = "Tool actions",
-                -- Enter opens a confirmation picker rather than
-                -- deleting outright — accidentally hitting Enter on
-                -- the wrong row was too easy to do irreversibly.
-                -- The `D` shortcut is still wired below for users
-                -- who explicitly want the direct path.
                 on_enter = function()
-                    local key = entry.key
-                    local actions = {
-                        { label = "Delete tool",
-                          do_it = function()
-                              profile:remove_tool(key)
-                              ws:_save_user()
-                              ws:remerge()
-                          end },
-                        { label = "Cancel", do_it = function() end },
-                    }
-                    vim.ui.select(actions, {
-                        prompt = "Tool '" .. entry.label .. "':",
-                        format_item = function(a) return a.label end,
-                    }, function(choice)
-                        if choice and choice.do_it then choice.do_it() end
-                    end)
-                end,
-                on_delete = function()
-                    profile:remove_tool(entry.key)
-                    ws:_save_user()
-                    ws:remerge()
-                end,
-            })
-        end
-
-        -- "Add tool" sentinel: opens the picker. The picker offers
-        -- every tool currently known to the workspace registries
-        -- across all modules — host-detected + SDK-derived kits.
-        tree:item("  + Add tool", {
-            hl = "LoomworksActionable",
-            direct = true,
-            on_enter = function()
-                local items = {}
-                local seen_keys = {}
-                for _, mod in pairs(ws._modules or {}) do
-                    for _, tool in pairs(mod._tools or {}) do
-                        if tool.key and not tool._removed
-                                and not seen_keys[tool.key]
-                                and not contains(profile._tool_keys or {}, tool.key) then
-                            seen_keys[tool.key] = true
-                            items[#items + 1] = {
-                                key = tool.key,
-                                label = tool.label or tool.key,
-                                languages = tool.languages or {},
-                                module_id = mod.id,
-                            }
+                    local items = {}
+                    local seen_keys = {}
+                    for _, mod in pairs(ws._modules or {}) do
+                        for _, tool in pairs(mod._tools or {}) do
+                            if tool.key and not tool._removed
+                                    and not seen_keys[tool.key]
+                                    and not contains(profile._tool_keys or {}, tool.key) then
+                                seen_keys[tool.key] = true
+                                items[#items + 1] = {
+                                    key = tool.key,
+                                    label = tool.label or tool.key,
+                                    languages = tool.languages or {},
+                                    module_id = mod.id,
+                                }
+                            end
                         end
                     end
-                end
 
-                if #items == 0 then
-                    vim.notify(
-                        "loomworks: no tools available to add. Detect "
-                        .. "host tools or add an SDK.",
-                        vim.log.levels.INFO)
-                    return
-                end
+                    if #items == 0 then
+                        vim.notify(
+                            "loomworks: no tools available to add. Detect "
+                            .. "host tools or add an SDK.",
+                            vim.log.levels.INFO)
+                        return
+                    end
 
-                table.sort(items, function(a, b) return a.label < b.label end)
+                    table.sort(items, function(a, b) return a.label < b.label end)
 
-                vim.ui.select(items, {
-                    prompt = "Add tool:",
-                    format_item = function(item)
-                        local langs = ""
-                        if #item.languages > 0 then
-                            langs = "  [" .. table.concat(item.languages, ", ") .. "]"
-                        end
-                        return item.label .. langs
-                    end,
-                }, function(choice)
-                    if not choice then return end
-                    profile:add_tool(choice.key)
-                    ws:_save_user()
-                    ws:remerge()
-                end)
-            end,
-        })
+                    vim.ui.select(items, {
+                        prompt = "Add tool:",
+                        format_item = function(item)
+                            local langs = ""
+                            if #item.languages > 0 then
+                                langs = "  [" .. table.concat(item.languages, ", ") .. "]"
+                            end
+                            return item.label .. langs
+                        end,
+                    }, function(choice)
+                        if not choice then return end
+                        profile:add_tool(choice.key)
+                        ws:_save_user()
+                        ws:remerge()
+                    end)
+                end,
+            })
+        end)
     end
 
     -- Device selection: per-profile, gated on the profile actually
