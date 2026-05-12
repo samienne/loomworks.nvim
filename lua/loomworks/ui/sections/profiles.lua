@@ -323,6 +323,10 @@ local function render_profile_details(tree, profile, lw)
             end
         end)
     end
+
+    -- Trailing blank line gives unfolded profiles visual breathing
+    -- room before the next profile (or sentinel) begins.
+    tree:blank()
 end
 
 --- Render the profiles section.
