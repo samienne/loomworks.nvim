@@ -1737,6 +1737,53 @@ function Workspace:diagnostics()
                 if not cfg._removed and cfg.diagnostic then
                     add(cfg:diagnostic())
                 end
+                -- Soft diagnostic: configuration's declared
+                -- languages don't match what the last configure
+                -- actually enabled. Non-blocking — declared list is
+                -- the source of truth; the detected list is a
+                -- helpful hint when the user has missed adding (or
+                -- removing) a language.
+                if not cfg._removed and cfg._detected_languages then
+                    local effective = cfg:effective_languages()
+                    local effective_set = {}
+                    for _, l in ipairs(effective) do effective_set[l] = true end
+                    local detected_set = {}
+                    for _, l in ipairs(cfg._detected_languages) do detected_set[l] = true end
+
+                    local missing_from_config = {}
+                    for _, l in ipairs(cfg._detected_languages) do
+                        if not effective_set[l] then
+                            missing_from_config[#missing_from_config + 1] = l
+                        end
+                    end
+                    local missing_from_build = {}
+                    for _, l in ipairs(effective) do
+                        if not detected_set[l] then
+                            missing_from_build[#missing_from_build + 1] = l
+                        end
+                    end
+
+                    if #missing_from_config > 0 or #missing_from_build > 0 then
+                        local parts = {}
+                        if #missing_from_config > 0 then
+                            parts[#parts + 1] = "build also uses "
+                                .. table.concat(missing_from_config, ", ")
+                        end
+                        if #missing_from_build > 0 then
+                            parts[#parts + 1] = "declared but unused: "
+                                .. table.concat(missing_from_build, ", ")
+                        end
+                        add({
+                            severity = "warn",
+                            source = "Project/" .. project.key .. "/" .. cfg.name,
+                            message = project.key .. "/" .. cfg.name
+                                .. " language declaration differs from build: "
+                                .. table.concat(parts, "; "),
+                            target_fold_key = "config:" .. project.key
+                                .. ":" .. cfg.name,
+                        })
+                    end
+                end
             end
         end
     end
@@ -2120,18 +2167,28 @@ function Workspace:record_task_result(result)
     self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 
-    -- Parse targets after successful configure (runtime only, not cached)
+    -- Post-configure detection (runtime only, not cached in v1).
+    -- Parse targets + detect languages from the file-api reply so
+    -- the status page can flag a configuration whose declared
+    -- `languages` doesn't match what was actually enabled.
     if config_unit and action == "configure" and success and result.build_dir then
         if proj_type ~= "unknown" then
             local mod = self._core._deps.modules.get(proj_type)
+            local project = config_unit._project
+            local ctx = {
+                build_dir = result.build_dir,
+                project_path = project and (self.root .. "/" .. (project.path or project.key)) or nil,
+                config_name = result.variant,
+            }
             if mod and mod.parse_targets then
-                local project = config_unit._project
-                local ctx = {
-                    build_dir = result.build_dir,
-                    project_path = project and (self.root .. "/" .. (project.path or project.key)) or nil,
-                    config_name = result.variant,
-                }
                 config_unit:set_targets(mod.parse_targets(ctx))
+            end
+            if mod and mod.detect_languages then
+                local detected = mod.detect_languages(ctx)
+                local cfg = config_unit._configuration
+                if cfg and not cfg._removed then
+                    cfg._detected_languages = detected
+                end
             end
         end
     end

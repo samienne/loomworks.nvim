@@ -55,6 +55,11 @@ end
 ---        Determines which tools in `profile.tools` are "in scope"
 ---        for ConfigUnits derived from this configuration.
 --- @field role string|nil special role (e.g., "compile_commands")
+--- @field _detected_languages string[]|nil languages actually enabled
+---        by the last successful configure (filled by
+---        `module.detect_languages` post-configure). Runtime-only
+---        in v1 — not persisted to cache yet. Drives the soft
+---        "language declared vs enabled" diagnostic.
 --- @field _removed boolean
 --- @field _source_missing boolean true when this Configuration exists as
 ---        a skeleton — created because a config_set mapping,

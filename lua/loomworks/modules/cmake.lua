@@ -1269,6 +1269,81 @@ function M.parse_targets_async(ctx, callback)
     end)
 end
 
+--- Map cmake's language tokens (the `language` field on per-target
+--- compileGroups in the file-api reply) to the canonical strings we
+--- match against `Configuration.languages` and `Tool.languages`.
+--- Languages cmake exposes that don't have an entry here pass
+--- through lowercased verbatim, so a new toolchain that introduces
+--- a novel language gets surfaced rather than silently dropped.
+local CMAKE_LANG_CANONICAL = {
+    C      = "c",
+    CXX    = "c++",
+    Rust   = "rust",
+    Fortran = "fortran",
+    ASM    = "asm",
+    ["ASM-ATT"]   = "asm",
+    ["ASM-MASM"]  = "asm",
+    ["ASM_NASM"]  = "asm",
+    OBJC   = "objective-c",
+    OBJCXX = "objective-c++",
+    CUDA   = "cuda",
+    Swift  = "swift",
+    HIP    = "hip",
+    ISPC   = "ispc",
+    CSharp = "c#",
+    Java   = "java",
+}
+
+--- Detect the set of languages a cmake configuration actually
+--- enabled. Walks every target's compileGroups in the file-api
+--- codemodel reply, unions the `language` fields, and normalizes
+--- to canonical strings. The configuration must have been
+--- successfully configured at least once (file-api reply must
+--- exist on disk).
+--- @param ctx { build_dir: string, config_name?: string }
+--- @return string[]|nil canonical language list, or nil when no reply exists
+function M.detect_languages(ctx)
+    local build_dir = ctx.build_dir
+    if not build_dir then return nil end
+    local codemodel = find_file_api_reply(build_dir, "codemodel", 2)
+    if not codemodel or not codemodel.configurations then return nil end
+
+    local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+    local config_name = ctx.config_name
+
+    -- Match the configuration (multi-config generators) or take the
+    -- first (single-config generators).
+    local cfg
+    if config_name then
+        for _, c in ipairs(codemodel.configurations) do
+            if c.name == config_name then cfg = c break end
+        end
+    end
+    cfg = cfg or codemodel.configurations[1]
+    if not cfg or not cfg.targets then return nil end
+
+    local seen, list = {}, {}
+    for _, tgt_ref in ipairs(cfg.targets) do
+        if tgt_ref.jsonFile then
+            local detail = read_json_file(reply_dir .. "/" .. tgt_ref.jsonFile)
+            if detail and detail.compileGroups then
+                for _, cg in ipairs(detail.compileGroups) do
+                    local lang = cg.language
+                    if type(lang) == "string" and lang ~= "" then
+                        local canon = CMAKE_LANG_CANONICAL[lang] or lang:lower()
+                        if not seen[canon] then
+                            seen[canon] = true
+                            list[#list + 1] = canon
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(list)
+    return #list > 0 and list or nil
+end
+
 --- Collect flat options from file-api cache-v2 reply.
 --- @param build_dir string
 --- @return loomworks.Option[]|nil
