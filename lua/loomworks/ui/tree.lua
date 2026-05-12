@@ -505,12 +505,26 @@ function Tree:node(text, opts, children_fn)
 end
 
 --- Add a non-foldable item with optional marker prefix.
---- @param text string
+--- Accepts either a string for `text` or a chunks list
+--- `{{string, hl}, ...}` for multi-color rows.
+--- @param text string|{[1]: string, [2]: string}[]
 --- @param opts table
 function Tree:item(text, opts)
     if opts.spinning then self._needs_frame = true end
     local marker = opts.spinning and self:_spinner() or (opts.marker or "")
-    if marker ~= "" and opts.marker_hl and opts.marker_hl ~= opts.hl then
+    local has_marker = marker ~= ""
+    local text_is_chunks = type(text) == "table"
+
+    if text_is_chunks then
+        local chunks = {}
+        if has_marker then
+            chunks[#chunks + 1] = { marker, opts.marker_hl or opts.hl }
+        end
+        for _, c in ipairs(text) do
+            chunks[#chunks + 1] = c
+        end
+        self:_add_chunks(chunks, self:_make_widget(opts))
+    elseif has_marker and opts.marker_hl and opts.marker_hl ~= opts.hl then
         self:_add_chunks({
             { marker, opts.marker_hl },
             { text, opts.hl },

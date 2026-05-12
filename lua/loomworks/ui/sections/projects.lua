@@ -16,14 +16,21 @@ local function render_env_dict_field(tree, project, field)
     local current = project.type_config and project.type_config[field.name] or {}
     if not next(current) and project.orphaned then return end
 
-    tree:group(field.label .. ":", "Comment", function()
+    tree:group(field.label .. ":", "LoomworksSection", function()
         local keys = {}
         for k in pairs(current) do keys[#keys + 1] = k end
         table.sort(keys)
         for _, k in ipairs(keys) do
             local ek = k  -- capture
-            tree:item(k .. "=" .. current[k], {
-                hl = "LoomworksActionable",
+            -- Chunk the row so the key reads as the named entity
+            -- and the value as supplemental detail. Mirrors the
+            -- pattern used for configurations and variables.
+            tree:item({
+                { k,             "LoomworksVariant" },
+                { "=",           "Comment" },
+                { current[k],    "Comment" },
+            }, {
+                hl = "LoomworksVariant",
                 enter_label = "Edit variable",
                 direct = true,
                 on_enter = function()
@@ -47,7 +54,7 @@ local function render_env_dict_field(tree, project, field)
         end
         if not project.orphaned then
             tree:item("▸ Add variable", {
-                hl = "LoomworksActionable",
+                hl = "LoomworksAdd",
                 direct = true,
                 on_enter = function()
                     vim.ui.input({ prompt = "Variable name: " }, function(name)
@@ -912,8 +919,11 @@ return function(tree, ctx)
                         if lc.config.args and #lc.config.args > 0 then
                             desc = desc .. " " .. table.concat(lc.config.args, " ")
                         end
-                        tree:item(lname .. "  " .. desc, {
-                            hl = "LoomworksActionable",
+                        tree:item({
+                            { lname,           "LoomworksVariant" },
+                            { "  " .. desc,   "Comment" },
+                        }, {
+                            hl = "LoomworksVariant",
                             enter_label = "Edit launch config",
                             on_enter = function() edit_launch_config(project, lname) end,
                             on_delete = function() delete_launch_config(project, lname) end,
@@ -1069,9 +1079,12 @@ return function(tree, ctx)
                 tree:group("Variables:", "LoomworksSection", function()
                     for _, v in ipairs(vars) do
                         local vname = v.name  -- capture
-                        local display = v.name .. "  (" .. v.type .. ") = " .. v.default
-                        tree:item(display, {
-                            hl = "LoomworksActionable",
+                        local suffix = "  (" .. v.type .. ") = " .. v.default
+                        tree:item({
+                            { v.name, "LoomworksVariant" },
+                            { suffix, "Comment" },
+                        }, {
+                            hl = "LoomworksVariant",
                             enter_label = "Edit variable",
                             on_enter = function() edit_variable(project, vname) end,
                             on_delete = function() delete_variable(project, vname) end,
