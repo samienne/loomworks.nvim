@@ -84,6 +84,59 @@ function SDK:sdk_path()
     return self._path
 end
 
+--- Enumerate the SDK's kits as flat `{ platform, arch }` pairs. A
+--- kit is a property of the SDK (what targets it can build for),
+--- independent of any module — modules then turn a chosen kit into
+--- module-specific tool_data via their own `kits_from_sdk`.
+---
+--- Resolution order:
+---   1. Provider's `kits(sdk)` if present — explicit, opaque-free.
+---   2. Fallback: derive from `query("cmake").platforms` for
+---      providers that haven't migrated. Lets the abstraction land
+---      without churning every provider at once.
+--- @return { sdk: loomworks.SDK, platform: string, arch: string }[]
+function SDK:kits()
+    if not self._resolved then return {} end
+
+    if self._provider.kits then
+        local ok, result = pcall(self._provider.kits, self)
+        if ok and type(result) == "table" then
+            local out = {}
+            for _, k in ipairs(result) do
+                if k.platform and k.arch then
+                    out[#out + 1] = { sdk = self, platform = k.platform, arch = k.arch }
+                end
+            end
+            return out
+        end
+        return {}
+    end
+
+    local caps = self:query("cmake")
+    if not caps or not caps.platforms then return {} end
+    local out = {}
+    for _, platform in ipairs(caps.platforms) do
+        for _, arch in ipairs(platform.archs or {}) do
+            out[#out + 1] = { sdk = self, platform = platform.name, arch = arch }
+        end
+    end
+    return out
+end
+
+--- Human-readable label for a kit pair (platform × arch). Includes
+--- the SDK version so different SDK installs are visually distinct
+--- in a flat picker.
+--- @param platform string
+--- @param arch string
+--- @return string
+function SDK:kit_label(platform, arch)
+    local v = self._version
+    if v and v ~= "" then
+        return platform .. " " .. v .. " " .. arch
+    end
+    return platform .. " " .. arch
+end
+
 --- Serialize for user.json persistence.
 --- @return table
 function SDK:serialize()

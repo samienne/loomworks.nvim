@@ -6,6 +6,8 @@ vim.g.loaded_loomworks = true
 
 -- Status highlight groups (default links, user can override)
 local hl = vim.api.nvim_set_hl
+
+-- Legacy status-as-color groups — still used by older sections.
 hl(0, "LoomworksActive",       { link = "DiagnosticOk",    default = true })
 hl(0, "LoomworksBuilt",        { link = "DiagnosticOk",    default = true })
 hl(0, "LoomworksConfigured",   { link = "DiagnosticInfo",  default = true })
@@ -13,8 +15,46 @@ hl(0, "LoomworksUnconfigured", { link = "Comment",         default = true })
 hl(0, "LoomworksFailed",       { link = "DiagnosticError", default = true })
 hl(0, "LoomworksRunning",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksDeleting",     { link = "DiagnosticError", default = true })
-hl(0, "LoomworksUnknown",     { link = "DiagnosticWarn",  default = true })
-hl(0, "LoomworksActionable",  { link = "Normal",         default = true })
+hl(0, "LoomworksUnknown",      { link = "DiagnosticWarn",  default = true })
+hl(0, "LoomworksActionable",   { link = "Normal",          default = true })
+
+-- Entity-color scheme:
+--   * Active profile  → `DiagnosticOk` green + bold (the "this is
+--     where you are" row, brightest and heaviest)
+--   * Inactive profile → `LoomworksActionable` (defaults to Normal),
+--     i.e. the same look as the `Projects:` label and other
+--     actionable text in the tree. Keeps inactive profiles
+--     readable without competing with the active green.
+--   * Project rows → `DiagnosticInfo` blue.
+-- Severity stays on the marker icon's color, never on the row text.
+local function _fg(name)
+    local ok, h = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
+    if not ok then return nil end
+    return h.fg
+end
+
+local _profile_fg = _fg("DiagnosticOk")   or "#5fd700"
+local _project_fg = _fg("DiagnosticInfo") or "#00afff"
+
+hl(0, "LoomworksProfile",         { fg = _profile_fg, bold = true, default = true })
+hl(0, "LoomworksProfileInactive", { link = "LoomworksActionable",  default = true })
+hl(0, "LoomworksProject",         { fg = _project_fg,              default = true })
+
+-- Sub-section labels and sentinels inside an unfolded profile:
+-- distinct theme-aware accents so they don't all read as plain
+-- text (which is what `LoomworksActionable` defaults to and what
+-- inactive profile rows now use).
+--   * `LoomworksSection`  — group labels like "Projects:"
+--   * `LoomworksAdd`      — actionable sentinels ("+ Add tool",
+--                          "▸ Create new profile")
+--   * `LoomworksTarget`   — the "Target: <name>" row when a target
+--                          is selected
+-- Linked to common syntax groups so they track the colorscheme;
+-- the user can override any single one without touching the rest.
+hl(0, "LoomworksSection", { link = "Statement", default = true })
+hl(0, "LoomworksAdd",     { link = "Constant",  default = true })
+hl(0, "LoomworksTarget",  { link = "Comment",   default = true })
+hl(0, "LoomworksVariant", { link = "Type",      default = true })
 
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)
   local path = cmd.args ~= "" and cmd.args or nil

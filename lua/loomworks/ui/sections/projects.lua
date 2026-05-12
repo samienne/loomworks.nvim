@@ -16,14 +16,21 @@ local function render_env_dict_field(tree, project, field)
     local current = project.type_config and project.type_config[field.name] or {}
     if not next(current) and project.orphaned then return end
 
-    tree:group(field.label .. ":", "Comment", function()
+    tree:group(field.label .. ":", "LoomworksSection", function()
         local keys = {}
         for k in pairs(current) do keys[#keys + 1] = k end
         table.sort(keys)
         for _, k in ipairs(keys) do
             local ek = k  -- capture
-            tree:item(k .. "=" .. current[k], {
-                hl = "LoomworksActionable",
+            -- Chunk the row so the key reads as the named entity
+            -- and the value as supplemental detail. Mirrors the
+            -- pattern used for configurations and variables.
+            tree:item({
+                { k,             "LoomworksVariant" },
+                { "=",           "Comment" },
+                { current[k],    "Comment" },
+            }, {
+                hl = "LoomworksVariant",
                 enter_label = "Edit variable",
                 direct = true,
                 on_enter = function()
@@ -47,7 +54,7 @@ local function render_env_dict_field(tree, project, field)
         end
         if not project.orphaned then
             tree:item("▸ Add variable", {
-                hl = "LoomworksActionable",
+                hl = "LoomworksAdd",
                 direct = true,
                 on_enter = function()
                     vim.ui.input({ prompt = "Variable name: " }, function(name)
@@ -378,6 +385,8 @@ local function edit_project_configuration(project, config_name)
         variables = ctx.variables,
         toolchain = ctx.toolchain,
         generator = ctx.generator,
+        languages = ctx.languages,
+        module_languages = ctx.module_languages,
         build_dir = ctx.build_dir,
         is_default = ctx.is_default and config_name ~= nil,
         has_options = ctx.has_options,
@@ -503,7 +512,7 @@ return function(tree, ctx)
         tree:leaf("Projects", "Title")
         tree:blank()
         tree:item("▸ Add project", {
-            hl = "LoomworksActionable",
+            hl = "LoomworksAdd",
             direct = true,
             on_enter = open_add_project,
         })
@@ -523,20 +532,37 @@ return function(tree, ctx)
     helpers.render_grouped(tree, sorted, function(t, proj, group)
         local key = proj.key
         local proj_running = proj:running_action()
-        local is_active_project = proj.configuration ~= nil and not proj.orphaned
         local is_shared_only = group == "shared"
-        local proj_hl = proj_running and "LoomworksRunning"
-                or is_shared_only and "Comment"
-                or (is_active_project and "LoomworksActive" or "LoomworksActionable")
 
         local modified_tag = ws and ws:is_project_modified(proj) and "+" or ""
-        local type_tag = "[" .. proj.type .. "]"
+        local type_tag = " [" .. proj.type .. "]"
         local orphan_tag = proj.orphaned and " (orphaned)" or ""
         local refresh_tag = proj.needs_refresh and " !" or ""
-        t:node(modified_tag .. key .. " " .. type_tag .. orphan_tag .. refresh_tag, {
+
+        -- Project header: always blue (`LoomworksProject`) except
+        -- when the project is shared-only — those follow the
+        -- publish UX and dim to Comment. State (running, orphaned,
+        -- needs-refresh) is conveyed via marker spinner or text
+        -- tags, not row color. The "active project" distinction
+        -- was dropped — the user thinks in profiles, not in which
+        -- projects happen to be in scope.
+        local row_hl = is_shared_only and "Comment" or "LoomworksProject"
+        local row_chunks = {
+            { modified_tag, "Comment" },
+            { key, row_hl },
+            { type_tag, "Comment" },
+        }
+        if orphan_tag ~= "" then
+            row_chunks[#row_chunks + 1] = { orphan_tag, "DiagnosticWarn" }
+        end
+        if refresh_tag ~= "" then
+            row_chunks[#row_chunks + 1] = { refresh_tag, "DiagnosticWarn" }
+        end
+
+        t:node(row_chunks, {
             fold_key = "project:" .. key,
             spinning = proj_running ~= nil,
-            hl = proj_hl,
+            hl = row_hl,
             publish_label = helpers.intent_action_label(proj),
             on_publish = function()
                 helpers.cycle_intent(proj)
@@ -587,7 +613,7 @@ return function(tree, ctx)
             end
 
             if proj.configurations and next(proj.configurations) then
-                t:group({{"Configurations:  ", "LoomworksActionable"}, {"[D] delete", "Comment"}}, function()
+                t:group("Configurations:", "LoomworksSection", function()
                     -- Build sorted config list with Configuration objects for grouping
                     local config_list = {}
                     for cname, cdata in pairs(proj.configurations) do
@@ -634,24 +660,19 @@ return function(tree, ctx)
                         local dependents = cname_cfg
                             and cname_cfg:dependents() or {}
 
-                        -- Colour priorities, highest-visibility first:
-                        --   orphan (source-missing or unresolved-inherits) → WarningMsg
-                        --   auto-gen → Comment (dimmed — not user's thing to edit)
-                        --   shared tier → Comment (existing convention)
-                        --   abstract → Comment
-                        --   running → LoomworksRunning
-                        --   else   → LoomworksActionable
-                        local config_hl
-                        if is_source_missing or has_unresolved then
-                            config_hl = "WarningMsg"
-                        elseif is_auto_gen then
-                            config_hl = "Comment"
-                        elseif is_abstract or cfg_group == "shared" then
-                            config_hl = "Comment"
-                        elseif config_has_running then
-                            config_hl = "LoomworksRunning"
+                        -- Variant-name color: `LoomworksVariant` for
+                        -- buildable user configs; `Comment` for
+                        -- shared/auto-gen/abstract entries (dim
+                        -- because they're not the user's primary
+                        -- edit targets in this list). Severity
+                        -- (source-missing, unresolved inherits)
+                        -- stays on the leading `⚠` prefix —
+                        -- the variant name keeps its identity color.
+                        local variant_hl
+                        if is_auto_gen or cfg_group == "shared" or is_abstract then
+                            variant_hl = "Comment"
                         else
-                            config_hl = "LoomworksActionable"
+                            variant_hl = "LoomworksVariant"
                         end
 
                         --- Format an inherits list inline with ⚠ prefixes
@@ -708,10 +729,22 @@ return function(tree, ctx)
                         local cfg_obj = cname_cfg
                         local has_user_entry = cfg_obj and cfg_obj.is_user or false
 
-                        ct:node(warn_prefix .. cfg_modified_tag .. cname .. brief_str, {
+                        local config_chunks = {}
+                        if warn_prefix ~= "" then
+                            config_chunks[#config_chunks + 1] = { warn_prefix, "DiagnosticWarn" }
+                        end
+                        if cfg_modified_tag ~= "" then
+                            config_chunks[#config_chunks + 1] = { cfg_modified_tag, "Comment" }
+                        end
+                        config_chunks[#config_chunks + 1] = { cname, variant_hl }
+                        if brief_str ~= "" then
+                            config_chunks[#config_chunks + 1] = { brief_str, "Comment" }
+                        end
+
+                        ct:node(config_chunks, {
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
-                            hl = config_hl,
+                            hl = variant_hl,
                             enter_label = "Edit configuration",
                             on_enter = function() edit_project_configuration(project, cfg_name) end,
                             publish_label = cname_cfg and helpers.intent_action_label(cname_cfg) or nil,
@@ -847,7 +880,7 @@ return function(tree, ctx)
                     if not proj.orphaned then
                         local project = proj
                         tree:item("▸ Add configuration", {
-                            hl = "LoomworksActionable",
+                            hl = "LoomworksAdd",
                             direct = true,
                             on_enter = function() edit_project_configuration(project, nil) end,
                         })
@@ -857,7 +890,7 @@ return function(tree, ctx)
 
             -- Preset configurations (separate, read-only group)
             if proj.preset_configurations and next(proj.preset_configurations) then
-                tree:group("Presets:", "Comment", function()
+                tree:group("Presets:", "LoomworksSection", function()
                     local preset_names = {}
                     for name in pairs(proj.preset_configurations) do
                         preset_names[#preset_names + 1] = name
@@ -879,22 +912,25 @@ return function(tree, ctx)
             local launches = workspace_view.get_launch_configs(proj)
             if #launches > 0 or not proj.orphaned then
                 local project = proj  -- capture for closure
-                tree:group("Launch:", "Comment", function()
+                tree:group("Launch:", "LoomworksSection", function()
                     for _, lc in ipairs(launches) do
                         local lname = lc.name
                         local desc = lc.config.command or ""
                         if lc.config.args and #lc.config.args > 0 then
                             desc = desc .. " " .. table.concat(lc.config.args, " ")
                         end
-                        tree:item(lname .. "  " .. desc, {
-                            hl = "LoomworksActionable",
+                        tree:item({
+                            { lname,           "LoomworksVariant" },
+                            { "  " .. desc,   "Comment" },
+                        }, {
+                            hl = "LoomworksVariant",
                             enter_label = "Edit launch config",
                             on_enter = function() edit_launch_config(project, lname) end,
                             on_delete = function() delete_launch_config(project, lname) end,
                         })
                     end
                     tree:item("▸ Add launch config", {
-                        hl = "LoomworksActionable",
+                        hl = "LoomworksAdd",
                         direct = true,
                         on_enter = function() edit_launch_config(project, nil) end,
                     })
@@ -907,7 +943,7 @@ return function(tree, ctx)
             if has_deploy or not proj.orphaned then
                 local project = proj  -- capture for closure
                 local deploy_mod = require("loomworks.deploy")
-                tree:group("Deploy:", "Comment", function()
+                tree:group("Deploy:", "LoomworksSection", function()
                     local function format_source(src)
                         local display = src.project or "?"
                         if src.target then display = display .. " : " .. src.target
@@ -1005,7 +1041,7 @@ return function(tree, ctx)
 
                     if not proj.orphaned then
                         tree:item("▸ Add deploy step", {
-                            hl = "LoomworksActionable",
+                            hl = "LoomworksAdd",
                             direct = true,
                             on_enter = function()
                                 require("loomworks.ui.deploy_editor").open({
@@ -1040,19 +1076,22 @@ return function(tree, ctx)
             local vars = workspace_view.get_variables(proj)
             if #vars > 0 or not proj.orphaned then
                 local project = proj  -- capture for closure
-                tree:group("Variables:", "Comment", function()
+                tree:group("Variables:", "LoomworksSection", function()
                     for _, v in ipairs(vars) do
                         local vname = v.name  -- capture
-                        local display = v.name .. "  (" .. v.type .. ") = " .. v.default
-                        tree:item(display, {
-                            hl = "LoomworksActionable",
+                        local suffix = "  (" .. v.type .. ") = " .. v.default
+                        tree:item({
+                            { v.name, "LoomworksVariant" },
+                            { suffix, "Comment" },
+                        }, {
+                            hl = "LoomworksVariant",
                             enter_label = "Edit variable",
                             on_enter = function() edit_variable(project, vname) end,
                             on_delete = function() delete_variable(project, vname) end,
                         })
                     end
                     tree:item("▸ Add variable", {
-                        hl = "LoomworksActionable",
+                        hl = "LoomworksAdd",
                         direct = true,
                         on_enter = function() edit_variable(project, nil) end,
                     })
@@ -1072,7 +1111,7 @@ return function(tree, ctx)
     end)
 
     tree:item("▸ Add project", {
-        hl = "LoomworksActionable",
+        hl = "LoomworksAdd",
         enter_label = "Add project",
         on_enter = open_add_project,
     })

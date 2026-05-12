@@ -381,6 +381,9 @@ function Project:save_configuration(config_name, config_data)
     end
     if config_data.toolchain then clean.toolchain = config_data.toolchain end
     if config_data.generator then clean.generator = config_data.generator end
+    -- Languages: non-nil array = explicit override, nil = inherit
+    -- from module. We pass through whatever the editor produced.
+    if config_data.languages ~= nil then clean.languages = config_data.languages end
 
     -- Create or update Configuration domain object
     local existing = self:get_configuration(config_name)

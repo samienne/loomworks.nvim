@@ -15,23 +15,23 @@ local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
 local ACTION_ORDER = {
     { action = "enter",     label = "Activate" },
     { action = "create",    label = "Create profile from set" },
-    { action = "build",     label = "Build" },
-    { action = "build_serial", label = "Build (serial -j1)" },
-    { action = "configure", label = "Configure" },
-    { action = "task",      label = "Open task output" },
-    { action = "options",   label = "Show build options" },
+    { action = "build",     label = "Build  b" },
+    { action = "build_serial", label = "Build (serial -j1)  <C-b>" },
+    { action = "configure", label = "Configure  c" },
+    { action = "task",      label = "Open task output  t" },
+    { action = "options",   label = "Show build options  o" },
     { action = "move_up",   label = "Move up  <C-k>" },
     { action = "move_down", label = "Move down  <C-j>" },
     { action = "publish",   label = "Publish  P" },
     { action = "publish_now", label = "Publish this item now" },
     { action = "revert_one", label = "Revert this item to baseline" },
-    { action = "rebuild",   label = "Rebuild (clean + build)" },
-    { action = "clean",     label = "Clean" },
+    { action = "rebuild",   label = "Rebuild (clean + build)  R" },
+    { action = "clean",     label = "Clean  C" },
     { action = "delete",    label = "Delete  D" },
 }
 
 --- Fields consumed by the tree builder for rendering only.
-local RENDER_KEYS = { hl = true, spinning = true, marker = true }
+local RENDER_KEYS = { hl = true, spinning = true, marker = true, marker_hl = true, hover = true }
 
 --- @class loomworks.Tree
 --- @field _render_fn fun(tree: loomworks.Tree)
@@ -172,6 +172,27 @@ function Tree:on_key(action, line)
             if choice then choice.callback() end
         end)
         return {}
+
+    elseif action == "hover" then
+        -- Return the raw content of the current line so the View can
+        -- show it in a wrapped popup. Strip leading indentation, fold
+        -- chars and markers — the user wants to read the *content*,
+        -- not look at structural decoration again. Widgets can opt
+        -- into richer hover content via a `hover` field on their
+        -- opts table (string or `fun(): string|string[]`).
+        local w = self.line_meta[line]
+        if w and w.hover then
+            local content = type(w.hover) == "function" and w.hover() or w.hover
+            if content then return { hover = content } end
+        end
+        local raw = self.lines[line] or ""
+        if raw == "" then return {} end
+        -- Strip leading spaces, fold char (▶/▼ + space), and marker
+        -- characters. The exact prefix shape varies (some rows have
+        -- markers, some don't, etc.) so a permissive strip.
+        local content = raw:gsub("^[%s▶▼]+", "")
+        content = content:gsub("^[○◐✓✗?⌫⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]%s*", "")
+        return { hover = content }
 
     elseif action == "create_workspace" then
         self:_create_workspace()
@@ -464,17 +485,37 @@ function Tree:node(text, opts, children_fn)
     local folded = not self._folds[opts.fold_key]
     local fold_char = folded and "▶ " or "▼ "
 
-    local prefix
-    local slots
-    if opts.marker then
-        prefix = (opts.spinning and self:_spinner() or opts.marker) .. fold_char
-        slots = 2
-    else
-        prefix = opts.spinning and self:_spinner() or fold_char
-        slots = 1
-    end
+    local marker = opts.spinning and self:_spinner() or (opts.marker or "")
+    local has_marker = marker ~= ""
+    local slots = has_marker and 2 or 1
+    local text_is_chunks = type(text) == "table"
 
-    self:_add(self:_pad() .. prefix .. text, opts.hl, self:_make_widget(opts))
+    if text_is_chunks then
+        -- Chunks form: row text comes in as `{{string, hl}, ...}`.
+        -- Marker (if any) and fold_char get their respective hls;
+        -- everything after is taken verbatim from the caller.
+        local chunks = {}
+        if has_marker then
+            chunks[#chunks + 1] = { marker, opts.marker_hl or opts.hl }
+        end
+        chunks[#chunks + 1] = { fold_char, opts.hl }
+        for _, c in ipairs(text) do
+            chunks[#chunks + 1] = c
+        end
+        self:_add_chunks(chunks, self:_make_widget(opts))
+    elseif has_marker and opts.marker_hl and opts.marker_hl ~= opts.hl then
+        -- Split highlights: marker gets its own color, fold_char +
+        -- text follow `opts.hl`. Lets severity icons stay red/yellow
+        -- while the row text keeps its entity color (profile=green,
+        -- project=blue).
+        self:_add_chunks({
+            { marker, opts.marker_hl },
+            { fold_char .. text, opts.hl },
+        }, self:_make_widget(opts))
+    else
+        local prefix = has_marker and (marker .. fold_char) or fold_char
+        self:_add(self:_pad() .. prefix .. text, opts.hl, self:_make_widget(opts))
+    end
 
     if not folded then
         local indent = slots + 1
@@ -485,12 +526,33 @@ function Tree:node(text, opts, children_fn)
 end
 
 --- Add a non-foldable item with optional marker prefix.
---- @param text string
+--- Accepts either a string for `text` or a chunks list
+--- `{{string, hl}, ...}` for multi-color rows.
+--- @param text string|{[1]: string, [2]: string}[]
 --- @param opts table
 function Tree:item(text, opts)
     if opts.spinning then self._needs_frame = true end
-    local prefix = opts.spinning and self:_spinner() or (opts.marker or "")
-    self:_add(self:_pad() .. prefix .. text, opts.hl, self:_make_widget(opts))
+    local marker = opts.spinning and self:_spinner() or (opts.marker or "")
+    local has_marker = marker ~= ""
+    local text_is_chunks = type(text) == "table"
+
+    if text_is_chunks then
+        local chunks = {}
+        if has_marker then
+            chunks[#chunks + 1] = { marker, opts.marker_hl or opts.hl }
+        end
+        for _, c in ipairs(text) do
+            chunks[#chunks + 1] = c
+        end
+        self:_add_chunks(chunks, self:_make_widget(opts))
+    elseif has_marker and opts.marker_hl and opts.marker_hl ~= opts.hl then
+        self:_add_chunks({
+            { marker, opts.marker_hl },
+            { text, opts.hl },
+        }, self:_make_widget(opts))
+    else
+        self:_add(self:_pad() .. marker .. text, opts.hl, self:_make_widget(opts))
+    end
 end
 
 --- Add a labeled sub-section that increases indentation for its children.

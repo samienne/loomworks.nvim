@@ -3,6 +3,18 @@
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
 
+--- Local helper: linear `contains` on a small string array. The
+--- profile.tool_keys list is short enough that hashing isn't worth
+--- the allocation overhead at render time.
+--- @param list string[]|nil
+--- @param item string
+--- @return boolean
+local function contains(list, item)
+    if not list then return false end
+    for _, v in ipairs(list) do if v == item then return true end end
+    return false
+end
+
 --- Render profile details when expanded.
 --- @param tree loomworks.Tree
 --- @param profile loomworks.Profile
@@ -15,90 +27,141 @@ local function render_profile_details(tree, profile, lw)
         tree:leaf("Set: " .. profile._config_set_ref.name, "Comment")
     end
 
-    -- SDK display
-    local sdk = profile:sdk()
-    if sdk then
-        tree:item("SDK: " .. sdk:display_name(), {
-            hl = sdk:is_resolved() and "Comment" or "DiagnosticWarn",
-            on_enter = function()
-                -- Pick a different SDK
-                local ws = profile._workspace
-                local candidates = {}
-                for _, s in ipairs(ws:sdks()) do
-                    if s:is_resolved() then
-                        candidates[#candidates + 1] = s
-                    end
-                end
-                candidates[#candidates + 1] = { key = nil, display_name = function() return "(none — host build)" end }
-                vim.ui.select(candidates, {
-                    prompt = "Select SDK for profile:",
-                    format_item = function(s)
-                        if s.key == nil then return "(none — host build)" end
-                        local mark = (sdk and s.key == sdk.key) and " (current)" or ""
-                        return s:display_name() .. mark
-                    end,
-                }, function(choice)
-                    if not choice then return end
-                    if choice.key == nil then
-                        profile:set_sdk(nil)
-                    else
-                        profile:set_sdk(choice)
-                    end
-                    profile:_derive_key()
-                    ws:_save_user()
-                    ws:remerge()
-                end)
-            end,
-        })
-    else
-        tree:item("SDK: (none)", {
-            hl = "Comment",
-            on_enter = function()
-                local ws = profile._workspace
-                local candidates = {}
-                for _, s in ipairs(ws:sdks()) do
-                    if s:is_resolved() then
-                        candidates[#candidates + 1] = s
-                    end
-                end
-                if #candidates == 0 then
-                    vim.notify("loomworks: no SDKs available. Add one from the SDKs section.", vim.log.levels.INFO)
-                    return
-                end
-                vim.ui.select(candidates, {
-                    prompt = "Select SDK for profile:",
-                    format_item = function(s) return s:display_name() end,
-                }, function(choice)
-                    if not choice then return end
-                    profile:set_sdk(choice)
-                    profile:_derive_key()
-                    ws:_save_user()
-                    ws:remerge()
-                end)
-            end,
-        })
-    end
-
-    local tools_data = profile:tools_data()
-    if tools_data then
-        for mod_type, tool in pairs(tools_data) do
-            if tool.label then
-                tree:leaf("Tool: " .. tool.label, "Comment")
-            end
-            if tool.data then
-                if tool.data.generator then
-                    tree:leaf("Generator: " .. tool.data.generator, "Comment")
-                end
-                if tool.data.compiler_id then
-                    tree:leaf("Compiler: " .. tool.data.compiler_id, "Comment")
-                end
-            end
-        end
-    end
-
-    -- Device selection (only when workspace has device-capable modules)
+    -- Toolchain section: one row per tool in `profile._tool_keys`.
+    -- Each row is a single tool selection; the user adds and removes
+    -- entries. Resolution is language-keyed — at build time each
+    -- ConfigUnit picks the first tool in the array that provides one
+    -- of its configuration's required languages.
     local ws = profile._workspace
-    if ws:has_device_modules() then
+    local needing = profile:tool_needing_modules()
+    local entries = profile:toolchain_entries()
+
+    if #needing > 0 or #entries > 0 then
+        -- Toolchain fold: collapsed shows a single summary row;
+        -- expanded reveals per-tool rows with add/remove.
+        -- Most profiles use a single tool that's already part of
+        -- the profile name, so the collapsed shape is the common
+        -- case — only widening when the user actually wants to
+        -- edit the list.
+        local summary_parts = {}
+        local any_unresolved = false
+        for _, entry in ipairs(entries) do
+            local part = entry.label
+            if not entry.resolved then
+                part = part .. " (unresolved)"
+                any_unresolved = true
+            end
+            summary_parts[#summary_parts + 1] = part
+        end
+        local summary
+        if #summary_parts == 0 then
+            summary = "(none)"
+        else
+            summary = table.concat(summary_parts, " + ")
+        end
+        local header_hl = any_unresolved and "DiagnosticWarn" or "Comment"
+
+        tree:node("Toolchain: " .. summary, {
+            fold_key = "toolchain:" .. profile.key,
+            hl = header_hl,
+        }, function()
+            for _, entry in ipairs(entries) do
+                local lang_suffix = ""
+                if #entry.languages > 0 then
+                    lang_suffix = "  [" .. table.concat(entry.languages, ", ") .. "]"
+                end
+                local hl = entry.resolved and "Comment" or "DiagnosticWarn"
+                local label = entry.label .. lang_suffix
+                if not entry.resolved then
+                    label = label .. " (unresolved)"
+                end
+
+                tree:item(label, {
+                    hl = hl,
+                    direct = true,
+                    enter_label = "Tool actions",
+                    on_enter = function()
+                        local key = entry.key
+                        local actions = {
+                            { label = "Delete tool",
+                              do_it = function()
+                                  profile:remove_tool(key)
+                                  ws:_save_user()
+                                  ws:remerge()
+                              end },
+                            { label = "Cancel", do_it = function() end },
+                        }
+                        vim.ui.select(actions, {
+                            prompt = "Tool '" .. entry.label .. "':",
+                            format_item = function(a) return a.label end,
+                        }, function(choice)
+                            if choice and choice.do_it then choice.do_it() end
+                        end)
+                    end,
+                    on_delete = function()
+                        profile:remove_tool(entry.key)
+                        ws:_save_user()
+                        ws:remerge()
+                    end,
+                })
+            end
+
+            tree:item("+ Add tool", {
+                hl = "LoomworksAdd",
+                direct = true,
+                on_enter = function()
+                    local items = {}
+                    local seen_keys = {}
+                    for _, mod in pairs(ws._modules or {}) do
+                        for _, tool in pairs(mod._tools or {}) do
+                            if tool.key and not tool._removed
+                                    and not seen_keys[tool.key]
+                                    and not contains(profile._tool_keys or {}, tool.key) then
+                                seen_keys[tool.key] = true
+                                items[#items + 1] = {
+                                    key = tool.key,
+                                    label = tool.label or tool.key,
+                                    languages = tool.languages or {},
+                                    module_id = mod.id,
+                                }
+                            end
+                        end
+                    end
+
+                    if #items == 0 then
+                        vim.notify(
+                            "loomworks: no tools available to add. Detect "
+                            .. "host tools or add an SDK.",
+                            vim.log.levels.INFO)
+                        return
+                    end
+
+                    table.sort(items, function(a, b) return a.label < b.label end)
+
+                    vim.ui.select(items, {
+                        prompt = "Add tool:",
+                        format_item = function(item)
+                            local langs = ""
+                            if #item.languages > 0 then
+                                langs = "  [" .. table.concat(item.languages, ", ") .. "]"
+                            end
+                            return item.label .. langs
+                        end,
+                    }, function(choice)
+                        if not choice then return end
+                        profile:add_tool(choice.key)
+                        ws:_save_user()
+                        ws:remerge()
+                    end)
+                end,
+            })
+        end)
+    end
+
+    -- Device selection: per-profile, gated on the profile actually
+    -- containing a device-capable module project. A cmake-only profile
+    -- in a workspace that also has harmony shouldn't show this row.
+    if profile:has_device_module() then
         local device = profile:device()
         local device_text, device_hl
         if device and device:is_online() then
@@ -157,18 +220,16 @@ local function render_profile_details(tree, profile, lw)
         })
     end
 
-    local op = profile:operation()
-    if op and op.message then
-        local op_hl = op.success and "DiagnosticOk" or "DiagnosticError"
-        tree:leaf("Last: " .. op.message, op_hl)
-    end
+    -- (Last-operation message is already shown in the profile header
+    -- line — see the `display` assembly in the profiles section's main
+    -- render function — so we don't repeat it here.)
 
     -- Default target line
     local launch_target = profile:default_target()
     local target_display, target_hl
     if launch_target and launch_target:is_valid() then
         target_display = "Target: " .. launch_target:display_name()
-        target_hl = "LoomworksActionable"
+        target_hl = "LoomworksTarget"
     elseif launch_target then
         target_display = "Target: " .. launch_target:display_name() .. " (stale)"
         target_hl = "DiagnosticWarn"
@@ -194,9 +255,9 @@ local function render_profile_details(tree, profile, lw)
 
     local pps = profile:projects()
     if #pps > 0 then
-        tree:group({{"Projects:  ", "LoomworksActionable"}, {"[b] build  [c] configure  [t] task output  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
+        tree:group("Projects:", "LoomworksSection", function()
             for _, pp in ipairs(pps) do
-                local config_status, status_hl, progress_str, is_spinning =
+                local config_status, _status_hl, progress_str, is_spinning =
                         helpers.resolve_config_status(pp, nil)
 
                 local unit = pp._config_unit
@@ -204,13 +265,40 @@ local function render_profile_details(tree, profile, lw)
                     and (" [" .. pp._project.type .. "]") or ""
                 local pp_pkey = pp._project and pp._project.key or "?"
                 local variant_display = pp:variant_name() or "?"
-                if pp:is_configuration_missing() then
-                    variant_display = variant_display .. " (missing)"
+                local missing_suffix = pp:is_configuration_missing()
+                    and " (missing)" or ""
+                -- Status moves into the header line (parallel to the
+                -- profile-level "(status)" suffix), so the expansion
+                -- doesn't have to repeat it as a child leaf.
+                local status_suffix = config_status
+                    and (" (" .. config_status .. ")") or ""
+                -- Severity is in the marker icon's color, not the row
+                -- text. Missing configurations still surface a
+                -- warn-colored marker via the status mapping.
+                local pp_marker = helpers.status_marker(config_status)
+                local pp_marker_hl = pp:is_configuration_missing()
+                    and "DiagnosticWarn"
+                    or helpers.status_marker_hl(config_status)
+                -- Row chunks mirror the config-set project row:
+                -- project key in blue, arrow + type tag + status in
+                -- Comment, variant in LoomworksVariant. Reads as the
+                -- same vocabulary across sections.
+                local row_chunks = {
+                    { pp_pkey, "LoomworksProject" },
+                    { type_tag, "Comment" },
+                    { " → ", "Comment" },
+                    { variant_display, "LoomworksVariant" },
+                }
+                if missing_suffix ~= "" then
+                    row_chunks[#row_chunks + 1] = { missing_suffix, "DiagnosticWarn" }
                 end
-                tree:node(pp_pkey .. type_tag .. " → " .. variant_display .. progress_str, {
+                row_chunks[#row_chunks + 1] = { status_suffix .. progress_str, "Comment" }
+                tree:node(row_chunks, {
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp_pkey,
+                    marker = pp_marker,
+                    marker_hl = pp_marker_hl,
                     spinning = is_spinning,
-                    hl = pp:is_configuration_missing() and "DiagnosticWarn" or status_hl,
+                    hl = "LoomworksProject",
                     enter_label = "Open task output",
                     on_enter = actions.open_task(unit),
                     on_task = actions.open_task(unit),
@@ -222,11 +310,34 @@ local function render_profile_details(tree, profile, lw)
                     on_delete = actions.delete_config(unit),
                     on_options = actions.show_options(unit),
                 }, function()
+                    -- Per-ConfigUnit tool(s): the specific tools
+                    -- this (project, configuration) is actually
+                    -- using out of the profile's array. For most
+                    -- profiles this is one tool; for multi-language
+                    -- configurations (e.g. cmake+rust) it's the
+                    -- set that covers the configuration's required
+                    -- languages.
+                    local cfg = pp._configuration
+                    if cfg and not cfg._removed and profile.tools_for then
+                        local tools = profile:tools_for(cfg)
+                        if #tools > 0 then
+                            local labels = {}
+                            for _, t in ipairs(tools) do
+                                labels[#labels + 1] = t.label or t.key or "?"
+                            end
+                            local kw = #tools == 1 and "Tool" or "Tools"
+                            tree:leaf(kw .. ": " .. table.concat(labels, ", "), "Comment")
+                        end
+                    end
                     helpers.render_cached_details(tree, config_status, status_hl, nil, nil, unit)
                 end)
             end
         end)
     end
+
+    -- Trailing blank line gives unfolded profiles visual breathing
+    -- room before the next profile (or sentinel) begins.
+    tree:blank()
 end
 
 --- Render the profiles section.
@@ -264,9 +375,9 @@ return function(tree, ctx)
         local profile_running = profile:is_running()
         local has_operation = profile:has_active_operation()
 
-        local status_label, status_hl = profile:status()
+        local status_label, _status_hl = profile:status()
         local marker = helpers.status_marker(status_label)
-        local hl
+        local marker_hl = helpers.status_marker_hl(status_label)
 
         local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
         local display = prof_modified .. profile.key
@@ -279,39 +390,40 @@ return function(tree, ctx)
 
         display = display .. " (" .. status_label .. ")"
         if has_operation then
-            hl = is_active and "LoomworksActive" or "LoomworksRunning"
             local pps = profile:projects()
             local pct = helpers.aggregate_progress(pps)
             if pct then
                 display = display .. " " .. pct .. "%"
             end
             display = display .. helpers.format_elapsed(profile:operation_elapsed())
-        elseif is_active then
-            hl = "LoomworksActive"
-            local op = profile:operation()
-            if op and op.message then
-                display = display .. " — " .. op.message
-            end
         else
-            if status_label == "failed_configure" or status_label == "failed_build"
-                    or status_label:match("failed") then
-                hl = "LoomworksFailed"
-            elseif status_label == "unconfigured" then
-                hl = "LoomworksUnconfigured"
-            else
-                hl = "LoomworksConfigured"
-            end
             local op = profile:operation()
             if op and op.message then
                 display = display .. " — " .. op.message
             end
         end
 
+        -- Profile rows: active profile gets bold green
+        -- (`LoomworksProfile`). Inactive profiles use
+        -- `LoomworksProfileInactive` — linked to `LoomworksActionable`
+        -- (Normal text), matching the `Projects:` label so inactive
+        -- profile rows read as plain interactive items rather than
+        -- competing with the active green.
+        local hl
+        if group == "shared" then
+            hl = "Comment"
+        elseif is_active then
+            hl = "LoomworksProfile"
+        else
+            hl = "LoomworksProfileInactive"
+        end
+
         t:node(display, {
             fold_key = "profile:" .. profile.key,
             marker = marker,
+            marker_hl = marker_hl,
             spinning = profile_running or has_operation,
-            hl = group == "shared" and "Comment" or hl,
+            hl = hl,
             enter_label = "Activate",
             on_enter = actions.activate(profile),
             publish_label = helpers.intent_action_label(profile),
@@ -338,7 +450,7 @@ return function(tree, ctx)
         tree:leaf("No projects yet. Add projects first.", "Comment")
     else
         tree:item("▸ Create new profile", {
-            hl = "LoomworksActionable",
+            hl = "LoomworksAdd",
             direct = true,
             on_enter = actions.create_profile(ctx),
         })

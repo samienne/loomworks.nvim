@@ -214,6 +214,54 @@ Map configuration names across projects:
 When combined with detected cmake tools, profiles are auto-generated:
 `Debug:ninja-gcc-14.2.0`, `Debug:msvc-17-2022-enterprise`, etc.
 
+Profiles store their toolchain as a **flat array of tool keys** in
+user.json / loomworks.json:
+
+```json
+"profiles": {
+  "Debug:ninja-gcc-14.2.0": {
+    "configuration_set": "Debug",
+    "tools": ["ninja-gcc-14.2.0"]
+  },
+  "Debug-harmony:ohos-harmonyos-arm64-v8a": {
+    "configuration_set": "Debug-harmony",
+    "tools": ["ohos-harmonyos-arm64-v8a"]
+  }
+}
+```
+
+The picker behind the profile's `Toolchain:` row offers every detected
+host tool plus every kit each SDK exposes, and you add / remove
+entries with `+ Add tool` / `D`. Multi-language profiles (e.g. cmake
++ rust) carry one tool per language family.
+
+### Languages
+
+Each cmake / meson configuration declares the languages it builds
+(`{"c", "c++"}` by default; user override per configuration). The
+language list drives which tool in `profile.tools` applies — a
+profile is *complete* only when every language a configuration
+declares has a tool in the array providing it. Tools declare their
+language coverage at construction (host kits via
+`detect_tools`, SDK kits via `kits_from_sdk`).
+
+```json
+"MyProject": {
+  "cmake": {
+    "configurations": {
+      "cpp-only": {
+        "inherits": "variant:Debug",
+        "languages": ["c++"]
+      }
+    }
+  }
+}
+```
+
+After every cmake configure, the file-api codemodel is read and the
+actual enabled languages are compared against the declaration. A
+non-blocking "language drift" diagnostic surfaces if they disagree.
+
 ### Launch configurations
 
 Define how to run a project after building:
@@ -444,6 +492,7 @@ automatically from your system.
 | `C` | Clean — reset to unconfigured, delete build dir (destructive) |
 | `D` | Delete profile or configuration (destructive, with confirmation) |
 | `L` | Load workspace from cwd / rescan tools |
+| `K` | Hover popup with the full content of the current line (paths, diagnostic messages, etc.) |
 | `<C-n>` | Reset workspace: delete `.nvim/build/` + cache, reload (destructive) |
 | `?` | Show help dialog |
 | `q` | Close the status page |

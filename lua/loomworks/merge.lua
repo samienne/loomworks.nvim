@@ -397,8 +397,27 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
 
         local active_configuration = set_mappings and set_mappings[key] or nil
 
-        -- Look up tool for this project's module type from the profile's tools dict
-        local project_tool = active_tools and active_tools[project.type] or nil
+        -- Look up the tool this project's module should consume from
+        -- the profile's tools collection. Supports both shapes:
+        --   * legacy dict `{ module_id → ref }` — `active_tools[mod]` is
+        --     the ref directly.
+        --   * new flat array `["key1", "key2"]` — resolve each key
+        --     against the detected-tools/cache registry; pick the first
+        --     whose module type matches this project.
+        local project_tool = nil
+        if active_tools then
+            if vim.islist and vim.islist(active_tools) then
+                for _, tk in ipairs(active_tools) do
+                    local td, tl, tmt = resolve_tool(tools_by_type, cache, tk)
+                    if tmt == project.type and td then
+                        project_tool = { key = tk, data = td, label = tl }
+                        break
+                    end
+                end
+            else
+                project_tool = active_tools[project.type]
+            end
+        end
         local project_tool_key = project_tool and project_tool.key or nil
 
         local cache_config_key = nil

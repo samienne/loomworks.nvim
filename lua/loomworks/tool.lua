@@ -8,11 +8,41 @@
 --- @field key string|nil opaque identifier (for display + cache matching). nil for default tools.
 --- @field data table module-specific data (cmake: generator, compiler_path, etc.)
 --- @field label string|nil display label (e.g., "Ninja + GCC 12"). nil for default tools.
+--- @field languages string[] languages this tool can provide (e.g.
+---        {"c", "c++"} for ninja+clang, {"rust"} for rust-nightly).
+---        Defaults to the owning module's static `languages` when the
+---        tool's source data doesn't override.
 --- @field _module loomworks.Module owning module domain object
 --- @field mod_type string module type (computed from _module.id, backward compat)
 --- @field _removed boolean
 local Tool = {}
 Tool.__index = Tool
+
+--- Default languages list: take `data.languages` when present
+--- (modules can override per-tool), else fall back to the module's
+--- static list. Defensive about types — only accept arrays of
+--- non-empty strings.
+--- @param module loomworks.Module
+--- @param data table
+--- @return string[]
+local function resolve_languages(module, data)
+    local source = nil
+    if type(data) == "table" and type(data.languages) == "table" then
+        source = data.languages
+    elseif module and type(module.languages) == "table" then
+        source = module.languages
+    end
+    if not source then return {} end
+    local out = {}
+    local seen = {}
+    for _, lang in ipairs(source) do
+        if type(lang) == "string" and lang ~= "" and not seen[lang] then
+            seen[lang] = true
+            out[#out + 1] = lang
+        end
+    end
+    return out
+end
 
 --- Create a new Tool.
 --- @param module loomworks.Module owning module domain object
@@ -27,6 +57,7 @@ function Tool.new(module, key, data, label)
     self.key = key
     self.data = data or {}
     self.label = label
+    self.languages = resolve_languages(module, data)
     self._removed = false
     return self
 end
@@ -37,6 +68,19 @@ end
 function Tool:_update(data, label)
     self.data = data or self.data
     self.label = label or self.label
+    self.languages = resolve_languages(self._module, self.data)
+end
+
+--- Does this tool provide the given language?
+--- String equality on the language identifier — no normalization
+--- (so callers and producers must agree on the canonical string).
+--- @param lang string
+--- @return boolean
+function Tool:provides_language(lang)
+    for _, l in ipairs(self.languages) do
+        if l == lang then return true end
+    end
+    return false
 end
 
 --- Check if this is a keyed tool (participates in name generation).

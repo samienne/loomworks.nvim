@@ -28,7 +28,15 @@ return function(tree, ctx)
         local path_str = sdk:sdk_path() and ("  " .. sdk:sdk_path()) or ""
         local label = sdk:display_name() .. path_str
 
-        tree:item(label, {
+        -- Enumerate kits the SDK exposes (platform × arch). Shown
+        -- when the node is unfolded so the user can see at a glance
+        -- which combinations are available. Picking still happens
+        -- via the profile-level Toolchain row — these leaves are
+        -- purely informational.
+        local kits = sdk:is_resolved() and sdk:kits() or {}
+
+        tree:node(label, {
+            fold_key = "sdk:" .. sdk.key,
             hl = hl,
             on_delete = function()
                 vim.ui.select({ "Yes", "No" }, {
@@ -39,7 +47,21 @@ return function(tree, ctx)
                     require("loomworks.ui.status").refresh()
                 end)
             end,
-        })
+        }, function()
+            if #kits == 0 then
+                if sdk:is_resolved() then
+                    tree:leaf("(no kits exposed)", "Comment")
+                else
+                    tree:leaf("(SDK not resolved — install missing)",
+                        "DiagnosticWarn")
+                end
+            else
+                for _, kit in ipairs(kits) do
+                    tree:leaf("  " .. sdk:kit_label(kit.platform, kit.arch),
+                        "Comment")
+                end
+            end
+        end)
     end
 
     -- Add SDK action

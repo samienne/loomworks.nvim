@@ -460,21 +460,54 @@ end
 --- @param sdk loomworks.SDK
 --- @return { tool_data: table }[]
 function M.kits_from_sdk(caps, sdk)
-    -- caps is expected to contain: deveco_home, node, hvigorw_js, ohpm, hdc, java
+    -- caps is expected to contain: deveco_home, node, hvigorw_js, ohpm, hdc, java.
+    -- We fan out one kit per (platform, arch) the SDK exposes — even
+    -- though harmony itself selects ABI per-config at build time,
+    -- carrying platform/arch on tool_data lets the UI label match the
+    -- cmake-side label (so a profile that combines cmake + harmony
+    -- speaks one vocabulary).
     if not caps or not caps.deveco_home then return {} end
-    -- Tag with SDK identity so tool_key can derive a key
-    local td = vim.deepcopy(caps)
-    td.sdk_key = sdk.key
-    td.sdk_display = sdk:display_name()
-    return { { tool_data = td } }
+
+    local sdk_kits = sdk:kits()
+
+    -- Fallback for SDKs that don't expose platform/arch: emit one
+    -- generic kit. The label keeps the legacy "DevEco Studio <ver>"
+    -- shape until a richer SDK becomes available.
+    if #sdk_kits == 0 then
+        local td = vim.deepcopy(caps)
+        td.sdk_key = sdk.key
+        td.sdk_display = sdk:display_name()
+        td.sdk_version = sdk:sdk_version()
+        return { { tool_data = td } }
+    end
+
+    local result = {}
+    for _, kit in ipairs(sdk_kits) do
+        local td = vim.deepcopy(caps)
+        td.sdk_key = sdk.key
+        td.sdk_display = sdk:display_name()
+        td.sdk_version = sdk:sdk_version()
+        td.platform = kit.platform
+        td.arch = kit.arch
+        -- Composite kit id mirrors the cmake kit id shape so cross-
+        -- module identity matches: <sdk_type>-<platform_lower>-<arch>.
+        td.kit_id = sdk:sdk_type() .. "-"
+            .. kit.platform:lower():gsub("%s+", "-") .. "-" .. kit.arch
+        result[#result + 1] = { tool_data = td }
+    end
+    return result
 end
 
 --- Compare two harmony tool_data objects.
---- Match by sdk_key if present, otherwise always match.
+--- Match on composite kit identity (sdk + platform + arch) when
+--- available; fall back to sdk_key for legacy data; otherwise match.
 --- @param a table
 --- @param b table
 --- @return boolean
 function M.tools_match(a, b)
+    if a.kit_id and b.kit_id then
+        return a.kit_id == b.kit_id
+    end
     if a.sdk_key and b.sdk_key then
         return a.sdk_key == b.sdk_key
     end
@@ -482,16 +515,28 @@ function M.tools_match(a, b)
 end
 
 --- Cache key suffix from tool_data.
+--- Prefers the composite kit id (matches cmake's shape exactly so
+--- multi-module profiles produce the same key across modules).
+--- Falls back to sdk_key for legacy tool_data lacking kit fields.
 --- @param tool_data table
 --- @return string|nil
 function M.tool_key(tool_data)
-    return tool_data.sdk_key
+    return tool_data.kit_id or tool_data.sdk_key
 end
 
---- Display label for tool.
+--- Display label for tool. Prefers the platform+version+arch shape so
+--- the label matches cmake's kit display. Falls back to the legacy
+--- `sdk_display` for tool_data that pre-dates the kit fan-out.
 --- @param tool_data table
 --- @return string|nil
 function M.tool_label(tool_data)
+    if tool_data.platform and tool_data.arch then
+        local v = tool_data.sdk_version
+        if v and v ~= "" then
+            return tool_data.platform .. " " .. v .. " " .. tool_data.arch
+        end
+        return tool_data.platform .. " " .. tool_data.arch
+    end
     if tool_data.sdk_display then
         return tool_data.sdk_display
     end

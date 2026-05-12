@@ -169,14 +169,36 @@ Profiles that share ConfigUnits with the initiating profile show spinners
 
 **Profile children** (when unfolded):
 - Set name (with warning if orphaned/stale) — only for set-based profiles
-- Tool label (with generator/compiler details)
-- Device selection (only when workspace has device-capable modules) —
-  shows `Device: <name> (<serial>)` (online), `Device: <serial> (offline)`
-  (offline/stale), or `Device: (none selected)`. `<CR>` opens device picker.
-- Last operation message
+- Toolchain — a single profile-level row. A toolchain is one decision
+  (host tools or an SDK kit identity `(sdk, platform, arch)`) shared
+  across every tool-needing module in the profile. Row format
+  `Toolchain: <label>`. Label resolution: for SDK kits the canonical
+  shape is `<platform> <version> <arch>` ("HarmonyOS 6.0.1.251
+  arm64-v8a"); for host selections it's `<tool_label> [host/<mod_id>]`
+  per module; otherwise `(none — incomplete)`. `<CR>` opens the
+  unified picker — entries are host tools from each tool-needing
+  module's registry plus one entry per kit from each resolved SDK
+  (sourced from `SDK:kits()`), with a `(none)` sentinel.
+  Picking an SDK kit calls each tool-needing module's `kits_from_sdk`
+  with the chosen `(sdk, platform, arch)`, matches by the kit's
+  composite `id`/`kit_id`, and stores the per-module tool_data
+  atomically. Host picks set only the target module's `_tools_raw`
+  entry and clear the SDK.
+- Device selection (only when the profile contains a project from a
+  device-capable module) — shows `Device: <name> (<serial>)` (online),
+  `Device: <serial> (offline)` (offline/stale), or
+  `Device: (none selected)`. `<CR>` opens device picker.
+- (The last-operation message is shown in the profile header line via
+  the `— <message>` suffix, not repeated here.)
 - Projects sub-group:
-  - Each project: `project_key [module_type] → variant {progress}` with status highlight
-  - When unfolded: status, build dir, cmake details (generator, compiler)
+  - Each project: `project_key [module_type] → variant (status) {progress}`
+    with status highlight. The `(status)` suffix mirrors the profile
+    header's `(status)` so the expansion doesn't need a separate
+    `Status:` leaf.
+  - When unfolded: build dir and targets only. Tool / generator /
+    compiler leaves are dropped — the toolchain is shown once per
+    profile in the profile-level Toolchain row, not repeated per
+    config.
 
 **Profile actions**:
 

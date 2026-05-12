@@ -531,29 +531,73 @@ end
 
 --- Compute the expected build directory for a project configuration.
 --- Delegates to the module's resolve_build_dir, then relativizes.
---- For modules without resolve_build_dir, uses default path formula.
+---
+--- Accepts either:
+--- * A single `tool_data` table (legacy — wraps into a one-element
+---   effective-tools list internally).
+--- * An array of `{ key, data }` (the new effective-tools list from
+---   `Profile:tools_for(configuration)`). When more than one tool is
+---   in the list, the path segment is the sorted+joined tool keys
+---   so that multi-language profiles with different rust/cmake combos
+---   don't collide in the same build dir.
+---
+--- Module-specific behaviour: the module's `resolve_build_dir`
+--- continues to receive a single `tool_data` (the primary — first in
+--- the effective list); when there are extra tools the segment they
+--- contribute is delivered via `tool_data._effective_keys`, an opt-in
+--- field modules can choose to read for naming. A module that
+--- ignores it gets the single-tool behaviour it had before.
 --- @param project loomworks.Project
 --- @param variant string configuration variant name
---- @param tool_data? table module-specific tool data (with .id for cmake kits)
+--- @param tool_data_or_list? table single tool_data, or list of `{key, data}` entries
 --- @return string relative build_dir key (used as ConfigUnit id and cache key)
 --- @return string absolute build_dir path
-function Workspace:_compute_build_dir(project, variant, tool_data)
+function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
+    -- Normalize to a primary tool_data + sorted effective keys.
+    local primary_data = nil
+    local effective_keys = nil
+    if tool_data_or_list then
+        if vim.islist and vim.islist(tool_data_or_list) and #tool_data_or_list > 0 then
+            local keys = {}
+            for _, entry in ipairs(tool_data_or_list) do
+                local key = entry.key
+                    or (entry.data and entry.data.id)
+                    or (entry.data and entry.data.kit_id)
+                if key then keys[#keys + 1] = key end
+            end
+            table.sort(keys)
+            effective_keys = keys
+            primary_data = tool_data_or_list[1].data
+            if primary_data and #keys > 1 then
+                -- Stamp the joined keys onto the primary tool_data so
+                -- modules that opt in can use it for naming.
+                primary_data = vim.tbl_extend("force", {}, primary_data)
+                primary_data._effective_keys = keys
+            end
+        elseif type(tool_data_or_list) == "table" and not vim.islist(tool_data_or_list) then
+            -- Single tool_data (legacy single-tool path).
+            primary_data = tool_data_or_list
+        end
+    end
+
     local mod = project._module and project._module.impl or nil
     local abs_path
     if mod and mod.resolve_build_dir then
-        -- Get configuration info from project for binary_dir overrides
         local config_info = nil
         local cfg = project:get_configuration(variant)
         if cfg and cfg.module_config then
             config_info = cfg.module_config
         end
-        abs_path = mod.resolve_build_dir(project.key, variant, config_info, self.root, tool_data)
+        abs_path = mod.resolve_build_dir(project.key, variant, config_info, self.root, primary_data)
     else
-        -- Default: {root}/.nvim/build/{project_key}/{variant}
-        -- Include tool id as path segment when present
-        local tool_id = tool_data and tool_data.id or nil
-        if tool_id then
-            abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. tool_id .. "/" .. variant
+        local segment = nil
+        if effective_keys and #effective_keys > 1 then
+            segment = table.concat(effective_keys, "+")
+        elseif primary_data and primary_data.id then
+            segment = primary_data.id
+        end
+        if segment then
+            abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. segment .. "/" .. variant
         else
             abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. variant
         end
@@ -740,7 +784,14 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         self._user_config_overlay = next(user_overlay) and user_overlay or nil
         user_data = raw_user
     else
-        active_profile_key = self._active_profile_key
+        -- Derive the key string from the live active-profile *object*.
+        -- The cached `_active_profile_key` field is a load-time
+        -- artifact — once we have a resolved Profile, its `.key`
+        -- is the authoritative current value. Reading the string
+        -- directly would miss key changes from in-place mutations
+        -- (e.g. `Profile:add_tool` re-deriving the key).
+        active_profile_key = self._active_profile and self._active_profile.key
+            or self._active_profile_key
         default_target_data = self._default_target_data
         device_data = self._device_data
         -- Reconstruct user overlay from domain objects (items with local or local+shared intent)
@@ -1055,6 +1106,74 @@ function Workspace:has_device_modules()
         end
     end
     return false
+end
+
+--- Enumerate the available toolchain options for an entire profile.
+--- A toolchain is an SDK-kit identity `(sdk, platform, arch)` or a
+--- host-tool identity. Per-module overrides have been collapsed —
+--- one toolchain selection applies to every tool-needing module in
+--- the profile.
+---
+--- Returns a flat list. Each entry is one of:
+---   { kind = "host", module_id = string, tool = loomworks.Tool,
+---     label = string }
+---   { kind = "sdk_kit", sdk = loomworks.SDK, platform = string,
+---     arch = string, label = string }
+---
+--- Host entries are emitted only when **every** tool-needing module
+--- in the profile has host tools (a host-cmake + harmony profile is
+--- unbuildable, so no host entries appear there).
+--- @param profile loomworks.Profile
+--- @return table[]
+function Workspace:available_profile_toolchains(profile)
+    local needing = profile:tool_needing_modules()
+    if #needing == 0 then return {} end
+
+    local entries = {}
+
+    -- Host tools: emit one entry per host tool from each module's
+    -- registry. We surface them by module since each host pick is
+    -- inherently per-module (no platform/arch axis). A profile that
+    -- can't run a host build for one of its modules just won't be
+    -- valid until the user later picks a kit for the remaining ones,
+    -- but we still let the user mix incremental host picks.
+    for _, module in ipairs(needing) do
+        for _, tool in pairs(module._tools) do
+            if not tool._removed
+                    and tool.key
+                    and not (tool.data and tool.data.sdk_key) then
+                entries[#entries + 1] = {
+                    kind = "host",
+                    module_id = module.id,
+                    tool = tool,
+                    label = (tool.label or tool.key)
+                        .. " [host/" .. module.id .. "]",
+                }
+            end
+        end
+    end
+
+    -- SDK kits: enumerate via SDK:kits() so the kit identity is one
+    -- shared concept across modules. Per-module tool_data is derived
+    -- at apply time (Profile:set_profile_toolchain).
+    for _, sdk in ipairs(self:sdks()) do
+        if sdk:is_resolved() then
+            for _, kit in ipairs(sdk:kits()) do
+                entries[#entries + 1] = {
+                    kind = "sdk_kit",
+                    sdk = sdk,
+                    platform = kit.platform,
+                    arch = kit.arch,
+                    label = sdk:kit_label(kit.platform, kit.arch),
+                }
+            end
+        end
+    end
+
+    table.sort(entries, function(a, b)
+        return (a.label or "") < (b.label or "")
+    end)
+    return entries
 end
 
 --- Scan for connected devices from all device-capable modules.
@@ -1593,6 +1712,23 @@ function Workspace:diagnostics()
     for _, profile in pairs(self._profiles) do
         if not profile._removed and profile.diagnostic then
             add(profile:diagnostic())
+            -- Non-blocking: tools in `_tool_keys` that no
+            -- configuration in this profile uses. Separate from the
+            -- invalidity diagnostic because the profile is still
+            -- buildable — the unused tool is just dead weight.
+            if profile.unused_tools then
+                local unused = profile:unused_tools()
+                if #unused > 0 then
+                    add({
+                        severity = "warn",
+                        source = "Profile/" .. profile.key,
+                        message = "profile '" .. profile.key
+                            .. "' has unused tool(s): "
+                            .. table.concat(unused, ", "),
+                        target_fold_key = "profile:" .. profile.key,
+                    })
+                end
+            end
         end
     end
     for _, project in pairs(self._projects) do
@@ -1600,6 +1736,57 @@ function Workspace:diagnostics()
             for _, cfg in ipairs(project._configurations) do
                 if not cfg._removed and cfg.diagnostic then
                     add(cfg:diagnostic())
+                end
+                -- Soft diagnostic: configuration's declared
+                -- languages don't match what the last configure
+                -- actually enabled. Non-blocking — declared list is
+                -- the source of truth; the detected list is a
+                -- helpful hint when the user has missed adding (or
+                -- removing) a language.
+                if not cfg._removed and cfg._detected_languages then
+                    local effective = cfg:effective_languages()
+                    local effective_set = {}
+                    for _, l in ipairs(effective) do effective_set[l] = true end
+                    local detected_set = {}
+                    for _, l in ipairs(cfg._detected_languages) do detected_set[l] = true end
+
+                    local missing_from_config = {}
+                    for _, l in ipairs(cfg._detected_languages) do
+                        if not effective_set[l] then
+                            missing_from_config[#missing_from_config + 1] = l
+                        end
+                    end
+                    local missing_from_build = {}
+                    for _, l in ipairs(effective) do
+                        if not detected_set[l] then
+                            missing_from_build[#missing_from_build + 1] = l
+                        end
+                    end
+
+                    if #missing_from_config > 0 or #missing_from_build > 0 then
+                        -- Compact message — the source prefix
+                        -- (`Project/<key>/<config>`) already names
+                        -- the configuration, so the body just states
+                        -- the delta. Most lines fit in a single
+                        -- pane width without overflow.
+                        local parts = {}
+                        if #missing_from_config > 0 then
+                            parts[#parts + 1] = "build adds "
+                                .. table.concat(missing_from_config, ", ")
+                        end
+                        if #missing_from_build > 0 then
+                            parts[#parts + 1] = "declared unused: "
+                                .. table.concat(missing_from_build, ", ")
+                        end
+                        add({
+                            severity = "warn",
+                            source = "Project/" .. project.key .. "/" .. cfg.name,
+                            message = "language drift — "
+                                .. table.concat(parts, "; "),
+                            target_fold_key = "config:" .. project.key
+                                .. ":" .. cfg.name,
+                        })
+                    end
                 end
             end
         end
@@ -1984,18 +2171,28 @@ function Workspace:record_task_result(result)
     self:_sync_build_dir_refs()
     self._core._deps.events.emit("active_set_changed", self._active_set)
 
-    -- Parse targets after successful configure (runtime only, not cached)
+    -- Post-configure detection (runtime only, not cached in v1).
+    -- Parse targets + detect languages from the file-api reply so
+    -- the status page can flag a configuration whose declared
+    -- `languages` doesn't match what was actually enabled.
     if config_unit and action == "configure" and success and result.build_dir then
         if proj_type ~= "unknown" then
             local mod = self._core._deps.modules.get(proj_type)
+            local project = config_unit._project
+            local ctx = {
+                build_dir = result.build_dir,
+                project_path = project and (self.root .. "/" .. (project.path or project.key)) or nil,
+                config_name = result.variant,
+            }
             if mod and mod.parse_targets then
-                local project = config_unit._project
-                local ctx = {
-                    build_dir = result.build_dir,
-                    project_path = project and (self.root .. "/" .. (project.path or project.key)) or nil,
-                    config_name = result.variant,
-                }
                 config_unit:set_targets(mod.parse_targets(ctx))
+            end
+            if mod and mod.detect_languages then
+                local detected = mod.detect_languages(ctx)
+                local cfg = config_unit._configuration
+                if cfg and not cfg._removed then
+                    cfg._detected_languages = detected
+                end
             end
         end
     end
@@ -3043,11 +3240,8 @@ function Workspace:_user_config_from_objects()
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
-            if profile._sdk_key then
-                entry.sdk = profile._sdk_key
-            end
-            if profile._tools_raw and next(profile._tools_raw) then
-                entry.tools = profile._tools_raw
+            if profile._tool_keys and #profile._tool_keys > 0 then
+                entry.tools = vim.list_extend({}, profile._tool_keys)
             end
             profiles[profile.key] = entry
         end
@@ -3729,8 +3923,14 @@ function Workspace:_serialize_user()
     local data = { _meta = { version = 2 } }
 
     -- Active selection
-    if self._active_profile_key then
-        data.active_profile = self._active_profile_key
+    -- Derive from the live Profile object — `_active_profile_key`
+    -- is only the post-load cache of the string; mutations
+    -- (e.g. add_tool changing the derived key) update the object,
+    -- not the cached string.
+    local apk = self._active_profile and self._active_profile.key
+        or self._active_profile_key
+    if apk then
+        data.active_profile = apk
     end
 
     -- Default targets
@@ -3772,12 +3972,9 @@ function Workspace:_serialize_user()
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
-            if profile._sdk_key then
-                entry.sdk = profile._sdk_key
+            if profile._tool_keys and #profile._tool_keys > 0 then
+                entry.tools = vim.list_extend({}, profile._tool_keys)
             end
-            -- Serialize only module-specific overrides, not SDK-derived tools
-            local tools = profile._tools_raw
-            if tools and next(tools) then entry.tools = tools end
             user_profiles[profile.key] = entry
         end
     end
@@ -4515,17 +4712,36 @@ end
 --- @param transform fun(tools: table|nil): table|nil
 --- @return boolean user_changed whether active_profile was updated
 function Workspace:apply_profile_renames(renames, transform)
-    -- Build profile lookup from domain objects
     local profiles_by_key = {}
     for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
 
     local user_changed = false
     for _, r in ipairs(renames) do
-        -- Update domain object — key re-derives from updated tools
         local profile = profiles_by_key[r.old_key]
         if profile then
-            profile._tools_raw = transform(profile:tools_data())
-            -- Clear resolved tool objects so tools_data() reads from _tools_raw
+            local new_dict = transform(profile:tools_data())
+            -- Translate the dict-shaped result back to _tool_keys
+            -- (deduped). transform is the legacy interface — it
+            -- operates on `{ module_id → ref }` because callers (e.g.
+            -- `upgrade_profiles_for_tool`) were written before the
+            -- flat array existed. The conversion is one line; we
+            -- don't need to migrate every caller right now.
+            local keys = {}
+            local seen = {}
+            if type(new_dict) == "table" then
+                local mod_ids = {}
+                for mid in pairs(new_dict) do mod_ids[#mod_ids + 1] = mid end
+                table.sort(mod_ids)
+                for _, mid in ipairs(mod_ids) do
+                    local ref = new_dict[mid]
+                    local k = type(ref) == "table" and ref.key or nil
+                    if type(k) == "string" and k ~= "" and not seen[k] then
+                        seen[k] = true
+                        keys[#keys + 1] = k
+                    end
+                end
+            end
+            profile._tool_keys = keys
             profile._tool_objects = nil
             profile:_derive_key()
         end

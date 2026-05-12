@@ -5,7 +5,14 @@ local io_mod = require("loomworks.io")
 M.id = "cmake"
 M.has_keyed_tools = true
 M.has_options = true
-M.languages = { "c++" }
+-- CMake's default `project(name)` call enables both C and CXX, so
+-- almost every cmake project's compileGroups carry "c" plus "c++"
+-- even when no `.c` files exist. Declare both as the static default
+-- so configurations and SDK-derived kits don't trip the
+-- "build also uses c" diagnostic for the empty-LANGUAGES case.
+-- Projects that override `Configuration.languages` (e.g. drop "c"
+-- when they explicitly `project(... LANGUAGES CXX)`) still win.
+M.languages = { "c", "c++" }
 
 local uv = vim.uv or vim.loop
 
@@ -487,7 +494,19 @@ local function resolve_build_dir(project_name, config_name, config_info, workspa
     end
 
     local base = workspace_root .. "/.nvim/build/" .. sanitize_path_component(project_name)
-    local kit_suffix = kit and kit.id or nil
+    -- Build-dir segment: when more than one tool is in the effective
+    -- set (multi-language profile), use the sorted joined keys so a
+    -- profile with different rust+cmake combos doesn't collide. With
+    -- a single tool, fall back to the kit id — identical to the
+    -- legacy single-tool naming so existing cache entries still hit.
+    local kit_suffix = nil
+    if kit then
+        if kit._effective_keys and #kit._effective_keys > 1 then
+            kit_suffix = table.concat(kit._effective_keys, "+")
+        elseif kit.id then
+            kit_suffix = kit.id
+        end
+    end
 
     if multi_config then
         -- Multi-config: one dir per kit (Debug/Release selected at build time via --config)
@@ -1022,6 +1041,13 @@ function M.kits_from_sdk(caps, sdk)
                 clangd_required = caps.clangd_required or false,
                 extra_args = extra_args,
                 sdk_key = sdk.key,
+                -- Explicit kit identity fields. The profile-level
+                -- Toolchain row reads these to render the canonical
+                -- `<platform> <version> <arch>` label without parsing
+                -- `id` or `display`.
+                platform = platform_name,
+                arch = arch,
+                sdk_version = sdk:sdk_version(),
             } }
         end
     end
@@ -1248,6 +1274,81 @@ function M.parse_targets_async(ctx, callback)
     vim.schedule(function()
         callback(M.parse_targets(ctx))
     end)
+end
+
+--- Map cmake's language tokens (the `language` field on per-target
+--- compileGroups in the file-api reply) to the canonical strings we
+--- match against `Configuration.languages` and `Tool.languages`.
+--- Languages cmake exposes that don't have an entry here pass
+--- through lowercased verbatim, so a new toolchain that introduces
+--- a novel language gets surfaced rather than silently dropped.
+local CMAKE_LANG_CANONICAL = {
+    C      = "c",
+    CXX    = "c++",
+    Rust   = "rust",
+    Fortran = "fortran",
+    ASM    = "asm",
+    ["ASM-ATT"]   = "asm",
+    ["ASM-MASM"]  = "asm",
+    ["ASM_NASM"]  = "asm",
+    OBJC   = "objective-c",
+    OBJCXX = "objective-c++",
+    CUDA   = "cuda",
+    Swift  = "swift",
+    HIP    = "hip",
+    ISPC   = "ispc",
+    CSharp = "c#",
+    Java   = "java",
+}
+
+--- Detect the set of languages a cmake configuration actually
+--- enabled. Walks every target's compileGroups in the file-api
+--- codemodel reply, unions the `language` fields, and normalizes
+--- to canonical strings. The configuration must have been
+--- successfully configured at least once (file-api reply must
+--- exist on disk).
+--- @param ctx { build_dir: string, config_name?: string }
+--- @return string[]|nil canonical language list, or nil when no reply exists
+function M.detect_languages(ctx)
+    local build_dir = ctx.build_dir
+    if not build_dir then return nil end
+    local codemodel = find_file_api_reply(build_dir, "codemodel", 2)
+    if not codemodel or not codemodel.configurations then return nil end
+
+    local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+    local config_name = ctx.config_name
+
+    -- Match the configuration (multi-config generators) or take the
+    -- first (single-config generators).
+    local cfg
+    if config_name then
+        for _, c in ipairs(codemodel.configurations) do
+            if c.name == config_name then cfg = c break end
+        end
+    end
+    cfg = cfg or codemodel.configurations[1]
+    if not cfg or not cfg.targets then return nil end
+
+    local seen, list = {}, {}
+    for _, tgt_ref in ipairs(cfg.targets) do
+        if tgt_ref.jsonFile then
+            local detail = read_json_file(reply_dir .. "/" .. tgt_ref.jsonFile)
+            if detail and detail.compileGroups then
+                for _, cg in ipairs(detail.compileGroups) do
+                    local lang = cg.language
+                    if type(lang) == "string" and lang ~= "" then
+                        local canon = CMAKE_LANG_CANONICAL[lang] or lang:lower()
+                        if not seen[canon] then
+                            seen[canon] = true
+                            list[#list + 1] = canon
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(list)
+    return #list > 0 and list or nil
 end
 
 --- Collect flat options from file-api cache-v2 reply.

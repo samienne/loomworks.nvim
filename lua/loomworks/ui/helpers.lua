@@ -80,12 +80,37 @@ M.STATUS_HL = {
 
 M.STATUS_ICON = {
     unconfigured     = "○",
-    configured       = "◆",
-    built            = "●",
-    failed_configure = "✘",
-    failed_build     = "✘",
+    configured       = "◐",
+    built            = "✓",
+    failed_configure = "✗",
+    failed_build     = "✗",
     unknown          = "?",
 }
+
+--- Marker color (separate from row text color). Mapped to the
+--- standard Diagnostic groups so the marker reads as severity
+--- independent of the row's entity color (profiles green,
+--- projects blue, etc.).
+M.STATUS_MARKER_HL = {
+    unconfigured     = "Comment",
+    configured       = "Comment",
+    built            = "DiagnosticOk",
+    failed_configure = "DiagnosticError",
+    failed_build     = "DiagnosticError",
+    deleting         = "DiagnosticError",
+    cleaning         = "DiagnosticError",
+    configuring      = "DiagnosticWarn",
+    building         = "DiagnosticWarn",
+    unknown          = "DiagnosticWarn",
+}
+
+--- Get the marker highlight group for a status. Falls back to
+--- `Comment` (calm) when the status is unknown to the table.
+--- @param status string
+--- @return string
+function M.status_marker_hl(status)
+    return M.STATUS_MARKER_HL[status] or "Comment"
+end
 
 --- Format a status label with its icon prefix.
 --- Running/deleting states use the spinner so no icon is added.
@@ -150,33 +175,28 @@ function M.resolve_config_status_global(unit, cached)
 end
 
 --- Render cached configuration details as leaf lines.
+---
+--- Status is *not* rendered here — callers fold it into the parent
+--- node's header line (matching the profile-level "(status)" suffix)
+--- so the expansion doesn't repeat it.
 --- @param tree loomworks.Tree
---- @param config_status string
---- @param status_hl string
+--- @param config_status string (kept in the signature for call-site
+---   parity; currently unused after status moved to the parent header)
+--- @param status_hl string (likewise unused — see config_status)
 --- @param cached loomworks.CachedConfig|nil (deprecated, reads from unit when nil)
 --- @param fold_prefix? string prefix for foldable sub-nodes (e.g. "App:Debug:ninja-gcc-12")
 --- @param unit? loomworks.ConfigUnit for runtime-only data (targets) and first-class fields
 function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix, unit)
-    tree:leaf("Status: " .. config_status, status_hl)
-
     -- Read from cached table if provided, otherwise from ConfigUnit first-class fields
     local build_dir = cached and cached.build_dir or (unit and unit.build_dir_value)
-    local module_info = cached and cached.module_info or (unit and unit.module_info)
 
     if build_dir then
         tree:leaf("Build dir: " .. build_dir, "Comment")
     end
-    -- Module-specific cached fields (generator/compiler are cmake's shape; this
-    -- renders them when present. A future improvement would let the module
-    -- declare which fields to display).
-    if module_info then
-        if module_info.generator then
-            tree:leaf("Generator: " .. module_info.generator, "Comment")
-        end
-        if module_info.compiler then
-            tree:leaf("Compiler: " .. module_info.compiler, "Comment")
-        end
-    end
+    -- The toolchain (generator/compiler/SDK kit) is shown once per
+    -- profile in the profile-level Toolchain row, so we don't repeat
+    -- it per config here.
+
     -- Targets from ConfigUnit (runtime, not cached)
     local targets = unit and unit.targets or nil
     if targets and next(targets) then

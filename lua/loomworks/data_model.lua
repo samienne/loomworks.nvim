@@ -302,11 +302,28 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
         data._tool_objects = nil
         if data.tools then
             local tool_objs = {}
-            for mod_type, tool_ref in pairs(data.tools) do
-                local mod = ctx.modules[mod_type]
-                if mod then
-                    local tool = mod:find_tool(tool_ref.key)
-                    if tool then tool_objs[mod] = tool end
+            if vim.islist and vim.islist(data.tools) then
+                -- New flat array shape: ["key1", "key2"]. Each key
+                -- resolves once per module that has it in its
+                -- registry — multiple modules can share a key (e.g.
+                -- a kit-from-SDK that's materialized in both cmake's
+                -- and harmony's tool registry).
+                for _, tool_key in ipairs(data.tools) do
+                    for _, mod in pairs(ctx.modules) do
+                        if not tool_objs[mod] then
+                            local tool = mod:find_tool(tool_key)
+                            if tool then tool_objs[mod] = tool end
+                        end
+                    end
+                end
+            else
+                -- Legacy dict shape: { module_id → { key, data, label } }
+                for mod_type, tool_ref in pairs(data.tools) do
+                    local mod = ctx.modules[mod_type]
+                    if mod and type(tool_ref) == "table" then
+                        local tool = mod:find_tool(tool_ref.key)
+                        if tool then tool_objs[mod] = tool end
+                    end
                 end
             end
             if next(tool_objs) then data._tool_objects = tool_objs end
@@ -437,15 +454,37 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                     configuration = project:get_configuration(variant)
                 end
 
-                -- Resolve tool for this project from profile
-                -- Uses tool_for() which checks overrides then SDK
+                -- Resolve the effective tool set this project needs.
+                -- Language-aware: walks `profile._tool_keys` and for each
+                -- language declared by the configuration picks the first
+                -- tool that provides it. Falls back to the old single-tool
+                -- `tool_for(project.type)` path when the configuration
+                -- isn't resolved yet (so we can still compute a build_dir
+                -- for orphaned / partially-resolved units).
                 local tool_data = nil
                 local tool_key = nil
+                local effective_tools = nil
                 if project then
-                    local tool_ref = profile:tool_for(project.type)
-                    if tool_ref then
-                        tool_data = tool_ref.data
-                        tool_key = tool_ref.key
+                    if configuration and profile.tools_for then
+                        local tools = profile:tools_for(configuration)
+                        if tools and #tools > 0 then
+                            effective_tools = {}
+                            for _, t in ipairs(tools) do
+                                effective_tools[#effective_tools + 1] = {
+                                    key = t.key,
+                                    data = t.data,
+                                }
+                            end
+                            tool_data = tools[1].data
+                            tool_key = tools[1].key
+                        end
+                    end
+                    if not tool_data then
+                        local tool_ref = profile:tool_for(project.type)
+                        if tool_ref then
+                            tool_data = tool_ref.data
+                            tool_key = tool_ref.key
+                        end
                     end
                 end
 
@@ -453,7 +492,12 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 local build_dir_id = nil
                 local abs_path = nil
                 if project and deps.compute_build_dir then
-                    build_dir_id, abs_path = deps.compute_build_dir(project, variant, tool_data)
+                    -- Pass the effective tools list when we have one
+                    -- (multi-tool path); otherwise fall back to the
+                    -- legacy single-tool_data call.
+                    local arg = effective_tools and #effective_tools > 0
+                        and effective_tools or tool_data
+                    build_dir_id, abs_path = deps.compute_build_dir(project, variant, arg)
                 end
 
                 -- Accumulate ConfigUnit data (dedup by build_dir_id)

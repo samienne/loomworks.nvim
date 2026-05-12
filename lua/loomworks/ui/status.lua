@@ -115,6 +115,7 @@ local view = View.new({
         ["<C-n>"] = "nuke",
         ["U"]     = "delete_user_prefs",
         ["?"]     = "help",
+        ["K"]     = "hover",
     },
     is_modified = function()
         local lw = require("loomworks")
@@ -158,8 +159,48 @@ local view = View.new({
         "active_set_changed",
         "operation_started",
         "operation_finished",
+        "profile_renamed",
     },
 })
+
+-- When a profile's key changes (e.g. user adds/removes a tool), the
+-- tree's fold state is still keyed by the OLD profile key. Migrate
+-- every fold prefix that embeds the profile key so anything the
+-- user had open stays open through the rename.
+do
+    local events = require("loomworks.events")
+    local PREFIXES = { "profile:", "toolchain:" }
+    events.on("profile_renamed", function(payload)
+        if not payload or not payload.old_key or not payload.new_key then return end
+        if payload.old_key == payload.new_key then return end
+        local folds = tree._folds or {}
+        for _, prefix in ipairs(PREFIXES) do
+            local old_fk = prefix .. payload.old_key
+            local new_fk = prefix .. payload.new_key
+            if folds[old_fk] ~= nil then
+                folds[new_fk] = folds[old_fk]
+                folds[old_fk] = nil
+            end
+        end
+        -- profile_proj fold keys: `profile_proj:<profile_key>:<project_key>`.
+        -- Walk and translate any matching entry. Build the rename
+        -- map first, then apply — mutating during iteration is
+        -- undefined for `pairs`.
+        local old_pp_prefix = "profile_proj:" .. payload.old_key .. ":"
+        local renames = {}
+        for k, v in pairs(folds) do
+            if type(k) == "string" and k:sub(1, #old_pp_prefix) == old_pp_prefix then
+                local new_k = "profile_proj:" .. payload.new_key
+                    .. ":" .. k:sub(#old_pp_prefix + 1)
+                renames[k] = { new_k = new_k, v = v }
+            end
+        end
+        for old_k, info in pairs(renames) do
+            folds[info.new_k] = info.v
+            folds[old_k] = nil
+        end
+    end)
+end
 
 -- ---------------------------------------------------------------------------
 -- Public API

@@ -49,7 +49,17 @@ end
 --- @field is_user boolean from loomworks.json user override
 --- @field from_preset boolean from CMakePresets.json
 --- @field variables table<string, string>|nil variable overrides (name → value)
+--- @field languages string[]|nil explicit list of languages this
+---        configuration needs (e.g. {"c", "c++", "rust"}). When nil,
+---        falls through to `Project._module.languages` at resolution.
+---        Determines which tools in `profile.tools` are "in scope"
+---        for ConfigUnits derived from this configuration.
 --- @field role string|nil special role (e.g., "compile_commands")
+--- @field _detected_languages string[]|nil languages actually enabled
+---        by the last successful configure (filled by
+---        `module.detect_languages` post-configure). Runtime-only
+---        in v1 — not persisted to cache yet. Drives the soft
+---        "language declared vs enabled" diagnostic.
 --- @field _removed boolean
 --- @field _source_missing boolean true when this Configuration exists as
 ---        a skeleton — created because a config_set mapping,
@@ -187,11 +197,27 @@ function Configuration:_update(data)
     -- Variable overrides (generic, not module-specific)
     self.variables = data.variables or nil
 
+    -- Languages this configuration requires. Explicit nil keeps the
+    -- "no override" state — resolution falls through to module default.
+    -- Sanitize defensively: only accept arrays of strings.
+    if type(data.languages) == "table" then
+        local list = {}
+        for _, lang in ipairs(data.languages) do
+            if type(lang) == "string" and lang ~= "" then
+                list[#list + 1] = lang
+            end
+        end
+        self.languages = #list > 0 and list or nil
+    else
+        self.languages = nil
+    end
+
     -- Module-specific config: everything except the generic fields above
     local module_config = {}
     local generic = {
         is_default = true, is_user = true, from_preset = true,
         role = true, inherits = true, options = true, variables = true,
+        languages = true,
         prefix = true, base_name = true,
     }
     for k, v in pairs(data) do
@@ -273,6 +299,27 @@ end
 --- @return boolean
 function Configuration:is_abstract()
     return not self.module_config or self.module_config.variant == nil
+end
+
+--- Get the effective list of languages this configuration needs.
+--- Explicit `languages` on the configuration wins; otherwise falls
+--- through to the project module's static declaration.
+---
+--- Distinguishes from `self.languages` (the override slot) so the
+--- editor can show empty/inherited state separately. Resolution
+--- consumers (build dir, profile validity, tool lookup) call this
+--- accessor — never `self.languages` directly — so the fallback is
+--- centralized.
+--- @return string[] never nil; empty list means "no language needed"
+function Configuration:effective_languages()
+    if self.languages and #self.languages > 0 then
+        return self.languages
+    end
+    local mod = self._project and self._project._module
+    if mod and mod.languages and #mod.languages > 0 then
+        return mod.languages
+    end
+    return {}
 end
 
 --- Validity gate for build/configure/clean operations and UI
@@ -404,6 +451,7 @@ function Configuration:serialize_user_override()
     end
     if self.options and next(self.options) then entry.options = self.options end
     if self.variables and next(self.variables) then entry.variables = self.variables end
+    if self.languages and #self.languages > 0 then entry.languages = self.languages end
     if self.role then entry.role = self.role end
     -- Only emit if there's something beyond the bare default
     if not next(entry) then return nil end
