@@ -18,22 +18,32 @@ hl(0, "LoomworksDeleting",     { link = "DiagnosticError", default = true })
 hl(0, "LoomworksUnknown",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksActionable",   { link = "Normal",          default = true })
 
--- Entity-color scheme: profiles are blue, projects are green.
--- Status is conveyed by the leading marker icon's color, never by the
--- row text. Active profile gets bold; the row text color stays the
--- same so the active/inactive distinction is purely typographic.
+-- Entity-color scheme: profiles are green, projects are blue. The
+-- active profile uses a third, deliberately different hue —
+-- typically `Title` (theme's section-heading color, varies by theme
+-- but reliably distinct from green/blue). Falls back to `Keyword`
+-- if a theme leaves Title undefined.
 local function _fg(name)
     local ok, h = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
     if not ok then return nil end
     return h.fg
 end
 
-local _profile_fg = _fg("DiagnosticInfo") or "#00afff"
-local _project_fg = _fg("DiagnosticOk")   or "#5fd700"
+local function _fg_chain(names, fallback)
+    for _, name in ipairs(names) do
+        local fg = _fg(name)
+        if fg then return fg end
+    end
+    return fallback
+end
 
-hl(0, "LoomworksProfile",       { fg = _profile_fg,              default = true })
-hl(0, "LoomworksProfileActive", { fg = _profile_fg, bold = true, default = true })
-hl(0, "LoomworksProject",       { fg = _project_fg,              default = true })
+local _profile_fg        = _fg("DiagnosticOk")   or "#5fd700"
+local _profile_active_fg = _fg_chain({ "Title", "Keyword" }, "#d75fff")
+local _project_fg        = _fg("DiagnosticInfo") or "#00afff"
+
+hl(0, "LoomworksProfile",       { fg = _profile_fg,        default = true })
+hl(0, "LoomworksProfileActive", { fg = _profile_active_fg, default = true })
+hl(0, "LoomworksProject",       { fg = _project_fg,        default = true })
 
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)
   local path = cmd.args ~= "" and cmd.args or nil

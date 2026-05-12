@@ -388,9 +388,11 @@ return function(tree, ctx)
             end
         end
 
-        -- Profile rows: blue for every profile. Active uses bold to
-        -- differentiate. Shared-only profiles drop to `Comment` for
-        -- the publish UX.
+        -- Profile rows: green for inactive profiles. The active
+        -- profile uses a deliberately different hue
+        -- (`LoomworksProfileActive` — typically the theme's `Title`
+        -- color) so it pops without leaning on font-weight, which
+        -- some themes render indistinctly.
         local hl
         if group == "shared" then
             hl = "Comment"
