@@ -137,7 +137,18 @@ Loomworks configuration fields in the workspace config:
 <type>.configurations.<name>.options        — per-config -D flags
 <type>.configurations.<name>.toolchain      — path to .cmake toolchain file
 <type>.configurations.<name>.generator      — override generator
+<type>.configurations.<name>.languages      — explicit language list override
+                                              (string array; falls through to
+                                              module.languages when omitted)
 ```
+
+The `languages` field is the resolution axis that drives which tools
+in a profile apply to this configuration. Default fallback is the
+module's static `languages` declaration. User can override to add or
+drop languages — e.g. when a `DISABLE_RUST_LIBRARIES` flag gates out
+rust for a specific configuration, the user removes "rust" from that
+configuration's `languages`. Empty explicit list means "no tools
+needed" (rare).
 
 **Inheritance model** (cmake): custom configs inherit from one or more bases.
 Variant (CMAKE_BUILD_TYPE) is derived from the first base with a variant.
@@ -261,16 +272,23 @@ config under `"configuration_sets"`. It binds one configuration per project.
 
 ### 1.5 Tool
 
-A tool is a module-specific toolchain selection. For cmake projects this means
-a generator + compiler combination. Each module declares whether it has
-"keyed tools" — tools that produce distinct build artifacts requiring separate
-cache entries.
+A tool is a concrete buildable unit — a compiler chain, a kit derived from
+an SDK, or a similar build orchestrator. Every Tool declares a `languages`
+list (e.g. `["c", "c++"]` for ninja+clang, `["rust"]` for rust-nightly,
+`["arkts"]` for DevEco) — the strings are opaque to core, drawn from
+each module's static `languages` declaration unless the producer
+overrides per-tool. Tools are looked up by **string key** from a
+module-owned registry (`Module._tools`); the same kit identity can be
+registered to multiple modules' registries when more than one module
+can consume it (e.g. an OHOS HarmonyOS arm64-v8a kit appears in both
+cmake's and harmony's registries with the same key, different
+module-specific `data`).
 
-- **Keyed tools** (cmake, meson): cache key = `"variant:tool_key"` (e.g.,
-  `"Debug:ninja-gcc-12"`, `"Debug:gcc-14.2.0"`). Each generator+compiler (cmake)
-  or compiler (meson) produces different build output.
-- **Non-keyed tools** (harmony, typescript): cache key = `"variant"`. The tool
-  does not affect the cache key.
+- **Keyed tools** (cmake, meson): cache key encodes the tool —
+  `"Debug:ninja-gcc-12"`, `"Debug:gcc-14.2.0"`. Each generator+compiler
+  combo produces distinct build output.
+- **Non-keyed tools** (typescript shim): cache key = `"variant"`. The
+  tool does not affect the cache key.
 
 Tool detection runs asynchronously in the background:
 - Automatically after workspace initialization completes
@@ -278,38 +296,94 @@ Tool detection runs asynchronously in the background:
 
 Detection results are cached in memory for the session. Merge and
 build operations work without detection results — cached profiles
-store their own tool_data. Detection is only needed to populate the
-tool entries list in the Configuration Sets UI and to materialize
-new profiles.
+store the tool keys they need, and the registry is rebuilt on load
+from `detect_tools` + SDK enrichment.
 
 Each module declares a static `has_keyed_tools` property (boolean)
 so that config key construction works before detection completes.
 
+### 1.5.1 Languages
+
+Languages are first-class **string identifiers** that drive the
+profile→project→tool resolution. Core treats them as opaque strings —
+no normalization, no canonicalization. Each module declares a static
+`languages` list (e.g. `cmake.languages = {"c++"}`, `meson.languages =
+{"c", "c++"}`, `harmony.languages = {"arkts"}`) that serves as the
+default for that module's configurations and tools.
+
+Languages live in three places:
+
+| Owner | Field | Source |
+|-------|-------|--------|
+| Module | `module.languages` | Static, declared by the module |
+| Tool | `Tool.languages` | Producer-supplied or falls through to module's |
+| Configuration | `Configuration.languages` (optional) | User override; falls through to `module.languages` via `Configuration:effective_languages()` |
+
+Resolution is **declarative**: a profile is invalid when any of its
+configurations declares a language no tool in `profile._tool_keys`
+provides. Auto-detection from build-system metadata (cmake file-api,
+meson introspect) is a future refinement — a soft diagnostic, not
+authoritative.
+
 ### 1.6 Profile
 
-A profile is a fully resolved buildable unit. Every profile stores its own
-**mappings** (project_key → variant) directly. Profiles are what users
-activate, build, configure, and delete.
+A profile is a fully resolved buildable unit. Every profile stores its
+own **mappings** (project_key → variant) directly, plus an **ordered
+list of tool keys** (`profile.tools = ["key1", "key2"]`). Profiles
+are what users activate, build, configure, and delete.
 
 All profiles are **set-based** — they reference a configuration set and
 derive their mappings from it on every remerge. Adding/removing projects
 in the config automatically updates the profile.
+
+**Toolchain shape**: a profile carries `tools` as a flat array of
+string keys (same shape in user.json and loomworks.json). Order is
+user-controlled — first-match-per-language wins during resolution.
+Tool keys carry SDK provenance via the kit_id prefix
+(e.g. `ohos-harmonyos-arm64-v8a`); there is no separate `sdk` field
+on the profile.
+
+Resolution is **language-keyed**:
+
+- `Profile:tools_for(configuration)` walks `_tool_keys`, looks each key
+  up in the configuration's project module's registry
+  (`Module._tools`), and for each language in
+  `configuration:effective_languages()` returns the first tool that
+  provides it.
+- `Profile:missing_languages_for(configuration)` reports the gap.
+- A profile is **incomplete** when any of its (project, configuration)
+  pairs has an unresolved language (the `is_valid` gate).
+
+**Build dir naming**: when the effective tool set has more than one
+entry, the build_dir segment is the sorted+joined tool keys
+(`build/<project>/<key1+key2>/<variant>`). Single-tool segments are
+identical to the legacy `build/<project>/<key>/<variant>` shape so
+existing cache entries survive.
 
 **Profile keys are opaque identifiers** — they exist solely for cache
 persistence and display. They carry no semantic meaning and must never be
 parsed, compared, or used to match profiles to other objects. All matching
 uses object references or property-based comparison.
 
-**Profile key formats** (write-time conventions, not runtime contracts):
+**Profile key format**: `<set_name>:<sorted-deduped-tool-keys>` joined
+with `+`. Bare `<set_name>` when no tools (typescript-only profile).
+Examples:
 
-| Variant    | Key format                        | configuration_set |
-|------------|-----------------------------------|-------------------|
-| Set-based  | `set_name:tool_key` or `set_name` | non-nil           |
-| Pinned     | `project/config_key`              | nil               |
-| Explicit   | User-defined key                  | non-nil (typically)|
+| Profile shape | Key |
+|---------------|-----|
+| Set-based, single tool | `debug:ninja-gcc-12` |
+| Set-based, shared kit (cmake + harmony) | `Debug-harmony:ohos-harmonyos-arm64-v8a` |
+| Multi-language (cmake + rust) | `debug:ninja-clang-22.1.0+rust-nightly` |
+| Set-based, no tool | `debug` |
+| Pinned | `project/config_key` (configuration_set is nil) |
 
 Key collisions are resolved by appending `-2`, `-3`, etc. via
 `cache.next_available_key()`.
+
+**Unused-tool diagnostic**: a non-blocking warning surfaces when a
+tool in `profile._tool_keys` provides no language any configuration
+in the profile uses. The profile remains buildable; the diagnostic
+prompts the user to remove dead weight.
 
 **Profile lifecycle**:
 
@@ -2553,11 +2627,23 @@ above and document the per-module capability shape alongside.
 
 ### 10.6 Future direction
 
-Profile-level SDK selection is partially implemented and tracked in
-BACKLOG.md. The current shape resolves SDK-supplied tools lazily on
-each `Profile:tool_for(module)` call rather than persisting them in
-the profile's `tools` dict. That keeps SDK refresh cheap (re-query on
-load) at the cost of slightly more code in the access path.
+Profile-level toolchain selection is now language-keyed: profiles
+carry a flat array of tool keys (`profile.tools`), each tool declares
+its language coverage (`Tool.languages`), and each Configuration
+declares the languages it needs (`Configuration.languages`, defaulting
+to `module.languages`). SDK-supplied tools land in their module's
+`_tools` registry via `Workspace:_enrich_tools_from_sdks` on every
+remerge, identified by the same key shape host tools use so
+cross-module identity is preserved. SDK refresh remains cheap because
+the registry is rebuilt from cache + detection on each load —
+profiles store only keys, not tool_data, except in the legacy
+shape which migrates transparently on first save.
+
+Post-configure language detection (cmake file-api, meson introspect)
+is a future refinement — a soft diagnostic that suggests adding a
+language to a configuration when the actual configure enabled more
+than was declared. Not authoritative; user remains the source of
+truth for `Configuration.languages`.
 
 ---
 
