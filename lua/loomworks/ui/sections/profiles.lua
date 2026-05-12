@@ -53,7 +53,30 @@ local function render_profile_details(tree, profile, lw)
             tree:item("  " .. label, {
                 hl = hl,
                 direct = true,
-                enter_label = "Show",
+                enter_label = "Tool actions",
+                -- Enter opens a confirmation picker rather than
+                -- deleting outright — accidentally hitting Enter on
+                -- the wrong row was too easy to do irreversibly.
+                -- The `D` shortcut is still wired below for users
+                -- who explicitly want the direct path.
+                on_enter = function()
+                    local key = entry.key
+                    local actions = {
+                        { label = "Delete tool",
+                          do_it = function()
+                              profile:remove_tool(key)
+                              ws:_save_user()
+                              ws:remerge()
+                          end },
+                        { label = "Cancel", do_it = function() end },
+                    }
+                    vim.ui.select(actions, {
+                        prompt = "Tool '" .. entry.label .. "':",
+                        format_item = function(a) return a.label end,
+                    }, function(choice)
+                        if choice and choice.do_it then choice.do_it() end
+                    end)
+                end,
                 on_delete = function()
                     profile:remove_tool(entry.key)
                     ws:_save_user()
