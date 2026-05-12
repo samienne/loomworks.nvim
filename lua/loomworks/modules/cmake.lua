@@ -5,7 +5,14 @@ local io_mod = require("loomworks.io")
 M.id = "cmake"
 M.has_keyed_tools = true
 M.has_options = true
-M.languages = { "c++" }
+-- CMake's default `project(name)` call enables both C and CXX, so
+-- almost every cmake project's compileGroups carry "c" plus "c++"
+-- even when no `.c` files exist. Declare both as the static default
+-- so configurations and SDK-derived kits don't trip the
+-- "build also uses c" diagnostic for the empty-LANGUAGES case.
+-- Projects that override `Configuration.languages` (e.g. drop "c"
+-- when they explicitly `project(... LANGUAGES CXX)`) still win.
+M.languages = { "c", "c++" }
 
 local uv = vim.uv or vim.loop
 

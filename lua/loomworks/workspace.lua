@@ -1764,20 +1764,24 @@ function Workspace:diagnostics()
                     end
 
                     if #missing_from_config > 0 or #missing_from_build > 0 then
+                        -- Compact message — the source prefix
+                        -- (`Project/<key>/<config>`) already names
+                        -- the configuration, so the body just states
+                        -- the delta. Most lines fit in a single
+                        -- pane width without overflow.
                         local parts = {}
                         if #missing_from_config > 0 then
-                            parts[#parts + 1] = "build also uses "
+                            parts[#parts + 1] = "build adds "
                                 .. table.concat(missing_from_config, ", ")
                         end
                         if #missing_from_build > 0 then
-                            parts[#parts + 1] = "declared but unused: "
+                            parts[#parts + 1] = "declared unused: "
                                 .. table.concat(missing_from_build, ", ")
                         end
                         add({
                             severity = "warn",
                             source = "Project/" .. project.key .. "/" .. cfg.name,
-                            message = project.key .. "/" .. cfg.name
-                                .. " language declaration differs from build: "
+                            message = "language drift — "
                                 .. table.concat(parts, "; "),
                             target_fold_key = "config:" .. project.key
                                 .. ":" .. cfg.name,
