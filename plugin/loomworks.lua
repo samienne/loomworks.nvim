@@ -38,7 +38,7 @@ local function _fg_chain(names, fallback)
 end
 
 local _profile_fg        = _fg("DiagnosticOk")   or "#5fd700"
-local _profile_active_fg = _fg_chain({ "Title", "Keyword" }, "#d75fff")
+local _profile_active_fg = _fg_chain({ "Keyword", "Title" }, "#d75fff")
 local _project_fg        = _fg("DiagnosticInfo") or "#00afff"
 
 hl(0, "LoomworksProfile",       { fg = _profile_fg,        default = true })
