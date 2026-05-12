@@ -514,14 +514,25 @@ end
 --- Identify languages required by a configuration that no tool in
 --- this profile covers. Returned strings come straight from the
 --- configuration's `effective_languages()` — no normalization.
+---
+--- Shim modules (typescript) declare `languages` for DAP routing
+--- but have no build tool to "cover" them — neither `has_keyed_tools`
+--- nor `kits_from_sdk`. For those we return no gaps regardless of
+--- the configuration's language list: there's nothing the user could
+--- pick to satisfy them.
 --- @param configuration loomworks.Configuration
 --- @return string[] missing
 function Profile:missing_languages_for(configuration)
     if not configuration then return {} end
+    local mod = configuration._project and configuration._project._module
+    if not mod then return {} end
+
+    local needs_tool = mod.has_keyed_tools
+        or (mod.impl and mod.impl.kits_from_sdk)
+    if not needs_tool then return {} end
+
     local langs = configuration:effective_languages()
     if #langs == 0 then return {} end
-    local mod = configuration._project and configuration._project._module
-    if not mod then return langs end
 
     local covered = {}
     for _, key in ipairs(self._tool_keys or {}) do
