@@ -784,7 +784,14 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         self._user_config_overlay = next(user_overlay) and user_overlay or nil
         user_data = raw_user
     else
-        active_profile_key = self._active_profile_key
+        -- Derive the key string from the live active-profile *object*.
+        -- The cached `_active_profile_key` field is a load-time
+        -- artifact — once we have a resolved Profile, its `.key`
+        -- is the authoritative current value. Reading the string
+        -- directly would miss key changes from in-place mutations
+        -- (e.g. `Profile:add_tool` re-deriving the key).
+        active_profile_key = self._active_profile and self._active_profile.key
+            or self._active_profile_key
         default_target_data = self._default_target_data
         device_data = self._device_data
         -- Reconstruct user overlay from domain objects (items with local or local+shared intent)
@@ -3855,8 +3862,14 @@ function Workspace:_serialize_user()
     local data = { _meta = { version = 2 } }
 
     -- Active selection
-    if self._active_profile_key then
-        data.active_profile = self._active_profile_key
+    -- Derive from the live Profile object — `_active_profile_key`
+    -- is only the post-load cache of the string; mutations
+    -- (e.g. add_tool changing the derived key) update the object,
+    -- not the cached string.
+    local apk = self._active_profile and self._active_profile.key
+        or self._active_profile_key
+    if apk then
+        data.active_profile = apk
     end
 
     -- Default targets

@@ -754,18 +754,17 @@ function Profile:has_device_module()
     return false
 end
 
---- Carry workspace state across a profile key change. Re-points the
---- active profile reference (if it pointed at the old key) and
---- emits `profile_renamed` so listeners (e.g. the status tree) can
---- migrate fold state, cursor position, etc. tied to the old key.
+--- Emit `profile_renamed` so listeners (e.g. the status tree) can
+--- migrate string-keyed UI state (fold keys, jumplist marks) tied
+--- to the previous key. The active-profile and other workspace
+--- references are object pointers — they stay valid across the
+--- key change without our intervention; `_save_user` and `remerge`
+--- read the live `_active_profile.key` directly.
 --- @param old_key string|nil
 function Profile:_after_key_rename(old_key)
     if not old_key or old_key == self.key then return end
     local ws = self._workspace
     if not ws then return end
-    if ws._active_profile_key == old_key then
-        ws._active_profile_key = self.key
-    end
     if ws._core and ws._core._deps and ws._core._deps.events then
         ws._core._deps.events.emit("profile_renamed", {
             old_key = old_key, new_key = self.key,
