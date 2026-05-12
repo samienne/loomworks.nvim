@@ -3,6 +3,18 @@
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
 
+--- Local helper: linear `contains` on a small string array. The
+--- profile.tool_keys list is short enough that hashing isn't worth
+--- the allocation overhead at render time.
+--- @param list string[]|nil
+--- @param item string
+--- @return boolean
+local function contains(list, item)
+    if not list then return false end
+    for _, v in ipairs(list) do if v == item then return true end end
+    return false
+end
+
 --- Render profile details when expanded.
 --- @param tree loomworks.Tree
 --- @param profile loomworks.Profile
@@ -15,83 +27,88 @@ local function render_profile_details(tree, profile, lw)
         tree:leaf("Set: " .. profile._config_set_ref.name, "Comment")
     end
 
-    -- Toolchain: a single profile-level row. The toolchain is one
-    -- decision — host tools or an SDK kit identity (platform × arch) —
-    -- shared across every tool-needing module in the profile. The
-    -- picker offers kit identities (not per-module entries); applying
-    -- one writes per-module tool_data atomically.
+    -- Toolchain section: one row per tool in `profile._tool_keys`.
+    -- Each row is a single tool selection; the user adds and removes
+    -- entries. Resolution is language-keyed — at build time each
+    -- ConfigUnit picks the first tool in the array that provides one
+    -- of its configuration's required languages.
     local ws = profile._workspace
     local needing = profile:tool_needing_modules()
-    if #needing > 0 then
-        local id = profile:toolchain_identity()
-        local hl
-        if id.kind == "sdk_kit" and not id.resolved then
-            hl = "DiagnosticWarn"
-        elseif id.kind == "incomplete" then
-            hl = "DiagnosticWarn"
-        else
-            hl = "Comment"
+    local entries = profile:toolchain_entries()
+
+    if #needing > 0 or #entries > 0 then
+        tree:leaf("Toolchain:", "LoomworksActionable")
+
+        for _, entry in ipairs(entries) do
+            local lang_suffix = ""
+            if #entry.languages > 0 then
+                lang_suffix = "  [" .. table.concat(entry.languages, ", ") .. "]"
+            end
+            local hl = entry.resolved and "Comment" or "DiagnosticWarn"
+            local label = entry.label .. lang_suffix
+            if not entry.resolved then
+                label = label .. " (unresolved)"
+            end
+
+            tree:item("  " .. label, {
+                hl = hl,
+                direct = true,
+                enter_label = "Show",
+                on_delete = function()
+                    profile:remove_tool(entry.key)
+                    ws:_save_user()
+                    ws:remerge()
+                end,
+            })
         end
 
-        tree:item("Toolchain: " .. id.label, {
-            hl = hl,
+        -- "Add tool" sentinel: opens the picker. The picker offers
+        -- every tool currently known to the workspace registries
+        -- across all modules — host-detected + SDK-derived kits.
+        tree:item("  + Add tool", {
+            hl = "LoomworksActionable",
             direct = true,
-            enter_label = "Pick toolchain",
             on_enter = function()
-                local entries = ws:available_profile_toolchains(profile)
-                if #entries == 0 then
+                local items = {}
+                local seen_keys = {}
+                for _, mod in pairs(ws._modules or {}) do
+                    for _, tool in pairs(mod._tools or {}) do
+                        if tool.key and not tool._removed
+                                and not seen_keys[tool.key]
+                                and not contains(profile._tool_keys or {}, tool.key) then
+                            seen_keys[tool.key] = true
+                            items[#items + 1] = {
+                                key = tool.key,
+                                label = tool.label or tool.key,
+                                languages = tool.languages or {},
+                                module_id = mod.id,
+                            }
+                        end
+                    end
+                end
+
+                if #items == 0 then
                     vim.notify(
-                        "loomworks: no toolchains available. Detect host"
-                        .. " tools or add an SDK.",
+                        "loomworks: no tools available to add. Detect "
+                        .. "host tools or add an SDK.",
                         vim.log.levels.INFO)
                     return
                 end
 
-                local items = vim.list_extend({}, entries)
-                items[#items + 1] = { kind = "none",
-                    label = "(none — clear selection)" }
+                table.sort(items, function(a, b) return a.label < b.label end)
 
-                local cur_sdk_key = profile._sdk_key
                 vim.ui.select(items, {
-                    prompt = "Toolchain:",
+                    prompt = "Add tool:",
                     format_item = function(item)
-                        local is_current = false
-                        if item.kind == "sdk_kit" then
-                            local td_match = false
-                            if profile._tools_raw then
-                                for _, ref in pairs(profile._tools_raw) do
-                                    local td = ref and ref.data
-                                    if td and td.platform == item.platform
-                                            and td.arch == item.arch then
-                                        td_match = true
-                                        break
-                                    end
-                                end
-                            end
-                            is_current = cur_sdk_key == item.sdk.key and td_match
-                        elseif item.kind == "host" then
-                            local cur = profile:tool_for(item.module_id)
-                            is_current = not cur_sdk_key
-                                and cur and cur.key == item.tool.key
-                        elseif item.kind == "none" then
-                            is_current = not cur_sdk_key
-                                and (not profile._tools_raw
-                                    or not next(profile._tools_raw))
+                        local langs = ""
+                        if #item.languages > 0 then
+                            langs = "  [" .. table.concat(item.languages, ", ") .. "]"
                         end
-                        local prefix_str = ""
-                        if item.kind == "sdk_kit" then
-                            prefix_str = "[" .. item.sdk:display_name() .. "] "
-                        end
-                        return prefix_str .. item.label
-                            .. (is_current and " (current)" or "")
+                        return item.label .. langs
                     end,
                 }, function(choice)
                     if not choice then return end
-                    if choice.kind == "none" then
-                        profile:set_profile_toolchain(nil)
-                    else
-                        profile:set_profile_toolchain(choice)
-                    end
+                    profile:add_tool(choice.key)
                     ws:_save_user()
                     ws:remerge()
                 end)

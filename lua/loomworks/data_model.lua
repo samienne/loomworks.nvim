@@ -302,11 +302,28 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
         data._tool_objects = nil
         if data.tools then
             local tool_objs = {}
-            for mod_type, tool_ref in pairs(data.tools) do
-                local mod = ctx.modules[mod_type]
-                if mod then
-                    local tool = mod:find_tool(tool_ref.key)
-                    if tool then tool_objs[mod] = tool end
+            if vim.islist and vim.islist(data.tools) then
+                -- New flat array shape: ["key1", "key2"]. Each key
+                -- resolves once per module that has it in its
+                -- registry — multiple modules can share a key (e.g.
+                -- a kit-from-SDK that's materialized in both cmake's
+                -- and harmony's tool registry).
+                for _, tool_key in ipairs(data.tools) do
+                    for _, mod in pairs(ctx.modules) do
+                        if not tool_objs[mod] then
+                            local tool = mod:find_tool(tool_key)
+                            if tool then tool_objs[mod] = tool end
+                        end
+                    end
+                end
+            else
+                -- Legacy dict shape: { module_id → { key, data, label } }
+                for mod_type, tool_ref in pairs(data.tools) do
+                    local mod = ctx.modules[mod_type]
+                    if mod and type(tool_ref) == "table" then
+                        local tool = mod:find_tool(tool_ref.key)
+                        if tool then tool_objs[mod] = tool end
+                    end
                 end
             end
             if next(tool_objs) then data._tool_objects = tool_objs end

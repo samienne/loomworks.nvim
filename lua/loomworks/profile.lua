@@ -142,9 +142,12 @@ end
 --- @field _removed boolean
 --- Data fields (set during _apply):
 --- @field _configuration_set_name string|nil set name for set-based profiles
---- @field _tools_raw table|nil raw tools dict from deserialization (authoritative for mutations)
---- @field _sdk loomworks.SDK|nil SDK domain object reference
---- @field _sdk_key string|nil SDK key for serialization
+--- @field _tool_keys string[] authoritative list of tool keys this profile uses.
+---        Order is user-controlled (used by first-match-per-language
+---        resolution). Stored on disk as a flat string array.
+--- @field _sdk loomworks.SDK|nil SDK domain object reference (resolved at sync time
+---        from the first kit-derived tool in `_tool_keys`)
+--- @field _sdk_key string|nil cached SDK key for runtime queries
 --- @field _default_target_descriptor table|nil user.json default target for this profile
 --- @field _device_serial string|nil selected device serial for this profile
 --- Resolved references (set during _apply):
@@ -204,17 +207,54 @@ function Profile:_mark_user_owned()
     end
 end
 
+--- Read the canonical `_tool_keys` array from a profile's raw data.
+--- Accepts both the new array shape (`tools: ["key1", "key2"]`) and
+--- the legacy dict shape (`tools: { module_id → {key, data, label} }`)
+--- so existing user.json files migrate transparently on first load.
+--- Returns a deduplicated array; order is preserved from the input.
+--- @param tools_data any
+--- @return string[]
+local function read_tool_keys(tools_data)
+    if not tools_data then return {} end
+    local result = {}
+    local seen = {}
+    if vim.islist and vim.islist(tools_data) then
+        for _, k in ipairs(tools_data) do
+            if type(k) == "string" and k ~= "" and not seen[k] then
+                seen[k] = true
+                result[#result + 1] = k
+            end
+        end
+        return result
+    end
+    if type(tools_data) == "table" then
+        -- Legacy dict: { module_id → ref }. Collect keys in module-id
+        -- sort order so the migration is deterministic across loads.
+        local mod_ids = {}
+        for mid in pairs(tools_data) do mod_ids[#mod_ids + 1] = mid end
+        table.sort(mod_ids)
+        for _, mid in ipairs(mod_ids) do
+            local ref = tools_data[mid]
+            local k = type(ref) == "table" and ref.key or nil
+            if type(k) == "string" and k ~= "" and not seen[k] then
+                seen[k] = true
+                result[#result + 1] = k
+            end
+        end
+    end
+    return result
+end
+
 --- Update all data fields in place (preserves table identity).
 --- Pre-resolved fields (_tool_objects, _config_set_ref) are set by _sync_profiles.
 --- @param data loomworks.ProfileDef
 function Profile:_apply(data)
     self._configuration_set_name = data.configuration_set
-    self._tools_raw = data.tools or nil
+    self._tool_keys = read_tool_keys(data.tools)
     self._sdk_key = data.sdk or nil
     -- SDK domain object resolved during _sync_profiles or set_sdk()
     if data._sdk then
         self._sdk = data._sdk
-        -- Update key to match resolved SDK (migration from old format)
         self._sdk_key = data._sdk.key
     end
 
@@ -240,8 +280,9 @@ function Profile:_apply(data)
 end
 
 --- Compute and set self.key from the profile's data fields.
---- Format: config_set:tool_keys (sorted, joined with +)
---- SDK key is included alongside module override keys.
+--- Format: `<set>:<sorted-deduped-tool-keys>` joined with `+`.
+--- The SDK key is NOT included separately — tool keys carry SDK
+--- provenance via their kit_id prefix (e.g. `ohos-harmonyos-arm64-v8a`).
 function Profile:_derive_key()
     if not self._configuration_set_name then
         self.key = "unnamed"
@@ -249,39 +290,25 @@ function Profile:_derive_key()
     end
 
     local parts = {}
-
-    -- SDK key
-    if self._sdk_key then
-        parts[#parts + 1] = self._sdk_key
-    end
-
-    -- Module-specific tool override keys (not SDK-derived)
-    if self._tools_raw then
-        for _, tool_ref in pairs(self._tools_raw) do
-            if tool_ref.key then
-                parts[#parts + 1] = tool_ref.key
-            end
-        end
-    elseif self._tool_objects then
-        for _, tool in pairs(self._tool_objects) do
-            if tool.key then
-                parts[#parts + 1] = tool.key
-            end
+    local seen = {}
+    for _, k in ipairs(self._tool_keys or {}) do
+        if not seen[k] then
+            seen[k] = true
+            parts[#parts + 1] = k
         end
     end
-
     table.sort(parts)
+
     if #parts > 0 then
         self.key = self._configuration_set_name .. ":" .. table.concat(parts, "+")
     else
         self.key = self._configuration_set_name
     end
 
-    -- Debug: log derived key
     if self._workspace and self._workspace._core then
-        self._workspace._core._deps.log:debug("Profile key derived: '%s' (sdk_key=%s, tools_raw=%s)",
-            self.key, tostring(self._sdk_key),
-            self._tools_raw and vim.inspect(vim.tbl_keys(self._tools_raw)) or "nil")
+        self._workspace._core._deps.log:debug(
+            "Profile key derived: '%s' (tool_keys=%s)",
+            self.key, vim.inspect(self._tool_keys))
     end
 end
 
@@ -353,27 +380,47 @@ function Profile:_resolve_sdk_tool(mod_type)
     }
 end
 
---- Derive tools dict from explicit selections only.
---- Returns module-specific overrides (_tools_raw or _tool_objects).
---- Does NOT include SDK-derived tools — those are resolved lazily
---- per-project via tool_for(). This keeps the profile key clean.
---- @return table<string, { key: string, data: table, label: string|nil }>|nil
-function Profile:tools_data()
-    if self._tools_raw and next(self._tools_raw) then
-        return self._tools_raw
-    end
-    if self._tool_objects then
-        local result = {}
-        for mod, tool in pairs(self._tool_objects) do
-            result[mod.id] = {
-                key = tool.key,
-                data = tool.data,
-                label = tool.label,
-            }
-        end
-        if next(result) then return result end
+--- Find a module domain object by id within the workspace.
+--- @param workspace loomworks.Workspace
+--- @param mod_type string
+--- @return loomworks.Module|nil
+local function find_module(workspace, mod_type)
+    if not workspace or not workspace._modules then return nil end
+    for _, m in pairs(workspace._modules) do
+        if m.id == mod_type then return m end
     end
     return nil
+end
+
+--- Legacy compat shim: synthesize the per-module `tools` dict from
+--- the new `_tool_keys` array. For each key in the array, find every
+--- module that has a Tool by that key in its registry; emit one
+--- dict entry per (module, key) pair (first key per module wins so
+--- the shape matches the historic invariant of "one tool per module
+--- type"). Callers should migrate to `Profile:tools_for(configuration)`
+--- (language-aware) or read `_tool_keys` directly.
+--- @return table<string, loomworks.ToolRef>|nil
+function Profile:tools_data()
+    if not self._tool_keys or #self._tool_keys == 0 then return nil end
+    local ws = self._workspace
+    if not ws or not ws._modules then return nil end
+
+    local result = {}
+    for _, key in ipairs(self._tool_keys) do
+        for _, mod in pairs(ws._modules) do
+            if not result[mod.id] then
+                local tool = mod:find_tool(key)
+                if tool and not tool._removed then
+                    result[mod.id] = {
+                        key = tool.key,
+                        data = tool.data,
+                        label = tool.label,
+                    }
+                end
+            end
+        end
+    end
+    return next(result) and result or nil
 end
 
 --- Generate a definition suitable for loomworks.json.
@@ -383,15 +430,8 @@ function Profile:to_config_def()
     if self._configuration_set_name then
         def.configuration_set = self._configuration_set_name
     end
-    -- Extract tool key for the definition (kit_id)
-    local tools = self:tools_data()
-    if tools then
-        for _, tool_ref in pairs(tools) do
-            if tool_ref.key then
-                def.kit_id = tool_ref.key
-                break
-            end
-        end
+    if self._tool_keys and #self._tool_keys > 0 then
+        def.tools = vim.list_extend({}, self._tool_keys)
     end
     if self._default_target_descriptor then
         def.default_target = self._default_target_descriptor
@@ -399,24 +439,104 @@ function Profile:to_config_def()
     return def
 end
 
---- Get the ToolRef for a specific module type from this profile's tools.
---- Resolution: 1. module override, 2. SDK-derived, 3. nil (incomplete)
+--- Get the ToolRef for a specific module type. Compatibility shim
+--- for callers that haven't moved to the language-aware
+--- `tools_for(configuration)` API yet.
+---
+--- Resolution order:
+--- 1. Pre-resolved `_tool_objects` (set by `sync_profiles` during
+---    refresh — this is the only path that works mid-refresh, because
+---    `workspace._modules` isn't assigned until the refresh finishes).
+--- 2. `_tool_keys` against `workspace._modules` — used post-refresh
+---    when mutations have happened (e.g. add_tool) and we haven't
+---    been through sync_profiles since.
+--- 3. SDK-derived materialization for legacy profiles where the SDK
+---    is set but no tool key is stored.
 --- @param mod_type string module type (e.g. "cmake")
 --- @return loomworks.ToolRef|nil
 function Profile:tool_for(mod_type)
-    -- 1. Module-specific override (resolved domain objects or raw)
     if self._tool_objects then
         for mod, tool in pairs(self._tool_objects) do
-            if mod.id == mod_type then
+            if mod.id == mod_type and not tool._removed then
                 return { key = tool.key, data = tool.data, label = tool.label }
             end
         end
     end
-    if self._tools_raw and self._tools_raw[mod_type] then
-        return self._tools_raw[mod_type]
+    local mod = find_module(self._workspace, mod_type)
+    if mod then
+        for _, key in ipairs(self._tool_keys or {}) do
+            local tool = mod:find_tool(key)
+            if tool and not tool._removed then
+                return { key = tool.key, data = tool.data, label = tool.label }
+            end
+        end
     end
-    -- 2. SDK-derived tool
     return self:_resolve_sdk_tool(mod_type)
+end
+
+--- Language-aware resolution. Returns the array of effective Tool
+--- objects for a configuration — for each language the configuration
+--- needs, the first tool in `_tool_keys` that provides it (resolved
+--- against the project's module registry).
+--- Languages already covered by an earlier tool aren't re-scanned —
+--- one tool can cover multiple languages (`clang` covers c, c++).
+--- @param configuration loomworks.Configuration
+--- @return loomworks.Tool[] effective tools (ordered; deduped)
+function Profile:tools_for(configuration)
+    if not configuration then return {} end
+    local langs = configuration:effective_languages()
+    if #langs == 0 then return {} end
+    local mod = configuration._project and configuration._project._module
+    if not mod then return {} end
+
+    local result = {}
+    local added = {}
+    local covered = {}
+    for _, key in ipairs(self._tool_keys or {}) do
+        local tool = mod:find_tool(key)
+        if tool and not tool._removed then
+            local covers_some = false
+            for _, lang in ipairs(langs) do
+                if not covered[lang] and tool:provides_language(lang) then
+                    covered[lang] = true
+                    covers_some = true
+                end
+            end
+            if covers_some and not added[tool] then
+                added[tool] = true
+                result[#result + 1] = tool
+            end
+        end
+    end
+    return result
+end
+
+--- Identify languages required by a configuration that no tool in
+--- this profile covers. Returned strings come straight from the
+--- configuration's `effective_languages()` — no normalization.
+--- @param configuration loomworks.Configuration
+--- @return string[] missing
+function Profile:missing_languages_for(configuration)
+    if not configuration then return {} end
+    local langs = configuration:effective_languages()
+    if #langs == 0 then return {} end
+    local mod = configuration._project and configuration._project._module
+    if not mod then return langs end
+
+    local covered = {}
+    for _, key in ipairs(self._tool_keys or {}) do
+        local tool = mod:find_tool(key)
+        if tool and not tool._removed then
+            for _, lang in ipairs(tool.languages or {}) do
+                covered[lang] = true
+            end
+        end
+    end
+    local missing = {}
+    for _, lang in ipairs(langs) do
+        if not covered[lang] then missing[#missing + 1] = lang end
+    end
+    return missing
 end
 
 --- Get the Tool domain object for a specific module.
@@ -623,182 +743,81 @@ function Profile:has_device_module()
     return false
 end
 
---- Apply a profile-level toolchain selection. `entry` is one of the
---- entries produced by `Workspace:available_profile_toolchains(profile)`,
---- or `nil` to clear everything.
----
---- The selection is applied to **every** tool-needing module in the
---- profile in one shot:
---- * Host entry — only sets `_tools_raw[<entry.module_id>]` (host
----   tools are per-module by nature). Clears the SDK. Other modules
----   keep what they had.
---- * SDK kit entry — for each tool-needing module, calls the
----   module's `kits_from_sdk` to materialize tool_data, then picks
----   the kit whose identity matches the chosen `(sdk, platform, arch)`
----   (matched on cmake's kit `id` or harmony's `kit_id` field, both
----   of which encode the same triple). Stores per-module
----   `_tools_raw[mod.id]`. Sets the shared SDK.
---- * `nil` — clears `_tools_raw` and SDK entirely.
---- @param entry table|nil
-function Profile:set_profile_toolchain(entry)
-    self._tool_objects = nil   -- force tools_data() to read from _tools_raw
-
-    if entry == nil then
-        self._tools_raw = nil
-        self._sdk = nil
-        self._sdk_key = nil
-        self:_derive_key()
-        return
+--- Append a tool key to the profile's tool list. No-op if already
+--- present (the list is deduplicated). Re-derives the profile key.
+--- @param tool_key string
+function Profile:add_tool(tool_key)
+    if not tool_key or tool_key == "" then return end
+    self._tool_keys = self._tool_keys or {}
+    for _, k in ipairs(self._tool_keys) do
+        if k == tool_key then return end
     end
-
-    if entry.kind == "host" then
-        self._tools_raw = self._tools_raw or {}
-        local tool = entry.tool
-        self._tools_raw[entry.module_id] = {
-            key = tool.key,
-            data = tool.data,
-            label = tool.label,
-        }
-        self._sdk = nil
-        self._sdk_key = nil
-        self:_derive_key()
-        return
-    end
-
-    if entry.kind == "sdk_kit" then
-        local sdk = entry.sdk
-        local expected_kit_id = sdk:sdk_type() .. "-"
-            .. entry.platform:lower():gsub("%s+", "-") .. "-" .. entry.arch
-
-        self._tools_raw = self._tools_raw or {}
-
-        for _, module in ipairs(self:tool_needing_modules()) do
-            local mod_impl = module.impl
-            if mod_impl and mod_impl.kits_from_sdk then
-                local caps = sdk:query(module.id)
-                if caps then
-                    local ok, kits = pcall(mod_impl.kits_from_sdk, caps, sdk)
-                    if ok and kits then
-                        -- Match by the composite kit id (cmake uses
-                        -- `id`; harmony uses `kit_id`). Both encode
-                        -- `<sdk_type>-<platform_lower>-<arch>`.
-                        local matched
-                        for _, kit in ipairs(kits) do
-                            local kid = kit.tool_data
-                                and (kit.tool_data.id or kit.tool_data.kit_id)
-                            if kid == expected_kit_id then
-                                matched = kit
-                                break
-                            end
-                        end
-                        -- Fallback: if the module doesn't fan out
-                        -- per-kit (e.g. an SDK with no per-arch
-                        -- toolchain), take the first kit.
-                        if not matched and kits[1] then
-                            matched = kits[1]
-                        end
-                        if matched then
-                            local td = matched.tool_data
-                            local tk = mod_impl.tool_key
-                                and mod_impl.tool_key(td) or nil
-                            local tl = mod_impl.tool_label
-                                and mod_impl.tool_label(td) or nil
-                            self._tools_raw[module.id] = {
-                                key = tk,
-                                data = td,
-                                label = tl,
-                            }
-                        end
-                    end
-                end
-            end
-        end
-
-        self._sdk = sdk
-        self._sdk_key = sdk.key
-        self:_derive_key()
-        return
-    end
+    self._tool_keys[#self._tool_keys + 1] = tool_key
+    self:_derive_key()
 end
 
---- Describe the profile's current toolchain selection as a flat
---- identity. Used by the UI to render a single Toolchain row.
----
---- Returns one of:
----   { kind = "sdk_kit", sdk = SDK, label = string, resolved = bool }
----   { kind = "host", tools = { mod_id -> tool_ref }, label = string }
----   { kind = "incomplete", label = string }
----
---- Resolution order:
---- * If `_sdk` is set, that's the active kit. Label is derived from
----   the cmake-side kit (the canonical platform×arch shape) if any
----   tool-needing module's tool_data carries a `platform`/`arch`
----   pair; otherwise falls back to the SDK display name.
---- * Otherwise, if any tool-needing module has a tool_data, treat
----   that as a host selection.
---- * Otherwise, the profile is incomplete.
---- @return table
-function Profile:toolchain_identity()
-    -- SDK kit path.
-    if self._sdk then
-        local label
+--- Remove a tool key from the profile's tool list. No-op if absent.
+--- Re-derives the profile key.
+--- @param tool_key string
+function Profile:remove_tool(tool_key)
+    if not tool_key or not self._tool_keys then return end
+    local kept = {}
+    for _, k in ipairs(self._tool_keys) do
+        if k ~= tool_key then kept[#kept + 1] = k end
+    end
+    self._tool_keys = #kept > 0 and kept or {}
+    -- Re-derive SDK key from remaining tools (first tool with sdk_key wins).
+    local new_sdk_key, new_sdk = nil, nil
+    for _, k in ipairs(self._tool_keys) do
+        local ws = self._workspace
+        if ws and ws._modules then
+            for _, mod in pairs(ws._modules) do
+                local tool = mod:find_tool(k)
+                if tool and tool.data and tool.data.sdk_key then
+                    new_sdk_key = tool.data.sdk_key
+                    new_sdk = ws:find_sdk(new_sdk_key)
+                    break
+                end
+            end
+            if new_sdk_key then break end
+        end
+    end
+    self._sdk = new_sdk
+    self._sdk_key = new_sdk_key
+    self:_derive_key()
+end
 
-        -- 1. Tool_data with explicit platform/arch — the canonical
-        --    path. New picks always have these fields.
-        if self._tools_raw then
-            for _, ref in pairs(self._tools_raw) do
-                local td = ref and ref.data
-                if td and td.platform and td.arch then
-                    label = self._sdk:kit_label(td.platform, td.arch)
+--- Describe the profile's current toolchain selection as a list of
+--- entries the UI can render. Returns one entry per key in
+--- `_tool_keys`, each annotated with what the registry knows about
+--- the tool. Unresolved keys (registry doesn't have them) are still
+--- reported so the UI can surface them as broken references rather
+--- than hide them.
+--- @return { key: string, label: string, languages: string[], resolved: boolean }[]
+function Profile:toolchain_entries()
+    local entries = {}
+    local ws = self._workspace
+    for _, key in ipairs(self._tool_keys or {}) do
+        local label, languages, resolved = key, {}, false
+        if ws and ws._modules then
+            for _, mod in pairs(ws._modules) do
+                local tool = mod:find_tool(key)
+                if tool and not tool._removed then
+                    label = tool.label or tool.key or key
+                    languages = tool.languages or {}
+                    resolved = true
                     break
                 end
             end
         end
-
-        -- 2. Legacy fallback: cmake tool_data stores the same shape
-        --    inside `display` ("HarmonyOS 6.0.1.251 arm64-v8a"); use
-        --    it directly so existing profiles read correctly until
-        --    the user next re-picks.
-        if not label and self._tools_raw then
-            for _, ref in pairs(self._tools_raw) do
-                local td = ref and ref.data
-                if td and td.id and td.display then
-                    label = td.display
-                    break
-                end
-            end
-        end
-
-        -- 3. Last resort — SDK display name. Loses the platform×arch
-        --    detail but at least identifies the SDK.
-        if not label then
-            label = self._sdk:display_name()
-        end
-
-        return {
-            kind = "sdk_kit",
-            sdk = self._sdk,
+        entries[#entries + 1] = {
+            key = key,
             label = label,
-            resolved = self._sdk:is_resolved(),
+            languages = languages,
+            resolved = resolved,
         }
     end
-
-    -- Host path.
-    if self._tools_raw and next(self._tools_raw) then
-        local labels = {}
-        for mod_id, ref in pairs(self._tools_raw) do
-            labels[#labels + 1] = (ref.label or ref.key or mod_id)
-                .. " [" .. mod_id .. "]"
-        end
-        table.sort(labels)
-        return {
-            kind = "host",
-            tools = self._tools_raw,
-            label = table.concat(labels, " + "),
-        }
-    end
-
-    return { kind = "incomplete", label = "(none — incomplete)" }
+    return entries
 end
 
 --- Enumerate the unique Modules in this profile that need a tool/SDK

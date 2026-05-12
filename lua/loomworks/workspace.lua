@@ -3111,11 +3111,8 @@ function Workspace:_user_config_from_objects()
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
-            if profile._sdk_key then
-                entry.sdk = profile._sdk_key
-            end
-            if profile._tools_raw and next(profile._tools_raw) then
-                entry.tools = profile._tools_raw
+            if profile._tool_keys and #profile._tool_keys > 0 then
+                entry.tools = vim.list_extend({}, profile._tool_keys)
             end
             profiles[profile.key] = entry
         end
@@ -3840,12 +3837,9 @@ function Workspace:_serialize_user()
             if profile._configuration_set_name then
                 entry.configuration_set = profile._configuration_set_name
             end
-            if profile._sdk_key then
-                entry.sdk = profile._sdk_key
+            if profile._tool_keys and #profile._tool_keys > 0 then
+                entry.tools = vim.list_extend({}, profile._tool_keys)
             end
-            -- Serialize only module-specific overrides, not SDK-derived tools
-            local tools = profile._tools_raw
-            if tools and next(tools) then entry.tools = tools end
             user_profiles[profile.key] = entry
         end
     end
@@ -4583,17 +4577,36 @@ end
 --- @param transform fun(tools: table|nil): table|nil
 --- @return boolean user_changed whether active_profile was updated
 function Workspace:apply_profile_renames(renames, transform)
-    -- Build profile lookup from domain objects
     local profiles_by_key = {}
     for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
 
     local user_changed = false
     for _, r in ipairs(renames) do
-        -- Update domain object — key re-derives from updated tools
         local profile = profiles_by_key[r.old_key]
         if profile then
-            profile._tools_raw = transform(profile:tools_data())
-            -- Clear resolved tool objects so tools_data() reads from _tools_raw
+            local new_dict = transform(profile:tools_data())
+            -- Translate the dict-shaped result back to _tool_keys
+            -- (deduped). transform is the legacy interface — it
+            -- operates on `{ module_id → ref }` because callers (e.g.
+            -- `upgrade_profiles_for_tool`) were written before the
+            -- flat array existed. The conversion is one line; we
+            -- don't need to migrate every caller right now.
+            local keys = {}
+            local seen = {}
+            if type(new_dict) == "table" then
+                local mod_ids = {}
+                for mid in pairs(new_dict) do mod_ids[#mod_ids + 1] = mid end
+                table.sort(mod_ids)
+                for _, mid in ipairs(mod_ids) do
+                    local ref = new_dict[mid]
+                    local k = type(ref) == "table" and ref.key or nil
+                    if type(k) == "string" and k ~= "" and not seen[k] then
+                        seen[k] = true
+                        keys[#keys + 1] = k
+                    end
+                end
+            end
+            profile._tool_keys = keys
             profile._tool_objects = nil
             profile:_derive_key()
         end
