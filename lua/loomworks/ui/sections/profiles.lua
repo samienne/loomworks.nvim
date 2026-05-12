@@ -255,7 +255,7 @@ local function render_profile_details(tree, profile, lw)
 
     local pps = profile:projects()
     if #pps > 0 then
-        tree:group({{"Projects:  ", "LoomworksSection"}, {"[b] build  [c] configure  [t] task output  [o] options  [R] rebuild  [C] clean  [D] delete", "Comment"}}, function()
+        tree:group("Projects:", "LoomworksSection", function()
             for _, pp in ipairs(pps) do
                 local config_status, _status_hl, progress_str, is_spinning =
                         helpers.resolve_config_status(pp, nil)
