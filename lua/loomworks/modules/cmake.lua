@@ -487,7 +487,19 @@ local function resolve_build_dir(project_name, config_name, config_info, workspa
     end
 
     local base = workspace_root .. "/.nvim/build/" .. sanitize_path_component(project_name)
-    local kit_suffix = kit and kit.id or nil
+    -- Build-dir segment: when more than one tool is in the effective
+    -- set (multi-language profile), use the sorted joined keys so a
+    -- profile with different rust+cmake combos doesn't collide. With
+    -- a single tool, fall back to the kit id — identical to the
+    -- legacy single-tool naming so existing cache entries still hit.
+    local kit_suffix = nil
+    if kit then
+        if kit._effective_keys and #kit._effective_keys > 1 then
+            kit_suffix = table.concat(kit._effective_keys, "+")
+        elseif kit.id then
+            kit_suffix = kit.id
+        end
+    end
 
     if multi_config then
         -- Multi-config: one dir per kit (Debug/Release selected at build time via --config)

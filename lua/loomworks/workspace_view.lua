@@ -1320,6 +1320,21 @@ function M.compute_edit_configuration_context(project, config_name)
         end
     end
 
+    -- Languages: explicit override from the live Configuration if
+    -- the user has set one (nil otherwise) + the module's static
+    -- list as the default to show in "(inherited)" mode.
+    local cfg_languages = nil
+    local module_languages = {}
+    if config_name then
+        local cfg_obj = project:get_configuration(config_name)
+        if cfg_obj and cfg_obj.languages and #cfg_obj.languages > 0 then
+            cfg_languages = vim.deepcopy(cfg_obj.languages)
+        end
+    end
+    if project._module and project._module.languages then
+        module_languages = vim.deepcopy(project._module.languages)
+    end
+
     return {
         project_key = project_key,
         project_type = project.type,
@@ -1331,6 +1346,8 @@ function M.compute_edit_configuration_context(project, config_name)
         variables = config_variable_overrides,
         toolchain = config_data.toolchain or "",
         generator = config_data.generator or "",
+        languages = cfg_languages,
+        module_languages = module_languages,
         is_default = is_default,
         has_options = impl and impl.has_options or false,
         available_configs = available_configs,

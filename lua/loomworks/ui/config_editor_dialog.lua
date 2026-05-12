@@ -41,6 +41,15 @@ function M.open(opts)
     local generator = opts.generator or ""
     local name_error = nil
 
+    -- Languages override. When `opts.languages` is nil, the
+    -- configuration inherits its module's default; we represent
+    -- that as `nil` here and show it as "(inherited)". An explicit
+    -- empty list means "no languages needed" (rare; user override).
+    -- `opts.module_languages` (string[]) carries the fallback for
+    -- display purposes.
+    local languages = opts.languages and vim.deepcopy(opts.languages) or nil
+    local module_languages = opts.module_languages or {}
+
     local function revalidate()
         if not opts.validate then
             name_error = nil
@@ -176,6 +185,48 @@ function M.open(opts)
                             if view then view:refresh() end
                         end
                     end)
+                end,
+            })
+        end
+
+        -- Languages — the set of compilers this configuration needs.
+        -- Defaults inherit from the module (`module_languages`); the
+        -- user can override to add/remove specific languages. The
+        -- effective set drives which tools in `profile.tools` apply.
+        do
+            local effective = languages or module_languages
+            local source = languages and "user" or "module"
+            local display
+            if #effective == 0 then
+                display = "(none — module declared none)"
+            else
+                display = table.concat(effective, ", ")
+                    .. "  (" .. source .. ")"
+            end
+            t:item("Languages  " .. display, {
+                hl = languages and "LoomworksActionable" or "Comment",
+                direct = true,
+                enter_label = "Edit languages",
+                on_enter = function()
+                    -- Pop a comma-separated input. Empty string =
+                    -- explicit empty override; clearing = restore
+                    -- module default (set to nil).
+                    local current = table.concat(effective, ", ")
+                    edit_string(
+                        "Languages (comma-separated, empty = inherit): ",
+                        current, function(v)
+                            v = v:gsub("^%s+", ""):gsub("%s+$", "")
+                            if v == "" then
+                                languages = nil
+                            else
+                                local list = {}
+                                for tok in v:gmatch("[^,%s]+") do
+                                    list[#list + 1] = tok
+                                end
+                                languages = list
+                            end
+                            if view then view:refresh() end
+                        end)
                 end,
             })
         end
@@ -413,6 +464,9 @@ function M.open(opts)
                 variables = variables,
                 toolchain = toolchain ~= "" and toolchain or nil,
                 generator = generator ~= "" and generator or nil,
+                -- nil = inherit from module; non-nil array (possibly
+                -- empty) = explicit override.
+                languages = languages,
             })
             return {}
         end

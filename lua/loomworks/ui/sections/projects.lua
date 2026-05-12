@@ -378,6 +378,8 @@ local function edit_project_configuration(project, config_name)
         variables = ctx.variables,
         toolchain = ctx.toolchain,
         generator = ctx.generator,
+        languages = ctx.languages,
+        module_languages = ctx.module_languages,
         build_dir = ctx.build_dir,
         is_default = ctx.is_default and config_name ~= nil,
         has_options = ctx.has_options,

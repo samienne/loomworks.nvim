@@ -903,22 +903,99 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Check if all modules in this profile have tools resolved.
---- A profile is incomplete if any module that requires tools (keyed tools
---- or SDK-capable modules) has no tool available.
+--- A profile is incomplete when:
+--- * any of its projects' configurations declares a language no tool
+---   in `_tool_keys` provides (the canonical language-keyed check), OR
+--- * a project's module needs a tool but no entry in `_tool_keys`
+---   resolves under that module's registry. This second check
+---   handles modules that haven't declared `languages` yet or
+---   profiles whose configurations aren't resolved yet — the
+---   pre-language fallback that keeps existing tests passing.
 --- @return boolean
 function Profile:is_complete()
+    if #self:language_gaps() > 0 then return false end
     for _, pp in ipairs(self:projects()) do
         local project = pp._project
-        if not project or not project._module then goto next end
-        local mod = project._module
-        -- Module needs tools if it has keyed tools or can consume SDK capabilities
-        local needs_tools = mod.has_keyed_tools or (mod.impl and mod.impl.kits_from_sdk)
-        if needs_tools and not self:tool_for(project.type) then
-            return false
+        local cfg = pp._configuration
+        local langs_known = cfg and not cfg._removed
+            and #cfg:effective_languages() > 0
+        if not langs_known and project and project._module then
+            local mod = project._module
+            local needs_tools = mod.has_keyed_tools
+                or (mod.impl and mod.impl.kits_from_sdk)
+            if needs_tools and not self:tool_for(project.type) then
+                return false
+            end
         end
-        ::next::
     end
     return true
+end
+
+--- Enumerate missing-language gaps across the profile's
+--- (project, configuration) pairs. Returns a list of
+--- `{ project, configuration, languages }` entries — one per
+--- configuration that needs languages not covered by `_tool_keys`.
+--- Empty list means the profile is language-complete.
+--- @return { project: loomworks.Project, configuration: loomworks.Configuration, languages: string[] }[]
+function Profile:language_gaps()
+    local gaps = {}
+    for _, pp in ipairs(self:projects()) do
+        local cfg = pp._configuration
+        if cfg and not cfg._removed then
+            local missing = self:missing_languages_for(cfg)
+            if #missing > 0 then
+                gaps[#gaps + 1] = {
+                    project = pp._project,
+                    configuration = cfg,
+                    languages = missing,
+                }
+            end
+        end
+    end
+    return gaps
+end
+
+--- List tools in `_tool_keys` that no configuration in this profile
+--- needs. Non-blocking — purely informational, but lets the
+--- diagnostics surface flag dead weight to the user. Tools whose
+--- registry entry is unresolved are skipped (they get their own
+--- "unresolved tool" diagnostic via `toolchain_entries()`).
+--- @return string[] tool keys
+function Profile:unused_tools()
+    local ws = self._workspace
+    if not ws then return {} end
+
+    -- Gather every language used across the profile's configurations.
+    local used = {}
+    for _, pp in ipairs(self:projects()) do
+        local cfg = pp._configuration
+        if cfg and not cfg._removed then
+            for _, lang in ipairs(cfg:effective_languages()) do
+                used[lang] = true
+            end
+        end
+    end
+
+    local unused = {}
+    for _, key in ipairs(self._tool_keys or {}) do
+        local covers_used = false
+        if ws._modules then
+            for _, mod in pairs(ws._modules) do
+                local tool = mod:find_tool(key)
+                if tool and not tool._removed then
+                    for _, lang in ipairs(tool.languages or {}) do
+                        if used[lang] then
+                            covers_used = true
+                            break
+                        end
+                    end
+                    if covers_used then break end
+                end
+            end
+        end
+        if not covers_used then unused[#unused + 1] = key end
+    end
+    return unused
 end
 
 --- Validity gate. Returns `(ok, reasons)`. A profile is invalid
@@ -939,23 +1016,44 @@ function Profile:is_valid()
         reasons[#reasons + 1] = "profile was removed from the registry"
         return false, reasons
     end
-    -- Tool/SDK completeness (existing is_complete predicate)
-    if not self:is_complete() then
-        local missing = {}
-        for _, pp in ipairs(self:projects()) do
-            local project = pp._project
-            if project and project._module then
-                local mod = project._module
-                local needs_tools = mod.has_keyed_tools
-                    or (mod.impl and mod.impl.kits_from_sdk)
-                if needs_tools and not self:tool_for(project.type) then
-                    missing[#missing + 1] = project.key
-                end
+
+    -- Language-coverage gaps: per-configuration missing-language
+    -- diagnostic (the canonical check when modules declare
+    -- `languages` and configurations resolve).
+    for _, gap in ipairs(self:language_gaps()) do
+        local pk = gap.project and gap.project.key or "?"
+        local cn = gap.configuration and gap.configuration.name or "?"
+        reasons[#reasons + 1] = "incomplete — no tool provides "
+            .. table.concat(gap.languages, ", ")
+            .. " for " .. pk .. "/" .. cn
+    end
+
+    -- Legacy fallback: a project's module needs a tool but no
+    -- entry in `_tool_keys` resolves there. Only fires for
+    -- projects whose configuration didn't contribute languages
+    -- (configuration unresolved or module hasn't declared
+    -- `languages` yet), so it doesn't double-report with the
+    -- language-gap check above.
+    local legacy_missing = {}
+    for _, pp in ipairs(self:projects()) do
+        local project = pp._project
+        local cfg = pp._configuration
+        local langs_known = cfg and not cfg._removed
+            and #cfg:effective_languages() > 0
+        if not langs_known and project and project._module then
+            local mod = project._module
+            local needs_tools = mod.has_keyed_tools
+                or (mod.impl and mod.impl.kits_from_sdk)
+            if needs_tools and not self:tool_for(project.type) then
+                legacy_missing[#legacy_missing + 1] = project.key or "?"
             end
         end
-        reasons[#reasons + 1] = "incomplete — no tool/SDK selected for: "
-            .. table.concat(missing, ", ")
     end
+    if #legacy_missing > 0 then
+        reasons[#reasons + 1] = "incomplete — no tool/SDK selected for: "
+            .. table.concat(legacy_missing, ", ")
+    end
+
     -- Referenced ConfigurationSet validity
     if self._config_set_ref and self._config_set_ref.is_valid then
         local set_ok, set_reasons = self._config_set_ref:is_valid()

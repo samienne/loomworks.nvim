@@ -531,29 +531,73 @@ end
 
 --- Compute the expected build directory for a project configuration.
 --- Delegates to the module's resolve_build_dir, then relativizes.
---- For modules without resolve_build_dir, uses default path formula.
+---
+--- Accepts either:
+--- * A single `tool_data` table (legacy — wraps into a one-element
+---   effective-tools list internally).
+--- * An array of `{ key, data }` (the new effective-tools list from
+---   `Profile:tools_for(configuration)`). When more than one tool is
+---   in the list, the path segment is the sorted+joined tool keys
+---   so that multi-language profiles with different rust/cmake combos
+---   don't collide in the same build dir.
+---
+--- Module-specific behaviour: the module's `resolve_build_dir`
+--- continues to receive a single `tool_data` (the primary — first in
+--- the effective list); when there are extra tools the segment they
+--- contribute is delivered via `tool_data._effective_keys`, an opt-in
+--- field modules can choose to read for naming. A module that
+--- ignores it gets the single-tool behaviour it had before.
 --- @param project loomworks.Project
 --- @param variant string configuration variant name
---- @param tool_data? table module-specific tool data (with .id for cmake kits)
+--- @param tool_data_or_list? table single tool_data, or list of `{key, data}` entries
 --- @return string relative build_dir key (used as ConfigUnit id and cache key)
 --- @return string absolute build_dir path
-function Workspace:_compute_build_dir(project, variant, tool_data)
+function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
+    -- Normalize to a primary tool_data + sorted effective keys.
+    local primary_data = nil
+    local effective_keys = nil
+    if tool_data_or_list then
+        if vim.islist and vim.islist(tool_data_or_list) and #tool_data_or_list > 0 then
+            local keys = {}
+            for _, entry in ipairs(tool_data_or_list) do
+                local key = entry.key
+                    or (entry.data and entry.data.id)
+                    or (entry.data and entry.data.kit_id)
+                if key then keys[#keys + 1] = key end
+            end
+            table.sort(keys)
+            effective_keys = keys
+            primary_data = tool_data_or_list[1].data
+            if primary_data and #keys > 1 then
+                -- Stamp the joined keys onto the primary tool_data so
+                -- modules that opt in can use it for naming.
+                primary_data = vim.tbl_extend("force", {}, primary_data)
+                primary_data._effective_keys = keys
+            end
+        elseif type(tool_data_or_list) == "table" and not vim.islist(tool_data_or_list) then
+            -- Single tool_data (legacy single-tool path).
+            primary_data = tool_data_or_list
+        end
+    end
+
     local mod = project._module and project._module.impl or nil
     local abs_path
     if mod and mod.resolve_build_dir then
-        -- Get configuration info from project for binary_dir overrides
         local config_info = nil
         local cfg = project:get_configuration(variant)
         if cfg and cfg.module_config then
             config_info = cfg.module_config
         end
-        abs_path = mod.resolve_build_dir(project.key, variant, config_info, self.root, tool_data)
+        abs_path = mod.resolve_build_dir(project.key, variant, config_info, self.root, primary_data)
     else
-        -- Default: {root}/.nvim/build/{project_key}/{variant}
-        -- Include tool id as path segment when present
-        local tool_id = tool_data and tool_data.id or nil
-        if tool_id then
-            abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. tool_id .. "/" .. variant
+        local segment = nil
+        if effective_keys and #effective_keys > 1 then
+            segment = table.concat(effective_keys, "+")
+        elseif primary_data and primary_data.id then
+            segment = primary_data.id
+        end
+        if segment then
+            abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. segment .. "/" .. variant
         else
             abs_path = self.root .. "/.nvim/build/" .. project.key .. "/" .. variant
         end
@@ -1661,6 +1705,23 @@ function Workspace:diagnostics()
     for _, profile in pairs(self._profiles) do
         if not profile._removed and profile.diagnostic then
             add(profile:diagnostic())
+            -- Non-blocking: tools in `_tool_keys` that no
+            -- configuration in this profile uses. Separate from the
+            -- invalidity diagnostic because the profile is still
+            -- buildable — the unused tool is just dead weight.
+            if profile.unused_tools then
+                local unused = profile:unused_tools()
+                if #unused > 0 then
+                    add({
+                        severity = "warn",
+                        source = "Profile/" .. profile.key,
+                        message = "profile '" .. profile.key
+                            .. "' has unused tool(s): "
+                            .. table.concat(unused, ", "),
+                        target_fold_key = "profile:" .. profile.key,
+                    })
+                end
+            end
         end
     end
     for _, project in pairs(self._projects) do
