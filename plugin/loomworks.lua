@@ -20,20 +20,34 @@ hl(0, "LoomworksActionable",   { link = "Normal",          default = true })
 
 -- New entity-color scheme: profiles are green, projects are blue.
 -- Status is conveyed by the leading marker icon's color, never by the
--- row text. Active profile gets bold. We resolve fg from the system
--- diagnostic groups so it tracks the user's colorscheme.
+-- row text. Active profile uses the theme's primary "ok" green;
+-- inactive profiles use a softer second color so they read as
+-- "also profiles, not focused" rather than "dimmed text" or
+-- "decoration".
 local function _fg(name)
     local ok, h = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
     if not ok then return nil end
     return h.fg
 end
 
-local _profile_fg = _fg("DiagnosticOk")   or "#5fd700"
-local _project_fg = _fg("DiagnosticInfo") or "#00afff"
+-- Walk a list of highlight group names, return the first one with a
+-- resolved fg. Lets us prefer one semantic group but fall back to
+-- another when a colorscheme leaves it undefined.
+local function _fg_chain(names, fallback)
+    for _, name in ipairs(names) do
+        local fg = _fg(name)
+        if fg then return fg end
+    end
+    return fallback
+end
 
-hl(0, "LoomworksProfile",       { fg = _profile_fg,              default = true })
-hl(0, "LoomworksProfileActive", { fg = _profile_fg, bold = true, default = true })
-hl(0, "LoomworksProject",       { fg = _project_fg,              default = true })
+local _profile_fg          = _fg("DiagnosticOk")   or "#5fd700"
+local _profile_inactive_fg = _fg_chain({ "MoreMsg", "DiagnosticHint" }, "#3a8838")
+local _project_fg          = _fg("DiagnosticInfo") or "#00afff"
+
+hl(0, "LoomworksProfile",         { fg = _profile_fg,          default = true })
+hl(0, "LoomworksProfileInactive", { fg = _profile_inactive_fg, default = true })
+hl(0, "LoomworksProject",         { fg = _project_fg,          default = true })
 
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)
   local path = cmd.args ~= "" and cmd.args or nil

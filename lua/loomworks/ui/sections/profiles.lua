@@ -388,16 +388,20 @@ return function(tree, ctx)
             end
         end
 
-        -- Profile rows: always green; bold when active. Shared-only
-        -- profiles (from loomworks.json with no local override) stay
-        -- in the dimmed Comment palette to match the publish UX.
+        -- Profile rows: green family for every profile so the section
+        -- structure stays scannable. Active profile uses the theme's
+        -- primary `DiagnosticOk` green; inactive profiles use a
+        -- distinct second color (typically `MoreMsg` — a softer
+        -- green in most themes) so they read as "profile, not
+        -- focused" rather than "dimmed text". Shared-only profiles
+        -- still drop to `Comment` for the publish UX.
         local hl
         if group == "shared" then
             hl = "Comment"
         elseif is_active then
-            hl = "LoomworksProfileActive"
-        else
             hl = "LoomworksProfile"
+        else
+            hl = "LoomworksProfileInactive"
         end
 
         t:node(display, {
