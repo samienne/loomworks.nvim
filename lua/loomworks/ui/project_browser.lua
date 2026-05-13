@@ -197,6 +197,14 @@ function M.open(root)
                 tag_chunks[#tag_chunks + 1] = { "[" .. ti.type .. ": " .. ti.marker .. "]", tag_hl }
             end
         end
+        -- Shell has no marker, so it never appears in `types`. When the
+        -- user has declared a shell project at this folder, show a
+        -- `[shell: custom]` tag in the listing for parity with detected
+        -- types — without it the ✓ checkmark alone is ambiguous.
+        if is_added(added, rel, "shell") or is_added(added, entry.name, "shell") then
+            tag_chunks[#tag_chunks + 1] = { "  ", nil }
+            tag_chunks[#tag_chunks + 1] = { "[shell: custom]", "DiagnosticOk" }
+        end
 
         -- Check if any type is already added
         local any_added = false
@@ -207,6 +215,11 @@ function M.open(root)
                     break
                 end
             end
+        end
+        -- Also catch shell, which isn't in `types`
+        if not any_added and (is_added(added, rel, "shell")
+                or is_added(added, entry.name, "shell")) then
+            any_added = true
         end
         -- Also check by basename for root-level projects
         if not any_added and added[entry.name] then
@@ -244,6 +257,22 @@ function M.open(root)
                 end
             end
         end
+
+        -- The shell module never auto-detects (no marker), but a project
+        -- with a self-managed build system may still want to be declared
+        -- against this folder. Always offer it as an explicit picker
+        -- entry alongside detected types, distinct-labeled as "(custom)"
+        -- so it doesn't visually compete with the recommended type.
+        if not is_added(added, rel, "shell")
+            and not is_added(added, entry.name, "shell") then
+            picker_items[#picker_items + 1] = {
+                label = "Add as shell (custom)",
+                callback = function()
+                    do_add(entry, { type = "shell", marker = "(custom)" })
+                end,
+            }
+        end
+
         if has_types then
             for _, ti in ipairs(types) do
                 if is_added(added, rel, ti.type)
@@ -255,6 +284,18 @@ function M.open(root)
                     }
                 end
             end
+        end
+
+        -- Surface a Remove for shell separately — `types` doesn't carry
+        -- shell entries (no marker), so the loop above won't pick it up
+        -- even when shell IS added at this path.
+        if is_added(added, rel, "shell")
+            or is_added(added, entry.name, "shell") then
+            picker_items[#picker_items + 1] = {
+                label = "Remove [shell]",
+                callback = function() do_remove(entry) end,
+                destructive = true,
+            }
         end
 
         -- Build on_enter: always show picker when items exist
