@@ -54,8 +54,20 @@ function SDK:is_resolved()
 end
 
 --- Get the human-readable display name.
+---
+--- Providers may override per-SDK labelling by implementing
+--- `display_name_for(sdk) → string` — useful when the static
+--- `display_name` field isn't expressive enough (e.g. the C/C++
+--- compiler provider wants to surface the detected family in the
+--- label: "Clang 19.0.0 (custom)" rather than the static "C/C++
+--- Compiler"). When the override is absent, falls back to the
+--- generic `<display_name> <version>` shape.
 --- @return string
 function SDK:display_name()
+    if self._resolved and self._provider.display_name_for then
+        local ok, name = pcall(self._provider.display_name_for, self)
+        if ok and type(name) == "string" and name ~= "" then return name end
+    end
     local name = self._provider.display_name or self._type
     if self._version then
         name = name .. " " .. self._version

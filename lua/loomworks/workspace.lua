@@ -4313,13 +4313,26 @@ function Workspace:add_sdk(sdk_type, path)
         return nil, "no provider for SDK type '" .. sdk_type .. "'"
     end
 
+    -- Providers may override key derivation (e.g. the C/C++ compiler
+    -- provider includes a path-derived token so two custom builds at
+    -- the same version don't collide). Default shape stays
+    -- `<type>-<version>`; the override gets the validate-info table
+    -- plus the path so it can compose any shape it likes.
+    local function derive_key(info, p)
+        if provider.derive_key then
+            local ok, key = pcall(provider.derive_key, info, p)
+            if ok and type(key) == "string" and key ~= "" then return key end
+        end
+        return sdk_type .. (info.version and ("-" .. info.version) or "")
+    end
+
     local sdk
     if path then
         local info = provider.validate(path)
         if not info then
             return nil, "'" .. path .. "' is not a valid " .. sdk_type .. " installation"
         end
-        local key = sdk_type .. (info.version and ("-" .. info.version) or "")
+        local key = derive_key(info, path)
         if self:find_sdk(key) then
             return nil, "SDK '" .. key .. "' already added"
         end
@@ -4330,7 +4343,7 @@ function Workspace:add_sdk(sdk_type, path)
             return nil, "no " .. sdk_type .. " installation found"
         end
         local inst = installations[1]
-        local key = sdk_type .. (inst.version and ("-" .. inst.version) or "")
+        local key = derive_key(inst, inst.path)
         if self:find_sdk(key) then
             return nil, "SDK '" .. key .. "' already added"
         end

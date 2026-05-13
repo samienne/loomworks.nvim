@@ -1,11 +1,25 @@
---- loomworks/compilers.lua — Native C/C++ compiler detection.
+--- loomworks/cpp_compilers.lua — Native C/C++ compiler detection
+--- and identification.
 ---
---- Shared by modules that need to pin a compiler toolchain (cmake,
---- meson). Each discovered compiler is a stable toolchain identity
---- that callers can persist on a profile's tool_data and later resolve
---- back into concrete paths (compiler binary, bin directory for
---- runtime DLLs, sibling clangd). Detection is cached for the lifetime
---- of the nvim process; call `clear_cache()` before re-scanning.
+--- Single source of truth for "what is this C/C++ compiler" knowledge
+--- in the codebase. Used by modules that pin a compiler toolchain
+--- (cmake, meson) and by the user-declared compiler SDK provider
+--- (`sdks/cpp_compiler.lua`).
+---
+--- Two entry points:
+---   * `M.detect()` / `M.detect_async()` — probe PATH for known
+---     compiler binaries (gcc, g++, clang, clang++, versioned
+---     variants) and return everything found. Results are cached for
+---     the nvim process; `clear_cache()` re-scans.
+---   * `M.probe_path(path)` — identify an arbitrary user-provided
+---     compiler executable. No PATH search; the caller is asserting
+---     "this is the compiler I want." Returns the same shape as the
+---     PATH-detected variants.
+---
+--- All family-specific knowledge (regex against `--version` output,
+--- C-counterpart naming, sibling-clangd discovery gated on Clang)
+--- lives in this file. Other parts of the codebase consume the
+--- resulting toolchain table opaquely.
 
 local M = {}
 
@@ -181,6 +195,93 @@ function M.get_by_id(id)
         if c.id == id then return c end
     end
     return nil
+end
+
+--- Identify an arbitrary user-provided compiler executable. Used by
+--- the custom-compiler SDK provider — the user picks a path; we work
+--- out everything else.
+---
+--- Resolution:
+---   * Run `--version`; match the output against known family
+---     patterns (Clang first because some GCC distros mention Clang
+---     in `__has_include` lines; Apple Clang and stock LLVM Clang
+---     are both reported as "Clang"). Falls back to inspecting the
+---     basename if `--version` is silent on family.
+---   * Version extraction is the same digit-pattern used by the
+---     PATH scanner.
+---   * `c_path` is derived from the basename only when the input
+---     looks like a C++ driver (`*++` / `clang++` / `g++`); otherwise
+---     `c_path` equals `path` (the input is already a C driver, or
+---     the family doesn't follow the C/C++ split convention).
+---   * `clangd_path` is **only** populated when family is Clang —
+---     a GCC sibling won't have a clangd binary and probing
+---     for one would be misleading.
+---
+--- Returned shape mirrors `loomworks.CompilerToolchain` so callers
+--- can treat PATH-detected and user-declared compilers identically.
+--- @param path string absolute path to a compiler executable
+--- @return loomworks.CompilerToolchain|nil
+function M.probe_path(path)
+    if not path or path == "" then return nil end
+    if not uv.fs_stat(path) then return nil end
+
+    local ver_output = run({ path, "--version" })
+    if not ver_output then return nil end
+    local version = parse_version(ver_output)
+    if not version then return nil end
+
+    -- Family detection: prefer signal in `--version` output (most
+    -- distros embed the family name), fall back to the basename.
+    -- Order matters: "Apple clang" output still contains "clang".
+    local family
+    local lower = ver_output:lower()
+    if lower:match("clang version") or lower:match("apple clang") then
+        family = "clang"
+    elseif lower:match("free software foundation") or lower:match("gcc") or lower:match("g%+%+") then
+        family = "gcc"
+    else
+        local basename = path:match("[^/\\]+$") or ""
+        if basename:match("^clang") then family = "clang"
+        elseif basename:match("^g[c%+]") then family = "gcc" end
+    end
+
+    -- Derive C counterpart by name only when input looks like a
+    -- C++ driver. We don't `probe` (no recursive --version call) —
+    -- existence check is sufficient. Order matters: `clang%+%+`
+    -- must be substituted *before* `g%+%+` because "clang++"
+    -- contains "g++" as a substring; running the GCC rule first
+    -- would corrupt "clang++" → "clangcc".
+    local c_path = path
+    local basename = path:match("[^/\\]+$") or ""
+    local is_cpp = basename:match("%+%+") ~= nil
+    if is_cpp then
+        local c_basename = basename
+            :gsub("clang%+%+", "clang")
+            :gsub("g%+%+", "gcc")
+        local sep = path:find("[/\\][^/\\]+$")
+        if sep then
+            local candidate = path:sub(1, sep) .. c_basename
+            if uv.fs_stat(candidate) then c_path = candidate end
+        end
+    end
+
+    -- clangd discovery: only meaningful for the Clang family.
+    local clangd_path = family == "clang" and sibling_clangd(path) or nil
+
+    local family_label = family == "gcc" and "GCC"
+        or family == "clang" and "Clang"
+        or "C++"
+
+    return {
+        id = (family or "cpp") .. "-" .. version,
+        display = family_label .. " " .. version,
+        family = family,
+        version = version,
+        path = path,
+        c_path = c_path,
+        bin_dir = bin_dir_of(path),
+        clangd_path = clangd_path,
+    }
 end
 
 --- Clear the detection cache. Called by modules' `invalidate_tools`.

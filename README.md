@@ -235,6 +235,24 @@ host tool plus every kit each SDK exposes, and you add / remove
 entries with `+ Add tool` / `D`. Multi-language profiles (e.g. cmake
 + rust) carry one tool per language family.
 
+#### Custom C/C++ compilers
+
+For compilers not on `PATH` — cross-compilers, snapshot builds,
+vendor distributions — add them via the SDK section's `▸ Add SDK`
+action. The picker includes a `C/C++ Compiler  (browse for path...)`
+entry; selecting it prompts for the compiler executable path.
+
+The probe identifies the compiler family (Clang / GCC) from
+`--version`, finds the sibling C driver (e.g. `clang` next to
+`clang++`), and — for Clang only — picks up the sibling `clangd`
+binary for LSP. Everything else falls back to a generic
+CC/CXX-passthrough kit.
+
+The resulting kit appears in the toolchain picker like any other,
+including its family in the label: `Clang 19.0.0 (custom)`, `GCC
+13.2.0 (custom)`. Profile pinning, completeness checks, and the
+diagnostic gates all work unchanged.
+
 ### Languages
 
 Each cmake / meson configuration declares the languages it builds

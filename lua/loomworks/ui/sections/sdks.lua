@@ -121,9 +121,18 @@ return function(tree, ctx)
                     if not choice then return end
 
                     if choice.browse then
+                        -- Providers may override the prompt label via
+                        -- `path_prompt` — useful when "SDK path" is
+                        -- misleading (e.g. the C/C++ compiler
+                        -- provider wants "Path to C/C++ compiler
+                        -- executable"). Falls back to a generic
+                        -- "<display_name> SDK path" otherwise.
+                        local prov = sdk_registry.get(choice.provider_id)
+                        local prompt = prov and prov.path_prompt
+                            or ((prov and prov.display_name or choice.provider_id)
+                                .. " SDK path")
                         vim.ui.input({
-                            prompt = (sdk_registry.get(choice.provider_id).display_name or choice.provider_id)
-                                .. " SDK path: ",
+                            prompt = prompt .. ": ",
                         }, function(path)
                             if not path or path == "" then return end
                             local sdk2, err = ws:add_sdk(choice.provider_id, path)

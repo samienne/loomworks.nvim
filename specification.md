@@ -2651,9 +2651,24 @@ and per-module capability shape in its own spec file:
 
 - [`spec/sdks/ohos.md`](spec/sdks/ohos.md) — OpenHarmony /
   HarmonyOS via DevEco Studio.
+- [`spec/sdks/cpp_compiler.md`](spec/sdks/cpp_compiler.md) —
+  User-declared C/C++ compiler (cross-compiler / custom build).
 
 Third-party providers follow the same shape: implement the contract
 above and document the per-module capability shape alongside.
+
+Optional provider hooks beyond the base contract:
+
+- `path_prompt: string` — overrides the generic `<display_name>
+  SDK path` text in the Add-SDK dialog. Useful when the
+  installation is not a directory (e.g. a compiler binary).
+- `derive_key(info, path) → string` — overrides the default
+  `<type>-<version>` key shape. Useful when one user can have
+  multiple distinct installations of the same type and version
+  (e.g. two custom compiler builds at different paths).
+- `display_name_for(sdk) → string` — overrides
+  `SDK:display_name()` per instance so labels can depend on
+  query-time information (e.g. detected compiler family).
 
 ### 10.6 Future direction
 

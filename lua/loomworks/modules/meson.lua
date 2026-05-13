@@ -257,7 +257,7 @@ function M.detect_tools()
     local meson = find_meson()
     if not meson then return {} end
 
-    local compilers = require("loomworks.compilers").detect()
+    local compilers = require("loomworks.cpp_compilers").detect()
     if #compilers == 0 then return {} end
 
     local tools = {}
@@ -288,7 +288,7 @@ end
 --- Clear the shared compiler detection cache so the next
 --- `detect_tools` call re-scans PATH. Called by core's rescan flow.
 function M.invalidate_tools()
-    require("loomworks.compilers").clear_cache()
+    require("loomworks.cpp_compilers").clear_cache()
 end
 
 --- Cache key suffix from tool_data. The compiler_id pins the
