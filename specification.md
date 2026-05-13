@@ -14,7 +14,7 @@ or SDKs in normative prose — implementations are documented in
 sibling files under `spec/`:
 
 - [`spec/modules/`](spec/modules/) — per-module implementations (cmake,
-  harmony, meson, typescript)
+  harmony, meson, shell, typescript)
 - [`spec/integrations/lsp/`](spec/integrations/lsp/) — per-LSP-server
   integrations (clangd, …)
 - [`spec/integrations/debug/`](spec/integrations/debug/) — per-DAP-adapter
@@ -1803,6 +1803,8 @@ this contract in its own spec file:
   build dirs, hdc device interface)
 - [`spec/modules/meson.md`](spec/modules/meson.md) — meson projects
   (introspect-driven discovery, per-compiler kits)
+- [`spec/modules/shell.md`](spec/modules/shell.md) — generic shell-command
+  runner (self-managed builds: custom scripts, Make, vendor toolchains)
 - [`spec/modules/typescript.md`](spec/modules/typescript.md) — v1 stub
   (project detection only, no build tasks)
 

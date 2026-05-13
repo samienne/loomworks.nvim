@@ -1,5 +1,29 @@
 local M = {}
 
+--- Resolve user-declared project variables for the active configuration.
+--- Returns nil when the project has no variable declarations so module
+--- contexts stay lean. The Configuration object is the inheritance root —
+--- pass nil to get project-default values only.
+--- @param project loomworks.Project|nil
+--- @param configuration loomworks.Configuration|nil
+--- @return table<string, { value: string, type: string }>|nil
+local function resolve_project_variables(project, configuration)
+    if not project or not project.variables or not next(project.variables) then
+        return nil
+    end
+    local variables = require("loomworks.variables")
+    local resolved = variables.resolve(project, configuration)
+    if not next(resolved) then return nil end
+    -- Drop the source_config reference: modules shouldn't depend on
+    -- Configuration object identity, and the value is what's load-bearing
+    -- for command expansion.
+    local out = {}
+    for name, entry in pairs(resolved) do
+        out[name] = { value = entry.value, type = entry.type }
+    end
+    return out
+end
+
 --- Collect task definitions for a single project configuration, grouped by action.
 --- @param unit loomworks.ConfigUnit
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
@@ -42,6 +66,7 @@ local function collect_configuration_tasks(unit)
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
+        resolved_variables = resolve_project_variables(project, unit._configuration),
     }
 
     local pt = mod.progress_parser
@@ -121,6 +146,7 @@ function M.build_spec_for(unit, target_id)
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
+        resolved_variables = resolve_project_variables(project, unit._configuration),
     }
 
     --- Validate spec types and coerce missing cwd to the workspace root.
@@ -225,6 +251,7 @@ local function collect_profile_tasks(profile)
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},
             cached_build_dir = pp:build_dir(),
+            resolved_variables = resolve_project_variables(project, pp._configuration),
         }
 
         local pt = mod.progress_parser
@@ -293,6 +320,7 @@ local function collect_configuration_clean_tasks(unit)
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
+        resolved_variables = resolve_project_variables(project, unit._configuration),
     }
 
     return mod.clean_tasks(project_ctx, variant)
@@ -337,6 +365,7 @@ local function collect_profile_clean_tasks(profile)
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},
             cached_build_dir = pp:build_dir(),
+            resolved_variables = resolve_project_variables(project, pp._configuration),
         }
 
         local clean = mod.clean_tasks(project_ctx, active_config)
