@@ -295,6 +295,25 @@ describe("shell module", function()
         end)
     end)
 
+    describe("editable_type_config_fields", function()
+        it("declares one row per editable shell field with the right kind", function()
+            local fields = shell.editable_type_config_fields()
+            local by_name = {}
+            for _, f in ipairs(fields) do by_name[f.name] = f end
+
+            -- Each kind drives a specific UI editor in projects.lua —
+            -- the renderer dispatches on `kind`, so mismatches here
+            -- silently produce "(unsupported kind: ...)" leaves.
+            assert.equals("string",    by_name.build_dir.kind)
+            assert.equals("cmd_array", by_name.configure_cmd.kind)
+            assert.equals("cmd_array", by_name.build_cmd.kind)
+            assert.equals("cmd_array", by_name.clean_cmd.kind)
+            assert.equals("string",    by_name.compile_commands.kind)
+            assert.equals("env_dict",  by_name.env.kind)
+            assert.equals("string",    by_name.clangd.kind)
+        end)
+    end)
+
     describe("map_variant", function()
         it("single-config fallback returns the only config", function()
             assert.equals("default", shell.map_variant("debug", { "default" }))

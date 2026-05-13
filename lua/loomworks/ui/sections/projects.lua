@@ -72,6 +72,87 @@ local function render_env_dict_field(tree, project, field)
     end)
 end
 
+--- Render a single string-valued editable type_config field as a row.
+--- Empty values show "(unset)" in Comment hl. Enter opens a prompt
+--- pre-filled with the current value; submitting empty clears.
+--- @param tree loomworks.Tree
+--- @param project loomworks.Project
+--- @param field { name: string, label: string, placeholder?: string }
+local function render_string_field(tree, project, field)
+    local current = project.type_config and project.type_config[field.name] or nil
+    if not current and project.orphaned then return end
+
+    local display = current and current ~= "" and current or "(unset)"
+    local hl = current and "LoomworksActionable" or "Comment"
+    tree:item({
+        { field.label .. ": ", "LoomworksSection" },
+        { display, hl },
+    }, {
+        hl = hl,
+        direct = true,
+        enter_label = "Edit " .. field.label:lower(),
+        on_enter = function()
+            vim.ui.input({
+                prompt = field.label .. ": ",
+                default = current or field.placeholder or "",
+            }, function(val)
+                if val == nil then return end
+                local new_val = val
+                if new_val == "" then new_val = nil end
+                project:save_type_config_field(field.name, new_val)
+            end)
+        end,
+        on_delete = current and function()
+            project:save_type_config_field(field.name, nil)
+        end or nil,
+    })
+end
+
+--- Render a command-array editable type_config field. Displayed as the
+--- whitespace-joined command line; editing accepts a joined string and
+--- splits on whitespace. Quoted args / escapes are not supported here
+--- — for those the user edits user.json / loomworks.json directly.
+--- @param tree loomworks.Tree
+--- @param project loomworks.Project
+--- @param field { name: string, label: string, placeholder?: string }
+local function render_cmd_array_field(tree, project, field)
+    local current = project.type_config and project.type_config[field.name] or nil
+    if not current and project.orphaned then return end
+
+    local joined = ""
+    if type(current) == "table" then
+        joined = table.concat(current, " ")
+    end
+    local display = joined ~= "" and joined or "(unset)"
+    local hl = joined ~= "" and "LoomworksActionable" or "Comment"
+    tree:item({
+        { field.label .. ": ", "LoomworksSection" },
+        { display, hl },
+    }, {
+        hl = hl,
+        direct = true,
+        enter_label = "Edit " .. field.label:lower(),
+        on_enter = function()
+            vim.ui.input({
+                prompt = field.label .. " (space-separated): ",
+                default = joined ~= "" and joined or (field.placeholder or ""),
+            }, function(val)
+                if val == nil then return end
+                if val == "" then
+                    project:save_type_config_field(field.name, nil)
+                    return
+                end
+                local parts = {}
+                for tok in val:gmatch("%S+") do parts[#parts + 1] = tok end
+                project:save_type_config_field(field.name, parts)
+            end)
+        end,
+        on_delete = (joined ~= "") and function()
+            project:save_type_config_field(field.name, nil)
+        end or nil,
+    })
+end
+
 --- Dispatch rendering for an editable type_config field based on its kind.
 --- Extend this switch as new kinds are introduced.
 --- @param tree loomworks.Tree
@@ -80,6 +161,10 @@ end
 local function render_editable_type_config_field(tree, project, field)
     if field.kind == "env_dict" then
         render_env_dict_field(tree, project, field)
+    elseif field.kind == "string" then
+        render_string_field(tree, project, field)
+    elseif field.kind == "cmd_array" then
+        render_cmd_array_field(tree, project, field)
     else
         tree:leaf(field.label .. ": (unsupported kind: "
             .. tostring(field.kind) .. ")", "DiagnosticWarn")

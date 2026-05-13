@@ -349,6 +349,28 @@ function M.progress_parser()
 end
 
 -- ---------------------------------------------------------------------------
+-- UI: editable type_config fields
+-- ---------------------------------------------------------------------------
+
+--- Declare fields the status page can edit inline. The generic renderer
+--- in `ui/sections/projects.lua` reads these and emits one row per
+--- field; the field's `kind` picks the editor (string, cmd_array,
+--- env_dict). Persistence goes through `Project:save_type_config_field`,
+--- so no extra mutation plumbing is required here.
+--- @return table[]
+function M.editable_type_config_fields()
+    return {
+        { name = "build_dir",        label = "Build dir",        kind = "string" },
+        { name = "configure_cmd",    label = "Configure cmd",    kind = "cmd_array" },
+        { name = "build_cmd",        label = "Build cmd",        kind = "cmd_array" },
+        { name = "clean_cmd",        label = "Clean cmd",        kind = "cmd_array" },
+        { name = "compile_commands", label = "Compile commands", kind = "string" },
+        { name = "env",              label = "Build environment", kind = "env_dict" },
+        { name = "clangd",           label = "clangd binary",    kind = "string" },
+    }
+end
+
+-- ---------------------------------------------------------------------------
 -- LSP integration
 -- ---------------------------------------------------------------------------
 

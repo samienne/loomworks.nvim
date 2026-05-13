@@ -153,3 +153,24 @@ v1 path is to wire tests through neotest directly outside loomworks.
 Module language `"c++"` resolves to the default codelldb adapter.
 Users declare launch configurations the same way as any other module
 (`debug = ["c++"]`, explicit `program`, `args`, etc.).
+
+## 12. UI: in-place type_config editing
+
+`editable_type_config_fields()` declares every field in the `shell:`
+block to the generic status-page renderer (`ui/sections/projects.lua`).
+Each field produces an inline row with an editor:
+
+| Field | Editor kind | Notes |
+|------|------------|------|
+| `build_dir` | `string` | Single-value prompt. |
+| `configure_cmd` | `cmd_array` | Joined on display; edits accept a whitespace-separated string and split. Quoted args / escapes require hand-editing JSON. |
+| `build_cmd` | `cmd_array` | Same. |
+| `clean_cmd` | `cmd_array` | Same. Empty value means "fall back to wiping build dir." |
+| `compile_commands` | `string` | Single path. |
+| `env` | `env_dict` | Existing harmony-style env editor (per-entry rows + Add). |
+| `clangd` | `string` | Single path override. |
+
+Project-level `variables` and per-configuration variable overrides
+use the existing variable editor (`ui/variable_editor.lua`) and
+configuration dialog (`ui/config_editor_dialog.lua`) — shell projects
+inherit those flows from the generic projects section.
