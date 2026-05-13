@@ -972,6 +972,24 @@ function Workspace:_rebuild_profile_projects_for(profile)
                     units_by_id[config_unit.id] = config_unit
                 end
             end
+            -- Per-(profile, config) tool compatibility check. Mirrors
+            -- the same call site in data_model.sync — the targeted
+            -- rebuild path must also refresh `_tool_compat_error` so
+            -- mapping changes (which bypass a full remerge) update
+            -- the diagnostic and per-PP marker live.
+            local tool = nil
+            if project then
+                local profile_tools = profile:tools_data()
+                local tool_key_local = profile_tools
+                    and profile_tools[project.type]
+                    and profile_tools[project.type].key
+                if tool_key_local and project._module then
+                    tool = project._module:find_tool(tool_key_local)
+                end
+            end
+            local tool_compat_error = data_model.compute_tool_compat_error(
+                project, configuration, tool)
+
             local reg_key = profile.key .. "\0" .. project_key
             local data = {
                 project_key = project_key,
@@ -979,6 +997,7 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 project = project,
                 configuration = configuration,
                 config_unit = config_unit,
+                tool_compat_error = tool_compat_error,
             }
             local existing = existing_pps[reg_key]
             if existing then
@@ -1794,6 +1813,31 @@ function Workspace:diagnostics()
     for _, cs in pairs(self._config_sets) do
         if not cs._removed and cs.diagnostic then
             add(cs:diagnostic())
+        end
+    end
+
+    -- Tool/configuration compatibility errors. Reported per
+    -- (profile, configuration) pair because each profile picks its
+    -- own tool — the same configuration can be valid in one profile
+    -- and invalid in another. Severity is error: this blocks
+    -- build/configure/clean/deploy/launch/debug on the active
+    -- profile, so it deserves the same weight as profile invalidity.
+    -- Source identifies the profile + project + variant so the user
+    -- can locate the failing row on the status page.
+    for _, pp in pairs(self._profile_projects) do
+        if not pp._removed and pp._tool_compat_error then
+            local profile_key = pp._profile and pp._profile.key or "?"
+            local project_key = pp._project and pp._project.key
+                or pp._init_project_key or "?"
+            local variant = pp._configuration and pp._configuration.name or "?"
+            add({
+                severity = "error",
+                source = "Profile/" .. profile_key
+                    .. "/" .. project_key .. "/" .. variant,
+                message = pp._tool_compat_error,
+                target_fold_key = "profile_proj:" .. profile_key
+                    .. ":" .. project_key,
+            })
         end
     end
 

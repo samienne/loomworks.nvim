@@ -11,6 +11,7 @@
 --- @field _project loomworks.Project|nil resolved project
 --- @field _configuration loomworks.Configuration|nil resolved configuration
 --- @field _config_unit loomworks.ConfigUnit|nil resolved config unit
+--- @field _tool_compat_error string|nil tool/configuration compatibility error for this (profile, configuration) pair, or nil when compatible. Recomputed every sync.
 --- @field _removed boolean
 local ProfileProject = {}
 ProfileProject.__index = ProfileProject
@@ -18,7 +19,7 @@ ProfileProject.__index = ProfileProject
 --- Create a ProfileProject.
 --- @param workspace loomworks.Workspace
 --- @param project_key string used for identity and fallback resolution
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit }
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string }
 --- @return loomworks.ProfileProject
 function ProfileProject.new(workspace, project_key, data)
     local self = setmetatable({}, ProfileProject)
@@ -31,12 +32,25 @@ end
 
 --- Update in place (preserves table identity).
 --- Receives pre-resolved references from _sync_profile_projects.
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit }
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string }
 function ProfileProject:_apply(data)
     self._profile = data.profile
     self._project = data.project
     self._configuration = data.configuration
     self._config_unit = data.config_unit
+    -- Compat error is recomputed each sync — preserve nil when the
+    -- module didn't report one, set the reason when it did.
+    self._tool_compat_error = data.tool_compat_error
+end
+
+--- Get the tool/configuration compatibility error for this
+--- (profile, configuration) pair, if any. Non-nil means this
+--- profile's resolved tool can't honor the configuration's
+--- contract — build actions on this profile-project are blocked.
+--- See spec §3 `validate_config_tool`.
+--- @return string|nil reason
+function ProfileProject:tool_compat_error()
+    return self._tool_compat_error
 end
 
 function ProfileProject:__tostring()

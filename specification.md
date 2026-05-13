@@ -1689,6 +1689,36 @@ under `workspace_root` for deletion safety. If not implemented, the
 core uses the default formula:
 `{workspace_root}/.nvim/build/{project}/{config}`.
 
+**`validate_config_tool(configuration, tool) → ok, reason`** *(optional)*
+
+Enforce that a tool the profile has selected is compatible with a
+specific configuration's contract. Returns `ok=true` when compatible,
+or `ok=false, reason=string` when the tool cannot honor the
+configuration's claim. Modules that omit this method are permissive
+(no check fires).
+
+Called during profile-project sync, once per ProfileProject (i.e.
+once per `(profile, configuration)` pair), against the tool that the
+profile resolves for the configuration. The result is stored on the
+ProfileProject as `_tool_compat_error` (nil when compatible) — *not*
+on the ConfigUnit, because the same unit can be valid in one profile
+and invalid in another. `ConfigUnit:tool_compat_error()` is a
+convenience helper that looks up the *active* profile's
+ProfileProject for the unit and returns its compat error.
+
+When the active profile's PP has a compat error set, build, rebuild,
+configure, clean, deploy, launch, and debug actions are blocked on
+that unit; delete is allowed. The reason string is rendered in the
+diagnostics section and surfaced on the failing config row's hover.
+The profile-level status marker also swaps to ✗ when any of its PPs
+has a compat error, so the problem is visible without expanding.
+
+The check is intended for cross-module consistency invariants that
+emerge from the profile's tool selection (e.g. a kit's platform/arch
+claim must match the configuration's product). Modules whose tool
+selection is binding by construction (the tool itself defines the
+compiler) don't need this check.
+
 **`invalidate_tools()`** *(optional)*
 
 Clear any cached tool-detection state the module holds. Called by core

@@ -672,6 +672,28 @@ end
 function M.run_configuration_action(unit, action, on_complete, opts)
     local future_mod = require("loomworks.future")
 
+    -- Tool/configuration compatibility gate. Refuse build/configure/
+    -- rebuild when the active profile's tool can't honor the
+    -- configuration's contract — going further would queue tasks
+    -- that either fail opaquely or silently produce wrong-platform
+    -- artefacts. The diagnostic already surfaces the same reason on
+    -- the status page; this is the belt-and-braces path for users
+    -- who act before reading the diagnostic. Runs before the
+    -- overseer check because it's about the unit's state, not about
+    -- task queueing. Compat error is per-(profile, configuration);
+    -- ConfigUnit:tool_compat_error() resolves against the workspace's
+    -- active profile.
+    local compat_err = unit and unit.tool_compat_error
+        and unit:tool_compat_error() or nil
+    if compat_err then
+        vim.notify(
+            "loomworks: " .. compat_err
+                .. " — change the profile's tool to match the configuration",
+            vim.log.levels.ERROR)
+        if on_complete then on_complete(false) end
+        return future_mod.rejected(compat_err)
+    end
+
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)
@@ -772,6 +794,23 @@ end
 --- @return loomworks.Future
 function M.run_configuration_clean(unit, on_complete)
     local future_mod = require("loomworks.future")
+
+    -- Clean invokes the module's build system (hvigor for harmony),
+    -- which needs the right SDK env to know where it's pointing. A
+    -- mismatched tool would clean the wrong tree or fail opaquely.
+    -- ConfigUnit:delete (rm-rf of the cached dir) is independent and
+    -- remains allowed — see spec §3 `validate_config_tool`.
+    local compat_err = unit and unit.tool_compat_error
+        and unit:tool_compat_error() or nil
+    if compat_err then
+        vim.notify(
+            "loomworks: " .. compat_err
+                .. " — change the profile's tool to match the configuration",
+            vim.log.levels.ERROR)
+        if on_complete then on_complete(false) end
+        return future_mod.rejected(compat_err)
+    end
+
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomworks: overseer.nvim not found", vim.log.levels.ERROR)

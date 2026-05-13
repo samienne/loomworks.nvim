@@ -500,17 +500,35 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                     build_dir_id, abs_path = deps.compute_build_dir(project, variant, arg)
                 end
 
-                -- Accumulate ConfigUnit data (dedup by build_dir_id)
+                -- Resolve tool domain object (used for both the
+                -- ConfigUnit accumulator below and the per-PP compat
+                -- check). Even when expected_units[build_dir_id] is
+                -- already populated by a different profile, we still
+                -- need the tool object for *this* profile's PP.
+                local tool = nil
+                if tool_key then
+                    local mod = project and project._module or nil
+                    if mod then tool = mod:find_tool(tool_key) end
+                end
+
+                -- Per-(profile, config) compatibility check. Stored
+                -- on the ProfileProject, not the ConfigUnit — the
+                -- same unit can be valid in one profile and invalid
+                -- in another (each profile picks its own tool).
+                -- Module-agnostic via `validate_config_tool` hook
+                -- (see spec §3).
+                local tool_compat_error = M.compute_tool_compat_error(
+                    project, configuration, tool)
+
+                -- Accumulate ConfigUnit data (dedup by build_dir_id).
+                -- This block is iteration-order-sensitive by design:
+                -- the unit's stored `_tool_data` reflects whichever
+                -- profile happened to resolve first. The compat
+                -- error, in contrast, lives on PP and is correctly
+                -- scoped to (profile, config) below.
                 local config_unit_ref = nil
                 if build_dir_id then
                     if not expected_units[build_dir_id] then
-                        -- Resolve tool domain object
-                        local tool = nil
-                        if tool_key then
-                            local mod = project and project._module or nil
-                            if mod then tool = mod:find_tool(tool_key) end
-                        end
-
                         -- Look up cache entry by build_dir key
                         local cache_entry = cache and cache.build_dirs
                             and cache.build_dirs[build_dir_id] or nil
@@ -545,6 +563,7 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                     project = project,
                     configuration = configuration,
                     config_unit_ref = config_unit_ref,  -- resolved after unit creation
+                    tool_compat_error = tool_compat_error,
                 }
             end
         end
@@ -636,6 +655,27 @@ function M.sync_build_dir_refs(config_units, normalize)
         end
     end
     return refs
+end
+
+--- Compute the per-(profile, configuration) tool compatibility error
+--- by invoking the module's `validate_config_tool` hook. Modules that
+--- don't implement the hook are permissive (returns nil). Used by
+--- both the full `data_model.refresh` path and the targeted
+--- `Workspace:_rebuild_profile_projects_for` path so a mapping change
+--- updates the compat state without a full file-driven remerge.
+--- @param project loomworks.Project|nil
+--- @param configuration loomworks.Configuration|nil
+--- @param tool loomworks.Tool|nil
+--- @return string|nil reason
+function M.compute_tool_compat_error(project, configuration, tool)
+    if not project or not configuration or not tool then return nil end
+    local impl = project._module and project._module.impl or nil
+    if not impl or not impl.validate_config_tool then return nil end
+    local ok, err = impl.validate_config_tool(configuration, tool)
+    if ok == false then
+        return err or "tool incompatible with configuration"
+    end
+    return nil
 end
 
 -- ===========================================================================

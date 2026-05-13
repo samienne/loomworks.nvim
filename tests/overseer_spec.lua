@@ -281,6 +281,98 @@ describe("overseer launch_tasks", function()
             assert.is_true(build_fired)
         end)
     end)
+
+    -- ----------------------------------------------------------------------
+    -- Tool/configuration compatibility gate
+    -- ----------------------------------------------------------------------
+    --
+    -- Per spec §3 `validate_config_tool`, a non-nil `_tool_compat_error`
+    -- blocks the unit from being built, configured, rebuilt, or
+    -- cleaned. The gate sits at the top of run_configuration_action
+    -- and run_configuration_clean; both return a rejected Future and
+    -- never enqueue any task.
+    describe("tool/configuration compatibility gate", function()
+        local overseer_mod = require("loomworks.overseer")
+
+        --- Stub vim.notify so the gate's error notification doesn't
+        --- pollute test output, and we can assert the message later.
+        local function stub_notify()
+            local orig = vim.notify
+            local captured = {}
+            vim.notify = function(msg, level)
+                captured[#captured + 1] = { msg = msg, level = level }
+            end
+            return captured, function() vim.notify = orig end
+        end
+
+        --- Wire a fake active profile onto the unit's workspace so
+        --- `ConfigUnit:tool_compat_error()` finds the reason. The
+        --- helper mimics what the data_model would have populated
+        --- on a real ProfileProject during sync.
+        local function set_active_compat_error(unit, reason)
+            unit._workspace._active_profile = {
+                projects = function()
+                    return { { _config_unit = unit,
+                        _tool_compat_error = reason } }
+                end,
+            }
+        end
+
+        it("run_configuration_action rejects when active profile has compat error", function()
+            local unit = make_unit("App", "Debug", "unconfigured")
+            set_active_compat_error(unit,
+                "targets OpenHarmony but profile tool is HarmonyOS")
+
+            local _captured, restore = stub_notify()
+            local rejected_with = nil
+            local resolved = false
+            local f = overseer_mod.run_configuration_action(unit, "build")
+            f:next(function() resolved = true end)
+            f:catch(function(err) rejected_with = err end)
+            restore()
+
+            assert.is_false(resolved)
+            assert.is_truthy(rejected_with)
+            assert.is_truthy(
+                tostring(rejected_with):find("OpenHarmony"),
+                "rejection carries the compat reason")
+        end)
+
+        it("run_configuration_clean rejects when active profile has compat error", function()
+            local unit = make_unit("App", "Debug", "built")
+            set_active_compat_error(unit,
+                "ABI is arm64-v8a but profile tool is armeabi-v7a")
+
+            local _captured, restore = stub_notify()
+            local rejected_with = nil
+            local resolved = false
+            local f = overseer_mod.run_configuration_clean(unit)
+            f:next(function() resolved = true end)
+            f:catch(function(err) rejected_with = err end)
+            restore()
+
+            assert.is_false(resolved)
+            assert.is_truthy(rejected_with)
+            assert.is_truthy(tostring(rejected_with):find("ABI"))
+        end)
+
+        it("notify message points the user at the fix", function()
+            local unit = make_unit("App", "Debug", "unconfigured")
+            set_active_compat_error(unit,
+                "targets OpenHarmony but profile tool is HarmonyOS")
+
+            local captured, restore = stub_notify()
+            overseer_mod.run_configuration_action(unit, "configure")
+            restore()
+
+            assert.is_true(#captured > 0, "exactly one notify fires")
+            local msg = captured[1].msg
+            assert.is_truthy(msg:find("OpenHarmony"))
+            assert.is_truthy(
+                msg:find("change the profile") or msg:find("change the tool"),
+                "message tells the user how to recover: " .. msg)
+        end)
+    end)
 end)
 
 -- ---------------------------------------------------------------------------

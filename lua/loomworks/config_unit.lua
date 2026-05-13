@@ -91,6 +91,31 @@ function ConfigUnit.new(workspace, id, project_key)
     return self
 end
 
+--- Get the tool/configuration compatibility error for this unit
+--- when used by the workspace's active profile, if any. Looks up
+--- the active profile's ProfileProject for this unit and returns
+--- its `_tool_compat_error`. Returns nil when no active profile
+--- references this unit, or when the active profile's tool is
+--- compatible.
+---
+--- The compat error is stored per-(profile, configuration) on
+--- ProfileProject — the same ConfigUnit can be valid in one
+--- profile and invalid in another. Action gates that operate on a
+--- ConfigUnit use this helper to check against the active profile
+--- (which is what hvigor / overseer will actually use).
+--- @return string|nil reason
+function ConfigUnit:tool_compat_error()
+    local ws = self._workspace
+    local active = ws and ws._active_profile or nil
+    if not active then return nil end
+    for _, pp in ipairs(active:projects()) do
+        if pp._config_unit == self then
+            return pp._tool_compat_error
+        end
+    end
+    return nil
+end
+
 --- Refresh project, tool, and configuration references from pre-resolved data.
 --- Preserves runtime state (_task_id, _action, _progress, _deleting, _listeners, targets).
 --- Populates first-class fields from the cached input data (reads but does not store).
