@@ -1,0 +1,170 @@
+--- Tests for cpp_compilers.probe_path — identification of an
+--- arbitrary user-provided compiler executable. The family /
+--- version / sibling-clangd logic that's shared with the PATH-scan
+--- path lives here, and these tests pin its contract.
+---
+--- Real compilers aren't available in CI, so the tests stub
+--- `vim.fn.system` to return canned `--version` output, and stub
+--- `vim.uv.fs_stat` / `vim.fn.executable` so sibling-lookup
+--- decisions are independent of the host filesystem.
+
+-- We poke private state so reload the module fresh per spec to
+-- avoid cross-test cache pollution.
+package.loaded["loomworks.cpp_compilers"] = nil
+local cpp = require("loomworks.cpp_compilers")
+
+local function with_stubs(stubs, fn)
+    local saved = {}
+    for path, value in pairs(stubs) do
+        local parts, key = {}, nil
+        for p in string.gmatch(path, "[^%.]+") do parts[#parts + 1] = p end
+        local tbl = _G
+        for i = 1, #parts - 1 do tbl = tbl[parts[i]] end
+        key = parts[#parts]
+        saved[path] = { tbl = tbl, key = key, prev = tbl[key] }
+        tbl[key] = value
+    end
+    local ok, err = pcall(fn)
+    for path, s in pairs(saved) do
+        s.tbl[s.key] = s.prev
+    end
+    if not ok then error(err) end
+end
+
+describe("cpp_compilers.probe_path", function()
+    it("returns nil for empty path", function()
+        assert.is_nil(cpp.probe_path(nil))
+        assert.is_nil(cpp.probe_path(""))
+    end)
+
+    it("returns nil when path doesn't exist", function()
+        with_stubs({
+            ["vim.uv.fs_stat"] = function() return nil end,
+        }, function()
+            assert.is_nil(cpp.probe_path("/nonexistent/clang++"))
+        end)
+    end)
+
+    it("identifies Clang from --version output", function()
+        with_stubs({
+            ["vim.uv.fs_stat"] = function(path)
+                return path == "/opt/myclang/bin/clang++" and { type = "file" } or nil
+            end,
+            ["vim.fn.system"] = function() return "clang version 19.0.0 (...)\n" end,
+            ["vim.v"] = { shell_error = 0 },
+            ["vim.fn.executable"] = function() return 0 end,
+        }, function()
+            local info = cpp.probe_path("/opt/myclang/bin/clang++")
+            assert.is_not_nil(info)
+            assert.equals("clang", info.family)
+            assert.equals("19.0.0", info.version)
+            assert.equals("/opt/myclang/bin/clang++", info.path)
+        end)
+    end)
+
+    it("identifies GCC from --version output", function()
+        with_stubs({
+            ["vim.uv.fs_stat"] = function(path)
+                return path == "/usr/bin/g++" and { type = "file" } or nil
+            end,
+            ["vim.fn.system"] = function()
+                return "g++ (Ubuntu 13.2.0-23ubuntu4) 13.2.0\nCopyright (C) 2023 Free Software Foundation, Inc.\n"
+            end,
+            ["vim.v"] = { shell_error = 0 },
+            ["vim.fn.executable"] = function() return 0 end,
+        }, function()
+            local info = cpp.probe_path("/usr/bin/g++")
+            assert.is_not_nil(info)
+            assert.equals("gcc", info.family)
+            assert.equals("13.2.0", info.version)
+        end)
+    end)
+
+    it("falls back to basename when --version is uninformative", function()
+        -- An exotic compiler that prints something we don't recognize.
+        -- Family detection should still fall back to the binary name.
+        with_stubs({
+            ["vim.uv.fs_stat"] = function() return { type = "file" } end,
+            ["vim.fn.system"] = function() return "Some Vendor C++ 7.1.2\n" end,
+            ["vim.v"] = { shell_error = 0 },
+            ["vim.fn.executable"] = function() return 0 end,
+        }, function()
+            local info = cpp.probe_path("/opt/vendor/bin/cxx")
+            -- Family is nil — we don't recognize "vendor" — but the
+            -- result is still returned with the version filled in,
+            -- so the kit works as a CC/CXX passthrough.
+            assert.is_not_nil(info)
+            assert.is_nil(info.family)
+            assert.equals("7.1.2", info.version)
+        end)
+    end)
+
+    it("only sets clangd_path for Clang family", function()
+        -- Stub sibling clangd as existing for both inputs; the probe
+        -- should only return it for Clang.
+        local seen_paths = {}
+        with_stubs({
+            ["vim.uv.fs_stat"] = function(path)
+                seen_paths[path] = true
+                return { type = "file" }
+            end,
+            ["vim.fn.executable"] = function() return 1 end,
+            ["vim.fn.system"] = function(cmd)
+                if cmd[1]:match("clang") then return "clang version 19.0.0\n" end
+                return "g++ (...) 13.2.0\nFree Software Foundation\n"
+            end,
+            ["vim.v"] = { shell_error = 0 },
+        }, function()
+            local clang = cpp.probe_path("/opt/c/bin/clang++")
+            local gcc = cpp.probe_path("/usr/bin/g++")
+            assert.is_not_nil(clang.clangd_path,
+                "clang family should expose sibling clangd")
+            assert.is_nil(gcc.clangd_path,
+                "gcc family must not claim a clangd sibling")
+        end)
+    end)
+
+    it("derives c_path sibling for a clang++ input", function()
+        with_stubs({
+            ["vim.uv.fs_stat"] = function(path)
+                -- clang++ exists, sibling clang also exists.
+                return (path:match("clang%+%+$") or path:match("/clang$"))
+                    and { type = "file" } or nil
+            end,
+            ["vim.fn.executable"] = function() return 0 end,
+            ["vim.fn.system"] = function() return "clang version 19.0.0\n" end,
+            ["vim.v"] = { shell_error = 0 },
+        }, function()
+            local info = cpp.probe_path("/opt/c/bin/clang++")
+            assert.equals("/opt/c/bin/clang", info.c_path)
+        end)
+    end)
+
+    it("falls back to cxx path when c sibling missing", function()
+        with_stubs({
+            ["vim.uv.fs_stat"] = function(path)
+                return path:match("g%+%+$") and { type = "file" } or nil
+            end,
+            ["vim.fn.executable"] = function() return 0 end,
+            ["vim.fn.system"] = function()
+                return "g++ 13.2.0\nFree Software Foundation\n"
+            end,
+            ["vim.v"] = { shell_error = 0 },
+        }, function()
+            local info = cpp.probe_path("/some/dir/g++")
+            assert.equals(info.path, info.c_path,
+                "no `gcc` sibling → c_path falls back to cxx path")
+        end)
+    end)
+
+    it("returns nil when --version exits non-zero", function()
+        with_stubs({
+            ["vim.uv.fs_stat"] = function() return { type = "file" } end,
+            ["vim.fn.system"] = function() return "" end,
+            ["vim.v"] = { shell_error = 127 },
+            ["vim.fn.executable"] = function() return 0 end,
+        }, function()
+            assert.is_nil(cpp.probe_path("/opt/not-a-compiler"))
+        end)
+    end)
+end)

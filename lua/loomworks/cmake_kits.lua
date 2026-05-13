@@ -113,12 +113,12 @@ local function find_sibling_clangd(compiler_path)
 end
 
 --- Detect C/C++ compilers in PATH. Delegates to the shared
---- `loomworks.compilers` module, shaping the result into the
+--- `loomworks.cpp_compilers` module, shaping the result into the
 --- `{path=...}` fields cmake_kits has historically used. Keeping the
 --- adapter thin makes the shared detector the single source of truth.
 --- @return { id: string, display: string, path: string, version: string, family: string, clangd_path: string|nil }[]
 local function detect_compilers()
-    local shared = require("loomworks.compilers").detect()
+    local shared = require("loomworks.cpp_compilers").detect()
     local out = {}
     for _, c in ipairs(shared) do
         out[#out + 1] = {
@@ -186,7 +186,7 @@ end
 --- `cmake_kits.clear_cache()` wired up continue to work.
 function M.clear_cache()
     M._cached = nil
-    require("loomworks.compilers").clear_cache()
+    require("loomworks.cpp_compilers").clear_cache()
 end
 
 --- Detect MSVC installations asynchronously via vswhere.exe.

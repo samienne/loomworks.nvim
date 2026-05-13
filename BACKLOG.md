@@ -109,7 +109,7 @@ hypothesis before changing anything.
 Meson builds fine with MSVC (`cl.exe`) on the ninja backend, but only
 when invoked under an environment where `vcvarsall.bat` has run — that
 sets `INCLUDE`, `LIB`, `PATH`, etc. for the target architecture. The
-meson module's compiler detector (`lua/loomworks/compilers.lua`)
+meson module's compiler detector (`lua/loomworks/cpp_compilers.lua`)
 currently only finds gcc/clang on PATH; `cmake_kits.lua` already has
 the MSVC + vcvarsall plumbing for cmake.
 

@@ -1010,6 +1010,31 @@ function M.kits_from_sdk(caps, sdk)
     local kits = {}
     local cmake_path = caps.cmake_path
 
+    -- Single-compiler SDKs (no platforms[] / archs[] cross product):
+    -- the C/C++ compiler provider hands us one compiler binary and
+    -- we produce exactly one kit. Distinguished from platform SDKs
+    -- by `compiler_path` being set without `platforms` or
+    -- `toolchain_file`. No cross-compile machinery — just CC/CXX
+    -- env passthrough so cmake picks the right compiler at configure
+    -- time, plus any sibling clangd for LSP. compiler_path is the
+    -- C++ driver (the load-bearing field).
+    if not caps.platforms and not caps.toolchain_file and caps.compiler_path then
+        local env = {}
+        if caps.cc_path then env.CC = caps.cc_path end
+        env.CXX = caps.compiler_path
+        return { { tool_data = {
+            id = sdk.key,
+            display = sdk:display_name(),
+            generator = caps.generator or "Ninja",
+            compiler_id = caps.compiler_id,
+            compiler_path = caps.compiler_path,
+            compiler_version = caps.compiler_version,
+            clangd_path = caps.clangd_path,
+            env = next(env) and env or nil,
+            sdk_key = sdk.key,
+        } } }
+    end
+
     -- Support multi-platform SDKs (e.g., HarmonyOS + OpenHarmony)
     local platforms = caps.platforms
     if not platforms and caps.toolchain_file then
