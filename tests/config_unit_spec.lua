@@ -261,6 +261,54 @@ describe("ConfigUnit", function()
         end)
     end)
 
+    describe("tool/configuration compatibility", function()
+        -- Tool compat errors live on ProfileProject (per-profile),
+        -- not on ConfigUnit. ConfigUnit:tool_compat_error() is a
+        -- view-over-the-active-profile helper that walks active
+        -- profile's PPs to find this unit. With no workspace
+        -- active_profile, the helper returns nil.
+        it("returns nil when there is no active profile", function()
+            local unit = make_unit()
+            assert.is_nil(unit:tool_compat_error())
+        end)
+
+        it("returns nil when active profile has no PP for this unit",
+            function()
+                local unit = make_unit()
+                unit._workspace._active_profile = {
+                    projects = function() return {} end,
+                }
+                assert.is_nil(unit:tool_compat_error())
+            end)
+
+        it("returns the active profile's PP compat error", function()
+            local unit = make_unit()
+            unit._workspace._active_profile = {
+                projects = function()
+                    return { { _config_unit = unit,
+                        _tool_compat_error = "targets X but tool is Y" } }
+                end,
+            }
+            assert.equals(
+                "targets X but tool is Y",
+                unit:tool_compat_error())
+        end)
+
+        it("ignores PPs that don't point at this unit", function()
+            local unit = make_unit()
+            local other_unit = { id = "other" }
+            unit._workspace._active_profile = {
+                projects = function()
+                    return {
+                        { _config_unit = other_unit,
+                          _tool_compat_error = "stale from another unit" },
+                    }
+                end,
+            }
+            assert.is_nil(unit:tool_compat_error())
+        end)
+    end)
+
     describe("is_deleting", function()
         it("returns false by default", function()
             local unit = make_unit()

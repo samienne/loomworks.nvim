@@ -66,6 +66,39 @@ directory:
 The path is outside the standard `.nvim/build/` tree because hvigor
 owns it. It must still be under `workspace_root` for deletion safety.
 
+## 4a. Configuration / tool compatibility
+
+Implements `validate_config_tool(configuration, tool) → ok, reason`
+to enforce that the profile's harmony tool's claimed platform and arch
+match the configuration's product. The check has two axes:
+
+| Axis | Tool field | Configuration field | Notes |
+|------|-----------|--------------------|-------|
+| Platform | `tool.data.platform` | `configuration.module_config.runtime_os` | E.g. `"HarmonyOS"` vs `"OpenHarmony"` |
+| Arch | `tool.data.arch` | `configuration.module_config.abi` | E.g. `"arm64-v8a"` vs `"armeabi-v7a"` |
+
+Either mismatch fails. The failure reason concatenates each mismatching
+axis (e.g. `"targets HarmonyOS but profile tool is OpenHarmony; ABI is
+arm64-v8a but profile tool is armeabi-v7a"`).
+
+Tools or configurations missing the relevant field are **permissive on
+that axis** (no claim → no check). This preserves backwards compat with
+legacy SDK fallback tools that don't expose `platform`/`arch` and with
+older cache entries that pre-date the `runtime_os`/`abi` fields.
+
+The arch axis is load-bearing for cross-module consistency: a profile
+combining cmake + harmony from a shared SDK kit asserts both sides
+produce artifacts for the same `(platform, arch)`. hvigor itself reads
+ABI from `product.abiFilters` rather than the tool's claim, but a
+divergence between the cmake-side arch and the harmony-side abi would
+leave the resulting HAP unable to load the cmake-built shared libs.
+Enforcement at the tool/config level catches the divergence before any
+build runs.
+
+Non-native configurations (no `abi` field) skip the arch check; only
+platform is enforced. This is correct: ArkTS-only configs don't compile
+native code, so arch doesn't apply.
+
 ## 5. Editable type_config fields
 
 Implements `editable_type_config_fields()` to expose `cmake_env` as a

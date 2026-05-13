@@ -275,10 +275,25 @@ local function render_profile_details(tree, profile, lw)
                 -- Severity is in the marker icon's color, not the row
                 -- text. Missing configurations still surface a
                 -- warn-colored marker via the status mapping.
-                local pp_marker = helpers.status_marker(config_status)
-                local pp_marker_hl = pp:is_configuration_missing()
-                    and "DiagnosticWarn"
-                    or helpers.status_marker_hl(config_status)
+                -- Compat-error swap: when this profile's tool can't
+                -- honor this configuration, the row is unbuildable
+                -- regardless of cached state. Swap the marker to
+                -- ✗ / DiagnosticError so the row reads as blocked
+                -- (matches the severity of the diagnostics-section
+                -- entry that reports the same reason).
+                -- Stored per-PP because the same ConfigUnit may be
+                -- valid in one profile and invalid in another.
+                local compat_error = pp._tool_compat_error
+                local pp_marker, pp_marker_hl
+                if compat_error then
+                    pp_marker = "✗ "
+                    pp_marker_hl = "DiagnosticError"
+                else
+                    pp_marker = helpers.status_marker(config_status)
+                    pp_marker_hl = pp:is_configuration_missing()
+                        and "DiagnosticWarn"
+                        or helpers.status_marker_hl(config_status)
+                end
                 -- Row chunks mirror the config-set project row:
                 -- project key in blue, arrow + type tag + status in
                 -- Comment, variant in LoomworksVariant. Reads as the
@@ -310,6 +325,13 @@ local function render_profile_details(tree, profile, lw)
                     on_delete = actions.delete_config(unit),
                     on_options = actions.show_options(unit),
                 }, function()
+                    -- Surface the compat-error reason at the top of
+                    -- the expansion so the user sees *why* the row is
+                    -- blocked without scrolling to the diagnostics
+                    -- section.
+                    if compat_error then
+                        tree:leaf("✗ " .. compat_error, "DiagnosticError")
+                    end
                     -- Per-ConfigUnit tool(s): the specific tools
                     -- this (project, configuration) is actually
                     -- using out of the profile's array. For most
@@ -378,6 +400,24 @@ return function(tree, ctx)
         local status_label, _status_hl = profile:status()
         local marker = helpers.status_marker(status_label)
         local marker_hl = helpers.status_marker_hl(status_label)
+
+        -- Profile-level compat-error swap: if any PP in this
+        -- profile carries a tool/configuration mismatch, swap the
+        -- profile's status marker to ✗ / DiagnosticError so the
+        -- problem is visible at a glance without expanding the
+        -- profile. The per-PP rows underneath still carry their
+        -- own ✗ marker.
+        local has_compat_error = false
+        for _, pp in ipairs(profile:projects()) do
+            if pp._tool_compat_error then
+                has_compat_error = true
+                break
+            end
+        end
+        if has_compat_error then
+            marker = "✗ "
+            marker_hl = "DiagnosticError"
+        end
 
         local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
         local display = prof_modified .. profile.key

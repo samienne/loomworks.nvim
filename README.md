@@ -467,9 +467,11 @@ automatically from your system.
 1. **Header** — plugin version, workspace name, root path
 2. **Diagnostics** — structural warnings/errors aggregated from across the
    workspace (incomplete profiles, source-missing configurations, stale
-   `configuration_set` mappings, unresolved inherits chains). Hidden when
-   everything is healthy. Pressing `<CR>` on an entry jumps to the relevant
-   tree node, with `<C-o>`/`<C-i>` returning you back.
+   `configuration_set` mappings, unresolved inherits chains,
+   tool/configuration mismatches — e.g. a profile picking a HarmonyOS
+   arm64-v8a kit while mapping a project to an OpenHarmony product).
+   Hidden when everything is healthy. Pressing `<CR>` on an entry jumps to
+   the relevant tree node, with `<C-o>`/`<C-i>` returning you back.
 3. **Profiles** — all materialized profiles with build status
 4. **Orphaned Items** — cached configs no longer referenced by any profile,
    plus stray build directories not tracked in cache (hidden when empty)

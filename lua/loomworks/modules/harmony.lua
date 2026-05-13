@@ -371,6 +371,50 @@ function M.info(path, config)
     }
 end
 
+--- Check that a profile's harmony tool is compatible with a
+--- configuration. Compares `tool.data.platform` against
+--- `configuration.module_config.runtime_os` and `tool.data.arch`
+--- against `configuration.module_config.abi`. Either mismatch fails.
+--- Missing fields on either side are permissive on that axis — the
+--- tool isn't claiming, or the configuration doesn't carry the
+--- information, so we can't detect a contradiction.
+---
+--- The arch axis is purely cosmetic for harmony's own build (hvigor
+--- picks ABI from `product.abiFilters` regardless of the tool), but
+--- it remains load-bearing for cross-module consistency: a profile
+--- that combines cmake + harmony from the same SDK kit asserts both
+--- sides produce artifacts for the same (platform, arch). A divergence
+--- would leave the resulting HAP unable to load the cmake-built libs,
+--- so we catch it before the build runs.
+---
+--- See spec/modules/harmony.md §4a for the full rationale.
+--- @param configuration loomworks.Configuration
+--- @param tool loomworks.Tool|nil
+--- @return boolean ok
+--- @return string|nil reason
+function M.validate_config_tool(configuration, tool)
+    local mc = configuration and configuration.module_config or {}
+    local td = tool and tool.data
+    if not td then return true end
+
+    local issues = {}
+
+    local cp, tp = mc.runtime_os, td.platform
+    if cp and tp and cp ~= tp then
+        issues[#issues + 1] = string.format(
+            "targets %s but profile tool is %s", cp, tp)
+    end
+
+    local ca, ta = mc.abi, td.arch
+    if ca and ta and ca ~= ta then
+        issues[#issues + 1] = string.format(
+            "ABI is %s but profile tool is %s", ca, ta)
+    end
+
+    if #issues == 0 then return true end
+    return false, table.concat(issues, "; ")
+end
+
 --- Resolve the build directory for a harmony configuration.
 --- Native configurations (with ABI) return hvigor's cmake build dir.
 --- Non-native configurations use the default .nvim/build/ formula.
