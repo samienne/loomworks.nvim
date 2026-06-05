@@ -439,6 +439,7 @@ local function edit_project_configuration(project, config_name)
                     variables = result.variables,
                     toolchain = result.toolchain,
                     generator = result.generator,
+                    languages = result.languages,
                 })
             if ok then
                 local verb = config_name and "updated" or "created"

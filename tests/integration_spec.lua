@@ -2554,6 +2554,27 @@ describe("project configuration lifecycle", function()
         assert.same({ "Debug" }, cfg.inherits_names)
     end)
 
+    it("execute_save_configuration persists the languages field", function()
+        -- Regression: the UI dispatch in ui/sections/projects.lua used
+        -- to forward variant/inherits/options/variables/toolchain/
+        -- generator but silently drop `languages`, so any edit to the
+        -- languages list in the config editor disappeared on accept.
+        -- Lock the contract at the workspace_view layer.
+        local ws = make_ws({ projects = { App = { cmake = {} } } })
+        local app = h.find_project_in(ws:get_projects(), "App")
+
+        local ok = wv.execute_save_configuration(app, nil, "Debug-extra", {
+            inherits = "Debug",
+            languages = { "c++", "c" },
+        })
+        assert.is_true(ok)
+
+        local cfg = app:get_configuration("Debug-extra")
+        assert.is_not_nil(cfg)
+        assert.same({ "c++", "c" }, cfg.languages)
+        assert.same({ "c++", "c" }, cfg:effective_languages())
+    end)
+
     it("edits existing configuration options", function()
         -- Under strict auto/user separation the user declares a
         -- standalone config (bare name, no ':'); it's not a silent
