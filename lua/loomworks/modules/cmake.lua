@@ -1372,6 +1372,13 @@ function M.detect_languages(ctx)
             end
         end
     end
+    -- Filter to languages loomworks tracks (module-declared + debug
+    -- adapter mappings). Drops noise like `rc` (Windows resource
+    -- compiler), `asm`, `ispc`, etc. that cmake enables behind the
+    -- scenes but loomworks has no routing concept for. Without this,
+    -- the language-drift diagnostic in workspace.lua fires on
+    -- spurious differences the user can't act on.
+    list = require("loomworks.languages").filter(list)
     table.sort(list)
     return #list > 0 and list or nil
 end
