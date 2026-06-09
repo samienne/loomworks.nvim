@@ -351,7 +351,15 @@ local function render_profile_details(tree, profile, lw)
                             tree:leaf(kw .. ": " .. table.concat(labels, ", "), "Comment")
                         end
                     end
-                    helpers.render_cached_details(tree, config_status, status_hl, nil, nil, unit)
+                    -- Uniqueify the fold_key prefix per (profile, project)
+                    -- so the Targets node (and its `ttype:`/`target:`
+                    -- descendants) doesn't collide across profiles —
+                    -- otherwise the cursor jumps to the topmost match
+                    -- when collapsing in any non-first profile.
+                    local cached_fold_prefix = "profile_proj:"
+                        .. profile.key .. ":" .. pp_pkey
+                    helpers.render_cached_details(tree, config_status, status_hl,
+                        nil, cached_fold_prefix, unit)
                 end)
             end
         end)
