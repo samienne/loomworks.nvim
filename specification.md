@@ -2499,6 +2499,9 @@ Each `integrations/lsp/<server>.lua` returns a table with these fields
 | `status_extras(entry) → table` | Per-server fields merged into `extra` on the status page |
 | `on_active_set_changed()` | Called on profile/active-set change |
 | `on_workspace_changed()` | Called on workspace swap / first load |
+| `on_unexpected_exit(info) → decision` | Restart policy for an unexpected client death (see §9.6). `info` carries `{ server, root_dir, exit_code, signal, attempt, args }`. `decision` is `{ restart: boolean, args?: string[], reason?: string }` |
+| `reset(root_dir)` | Clear any adaptive state for a root (UI Reset action) |
+| `reset_label` | Display label for the UI Reset row |
 
 The integration's module body calls
 `require("loomworks.lsp").register(name, M)` as its last action, then
@@ -2568,6 +2571,32 @@ fields, lifecycle, and status display in its own spec file:
 
 Third-party integrations follow the same shape: implement the
 contract above and document the per-server fields alongside.
+
+### 9.6 Restart on unexpected exit
+
+`lsp.lua` wraps every managed client's `on_exit` so it can distinguish
+three exit modes and route them correctly:
+
+| Mode | Trigger | Action |
+|------|---------|--------|
+| Managed stop | Integration called `lsp.mark_managed_stop(client.id)` before `client:stop()` (e.g. its own `on_active_set_changed` restart) | Skip dispatch — the integration is restarting itself. |
+| Clean external stop | `exit_code == 0` and `signal in {0, 15}` and not managed | Set per-`(server, root_dir)` suppression flag — `:LspStop` is the user's hard kill, no auto-restart until a fresh `LspAttach` or UI Reset clears it. |
+| Unexpected death | anything else | Dispatch to the integration's `on_unexpected_exit(info)`. If it returns `restart = true`, re-enable the server through nvim's normal path (the integration's `cmd_factory` will run again with whatever adaptive state it keeps). |
+
+A generic throttle caps restart velocity at **4 attempts per 5-minute
+sliding window** per `(server, root_dir)`. When the cap is reached,
+subsequent attempts defer until the oldest timestamp falls out of the
+window. There is no permanent give-up at the lsp.lua layer — `:LspStop`
+remains the user's escape hatch.
+
+`lsp.lua` exposes:
+
+- `mark_managed_stop(client_id)` — integrations call this before stopping their own clients
+- `wrap_on_exit(server, user_on_exit) → fn` — integrations install this as `config.on_exit` from `build_config()` so the user's `on_exit` still runs and our dispatcher gets a turn after
+- `is_suppressed(server, root_dir) / clear_suppression(server, root_dir) / reset_attempts(server, root_dir)` — public so the UI Reset action can recover from suppression and throttle without touching server-specific code
+
+Adaptive state (e.g. clangd's `-j` step-down) lives entirely inside
+the integration. Core sees only the opaque `LspRestartDecision`.
 
 ---
 

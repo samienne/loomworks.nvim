@@ -22,6 +22,26 @@ local _resolved_cmd = {}
 --- @type table<string, { binary: string|nil, compile_commands_dir: string|nil }>
 local _client_state = {}
 
+--- OOM-adaptive `-j` state per normalized root_dir. `current_j` is the
+--- value we append on the next start; nil means "don't touch clangd's
+--- arg list" (the first run uses whatever cmd the user passed). On
+--- the first OOM we seed `current_j = INITIAL_J` and halve on each
+--- subsequent OOM. `retried_same_args` tracks the single retry granted
+--- for a non-OOM unexpected exit (so a permanently crashing build
+--- doesn't burn through the throttle window).
+--- @type table<string, { current_j: integer|nil, retried_same_args: boolean }>
+local _j_state = {}
+
+--- Starting `-j` value when we enter adaptive mode after the first
+--- OOM. Halved from there (12 → 6 → 3 → 1). Picked as a sensible
+--- developer-machine compromise; if your specific workload needs a
+--- different starting point, the trade-off in code-vs-flexibility
+--- favours hardcoding for now.
+local INITIAL_J = 12
+
+--- How many rotated nvim LSP log snapshots to keep.
+local LOG_KEEP = 5
+
 --- Expand ${ENV_VAR} patterns. Leaves unresolved refs unchanged.
 --- @param s string
 --- @return string
@@ -57,6 +77,91 @@ end
 local function entry_for(project)
     local lsp = require("loomworks.lsp")
     return lsp.entry_for_project(project, "clangd")
+end
+
+-- ---------------------------------------------------------------------------
+-- `-j` injection
+-- ---------------------------------------------------------------------------
+
+--- Append `-j <n>` to a copy of args. We deliberately don't parse or
+--- strip any pre-existing `-j` the user might have passed: clangd uses
+--- LLVM's `cl::opt` parser where the last occurrence of a single-value
+--- option wins, so appending always overrides cleanly. The first start
+--- never appends (no adaptive state yet), so the user's cmd reaches
+--- clangd untouched until the first OOM kicks in.
+--- @param args string[]
+--- @param j integer
+--- @return string[]
+local function with_j(args, j)
+    local out = vim.list_extend({}, args)
+    out[#out + 1] = "-j" .. tostring(j)
+    return out
+end
+
+-- ---------------------------------------------------------------------------
+-- OOM detection
+-- ---------------------------------------------------------------------------
+
+--- Heuristic: did this exit look like an out-of-memory kill?
+--- Linux: signal 9 (SIGKILL) is the canonical OOM-killer signature.
+--- Windows: exit codes 0xC0000005 (access violation, often allocation
+--- failure under heavy load) and 0xC0000017 (STATUS_NO_MEMORY).
+--- Falsely-positive triggers (manual `kill -9`, unrelated access
+--- violations) still result in a smaller `-j`, which is harmless — the
+--- UI Reset action puts it back.
+--- @param exit_code integer
+--- @param signal integer
+--- @return boolean
+local function looks_like_oom(exit_code, signal)
+    if signal == 9 then return true end
+    if exit_code == 0xC0000005 or exit_code == 0xC0000017 then return true end
+    return false
+end
+
+-- ---------------------------------------------------------------------------
+-- nvim LSP log rotation
+-- ---------------------------------------------------------------------------
+
+--- Copy `src` → `dst`. Used by rotate_nvim_lsp_log to snapshot nvim's
+--- live LSP log without renaming it (renames are racy on Windows when
+--- nvim has the file handle open).
+--- @param src string
+--- @param dst string
+--- @return boolean ok
+local function copy_file(src, dst)
+    local in_fd = io.open(src, "rb")
+    if not in_fd then return false end
+    local out_fd = io.open(dst, "wb")
+    if not out_fd then in_fd:close() return false end
+    local chunk
+    repeat
+        chunk = in_fd:read(64 * 1024)
+        if chunk then out_fd:write(chunk) end
+    until not chunk
+    in_fd:close()
+    out_fd:close()
+    return true
+end
+
+--- Snapshot nvim's LSP log file into `<log>.1` and shift older
+--- snapshots down (1 → 2 → … → LOG_KEEP). Keeps the live log intact
+--- so nvim's open handle keeps writing into it; we just preserve a
+--- copy from the moment of each clangd (re)start, giving the user a
+--- postmortem they can reach for after a crash.
+local function rotate_nvim_lsp_log()
+    local ok_path, log_path = pcall(vim.lsp.log.get_filename)
+    if not ok_path or type(log_path) ~= "string" then return end
+    if not uv.fs_stat(log_path) then return end
+
+    -- Drop the oldest, then bump every other snapshot up by one.
+    local oldest = log_path .. "." .. LOG_KEEP
+    if uv.fs_stat(oldest) then pcall(os.remove, oldest) end
+    for i = LOG_KEEP - 1, 1, -1 do
+        local src = log_path .. "." .. i
+        local dst = log_path .. "." .. (i + 1)
+        if uv.fs_stat(src) then pcall(os.rename, src, dst) end
+    end
+    copy_file(log_path, log_path .. ".1")
 end
 
 --- Find the clangd entry for a given root_dir by asking the core.
@@ -100,9 +205,28 @@ function M.cmd_factory(base_cmd)
         local dir = resolve_compile_commands_dir(entry)
         if dir then args[#args + 1] = "--compile-commands-dir=" .. dir end
 
+        -- OOM-adaptive `-j` injection. State is created lazily on the
+        -- first crash (in on_unexpected_exit); first run for a root has
+        -- no state and reaches clangd with the user's pristine cmd.
+        -- `current_j == nil` means "no adaptive value yet" — don't
+        -- touch the cmd. After the first OOM, `current_j` is set and
+        -- we append `-j N` (LLVM's option parser respects last-wins,
+        -- so any user `-j` earlier in the line gets overridden cleanly).
+        local root_key = config.root_dir and normalize(config.root_dir) or "?"
+        local state = _j_state[root_key]
+        if state and state.current_j then
+            args = with_j(args, state.current_j)
+        end
+
         if config.root_dir then
             _resolved_cmd[normalize(config.root_dir)] = vim.list_extend({}, args)
         end
+
+        -- Snapshot nvim's LSP log before spawning. The live log keeps
+        -- collecting; previous content lives in `<log>.1` for crash
+        -- forensics. Rotation happens on every start, not just after
+        -- crashes, so the user always has a recent baseline available.
+        rotate_nvim_lsp_log()
 
         return vim.lsp.rpc.start(args, dispatchers, {
             cwd = config.cmd_cwd,
@@ -199,6 +323,9 @@ function M.build_config(user_cfg)
     config.root_dir = M.root_dir_factory(root_dir_fallback)
     config.root_markers = root_markers
     config.filetypes = filetypes
+    -- Wrap any user on_exit so loomworks' restart dispatcher gets every
+    -- exit. The user callback still fires first inside the wrapper.
+    config.on_exit = require("loomworks.lsp").wrap_on_exit("clangd", user_cfg.on_exit)
     if not config.capabilities then
         config.capabilities = detect_capabilities()
     end
@@ -239,10 +366,14 @@ local function find_clients(root_dir)
 end
 
 local function restart_clients(clients)
+    local lsp = require("loomworks.lsp")
     for _, client in ipairs(clients) do
         if client.root_dir then
             _resolved_cmd[normalize(client.root_dir)] = nil
         end
+        -- Tell lsp.lua this exit is loomworks-initiated so the on_exit
+        -- dispatcher skips the unexpected-death restart path.
+        lsp.mark_managed_stop(client.id)
         client:stop()
     end
     vim.schedule(function() vim.lsp.enable("clangd") end)
@@ -295,6 +426,84 @@ function M.on_workspace_changed()
     vim.notify("loomworks: restarting " .. #clients .. " clangd client(s) for workspace integration")
     restart_clients(clients)
 end
+
+-- ---------------------------------------------------------------------------
+-- Restart policy + UI reset (consumed by loomworks.lsp generic dispatcher)
+-- ---------------------------------------------------------------------------
+
+--- Decide what to do when a clangd client dies unexpectedly. The
+--- contract is documented on `loomworks.LspIntegration.on_unexpected_exit`.
+--- @param info loomworks.LspExitInfo
+--- @return loomworks.LspRestartDecision
+function M.on_unexpected_exit(info)
+    -- Lazy seed: first exit for this root creates the record. Without
+    -- this, repeated crashes would keep going through whatever branch
+    -- handles "no state" forever — defeating the non-OOM give-up rule.
+    local state = _j_state[info.root_dir]
+    if not state then
+        state = { current_j = nil, retried_same_args = false }
+        _j_state[info.root_dir] = state
+    end
+
+    if looks_like_oom(info.exit_code, info.signal) then
+        local cur = state.current_j
+        local next_j
+        if cur == nil then
+            -- Entering adaptive mode after the first OOM. Start at a
+            -- developer-machine-friendly default and let subsequent
+            -- crashes halve it. We don't bother inspecting the user's
+            -- original `-j` (if any) because clangd treats the last
+            -- `-j` on the line as authoritative.
+            next_j = INITIAL_J
+        elseif cur > 1 then
+            next_j = math.max(1, math.floor(cur / 2))
+        else
+            -- Already at the floor; nothing more we can do via -j.
+            return {
+                restart = false,
+                reason = "OOM at -j 1 — clangd needs more memory than fits",
+            }
+        end
+        state.current_j = next_j
+        state.retried_same_args = false
+        return {
+            restart = true,
+            reason = "OOM detected, restarting with -j " .. next_j,
+        }
+    end
+
+    -- Non-OOM crash. Allow exactly one retry with the same args so a
+    -- transient fault recovers; if the second run dies too, give up
+    -- until the user resets — repeated crashing on identical args is
+    -- not something the restart loop can solve.
+    if not state.retried_same_args then
+        state.retried_same_args = true
+        return { restart = true, reason = "clangd crashed, retrying once" }
+    end
+    return {
+        restart = false,
+        reason = "clangd keeps crashing on the same args",
+    }
+end
+
+--- Clear adaptive state for a root. Called by the UI Reset action so
+--- the user can recover from a permanent failure (give up) or an
+--- over-aggressive `-j` step-down without restarting nvim. Also clears
+--- the generic suppression / throttle flags on the lsp.lua side.
+--- @param root_dir string normalized root directory
+function M.reset(root_dir)
+    _j_state[root_dir] = nil
+    -- Force a fresh capture of `base_j` on the next cmd_factory call.
+    _resolved_cmd[root_dir] = nil
+    local lsp = require("loomworks.lsp")
+    lsp.reset_attempts("clangd", root_dir)
+    lsp.clear_suppression("clangd", root_dir)
+    -- Kick a fresh attach if there's a live buffer waiting.
+    vim.schedule(function() vim.lsp.enable("clangd") end)
+end
+
+--- UI label for the reset action.
+M.reset_label = "Reset clangd -j"
 
 -- Self-register with the core LSP registry.
 require("loomworks.lsp").register("clangd", M)

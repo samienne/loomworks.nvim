@@ -17,6 +17,23 @@
 ---   @field status_extras? fun(entry: table): table              -- fields for status page
 ---   @field on_active_set_changed? fun()                         -- wired by lsp.lua
 ---   @field on_workspace_changed? fun()                          -- wired by lsp.lua
+---   @field on_unexpected_exit? fun(info: loomworks.LspExitInfo): loomworks.LspRestartDecision
+---                                                               -- called when a managed client dies unexpectedly
+---   @field reset? fun(root_dir: string)                          -- clear adaptive state for a root (UI "Reset" action)
+---   @field reset_label? string                                  -- UI label for the reset action ("Reset clangd -j", …)
+---
+--- @class loomworks.LspExitInfo
+--- @field server string
+--- @field root_dir string                                       -- normalized
+--- @field exit_code number                                      -- process exit code
+--- @field signal number                                         -- terminating signal (0 if none)
+--- @field attempt integer                                       -- 1-based count of consecutive unexpected exits
+--- @field args string[]                                         -- cmd args last used to start the client
+---
+--- @class loomworks.LspRestartDecision
+--- @field restart boolean                                       -- if false, lsp.lua suppresses and notifies
+--- @field args? string[]                                        -- override args for the next start (server still re-enables itself)
+--- @field reason? string                                        -- short human message for notifications
 ---
 --- Core routes by `entry.server` only — no server-specific branches.
 
@@ -191,6 +208,230 @@ function M.find_project_by_root(server, root_dir)
 end
 
 -- ---------------------------------------------------------------------------
+-- Auto-restart on unexpected client exit (generic; integrations decide policy)
+-- ---------------------------------------------------------------------------
+
+--- Throttle constants. Capped at 4 unexpected exits per 5-minute sliding
+--- window. When the cap is hit, subsequent attempts are deferred until
+--- the oldest timestamp falls out of the window. There is no give-up:
+--- `:LspStop` is the user's hard kill (sets a per-root suppression flag
+--- that lasts until the next manual `:LspStart` / attach).
+local THROTTLE_COUNT = 4
+local THROTTLE_WINDOW_MS = 5 * 60 * 1000
+
+--- @type table<integer, true> client_id → set when we initiated the stop ourselves
+local _managed_stop_ids = {}
+
+--- @type table<integer, { server: string, root_dir: string }> recorded at LspAttach
+local _client_records = {}
+
+--- @type table<string, true> "<server>:<root_dir>" → true while user has stopped this LSP
+local _suppressed = {}
+
+--- @type table<string, integer[]> "<server>:<root_dir>" → attempt timestamps (vim.uv.now ms)
+local _attempts = {}
+
+--- @type table<string, integer[]> deferred-attempt count (for throttle test)
+--- @diagnostic disable-next-line: unused-local
+local _pending = {}
+
+--- Compose the throttle key.
+--- @param server string
+--- @param root_dir string
+--- @return string
+local function attempt_key(server, root_dir)
+    return server .. ":" .. normalize(root_dir or "")
+end
+
+--- Mark a client as being stopped by loomworks itself. The on_exit
+--- handler then knows the exit isn't an "unexpected death" and won't
+--- trigger the restart policy. Integrations call this before invoking
+--- `client:stop()` from their own paths (e.g. active_set_changed).
+--- @param client_id integer
+function M.mark_managed_stop(client_id)
+    if client_id then _managed_stop_ids[client_id] = true end
+end
+
+--- Set or clear the user-suppression flag for a (server, root) pair.
+--- Called by the on_exit handler when it detects a clean external stop
+--- (signal 0/SIGTERM, exit 0). Cleared on the next successful LspAttach
+--- for that pair so a manual `:LspStart` un-suppresses naturally.
+--- @param server string
+--- @param root_dir string
+--- @param value boolean
+local function set_suppressed(server, root_dir, value)
+    _suppressed[attempt_key(server, root_dir)] = value or nil
+end
+
+--- Test whether auto-restart is currently suppressed for a (server, root)
+--- pair (i.e. the user ran `:LspStop`). Public so the UI reset action
+--- can clear it.
+--- @param server string
+--- @param root_dir string
+--- @return boolean
+function M.is_suppressed(server, root_dir)
+    return _suppressed[attempt_key(server, root_dir)] == true
+end
+
+--- Clear suppression for a (server, root) pair — used by the UI Reset
+--- action so the user can recover from a stop without invoking
+--- `:LspStart` themselves.
+--- @param server string
+--- @param root_dir string
+function M.clear_suppression(server, root_dir)
+    set_suppressed(server, root_dir, false)
+end
+
+--- Throttle gate. Returns `true, 0` when an attempt may proceed now;
+--- returns `false, wait_ms` when the caller should defer.
+--- @param server string
+--- @param root_dir string
+--- @return boolean, integer
+local function throttle_check(server, root_dir)
+    local key = attempt_key(server, root_dir)
+    local now = (vim.uv or vim.loop).now()
+    local kept = {}
+    for _, ts in ipairs(_attempts[key] or {}) do
+        if now - ts < THROTTLE_WINDOW_MS then kept[#kept + 1] = ts end
+    end
+    _attempts[key] = kept
+    if #kept >= THROTTLE_COUNT then
+        return false, THROTTLE_WINDOW_MS - (now - kept[1]) + 100
+    end
+    return true, 0
+end
+
+--- Record an attempt for throttle accounting. Caller has already
+--- consulted `throttle_check`; this just stamps a fresh timestamp.
+--- @param server string
+--- @param root_dir string
+local function throttle_record(server, root_dir)
+    local key = attempt_key(server, root_dir)
+    _attempts[key] = _attempts[key] or {}
+    _attempts[key][#_attempts[key] + 1] = (vim.uv or vim.loop).now()
+end
+
+--- @param server string
+--- @param root_dir string
+--- @return integer how many unexpected exits have happened within the current window
+local function attempt_count(server, root_dir)
+    local key = attempt_key(server, root_dir)
+    return #(_attempts[key] or {})
+end
+
+--- Reset per-root attempt accounting. Called by the UI Reset action so
+--- the user can recover from throttling without waiting out the window,
+--- and called automatically once a client has been alive long enough
+--- to count as "recovered."
+--- @param server string
+--- @param root_dir string
+function M.reset_attempts(server, root_dir)
+    _attempts[attempt_key(server, root_dir)] = nil
+end
+
+--- Wrap a user-provided on_exit so loomworks gets to inspect every exit
+--- and dispatch to the integration's restart policy. Integrations call
+--- this from inside `build_config()`; user_on_exit (if present in the
+--- merged user_cfg) still runs first so user-side cleanup isn't dropped.
+--- @param server string
+--- @param user_on_exit function|nil
+--- @return function
+function M.wrap_on_exit(server, user_on_exit)
+    return function(code, signal, client_id)
+        if user_on_exit then pcall(user_on_exit, code, signal, client_id) end
+
+        local managed = _managed_stop_ids[client_id]
+        _managed_stop_ids[client_id] = nil
+
+        local record = _client_records[client_id]
+        _client_records[client_id] = nil
+        local root_dir = record and record.root_dir or nil
+        if not root_dir then return end
+
+        -- Our own restart_clients() path. Don't react.
+        if managed then return end
+
+        -- Clean external stop (`:LspStop`, normal shutdown). Suppress
+        -- auto-restart until the user re-attaches.
+        local clean = code == 0 and (signal == 0 or signal == 15)
+        if clean then
+            set_suppressed(server, root_dir, true)
+            return
+        end
+
+        -- Unexpected death — dispatch to the integration's policy.
+        local integration = _integrations[server]
+        if not integration or not integration.on_unexpected_exit then return end
+
+        local args = integration.get_resolved_cmd
+            and integration.get_resolved_cmd(root_dir) or nil
+        local decision = integration.on_unexpected_exit({
+            server = server,
+            root_dir = root_dir,
+            exit_code = code,
+            signal = signal,
+            attempt = attempt_count(server, root_dir) + 1,
+            args = args or {},
+        }) or { restart = true }
+
+        if not decision.restart then
+            vim.schedule(function()
+                vim.notify("loomworks.lsp: " .. server .. " stopped restarting"
+                    .. (decision.reason and (" (" .. decision.reason .. ")") or ""),
+                    vim.log.levels.WARN)
+            end)
+            return
+        end
+
+        local function do_restart()
+            throttle_record(server, root_dir)
+            -- We don't programmatically push the new args back into
+            -- vim.lsp.config — the integration's cmd_factory closure
+            -- reads its own per-root state and injects them at the
+            -- next start. Just re-enable the server so nvim spawns it.
+            vim.lsp.enable(server)
+            if decision.reason then
+                vim.notify("loomworks.lsp: restarting " .. server
+                    .. " (" .. decision.reason .. ")", vim.log.levels.INFO)
+            end
+        end
+
+        local ok, wait_ms = throttle_check(server, root_dir)
+        if ok then
+            vim.schedule(do_restart)
+        else
+            vim.notify("loomworks.lsp: " .. server
+                .. " hit restart throttle, waiting "
+                .. math.ceil(wait_ms / 1000) .. "s",
+                vim.log.levels.WARN)
+            vim.defer_fn(do_restart, wait_ms)
+        end
+    end
+end
+
+--- Record the (server, root_dir) of every managed client on attach so
+--- the on_exit dispatcher (which receives only `client_id`) can look up
+--- what died. Also clears the suppression flag for the pair — a fresh
+--- attach means the user re-enabled it.
+local _restart_autocmd_registered = false
+local function ensure_restart_autocmd()
+    if _restart_autocmd_registered then return end
+    _restart_autocmd_registered = true
+    vim.api.nvim_create_autocmd("LspAttach", {
+        group = vim.api.nvim_create_augroup("loomworks.lsp.restart", { clear = true }),
+        callback = function(args)
+            local client = vim.lsp.get_client_by_id(args.data.client_id)
+            if not client or not _integrations[client.name] then return end
+            _client_records[client.id] = {
+                server = client.name,
+                root_dir = client.root_dir or "",
+            }
+            set_suppressed(client.name, client.root_dir or "", false)
+        end,
+    })
+end
+
+-- ---------------------------------------------------------------------------
 -- Generic factory dispatch (for user config)
 -- ---------------------------------------------------------------------------
 
@@ -361,6 +602,9 @@ function M.setup_servers(lsp_opts)
     if _excludes ~= false then
         ensure_exclude_autocmd()
     end
+    -- Restart machinery needs to know when integrations' clients attach
+    -- so on_exit dispatch can look up the dead client's (server, root).
+    ensure_restart_autocmd()
 
     for server, integration in pairs(_integrations) do
         local user_cfg = lsp_opts[server]

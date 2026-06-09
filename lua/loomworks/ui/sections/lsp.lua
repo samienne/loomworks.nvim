@@ -1,7 +1,8 @@
 --- loomworks/ui/sections/lsp.lua — LSP section renderer.
 ---
 --- Shows resolved LSP configuration for loomworks-managed projects:
---- active clients, command line args, compile_commands_dir.
+--- active clients, command line args, compile_commands_dir, and
+--- per-integration reset/throttle status.
 
 --- Render the LSP section.
 --- @param tree loomworks.Tree
@@ -47,6 +48,35 @@ return function(tree, ctx)
 
             if #entry.clients == 0 then
                 tree:leaf("No active clients", "Comment")
+            end
+
+            -- Per-integration reset action. The integration declares
+            -- `reset(root_dir)` + a `reset_label`; we don't look at the
+            -- server name here — any integration with adaptive state
+            -- (clangd's -j step-down today, anything similar tomorrow)
+            -- gets a row without touching the core UI section.
+            for _, client in ipairs(entry.clients) do
+                local integration = lsp.integration(client.name)
+                if integration and integration.reset then
+                    local server = client.name
+                    local root_dir = entry.root_dir
+                    local suppressed = lsp.is_suppressed(server, root_dir)
+                    local label = integration.reset_label or ("▸ Reset " .. server)
+                    if suppressed then
+                        label = label .. "  (auto-restart suppressed)"
+                    end
+                    tree:item("▸ " .. label, {
+                        hl = suppressed and "DiagnosticWarn" or "LoomworksActionable",
+                        direct = true,
+                        on_enter = function()
+                            integration.reset(root_dir)
+                            vim.notify("loomworks.lsp: reset " .. server
+                                .. " for " .. root_dir, vim.log.levels.INFO)
+                            require("loomworks.ui.status").refresh()
+                        end,
+                    })
+                    break  -- one reset row per server is plenty
+                end
             end
         end)
     end
