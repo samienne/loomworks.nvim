@@ -101,3 +101,68 @@ page:
 | `binary_required` | `entry.binary_required` |
 | `compile_commands_dir` | `entry.compile_commands_dir` (or `(not found)`) |
 | `binary_resolved` | Whether the binary actually exists on disk |
+
+## 9. OOM-adaptive `-j` step-down
+
+The integration implements `on_unexpected_exit` (core spec contract
+under §9 LSP integration restart policy). Per-root state tracks:
+
+- `current_j` — the value appended to the cmd on the next start. `nil`
+  before the first OOM means "leave the cmd alone" so the user's
+  pristine arg list reaches clangd untouched.
+- `retried_same_args` — one-shot flag for non-OOM crashes.
+
+The first start for a root passes the cmd through verbatim — no `-j`
+injection. On the first OOM we seed `current_j = 12` (a developer-
+machine-friendly starting point) and append `-j 12` on the restart.
+Each subsequent OOM halves the value (12 → 6 → 3 → 1). We don't bother
+parsing or removing an existing `-j` from the user's cmd: clangd uses
+LLVM's `cl::opt` parser where the last `-j` on the line wins, so a
+plain append always overrides cleanly.
+
+Decision table:
+
+| Exit signature | Decision |
+|---------------|----------|
+| Linux signal 9 (SIGKILL) | OOM: seed `-j 12` on first, halve thereafter, restart |
+| Windows exit code `0xC0000017` (STATUS_NO_MEMORY) | OOM: same |
+| Windows exit code `0xC0000005` (access violation) | OOM heuristic: same (false positives are harmless — UI Reset puts it back) |
+| Non-OOM, first occurrence | Restart once with same args |
+| Non-OOM, second occurrence | Give up (lsp.lua notifies user) |
+| OOM at `-j 1` | Give up (clangd needs more memory than fits) |
+
+Adaptive state is in-memory only. Restarting nvim wipes `current_j`,
+so the next session starts fresh from the user's cmd. A successful UI
+`Reset` action (§11) calls `M.reset(root_dir)` which clears `_j_state`,
+the cached `_resolved_cmd`, throttle attempts, and the generic lsp.lua
+suppression flag — then re-enables clangd.
+
+## 10. Log rotation
+
+`cmd_factory` snapshots nvim's own LSP log file
+(`vim.lsp.log.get_filename()`) on every clangd (re)start:
+
+```
+.log.5 ← .log.4 ← .log.3 ← .log.2 ← .log.1 ← copy(.log)
+```
+
+`LOG_KEEP = 5` snapshots are retained. We copy (rather than rename)
+the live file because nvim's open handle stays attached to that path;
+renaming is racy on Windows and on Linux would orphan the inode the
+handle points at. Each snapshot captures everything nvim has logged
+up to the moment of that restart, so the most recent one is the
+postmortem to read after a crash.
+
+Snapshots include other LSP servers' output too — the nvim log is
+shared. That's an acceptable trade for not needing a clangd-specific
+log capture wrapper. clangd is the most verbose server in practice
+and the one most likely to die unexpectedly anyway.
+
+## 11. UI Reset
+
+The integration declares `reset(root_dir)` and `reset_label = "Reset
+clangd -j"`. The LSPs section in the status page renders one row per
+client whose integration exposes `reset` — pressing Enter calls it.
+The action label flips to `(auto-restart suppressed)` when the user
+has stopped the client (`:LspStop`); selecting the row in that state
+also clears the suppression flag so the client comes back to life.
