@@ -231,6 +231,9 @@
 --- @field tool_data? table opaque module-specific tool data
 --- @field workspace_root string absolute path
 --- @field env table<string, string>
+--- @field cached_build_dir? string cached build directory, if known
+--- @field type_config? table raw type_config from loomworks.json
+--- @field resolved_variables? table<string, { value: string, type: string }> user-declared project variables resolved for the active configuration
 
 --- Module info() return value.
 --- @class loomworks.ModuleInfo

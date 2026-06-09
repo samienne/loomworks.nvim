@@ -390,6 +390,11 @@ These are implementation-specific details not covered by the spec or architectur
   tools that pin CC/CXX and prepend compiler bin dir to PATH, loomtest
   integration via MesonTestUnit using `meson introspect --tests` + gtest
   probing with jump-to-test via `target_sources`)
+- `shell` — generic shell-command runner. Manually-declared projects with
+  user-supplied configure/build/clean commands and a build_dir template,
+  resolved through the variable system. Forwards compile_commands.json
+  location to clangd via lsp_configs. No auto-detect, no tools, no
+  staleness check, no targets/tests — see spec/modules/shell.md.
 - `typescript` — shim (shows project exists, no build functionality)
 
 **Deferred (not in v1):**

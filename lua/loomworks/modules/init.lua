@@ -28,7 +28,7 @@ end
 --- @return string[]
 function M.list()
     -- Ensure built-in modules are loaded
-    for _, id in ipairs({ "cmake", "harmony", "meson", "typescript" }) do
+    for _, id in ipairs({ "cmake", "harmony", "meson", "shell", "typescript" }) do
         M.get(id)
     end
     local ids = {}

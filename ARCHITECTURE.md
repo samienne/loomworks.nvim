@@ -233,9 +233,10 @@ may import from its own layer or any layer below it, never above.
    for API calls. UI callers that mutate state (project_browser, actions)
    obtain the Workspace via `lw.get_workspace()` and call workspace methods
    directly (e.g., `ws:add_project()`, `ws:add_configuration_set()`).
-6. **Modules** (cmake, harmony, typescript) know nothing about profiles, UI, or
-   overseer. They implement the module interface (validate, info, tasks,
-   inspect, detect_tools) and operate on project paths and config data.
+6. **Modules** (cmake, harmony, meson, shell, typescript) know nothing about
+   profiles, UI, or overseer. They implement the module interface (validate,
+   info, tasks, inspect, detect_tools) and operate on project paths and config
+   data.
 7. **Integrations** (overseer, lsp, fidget, lualine) consume the public API
    via `require("loomworks")` and listen for events. They never import
    core.lua directly.

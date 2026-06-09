@@ -9,13 +9,14 @@ modifies your project files and collaborators don't need to know it exists.
 
 ## Status
 
-Early development (v0.0.1-dev). The cmake and harmony modules are fully implemented;
-typescript modules are shims.
+Early development (v0.0.1-dev). The cmake, harmony, and meson modules are fully
+implemented; shell provides a generic command runner for self-managed builds;
+typescript is a shim.
 
 ## Features
 
-- **Multi-project workspaces** — manage cmake, meson, harmony, and typescript projects
-  from a single `loomworks.json`
+- **Multi-project workspaces** — manage cmake, meson, harmony, shell, and
+  typescript projects from a single `loomworks.json`
 - **CMake preset support** — reads `CMakePresets.json` and
   `CMakeUserPresets.json` with full inheritance
 - **Automatic tool detection** — finds MSVC (via vswhere), GCC, and Clang
@@ -148,7 +149,8 @@ Projects are declared with their type as the inner key:
 }
 ```
 
-Available types: `cmake` (full), `meson` (full), `harmony` (full), `typescript` (shim).
+Available types: `cmake` (full), `meson` (full), `harmony` (full),
+`shell` (generic runner — see `spec/modules/shell.md`), `typescript` (shim).
 
 ### Paths
 
