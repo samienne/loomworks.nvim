@@ -1031,4 +1031,63 @@ describe("Target rendering", function()
             end
         end
     end)
+
+    -- Regression: the Targets fold_key (and its descendants
+    -- `ttype:<type>` / `target:<name>`) used to be a constant string
+    -- because the profiles section called render_cached_details with
+    -- fold_prefix = nil. Two profiles sharing a project produced
+    -- duplicate fold_keys; collapsing the second one's Targets node
+    -- moved the cursor to the first one's row.
+    it("render_targets emits distinct fold_keys per prefix", function()
+        local function fold_keyed_tree()
+            local lines = {}
+            local level = 0
+            return {
+                _lines = lines,
+                leaf = function(_, text, hl)
+                    lines[#lines + 1] = { text = text, hl = hl, level = level, type = "leaf" }
+                end,
+                node = function(_, text, opts, children_fn)
+                    lines[#lines + 1] = {
+                        text = text, level = level, type = "node",
+                        fold_key = opts and opts.fold_key,
+                    }
+                    level = level + 1
+                    children_fn()
+                    level = level - 1
+                end,
+            }
+        end
+
+        local targets = {
+            app = { type = "executable" },
+            libcore = { type = "static_library" },
+        }
+
+        local a = fold_keyed_tree()
+        helpers.render_targets(a, targets, "profile_proj:Debug:App")
+        local b = fold_keyed_tree()
+        helpers.render_targets(b, targets, "profile_proj:Release:App")
+
+        local function find_fold_keys(tree)
+            local out = {}
+            for _, line in ipairs(tree._lines) do
+                if line.fold_key then out[#out + 1] = line.fold_key end
+            end
+            return out
+        end
+
+        local keys_a = find_fold_keys(a)
+        local keys_b = find_fold_keys(b)
+        assert.is_true(#keys_a > 0)
+        assert.equals(#keys_a, #keys_b)
+        for i = 1, #keys_a do
+            assert.not_equals(keys_a[i], keys_b[i],
+                "fold_key collision at index " .. i .. ": " .. keys_a[i])
+            assert.is_truthy(keys_a[i]:match("^profile_proj:Debug:App:"),
+                "expected prefix in key: " .. keys_a[i])
+            assert.is_truthy(keys_b[i]:match("^profile_proj:Release:App:"),
+                "expected prefix in key: " .. keys_b[i])
+        end
+    end)
 end)
