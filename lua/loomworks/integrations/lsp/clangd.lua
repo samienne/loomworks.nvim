@@ -42,6 +42,28 @@ local INITIAL_J = 12
 --- How many rotated nvim LSP log snapshots to keep.
 local LOG_KEEP = 5
 
+--- Memory-friendly flags injected into every clangd cmd. Targeted at
+--- large C++ codebases where stock clangd routinely peaks above a few
+--- GiB per server. Appended after the user's args so they win against
+--- any conflicting earlier flag (LLVM's `cl::opt` parser is last-wins
+--- for both `=value` and boolean options).
+---
+--- - `--background-index-priority=low`: indexer threads run at a lower
+---   OS priority so they don't starve the foreground request loop.
+---   Available since clangd 13.
+--- - `--pch-storage=disk`: store precompiled headers on disk instead of
+---   in memory. Single biggest RSS reduction for large translation
+---   units; pays a small I/O cost we can afford. Universally supported.
+---
+--- `--malloc-trim` would also be a win for Linux glibc users on clangd
+--- 16+, but it's rejected outright by older clangd builds (notably the
+--- OpenHarmony SDK's clang-15-era clangd). When we add a user-config
+--- path for extra flags this can return as opt-in.
+local MEMORY_FLAGS = {
+    "--background-index-priority=low",
+    "--pch-storage=disk",
+}
+
 --- Expand ${ENV_VAR} patterns. Leaves unresolved refs unchanged.
 --- @param s string
 --- @return string
@@ -204,6 +226,11 @@ function M.cmd_factory(base_cmd)
 
         local dir = resolve_compile_commands_dir(entry)
         if dir then args[#args + 1] = "--compile-commands-dir=" .. dir end
+
+        -- Memory-friendly defaults for large codebases. Appended after
+        -- the user's args so we win any last-wins conflict; see
+        -- MEMORY_FLAGS docstring for rationale on each flag.
+        for _, f in ipairs(MEMORY_FLAGS) do args[#args + 1] = f end
 
         -- OOM-adaptive `-j` injection. State is created lazily on the
         -- first crash (in on_unexpected_exit); first run for a root has

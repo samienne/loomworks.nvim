@@ -102,7 +102,41 @@ page:
 | `compile_commands_dir` | `entry.compile_commands_dir` (or `(not found)`) |
 | `binary_resolved` | Whether the binary actually exists on disk |
 
-## 9. OOM-adaptive `-j` step-down
+## 9. Memory-friendly flag injection
+
+`cmd_factory` appends a fixed set of memory-friendly defaults to every
+clangd cmd, regardless of whether the user passed their own `cmd` or
+relies on the integration defaults:
+
+| Flag | Effect | Available since |
+|------|--------|-----------------|
+| `--background-index-priority=low` | Indexer threads run at lower OS priority so they don't starve the foreground request loop | clangd 13 |
+| `--pch-storage=disk` | Store precompiled headers on disk rather than RAM. Single biggest RSS reduction on large TUs; pays a small I/O cost | universally supported |
+
+These are unconditional and not user-configurable for now: they are
+strict wins on the workloads loomworks targets — large C++ projects
+with multi-GiB clangd RSS. Each flag would still apply on a small
+codebase but the cost is negligible.
+
+`--malloc-trim` is intentionally **not** in the set even though it
+would be a real memory win on Linux glibc. Older clangd builds reject
+unknown args outright rather than silently ignoring them — notably the
+OpenHarmony SDK's clang-15-era clangd refuses to start with
+`--malloc-trim` on the command line. It can return as an opt-in flag
+once we add a user-config path for extra args.
+
+Flags are appended *after* both the user's base cmd and the dynamic
+injections (`--compile-commands-dir`, `-j`). LLVM's `cl::opt` parser
+treats the last occurrence of any single-value option as authoritative
+(both `=value` flags and booleans), so this position cleanly overrides
+any conflicting earlier flag without us having to parse the cmd.
+
+If a user later needs to opt out (e.g., a workload that hates
+`--pch-storage=disk` for some reason), the path forward is to add an
+explicit toggle on the user-facing config — not to strip the injection
+heuristically.
+
+## 10. OOM-adaptive `-j` step-down
 
 The integration implements `on_unexpected_exit` (core spec contract
 under §9 LSP integration restart policy). Per-root state tracks:
@@ -133,11 +167,11 @@ Decision table:
 
 Adaptive state is in-memory only. Restarting nvim wipes `current_j`,
 so the next session starts fresh from the user's cmd. A successful UI
-`Reset` action (§11) calls `M.reset(root_dir)` which clears `_j_state`,
+`Reset` action (§12) calls `M.reset(root_dir)` which clears `_j_state`,
 the cached `_resolved_cmd`, throttle attempts, and the generic lsp.lua
 suppression flag — then re-enables clangd.
 
-## 10. Log rotation
+## 11. Log rotation
 
 `cmd_factory` snapshots nvim's own LSP log file
 (`vim.lsp.log.get_filename()`) on every clangd (re)start:
@@ -158,7 +192,7 @@ shared. That's an acceptable trade for not needing a clangd-specific
 log capture wrapper. clangd is the most verbose server in practice
 and the one most likely to die unexpectedly anyway.
 
-## 11. UI Reset
+## 12. UI Reset
 
 The integration declares `reset(root_dir)` and `reset_label = "Reset
 clangd -j"`. The LSPs section in the status page renders one row per

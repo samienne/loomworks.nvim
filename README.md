@@ -27,9 +27,11 @@ typescript is a shim.
   with a toolchain. Activate, build, and manage profiles from the status page
 - **Overseer integration** — auto-generates configure and build tasks, tracks
   completion, records state to cache
-- **clangd integration** — auto-injects `--compile-commands-dir`, restarts
-  clangd when switching profiles, OOM-adaptive `-j` step-down with nvim
-  LSP log rotation, throttle 4 attempts / 5min, UI Reset action
+- **clangd integration** — auto-injects `--compile-commands-dir`,
+  memory-friendly defaults (`--background-index-priority=low`,
+  `--pch-storage=disk`), restarts clangd when switching profiles,
+  OOM-adaptive `-j` step-down with nvim LSP log rotation, throttle
+  4 attempts / 5min, UI Reset action
 - **Lualine component** — winbar showing active profile/project/configuration
 - **Live file watching** — reloads automatically when config files change
 - **Status page** — `:LoomworksInfo` shows workspace state with folding, status
