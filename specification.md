@@ -1500,6 +1500,34 @@ Configs in `unknown` state block build and configure actions. The user must
 issue a delete or clean first to resolve the unknown state. The UI should
 indicate this restriction.
 
+### 5.8 Process priority
+
+Long-running tasks launched on behalf of the user — configure, build,
+clean, and test runs — must yield CPU and I/O to the editor so the UI
+and language server stay responsive while the build runs.
+
+On platforms where the OS exposes a CLI mechanism to drop both CPU and
+I/O priority for a spawned child (Linux: `nice` + `ionice`), the
+implementation prepends that mechanism to the task's cmd. The
+prepended wrapper must be:
+
+- **Transparent to the cmd contract** — original args appear unchanged
+  after the prefix; the cmd remains an exec-style argv array.
+- **Best-effort** — if the wrapper binaries are missing, the task
+  still launches with the original cmd. No errors raised.
+- **Scoped to user-launched long tasks** — configure, build, clean,
+  test. Short, user-blocking probes (target enumeration, option
+  introspection, version checks) are excluded so the editor doesn't
+  feel sluggish.
+- **Excluded for debugger sessions** — debug-attached test runs go
+  through the DAP path and must not be wrapped (would distort
+  debugger timing and confuse the adapter).
+
+Platforms without a clean CLI mechanism (Windows, macOS) skip the
+wrap and rely on the OS scheduler's defaults. Whether to wrap is a
+boolean decision per-task — there is no per-platform priority knob in
+the spec.
+
 ---
 
 ## 6. UI

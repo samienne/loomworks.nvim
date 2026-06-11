@@ -198,9 +198,16 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
 
     -- Create and start the task.
     -- Use minimal components to suppress overseer's default notifications.
+    -- Wrap the cmd in nice/ionice so a long test run yields CPU/IO to
+    -- the editor; resolve the display name from the original program
+    -- name first so the wrapper binary doesn't leak into the title.
+    local test_program = spec.cmd[1] or "test"
+    local task_name = "loomtest: "
+        .. (test_program:match("[/\\]([^/\\]+)$") or test_program)
+    local wrapped_cmd = require("loomworks.nice").wrap_cmd(spec.cmd)
     local task = overseer.new_task({
-        name = "loomtest: " .. ((spec.cmd[1] or "test"):match("[/\\]([^/\\]+)$") or spec.cmd[1] or "test"),
-        cmd = spec.cmd,
+        name = task_name,
+        cmd = wrapped_cmd,
         cwd = spec.cwd,
         env = spec.env,
         components = {

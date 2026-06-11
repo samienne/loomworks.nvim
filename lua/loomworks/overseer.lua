@@ -1,5 +1,29 @@
 local M = {}
 
+local nice = require("loomworks.nice")
+
+--- Action set that gets the nice/ionice wrapper. Configure, build and
+--- clean are the long-running ones competing with the editor for CPU
+--- and disk; test runs are wrapped at the loomtest runner instead
+--- (because they don't pass through this module's action dispatch).
+--- Detection probes (parse_targets, get_options, version checks) are
+--- intentionally excluded — those are short and user-blocking, so
+--- niceing them just makes the editor feel slow.
+local NICE_ACTIONS = { configure = true, build = true, clean = true }
+
+--- Wrap the `cmd` field of a task builder result with nice/ionice when
+--- the action qualifies. No-op on non-Linux or when the wrapper
+--- binaries are missing (see `loomworks.nice`).
+--- @param build_result table builder() output with optional `cmd`
+--- @param action string|nil loomworks action tag
+--- @return table the same build_result (mutated in place)
+local function apply_nice(build_result, action)
+    if not action or not NICE_ACTIONS[action] then return build_result end
+    if type(build_result.cmd) ~= "table" then return build_result end
+    build_result.cmd = nice.wrap_cmd(build_result.cmd)
+    return build_result
+end
+
 --- Resolve user-declared project variables for the active configuration.
 --- Returns nil when the project has no variable declarations so module
 --- contexts stay lean. The Configuration object is the inheritance root —
@@ -151,7 +175,10 @@ function M.build_spec_for(unit, target_id)
 
     --- Validate spec types and coerce missing cwd to the workspace root.
     --- overseer's new_task rejects userdata fields with opaque messages,
-    --- so normalize early and reject with a helpful one.
+    --- so normalize early and reject with a helpful one. Also applies
+    --- the nice/ionice wrap — `build_spec_for` is only ever called for
+    --- builds (per-target, or the build action fallback), so we wrap
+    --- here unconditionally rather than threading an action arg through.
     --- @param spec table|nil
     --- @return table|nil normalized spec, string|nil err
     local function normalize(spec)
@@ -170,6 +197,7 @@ function M.build_spec_for(unit, target_id)
         if spec.env ~= nil and type(spec.env) ~= "table" then
             spec.env = nil
         end
+        spec.cmd = nice.wrap_cmd(spec.cmd)
         return spec, nil
     end
 
@@ -415,6 +443,7 @@ local function start_one_task(overseer, task_def, on_complete)
             end
 
             local build_result = task_def.builder()
+            apply_nice(build_result, lw_meta.action)
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
             local task = overseer.new_task(build_result)
@@ -857,6 +886,7 @@ function M.run_configuration_clean(unit, on_complete)
     for _, task_def in ipairs(tasks) do
         local tf = future_mod.create(function(resolve, reject, token)
             local build_result = task_def.builder()
+            apply_nice(build_result, "clean")
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
             local task = overseer.new_task(build_result)
@@ -910,6 +940,7 @@ function M.run_profile_clean(profile, on_complete)
     for _, task_def in ipairs(tasks) do
         local tf = future_mod.create(function(resolve, reject, token)
             local build_result = task_def.builder()
+            apply_nice(build_result, "clean")
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
             local task = overseer.new_task(build_result)

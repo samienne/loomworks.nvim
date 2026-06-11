@@ -26,7 +26,9 @@ typescript is a shim.
 - **Profiles** — fully resolved buildable units combining a configuration set
   with a toolchain. Activate, build, and manage profiles from the status page
 - **Overseer integration** — auto-generates configure and build tasks, tracks
-  completion, records state to cache
+  completion, records state to cache. On Linux, configure/build/clean/test
+  tasks run under `ionice -c 3 nice -n 10` so the editor and clangd stay
+  responsive during long builds
 - **clangd integration** — auto-injects `--compile-commands-dir`,
   memory-friendly defaults (`--background-index-priority=low`,
   `--pch-storage=disk`), restarts clangd when switching profiles,
