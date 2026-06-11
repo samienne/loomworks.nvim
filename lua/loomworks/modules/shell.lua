@@ -344,15 +344,23 @@ function M.clean_tasks(project, active_config)
     }
 end
 
---- Wire up the ninja progress parser unconditionally. The parser is
---- purely a `(line) -> ProgressUpdate | nil` function: it matches the
---- `[N/M] message` pattern and returns nil for everything else. For
---- shell projects that don't run a ninja-flavored build underneath,
---- every line returns nil and fidget simply stays empty — the "try
---- only" semantics. No config field needed; the cost is one regex per
---- output line.
+--- Wire up the ninja progress parser unconditionally. The contract is
+--- to return the tool **name** (a string) that the progress registry
+--- looks up — NOT the parser function itself. The registry then maps
+--- the name to `progress/<name>.lua`'s parser, which is itself a
+--- `(line) -> ProgressUpdate | nil` function: matches `[N/M] message`
+--- and returns nil for everything else. For shell projects that don't
+--- run a ninja-flavored build underneath, every line returns nil and
+--- fidget simply stays empty — the "try only" semantics. No config
+--- field needed; the cost is one regex per output line.
+---
+--- Subtle: this method must return a string, not the parser function.
+--- Returning the function directly causes `progress.get(<function>)`
+--- to fail with a string-concat error inside `start_one_task`, which
+--- leaves the overseer task wedged in PENDING because the lifecycle
+--- subscriptions haven't been wired yet by the time the throw lands.
 function M.progress_parser()
-    return require("loomworks.progress.ninja")
+    return "ninja"
 end
 
 -- ---------------------------------------------------------------------------
