@@ -64,6 +64,20 @@ local MEMORY_FLAGS = {
     "--pch-storage=disk",
 }
 
+--- Always-injected feature flags. Distinct from MEMORY_FLAGS so the
+--- rationale stays clean — these aren't memory wins, they're features
+--- we want on regardless of whether the user passed their own `cmd`.
+---
+--- - `--clang-tidy`: enable clang-tidy diagnostics. Costs ~2x memory
+---   per TU but the diagnostics are usually load-bearing on real
+---   projects, and users who already configure clang-tidy via
+---   `.clang-tidy` files expect them to show up. LLVM `cl::opt`
+---   last-wins still applies: a user who wants it off can append
+---   `--clang-tidy=false` to their own cmd.
+local ALWAYS_FLAGS = {
+    "--clang-tidy",
+}
+
 --- Expand ${ENV_VAR} patterns. Leaves unresolved refs unchanged.
 --- @param s string
 --- @return string
@@ -231,6 +245,7 @@ function M.cmd_factory(base_cmd)
         -- the user's args so we win any last-wins conflict; see
         -- MEMORY_FLAGS docstring for rationale on each flag.
         for _, f in ipairs(MEMORY_FLAGS) do args[#args + 1] = f end
+        for _, f in ipairs(ALWAYS_FLAGS) do args[#args + 1] = f end
 
         -- OOM-adaptive `-j` injection. State is created lazily on the
         -- first crash (in on_unexpected_exit); first run for a root has
@@ -298,7 +313,10 @@ function M.get_resolved_cmd(root_dir)
 end
 
 --- Default base cmd args when the user doesn't provide one.
-local DEFAULT_CMD = { "clangd", "--background-index", "--clang-tidy",
+-- `--clang-tidy` lives in ALWAYS_FLAGS now so it applies even when the
+-- user overrides `cmd`. Keep this list minimal — anything we want
+-- unconditionally goes in MEMORY_FLAGS or ALWAYS_FLAGS instead.
+local DEFAULT_CMD = { "clangd", "--background-index",
     "--header-insertion=iwyu" }
 local DEFAULT_FILETYPES = { "c", "cpp", "objc", "objcpp", "cuda" }
 local DEFAULT_ROOT_MARKERS = { ".clangd", ".clang-tidy", "compile_commands.json",

@@ -488,6 +488,42 @@ function Core:find_running_tasks_for_items(items)
     return self._workspace:find_running_tasks_for_items(items)
 end
 
+--- @see loomworks.Workspace.get_active_tasks
+function Core:get_active_tasks()
+    if not self._workspace then return {} end
+    return self._workspace:get_active_tasks()
+end
+
+--- @see loomworks.Workspace.get_build_dir_locks_info
+function Core:get_build_dir_locks_info()
+    if not self._workspace then return {} end
+    return self._workspace:get_build_dir_locks_info()
+end
+
+--- @see loomworks.Workspace.force_release_build_dir_lock
+function Core:force_release_build_dir_lock(dir)
+    if not self._workspace then return false end
+    return self._workspace:force_release_build_dir_lock(dir)
+end
+
+--- @see loomworks.Workspace.cancel_task
+function Core:cancel_task(task_id)
+    if not self._workspace then return false end
+    return self._workspace:cancel_task(task_id)
+end
+
+--- @see loomworks.Workspace.cancel_tasks_for_project
+function Core:cancel_tasks_for_project(project)
+    if not self._workspace then return 0 end
+    return self._workspace:cancel_tasks_for_project(project)
+end
+
+--- @see loomworks.Workspace.cancel_tasks_for_profile
+function Core:cancel_tasks_for_profile(profile)
+    if not self._workspace then return 0 end
+    return self._workspace:cancel_tasks_for_profile(profile)
+end
+
 --- @see loomworks.Workspace.stop_tasks_then
 function Core:stop_tasks_then(task_ids, on_done)
     if not self._workspace then on_done(); return end

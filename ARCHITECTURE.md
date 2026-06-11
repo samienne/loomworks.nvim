@@ -76,6 +76,7 @@ system does (data model, state machines, UI behavior, invariants), see
           |
     ui/sections/   ◄── pure rendering functions, one per section
       diagnostics.lua
+      tasks.lua
       profiles.lua
       orphaned.lua
       config_sets.lua
@@ -333,7 +334,7 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `overseer.lua` | Template provider registration, task collection from modules, task launching with readiness checks and build dir lock acquisition, auto-configure-before-build, profile-level operations; **nice/ionice cmd wrapping** for action ∈ {configure, build, clean} (Linux only, via `loomworks.nice`) so long tasks yield CPU/IO to the editor | Import core.lua directly; own state beyond task generation |
 | `lsp.lua` | LSP dispatch layer + plugin-style integration registry. On load, scans every runtime path for `integrations/lsp/*.lua` and requires each — integrations self-register via `register(server, M)`. Exposes generic `cmd(server, base)` / `root_dir(server, fallback)` factories, a `setup_servers(opts)` that installs enabled integrations via `vim.lsp.config` + `vim.lsp.enable`, buffer excludes (`default_excludes()` / `excluded(bufnr)` + `LspAttach` detach autocmd) applied uniformly across all managed integrations, `get_status()` dispatching per-server status fields to integrations, and the **generic restart machinery**: `wrap_on_exit(server, user_on_exit)` distinguishes managed-stop / clean external stop / unexpected death; `mark_managed_stop(client_id)` lets integrations flag their own intentional stops; per-`(server, root_dir)` throttle (4 attempts / 5min sliding window) deferring with `vim.defer_fn`; `is_suppressed` / `clear_suppression` / `reset_attempts` for the UI Reset path | Contain server-specific wiring (lives in `integrations/lsp/<server>.lua`) |
-| `integrations/lsp/clangd.lua` | clangd-specific wiring: `build_config(user_cfg)` for zero-config setup, function-based cmd + root_dir (resolve per-buffer: SDK clangd inside workspace, user base cmd outside), auto-restart on workspace/active set changes, capability auto-detection for blink.cmp/cmp_nvim_lsp, binary_required enforcement; **memory-friendly flag injection** (`--background-index-priority=low`, `--pch-storage=disk`) appended to every cmd (last-wins via LLVM `cl::opt`); **OOM-adaptive `-j` step-down** via `on_unexpected_exit` (seed `-j 12` on first OOM, halve to 1 floor, give up after); single-retry policy for non-OOM crashes; nvim LSP log snapshot rotation (5 generations) on every (re)start; `reset(root_dir)` clears adaptive state and re-enables clangd | Reference specific modules; read `project.cmake` or other module-specific fields |
+| `integrations/lsp/clangd.lua` | clangd-specific wiring: `build_config(user_cfg)` for zero-config setup, function-based cmd + root_dir (resolve per-buffer: SDK clangd inside workspace, user base cmd outside), auto-restart on workspace/active set changes, capability auto-detection for blink.cmp/cmp_nvim_lsp, binary_required enforcement; **memory-friendly flag injection** (`--background-index-priority=low`, `--pch-storage=disk`) and **always-on feature flags** (`--clang-tidy`) appended to every cmd (last-wins via LLVM `cl::opt`); **OOM-adaptive `-j` step-down** via `on_unexpected_exit` (seed `-j 12` on first OOM, halve to 1 floor, give up after); single-retry policy for non-OOM crashes; nvim LSP log snapshot rotation (5 generations) on every (re)start; `reset(root_dir)` clears adaptive state and re-enables clangd | Reference specific modules; read `project.cmake` or other module-specific fields |
 | `fidget.lua` | fidget.nvim progress handles for operations and tasks | Require fidget.nvim unconditionally (graceful no-op) |
 | `task_tracker.lua` | Overseer component bridging task lifecycle to ConfigUnit, cache recording, and build dir lock release on completion/dispose (idempotent) | Be imported by anything except overseer |
 | `lualine/components/loomworks.lua` | Winbar component showing active profile context for current buffer | Import core.lua; do anything beyond formatting |
@@ -810,11 +811,14 @@ loomworks.nvim/
 │   │       ├── project_browser.lua   Directory browser for adding projects
 │   │       ├── helpers.lua            Shared formatting
 │   │       └── sections/
+│   │           ├── diagnostics.lua    Diagnostics section (errors + warnings)
+│   │           ├── tasks.lua          Tasks + build-dir locks (recovery surface)
 │   │           ├── profiles.lua       Profiles section
 │   │           ├── orphaned.lua       Orphaned Items section (configs + stray dirs)
 │   │           ├── config_sets.lua    Configuration Sets section
 │   │           ├── projects.lua       Projects section
-│   │           └── debug.lua         Debug Adapters section
+│   │           ├── lsp.lua            LSP section (clients + Reset action)
+│   │           └── debug.lua          Debug Adapters section
 │   ├── overseer/
 │   │   └── component/
 │   │       └── loomworks/

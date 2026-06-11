@@ -328,6 +328,46 @@ function M.has_running_tasks()
     return core:has_running_tasks()
 end
 
+--- Snapshot every active task across the workspace.
+--- @return loomworks.ActiveTaskInfo[]
+function M.get_active_tasks()
+    return core:get_active_tasks()
+end
+
+--- Snapshot the build-dir lock table for diagnostics/UI.
+--- @return loomworks.BuildDirLockInfo[]
+function M.get_build_dir_locks_info()
+    return core:get_build_dir_locks_info()
+end
+
+--- Force-release a build-dir lock (status-page "reset" action).
+--- @param dir string normalized build directory path
+--- @return boolean released
+function M.force_release_build_dir_lock(dir)
+    return core:force_release_build_dir_lock(dir)
+end
+
+--- Cancel a single active task by ID.
+--- @param task_id number
+--- @return boolean
+function M.cancel_task(task_id)
+    return core:cancel_task(task_id)
+end
+
+--- Cancel every running task for a Project (cascade-friendly).
+--- @param project loomworks.Project
+--- @return integer cancelled
+function M.cancel_tasks_for_project(project)
+    return core:cancel_tasks_for_project(project)
+end
+
+--- Cancel every running task for a Profile's units (cascade-friendly).
+--- @param profile loomworks.Profile
+--- @return integer cancelled
+function M.cancel_tasks_for_profile(profile)
+    return core:cancel_tasks_for_profile(profile)
+end
+
 -- ---------------------------------------------------------------------------
 -- Task results
 -- ---------------------------------------------------------------------------
@@ -418,6 +458,46 @@ function M.buf_status(bufnr)
         end
     end
 
+    -- Profile-aggregate state for the icon surface. Profile:status()
+    -- returns a human label that can be composite ("1 building,
+    -- 2 built"), so we compute a single icon-friendly key here. Order
+    -- matters: running and failed dominate the aggregate so the user
+    -- sees the actionable signal first.
+    local profile_state = nil
+    if profile then
+        local counts = {
+            unconfigured = 0, configured = 0, built = 0,
+            configure_failed = 0, build_failed = 0,
+            configuring = 0, building = 0,
+            deleting = 0, cleaning = 0,
+        }
+        local total = 0
+        for _, pp in ipairs(profile:projects()) do
+            local s = pp:status()
+            counts[s] = (counts[s] or 0) + 1
+            total = total + 1
+        end
+        if total == 0 then
+            profile_state = nil
+        elseif counts.deleting > 0 or counts.cleaning > 0 then
+            profile_state = "deleting"
+        elseif counts.configuring > 0 or counts.building > 0 then
+            profile_state = counts.building > 0 and "building" or "configuring"
+        elseif counts.configure_failed > 0 then
+            profile_state = "failed_configure"
+        elseif counts.build_failed > 0 then
+            profile_state = "failed_build"
+        elseif counts.built == total then
+            profile_state = "built"
+        elseif counts.configured + counts.built == total then
+            profile_state = "configured"
+        elseif counts.unconfigured == total then
+            profile_state = "unconfigured"
+        else
+            profile_state = "mixed"
+        end
+    end
+
     -- Workspace-level diagnostic summary for the winbar indicator.
     -- Highest severity wins (error trumps warn). Nil when clean.
     local diagnostic_severity = nil
@@ -440,6 +520,7 @@ function M.buf_status(bufnr)
         project = project.key,
         configuration = project.configuration,
         status = status,
+        profile_state = profile_state,
         diagnostic_severity = diagnostic_severity,
     }
 end

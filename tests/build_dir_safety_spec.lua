@@ -560,4 +560,303 @@ describe("build dir operation queue", function()
             assert.same({ "a_exclusive", "b_exclusive" }, calls)
         end)
     end)
+
+    describe("get_build_dir_locks_info", function()
+        it("returns empty array when no locks held", function()
+            assert.same({}, ws:get_build_dir_locks_info())
+        end)
+
+        it("reports held exclusive lock", function()
+            ws:acquire_build_dir_lock("/build", "exclusive", function() end)
+            local info = ws:get_build_dir_locks_info()
+            assert.equals(1, #info)
+            assert.equals("/build", info[1].dir)
+            assert.is_true(info[1].exclusive)
+            assert.equals(0, info[1].shared_count)
+            assert.equals(0, info[1].queue_depth)
+        end)
+
+        it("reports shared-count and queue depth", function()
+            ws:acquire_build_dir_lock("/build", "shared", function() end)
+            ws:acquire_build_dir_lock("/build", "shared", function() end)
+            ws:acquire_build_dir_lock("/build", "exclusive", function() end)
+            local info = ws:get_build_dir_locks_info()
+            assert.equals(1, #info)
+            assert.is_false(info[1].exclusive)
+            assert.equals(2, info[1].shared_count)
+            assert.equals(1, info[1].queue_depth)
+        end)
+
+        it("sorts entries by dir path", function()
+            ws:acquire_build_dir_lock("/build/z", "exclusive", function() end)
+            ws:acquire_build_dir_lock("/build/a", "exclusive", function() end)
+            ws:acquire_build_dir_lock("/build/m", "exclusive", function() end)
+            local info = ws:get_build_dir_locks_info()
+            assert.equals("/build/a", info[1].dir)
+            assert.equals("/build/m", info[2].dir)
+            assert.equals("/build/z", info[3].dir)
+        end)
+    end)
+
+    describe("get_active_tasks", function()
+        local ws_local
+
+        --- Build a stub config unit matching only the fields
+        --- `get_active_tasks` reads. Real ConfigUnits would need a
+        --- full profile activation flow to materialize, which is
+        --- well outside the contract under test here.
+        --- @param opts table
+        --- @return table
+        local function stub_unit(opts)
+            return {
+                _task_id = opts.task_id,
+                _action = opts.action,
+                _start_time = opts.start_time,
+                _progress = opts.progress,
+                _project = { key = opts.project_key },
+                _init_project_key = opts.project_key,
+                id = opts.config_key,
+                config_key = function() return opts.config_key end,
+                build_dir = function() return opts.build_dir end,
+            }
+        end
+
+        before_each(function()
+            ws_local = make_ws()
+        end)
+
+        it("returns empty array when no tasks are running", function()
+            assert.same({}, ws_local:get_active_tasks())
+        end)
+
+        it("reports a single running task with progress", function()
+            ws_local._config_units = {
+                stub_unit({
+                    task_id = 42, action = "build",
+                    start_time = 990,
+                    progress = { current = 3, total = 10 },
+                    project_key = "App", config_key = "Debug:ninja-gcc",
+                    build_dir = "/build/App/Debug",
+                }),
+            }
+
+            local active = ws_local:get_active_tasks()
+            assert.equals(1, #active)
+            assert.equals(42, active[1].task_id)
+            assert.equals("App", active[1].project_key)
+            assert.equals("Debug:ninja-gcc", active[1].config_key)
+            assert.equals("build", active[1].action)
+            assert.equals(990, active[1].start_time)
+            assert.equals(3, active[1].progress.current)
+            assert.equals(10, active[1].progress.total)
+            assert.equals("/build/App/Debug", active[1].build_dir)
+        end)
+
+        it("skips units with no task_id (idle)", function()
+            ws_local._config_units = {
+                stub_unit({
+                    project_key = "App", config_key = "Debug",
+                }),
+                stub_unit({
+                    task_id = 5, action = "build",
+                    project_key = "App", config_key = "Release",
+                }),
+            }
+            local active = ws_local:get_active_tasks()
+            assert.equals(1, #active)
+            assert.equals(5, active[1].task_id)
+        end)
+
+        it("sorts by project then config then task_id", function()
+            ws_local._config_units = {
+                stub_unit({
+                    task_id = 5, action = "build",
+                    project_key = "App", config_key = "Release",
+                }),
+                stub_unit({
+                    task_id = 99, action = "configure",
+                    project_key = "App", config_key = "Debug",
+                }),
+            }
+            local active = ws_local:get_active_tasks()
+            assert.equals(2, #active)
+            -- Debug sorts before Release alphabetically.
+            assert.equals(99, active[1].task_id)
+            assert.equals(5, active[2].task_id)
+        end)
+    end)
+
+    describe("cancel_task", function()
+        local ws_local
+        local mock_tasks
+
+        before_each(function()
+            ws_local = make_ws()
+            mock_tasks = {}
+            ws_local._core._deps.get_overseer_task = function(id)
+                return mock_tasks[id]
+            end
+        end)
+
+        it("returns false when overseer doesn't know the task", function()
+            assert.is_false(ws_local:cancel_task(999))
+        end)
+
+        it("returns false when task is already complete", function()
+            mock_tasks[5] = {
+                is_complete = function() return true end,
+                stop = function() error("should not be called") end,
+            }
+            assert.is_false(ws_local:cancel_task(5))
+        end)
+
+        it("stops the task when found and live", function()
+            local stopped = false
+            mock_tasks[7] = {
+                is_complete = function() return false end,
+                stop = function() stopped = true end,
+            }
+            assert.is_true(ws_local:cancel_task(7))
+            assert.is_true(stopped)
+        end)
+    end)
+
+    describe("cancel_tasks_for_project", function()
+        local ws_local
+        local stops
+
+        before_each(function()
+            ws_local = make_ws()
+            stops = {}
+            ws_local._core._deps.get_overseer_task = function(id)
+                return {
+                    is_complete = function() return false end,
+                    stop = function() stops[#stops + 1] = id end,
+                }
+            end
+        end)
+
+        it("cancels every running unit for the project", function()
+            local proj_a = { key = "ProjA" }
+            local proj_b = { key = "ProjB" }
+            ws_local._config_units = {
+                { _project = proj_a, _task_id = 11 },
+                { _project = proj_a, _task_id = 22 },
+                { _project = proj_b, _task_id = 33 },
+                { _project = proj_a, _task_id = nil }, -- idle, skip
+            }
+            local n = ws_local:cancel_tasks_for_project(proj_a)
+            assert.equals(2, n)
+            table.sort(stops)
+            assert.same({ 11, 22 }, stops)
+        end)
+
+        it("returns 0 when project has no running tasks", function()
+            local proj = { key = "P" }
+            ws_local._config_units = {
+                { _project = proj, _task_id = nil },
+            }
+            assert.equals(0, ws_local:cancel_tasks_for_project(proj))
+        end)
+
+        it("returns 0 when project is nil (defensive)", function()
+            assert.equals(0, ws_local:cancel_tasks_for_project(nil))
+        end)
+    end)
+
+    describe("cancel_tasks_for_profile", function()
+        local ws_local
+        local stops
+
+        before_each(function()
+            ws_local = make_ws()
+            stops = {}
+            ws_local._core._deps.get_overseer_task = function(id)
+                return {
+                    is_complete = function() return false end,
+                    stop = function() stops[#stops + 1] = id end,
+                }
+            end
+        end)
+
+        it("cancels units mapped by the profile's config_set", function()
+            local proj_a = { key = "ProjA" }
+            local proj_b = { key = "ProjB" }
+            local cfg_a = { name = "Debug" }
+            local cfg_b = { name = "Release" }
+            local profile = {
+                _config_set_ref = {
+                    mappings = { [proj_a] = cfg_a, [proj_b] = cfg_b },
+                },
+            }
+            ws_local._config_units = {
+                { _project = proj_a, _configuration = cfg_a, _task_id = 10 },
+                { _project = proj_b, _configuration = cfg_b, _task_id = 20 },
+                -- Different configuration than the profile maps:
+                { _project = proj_a, _configuration = cfg_b, _task_id = 30 },
+            }
+            local n = ws_local:cancel_tasks_for_profile(profile)
+            assert.equals(2, n)
+            table.sort(stops)
+            assert.same({ 10, 20 }, stops)
+        end)
+
+        it("returns 0 for a pinned profile (no config_set)", function()
+            local profile = { _config_set_ref = nil }
+            ws_local._config_units = {}
+            assert.equals(0, ws_local:cancel_tasks_for_profile(profile))
+        end)
+
+        it("returns 0 when profile is nil (defensive)", function()
+            assert.equals(0, ws_local:cancel_tasks_for_profile(nil))
+        end)
+    end)
+
+    describe("force_release_build_dir_lock", function()
+        it("returns false when lock doesn't exist", function()
+            assert.is_false(ws:force_release_build_dir_lock("/nonexistent"))
+        end)
+
+        it("clears exclusive and dequeues waiters", function()
+            local calls = {}
+            ws:acquire_build_dir_lock("/build", "exclusive", function()
+                calls[#calls + 1] = "first"
+            end)
+            ws:acquire_build_dir_lock("/build", "exclusive", function()
+                calls[#calls + 1] = "second"
+            end)
+            assert.same({ "first" }, calls)
+
+            local released = ws:force_release_build_dir_lock("/build")
+            assert.is_true(released)
+            -- Second waiter should run after force-release.
+            assert.same({ "first", "second" }, calls)
+        end)
+
+        it("clears shared counts and dequeues exclusive waiter", function()
+            local calls = {}
+            ws:acquire_build_dir_lock("/build", "shared", function()
+                calls[#calls + 1] = "sh"
+            end)
+            ws:acquire_build_dir_lock("/build", "exclusive", function()
+                calls[#calls + 1] = "ex"
+            end)
+            assert.same({ "sh" }, calls)
+
+            ws:force_release_build_dir_lock("/build")
+            assert.same({ "sh", "ex" }, calls)
+        end)
+
+        it("is idempotent w.r.t. holder's eventual release call", function()
+            local ran
+            ws:acquire_build_dir_lock("/build", "exclusive", function() ran = true end)
+            assert.is_true(ran)
+            ws:force_release_build_dir_lock("/build")
+            -- Original holder's deferred release should be a no-op,
+            -- not corrupt state or raise.
+            ws:release_build_dir_lock("/build", "exclusive")
+            -- Entry should be cleaned up.
+            assert.is_nil(ws._build_dir_locks["/build"])
+        end)
+    end)
 end)

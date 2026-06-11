@@ -31,13 +31,17 @@ typescript is a shim.
   responsive during long builds
 - **clangd integration** — auto-injects `--compile-commands-dir`,
   memory-friendly defaults (`--background-index-priority=low`,
-  `--pch-storage=disk`), restarts clangd when switching profiles,
+  `--pch-storage=disk`) + `--clang-tidy`, restarts clangd when switching
+  profiles,
   OOM-adaptive `-j` step-down with nvim LSP log rotation, throttle
   4 attempts / 5min, UI Reset action
 - **Lualine component** — winbar showing active profile/project/configuration
 - **Live file watching** — reloads automatically when config files change
 - **Status page** — `:LoomworksInfo` shows workspace state with folding, status
-  icons, spinner animations, and build progress
+  icons, spinner animations, and build progress. The action picker on running
+  profile or configuration rows includes `Cancel running task(s)`. A Tasks
+  section at the bottom surfaces active tasks and held build-dir locks with
+  per-row cancel/force-release actions for recovering from stuck state
 
 ## Requirements
 
@@ -576,7 +580,9 @@ native `vim.lsp.config` + `vim.lsp.enable` API — you don't need
 ```lua
 require("loomworks").setup({})
 -- clangd is now enabled with sensible defaults:
---   cmd = { "clangd", "--background-index", "--clang-tidy", "--header-insertion=iwyu" }
+--   cmd = { "clangd", "--background-index", "--header-insertion=iwyu" }
+-- plus always-injected: --background-index-priority=low, --pch-storage=disk,
+-- --clang-tidy (appended in cmd_factory, applies even when user overrides cmd)
 -- Inside a workspace project, the active profile's compile_commands_dir and
 -- (if the profile uses an SDK) the SDK-bundled clangd binary are used.
 -- Outside any workspace, the default cmd is used.
