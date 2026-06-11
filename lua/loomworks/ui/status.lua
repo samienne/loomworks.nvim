@@ -77,6 +77,12 @@ local function render_fn(tree)
     require("loomworks.ui.sections.lsp")(tree, ctx)
     require("loomworks.ui.sections.debug")(tree, ctx)
     require("loomworks.ui.sections.sdks")(tree, ctx)
+
+    -- Tasks section lives at the bottom: it's the runtime-state
+    -- diagnostic surface, only interesting when something is wrong.
+    -- Renders nothing on the steady-state idle case so the bottom of
+    -- the page stays quiet unless there's something to look at.
+    require("loomworks.ui.sections.tasks")(tree, ctx)
 end
 
 -- ---------------------------------------------------------------------------

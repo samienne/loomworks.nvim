@@ -27,6 +27,7 @@ local ACTION_ORDER = {
     { action = "revert_one", label = "Revert this item to baseline" },
     { action = "rebuild",   label = "Rebuild (clean + build)  R" },
     { action = "clean",     label = "Clean  C" },
+    { action = "cancel",    label = "Cancel running task(s)" },
     { action = "delete",    label = "Delete  D" },
 }
 
@@ -160,7 +161,8 @@ function Tree:on_key(action, line)
         end
         if #items == 1
                 and items[1].action ~= "delete"
-                and items[1].action ~= "publish" then
+                and items[1].action ~= "publish"
+                and items[1].action ~= "cancel" then
             items[1].callback()
             return {}
         end

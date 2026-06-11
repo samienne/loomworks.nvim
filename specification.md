@@ -1428,6 +1428,24 @@ actual task launching to prevent filesystem corruption.
 **UI hint**: When an operation is queued (waiting for a build dir lock),
 the configuration shows "(queued)" in the status display.
 
+**Recovery from stuck state**: A task whose lifecycle never reaches the
+release path (e.g., a crash before subscription wiring completes) can
+leave a lock held with no live holder. The Tasks section of the status
+page (`spec/ui.md` §1.9) surfaces the lock and per-task state, and
+exposes a **force-release** action that drops the lock counts to zero
+and replays the FIFO queue. The force-release is idempotent with
+respect to the real holder's eventual release call — if the holder
+ever does fire, it sees zeroed counts and no-ops.
+
+**Cancel cascade**: A user-initiated cancel on a single task stops
+that task's overseer process. Chained next-tasks (the build link of a
+configure→build chain, or the next task in a multi-stage operation)
+auto-abort because each `do_start` checks `token:is_cancelled()`
+before launching and any subsequent `:next()` link rejects when the
+cancelled Future propagates. Profile-level and project-level cancel
+walk the matching units and cancel each running task individually —
+the cascade then takes care of every dependent waiter.
+
 ### 5.4 Profile-level operations
 
 All user-initiated actions (build, configure, clean, delete) are tracked

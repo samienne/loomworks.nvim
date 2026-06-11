@@ -2016,6 +2016,170 @@ function Workspace:find_running_tasks_for_items(items)
     return matches
 end
 
+--- Snapshot every active task across the workspace, in a stable order.
+--- Powers the Tasks section of the status page. Each entry includes
+--- enough info to identify, time, and cancel the task without the
+--- caller needing to walk ConfigUnits or the overseer registry.
+---
+--- Returned snapshots are point-in-time and not auto-refreshed —
+--- callers re-invoke on each render. We intentionally do not return
+--- the ConfigUnit reference: status renderers need keys + state, not
+--- live mutation handles.
+---
+--- @return loomworks.ActiveTaskInfo[]
+function Workspace:get_active_tasks()
+    local out = {}
+    for _, unit in pairs(self._config_units) do
+        if unit._task_id then
+            out[#out + 1] = {
+                task_id = unit._task_id,
+                project_key = unit._project and unit._project.key
+                    or unit._init_project_key,
+                config_key = unit:config_key() or unit.id,
+                action = unit._action,
+                start_time = unit._start_time,
+                progress = unit._progress,
+                build_dir = unit:build_dir(),
+            }
+        end
+    end
+    -- Stable order: project then config then task_id.
+    table.sort(out, function(a, b)
+        if a.project_key ~= b.project_key then
+            return tostring(a.project_key) < tostring(b.project_key)
+        end
+        if a.config_key ~= b.config_key then
+            return tostring(a.config_key) < tostring(b.config_key)
+        end
+        return (a.task_id or 0) < (b.task_id or 0)
+    end)
+    return out
+end
+
+--- Snapshot the build-dir lock table for the status page. Held locks
+--- (`exclusive=true` or `shared_count>0`) and locks with a non-empty
+--- queue are both reported — an empty entry hanging around without a
+--- holder or waiters is a bookkeeping artifact and elided.
+---
+--- @return loomworks.BuildDirLockInfo[]
+function Workspace:get_build_dir_locks_info()
+    local out = {}
+    for dir, lock in pairs(self._build_dir_locks or {}) do
+        if lock.exclusive or lock.shared_count > 0 or #lock.queue > 0 then
+            out[#out + 1] = {
+                dir = dir,
+                exclusive = lock.exclusive,
+                shared_count = lock.shared_count,
+                queue_depth = #lock.queue,
+            }
+        end
+    end
+    table.sort(out, function(a, b) return a.dir < b.dir end)
+    return out
+end
+
+--- Force-release a build-dir lock. Drops the exclusive/shared counts
+--- to zero and replays the FIFO queue so waiters can acquire. Idempotent
+--- with respect to the real holder's eventual `release_build_dir_lock`
+--- call: that release sees `exclusive=false` / `shared_count=0` and
+--- simply no-ops.
+---
+--- This is the manual escape hatch for the case where a task lifecycle
+--- went sideways and a lock got stuck without a live holder. The UI
+--- surfaces it as the "force release" action in the Tasks section.
+---
+--- @param dir string normalized build directory path
+--- @return boolean released true if there was a lock to release
+function Workspace:force_release_build_dir_lock(dir)
+    local lock = self._build_dir_locks and self._build_dir_locks[dir]
+    if not lock then return false end
+    lock.exclusive = false
+    lock.shared_count = 0
+    -- Drain whatever the dequeuer is willing to start. This also
+    -- garbage-collects the entry if nothing's left waiting.
+    self:_dequeue_build_dir_lock(dir)
+    return true
+end
+
+--- Cancel a single active task by ID. Stops the overseer task; the
+--- on_complete subscription set up by `start_one_task` handles the
+--- ConfigUnit unregister and lock release. Returns true if a task was
+--- found and stop was requested.
+---
+--- @param task_id number
+--- @return boolean
+function Workspace:cancel_task(task_id)
+    local task = self._core._deps.get_overseer_task(task_id)
+    if not task then return false end
+    if task:is_complete() then return false end
+    task:stop()
+    return true
+end
+
+--- Cancel every running task whose unit belongs to a given Project.
+--- A "unit belongs to a project" if its `_project` reference equals
+--- the passed Project. Cancels by calling `cancel_task` for each
+--- matching unit's `_task_id`. Returns the count of tasks for which
+--- stop was successfully requested.
+---
+--- Cascade: any tasks chained behind a cancelled one auto-abort via
+--- the Future token in `start_one_task` — when the running task's
+--- `on_complete` fires with CANCELED, the Future rejects and the
+--- `:next(function() return launch_tasks(buildTasks) end)` link
+--- never fires. Queued waiters on the build-dir lock see
+--- `token:is_cancelled()` in their `do_start` and bail.
+---
+--- @param project loomworks.Project
+--- @return integer cancelled count of tasks for which stop fired
+function Workspace:cancel_tasks_for_project(project)
+    if not project then return 0 end
+    local cancelled = 0
+    for _, unit in pairs(self._config_units) do
+        if unit._task_id and unit._project == project then
+            if self:cancel_task(unit._task_id) then
+                cancelled = cancelled + 1
+            end
+        end
+    end
+    return cancelled
+end
+
+--- Cancel every running task whose unit is referenced by a given
+--- Profile's config_set. Independent of *which* profile/operation
+--- started each task — we cancel any running task on any unit the
+--- profile touches. If two profiles share a unit, both lose work;
+--- in practice unit-sharing across profiles is rare and the
+--- alternative (tracking the initiating Profile per task) is more
+--- plumbing for marginal benefit. Returns the count cancelled.
+---
+--- @param profile loomworks.Profile
+--- @return integer cancelled
+function Workspace:cancel_tasks_for_profile(profile)
+    if not profile then return 0 end
+    -- Build the set of units the profile maps to. Set-based profiles
+    -- use their config_set's mappings; pinned profiles (no
+    -- config_set) declare project→configuration pairs directly. The
+    -- Profile interface hides this via `iter_units(workspace)` /
+    -- `units(workspace)` when available; fall back to walking the
+    -- workspace's config_units and checking membership.
+    local cancelled = 0
+    local config_set = profile._config_set_ref
+    if config_set and config_set.mappings then
+        for project, configuration in pairs(config_set.mappings) do
+            for _, unit in pairs(self._config_units) do
+                if unit._task_id
+                        and unit._project == project
+                        and unit._configuration == configuration then
+                    if self:cancel_task(unit._task_id) then
+                        cancelled = cancelled + 1
+                    end
+                end
+            end
+        end
+    end
+    return cancelled
+end
+
 --- Stop running overseer tasks and call on_done when all have stopped.
 --- @param task_ids number[] overseer task IDs to stop
 --- @param on_done function called when all tasks have stopped

@@ -328,6 +328,46 @@ function M.has_running_tasks()
     return core:has_running_tasks()
 end
 
+--- Snapshot every active task across the workspace.
+--- @return loomworks.ActiveTaskInfo[]
+function M.get_active_tasks()
+    return core:get_active_tasks()
+end
+
+--- Snapshot the build-dir lock table for diagnostics/UI.
+--- @return loomworks.BuildDirLockInfo[]
+function M.get_build_dir_locks_info()
+    return core:get_build_dir_locks_info()
+end
+
+--- Force-release a build-dir lock (status-page "reset" action).
+--- @param dir string normalized build directory path
+--- @return boolean released
+function M.force_release_build_dir_lock(dir)
+    return core:force_release_build_dir_lock(dir)
+end
+
+--- Cancel a single active task by ID.
+--- @param task_id number
+--- @return boolean
+function M.cancel_task(task_id)
+    return core:cancel_task(task_id)
+end
+
+--- Cancel every running task for a Project (cascade-friendly).
+--- @param project loomworks.Project
+--- @return integer cancelled
+function M.cancel_tasks_for_project(project)
+    return core:cancel_tasks_for_project(project)
+end
+
+--- Cancel every running task for a Profile's units (cascade-friendly).
+--- @param profile loomworks.Profile
+--- @return integer cancelled
+function M.cancel_tasks_for_profile(profile)
+    return core:cancel_tasks_for_profile(profile)
+end
+
 -- ---------------------------------------------------------------------------
 -- Task results
 -- ---------------------------------------------------------------------------

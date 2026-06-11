@@ -272,6 +272,23 @@
 --- @field action string "configure" or "build"
 --- @field configuration_key string
 
+--- Snapshot of an active task for the status-page Tasks section.
+--- @class loomworks.ActiveTaskInfo
+--- @field task_id number overseer task id
+--- @field project_key string
+--- @field config_key string
+--- @field action string "configure" or "build"
+--- @field start_time number|nil clock seconds when the task was registered
+--- @field progress { current: integer, total: integer, message: string|nil }|nil
+--- @field build_dir string|nil resolved build directory (nil for tasks without one)
+
+--- Snapshot of a build-dir lock entry for the status-page Tasks section.
+--- @class loomworks.BuildDirLockInfo
+--- @field dir string normalized build directory path
+--- @field exclusive boolean
+--- @field shared_count integer
+--- @field queue_depth integer
+
 -- ========================== Deletion ==========================
 
 --- Plan for deleting a profile's cached configs.

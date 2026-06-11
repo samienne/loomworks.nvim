@@ -37,7 +37,10 @@ typescript is a shim.
 - **Lualine component** — winbar showing active profile/project/configuration
 - **Live file watching** — reloads automatically when config files change
 - **Status page** — `:LoomworksInfo` shows workspace state with folding, status
-  icons, spinner animations, and build progress
+  icons, spinner animations, and build progress. The action picker on running
+  profile or configuration rows includes `Cancel running task(s)`. A Tasks
+  section at the bottom surfaces active tasks and held build-dir locks with
+  per-row cancel/force-release actions for recovering from stuck state
 
 ## Requirements
 

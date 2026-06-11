@@ -16,10 +16,15 @@ options or overridden per `open()` call — the `win` table is passed
 directly to `Snacks.win`. The page contains these sections in order:
 
 1. **Header** — plugin version, workspace name, workspace root
-2. **Profiles** — all materialized and explicit profiles
-3. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
-4. **Configuration Sets** — declared sets with tool entries
-5. **Projects** — all projects with their configurations
+2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
+3. **Profiles** — all materialized and explicit profiles
+4. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
+5. **Configuration Sets** — declared sets with tool entries
+6. **Projects** — all projects with their configurations
+7. **Tasks** — active loomworks-managed tasks and held build-dir locks
+   (hidden when both empty). Placed at the bottom because it's the
+   runtime-state diagnostic surface — only interesting when something
+   is wrong.
 
 Sections are separated by blank lines. Each section has a title line.
 
@@ -166,6 +171,19 @@ appears like any other profile; it simply has fewer projects when expanded.
 Note: "Has active Operation" means this profile initiated the action.
 Profiles that share ConfigUnits with the initiating profile show spinners
 (from running ConfigUnit state) but not the orange highlight or timer.
+
+**Cancel action** (added to the Enter picker when `profile:is_running()`):
+
+The action picker on a running profile includes `Cancel running task(s)`.
+On select, every unit mapped by the profile's config_set with an active
+task_id has its task stopped via `Workspace:cancel_tasks_for_profile`.
+Tasks chained behind a cancelled one (e.g. the build link after a
+configure) auto-abort because the Future token in `start_one_task` bails
+their `do_start` before the next launch. A notification reports the
+count cancelled. The same picker entry appears on per-configuration
+rows for fine-grained single-task cancel. Cancel is not exposed as a
+direct hotkey — only through the picker — because the destructive
+scope (profile-level) benefits from the explicit pick.
 
 **Profile children** (when unfolded):
 - Set name (with warning if orphaned/stale) — only for set-based profiles
@@ -499,11 +517,65 @@ interactive item:
 ```
 ▸ Add project
 ```
-Enter opens the project browser float (§1.13). Replaces the former `A`
+Enter opens the project browser float (§1.14). Replaces the former `A`
 keybinding.
 
 
-### 1.9 Deletion Confirmation Dialog
+### 1.9 Tasks Section
+
+Diagnostic and recovery surface for active task lifecycle state.
+Renders nothing when no tasks are running and no build-dir locks are
+held — quiet during idle. Placed at the bottom of the status page
+because it's only interesting when something is wrong; the day-to-day
+reader sees workspace state first.
+
+**Section content** (in render order):
+
+1. Title line `Tasks  [N active]` where N is the active-task count.
+2. Top action row `⟲ Reset all task & lock state` (warn highlight)
+   — Enter opens a confirmation dialog; on confirm, cancels every
+   active task and force-releases every held lock. Nuclear option for
+   the case where bookkeeping has wedged.
+3. One row per active task:
+   ```
+   ▸ {project_key} : {config_key} — {action}  [N/M]  {elapsed}
+   ```
+   - `{action}` is `configure` / `build` / `clean`.
+   - `[N/M]` is the most recent progress update (omitted when none).
+   - `{elapsed}` is the time since the task was registered (`30s`,
+     `1m4s`). The spinner marker animates while the task is live.
+   - **Enter** opens a `vim.ui.select` menu: `Cancel task` (calls
+     `task:stop()` via `Workspace:cancel_task`) and `Open overseer`
+     (opens the overseer task list for output inspection). Esc
+     dismisses without action.
+4. Sub-section `Build directory locks` (only when at least one lock
+   is held or has a non-empty queue):
+   ```
+   ▸ {build_dir}  exclusive · shared(N) · queued(N)
+   ```
+   - Tokens appear only when their count is non-zero; entries with
+     all zeros are elided by `get_build_dir_locks_info`.
+   - A queue with no live holder (shared_count=0, exclusive=false,
+     queue_depth>0) is highlighted with `DiagnosticWarn` — the
+     visual cue for the "stuck PENDING" scenario.
+   - **Enter** opens a `vim.ui.select` menu with one option
+     `Force-release lock` (zero the counts, replay the FIFO queue).
+     Idempotent with respect to the real holder's eventual release.
+     Esc dismisses.
+
+**Section invariants:**
+
+- Renders nothing when `get_active_tasks()` and
+  `get_build_dir_locks_info()` are both empty.
+- Per-row Enter opens a menu rather than firing directly. Both
+  actions are recoverable, but a misclicked cancel costs a full
+  rebuild on a large project — the menu serves as a one-keystroke
+  confirmation.
+- Top-level reset uses the heavier confirmation dialog because it
+  acts on multiple items at once.
+
+
+### 1.10 Deletion Confirmation Dialog
 
 Shown for all delete operations (`D` key). Floating window centered in editor.
 
@@ -518,7 +590,7 @@ Shown for all delete operations (`D` key). Floating window centered in editor.
 
 **Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
 
-### 1.10 Nuke Confirmation Dialog
+### 1.11 Nuke Confirmation Dialog
 
 Shown when `<C-n>` is pressed. Floating window centered in editor.
 
@@ -545,12 +617,12 @@ no files are deleted. These checks are specific to the nuke operation —
 the general io layer does not restrict deletion paths, because normal
 config/profile deletion may delete build directories anywhere.
 
-### 1.11 Help Dialog
+### 1.12 Help Dialog
 
 Floating window showing all keybindings. Destructive keys (`R`, `C`, `D`,
 `<C-n>`) have their key character highlighted with `DiagnosticWarn`.
 
-### 1.12 Options Float
+### 1.13 Options Float
 
 Triggered by `o` on a configuration or tool entry node in the Projects
 or Profiles section. Opens a floating window showing the project's build
@@ -572,7 +644,7 @@ after the value. Fold/unfold with `<Tab>`.
 
 The float is read-only. Close with `q` or `<Esc>`.
 
-### 1.13 Project Browser
+### 1.14 Project Browser
 
 The project browser is a float opened from the "Add project" sentinel line.
 It scans workspace subdirectories asynchronously and shows detected project
@@ -741,7 +813,7 @@ Available Workspace mutation methods:
 - `compute_downgrade_preview(project_key)` — compute profile renames
   that would occur if a project were removed (pure query, no mutation)
 
-### 1.14 Auto-refresh
+### 1.15 Auto-refresh
 
 The status page refreshes automatically on these events:
 - `task_started`, `task_stopped`, `task_result`, `task_progress`

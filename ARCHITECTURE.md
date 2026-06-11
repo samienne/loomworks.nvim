@@ -76,6 +76,7 @@ system does (data model, state machines, UI behavior, invariants), see
           |
     ui/sections/   ◄── pure rendering functions, one per section
       diagnostics.lua
+      tasks.lua
       profiles.lua
       orphaned.lua
       config_sets.lua
@@ -809,11 +810,14 @@ loomworks.nvim/
 │   │       ├── project_browser.lua   Directory browser for adding projects
 │   │       ├── helpers.lua            Shared formatting
 │   │       └── sections/
+│   │           ├── diagnostics.lua    Diagnostics section (errors + warnings)
+│   │           ├── tasks.lua          Tasks + build-dir locks (recovery surface)
 │   │           ├── profiles.lua       Profiles section
 │   │           ├── orphaned.lua       Orphaned Items section (configs + stray dirs)
 │   │           ├── config_sets.lua    Configuration Sets section
 │   │           ├── projects.lua       Projects section
-│   │           └── debug.lua         Debug Adapters section
+│   │           ├── lsp.lua            LSP section (clients + Reset action)
+│   │           └── debug.lua          Debug Adapters section
 │   ├── overseer/
 │   │   └── component/
 │   │       └── loomworks/

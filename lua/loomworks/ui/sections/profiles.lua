@@ -322,6 +322,17 @@ local function render_profile_details(tree, profile, lw)
                     on_rebuild = actions.rebuild_configuration(unit),
                     on_clean = actions.clean_configuration(unit),
                     on_configure = actions.configure_configuration(unit),
+                    -- Per-config cancel only appears when this unit's
+                    -- task is live. Single-task cancel suffices —
+                    -- chained tasks behind it abort via the Future's
+                    -- cancel token (start_one_task wires
+                    -- `token:on_cancel` to call `task:stop()`).
+                    on_cancel = (unit and unit._task_id) and function()
+                        if lw.cancel_task(unit._task_id) then
+                            vim.notify("loomworks: cancelled task " ..
+                                tostring(unit._task_id))
+                        end
+                    end or nil,
                     on_delete = actions.delete_config(unit),
                     on_options = actions.show_options(unit),
                 }, function()
@@ -487,6 +498,15 @@ return function(tree, ctx)
             on_rebuild = actions.rebuild(profile),
             on_clean = actions.clean(profile),
             on_configure = actions.configure(profile),
+            -- Cancel only appears in the picker when there's actually
+            -- something to cancel. Tasks chained behind a cancelled
+            -- one auto-abort via the Future token in start_one_task.
+            on_cancel = profile_running and function()
+                local n = lw.cancel_tasks_for_profile(profile)
+                vim.notify(string.format(
+                    "loomworks: cancelled %d task(s) for profile '%s'",
+                    n, profile.key))
+            end or nil,
             on_delete = actions.delete_profile(profile),
         }, function()
             render_profile_details(t, profile, lw)
