@@ -344,8 +344,15 @@ function M.clean_tasks(project, active_config)
     }
 end
 
+--- Wire up the ninja progress parser unconditionally. The parser is
+--- purely a `(line) -> ProgressUpdate | nil` function: it matches the
+--- `[N/M] message` pattern and returns nil for everything else. For
+--- shell projects that don't run a ninja-flavored build underneath,
+--- every line returns nil and fidget simply stays empty — the "try
+--- only" semantics. No config field needed; the cost is one regex per
+--- output line.
 function M.progress_parser()
-    return nil
+    return require("loomworks.progress.ninja")
 end
 
 -- ---------------------------------------------------------------------------

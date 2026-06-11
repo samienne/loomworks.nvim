@@ -97,6 +97,20 @@ user adds entries under `configurations`, the default is dropped.
 `cwd` defaults to `<workspace_root>/<project.path>`. Task env is the
 caller's env merged with `shell.env`.
 
+### 5.1 Progress parsing
+
+`progress_parser()` returns the ninja parser unconditionally. The
+parser matches lines like `[3/10] Building CXX object foo.o` and
+returns `nil` for everything else, so on shell projects that don't
+run a ninja-flavored build underneath every output line returns nil
+and fidget stays empty — the "try only" semantic, no config field
+needed. Cost is one regex per line of build output.
+
+The parser is shared with cmake and meson; see
+[`lua/loomworks/progress/ninja.lua`](../../lua/loomworks/progress/ninja.lua)
+for the matcher and the basename-shortening rule applied to the
+trailing message.
+
 ## 6. Build directory (`resolve_build_dir`)
 
 Resolves `shell.build_dir` with the standard expansion context for the
