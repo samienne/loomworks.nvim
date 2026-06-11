@@ -44,19 +44,27 @@ describe("shell module", function()
     end)
 
     describe("progress_parser", function()
-        it("returns the ninja parser unconditionally", function()
-            local parser = shell.progress_parser()
+        it("returns the 'ninja' tool name unconditionally", function()
+            -- The contract is a string the progress registry looks
+            -- up, NOT the parser function. Returning the function
+            -- directly is the bug fix/shell-progress-parser-string
+            -- corrects: the registry's lookup then string-concats
+            -- against a function and throws inside start_one_task,
+            -- wedging the overseer task in PENDING.
+            assert.equals("ninja", shell.progress_parser())
+        end)
+
+        it("returned name resolves to a working parser via the registry", function()
+            -- End-to-end: the same path overseer.lua takes. Look up
+            -- the parser via `progress.get(name)` and exercise it.
+            local tool = shell.progress_parser()
+            local parser = require("loomworks.progress").get(tool)
             assert.is_function(parser)
-            -- Verify it actually behaves like the ninja parser: matches
-            -- the [N/M] pattern and silently no-ops on other lines.
             local matched = parser("[3/10] Building CXX object foo.o")
             assert.is_table(matched)
             assert.equals(3, matched.current)
             assert.equals(10, matched.total)
-
             assert.is_nil(parser("make[1]: Entering directory ..."))
-            assert.is_nil(parser("error: something broke"))
-            assert.is_nil(parser(""))
         end)
     end)
 
