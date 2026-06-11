@@ -1,8 +1,10 @@
 --- lualine component for loomworks — shows active project/configuration/tool.
 ---
 --- Usage in lualine config:
----   { "loomworks" }                           -- default: debug > App/Debug [ninja-gcc-12]
+---   { "loomworks" }                           -- default: ⚙ debug > 📁 App/Debug [ninja-gcc-12]
 ---   { "loomworks", show = { "project" } }     -- just the project name
+---   { "loomworks", icons = {} }               -- disable icons globally
+---   { "loomworks", icons = { project = "" } } -- override single icon
 ---
 --- Available show fields: "diagnostics", "set_name", "project",
 ---     "configuration", "tool_key", "profile_key", "status".
@@ -10,12 +12,23 @@
 --- workspace has active diagnostics — same warning surface as the
 --- status-page Diagnostics section. Highlight uses DiagnosticWarn /
 --- DiagnosticError. Drop "diagnostics" from `show` to disable.
+---
+--- Icons (nerd font glyphs) are prepended to each shown field. Set a
+--- field to `false` or `""` to drop just that icon; pass `icons = {}`
+--- to drop all of them.
 
 local M = require("lualine.component"):extend()
 
 local default_options = {
     show = { "diagnostics", "set_name", "project", "configuration", "tool_key" },
     join = " \u{e0b1} ",
+    icons = {
+        set_name      = "\u{f085}",  -- nf-fa-cogs — profile/set
+        project       = "\u{f07b}",  -- nf-fa-folder — project (carries the config too)
+        configuration = false,        -- inline with project; no separate icon
+        tool_key      = false,        -- inline with project; no separate icon
+        profile_key   = false,
+    },
 }
 
 function M:init(options)
@@ -27,6 +40,26 @@ function M:init(options)
     for _, field in ipairs(self.options.show) do
         self._show[field] = true
     end
+
+    -- Normalize icons table: nil / false / empty string all mean "no
+    -- icon for this field"; anything else is the literal prefix to
+    -- prepend (followed by a space).
+    self._icons = {}
+    for field, glyph in pairs(self.options.icons or {}) do
+        if glyph and glyph ~= "" then
+            self._icons[field] = glyph .. " "
+        end
+    end
+end
+
+--- Prepend the configured icon (if any) to a field's rendered value.
+--- @param field string
+--- @param value string
+--- @return string
+function M:_with_icon(field, value)
+    local icon = self._icons[field]
+    if not icon then return value end
+    return icon .. value
 end
 
 function M:update_status()
@@ -55,7 +88,7 @@ function M:update_status()
 
     -- Set name: "debug"
     if self._show.set_name and status.set_name then
-        parts[#parts + 1] = status.set_name
+        parts[#parts + 1] = self:_with_icon("set_name", status.set_name)
     end
 
     -- Project and configuration: "App/Debug" or just "App"
@@ -75,14 +108,14 @@ function M:update_status()
         if self._show.tool_key and status.tool_key then
             project_part = project_part .. " [" .. status.tool_key .. "]"
         end
-        parts[#parts + 1] = project_part
+        parts[#parts + 1] = self:_with_icon("project", project_part)
     elseif self._show.tool_key and status.tool_key then
-        parts[#parts + 1] = "[" .. status.tool_key .. "]"
+        parts[#parts + 1] = self:_with_icon("tool_key", "[" .. status.tool_key .. "]")
     end
 
     -- Profile key (full, not shown by default)
     if self._show.profile_key and status.profile_key then
-        parts[#parts + 1] = status.profile_key
+        parts[#parts + 1] = self:_with_icon("profile_key", status.profile_key)
     end
 
     -- Status (not shown by default)
