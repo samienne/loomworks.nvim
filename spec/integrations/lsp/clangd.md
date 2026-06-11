@@ -112,11 +112,16 @@ relies on the integration defaults:
 |------|--------|-----------------|
 | `--background-index-priority=low` | Indexer threads run at lower OS priority so they don't starve the foreground request loop | clangd 13 |
 | `--pch-storage=disk` | Store precompiled headers on disk rather than RAM. Single biggest RSS reduction on large TUs; pays a small I/O cost | universally supported |
+| `--clang-tidy` | Enable clang-tidy diagnostics. Costs ~2x memory per TU but the diagnostics are usually load-bearing; users with `.clang-tidy` files expect them to show up. Lives in a separate `ALWAYS_FLAGS` array (not memory-related) but applied via the same append step | universally supported |
 
 These are unconditional and not user-configurable for now: they are
-strict wins on the workloads loomworks targets — large C++ projects
-with multi-GiB clangd RSS. Each flag would still apply on a small
-codebase but the cost is negligible.
+strict wins (or expected-on features) on the workloads loomworks
+targets — large C++ projects with multi-GiB clangd RSS. Each flag
+would still apply on a small codebase but the cost is negligible.
+
+`--clang-tidy` can be disabled per-project by appending
+`--clang-tidy=false` to the user's `cmd` — LLVM `cl::opt` last-wins
+applies to booleans as well as `=value` flags.
 
 `--malloc-trim` is intentionally **not** in the set even though it
 would be a real memory win on Linux glibc. Older clangd builds reject
