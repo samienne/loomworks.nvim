@@ -321,6 +321,10 @@
 --- @field project string project key for the buffer
 --- @field configuration? string active configuration name
 --- @field status? loomworks.ConfigUnitState current state
+--- @field profile_state? string icon-friendly aggregate over the active
+---     profile's projects. One of: configuring, building, deleting,
+---     failed_configure, failed_build, built, configured, unconfigured,
+---     mixed. Nil when no active profile or no projects.
 --- @field diagnostic_severity? "warn"|"error" highest severity active in
 ---     the workspace, nil when there are no diagnostics. Workspace-level
 ---     (not buffer-scoped) — same value for every buffer in the workspace.
