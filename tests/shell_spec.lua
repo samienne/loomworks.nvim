@@ -43,6 +43,23 @@ describe("shell module", function()
         end)
     end)
 
+    describe("progress_parser", function()
+        it("returns the ninja parser unconditionally", function()
+            local parser = shell.progress_parser()
+            assert.is_function(parser)
+            -- Verify it actually behaves like the ninja parser: matches
+            -- the [N/M] pattern and silently no-ops on other lines.
+            local matched = parser("[3/10] Building CXX object foo.o")
+            assert.is_table(matched)
+            assert.equals(3, matched.current)
+            assert.equals(10, matched.total)
+
+            assert.is_nil(parser("make[1]: Entering directory ..."))
+            assert.is_nil(parser("error: something broke"))
+            assert.is_nil(parser(""))
+        end)
+    end)
+
     describe("detect", function()
         it("never auto-detects — any directory could be 'shell'", function()
             local tmp = make_tmp_dir()
