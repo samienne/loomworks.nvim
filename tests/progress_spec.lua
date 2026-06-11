@@ -62,6 +62,25 @@ describe("progress", function()
             assert.is_nil(parse("Building CXX object without bracket prefix"))
         end)
 
+        it("matches [N/M] after non-numeric bracketed prefixes", function()
+            -- Real-world build wrappers commonly prefix every line:
+            -- `[INFO] [NINJA] [10/20] Building ...`. The progress
+            -- signal is still the `[N/M]` regardless of the leader.
+            local r = parse("[INFO] [NINJA] [10/20] Building CXX object src/foo.o")
+            assert.is_not_nil(r)
+            assert.equals(10, r.current)
+            assert.equals(20, r.total)
+            assert.equals("Building CXX object foo.o", r.message)
+        end)
+
+        it("matches [N/M] after a timestamp prefix", function()
+            local r = parse("[2026-06-11 12:34:56] [3/9] Linking foo")
+            assert.is_not_nil(r)
+            assert.equals(3, r.current)
+            assert.equals(9, r.total)
+            assert.equals("Linking foo", r.message)
+        end)
+
     end)
 
     describe("registry", function()

@@ -1,6 +1,13 @@
 --- loomworks/progress/ninja.lua — Ninja progress parser.
---- Parses lines like "[2/10] Building CXX object src/main.cpp.o"
---- Used by cmake (with Ninja generator) and meson (Ninja is the default backend).
+--- Parses lines containing "[N/M] description" anywhere on the line.
+--- Used by cmake (Ninja generator), meson (Ninja backend), and the
+--- shell module for projects that drive ninja-flavored output.
+---
+--- The `[N/M]` token is matched anywhere, not just at start of line,
+--- because real-world build wrappers commonly prefix every line with
+--- their own tags — e.g., a script that pipes ninja through a
+--- formatter and emits `[INFO] [NINJA] [10/20] Building ...`. The
+--- progress signal is the `[N/M]` regardless of what comes before it.
 ---
 --- The trailing description gets a structural compaction: if the
 --- last whitespace-delimited token is a path (contains `/` or `\`),
@@ -17,12 +24,15 @@
 --- @param line string
 --- @return loomworks.ProgressUpdate|nil
 local function parse(line)
-    local current, total = line:match("^%[(%d+)/(%d+)%]")
+    -- Find `[N/M]` anywhere; the trailing text after it (after any
+    -- whitespace) is the message. Lua's `match` returns the leftmost
+    -- match, which is exactly what we want — non-numeric prefixes
+    -- like `[INFO]` can't accidentally match the `%d+/%d+` pattern.
+    local current, total, message =
+        line:match("%[(%d+)/(%d+)%]%s*(.*)$")
     if not current then return nil end
 
-    local message = line:match("^%[%d+/%d+%]%s+(.*)")
-
-    if message then
+    if message and message ~= "" then
         local prefix, last = message:match("^(.-)%s+(%S+)$")
         if last and last:find("[/\\]") then
             local basename = last:match("[^/\\]+$")
