@@ -523,11 +523,20 @@ local function start_one_task(overseer, task_def, on_complete)
             task:start()
         end
 
-        -- Protected start: catch errors so the Future always resolves/rejects
+        -- Protected start: catch errors so the Future always resolves/rejects.
+        -- Surface the error to the user too — without this, a throw between
+        -- `overseer.new_task()` and `task:start()` leaves the task wedged in
+        -- PENDING with no visible signal (the Future rejects but Operations
+        -- only observe ConfigUnit state changes, which never happen). The
+        -- silent failure made the original `progress_parser` bug invisible.
         local function safe_start()
             local ok, err = pcall(do_start)
             if not ok then
-                reject("task start failed: " .. tostring(err))
+                local msg = "loomworks: task start failed: " .. tostring(err)
+                vim.schedule(function()
+                    vim.notify(msg, vim.log.levels.ERROR)
+                end)
+                reject(msg)
             end
         end
 
