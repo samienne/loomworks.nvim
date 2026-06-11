@@ -483,7 +483,33 @@ local function start_one_task(overseer, task_def, on_complete)
             end)
 
             if progress_parser then
+                -- One-shot diagnostic: first time we see any output for
+                -- this task, report whether on_output_lines is firing
+                -- and whether the parser matches at least one of those
+                -- lines. Saves a "is the chain broken?" debug session
+                -- in `:messages`.
+                local diag_fired = false
                 task:subscribe("on_output_lines", function(_, lines)
+                    if not diag_fired then
+                        diag_fired = true
+                        local sample = lines[#lines] or "(no lines)"
+                        local matched = nil
+                        for i = #lines, 1, -1 do
+                            if progress_parser(lines[i]) then
+                                matched = lines[i]
+                                break
+                            end
+                        end
+                        local action_label = lw_meta.action or "?"
+                        vim.schedule(function()
+                            vim.notify(string.format(
+                                "loomworks/progress[%s]: on_output_lines fired, %d line(s); first match: %s; last line sample: %s",
+                                action_label, #lines,
+                                matched and ("YES → " .. matched) or "no",
+                                sample:sub(1, 100)),
+                                vim.log.levels.INFO)
+                        end)
+                    end
                     for i = #lines, 1, -1 do
                         local update = progress_parser(lines[i])
                         if update then
