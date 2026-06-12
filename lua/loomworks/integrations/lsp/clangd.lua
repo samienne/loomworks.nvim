@@ -42,40 +42,16 @@ local INITIAL_J = 12
 --- How many rotated nvim LSP log snapshots to keep.
 local LOG_KEEP = 5
 
---- Memory-friendly flags injected into every clangd cmd. Targeted at
---- large C++ codebases where stock clangd routinely peaks above a few
---- GiB per server. Appended after the user's args so they win against
---- any conflicting earlier flag (LLVM's `cl::opt` parser is last-wins
---- for both `=value` and boolean options).
+--- Unconditional memory-friendly flag. Not exposed in user options
+--- because it's a strict win and there's no realistic workload that
+--- regrets it. Users who actually need it off can append
+--- `--pch-storage=memory` via `extra_args` (LLVM cl::opt last-wins).
 ---
---- - `--background-index-priority=low`: indexer threads run at a lower
----   OS priority so they don't starve the foreground request loop.
----   Available since clangd 13.
---- - `--pch-storage=disk`: store precompiled headers on disk instead of
----   in memory. Single biggest RSS reduction for large translation
----   units; pays a small I/O cost we can afford. Universally supported.
----
---- `--malloc-trim` would also be a win for Linux glibc users on clangd
---- 16+, but it's rejected outright by older clangd builds (notably the
---- OpenHarmony SDK's clang-15-era clangd). When we add a user-config
---- path for extra flags this can return as opt-in.
-local MEMORY_FLAGS = {
-    "--background-index-priority=low",
-    "--pch-storage=disk",
-}
-
---- Always-injected feature flags. Distinct from MEMORY_FLAGS so the
---- rationale stays clean — these aren't memory wins, they're features
---- we want on regardless of whether the user passed their own `cmd`.
----
---- - `--clang-tidy`: enable clang-tidy diagnostics. Costs ~2x memory
----   per TU but the diagnostics are usually load-bearing on real
----   projects, and users who already configure clang-tidy via
----   `.clang-tidy` files expect them to show up. LLVM `cl::opt`
----   last-wins still applies: a user who wants it off can append
----   `--clang-tidy=false` to their own cmd.
+--- `--malloc-trim` would also be a win for Linux glibc users on
+--- clangd 16+, but older builds reject unknown args outright. Modern
+--- clangd users can add it via `extra_args`.
 local ALWAYS_FLAGS = {
-    "--clang-tidy",
+    "--pch-storage=disk",
 }
 
 --- Expand ${ENV_VAR} patterns. Leaves unresolved refs unchanged.
@@ -241,11 +217,26 @@ function M.cmd_factory(base_cmd)
         local dir = resolve_compile_commands_dir(entry)
         if dir then args[#args + 1] = "--compile-commands-dir=" .. dir end
 
-        -- Memory-friendly defaults for large codebases. Appended after
-        -- the user's args so we win any last-wins conflict; see
-        -- MEMORY_FLAGS docstring for rationale on each flag.
-        for _, f in ipairs(MEMORY_FLAGS) do args[#args + 1] = f end
+        -- Always-on (no user opt-out). See ALWAYS_FLAGS docstring.
         for _, f in ipairs(ALWAYS_FLAGS) do args[#args + 1] = f end
+
+        -- User-configurable flags. Each emitted with an explicit
+        -- value so the appended form wins any earlier occurrence
+        -- in `base_cmd` via LLVM cl::opt last-wins, leaving the
+        -- resolved cmd self-describing. Defaults applied in
+        -- Workspace:get_lsp_options when keys are missing.
+        local ok_lw, lw = pcall(require, "loomworks")
+        local opts = ok_lw and lw.get_lsp_options
+            and lw.get_lsp_options("clangd") or {
+                clang_tidy = true,
+                background_index = true,
+                background_index_priority = "low",
+                extra_args = {},
+            }
+        args[#args + 1] = "--clang-tidy=" .. tostring(opts.clang_tidy ~= false)
+        args[#args + 1] = "--background-index=" .. tostring(opts.background_index ~= false)
+        args[#args + 1] = "--background-index-priority="
+            .. (opts.background_index_priority or "low")
 
         -- OOM-adaptive `-j` injection. State is created lazily on the
         -- first crash (in on_unexpected_exit); first run for a root has
@@ -258,6 +249,15 @@ function M.cmd_factory(base_cmd)
         local state = _j_state[root_key]
         if state and state.current_j then
             args = with_j(args, state.current_j)
+        end
+
+        -- User escape hatch: appended last so any flag the user puts
+        -- here wins everything (including our own typed knobs). Skip
+        -- non-string entries defensively in case validation missed.
+        if opts.extra_args and type(opts.extra_args) == "table" then
+            for _, a in ipairs(opts.extra_args) do
+                if type(a) == "string" then args[#args + 1] = a end
+            end
         end
 
         if config.root_dir then
@@ -470,6 +470,32 @@ function M.on_workspace_changed()
     if #clients == 0 then return end
     vim.notify("loomworks: restarting " .. #clients .. " clangd client(s) for workspace integration")
     restart_clients(clients)
+end
+
+--- Restart every clangd client when a user option that affects the
+--- cmd line changes. The new cmd is computed by `cmd_factory` on the
+--- next start; we don't need to teach this function which option
+--- changed. Throttled to one restart per nvim tick so a burst of
+--- toggles (e.g. the user cycling priority through values) doesn't
+--- thrash clangd processes.
+--- @param payload { server: string, key: string, value: any }
+function M.on_lsp_options_changed(payload)
+    if not payload or payload.server ~= "clangd" then return end
+    local clients = vim.lsp.get_clients({ name = "clangd" })
+    if #clients == 0 then return end
+    -- Coalesce bursts: defer until end-of-tick so multiple set calls
+    -- in the same UI handler trigger a single restart.
+    if M._restart_pending then return end
+    M._restart_pending = true
+    vim.schedule(function()
+        M._restart_pending = false
+        local current = vim.lsp.get_clients({ name = "clangd" })
+        if #current > 0 then
+            vim.notify("loomworks: restarting clangd for option change ("
+                .. payload.key .. ")")
+            restart_clients(current)
+        end
+    end)
 end
 
 -- ---------------------------------------------------------------------------

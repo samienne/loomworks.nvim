@@ -591,7 +591,8 @@ metadata lives here. All UI mutations land here.
   "profiles": { ... },
   "intent": { ... },
   "default_target": { ... },
-  "device": { ... }
+  "device": { ... },
+  "lsp": { ... }
 }
 ```
 
@@ -603,6 +604,17 @@ The `device` field maps profile keys to device serial strings:
 ```
 
 The `intent` field stores explicit per-item intent overrides (see §2.4).
+
+The `lsp` field stores per-server option overrides. Keys are server
+names (e.g. `clangd`); values are option tables whose accepted shape
+is defined by the integration's spec under `spec/integrations/lsp/`.
+All fields within a server table are optional — omitted fields fall
+back to the integration's hardcoded defaults. Saved on every
+mutation (toggle from the status page) so changes survive nvim
+restarts. Workspace-wide, not per-project: a single clangd binary
+serves every buffer in the workspace regardless of which project
+owns it. See `spec/integrations/lsp/clangd.md` §12 for clangd's
+specific schema and how options map to cmd flags.
 
 - Always gitignored.
 - Written on every UI mutation (add/edit/remove project, config, profile, etc.).

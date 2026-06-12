@@ -432,6 +432,9 @@ end
 --- @field _default_target_data table|nil raw default_target map from user.json
 --- @field _device_data table|nil raw device map from user.json (profile_key -> serial)
 --- @field _debug_settings table|nil debug settings from user.json (e.g. adapters)
+--- @field _lsp_options table<string, table>|nil per-server LSP option
+---     overrides from user.json (server name -> options table). Empty
+---     map is normalized to nil so `_serialize_user` can elide it.
 --- @field _active_set loomworks.ActiveSet|nil
 --- @field _modules loomworks.Module[] module domain objects
 --- @field _config_units loomworks.ConfigUnit[] all config units
@@ -475,6 +478,7 @@ function Workspace.new(core, data)
     self._default_target_data = nil
     self._device_data = nil
     self._debug_settings = nil
+    self._lsp_options = nil
     self._config_units = {}
     self._config_sets = {}
     self._profiles = {}
@@ -776,6 +780,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         default_target_data = raw_user.default_target
         device_data = raw_user.device
         self._debug_settings = raw_user.debug
+        self._lsp_options = self:_validate_lsp_options(raw_user.lsp)
         -- Store user overlay (projects/configuration_sets/profiles from user.json)
         user_overlay = {}
         if raw_user.projects then user_overlay.projects = raw_user.projects end
@@ -4162,6 +4167,9 @@ function Workspace:_serialize_user()
     -- Debug settings (pass-through)
     if self._debug_settings then data.debug = self._debug_settings end
 
+    -- LSP options (pass-through; populated by set_lsp_option)
+    if self._lsp_options then data.lsp = self._lsp_options end
+
     -- SDKs: persist resolved paths and versions
     if #self._sdks > 0 then
         local sdks = {}
@@ -4300,6 +4308,154 @@ function Workspace:set_debug_adapter(module_type, adapter_name)
     end
     self._debug_settings.adapters[module_type] = adapter_name
     self:_save_user()
+end
+
+-- ---------------------------------------------------------------------------
+-- LSP options (user.json `lsp` block)
+-- ---------------------------------------------------------------------------
+
+--- Per-server defaults applied when a key is missing from user.json.
+--- Currently only clangd has a schema; this table can grow as other
+--- integrations expose their own knobs.
+--- @type table<string, table>
+local LSP_OPTION_DEFAULTS = {
+    clangd = {
+        clang_tidy = true,
+        background_index = true,
+        background_index_priority = "low",
+        extra_args = {},
+    },
+}
+
+--- Per-server validation schemas. `keys` lists accepted field names
+--- with their expected Lua type; `enums` constrains string-typed
+--- fields to a fixed set. Anything not listed is dropped with a
+--- WARN log.
+--- @type table<string, { keys: table<string, string>, enums: table<string, string[]> }>
+local LSP_OPTION_SCHEMAS = {
+    clangd = {
+        keys = {
+            clang_tidy = "boolean",
+            background_index = "boolean",
+            background_index_priority = "string",
+            extra_args = "table",
+        },
+        enums = {
+            background_index_priority = { "low", "normal", "background" },
+        },
+    },
+}
+
+--- Validate a raw `lsp` block parsed from user.json. Unknown server
+--- names pass through (the integration may not have been registered
+--- yet); unknown / mistyped fields within a server table are stripped
+--- with a WARN notification so the user sees what was dropped.
+--- @param raw table|nil
+--- @return table<string, table>|nil normalized, or nil when empty
+function Workspace:_validate_lsp_options(raw)
+    if type(raw) ~= "table" or not next(raw) then return nil end
+    local out = {}
+    for server, opts in pairs(raw) do
+        if type(opts) ~= "table" then
+            self._core._deps.notify(
+                string.format("loomworks: user.json lsp.%s is not a table; ignoring", server),
+                vim.log.levels.WARN)
+        else
+            local schema = LSP_OPTION_SCHEMAS[server]
+            local clean = {}
+            for key, value in pairs(opts) do
+                if not schema then
+                    -- Unknown server: keep verbatim. The integration
+                    -- will validate when it reads, if/when it loads.
+                    clean[key] = value
+                else
+                    local expect = schema.keys[key]
+                    if not expect then
+                        self._core._deps.notify(
+                            string.format("loomworks: user.json lsp.%s.%s is unknown; ignoring",
+                                server, key),
+                            vim.log.levels.WARN)
+                    elseif type(value) ~= expect then
+                        self._core._deps.notify(
+                            string.format(
+                                "loomworks: user.json lsp.%s.%s expects %s, got %s; ignoring",
+                                server, key, expect, type(value)),
+                            vim.log.levels.WARN)
+                    elseif schema.enums[key] then
+                        local allowed = false
+                        for _, v in ipairs(schema.enums[key]) do
+                            if value == v then allowed = true; break end
+                        end
+                        if not allowed then
+                            self._core._deps.notify(
+                                string.format(
+                                    "loomworks: user.json lsp.%s.%s = %q is not one of %s; using default",
+                                    server, key, value, table.concat(schema.enums[key], "|")),
+                                vim.log.levels.WARN)
+                        else
+                            clean[key] = value
+                        end
+                    elseif key == "extra_args" then
+                        -- Array of strings; drop non-strings silently.
+                        local args = {}
+                        for _, a in ipairs(value) do
+                            if type(a) == "string" then args[#args + 1] = a end
+                        end
+                        clean[key] = args
+                    else
+                        clean[key] = value
+                    end
+                end
+            end
+            if next(clean) then out[server] = clean end
+        end
+    end
+    if next(out) == nil then return nil end
+    return out
+end
+
+--- Get the effective LSP options for a server with defaults applied.
+--- Returns a fresh table on each call — callers may mutate freely
+--- without affecting persisted state.
+--- @param server string e.g. "clangd"
+--- @return table options merged with LSP_OPTION_DEFAULTS[server]
+function Workspace:get_lsp_options(server)
+    local defaults = LSP_OPTION_DEFAULTS[server] or {}
+    local out = vim.deepcopy(defaults)
+    local stored = self._lsp_options and self._lsp_options[server]
+    if stored then
+        for key, value in pairs(stored) do
+            out[key] = value
+        end
+    end
+    return out
+end
+
+--- Set a single LSP option for a server and persist to user.json.
+--- Stores only when the value differs from the integration default,
+--- so loading + saving an untouched workspace doesn't bloat user.json.
+--- @param server string
+--- @param key string
+--- @param value any
+function Workspace:set_lsp_option(server, key, value)
+    local defaults = LSP_OPTION_DEFAULTS[server] or {}
+    if not self._lsp_options then self._lsp_options = {} end
+    if not self._lsp_options[server] then self._lsp_options[server] = {} end
+    if defaults[key] ~= nil and vim.deep_equal(defaults[key], value) then
+        -- Storing the default would be redundant; drop the entry.
+        self._lsp_options[server][key] = nil
+        if next(self._lsp_options[server]) == nil then
+            self._lsp_options[server] = nil
+        end
+        if next(self._lsp_options) == nil then
+            self._lsp_options = nil
+        end
+    else
+        self._lsp_options[server][key] = value
+    end
+    self:_save_user()
+    self._core._deps.events.emit("lsp_options_changed",
+        { server = server, key = key, value = value })
 end
 
 -- ---------------------------------------------------------------------------

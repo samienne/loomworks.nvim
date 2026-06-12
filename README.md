@@ -30,11 +30,12 @@ typescript is a shim.
   tasks run under `ionice -c 3 nice -n 10` so the editor and clangd stay
   responsive during long builds
 - **clangd integration** — auto-injects `--compile-commands-dir`,
-  memory-friendly defaults (`--background-index-priority=low`,
-  `--pch-storage=disk`) + `--clang-tidy`, restarts clangd when switching
-  profiles,
-  OOM-adaptive `-j` step-down with nvim LSP log rotation, throttle
-  4 attempts / 5min, UI Reset action
+  always-on `--pch-storage=disk`, user-toggleable `--clang-tidy` /
+  `--background-index` / priority (low/normal/background) plus an
+  `extra_args` escape hatch — all editable from the status page LSP
+  section, persisted to user.json, clangd restarts on change. Restarts
+  clangd on profile/SDK switch, OOM-adaptive `-j` step-down with nvim
+  LSP log rotation, throttle 4 attempts / 5min, UI Reset action
 - **Lualine component** — winbar showing active profile/project/configuration
 - **Live file watching** — reloads automatically when config files change
 - **Status page** — `:LoomworksInfo` shows workspace state with folding, status

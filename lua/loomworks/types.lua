@@ -81,6 +81,9 @@
 --- @field _meta { version: number }
 --- @field active_profile? string
 --- @field default_target? table<string, table> profile_key -> descriptor
+--- @field lsp? table<string, table> per-server option overrides
+---     (server name -> options). Schema per server lives in
+---     spec/integrations/lsp/<server>.md. See spec §2.2.
 
 --- Parsed loomworks.cache.json structure.
 --- @class loomworks.CacheData

@@ -368,6 +368,21 @@ function M.cancel_tasks_for_profile(profile)
     return core:cancel_tasks_for_profile(profile)
 end
 
+--- Get effective LSP options for a server (defaults applied).
+--- @param server string
+--- @return table
+function M.get_lsp_options(server)
+    return core:get_lsp_options(server)
+end
+
+--- Set a single LSP option and persist to user.json.
+--- @param server string
+--- @param key string
+--- @param value any
+function M.set_lsp_option(server, key, value)
+    core:set_lsp_option(server, key, value)
+end
+
 -- ---------------------------------------------------------------------------
 -- Task results
 -- ---------------------------------------------------------------------------

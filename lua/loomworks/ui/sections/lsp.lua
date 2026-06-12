@@ -2,7 +2,105 @@
 ---
 --- Shows resolved LSP configuration for loomworks-managed projects:
 --- active clients, command line args, compile_commands_dir, and
---- per-integration reset/throttle status.
+--- per-integration reset/throttle status. Above the per-project list
+--- a "Server defaults" group surfaces user-editable knobs (currently
+--- clangd's clang-tidy / background-index / priority) backed by
+--- `Workspace:set_lsp_option` — changes persist to user.json and
+--- trigger a clangd restart on the next event tick.
+
+local PRIORITY_VALUES = { "low", "normal", "background" }
+
+--- Cycle to the next value in a fixed enum, wrapping to the start.
+--- @param current string
+--- @param values string[]
+--- @return string
+local function cycle(current, values)
+    for i, v in ipairs(values) do
+        if v == current then return values[(i % #values) + 1] end
+    end
+    return values[1]
+end
+
+--- Render the clangd-options block. Each row toggles or cycles on
+--- Enter and writes through `lw.set_lsp_option`, which persists
+--- user.json synchronously and emits `lsp_options_changed` so the
+--- integration restarts the client.
+--- @param tree loomworks.Tree
+--- @param lw table loomworks public API
+local function render_clangd_defaults(tree, lw)
+    if not lw.get_lsp_options then return end
+    local opts = lw.get_lsp_options("clangd")
+    tree:node("Server defaults (clangd)", {
+        fold_key = "lsp:defaults:clangd",
+    }, function()
+        local refresh = function() require("loomworks.ui.status").refresh() end
+
+        tree:item(string.format("▸ clang-tidy: %s",
+                opts.clang_tidy and "on" or "off"), {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = function()
+                lw.set_lsp_option("clangd", "clang_tidy", not opts.clang_tidy)
+                refresh()
+            end,
+        })
+        tree:item(string.format("▸ background-index: %s",
+                opts.background_index and "on" or "off"), {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = function()
+                lw.set_lsp_option("clangd", "background_index",
+                    not opts.background_index)
+                refresh()
+            end,
+        })
+        tree:item(string.format("▸ priority: %s",
+                opts.background_index_priority or "low"), {
+            hl = "LoomworksActionable",
+            direct = true,
+            on_enter = function()
+                local next_v = cycle(opts.background_index_priority or "low",
+                    PRIORITY_VALUES)
+                lw.set_lsp_option("clangd", "background_index_priority", next_v)
+                refresh()
+            end,
+        })
+        local extra = opts.extra_args or {}
+        local joined = #extra > 0 and table.concat(extra, " ") or ""
+        local display = joined ~= "" and joined or "(unset)"
+        local hl = joined ~= "" and "LoomworksActionable" or "Comment"
+        -- Mirrors the cmd_array editor in sections/projects.lua: one
+        -- prompt, space-separated tokens, empty → clear. Tokens with
+        -- internal whitespace need to be hand-edited in user.json for
+        -- now (matches the project-side limitation).
+        tree:item({
+            { "extra args: ", "LoomworksSection" },
+            { display, hl },
+        }, {
+            hl = hl,
+            direct = true,
+            enter_label = "Edit clangd extra args",
+            on_enter = function()
+                vim.ui.input({
+                    prompt = "clangd extra args (space-separated): ",
+                    default = joined,
+                }, function(val)
+                    if val == nil then return end
+                    local parts = {}
+                    for tok in val:gmatch("%S+") do
+                        parts[#parts + 1] = tok
+                    end
+                    lw.set_lsp_option("clangd", "extra_args", parts)
+                    refresh()
+                end)
+            end,
+            on_delete = (joined ~= "") and function()
+                lw.set_lsp_option("clangd", "extra_args", {})
+                refresh()
+            end or nil,
+        })
+    end)
+end
 
 --- Render the LSP section.
 --- @param tree loomworks.Tree
@@ -16,6 +114,9 @@ return function(tree, ctx)
 
     tree:blank()
     tree:leaf("LSP", "Title")
+    tree:blank()
+
+    render_clangd_defaults(tree, ctx.lw)
     tree:blank()
 
     for _, entry in ipairs(status) do
