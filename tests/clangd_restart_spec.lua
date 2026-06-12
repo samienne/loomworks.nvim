@@ -36,6 +36,38 @@ describe("clangd on_unexpected_exit", function()
         clangd = require("loomworks.integrations.lsp.clangd")
     end)
 
+    describe("with_j argv shape", function()
+        --- Regression: previously we emitted "-j" .. tostring(n) as a
+        --- single argv element ("-j12"). clangd's cl::opt parser then
+        --- rejected it with:
+        ---   "for the -j option: may not occur within a group!"
+        --- The right shape is two argv elements (-j, N) so the parser
+        --- sees the value as a separate token. -j=N would also work
+        --- but we use the spaced form to match `clangd --help`.
+        it("emits -j and N as two separate argv elements", function()
+            local out = clangd._with_j_for_tests({ "clangd" }, 12)
+            assert.same({ "clangd", "-j", "12" }, out)
+        end)
+
+        it("does not concatenate -j with its value", function()
+            local out = clangd._with_j_for_tests({ "clangd" }, 6)
+            for _, arg in ipairs(out) do
+                assert.is_nil(arg:match("^%-j%d"),
+                    "found glued '-jN' argv element: " .. arg
+                        .. " — clangd's cl::opt parser rejects this")
+            end
+        end)
+
+        it("appends -j to the end so it overrides earlier values", function()
+            local out = clangd._with_j_for_tests(
+                { "clangd", "-j", "24", "--background-index" }, 6)
+            -- last -j wins per LLVM cl::opt; the new one must be at
+            -- the tail so any preceding user-supplied -j is overridden.
+            assert.equals("-j", out[#out - 1])
+            assert.equals("6", out[#out])
+        end)
+    end)
+
     describe("OOM detection", function()
         it("seeds -j 12 on the first OOM (Linux SIGKILL)", function()
             local d = clangd.on_unexpected_exit(exit_info({ signal = 9 }))

@@ -101,14 +101,25 @@ end
 --- option wins, so appending always overrides cleanly. The first start
 --- never appends (no adaptive state yet), so the user's cmd reaches
 --- clangd untouched until the first OOM kicks in.
+---
+--- The flag MUST be emitted as two argv elements (`-j`, `N`) or a
+--- single `=`-joined element (`-j=N`). The concatenated form `-jN`
+--- triggers a clangd `cl::opt` parse error: "for the -j option: may
+--- not occur within a group!" — clangd treats the digits as a glued
+--- option group rather than the value.
 --- @param args string[]
 --- @param j integer
 --- @return string[]
 local function with_j(args, j)
     local out = vim.list_extend({}, args)
-    out[#out + 1] = "-j" .. tostring(j)
+    out[#out + 1] = "-j"
+    out[#out + 1] = tostring(j)
     return out
 end
+
+--- Test-only handle on the `-j` formatter. Exposed so we can assert
+--- the argv shape without spinning up a real clangd through cmd_factory.
+M._with_j_for_tests = with_j
 
 -- ---------------------------------------------------------------------------
 -- OOM detection
