@@ -10,30 +10,86 @@ function M.register(id, mod)
     registry[id] = mod
 end
 
+local API = require("loomworks.api_versions")
+
+--- Track modules whose load attempt failed (file present but
+--- contract-mismatched or version-mismatched) so we don't spam the
+--- same warning every time M.get is called for that id.
+--- @type table<string, true>
+local rejected = {}
+
+--- Notify the user once that a module file failed the load check.
+--- Routed through vim.notify so it shows on the first nvim load
+--- the mismatch happens; subsequent gets stay silent.
+--- @param id string
+--- @param reason string
+local function reject(id, reason)
+    if rejected[id] then return end
+    rejected[id] = true
+    vim.notify(
+        "loomworks: module '" .. id .. "' will not load: " .. reason,
+        vim.log.levels.ERROR)
+end
+
 --- Get the module handler for a project type, or nil.
 --- @param id string
 --- @return table|nil
 function M.get(id)
-    if not registry[id] then
-        -- Try to load it
-        local ok, mod = pcall(require, "loomworks.modules." .. id)
-        if ok and type(mod) == "table" and mod.id then
-            registry[id] = mod
-        end
+    if registry[id] then return registry[id] end
+    if rejected[id] then return nil end
+    local ok, mod = pcall(require, "loomworks.modules." .. id)
+    if not ok then
+        -- File not present on rtp (or load-time error). Not a
+        -- "rejection" we want to warn about — it just means no
+        -- plugin ships this module. Stay quiet.
+        return nil
     end
-    return registry[id]
+    if type(mod) ~= "table" then
+        reject(id, "module did not return a table")
+        return nil
+    end
+    if mod.id ~= id then
+        reject(id, "module declares id='" .. tostring(mod.id)
+            .. "' but file is loomworks.modules." .. id)
+        return nil
+    end
+    if mod.api_version ~= API.module then
+        reject(id, "module declares api_version="
+            .. tostring(mod.api_version)
+            .. " but loomworks core requires "
+            .. tostring(API.module)
+            .. ". Update the module's plugin or pin a compatible "
+            .. "loomworks.nvim. No backwards compatibility — see "
+            .. "loomworks/api_versions.lua.")
+        return nil
+    end
+    registry[id] = mod
+    return mod
 end
 
 --- Get all registered module IDs.
+---
+--- Discovery walks the runtime path for `lua/loomworks/modules/*.lua`.
+--- Any plugin (built-in or third-party) that ships a file at that
+--- import path appears here. Mirrors the SDK provider registry in
+--- `loomworks/sdks/init.lua` so the registration mechanism is the same
+--- whichever side of the boundary the module lives on.
 --- @return string[]
 function M.list()
-    -- Ensure built-in modules are loaded
-    for _, id in ipairs({ "cmake", "harmony", "meson", "shell", "typescript" }) do
-        M.get(id)
-    end
     local ids = {}
-    for id in pairs(registry) do
-        ids[#ids + 1] = id
+    local seen = {}
+    local files = vim.api.nvim_get_runtime_file("lua/loomworks/modules/*.lua", true)
+    for _, path in ipairs(files) do
+        local id = path:match("modules[/\\](.+)%.lua$")
+        if id and id ~= "init" and not seen[id] then
+            seen[id] = true
+            -- Lazy-load so an invalid module doesn't poison list()
+            -- itself; M.get drops modules whose require fails or whose
+            -- module table is missing the required `id` field.
+            if M.get(id) then
+                ids[#ids + 1] = id
+            end
+        end
     end
     table.sort(ids)
     return ids

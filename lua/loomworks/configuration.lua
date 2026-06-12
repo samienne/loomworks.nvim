@@ -125,8 +125,8 @@ Configuration.split_canonical = split_canonical
 ---   * `auto_configs`  bare-keyed table of the module's auto-gens.
 ---     Each entry may carry `prefix` in its data — if present, it
 ---     wins. Otherwise the module's id is used as the prefix
----     (harmony → "harmony:default-entry-arm64-v8a" when the module
----     doesn't opt into "auto:").
+---     (cmake → "cmake:Debug" when the module doesn't opt into
+---     "auto:").
 ---   * `user_overrides` user.json / loomworks.json
 ---     type_config.configurations dict. Keys must already be
 ---     validated free of `:` (enforced in config.validate). Each

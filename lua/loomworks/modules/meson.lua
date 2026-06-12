@@ -26,6 +26,7 @@ local uv = vim.uv or vim.loop
 local is_win = vim.fn.has("win32") == 1
 
 M.id = "meson"
+M.api_version = 1
 M.has_keyed_tools = true
 M.has_options = true
 M.languages = { "c++", "c" }

@@ -5,7 +5,7 @@ local Configuration = require("loomworks.configuration")
 
 --- @class loomworks.Project
 --- @field key string project key
---- @field type string module type ("cmake", "harmony", "typescript")
+--- @field type string module type ("cmake", "typescript")
 --- @field path? string relative path from workspace root
 --- @field type_config? table module-specific configuration (options, configurations, etc.)
 --- @field launch? table<string, table> launch configurations

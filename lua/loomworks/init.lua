@@ -20,22 +20,6 @@ local auto_load_mode = "auto"
 --- @type table
 local task_output_win = {}
 
---- On-device hilog level (`-L` flag). One of `D|I|W|E|F`. The harmony
---- module passes this to `device_log()` so noisy debug lines never
---- cross the wire. Configurable at setup or at runtime via
---- :LoomworksDeviceLogLevel.
---- @type "D"|"I"|"W"|"E"|"F"
-local device_log_level = "I"
-
---- When true (the default), session_tracker passes `-P <pid>` to
---- hilog so the stream is limited to the app's own process. Cuts
---- volume dramatically and matches DevEco Studio's "All logs of
---- selected App" behaviour. Set false in setup() if your app spawns
---- helper processes whose logs you need; the client-side prefilter
---- (pid OR proc-contains-bundle) then becomes the only PID guard.
---- @type boolean
-local device_log_strict_pid = true
-
 --- Access the underlying core instance (for advanced use / testing).
 --- @return loomworks.Core
 function M._core()
@@ -102,7 +86,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, device_log_level?: "D"|"I"|"W"|"E"|"F", device_log_strict_pid?: boolean, progress_max_width?: integer }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -115,20 +99,6 @@ function M.setup(opts)
     end
     if opts and opts.task_output_win then
         task_output_win = opts.task_output_win
-    end
-    if opts and opts.device_log_level then
-        local harmony = require("loomworks.modules.harmony")
-        if harmony.HILOG_LEVELS and harmony.HILOG_LEVELS[opts.device_log_level] then
-            device_log_level = opts.device_log_level
-        else
-            vim.notify(
-                "loomworks: invalid device_log_level '" .. tostring(opts.device_log_level)
-                    .. "' — must be one of D|I|W|E|F",
-                vim.log.levels.WARN)
-        end
-    end
-    if opts and opts.device_log_strict_pid ~= nil then
-        device_log_strict_pid = opts.device_log_strict_pid and true or false
     end
 
     -- Configure log level
@@ -173,36 +143,6 @@ end
 --- @return string|false
 function M._auto_load_mode()
     return auto_load_mode
-end
-
---- Get the current on-device hilog level.
---- @return "D"|"I"|"W"|"E"|"F"
-function M.get_device_log_level()
-    return device_log_level
-end
-
---- @return boolean true when session_tracker should pass -P pid to hilog
-function M.get_device_log_strict_pid()
-    return device_log_strict_pid
-end
-
---- Set the device-log level. Applied as the **client-side soft
---- filter** level: the live ring buffer re-renders without restarting
---- hilog, so loosening the level recovers history that's already in
---- the buffer (the hilog stream itself is unfiltered by level — see
---- spec/modules/harmony.md §6.1).
---- @param level "D"|"I"|"W"|"E"|"F"
---- @return boolean ok, string|nil err
-function M.set_device_log_level(level)
-    local harmony = require("loomworks.modules.harmony")
-    if not (harmony.HILOG_LEVELS and harmony.HILOG_LEVELS[level]) then
-        return false, "invalid level '" .. tostring(level) ..
-            "' — must be one of D|I|W|E|F"
-    end
-    device_log_level = level
-    local ok, dl = pcall(require, "loomworks.device_log")
-    if ok and dl.set_level then dl.set_level(level) end
-    return true
 end
 
 --- Get the merged active configuration set.

@@ -306,8 +306,8 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
                 -- New flat array shape: ["key1", "key2"]. Each key
                 -- resolves once per module that has it in its
                 -- registry — multiple modules can share a key (e.g.
-                -- a kit-from-SDK that's materialized in both cmake's
-                -- and harmony's tool registry).
+                -- a kit-from-SDK that's materialized in multiple
+                -- modules' tool registries).
                 for _, tool_key in ipairs(data.tools) do
                     for _, mod in pairs(ctx.modules) do
                         if not tool_objs[mod] then

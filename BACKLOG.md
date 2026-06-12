@@ -59,51 +59,6 @@ leaving it unset gets the integration's default behavior.
 
 ---
 
-## Device log streaming: sluggishness persists after stream ends
-
-After a harmony device session ends, editor responsiveness stays
-degraded until the user manually disposes the hilog task via
-`:OverseerOpen`. Closing our device_log bottom-split doesn't fix
-it; `session_tracker.stop_run` already calls `task:stop()` +
-`task:dispose()` on tear-down, so either that path isn't firing
-or the dispose doesn't fully clean up.
-
-Candidate causes to investigate:
-
-- Overseer's JobstartStrategy still creates a hidden output buffer
-  even with `use_terminal = false`, and appends every stdout chunk
-  via `nvim_buf_set_lines`. Long sessions can produce
-  hundreds-of-thousands-of-line buffers. If any statusline /
-  winbar / autocmd pattern iterates listed buffers (or walks lines
-  in them), that buffer becomes a global toll until disposed.
-- Subscriptions registered via `task:subscribe("on_output_lines", ...)`
-  capture the device_log view closure. If overseer's bookkeeping
-  keeps the handler after complete, the closure stays pinned.
-- An event / autocmd on the task buffer might still fire after
-  process exit.
-
-Options if it comes up again:
-
-- **Auto-dispose on stream end.** When `on_complete` fires (or
-  when `device_log.stop` is called) schedule the task for
-  disposal. Users lose post-mortem raw-stream access but gain a
-  clean editor; our ring-buffered view already keeps the last
-  5000 parsed records for inspection.
-- **Truncate the overseer buffer periodically** to a rolling
-  window (keep memory bounded without disposing the task).
-- **Bypass overseer entirely** for the hilog invocation — spawn
-  via `vim.uv.spawn` with a pipe, read lines directly, expose
-  stop via `device_log.stop_session`. Loses the "one task list"
-  story for this task type but eliminates the buffer-growth
-  problem.
-
-Diagnostic first step when someone hits this: check the task's
-buffer line count during a sluggish session (`:OverseerOpen` →
-inspect the task's output buffer) to confirm the buffer-size
-hypothesis before changing anything.
-
----
-
 ## MSVC toolchain support for the meson module
 
 Meson builds fine with MSVC (`cl.exe`) on the ninja backend, but only
@@ -178,9 +133,9 @@ cleanly.
 `lua/loomworks/debug.lua` currently hardcodes behavior for nvim-dap and
 has static tables of known adapters per language (`DEFAULT_ADAPTERS`,
 `KNOWN_ADAPTERS`, `JS_ADAPTERS`). To let new adapters plug in without
-editing core — and to give orchestration-heavy adapters (harmony
-lldb-server-over-hdc, future Ark CDP bridges) a clean home — mirror
-the LSP registry pattern.
+editing core — and to give orchestration-heavy adapters (remote
+debug-server bridges, on-device protocol bridges) a clean home —
+mirror the LSP registry pattern.
 
 ### Registry shape
 
@@ -189,7 +144,7 @@ lua/loomworks/debug.lua               — dispatcher + registry
 lua/loomworks/integrations/debug/codelldb.lua
 lua/loomworks/integrations/debug/cppdbg.lua
 lua/loomworks/integrations/debug/pwa_node.lua
-lua/loomworks/integrations/debug/harmony_lldb.lua   (once landed)
+lua/loomworks/integrations/debug/<vendor>.lua       (third-party)
 ```
 
 Each integration self-registers:
@@ -204,8 +159,8 @@ and exposes:
 - `M.build_config(spec, workspace) -> dap_config` — shape the DAP
   config (current `JS_ADAPTERS` transform for pwa-node lives here)
 - `M.setup(spec, callbacks) -> teardown_fn|nil` — optional pre-launch
-  orchestration (push lldb-server, `hdc fport`, etc.); returns a
-  teardown closure invoked on session end
+  orchestration (push a debug-server, set up port forwarding, etc.);
+  returns a teardown closure invoked on session end
 - `M.attach_pid_transform(spec, pid)` — optional, for multi-adapter
   attach to a PID discovered from the primary session
 - `M.default_enable = true|false` — whether core auto-picks this
@@ -225,10 +180,11 @@ and exposes:
 
 ### Forcing function
 
-The harmony native-device debug work is the natural second adapter
-that validates the design. Land this refactor first as a pure-internal
-branch (no behavior change; existing codelldb/cppdbg/pwa-node tests
-still pass), then build harmony_lldb.lua on top.
+The first device-native debug adapter (shipped in a separate plugin)
+will be the natural second adapter that validates the design. Land
+this refactor first as a pure-internal branch (no behavior change;
+existing codelldb/cppdbg/pwa-node tests still pass), then build the
+device adapter on top.
 
 ### Out of scope here
 
@@ -240,9 +196,9 @@ still pass), then build harmony_lldb.lua on top.
 ## Streaming device scan into picker
 
 Currently `Workspace:scan_devices()` waits for all modules' `list_devices`
-callbacks to complete before opening the picker. On slow systems, `hdc
-list targets` can take a couple of seconds, leaving the user staring at
-"scanning for devices..." before the picker appears.
+callbacks to complete before opening the picker. On slow systems, the
+underlying connector tool can take a couple of seconds, leaving the
+user staring at "scanning for devices..." before the picker appears.
 
 Ideally the picker would open immediately with results streaming in. This
 requires a dynamic-source picker — not supported by `vim.ui.select`.
@@ -255,199 +211,6 @@ Options to investigate:
   opens the picker
 
 Same treatment would benefit kit/SDK pickers and any other async source.
-
----
-
-## Native device debug (HarmonyOS via lldb-server)
-
-Extend session_tracker's device path to support `mode = "debug"` for
-device targets — currently device targets always run in launch mode.
-Scope: **native C++ only** for v1. ArkTS step-through is a separate,
-much larger effort (see "ArkTS debugger via CDP" below).
-
-### Activation
-
-- HAP must be a debug build with `debuggable: true` in `module.json5`.
-  The harmony module's debug configurations set this already; this
-  needs to be confirmed empirically, not assumed.
-- Start-with-pause via `aa start -D -a <ability> -b <bundle>`, or
-  attach-to-running via the existing `M.device_pid` path.
-
-### Host tooling
-
-- `native/llvm/bin/lldb` resolved by `sdks/ohos.lua` (already present
-  for clangd resolution — same tree).
-- codelldb on host drives the remote session via `initCommands`.
-
-### Device tooling
-
-- `lldb-server` pushed from SDK to `/data/local/tmp/lldb-server` via
-  `hdc file send`, `hdc shell chmod +x`, then spawned as
-  `./lldb-server platform --server --listen *:<device_port>`.
-- Don't assume pre-installed. Always push so the version matches the
-  host lldb.
-
-### Transport
-
-- `hdc fport tcp:<host_port> tcp:<device_port>` per session. Release
-  on teardown.
-
-### codelldb config shape
-
-```
-initCommands = {
-  "platform select remote-linux",
-  "platform connect connect://localhost:<host_port>",
-}
--- then one of:
-processCreateCommands = { "attach -p <pid>" }
--- OR
-program = <local .so or HAP binary with symbols>
-```
-
-### Symbols + source maps
-
-- `settings set target.source-map <device-src> <host-src>` for each
-  cmake project in the active profile.
-- `settings set target.exec-search-paths <build_dir>` so unstripped
-  `.so` files are discovered.
-- Pending breakpoints (codelldb default) handle dlopen-time symbol
-  resolution for native .so files loaded by the app.
-
-### Teardown
-
-- Kill lldb-server on device (`hdc shell kill`).
-- Release `hdc fport`.
-- Normal codelldb session disposal via session_tracker.
-
-### Interface additions
-
-- `M.device_debug(tool_data, device_serial, launch_info, pid)` on
-  harmony module — returns `{ adapter, config, setup_cmds,
-  teardown_cmds }`.
-- `M.languages` on harmony gains `"c++"` (arkts stays non-debuggable
-  for now).
-- session_tracker: device-debug branch mirroring device-launch, wrapping
-  dap.run in setup → run → teardown.
-- `debug.lua` (or the new integration per pluggable refactor): support
-  for pre-launch shell-command orchestration and post-exit cleanup.
-
-### Dependencies
-
-- Cleanest path is to land the **Pluggable debug adapter architecture**
-  refactor first so `integrations/debug/harmony_lldb.lua` is the
-  natural home for all the orchestration. Otherwise `debug.lua` grows
-  an `if adapter == "harmony_lldb"` branch that has to be refactored
-  out anyway.
-
-### Empirical unknowns that need a device-in-hand spike
-
-- Does OH's `aa start -D` actually pause the process waiting for
-  attach, or just enable attachability?
-- What's the correct `lldb-server` binary to push from the SDK? Does
-  OH ship one or do we use the Android-style Linux ARM64 build?
-- Is `hdc fport` reliable enough for long-lived debug sessions, or do
-  we need to watchdog it?
-- Does the VM's JIT interfere with symbol resolution in the native
-  addon (`.node`-style libs)? Needs testing with a debug .so.
-
----
-
-## ArkTS debugger via CDP (research findings)
-
-Research captured here so we don't re-do it. Separate, much larger
-effort than native device debug. Not on any near-term roadmap.
-
-### What we know
-
-- **Protocol is WebSocket + Chrome DevTools Protocol (CDP).** Not a
-  fully custom dialect. Standard domains (`Debugger`, `Runtime`,
-  `Profiler`) apply with Ark-specific additions.
-- **Server implementation is open source** at
-  `gitee.com/openharmony/arkcompiler_toolchain` under directories
-  `inspector/`, `tooling/`, `websocket/`. Readable, not
-  reverse-engineering.
-- **OH docs explicitly support multi-language debug** (ArkTS + native
-  C++ attached to the same process). DevEco uses this; we could too.
-- **Transport on device** is a local abstract UNIX socket, exposed to
-  host via `hdc fport tcp:<port> localabstract:<name>`. Socket name
-  appears to derive from bundle/PID — needs empirical confirmation.
-
-### What doesn't exist
-
-- **No public DAP adapter for ArkTS/Panda outside DevEco.** Not on
-  nvim-dap's wiki, not on VS Code marketplace (existing HarmonyOS VS
-  Code plugins are language-server/linting only), nothing on GitHub.
-  If we want this inside Neovim, we build it.
-
-### Three feasibility tiers, cheapest first
-
-1. **Chrome DevTools frontend direct-connect** (evening spike).
-   `hdc fport` the Ark inspector socket, open `chrome://inspect`,
-   point at `localhost:<port>`. If Ark's CDP subset is close enough
-   to V8, DevTools paints sources/breakpoints/watches. Solves the
-   "stop jumping to DevEco" pain at zero project cost. Debugger runs
-   in Chrome, not Neovim.
-
-2. **CDP-to-DAP bridge** (weeks, if tier 1 attaches but has gaps).
-   Small Go/Node process. Speaks CDP to the device, DAP to nvim-dap.
-   Protocol mapping reference is `vscode-js-debug` (does the
-   equivalent against V8). Still real work but not blind — the OH
-   source tells us what domains exist and which are stubs.
-
-3. **Full custom DAP adapter** (months, if tier 1 is rejected by
-   standard frontend). Build a from-scratch adapter against Ark's
-   CDP subset, including sourcemap handling (bytecode → `.ets`),
-   Ark-specific Runtime/Profiler domain quirks, and whatever the VM
-   doesn't implement from CDP.
-
-### Recommended first action whenever this comes up
-
-Spend one evening on tier 1 before committing to anything. The
-outcome tells you which tier you're in. Without that data, any
-estimate of the full cost is speculation.
-
-### Activation prerequisites for any tier
-
-- HAP built debuggable.
-- App launched with debug flag (`aa start -D` or the ArkTS-specific
-  equivalent). The exact flag set for ArkTS-debug is something only
-  hands-on testing can pin down.
-- VM debug feature compiled in — default on in debug builds of the
-  runtime, may not be on release device images.
-
-### Why this is stored, not planned
-
-User is presently fine using DevEco for ArkTS debug; the loss is
-only the cognitive cost of context-switching between editors. Not
-worth a months-long project to eliminate.
-
----
-
-## Device log view — follow-ups
-
-The device-log view (bottom-split, parsed + filtered client-side)
-lands with enough to be useful: session prefilter (pid OR
-proc-contains-bundle), soft filter (level / regex / tag / pid),
-ring buffer with auto-scroll, level-based highlights, auto-close on
-app exit via pidof polling. Known follow-ups:
-
-- **Persist soft filter per-project** — currently in-memory only;
-  moving to workspace config lets power users save a preferred
-  level or regex.
-- **Multi-session view** — one stream at a time today; a second
-  device launch stops the first log. If users need to tail two
-  apps concurrently, expose multiple views keyed by
-  `(serial, bundle)`.
-- **Save log to file** — simple `:w` action or a `SaveLog` keymap
-  that dumps the rendered buffer to `.nvim/device-log-<ts>.log`.
-- **Structured column view** — keep the render compact by default,
-  but offer a "full format" toggle that shows PID / proc / domain
-  columns aligned.
-- **Other modules** — the parser + view are harmony-shaped today
-  (hilog format). When cmake `run` output wants the same kind of
-  surface, factor the parser into a strategy and reuse view +
-  ring buffer.
 
 ---
 
@@ -713,8 +476,9 @@ specific modules.
 ## Profile-level SDK integration (design ready, not implemented)
 
 **Problem**: Currently profiles select tools per module type independently.
-Cross-compilation requires all modules to use the same SDK. A cmake project
-and a harmony project in the same profile should both use the same OHOS SDK.
+Cross-compilation requires all modules to use the same SDK. Two projects
+of different module types in the same profile should be able to share a
+single SDK selection.
 
 **Design decisions**:
 
@@ -732,7 +496,7 @@ and a harmony project in the same profile should both use the same OHOS SDK.
    creating a default. No automatic Visual Studio / default compiler
    fallbacks. User must explicitly select.
 
-4. **Profile name includes SDK**. "Debug:ohos" or "Debug:ninja-clang-18".
+4. **Profile name includes SDK**. "Debug:<sdk>" or "Debug:ninja-clang-18".
    SDK profiles are distinct from host profiles.
 
 5. **Profile creation flow**: pick config set → pick "Host" or an SDK →
@@ -743,7 +507,7 @@ and a harmony project in the same profile should both use the same OHOS SDK.
    resolves to SDK domain object via workspace. If SDK not found,
    profile is incomplete.
 
-7. **Core stays generic**: no `if sdk_type == "ohos"` anywhere. Core
+7. **Core stays generic**: no `if sdk_type == "<vendor>"` anywhere. Core
    iterates modules × SDKs via query interface.
 
 **Implementation needed**:
@@ -796,7 +560,7 @@ Hardcodes a "compile_commands_dir not found" warning specifically for
 cmake projects. The right shape is for the module's `lsp_configs`
 emission to carry an opaque hint flag (e.g.
 `expected_compile_commands = true`) and the UI to render that
-flag generically. Other modules that ship clangd configs (harmony,
-meson) are already in the same position; the pattern just isn't
-formalised yet.
+flag generically. Other modules that ship clangd configs (meson, and
+third-party C/C++ modules) are already in the same position; the
+pattern just isn't formalised yet.
 

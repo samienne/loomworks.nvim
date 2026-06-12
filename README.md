@@ -9,13 +9,13 @@ modifies your project files and collaborators don't need to know it exists.
 
 ## Status
 
-Early development (v0.0.1-dev). The cmake, harmony, and meson modules are fully
+Early development (v0.0.1-dev). The cmake and meson modules are fully
 implemented; shell provides a generic command runner for self-managed builds;
 typescript is a shim.
 
 ## Features
 
-- **Multi-project workspaces** — manage cmake, meson, harmony, shell, and
+- **Multi-project workspaces** — manage cmake, meson, shell, and
   typescript projects from a single `loomworks.json`
 - **CMake preset support** — reads `CMakePresets.json` and
   `CMakeUserPresets.json` with full inheritance
@@ -159,7 +159,7 @@ Projects are declared with their type as the inner key:
 }
 ```
 
-Available types: `cmake` (full), `meson` (full), `harmony` (full),
+Available types: `cmake` (full), `meson` (full),
 `shell` (generic runner — see `spec/modules/shell.md`), `typescript` (shim).
 
 ### Paths
@@ -187,9 +187,9 @@ root. Override with `path` if the directory name differs:
           "inherits": "variant:Release",
           "options": { "ENABLE_PROFILING": "ON" }
         },
-        "ohos-debug": {
+        "cross-debug": {
           "inherits": "variant:Debug",
-          "toolchain": "${OHOS_NDK_HOME}/cmake/ohos.toolchain.cmake"
+          "toolchain": "${VENDOR_SDK_ROOT}/cmake/cross.toolchain.cmake"
         }
       },
       "compile_commands_from": "ninja-debug"
@@ -200,8 +200,8 @@ root. Override with `path` if the directory name differs:
 
 - **Configuration name tiers**: module-emitted configs are canonical
   `prefix:name` (cmake built-ins as `variant:Debug`/`variant:Release`,
-  CMakePresets entries as `preset:<name>`, harmony project configs as
-  `auto:<product>-<target>-<abi>`). User-declared configs go under any
+  CMakePresets entries as `preset:<name>`, project-file-derived configs
+  as `auto:<base>`). User-declared configs go under any
   name without `:` and typically use `inherits:` to extend an auto-gen.
   Configs sharing a project's type can freely reference each other by
   canonical name. The `:` ban on user names is enforced by validation.
@@ -235,9 +235,9 @@ user.json / loomworks.json:
     "configuration_set": "Debug",
     "tools": ["ninja-gcc-14.2.0"]
   },
-  "Debug-harmony:ohos-harmonyos-arm64-v8a": {
-    "configuration_set": "Debug-harmony",
-    "tools": ["ohos-harmonyos-arm64-v8a"]
+  "Debug:ninja-clang-18.0.0": {
+    "configuration_set": "Debug",
+    "tools": ["ninja-clang-18.0.0"]
   }
 }
 ```
@@ -341,14 +341,14 @@ files are only copied when the source changes or the configuration switches.
 Deploy can also be declared at the **project level** (applies to every
 launch, build, and device target for that project), and individual steps
 can set `"pre_build": true` to run **before** the target is built —
-useful for bundling native libraries into a HAP or APK where the file
+useful for bundling native libraries into a package where the file
 must be an input to the build:
 
 ```json
 "NativeDemo": {
-  "harmony": { ... },
+  "cmake": { ... },
   "deploy": {
-    "${workspace_root}/NativeDemo/entry/libs/arm64-v8a/": {
+    "${workspace_root}/NativeDemo/assets/native/": {
       "project": "NativeLib",
       "target": "my_lib",
       "pre_build": true
@@ -360,62 +360,6 @@ must be an input to the build:
 When the same destination appears at both project and launch level,
 directories union (both sets of files copied) and file destinations
 override (launch wins).
-
-### Device deployment (harmony)
-
-For project types that deploy to physical or emulated devices (currently
-harmony via `hdc`), the status page shows a **Device** line in the active
-profile when the workspace has device-capable modules. Press `<CR>` to
-scan and pick a connected device — the selection is persisted per profile
-in `user.json`.
-
-The launch target picker offers `[device: Run on device]` entries for
-harmony projects. Selecting one changes the launch chain to:
-
-```
-build → deploy → install on device → launch on device
-```
-
-The harmony module parses `app.json5` for the bundle name and
-`module.json5` for the ability name, locates the HAP output from hvigor,
-and invokes `hdc install` and `hdc shell aa start` on the selected device.
-
-No explicit configuration is needed — the device targets are generated
-by the module from the active configuration.
-
-After launch, a device-log view opens at the bottom of the frame
-streaming `hdc hilog` output parsed and filtered to the running app
-(default filter: app PID AND proc matches bundle; interactive keymaps
-inside the view for level / regex / layout). `<S-F5>` force-stops the
-app on the device (`hdc shell aa force-stop`). Toggle the log view
-from anywhere with `<leader>wO`.
-
-The hilog stream is invoked with `-P <pid>` so only the app's own
-process emits, across all log types. This matches DevEco Studio's
-"All logs of selected App" behaviour and brings native `LOG_CORE`
-logs through alongside ArkTS `LOG_APP` traffic. Level filtering is
-done client-side on the ring buffer rather than via hilog's `-L`
-flag, because `-L` suppresses some native log paths in practice.
-
-```lua
-require("loomworks").setup({
-  device_log_level = "W",          -- soft filter level: D | I | W | E | F (default: I)
-  device_log_strict_pid = false,   -- omit -P pid; let helper-PID logs through (default: true)
-})
-```
-
-```vim
-:LoomworksDeviceLogLevel W   " retunes the live soft filter
-:LoomworksDeviceLogLevel     " query current level
-```
-
-Changing the level re-renders the ring buffer against the new
-threshold, so loosening (`W` → `I`) recovers history. The hilog
-stream itself is not restarted.
-
-Set `device_log_strict_pid = false` if your app spawns helper
-processes whose logs you need; the client-side prefilter (pid OR
-proc-contains-bundle) then becomes the only PID guard. Volume goes up.
 
 ### Progress notifications
 
@@ -498,8 +442,8 @@ automatically from your system.
 2. **Diagnostics** — structural warnings/errors aggregated from across the
    workspace (incomplete profiles, source-missing configurations, stale
    `configuration_set` mappings, unresolved inherits chains,
-   tool/configuration mismatches — e.g. a profile picking a HarmonyOS
-   arm64-v8a kit while mapping a project to an OpenHarmony product).
+   tool/configuration mismatches — e.g. a profile picking a kit whose
+   platform/arch contradicts the configuration's declared target).
    Hidden when everything is healthy. Pressing `<CR>` on an entry jumps to
    the relevant tree node, with `<C-o>`/`<C-i>` returning you back.
 3. **Profiles** — all materialized profiles with build status
@@ -679,7 +623,7 @@ contract in [specification.md §9.3](specification.md). Every plugin on
 
 - clangd restarts automatically when profile switches change the
   `compile_commands_dir` or resolved binary.
-- SDK-provided clangd is required for SDK profiles (e.g. harmony); when
+- SDK-provided clangd is required for SDK profiles; when
   its binary is missing, loomworks refuses to start clangd rather than
   falling back to a stock PATH clangd that can't find platform headers.
 

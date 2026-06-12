@@ -862,8 +862,8 @@ end
 function M.run_configuration_clean(unit, on_complete)
     local future_mod = require("loomworks.future")
 
-    -- Clean invokes the module's build system (hvigor for harmony),
-    -- which needs the right SDK env to know where it's pointing. A
+    -- Clean invokes the module's build system, which needs the
+    -- right SDK env to know where it's pointing. A
     -- mismatched tool would clean the wrong tree or fail opaquely.
     -- ConfigUnit:delete (rm-rf of the cached dir) is independent and
     -- remains allowed — see spec §3 `validate_config_tool`.
@@ -1015,8 +1015,8 @@ end
 --- Run a simple command as an overseer task. Returns a Future.
 --- Used for device install/launch operations.
 --- Supports `check_output(lines)` to detect failures when exit code is
---- unreliable (e.g., hdc exits 0 even on install errors). The function
---- returns an error string to reject, or nil/true for success.
+--- unreliable (e.g., some device connectors return 0 on partial failure).
+--- The function returns an error string to reject, or nil/true for success.
 --- @param opts { name: string, cmd: string|string[], args?: string[], cwd?: string, env?: table, check_output?: fun(lines: string[]): string|nil }
 --- @return loomworks.Future
 function M.run_cmd_task(opts)
@@ -1108,8 +1108,8 @@ function M.run_streaming_task(opts)
     -- default jobstart strategy runs the process under a pty sized
     -- to the current nvim window, which hard-wraps long stdout lines
     -- at `vim.o.columns - 4` and emits ANSI cursor-positioning
-    -- sequences between records. For hilog output — lines routinely
-    -- >200 chars — that turns every record into two or three
+    -- sequences between records. For line-oriented log output —
+    -- lines routinely >200 chars — that turns every record into two or three
     -- fragments, none of which parse. A non-terminal jobstart uses
     -- a plain stdout pipe and gives us raw newline-separated output.
     local task = overseer.new_task({

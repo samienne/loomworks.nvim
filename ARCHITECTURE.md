@@ -234,7 +234,7 @@ may import from its own layer or any layer below it, never above.
    for API calls. UI callers that mutate state (project_browser, actions)
    obtain the Workspace via `lw.get_workspace()` and call workspace methods
    directly (e.g., `ws:add_project()`, `ws:add_configuration_set()`).
-6. **Modules** (cmake, harmony, meson, shell, typescript) know nothing about
+6. **Modules** (cmake, meson, shell, typescript) know nothing about
    profiles, UI, or overseer. They implement the module interface (validate,
    info, tasks, inspect, detect_tools) and operate on project paths and config
    data.
@@ -276,7 +276,7 @@ may import from its own layer or any layer below it, never above.
 | `device.lua` | Device domain object: physical/emulated deployment target with serial, display_name, provider (module id), state (online/offline), properties. Runtime-only (not persisted). Workspace-level registry, discovered via module's `list_devices()` | Persist anything (runtime only) |
 | `launch_target.lua` | LaunchTarget class: resolves profile's default target descriptor into object references (Project, ConfigUnit, Target). Three target types: module targets, command launches, device targets. `build()` builds deps → pre-build deploy → build self. `deploy()` executes post-build deploy steps. Both phases merge project-level + launch-level deploy. `launch()`/`debug()` for local targets. `device_install()`/`device_launch()` for device targets. `requires_device()` returns true for device targets | Own state beyond resolution; do I/O directly |
 | `debug.lua` | DAP integration gateway. `run(spec, callbacks)` constructs DAP launch config with adapter-specific `extra` fields and calls `dap.run()`. Checks adapter availability before launch (Mason install hint). `resolve_adapter(workspace, module_type)` reads `user.json` debug settings with defaults (cmake→codelldb, typescript→pwa-node). `known_adapters(module_type)` returns picker options. Per-session callbacks via unique listener keys | Own state; depend on workspace internals |
-| `session_tracker.lua` | Unified launch/debug lifecycle manager. Tracks active run (overseer task or dap session). `start(target, mode)` handles confirmation dialog, build→deploy→execute chain with device extension (device-install→device-launch for device targets), fidget progress. `stop()` terminates overseer task or dap session (with `hierarchy=true` to kill debuggee). Auto-cleans tracked run on dap session end via listeners. Device-log stream uses `-P pid` only (volume cap by app PID); level filtering is client-side on the ring buffer, so `:LoomworksDeviceLogLevel` retunes the live view without restarting hilog | Own state beyond what init.lua provides |
+| `session_tracker.lua` | Unified launch/debug lifecycle manager. Tracks active run (overseer task or dap session). `start(target, mode)` handles confirmation dialog, build→deploy→execute chain with device extension (device-install→device-launch for device targets), fidget progress. `stop()` terminates overseer task or dap session (with `hierarchy=true` to kill debuggee). Auto-cleans tracked run on dap session end via listeners | Own state beyond what init.lua provides |
 | `target.lua` | Target class: wraps module-detected build target (type, dependencies, artifact). `build()` delegates to module. `launch()` runs executable via overseer. Runtime-only, recreated on parse | Persist anything |
 | `deploy.lua` | Deploy step validation, resolution, freshness checking, execution, cleanup. Pure functions — no state. Resolves source config units within profile context, compares mtime + source identity for freshness, copies files. `partition_by_phase()` splits a deploy dict by `pre_build` flag. `merge_deploy_sources()` merges project-level and launch-level deploy (directory destinations union, file destinations override) | Own state; do I/O beyond file copy |
 | `variables.lua` | Project variable validation and resolution. `resolve(project, configuration)` walks inheritance chain via object references, returns values with provenance (source Configuration object). Reserved name checking | Own state; mutate anything |
@@ -285,6 +285,7 @@ may import from its own layer or any layer below it, never above.
 | `workspace_view.lua` | View-model layer: orchestration logic for UI. Computes add/remove project context, tool detection caching, upgrade/downgrade previews, config set candidates. Config set create/edit/rename/delete context and execution. Orphan cleanup: stray build dir detection (top-down prune of `.nvim/build/`), orphaned config collection, bulk cleanup execution. Calls Workspace atomic mutations in sequence. No UI rendering — pure compute + execute | Render UI; own state; bypass Workspace methods |
 | `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, Ninja+MSVC combos). GCC/Clang detection delegates to `cpp_compilers.lua`. Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
 | `cpp_compilers.lua` | Single source of truth for C/C++ compiler identification. `detect()` / `detect_async()` probe PATH for gcc/clang/versioned variants; `probe_path(path)` identifies an arbitrary user-supplied executable. Returns `{id, display, family, version, path, c_path, bin_dir, clangd_path}` per compiler so modules can pin `CC`/`CXX` and prepend runtime-DLL directories to `PATH`. Used by `cmake_kits.lua`, `modules/meson.lua`, and `sdks/cpp_compiler.lua`. All compiler-family knowledge (regex patterns, sibling-driver naming, clangd discovery gated on Clang) lives here. Process-lifetime cache; `clear_cache()` forces rescan | Know about any specific module |
+| `sdks/init.lua` | SDK provider registry, lazy loading via rtp discovery. Same strict-equality `api_version` check + one-shot-notify rejection as `modules/init.lua` | Implement provider logic |
 | `sdks/cpp_compiler.lua` | User-declared C/C++ compiler SDK provider. No auto-detection (`detect_all` returns empty); user adds via the SDK section's `▸ Add SDK` action. Calls `cpp_compilers.probe_path` for identification; emits single-compiler cmake caps consumed by `cmake.kits_from_sdk`'s single-compiler branch. Provider-specific key derivation includes a path-derived token so two custom builds of the same family / version at different paths don't collide. See `spec/sdks/cpp_compiler.md` | Contain compiler family knowledge (lives in `cpp_compilers.lua`) |
 | `device_log.lua` | Client-side device-log view: line parser (`MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: msg`), session prefilter (pid OR proc-contains-bundle, applied at receive), soft filter (level / regex / tag / pid, applied at render), ring buffer (5000 records), bottom-split scratch buffer with level-based extmark highlights. Singleton view, one stream at a time. Streaming task runs under `loomworks.overseer.run_streaming_task` (visible in overseer's task list, killable there) | Spawn subprocesses directly (overseer owns the process); persist filter state (in-memory only for v1) |
 
@@ -298,9 +299,9 @@ may import from its own layer or any layer below it, never above.
 | `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking | Business logic; auto-migration |
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication | Domain logic; know about merge or profiles |
 | `config_editor.lua` | **Legacy** — retained for backward compatibility but not used at runtime. Mutation methods (`add_project`, `remove_project`, `add_configuration_set`, etc.) have moved to Workspace. Only `create_workspace` remains as a standalone entry point (paralleled by `workspace.create_workspace_config`) | Domain logic; know about runtime model |
-| `modules/init.lua` | Module registry, lazy loading, detection orchestration (`detect_all_types`, `scan_directory_async`) | Implement module logic |
+| `api_versions.lua` | Strict-equality version constants (`module`, `sdk`) for the plugin-interface registries. Both `modules.get` and `sdks.get` refuse to load plugins whose declared `api_version` doesn't match. See specification.md §8.0 for the bump policy | Track an interface that already has a more direct registration path (LSP, debug) |
+| `modules/init.lua` | Module registry, lazy loading via rtp discovery, detection orchestration (`detect_all_types`, `scan_directory_async`). Strict-equality `api_version` check at load with one-shot notify on mismatch; rejected ids stay rejected for the session | Implement module logic |
 | `modules/cmake.lua` | CMake module: detect, validate, info (preset + loomworks config separation), default_configurations, resolve_configurations (inheritance model), resolve_options/resolve_options_with_sources (option merge with source tracking), resolve_variant_source, tasks (CMAKE_BUILD_TYPE auto-set, user -D options), inspect, detect_tools/detect_tools_async, parse_targets (target discovery), get_options (cache variables), map_variant. Static `has_keyed_tools = true`, `has_options = true` | Know about profiles, UI, or overseer |
-| `modules/harmony.lua` | Harmony/OpenHarmony module: detect (build-profile.json5), validate, info (product/module/target extraction from build-profile.json5 via Node.js JSON5 parsing), default_configurations (product × target × ABI cross product), resolve_build_dir (hvigor's external cmake build dir outside .nvim/build/), validate_config_tool (rejects (profile.tool, configuration) when platform / ABI disagree with product's runtimeOS / abiFilters — guards cross-module consistency for mixed cmake+harmony profiles), lsp_configs (emits clangd entry with SDK-bundled binary for native configs), tasks (ohpm install + hvigor sync + assembleHap), clean_tasks, inspect (staleness detection + build dir verification via native_work_dir.txt), detect_tools/detect_tools_async, kits_from_sdk, tool_label, map_variant. Device interface: `list_devices` (hdc list targets), `device_targets` (Run on device), `device_install` (hdc install), `device_launch` (hdc shell aa start), `device_log` (hdc hilog), `resolve_artifact` (HAP path), `resolve_launch_info` (bundle/ability from app.json5/module.json5). Static `has_keyed_tools = false`, `has_options = false`, `has_devices = true` | Anything beyond the module interface |
 | `modules/meson.lua` | Meson module: detect (meson.build), validate, info (defaults Debug/Release/RelWithDebInfo mapping to buildtype), resolve_configurations (inheritance on top of defaults), tasks (meson setup + compile; auto-picks --reconfigure on re-setup; -D option args; optional --cross-file), clean_tasks (meson compile --clean), parse_targets/parse_targets_async (via `meson introspect --targets`), get_options (via `meson introspect --buildoptions`, grouped by section), lsp_configs (clangd entry with build_dir as compile_commands_dir), inspect (meson.build / meson.options / meson_options.txt staleness), detect_tools/detect_tools_async (meson on PATH, then pip-user Scripts dir via Python sysconfig probe; non-keyed), create_test_unit (MesonTestUnit), map_variant. Static `has_keyed_tools = false`, `has_options = true` | Anything beyond the module interface |
 | `test_units/meson.lua` | MesonTestUnit: wraps `meson introspect --tests` for discovery, gtest framework probing via shared helper, direct-exe gtest XML runs for per-test results. Same runtime surface as CTestUnit | Know about the meson module internals |
 | `modules/shell.lua` | Generic shell-command runner. Wraps user-declared `configure_cmd`/`build_cmd`/`clean_cmd` with variable expansion. `progress_parser` returns the ninja parser unconditionally (try-only: matches `[N/M]` lines, no-ops otherwise so non-ninja shell builds simply emit no progress). `lsp_configs` emits a clangd entry only when `shell.compile_commands` is set. `detect = nil` (manually-declared only). Static `has_keyed_tools = false`, `has_options = false`, `has_devices = false` | Auto-detect; introspect build options; own build-system knowledge |
@@ -580,7 +581,7 @@ through files.
 8. BuildDirRefs — reverse index from BuildDir paths
 
 **Module** (`module.lua`) wraps a stateless module function table (cmake.lua,
-harmony.lua, typescript.lua) as a per-workspace domain object. Owns the Tool
+meson.lua, typescript.lua) as a per-workspace domain object. Owns the Tool
 registry for its module type. No `_workspace` back-reference — pure domain
 object. Created during `_sync_modules()`. `Project._module` replaces
 `project.type` string for module identity (type string kept for display).
@@ -589,7 +590,7 @@ object. Created during `_sync_modules()`. `Project._module` replaces
 Owned by `Module._tools` registry, keyed by `tool_key`.
 `Tool._module` references the owning Module domain object.
 Created from async detection results AND from cached tool_data at startup.
-For non-keyed modules (harmony, typescript), a single default Tool with nil key
+For non-keyed modules (typescript), a single default Tool with nil key
 exists. ConfigUnit, Profile, and Project carry `_tool` references alongside
 legacy `tool` ToolRef tables. Accessor: `unit:tool_object()`,
 `profile:tool_object_for(module)`.
@@ -744,10 +745,10 @@ loomworks.nvim/
 ├── specification.md                   Core behavioral specification
 ├── spec/
 │   ├── ui.md                          Status page, highlights, winbar
-│   ├── modules/                       Per-module specs (cmake, harmony, meson, typescript)
+│   ├── modules/                       Per-module specs (cmake, meson, shell, typescript)
 │   ├── integrations/lsp/              Per-LSP-server specs (clangd, …)
 │   ├── integrations/debug/            Per-DAP-adapter specs (codelldb, cppdbg, pwa-node, …)
-│   └── sdks/                          Per-SDK-provider specs (ohos, …)
+│   └── sdks/                          Per-SDK-provider specs (cpp_compiler, …)
 ├── README.md                          User-facing documentation
 ├── BACKLOG.md                         Deferred features and design notes
 ├── lua/
@@ -791,7 +792,6 @@ loomworks.nvim/
 │   │   ├── modules/
 │   │   │   ├── init.lua               Module registry, detection orchestration
 │   │   │   ├── cmake.lua              CMake module (full v1)
-│   │   │   ├── harmony.lua              Harmony/OpenHarmony module (full)
 │   │   │   ├── meson.lua              Meson module (full v1)
 │   │   │   └── typescript.lua         TypeScript shim
 │   │   ├── progress/

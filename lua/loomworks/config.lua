@@ -1,12 +1,21 @@
 local M = {}
 
 local io_mod = require("loomworks.io")
+local modules = require("loomworks.modules")
 
---- Build KNOWN_TYPES from the module registry (single source of truth).
-local KNOWN_TYPES = {}
-for _, id in ipairs(require("loomworks.modules").list()) do
-    KNOWN_TYPES[id] = true
+--- Live check whether a project type maps to a registered module.
+--- Built lazily, NOT cached at file-load: third-party plugins that
+--- ship modules (e.g. loomworks-module-ohos's harmony) get added to
+--- runtimepath AFTER loomworks.config is required — a snapshot here
+--- was stale forever and falsely warned about legitimate project
+--- types. `modules.get` caches successful lookups internally so the
+--- per-call cost is a single registry-table read after the first hit.
+--- @param ptype string
+--- @return boolean
+local function is_known_type(ptype)
+    return modules.get(ptype) ~= nil
 end
+
 local NON_TYPE_KEYS = {
     path = true,
     depends_on = true,
@@ -62,7 +71,7 @@ function M.normalize_projects(raw_projects)
         if not ptype then
             return nil, "project '" .. key .. "': " .. type_err
         end
-        if not KNOWN_TYPES[ptype] then
+        if not is_known_type(ptype) then
             vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
         end
         projects[key] = {
@@ -98,7 +107,7 @@ function M.validate(raw, root)
             return nil, "project '" .. key .. "': " .. type_err
         end
 
-        if not KNOWN_TYPES[ptype] then
+        if not is_known_type(ptype) then
             vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
         end
 
@@ -143,7 +152,7 @@ function M.validate(raw, root)
         --
         -- We strip rather than error here. Older versions of the
         -- plugin had a serialization bug that wrote auto-gens
-        -- (`auto:...`, `harmony:...`, etc.) into loomworks.json;
+        -- (`auto:...`, `cmake:...`, etc.) into loomworks.json;
         -- failing the load would leave users with a workspace that
         -- can't open at all and needs manual editing. Stripping plus
         -- a one-shot warning lets the workspace load, the next `:w`

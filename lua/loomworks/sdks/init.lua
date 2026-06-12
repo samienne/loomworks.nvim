@@ -3,10 +3,26 @@
 --- Auto-discovers SDK providers from runtimepath. Third-party plugins
 --- can add providers by placing files in lua/loomworks/sdks/.
 
+local API = require("loomworks.api_versions")
+
 local M = {}
 
 --- @type table<string, table> cached providers by id
 local _providers = {}
+
+--- Track providers whose load attempt failed (file present but
+--- contract-mismatched or version-mismatched) so we don't spam the
+--- same warning every time M.get is called.
+--- @type table<string, true>
+local _rejected = {}
+
+local function reject(id, reason)
+    if _rejected[id] then return end
+    _rejected[id] = true
+    vim.notify(
+        "loomworks: SDK provider '" .. id .. "' will not load: " .. reason,
+        vim.log.levels.ERROR)
+end
 
 --- List all available provider IDs from runtimepath.
 --- @return string[]
@@ -26,18 +42,34 @@ function M.list()
 end
 
 --- Get a provider by ID. Lazy-loads and caches.
---- @param id string provider identifier (e.g., "ohos")
+--- @param id string provider identifier (e.g., "cpp_compiler")
 --- @return table|nil provider module
 function M.get(id)
-    if _providers[id] then
-        return _providers[id]
-    end
+    if _providers[id] then return _providers[id] end
+    if _rejected[id] then return nil end
     local ok, mod = pcall(require, "loomworks.sdks." .. id)
-    if ok and type(mod) == "table" and mod.id then
-        _providers[id] = mod
-        return mod
+    if not ok then return nil end
+    if type(mod) ~= "table" then
+        reject(id, "provider did not return a table")
+        return nil
     end
-    return nil
+    if mod.id ~= id then
+        reject(id, "provider declares id='" .. tostring(mod.id)
+            .. "' but file is loomworks.sdks." .. id)
+        return nil
+    end
+    if mod.api_version ~= API.sdk then
+        reject(id, "provider declares api_version="
+            .. tostring(mod.api_version)
+            .. " but loomworks core requires "
+            .. tostring(API.sdk)
+            .. ". Update the SDK provider's plugin or pin a "
+            .. "compatible loomworks.nvim. No backwards "
+            .. "compatibility — see loomworks/api_versions.lua.")
+        return nil
+    end
+    _providers[id] = mod
+    return mod
 end
 
 --- Get all loaded providers.

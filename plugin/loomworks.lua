@@ -71,27 +71,6 @@ end, {
   desc = "loomworks: show workspace status page",
 })
 
-vim.api.nvim_create_user_command("LoomworksDeviceLogLevel", function(cmd)
-  local lw = require("loomworks")
-  local arg = cmd.args
-  if not arg or arg == "" then
-    vim.notify("loomworks: device log level is " .. lw.get_device_log_level(),
-      vim.log.levels.INFO)
-    return
-  end
-  arg = arg:upper()
-  local ok, err = lw.set_device_log_level(arg)
-  if not ok then
-    vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
-    return
-  end
-  vim.notify("loomworks: device log level set to " .. arg, vim.log.levels.INFO)
-end, {
-  nargs = "?",
-  complete = function() return { "D", "I", "W", "E", "F" } end,
-  desc = "loomworks: get/set on-device hilog level (D|I|W|E|F)",
-})
-
 vim.api.nvim_create_user_command("LoomworksFidgetClear", function()
   -- Recovery hatch for stuck fidget popups. The fidget integration
   -- relies on event sequences (operation_finished, task_stopped, dap

@@ -167,7 +167,7 @@ local function render_project(insp, ctx)
     end
     ctx:add("")
 
-    -- Module-declared editable type_config fields (e.g. harmony's cmake_env).
+    -- Module-declared editable type_config fields.
     for _, field in ipairs(insp.type_config_fields or {}) do
         ctx:section(field.label .. "  (" .. tostring(#field.entries) .. ")")
         if #field.entries == 0 then

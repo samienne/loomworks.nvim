@@ -66,7 +66,7 @@
 --- Project entry in loomworks.json.
 --- @class loomworks.ConfigProject
 --- @field path string relative path from workspace root
---- @field type string module type ("cmake", "harmony", "typescript")
+--- @field type string module type ("cmake", "typescript")
 --- @field type_config table module-specific configuration from loomworks.json
 --- @field depends_on? string[]
 

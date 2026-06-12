@@ -180,8 +180,8 @@ function LaunchTarget:build(on_complete)
 
     -- Guard: if the selected ConfigUnit points at an abstract
     -- Configuration (no `variant` set on module_config — the state
-    -- we end up in when harmony's default_configurations couldn't
-    -- parse build-profile.json5 and the profile references a stub
+    -- we end up in when a module's default_configurations couldn't
+    -- parse its source manifest and the profile references a stub
     -- user config), bail out with a specific error rather than
     -- handing a no-op variant to the module and watching the chain
     -- hang on a phantom task. A clear message beats a silent spinner.
@@ -194,7 +194,7 @@ function LaunchTarget:build(on_complete)
             "configuration '%s' on project '%s' is abstract "
             .. "(no variant resolved) — can't build. "
             .. "Check module auto-detection (e.g. `:messages` for "
-            .. "harmony parse warnings).",
+            .. "module parse warnings).",
             cfg_name, proj_name)
         if on_complete then on_complete(false) end
         return future_mod.rejected(abs_err)
@@ -258,7 +258,7 @@ end
 --- project" and errors if the project isn't in the profile.
 ---
 --- Build invocation is unconditional — we hand the build off to
---- the module's build command (`cmake --build`, `ninja`, `hvigor`)
+--- the module's build command (`cmake --build`, `ninja`, `make`)
 --- and let the build system decide whether anything actually
 --- needs rebuilding. Short-circuiting on `state == "built"` would
 --- miss source-file changes (ConfigUnit's `is_stale` only watches
@@ -845,8 +845,7 @@ end
 -- rather than relying on overseer's default output-to-buffer view.
 
 --- Stop the app on a device. Returns a Future.
---- Delegates to the module's `device_stop` (harmony:
---- `hdc shell aa force-stop -b <bundle>`). Session tracker calls
+--- Delegates to the module's `device_stop` RPC. Session tracker calls
 --- this from `stop_run()` when it knows the active run is a
 --- device launch; it's fire-and-forget from the user's
 --- perspective — we don't block teardown on the RPC.

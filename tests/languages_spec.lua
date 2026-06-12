@@ -13,8 +13,6 @@ describe("loomworks.languages", function()
             assert.is_true(set["c++"])
             -- meson declares c
             assert.is_true(set["c"])
-            -- harmony declares arkts
-            assert.is_true(set["arkts"])
             -- typescript module declares typescript
             assert.is_true(set["typescript"])
         end)
@@ -33,8 +31,8 @@ describe("loomworks.languages", function()
 
     describe("filter", function()
         it("drops untracked entries and preserves order", function()
-            local out = languages.filter({ "c++", "rc", "c", "asm", "arkts" })
-            assert.same({ "c++", "c", "arkts" }, out)
+            local out = languages.filter({ "c++", "rc", "c", "asm" })
+            assert.same({ "c++", "c" }, out)
         end)
 
         it("deduplicates", function()

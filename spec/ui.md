@@ -191,8 +191,8 @@ scope (profile-level) benefits from the explicit pick.
   (host tools or an SDK kit identity `(sdk, platform, arch)`) shared
   across every tool-needing module in the profile. Row format
   `Toolchain: <label>`. Label resolution: for SDK kits the canonical
-  shape is `<platform> <version> <arch>` ("HarmonyOS 6.0.1.251
-  arm64-v8a"); for host selections it's `<tool_label> [host/<mod_id>]`
+  shape is `<platform> <version> <arch>` (e.g. `Android 14
+  arm64-v8a`); for host selections it's `<tool_label> [host/<mod_id>]`
   per module; otherwise `(none — incomplete)`. `<CR>` opens the
   unified picker — entries are host tools from each tool-needing
   module's registry plus one entry per kit from each resolved SDK

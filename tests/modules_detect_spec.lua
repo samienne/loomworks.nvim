@@ -56,27 +56,6 @@ describe("module detection", function()
     end)
 
     -- -----------------------------------------------------------------
-    -- harmony.detect
-    -- -----------------------------------------------------------------
-    describe("harmony.detect", function()
-        local harmony = require("loomworks.modules.harmony")
-
-        it("returns marker for directory with build-profile.json5", function()
-            local dir = tmpdir()
-            write_raw(dir .. "/build-profile.json5", "{}")
-
-            local result = harmony.detect(dir)
-            assert.is_not_nil(result)
-            assert.equals("build-profile.json5", result.marker)
-        end)
-
-        it("returns nil for empty directory", function()
-            local dir = tmpdir()
-            assert.is_nil(harmony.detect(dir))
-        end)
-    end)
-
-    -- -----------------------------------------------------------------
     -- typescript.detect
     -- -----------------------------------------------------------------
     describe("typescript.detect", function()
@@ -174,36 +153,6 @@ describe("module detection", function()
     end)
 
     -- -----------------------------------------------------------------
-    -- harmony.map_variant
-    --
-    -- Harmony's configs all default to `mode=debug` on the hvigor side,
-    -- so `map_variant("debug")` returns the first config and anything
-    -- else returns nil. Single-config projects take that one config
-    -- regardless of the requested variant type.
-    -- -----------------------------------------------------------------
-    describe("harmony.map_variant", function()
-        local harmony = require("loomworks.modules.harmony")
-
-        it("maps debug to the first available config", function()
-            assert.equals("default",
-                harmony.map_variant("debug", { "default", "other" }))
-        end)
-
-        it("returns nil for release", function()
-            assert.is_nil(harmony.map_variant("release", { "default", "other" }))
-        end)
-
-        it("returns nil for release_debug", function()
-            assert.is_nil(harmony.map_variant("release_debug", { "default", "other" }))
-        end)
-
-        it("returns the sole config for any variant (single-config fallback)", function()
-            assert.equals("only", harmony.map_variant("debug", { "only" }))
-            assert.equals("only", harmony.map_variant("release", { "only" }))
-        end)
-    end)
-
-    -- -----------------------------------------------------------------
     -- typescript.map_variant
     -- -----------------------------------------------------------------
     describe("typescript.map_variant", function()
@@ -271,15 +220,6 @@ describe("module detection", function()
             local dir = tmpdir()
             local results = modules.detect_all_types(dir)
             assert.equals(0, #results)
-        end)
-
-        it("detects harmony project", function()
-            local dir = tmpdir()
-            write_raw(dir .. "/build-profile.json5", "{}")
-
-            local results = modules.detect_all_types(dir)
-            assert.equals(1, #results)
-            assert.equals("harmony", results[1].type)
         end)
     end)
 end)

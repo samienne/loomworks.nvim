@@ -3,6 +3,7 @@ local M = {}
 local io_mod = require("loomworks.io")
 
 M.id = "cmake"
+M.api_version = 1
 M.has_keyed_tools = true
 M.has_options = true
 -- CMake's default `project(name)` call enables both C and CXX, so
@@ -629,7 +630,7 @@ function M.tasks(project, active_config)
         configure_cmd[#configure_cmd + 1] = "-DCMAKE_TOOLCHAIN_FILE=" .. tc
     end
 
-    -- SDK-provided extra cmake args (e.g., -DOHOS_ARCH=arm64-v8a)
+    -- SDK-provided extra cmake args (e.g., -DCMAKE_TOOLCHAIN_FILE=<path>)
     if kit and kit.extra_args then
         vim.list_extend(configure_cmd, kit.extra_args)
     end
@@ -1035,7 +1036,7 @@ function M.kits_from_sdk(caps, sdk)
         } } }
     end
 
-    -- Support multi-platform SDKs (e.g., HarmonyOS + OpenHarmony)
+    -- Support multi-platform SDKs (e.g., multi-arch / cross-compile)
     local platforms = caps.platforms
     if not platforms and caps.toolchain_file then
         -- Legacy single-platform format

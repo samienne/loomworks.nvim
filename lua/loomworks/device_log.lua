@@ -1,10 +1,12 @@
---- loomworks/device_log.lua — client-side device-log view.
+--- loomworks/device_log.lua — generic on-device streaming log view.
 ---
---- hdc/hilog's on-device filter flags are unreliable across
---- HarmonyOS releases, so we take the DevEco approach: receive the
---- raw stream, parse each line into a structured record, and filter
---- client-side. Two tiers of filtering keep memory bounded and the
---- view interactive:
+--- A reusable log view that lets a module supply its own line parser
+--- and pid/process prefilter. Device connectors typically expose
+--- on-device filter flags that are unreliable across OS versions, so
+--- we take the same approach as device-log UIs in vendor IDEs:
+--- receive the raw stream, parse each line into a structured record,
+--- and filter client-side. Two tiers of filtering keep memory bounded
+--- and the view interactive:
 ---
 ---   * session prefilter  applied at receive; dropped records are
 ---                        gone. Default matches pid OR proc-contains
@@ -29,10 +31,10 @@ local M = {}
 -- ---------------------------------------------------------------------------
 
 --- Strip escape sequences, BOM, and stray control bytes from a line.
---- hdc can prepend colour sequences, send BEL characters, or mix
---- CRLF depending on the build — without sanitising, those leak
---- into the parse regex (breaking it) or into the rendered buffer
---- (showing up as weird glyphs).
+--- The device connector can prepend colour sequences, send BEL
+--- characters, or mix CRLF depending on the build — without
+--- sanitising, those leak into the parse regex (breaking it) or into
+--- the rendered buffer (showing up as weird glyphs).
 --- @param line string
 --- @return string
 local function sanitize(line)
@@ -48,8 +50,8 @@ local function sanitize(line)
     -- that isn't '[' or ']' (covers ESC(A, ESC=, ESC\, ...).
     line = line:gsub("\27[^%[%]]", "")
     -- Headless CSI remnants: something upstream (overseer output
-    -- processing, neovim jobstart, or hdc itself) can eat the ESC
-    -- byte but leave the visible `[41;155H` tail. Strip the tail
+    -- processing, neovim jobstart, or the device connector itself)
+    -- can eat the ESC byte but leave the visible `[41;155H` tail. Strip the tail
     -- too — require at least two digits in the parameter block so
     -- legitimate bracketed content like `[a92ab178]` or `[0xABCD]`
     -- doesn't match.
@@ -72,7 +74,7 @@ function M.sanitize_line(line)
     return sanitize(line)
 end
 
---- Parse a single hilog line.
+--- Parse a single device log line.
 ---
 --- Expected format:
 ---   MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: message
@@ -176,7 +178,7 @@ function M.match_filter(filter, record, rendered)
     return true
 end
 
---- Does the hilog `proc` column refer to `bundle`?
+--- Does the device log's `proc` column refer to `bundle`?
 ---
 --- Three cases:
 ---   * exact match             `proc == bundle`
@@ -185,8 +187,8 @@ end
 ---                             helpers that live under the app, e.g.
 ---                             `com.example.app.worker` or
 ---                             `com.example.app:helper`)
----   * left-truncation         HarmonyOS hilog truncates the proc
----                             column to ~30 chars from the LEFT
+---   * left-truncation         some device log formats truncate the
+---                             proc column to ~30 chars from the LEFT
 ---                             for long bundle names. The proc seen
 ---                             in the stream is a suffix of the
 ---                             real bundle. Matches when
@@ -213,7 +215,7 @@ end
 --- Modes:
 ---   * `"strict"` (default) — keep a record only if **both** the PID
 ---     is the app's PID AND the proc column matches the bundle.
----     This is the DevEco "All logs of selected app" behaviour:
+---     This is the "All logs of selected app" behaviour:
 ---     drops system noise emitted by services that happen to run on
 ---     adjacent PIDs, drops the kernel/helpers that aren't our app.
 ---     If the launch resolved only one of pid/bundle, the prefilter
@@ -223,8 +225,9 @@ end
 ---     the user wants to see.
 ---   * `"all"` — no prefilter. For debugging the stream itself.
 ---
---- Regardless of mode, unparseable "raw" records always pass — hdc
---- errors, kernel panics, and similar diagnostic lines stay visible.
+--- Regardless of mode, unparseable "raw" records always pass —
+--- device-connector errors, kernel panics, and similar diagnostic
+--- lines stay visible.
 ---
 --- @param opts { pid?: number, bundle?: string, mode?: "strict"|"app-related"|"all" }
 --- @return fun(record: table): boolean
@@ -269,7 +272,7 @@ end
 -- regardless of which caller produced the rendered string).
 -- ---------------------------------------------------------------------------
 
---- Reconstruct a record verbosely: matches the raw hilog line
+--- Reconstruct a record verbosely: matches the raw device log line
 --- format 1:1 so it can be diffed against the source stream.
 ---   MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: msg
 --- @param record table
@@ -322,7 +325,7 @@ end
 --- Three record shapes:
 ---   * header  — session banner injected by `M.start`
 ---   * raw     — unparseable line; marked `[UNPARSED]`
----   * parsed  — real hilog record, laid out per `layout`
+---   * parsed  — real device-log record, laid out per `layout`
 ---
 --- @param record table
 --- @param layout? "compact"|"verbose" (default "compact")
@@ -889,7 +892,7 @@ local function ensure_view()
     return _view
 end
 
---- Start a new hilog stream. Disposes any previous stream first so
+--- Start a new device-log stream. Disposes any previous stream first so
 --- the "one active session" invariant holds.
 ---
 --- Soft filter handling (the user-tunable level / regex / tag

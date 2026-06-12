@@ -31,10 +31,10 @@ local function is_active_running()
     end
 end
 
---- Clear the device's hilog buffer before a fresh launch so the
+--- Clear the device's log buffer before a fresh launch so the
 --- device-log view doesn't mix in stale entries from previous
 --- sessions. Best-effort: a clear failure doesn't fail the launch.
---- Runs synchronously (it's one quick RPC to hdc).
+--- Runs synchronously (it's one quick RPC to the device connector).
 --- @param target loomworks.LaunchTarget
 --- @param device_serial string
 local function clear_device_log(target, device_serial)
@@ -57,23 +57,12 @@ end
 --- device_log, not on the active run record — session_tracker just
 --- asks device_log to stop during teardown.
 ---
---- Filter strategy (matches DevEco Studio's "All logs of selected
---- App" behaviour, see spec/modules/harmony.md §6.1):
----   * `-P <pid>` when `loomworks.get_device_log_strict_pid()` is
----     true (default). The primary volume reducer — only the app's
----     own process emits, across all log types, so native
----     `LOG_CORE` traffic comes through alongside ArkTS `LOG_APP`.
----     Helper processes that share the bundle name but log under a
----     different PID are dropped; users who need them set
----     `device_log_strict_pid = false` and rely on the client-side
----     prefilter (pid OR proc-contains-bundle) instead.
----   * **No `-L` (level) at the device** — hilog's level filter
----     interacts badly with native log paths in practice and
----     suppresses lines users want to see. Level filtering happens
----     entirely in the client-side soft filter.
----   * No `-t <type>` filter: native code routinely logs to type
----     `core`, so restricting to `app` would silently lose half the
----     stream.
+--- Modules with device-log support own the soft-filter level and any
+--- module-specific log-stream options. We read them via the optional
+--- `mod.device_log_options(tool_data)` hook (returning `{ level,
+--- strict_pid, ... }`) and pass `pid` through when the module asks
+--- for strict-pid filtering. The level travels into device_log purely
+--- as the initial soft filter — re-rendering only, never restarts.
 ---
 --- @param target loomworks.LaunchTarget
 --- @param device_serial string
@@ -85,24 +74,25 @@ local function start_device_log_view(target, device_serial, bundle, pid)
     if not mod or not mod.device_log then return end
     local td = target._config_unit and target._config_unit._tool_data or {}
 
-    local lw = require("loomworks")
-    local level = lw.get_device_log_level and lw.get_device_log_level() or "I"
-    local strict_pid = lw.get_device_log_strict_pid
-        and lw.get_device_log_strict_pid() or false
+    local log_options = (mod.device_log_options and mod.device_log_options(td))
+        or {}
+    local level = log_options.level or "I"
+    local strict_pid = log_options.strict_pid and true or false
     local log_opts = {}
     if strict_pid then log_opts.pid = pid end
     local spec = mod.device_log(td, device_serial, log_opts)
     if not spec or not spec.cmd then return end
     local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
 
-    -- Clear stale hilog buffer right before starting the stream so
-    -- we don't show entries from a previous run, but AFTER the
-    -- device_launch completed so any launch-time logs the app has
-    -- already emitted are still on the device and will stream in.
+    -- Clear the on-device log buffer right before starting the stream
+    -- so the view doesn't mix in stale entries from previous sessions,
+    -- but AFTER the device_launch completed so any launch-time logs
+    -- the app has already emitted are still on the device and will
+    -- stream in.
     clear_device_log(target, device_serial)
 
     local device_log = require("loomworks.device_log")
-    local pid_label = strict_pid and "-P " .. pid or "no -P (lenient)"
+    local pid_label = strict_pid and "strict-pid " .. pid or "no pid filter"
     device_log.start({
         name = target._project.key .. ": device logs (pid " .. pid .. ")",
         cmd = cmd,
@@ -124,8 +114,9 @@ end
 --- device. Two consecutive empty results = app is gone; tear the
 --- session down the same way a user-initiated stop would.
 ---
---- 3s cadence is long enough that hdc RTT isn't a burden but short
---- enough that users see the session clean up promptly. Two misses
+--- 3s cadence is long enough that device-connector RTT isn't a
+--- burden but short enough that users see the session clean up
+--- promptly. Two misses
 --- before closing smooths over a transient shell hiccup or a brief
 --- respawn.
 --- @param target loomworks.LaunchTarget
@@ -172,7 +163,7 @@ local function start_pidof_poll(target, device_serial, bundle)
 end
 
 --- Tear down the device-log session attached to the run, if any:
---- the pidof poll timer, the hilog streaming task, and the soft
+--- the pidof poll timer, the log streaming task, and the soft
 --- binding between the session and the log view. Swallow errors —
 --- this is cleanup and timer / task state varies with lifecycle.
 local function stop_log_session()
@@ -198,8 +189,7 @@ local function stop_run()
     if _active_run.mode == "launch" then
         -- Device launch: `<target>:stop()` only knows how to kill a
         -- local process; the app is running on the device, so
-        -- delegate to the module's `device_stop` RPC (e.g. harmony
-        -- emits `hdc shell aa force-stop -b <bundle>`). Fire and
+        -- delegate to the module's `device_stop` RPC. Fire and
         -- forget — failures are a notify-worthy warning, not a
         -- reason to block teardown.
         if _active_run.device_serial and _active_run.device_bundle then
@@ -372,8 +362,8 @@ local function start_run(target, mode)
                     -- fails to attach is a notification, not a
                     -- chain failure.
                     --
-                    -- We do NOT trust hdc/hilog's on-device filter
-                    -- flags (they're inconsistent across releases)
+                    -- We do NOT trust the device connector's on-device
+                    -- filter flags (they're inconsistent across releases)
                     -- — device_log parses the raw stream client-side
                     -- and applies a prefilter {pid, bundle} with
                     -- union semantics, catching both the app's main
