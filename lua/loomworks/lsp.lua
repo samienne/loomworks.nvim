@@ -17,6 +17,8 @@
 ---   @field status_extras? fun(entry: table): table              -- fields for status page
 ---   @field on_active_set_changed? fun()                         -- wired by lsp.lua
 ---   @field on_workspace_changed? fun()                          -- wired by lsp.lua
+---   @field on_lsp_options_changed? fun(payload: { server: string, key: string, value: any })
+---                                                               -- wired by lsp.lua; fires after Workspace:set_lsp_option
 ---   @field on_unexpected_exit? fun(info: loomworks.LspExitInfo): loomworks.LspRestartDecision
 ---                                                               -- called when a managed client dies unexpectedly
 ---   @field reset? fun(root_dir: string)                          -- clear adaptive state for a root (UI "Reset" action)
@@ -696,6 +698,13 @@ local function wire_listeners()
         for _, int in pairs(_integrations) do
             if int.on_workspace_changed then
                 vim.schedule(int.on_workspace_changed)
+            end
+        end
+    end)
+    lw.on("lsp_options_changed", function(payload)
+        for _, int in pairs(_integrations) do
+            if int.on_lsp_options_changed then
+                vim.schedule(function() int.on_lsp_options_changed(payload) end)
             end
         end
     end)

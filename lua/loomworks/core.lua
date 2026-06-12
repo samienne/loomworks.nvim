@@ -524,6 +524,18 @@ function Core:cancel_tasks_for_profile(profile)
     return self._workspace:cancel_tasks_for_profile(profile)
 end
 
+--- @see loomworks.Workspace.get_lsp_options
+function Core:get_lsp_options(server)
+    if not self._workspace then return {} end
+    return self._workspace:get_lsp_options(server)
+end
+
+--- @see loomworks.Workspace.set_lsp_option
+function Core:set_lsp_option(server, key, value)
+    if not self._workspace then return end
+    self._workspace:set_lsp_option(server, key, value)
+end
+
 --- @see loomworks.Workspace.stop_tasks_then
 function Core:stop_tasks_then(task_ids, on_done)
     if not self._workspace then on_done(); return end

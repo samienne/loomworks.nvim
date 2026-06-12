@@ -102,44 +102,56 @@ page:
 | `compile_commands_dir` | `entry.compile_commands_dir` (or `(not found)`) |
 | `binary_resolved` | Whether the binary actually exists on disk |
 
-## 9. Memory-friendly flag injection
+## 9. Flag injection
 
-`cmd_factory` appends a fixed set of memory-friendly defaults to every
-clangd cmd, regardless of whether the user passed their own `cmd` or
-relies on the integration defaults:
+`cmd_factory` appends three categories of flags to every clangd cmd,
+regardless of whether the user passed their own `cmd` or relies on
+the integration defaults:
+
+### 9.1 Always-on (no user opt-out)
 
 | Flag | Effect | Available since |
 |------|--------|-----------------|
-| `--background-index-priority=low` | Indexer threads run at lower OS priority so they don't starve the foreground request loop | clangd 13 |
 | `--pch-storage=disk` | Store precompiled headers on disk rather than RAM. Single biggest RSS reduction on large TUs; pays a small I/O cost | universally supported |
-| `--clang-tidy` | Enable clang-tidy diagnostics. Costs ~2x memory per TU but the diagnostics are usually load-bearing; users with `.clang-tidy` files expect them to show up. Lives in a separate `ALWAYS_FLAGS` array (not memory-related) but applied via the same append step | universally supported |
 
-These are unconditional and not user-configurable for now: they are
-strict wins (or expected-on features) on the workloads loomworks
-targets — large C++ projects with multi-GiB clangd RSS. Each flag
-would still apply on a small codebase but the cost is negligible.
+Strict win on the workloads loomworks targets — large C++ projects
+with multi-GiB clangd RSS. Negligible cost on small codebases. Not
+exposed in the user-config schema; a workload that hates it should
+file an issue rather than reach for an undocumented escape hatch.
 
-`--clang-tidy` can be disabled per-project by appending
-`--clang-tidy=false` to the user's `cmd` — LLVM `cl::opt` last-wins
-applies to booleans as well as `=value` flags.
-
-`--malloc-trim` is intentionally **not** in the set even though it
+`--malloc-trim` is intentionally **not** in this set even though it
 would be a real memory win on Linux glibc. Older clangd builds reject
-unknown args outright rather than silently ignoring them — notably the
-OpenHarmony SDK's clang-15-era clangd refuses to start with
-`--malloc-trim` on the command line. It can return as an opt-in flag
-once we add a user-config path for extra args.
+unknown args outright — notably the OpenHarmony SDK's clang-15-era
+clangd refuses to start with `--malloc-trim`. Users on a modern
+clangd can add it via `extra_args` (§12.1).
+
+### 9.2 User-configurable (via §12 user options)
+
+| Flag | Mapped from | Default |
+|------|-------------|---------|
+| `--clang-tidy` / `--clang-tidy=false` | `clang_tidy: bool` | `true` |
+| `--background-index` / `--background-index=false` | `background_index: bool` | `true` |
+| `--background-index-priority=<v>` | `background_index_priority: "low"\|"normal"\|"background"` | `"low"` |
+
+The integration emits each of these unconditionally (with explicit
+`=true`/`=false` for booleans) so the resolved cmd is self-describing
+and immune to whatever the user already passed in their own `cmd`.
+LLVM's `cl::opt` parser treats the last occurrence as authoritative,
+so the appended form always wins.
+
+### 9.3 Order
 
 Flags are appended *after* both the user's base cmd and the dynamic
-injections (`--compile-commands-dir`, `-j`). LLVM's `cl::opt` parser
-treats the last occurrence of any single-value option as authoritative
-(both `=value` flags and booleans), so this position cleanly overrides
-any conflicting earlier flag without us having to parse the cmd.
+injections (`--compile-commands-dir`, `-j`):
 
-If a user later needs to opt out (e.g., a workload that hates
-`--pch-storage=disk` for some reason), the path forward is to add an
-explicit toggle on the user-facing config — not to strip the injection
-heuristically.
+1. user's base cmd (or integration default)
+2. `--compile-commands-dir=<dir>` (when present)
+3. `-j N` (when OOM step-down has kicked in)
+4. always-on (§9.1)
+5. user-configurable (§9.2)
+6. `extra_args` from user.json (§12.1)
+
+`extra_args` last so the user's own opinion overrides everything else.
 
 ## 10. OOM-adaptive `-j` step-down
 
@@ -197,7 +209,59 @@ shared. That's an acceptable trade for not needing a clangd-specific
 log capture wrapper. clangd is the most verbose server in practice
 and the one most likely to die unexpectedly anyway.
 
-## 12. UI Reset
+## 12. User options (`user.json` → `lsp.clangd`)
+
+A subset of clangd's behavior is configurable per-workspace via the
+`lsp.clangd` block of `user.json` (core spec §2.2). Edits land via the
+status-page LSP section (§13) and persist to disk on every change.
+
+### 12.1 Schema
+
+```json
+{
+  "lsp": {
+    "clangd": {
+      "clang_tidy": true,
+      "background_index": true,
+      "background_index_priority": "low",
+      "extra_args": []
+    }
+  }
+}
+```
+
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `clang_tidy` | bool | `true` | Emits `--clang-tidy=true/false`. Disable when clang-tidy noise is unwanted or memory cost outweighs the diagnostics |
+| `background_index` | bool | `true` | Emits `--background-index=true/false`. Disable when you want clangd quiet on first open (no indexing storm) |
+| `background_index_priority` | `"low"\|"normal"\|"background"` | `"low"` | Emits `--background-index-priority=<v>`. `low` keeps the foreground request loop responsive; `background` is even gentler but noticeably slows index completion |
+| `extra_args` | `string[]` | `[]` | Appended to the cmd last, after every other injection. Use for anything not typed: `--query-driver=`, `--malloc-trim`, custom flags. Each entry is one argv element |
+
+All fields are optional. Omitted fields use the default. Validation
+behavior:
+
+- Unknown keys: logged at WARN, silently ignored.
+- `background_index_priority` not in the enum: logged at WARN, the
+  default `"low"` is used.
+- `extra_args` not a string array: logged at WARN, ignored entirely.
+
+### 12.2 Restart behavior
+
+Changing an option restarts every clangd client in the workspace so
+the new cmd takes effect. The restart goes through the same
+`mark_managed_stop` path as `on_active_set_changed` (§7), so the
+generic LSP throttle (§9.6 in the core spec) sees it as a managed
+stop and doesn't count it against the unexpected-death budget.
+
+### 12.3 Storage
+
+The `lsp.clangd` block lives only in `user.json`. It is **not**
+publishable to `loomworks.json` — different developers on the same
+project legitimately want different clangd settings (memory budget,
+clang-tidy preference). The publish/working-copy model (§2.4) does
+not apply.
+
+## 13. UI Reset and option editor
 
 The integration declares `reset(root_dir)` and `reset_label = "Reset
 clangd -j"`. The LSPs section in the status page renders one row per
@@ -205,3 +269,25 @@ client whose integration exposes `reset` — pressing Enter calls it.
 The action label flips to `(auto-restart suppressed)` when the user
 has stopped the client (`:LspStop`); selecting the row in that state
 also clears the suppression flag so the client comes back to life.
+
+The LSP section also renders an **option editor group** at the top
+of the section listing every clangd option from §12.1 with its
+current value:
+
+```
+Server defaults (clangd)
+  ▸ clang-tidy: on
+  ▸ background-index: on
+  ▸ priority: low
+    extra args: (none)
+```
+
+Enter on a boolean row toggles. Enter on `priority` cycles through
+the enum. Enter on `extra args` opens a `vim.ui.input` prompt with the
+current value as a space-separated string; on submit the input is
+tokenised on whitespace and stored as a string array. Empty input
+clears the field; `D` (delete) also clears. Tokens with internal
+whitespace need hand-editing in user.json — same limitation as the
+project-side `cmd_array` editor. Every change calls
+`Workspace:set_lsp_option("clangd", key, value)` which persists
+user.json synchronously and restarts clients.
