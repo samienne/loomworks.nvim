@@ -52,9 +52,3 @@ If codelldb is not registered in `dap.adapters`, `debug.run` shows a
 notification with the Mason install hint and returns `false`. Caller
 falls back to non-debug launch.
 
-## 6. Future: device debug (HarmonyOS native)
-
-Tracked in BACKLOG.md "Native device debug (HarmonyOS via lldb-server)".
-The plan reuses codelldb as the host-side adapter, driving an SDK
-`lldb-server` pushed to the device via `hdc` and connected through
-`hdc fport`.

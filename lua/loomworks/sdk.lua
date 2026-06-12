@@ -1,12 +1,13 @@
 --- loomworks/sdk.lua — SDK domain object.
 ---
---- Represents a resolved platform SDK installation (e.g., OpenHarmony, Android).
+--- Represents a resolved platform SDK installation (e.g., Android NDK,
+--- vendor cross-toolchain).
 --- Created by SDK providers. Modules query SDKs for capabilities via query().
 --- The core orchestrates SDK↔module communication without knowing the
 --- specifics of either side.
 
 --- @class loomworks.SDK
---- @field key string          identity key (e.g., "ohos", "ohos-5.0.1")
+--- @field key string          identity key (e.g., "android-ndk", "android-ndk-27.2.12479018")
 --- @field _type string        provider type id
 --- @field _version string|nil detected version
 --- @field _path string|nil    resolved installation path

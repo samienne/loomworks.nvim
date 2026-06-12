@@ -4,9 +4,9 @@
 --- device serial in user.json.
 
 --- @class loomworks.Device
---- @field serial string unique device identifier (e.g., hdc serial)
+--- @field serial string unique device identifier (e.g., adb serial)
 --- @field display_name string human-readable label (model name or serial)
---- @field provider string module ID that owns this device type (e.g., "harmony")
+--- @field provider string module ID that owns this device type (e.g., "<module-id>")
 --- @field state "online"|"offline"
 --- @field properties table opaque module-specific data (model, OS version, etc.)
 --- @field _removed boolean

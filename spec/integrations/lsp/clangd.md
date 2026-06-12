@@ -121,9 +121,9 @@ file an issue rather than reach for an undocumented escape hatch.
 
 `--malloc-trim` is intentionally **not** in this set even though it
 would be a real memory win on Linux glibc. Older clangd builds reject
-unknown args outright — notably the OpenHarmony SDK's clang-15-era
-clangd refuses to start with `--malloc-trim`. Users on a modern
-clangd can add it via `extra_args` (§12.1).
+unknown args outright — some vendor SDK clangd builds refuse to start
+with `--malloc-trim`. Users on a modern clangd can add it via
+`extra_args` (§12.1).
 
 ### 9.2 User-configurable (via §12 user options)
 

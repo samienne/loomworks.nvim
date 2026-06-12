@@ -9,11 +9,11 @@
 - **[spec/](spec/)** — Per-implementation specs that fulfil the core
   contracts:
   - [`spec/ui.md`](spec/ui.md) — status page, highlights, winbar
-  - [`spec/modules/`](spec/modules/) — cmake, harmony, meson, typescript
+  - [`spec/modules/`](spec/modules/) — cmake, meson, shell, typescript
   - [`spec/integrations/lsp/`](spec/integrations/lsp/) — clangd, …
   - [`spec/integrations/debug/`](spec/integrations/debug/) — codelldb,
     cppdbg, pwa-node, …
-  - [`spec/sdks/`](spec/sdks/) — ohos, …
+  - [`spec/sdks/`](spec/sdks/) — cpp_compiler, …
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — Implementation architecture.
   Defines *how* the system is built: layers, object model, data flow,
   file layout.
@@ -126,7 +126,7 @@ which auto-loads every subdirectory of `C:/src/nvim-plugins` as a lazy.nvim dev 
 
 - **Workspace** — domain container class, defined by `loomworks.json`. Owns all
   registries, business logic, and domain objects
-- **project** — sub-component with a type (cmake, harmony, typescript)
+- **project** — sub-component with a type (cmake, meson, typescript)
 - **configuration** — build variant within a project (Debug, Release)
 - **configuration_set** — cross-project mapping of configurations
 - **tool** — module-specific toolchain (cmake: generator+compiler)
@@ -272,14 +272,14 @@ These are implementation-specific details not covered by the spec or architectur
   `release_build_dir_lock()` in task_tracker on complete/dispose (idempotent).
   Prevents concurrent operations from corrupting shared build directories.
 - **Module domain object** (`module.lua`): wraps a stateless module function
-  table (cmake.lua, harmony.lua, typescript.lua) as a per-workspace domain object.
+  table (cmake.lua, meson.lua, typescript.lua) as a per-workspace domain object.
   Owns the Tool registry for its module type. No `_workspace` back-reference.
   `Project._module` replaces `project.type` string for module identity.
   Created during `_sync_modules()`, first step of remerge.
 - **Tool domain object** (`tool.lua`): represents a toolchain (ninja-gcc-12,
   msvc-17-2022). Owned by `Module._tools` registry, keyed by `tool_key`.
   `Tool._module` references the owning Module. Created from detection results
-  + cached tool_data. Non-keyed modules (harmony, typescript) have a single
+  + cached tool_data. Non-keyed modules (typescript) have a single
   default Tool with nil key. Domain objects carry `_tool` references.
   Accessors: `unit:tool_object()`, `profile:tool_object_for(module)`,
   `pp:tool_object()`.
@@ -380,9 +380,6 @@ These are implementation-specific details not covered by the spec or architectur
 
 **V1 modules:**
 - `cmake` — full implementation
-- `harmony` — full implementation (DevEco/SDK detection, hvigor build pipeline,
-  product×target×ABI configurations, external build dirs, SDK clangd via
-  lsp_configs (SDK clangd via harmony module), cmake_env passthrough, device deployment via hdc)
 - `meson` — full implementation (detection, default Debug/Release/RelWithDebInfo
   configs mapping to buildtype, setup+compile+clean tasks, introspect-based
   parse_targets and get_options, clangd via lsp_configs with auto-generated
@@ -396,6 +393,10 @@ These are implementation-specific details not covered by the spec or architectur
   location to clangd via lsp_configs. No auto-detect, no tools, no
   staleness check, no targets/tests — see spec/modules/shell.md.
 - `typescript` — shim (shows project exists, no build functionality)
+
+Module-specific implementations that target a particular platform/SDK
+(e.g., HarmonyOS / OpenHarmony via `loomworks-module-ohos.nvim`) ship
+as separate plugins and are not part of the core repo.
 
 **Deferred (not in v1):**
 - DAP, test integration beyond ctest, sub-workspaces, cross-project

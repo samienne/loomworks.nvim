@@ -143,7 +143,7 @@ function M.validate(raw, root)
         --
         -- We strip rather than error here. Older versions of the
         -- plugin had a serialization bug that wrote auto-gens
-        -- (`auto:...`, `harmony:...`, etc.) into loomworks.json;
+        -- (`auto:...`, `cmake:...`, etc.) into loomworks.json;
         -- failing the load would leave users with a workspace that
         -- can't open at all and needs manual editing. Stripping plus
         -- a one-shot warning lets the workspace load, the next `:w`

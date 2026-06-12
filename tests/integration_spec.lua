@@ -97,6 +97,21 @@ local mock_modules = {
     },
 }
 
+-- Register mock modules into the global registry too. Some module
+-- consumers (merge.lua, profile.lua, overseer.lua) read through
+-- `require("loomworks.modules")` directly rather than going through
+-- the injected `_deps.modules`, so an inline mock that only
+-- intercepts `_deps.modules.get` leaves those paths unmocked. After
+-- the ohos extraction the `harmony` module no longer lives in this
+-- repo at all; the global lookup MUST hit a registered mock for
+-- these tests to work.
+do
+    local registry = require("loomworks.modules")
+    for id, mod in pairs(mock_modules) do
+        registry.register(id, mod)
+    end
+end
+
 --- Common detected tool entries for tests that need tool-qualified profiles.
 --- Format matches what merge.get_all_profiles expects in _tools_by_type.
 local function make_detected_tools(entries)

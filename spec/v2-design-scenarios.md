@@ -153,15 +153,15 @@ into a TypeScript app's runtime tree before launching the app.
 ## UC-DEPLOY-02 — Pre-build deploy (artifact as build input)
 
 **Goal:** Build a cmake-produced `.so` and place it in a downstream
-project's source tree *before* that project's build, so the downstream
-build picks it up as an input (e.g., bundling a native library into a
-HarmonyOS HAP before assembly).
+cmake project's source tree *before* that project's build, so the
+downstream build picks it up as an input (e.g., bundling a generated
+shared library into an executable's `assets/` directory before its
+build step packages them).
 
 **Preconditions:**
-- Workspace has a cmake project (`NativeLib`) producing a `.so` for an
-  ABI matching the downstream project's expected ABI
-- Workspace has a harmony project (`App`) whose hvigor build expects
-  the `.so` at `App/entry/libs/<abi>/`
+- Workspace has a cmake project (`NativeLib`) producing a `.so`
+- Workspace has a second cmake project (`App`) whose build step
+  expects the `.so` at `App/assets/native/`
 - A profile is active
 
 **Steps:**
@@ -186,36 +186,35 @@ HarmonyOS HAP before assembly).
 
 ---
 
-## UC-DEVICE-01 — Device launch with log following
+## UC-DEVICE-01 — Launch and follow output
 
-**Goal:** Build a HAP, install it on a connected device, launch the
-app, and watch its log output.
+**Goal:** Build a cmake executable, launch it, and watch its stdout in
+a non-disruptive view.
 
 **Preconditions:**
-- Workspace has a harmony project
-- A device-capable profile is active
-- At least one device is connected
+- Workspace has a cmake project that produces an executable
+- A profile is active
+- A launch target is configured for the executable
 
 **Steps:**
-1. User triggers "Run on device" for the configured launch target
-2. If no device serial is pinned to the profile, user picks one
-3. Device install happens
-4. App launches
-5. Log stream starts
+1. User triggers "Launch" for the configured target
+2. Build runs
+3. Process launches
+4. Output stream starts
 
 **Expected outcome:**
-- Install + launch succeed; a single status surface shows progress
-- Log view appears non-disruptively (does not hijack the editor)
-- Log entries from the launched app's PID + bundle are visible
-- When the app exits on device, the log stream and tracked run clear
+- Build + launch succeed; a single status surface shows progress
+- Output view appears non-disruptively (does not hijack the editor)
+- Lines from the launched process are visible
+- When the process exits, the output stream and tracked run clear
   automatically
 
 **Failure modes:**
-- User has to manually dispose the log task to recover editor
-  responsiveness (see BACKLOG: device log sluggishness)
-- Log stream mixes in stale entries from before the launch
-- Stop action only closes the local log without terminating the
-  on-device process
+- User has to manually dispose the output task to recover editor
+  responsiveness
+- Output stream mixes in stale entries from before the launch
+- Stop action only closes the local view without terminating the
+  process
 
 ---
 

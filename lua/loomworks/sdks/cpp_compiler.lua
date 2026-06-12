@@ -2,9 +2,9 @@
 --- SDK provider.
 ---
 --- Lets the user pin a specific compiler installation (typically a
---- cross-compiler or a custom build) to a profile. Unlike the ohos
---- provider, there is no auto-detection — the user must explicitly
---- declare the path. We treat the compiler binary as the SDK's
+--- cross-compiler or a custom build) to a profile. There is no
+--- auto-detection — the user must explicitly declare the path. We
+--- treat the compiler binary as the SDK's
 --- "installation path"; everything else (family, version, sibling
 --- clangd, C-driver counterpart) is derived by
 --- `loomworks.cpp_compilers.probe_path`.
@@ -50,8 +50,8 @@ function P.validate(path)
     -- A short path-derived token lets `derive_key` produce stable
     -- distinct ids for two custom clang builds of the same version
     -- living in different directories. Uses the parent-directory
-    -- basename when meaningful (e.g. "/opt/harmony-clang/bin/clang++"
-    -- → "harmony-clang"), otherwise the compiler basename.
+    -- basename when meaningful (e.g. "/opt/vendor-clang/bin/clang++"
+    -- → "vendor-clang"), otherwise the compiler basename.
     local parent = path:match("^(.+)[/\\][^/\\]+[/\\][^/\\]+$")
     local token = parent and parent:match("[^/\\]+$") or nil
     if not token or token == "" then
@@ -70,7 +70,7 @@ end
 --- Version-constraint matching. Compiler SDKs don't currently
 --- participate in version constraints from loomworks.json (the SDK
 --- key already pins exactly), so we accept anything that has the
---- right type — matches the ohos provider's behaviour for
+--- right type — matches other SDK providers' behaviour for
 --- unconstrained queries.
 --- @return boolean
 function P.match_version()
@@ -83,7 +83,7 @@ end
 --- (the profile pins by key, so collisions would conflate them).
 ---
 --- Result: `cpp_compiler-<family>-<version>-<path_token>`
----   e.g. `cpp_compiler-clang-19.0.0-harmony-clang`
+---   e.g. `cpp_compiler-clang-19.0.0-vendor-clang`
 ---
 --- When validate didn't yield a family (unknown compiler), uses
 --- `cpp` in its place so the shape stays parseable.

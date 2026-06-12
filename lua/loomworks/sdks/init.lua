@@ -26,7 +26,7 @@ function M.list()
 end
 
 --- Get a provider by ID. Lazy-loads and caches.
---- @param id string provider identifier (e.g., "ohos")
+--- @param id string provider identifier (e.g., "cpp_compiler")
 --- @return table|nil provider module
 function M.get(id)
     if _providers[id] then

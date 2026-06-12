@@ -6,7 +6,7 @@
 local Tool = require("loomworks.tool")
 
 --- @class loomworks.Module
---- @field id string module type identifier (e.g., "cmake", "harmony", "typescript")
+--- @field id string module type identifier (e.g., "cmake", "typescript")
 --- @field impl table raw module function table from require()
 --- @field has_keyed_tools boolean whether tools have unique keys
 --- @field languages string[] languages supported by this module (e.g. {"c++"})

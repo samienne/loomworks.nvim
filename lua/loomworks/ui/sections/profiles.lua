@@ -160,7 +160,7 @@ local function render_profile_details(tree, profile, lw)
 
     -- Device selection: per-profile, gated on the profile actually
     -- containing a device-capable module project. A cmake-only profile
-    -- in a workspace that also has harmony shouldn't show this row.
+    -- in a multi-module workspace shouldn't show this row.
     if profile:has_device_module() then
         local device = profile:device()
         local device_text, device_hl

@@ -25,15 +25,28 @@ function M.get(id)
 end
 
 --- Get all registered module IDs.
+---
+--- Discovery walks the runtime path for `lua/loomworks/modules/*.lua`.
+--- Any plugin (built-in or third-party) that ships a file at that
+--- import path appears here. Mirrors the SDK provider registry in
+--- `loomworks/sdks/init.lua` so the registration mechanism is the same
+--- whichever side of the boundary the module lives on.
 --- @return string[]
 function M.list()
-    -- Ensure built-in modules are loaded
-    for _, id in ipairs({ "cmake", "harmony", "meson", "shell", "typescript" }) do
-        M.get(id)
-    end
     local ids = {}
-    for id in pairs(registry) do
-        ids[#ids + 1] = id
+    local seen = {}
+    local files = vim.api.nvim_get_runtime_file("lua/loomworks/modules/*.lua", true)
+    for _, path in ipairs(files) do
+        local id = path:match("modules[/\\](.+)%.lua$")
+        if id and id ~= "init" and not seen[id] then
+            seen[id] = true
+            -- Lazy-load so an invalid module doesn't poison list()
+            -- itself; M.get drops modules whose require fails or whose
+            -- module table is missing the required `id` field.
+            if M.get(id) then
+                ids[#ids + 1] = id
+            end
+        end
     end
     table.sort(ids)
     return ids

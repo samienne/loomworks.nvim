@@ -14,12 +14,12 @@ or SDKs in normative prose — implementations are documented in
 sibling files under `spec/`:
 
 - [`spec/modules/`](spec/modules/) — per-module implementations (cmake,
-  harmony, meson, shell, typescript)
+  meson, shell, typescript)
 - [`spec/integrations/lsp/`](spec/integrations/lsp/) — per-LSP-server
   integrations (clangd, …)
 - [`spec/integrations/debug/`](spec/integrations/debug/) — per-DAP-adapter
   contracts (codelldb, cppdbg, pwa-node, …)
-- [`spec/sdks/`](spec/sdks/) — per-SDK-provider details (ohos, …)
+- [`spec/sdks/`](spec/sdks/) — per-SDK-provider details (cpp_compiler, …)
 - [`spec/ui.md`](spec/ui.md) — the status page, highlight groups, and
   winbar/statusline component
 
@@ -63,7 +63,7 @@ top-level organizational unit.
 
 ### 1.2 Project
 
-A project is a sub-component of a workspace with a type (cmake, harmony,
+A project is a sub-component of a workspace with a type (cmake, meson,
 typescript, etc.). Projects are declared in `loomworks.json` and/or
 `loomworks.user.json` under `"projects"` (see §2.4 for the merge model).
 
@@ -88,8 +88,8 @@ the form `prefix:base`, where the prefix is chosen by the module:
   - `variant:` — built-in compile-mode variants (cmake/meson/typescript
     Debug/Release/RelWithDebInfo/MinSizeRel, typescript `default`)
   - `preset:` — CMakePresets.json entries (cmake)
-  - `auto:` — project-file-derived configs (harmony's
-    `auto:default-entry-arm64-v8a` from build-profile.json5)
+  - `auto:` — project-file-derived configs emitted by modules whose
+    configurations come from project metadata rather than fixed variants
 
 Auto-gen configs are read-only — their contents are regenerated from
 the module every load, never persisted. UI shows them in a dimmed
@@ -160,25 +160,6 @@ abstract mixins — not directly buildable, only usable as bases.
 `CMAKE_CONFIGURATION_TYPES` in CMakeLists.txt or standard cmake defaults
 (Debug, Release, RelWithDebInfo, MinSizeRel). User entries in
 the workspace config extend defaults (add options) rather than replace them.
-
-**Harmony configurations**: auto-generated from `build-profile.json5` as
-the cross product of products × module targets × ABI filters. Each
-canonical name is `auto:<product>-<target>-<abi>` (e.g.,
-`auto:default-default-arm64-v8a`, `auto:ohos-default-armeabi-v7a`).
-Products and targets come from the build-profile; ABI filters come
-from the product's `externalNativeOptions.abiFilters`. Non-native
-projects (no ABI filters) use `auto:<product>-<target>` without the
-ABI suffix.
-
-Each harmony configuration stores: `product` (product name), `target`
-(build target name), `abi` (architecture string or nil), `mode`
-(debug/release), `runtime_os` (HarmonyOS/OpenHarmony), `modules` (hvigor
-module names), `module_name` (primary module for build dir path).
-
-When `build-profile.json5` changes (product added, removed, ABI filters
-changed), configurations that no longer match get `_source_missing`
-treatment — they remain visible but marked as unavailable. New
-combinations appear as new configurations.
 
 ### 1.3.1 Project Variables
 
@@ -274,14 +255,13 @@ config under `"configuration_sets"`. It binds one configuration per project.
 
 A tool is a concrete buildable unit — a compiler chain, a kit derived from
 an SDK, or a similar build orchestrator. Every Tool declares a `languages`
-list (e.g. `["c", "c++"]` for ninja+clang, `["rust"]` for rust-nightly,
-`["arkts"]` for DevEco) — the strings are opaque to core, drawn from
-each module's static `languages` declaration unless the producer
-overrides per-tool. Tools are looked up by **string key** from a
-module-owned registry (`Module._tools`); the same kit identity can be
-registered to multiple modules' registries when more than one module
-can consume it (e.g. an OHOS HarmonyOS arm64-v8a kit appears in both
-cmake's and harmony's registries with the same key, different
+list (e.g. `["c", "c++"]` for ninja+clang, `["rust"]` for rust-nightly)
+— the strings are opaque to core, drawn from each module's static
+`languages` declaration unless the producer overrides per-tool. Tools
+are looked up by **string key** from a module-owned registry
+(`Module._tools`); the same kit identity can be registered to multiple
+modules' registries when more than one module can consume it (the kit
+appears under the same key in each registry, with different
 module-specific `data`).
 
 - **Keyed tools** (cmake, meson): cache key encodes the tool —
@@ -308,8 +288,8 @@ Languages are first-class **string identifiers** that drive the
 profile→project→tool resolution. Core treats them as opaque strings —
 no normalization, no canonicalization. Each module declares a static
 `languages` list (e.g. `cmake.languages = {"c++"}`, `meson.languages =
-{"c", "c++"}`, `harmony.languages = {"arkts"}`) that serves as the
-default for that module's configurations and tools.
+{"c", "c++"}`) that serves as the default for that module's
+configurations and tools.
 
 Languages live in three places:
 
@@ -340,7 +320,7 @@ in the config automatically updates the profile.
 string keys (same shape in user.json and loomworks.json). Order is
 user-controlled — first-match-per-language wins during resolution.
 Tool keys carry SDK provenance via the kit_id prefix
-(e.g. `ohos-harmonyos-arm64-v8a`); there is no separate `sdk` field
+(e.g. `<sdk>-<platform>-<arch>`); there is no separate `sdk` field
 on the profile.
 
 Resolution is **language-keyed**:
@@ -372,7 +352,7 @@ Examples:
 | Profile shape | Key |
 |---------------|-----|
 | Set-based, single tool | `debug:ninja-gcc-12` |
-| Set-based, shared kit (cmake + harmony) | `Debug-harmony:ohos-harmonyos-arm64-v8a` |
+| Set-based, SDK kit | `debug-cross:<sdk>-<platform>-<arch>` |
 | Multi-language (cmake + rust) | `debug:ninja-clang-22.1.0+rust-nightly` |
 | Set-based, no tool | `debug` |
 | Pinned | `project/config_key` (configuration_set is nil) |
@@ -427,8 +407,8 @@ entire system. They are never destroyed during a session.
 
 A device is a physical or emulated deployment target (phone, tablet,
 emulator). Devices are identified by a **serial string** assigned by the
-device connector tool (e.g., `hdc` for HarmonyOS, `adb` for Android).
-The serial is stable across USB reconnections and emulator restarts.
+module-supplied device connector tool. The serial is stable across USB
+reconnections and emulator restarts.
 
 **Fields**:
 
@@ -436,7 +416,7 @@ The serial is stable across USB reconnections and emulator restarts.
 |-------|------|-------------|
 | `serial` | string | Unique device identifier (identity key) |
 | `display_name` | string | Human-readable label (model name or serial) |
-| `provider` | string | Module ID that owns this device type (e.g., `"harmony"`) |
+| `provider` | string | Module ID that owns this device type |
 | `state` | string | `"online"` or `"offline"` |
 | `properties` | table | Opaque module-specific data (model, OS version, etc.) |
 
@@ -474,31 +454,24 @@ UI or store device selections.
         "configurations": {
           "Debug": {},
           "Release": {},
-          "ohos-debug": {
-            "toolchain": "${OHOS_NDK_HOME}/cmake/ohos.toolchain.cmake"
+          "cross-debug": {
+            "toolchain": "${VENDOR_SDK_ROOT}/cmake/cross.toolchain.cmake"
           }
         },
         "compile_commands_from": "ninja-debug",
-        "clangd": "${OHOS_NDK_HOME}/llvm/bin/clangd"
+        "clangd": "${VENDOR_SDK_ROOT}/llvm/bin/clangd"
       }
     },
-    "Frontend": { "typescript": {} },
-    "NativeDemo": {
-      "harmony": {
-        "cmake_env": {
-          "CORE_SUBMODULE_ROOT": "${workspace_root}/submodules"
-        }
-      }
-    }
+    "Frontend": { "typescript": {} }
   },
   "configuration_sets": {
-    "Debug":   { "App": "Debug",   "Frontend": "development", "NativeDemo": "default-default-arm64-v8a" },
-    "Release": { "App": "Release", "Frontend": "production",  "NativeDemo": "default-default-arm64-v8a" }
+    "Debug":   { "App": "Debug",   "Frontend": "development" },
+    "Release": { "App": "Release", "Frontend": "production"  }
   },
   "profiles": {
-    "cross-ohos": {
+    "cross": {
       "configuration_set": "Debug",
-      "kit_id": "ninja-ohos-clang"
+      "kit_id": "ninja-cross-clang"
     }
   }
 }
@@ -521,7 +494,7 @@ UI or store device selections.
 | `depends_on` | Reserved for future cross-project dependencies (ignored in v1) |
 | `<type>` | Inner key determines project type; value is the type-specific config |
 
-The type key (`cmake`, `meson`, `harmony`, `typescript`) is the only required field. Its
+The type key (`cmake`, `meson`, `typescript`, etc.) is the only required field. Its
 value is a table passed to the module as `type_config`.
 
 **CMake type_config fields**:
@@ -536,19 +509,12 @@ Configuration overrides may include:
 - `toolchain`: path to CMake toolchain file (`${ENV_VAR}` expanded, no absolute paths)
 - `role`: `"compile_commands"` hides the configuration from UI
 
-**Harmony type_config fields**:
-
-| Field | Description |
-|-------|-------------|
-| `configurations` | Dict of config_name → config overrides |
-| `cmake_env` | Dict of env_var → value, passed to hvigor's cmake as environment variables. Supports `${workspace_root}` expansion. |
-
 **Explicit profile fields**:
 
 | Field | Description |
 |-------|-------------|
 | `configuration_set` | Name of a configuration set to derive mappings from |
-| `kit_id` | Tool key to use (e.g., `"ninja-ohos-clang"`) |
+| `kit_id` | Tool key to use (e.g., `"ninja-clang-18.0.0"`) |
 
 ---
 
@@ -599,7 +565,7 @@ metadata lives here. All UI mutations land here.
 The `device` field maps profile keys to device serial strings:
 ```json
 "device": {
-    "Debug:ohos-sdk-5.0": "FMR0225108000951"
+    "Debug:<sdk>-<platform>-<arch>": "FMR0225108000951"
 }
 ```
 
@@ -930,7 +896,7 @@ Sparse record of what has actually been configured and built.
   deserialization, the cache data is consumed and discarded — no runtime
   code reads from it.
 - **External build directories**: Modules using external build systems
-  (e.g., harmony/hvigor) may have build directories outside `.nvim/build/`.
+  may have build directories outside `.nvim/build/`.
   The cache key for these is their absolute path (no `.nvim/` prefix to
   strip). `absolute_build_dir()` detects absolute paths and returns them
   unchanged. Deletion safety requires the path to be under workspace root.
@@ -949,7 +915,7 @@ The merge operation produces the active set by reconciling all three files:
 ### 2.6 Environment variable resolution for toolchain paths
 
 `loomworks.json` uses `${ENV_VAR}` references for toolchain paths (e.g.,
-`"toolchain": "${OHOS_NDK_HOME}/cmake/ohos.toolchain.cmake"`). These
+`"toolchain": "${VENDOR_SDK_ROOT}/cmake/cross.toolchain.cmake"`). These
 references are never stored resolved in `loomworks.json` — that file stays
 portable. The cache stores the resolved absolute path alongside other tool
 properties.
@@ -958,8 +924,8 @@ properties.
 
 | File | Stores | Example |
 |------|--------|---------|
-| `loomworks.json` | Variable reference | `${OHOS_NDK_HOME}/cmake/ohos.toolchain.cmake` |
-| `cache.json` | Resolved absolute path | `/opt/ohos-sdk/10/cmake/ohos.toolchain.cmake` |
+| `loomworks.json` | Variable reference | `${VENDOR_SDK_ROOT}/cmake/cross.toolchain.cmake` |
+| `cache.json` | Resolved absolute path | `/opt/vendor-sdk/10/cmake/cross.toolchain.cmake` |
 
 **Resolution timing**: Environment variables are resolved at **task launch
 time** (configure/build), not at startup or UI render. When the user presses
@@ -1617,7 +1583,7 @@ subprocess spawning, no deep file parsing. See per-module specs in
 Check whether the project directory is valid for this module type. `path` is
 the absolute project directory. `config` is the type_config from the
 workspace config (the value of the module's type key, e.g. the dict under
-`"cmake"` or `"harmony"`).
+`"cmake"` or `"meson"`).
 
 - Return `{ valid = false, warnings = {...} }` to reject
 - Return `{ valid = true, warnings = {...} }` with non-fatal warnings
@@ -1856,9 +1822,6 @@ this contract in its own spec file:
 
 - [`spec/modules/cmake.md`](spec/modules/cmake.md) — cmake projects
   (CMakePresets, file-api target discovery, ctest/gtest integration)
-- [`spec/modules/harmony.md`](spec/modules/harmony.md) — HarmonyOS /
-  OpenHarmony projects (build-profile.json5 configurations, hvigor
-  build dirs, hdc device interface)
 - [`spec/modules/meson.md`](spec/modules/meson.md) — meson projects
   (introspect-driven discovery, per-compiler kits)
 - [`spec/modules/shell.md`](spec/modules/shell.md) — generic shell-command
@@ -2136,8 +2099,8 @@ The launch flow (section 9.7) is extended with both deploy phases:
 3. **Build dependencies** (explicit `depends_on` + deploy source projects)
 4. **Execute pre-build deploy steps** (`pre_build: true` sources).
    These run after deps are built so their outputs are up to date, but
-   before the launch target builds so hvigor/cmake sees the copied files
-   as inputs.
+   before the launch target builds so the downstream build sees the copied
+   files as inputs.
 5. **Build self** (if buildable)
 6. **Execute post-build deploy steps** (`pre_build: false`, default).
    These land artifacts near the launch binary (e.g., `.node` files,
@@ -2660,9 +2623,9 @@ the integration. Core sees only the opaque `LspRestartDecision`.
 
 ## 10. SDK Provider Contract
 
-An SDK is a resolved platform installation (e.g., a HarmonyOS / OHOS
-SDK shipped inside DevEco Studio, an Android NDK, an embedded vendor
-toolchain) that supplies tools to one or more modules. SDK providers
+An SDK is a resolved platform installation (e.g., an Android NDK, an
+embedded vendor toolchain, a cross-compiler distribution) that supplies
+tools to one or more modules. SDK providers
 are pluggable: each provider lives at `lua/loomworks/sdks/<id>.lua`
 and registers itself by being required from `lua/loomworks/sdks/init.lua`
 or another runtime path file.
@@ -2673,7 +2636,7 @@ Each provider table exposes:
 
 | Field | Purpose |
 |-------|---------|
-| `id` | Provider identity (e.g., `"ohos"`) — stable across versions |
+| `id` | Provider identity (e.g., `"android-ndk"`) — stable across versions |
 | `display_name` | Human-readable name shown in pickers and status |
 | `detect_all() → { path, version }[]` | Enumerate installations on the host. Pure detection — no validation, no domain object creation |
 | `validate(path) → boolean` | Return whether a given path looks like a valid installation of this SDK type |
@@ -2712,8 +2675,8 @@ module in its own spec file.
 
 A profile may pin an SDK by `key` in user.json. On reload, the SDK
 is resolved by `key` against the workspace's known providers. If the
-provider can no longer find the installation (e.g., DevEco moved or
-uninstalled), the profile renders as incomplete with a rebase
+provider can no longer find the installation (e.g., the SDK was moved
+or uninstalled), the profile renders as incomplete with a rebase
 action. No fallback guessing — incomplete profiles surface
 explicitly.
 
@@ -2738,8 +2701,6 @@ Configuration, and on-disk artefacts come out malformed.
 Each SDK provider documents its detection logic, validation rules,
 and per-module capability shape in its own spec file:
 
-- [`spec/sdks/ohos.md`](spec/sdks/ohos.md) — OpenHarmony /
-  HarmonyOS via DevEco Studio.
 - [`spec/sdks/cpp_compiler.md`](spec/sdks/cpp_compiler.md) —
   User-declared C/C++ compiler (cross-compiler / custom build).
 
@@ -2836,13 +2797,13 @@ artifact onto a device. Does NOT execute the command — core runs it
 via overseer. Always reinstalls (no freshness tracking).
 
 `check_output(lines: string[]) → string|nil` is an optional failure
-detector. Some device connectors (notably `hdc`) exit with status 0
-even when an install is rejected by the device-side bundle manager;
-without parsing the output, the build → deploy → install → launch
-chain falls through silently and the device launches the
-previously-installed version of the app. Returning a non-nil string
-fails the install task and breaks the chain. Modules that wrap
-exit-code-honest connectors may omit this field.
+detector. Some device connectors exit with status 0 even when an
+install is rejected by the device-side package manager; without
+parsing the output, the build → deploy → install → launch chain
+falls through silently and the device launches the previously
+installed version of the app. Returning a non-nil string fails the
+install task and breaks the chain. Modules that wrap exit-code-honest
+connectors may omit this field.
 
 **`device_launch(tool_data, device_serial, launch_info) → { cmd, args, env?, check_output? }`**
 
@@ -2959,10 +2920,10 @@ The target picker collects from all three sources:
 ### 11.5 Device interface implementations
 
 Devices are typically implemented inside the module that knows the
-relevant connector tool. See per-module specs:
-
-- [`spec/modules/harmony.md`](spec/modules/harmony.md) §6 —
-  HarmonyOS device interface via `hdc`.
+relevant connector tool. No v1 core module ships a device interface;
+device-capable modules (e.g. mobile/embedded targets) live in
+separate plugins and document their connector usage in their own
+specs.
 
 ---
 

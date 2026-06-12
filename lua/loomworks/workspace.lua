@@ -1145,8 +1145,8 @@ end
 ---     arch = string, label = string }
 ---
 --- Host entries are emitted only when **every** tool-needing module
---- in the profile has host tools (a host-cmake + harmony profile is
---- unbuildable, so no host entries appear there).
+--- in the profile has host tools (a host-cmake + cross-only profile
+--- is unbuildable, so no host entries appear there).
 --- @param profile loomworks.Profile
 --- @return table[]
 function Workspace:available_profile_toolchains(profile)
@@ -4605,7 +4605,7 @@ end
 
 --- Find an SDK by key.
 --- Matches exact key first, then falls back to type-prefix match
---- (e.g., "ohos" matches "ohos-6.0.1.251" for migration).
+--- (e.g., "android-ndk" matches "android-ndk-27.2.12479018" for migration).
 --- @param key string
 --- @return loomworks.SDK|nil
 function Workspace:find_sdk(key)
@@ -4613,7 +4613,7 @@ function Workspace:find_sdk(key)
     for _, sdk in ipairs(self._sdks) do
         if sdk.key == key then return sdk end
     end
-    -- Prefix match: "ohos" matches "ohos-6.0.1.251"
+    -- Prefix match: "android-ndk" matches "android-ndk-27.2.12479018"
     for _, sdk in ipairs(self._sdks) do
         if sdk.key:sub(1, #key) == key and (sdk.key:sub(#key + 1, #key + 1) == "-" or sdk.key:sub(#key + 1, #key + 1) == "") then
             return sdk
@@ -4715,7 +4715,7 @@ end
 --- Updates config, remerges, and saves to disk.
 --- Mappings are added separately via ConfigurationSet:update_mapping().
 --- @param key string project key
---- @param type string module type ("cmake", "typescript", "harmony")
+--- @param type string module type ("cmake", "typescript")
 --- @param path? string relative path (defaults to key)
 --- @return boolean ok, string|nil err
 function Workspace:add_project(key, type, path)

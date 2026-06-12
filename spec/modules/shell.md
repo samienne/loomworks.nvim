@@ -181,7 +181,7 @@ Each field produces an inline row with an editor:
 | `build_cmd` | `cmd_array` | Same. |
 | `clean_cmd` | `cmd_array` | Same. Empty value means "fall back to wiping build dir." |
 | `compile_commands` | `string` | Single path. |
-| `env` | `env_dict` | Existing harmony-style env editor (per-entry rows + Add). |
+| `env` | `env_dict` | Dict-style env editor (per-entry rows + Add). |
 | `clangd` | `string` | Single path override. |
 
 Project-level `variables` and per-configuration variable overrides

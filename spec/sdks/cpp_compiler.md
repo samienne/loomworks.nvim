@@ -41,7 +41,7 @@ key derivation:
 |------|--------|
 | `version` | parsed from `--version` |
 | `family` | "clang" / "gcc" / nil (unknown) |
-| `basename_token` | sanitized parent-dir name (e.g. `harmony-clang` from `/opt/harmony-clang/bin/clang++`), or the binary basename when no parent dir |
+| `basename_token` | sanitized parent-dir name (e.g. `cross-clang` from `/opt/cross-clang/bin/clang++`), or the binary basename when no parent dir |
 
 ## 4. Key derivation (`derive_key`)
 
@@ -51,7 +51,7 @@ Override of the workspace default. Returns:
 cpp_compiler-<family>-<version>-<basename_token>
 ```
 
-e.g. `cpp_compiler-clang-19.0.0-harmony-clang`. The path-derived
+e.g. `cpp_compiler-clang-19.0.0-cross-clang`. The path-derived
 token ensures two custom builds of the same family and version
 living at different paths produce distinct SDK keys — the profile
 pins by key, so collisions would conflate them.

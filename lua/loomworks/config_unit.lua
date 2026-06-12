@@ -102,7 +102,7 @@ end
 --- ProfileProject — the same ConfigUnit can be valid in one
 --- profile and invalid in another. Action gates that operate on a
 --- ConfigUnit use this helper to check against the active profile
---- (which is what hvigor / overseer will actually use).
+--- (which is what overseer will actually use).
 --- @return string|nil reason
 function ConfigUnit:tool_compat_error()
     local ws = self._workspace

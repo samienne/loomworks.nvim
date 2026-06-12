@@ -296,7 +296,7 @@ end
 --- Compute and set self.key from the profile's data fields.
 --- Format: `<set>:<sorted-deduped-tool-keys>` joined with `+`.
 --- The SDK key is NOT included separately — tool keys carry SDK
---- provenance via their kit_id prefix (e.g. `ohos-harmonyos-arm64-v8a`).
+--- provenance via their kit_id prefix (e.g. `ninja-clang-18`).
 function Profile:_derive_key()
     if not self._configuration_set_name then
         self.key = "unnamed"
@@ -753,7 +753,7 @@ end
 
 --- Does this profile contain a project from a device-capable module?
 --- Used to gate the Device line in the UI per-profile (rather than
---- per-workspace), so a mixed cmake+harmony workspace doesn't surface
+--- per-workspace), so a multi-module workspace doesn't surface
 --- a meaningless Device row under its cmake profile.
 --- @return boolean
 function Profile:has_device_module()
