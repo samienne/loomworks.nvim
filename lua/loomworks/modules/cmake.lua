@@ -3,6 +3,7 @@ local M = {}
 local io_mod = require("loomworks.io")
 
 M.id = "cmake"
+M.api_version = 1
 M.has_keyed_tools = true
 M.has_options = true
 -- CMake's default `project(name)` call enables both C and CXX, so

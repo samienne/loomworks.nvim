@@ -22,6 +22,7 @@ local cpp_compilers = require("loomworks.cpp_compilers")
 
 local P = {}
 P.id = "cpp_compiler"
+P.api_version = 1
 P.display_name = "C/C++ Compiler"
 P.path_prompt = "Path to C/C++ compiler executable"
 

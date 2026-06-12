@@ -376,6 +376,22 @@ These are implementation-specific details not covered by the spec or architectur
   option. Orphaned objects (project removed from config but cache still
   references it) are NOT errors — they are handled gracefully.
 
+## Plugin API versioning
+
+`lua/loomworks/api_versions.lua` holds the strict-equality version
+constants for the module + SDK plugin interfaces (`module = 1`,
+`sdk = 1`). Module / SDK files declare `M.api_version = N` matching;
+the registry's `M.get(id)` refuses to load mismatched plugins with a
+clear `vim.notify` error. No backwards compatibility — bump core's
+constant when the contract surface changes, and every plugin
+shipping that interface category bumps in lockstep. See
+[specification.md §8.0](specification.md) for the bump policy.
+
+Unknown-type / rejected-module projects in `loomworks.json` are
+preserved verbatim through load → in-memory model → serialize, so
+data is never lost when a plugin is missing or version-mismatched
+(see specification.md §8.0).
+
 ## v1 Scope
 
 **V1 modules:**

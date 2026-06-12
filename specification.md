@@ -1566,6 +1566,39 @@ A module is a handler for a project type. Modules implement a standard
 interface that the core system calls for project discovery, task generation,
 and staleness detection.
 
+### 8.0 API version
+
+Every module table declares `M.api_version = N` matching the constant
+in `lua/loomworks/api_versions.lua` (`module` field). The module
+registry (`loomworks.modules.get(id)`) does a strict-equality check
+at load time: a module whose declared version doesn't match core's
+expectation is **refused**, with a one-shot `vim.notify` warning
+naming the file, the declared version, and the expected version.
+
+There is no backwards compatibility. A version bump in core means
+every plugin that ships that module type must bump in lockstep.
+
+**When to bump**: required field added, function signature changed,
+return shape changed, capability flag semantics shifted. Adding a
+new *optional* field with a sensible default does NOT require a
+bump. The strict-equality enforcement makes false bumps painful
+(every plugin breaks), so the rule naturally self-enforces.
+
+A rejected module is treated the same as a missing one. Projects in
+`loomworks.json` whose type maps to the rejected module are kept in
+the in-memory model with their full `type_config` (configurations,
+launch, variables, deploy), and round-trip cleanly through
+`_serialize_config` / `_serialize_user`. The user can edit other
+projects, publish, revert, or delete without losing data on the
+rejected-type project. Build, launch, and configure operations
+on it are simply unavailable until the version mismatch is
+resolved.
+
+The SDK provider registry uses the same mechanism with the `sdk`
+field of `api_versions.lua`. LSP and debug integrations do not yet
+have a versioned registry; they're wired more directly into core
+today.
+
 ### 8.1 Required methods
 
 **`detect(abs_path) → { marker }|nil`**
