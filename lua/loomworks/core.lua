@@ -191,6 +191,13 @@ function Core:_on_files_read(root, paths, results)
         return
     end
 
+    -- Tear down any previous workspace before replacing — releases its
+    -- file tracker, cancels in-flight tasks, detaches event subscribers.
+    -- Fire-and-forget the returned future; on swap we don't wait.
+    if self._workspace then
+        self._workspace:teardown()
+    end
+
     -- Create Workspace instance with registries
     self._workspace = Workspace.new(self, data)
 
@@ -373,10 +380,11 @@ function Core:project_for_buf(bufnr)
     return best_project
 end
 
---- Stop file tracking and clean up.
+--- Detach the active workspace fully. Called on VimLeave-style shutdown.
 function Core:shutdown()
     if self._workspace then
-        self._workspace:_stop_tracking()
+        self._workspace:teardown()
+        self._workspace = nil
     end
 end
 

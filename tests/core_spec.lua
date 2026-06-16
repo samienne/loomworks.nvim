@@ -613,12 +613,14 @@ describe("Core", function()
     end)
 
     describe("shutdown", function()
-        it("stops file tracker", function()
+        it("tears down the workspace (stops file tracker, drops the ref)", function()
             local core = make_core()
             core:setup({ root = "/root" })
-            assert.is_not_nil(core._workspace._tracker)
+            local ws = core._workspace
+            assert.is_not_nil(ws._tracker)
             core:shutdown()
-            assert.is_nil(core._workspace._tracker)
+            assert.is_nil(ws._tracker)
+            assert.is_nil(core._workspace)
         end)
 
         it("is safe without tracker", function()

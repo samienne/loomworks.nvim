@@ -5521,6 +5521,54 @@ function Workspace:on(event, handler)
     }
 end
 
+-- ---------------------------------------------------------------------------
+-- Teardown
+-- ---------------------------------------------------------------------------
+
+--- Detach all resources this workspace owns. Called by Core when the
+--- workspace is replaced (cwd change → new workspace), on shutdown,
+--- and by `:LoomworksReload`.
+---
+--- Best-effort: never raises. Covers:
+---   1. File tracker — stops the libuv fs_poll handle.
+---   2. In-flight overseer tasks — collects `_task_id`s from config
+---      units and asks overseer to stop each. Returns a Future that
+---      resolves when all have actually stopped, so reload can wait.
+---   3. Event subscriptions registered via `Workspace:on`.
+---   4. Build dir locks — drops the table. Pending waiters' fn refs
+---      were closures over this workspace and shouldn't run on a stale
+---      one; on_complete handlers' release calls become no-ops.
+---   5. Per-workspace runtime caches (status cursor, etc.).
+---
+--- Not covered (intentional): plugin-global augroups, user commands,
+--- and keymaps. Those are owned by `setup()` and self-heal on re-run
+--- via `clear = true` / `force = true` / `vim.keymap.set` overwrite.
+--- Overseer task_tracker subscribers also stay registered — they fail
+--- fast against a torn-down workspace and accumulate slightly per
+--- reload. Acceptable for a dev-only feature.
+--- @return loomworks.Future resolves once tasks are confirmed stopped
+function Workspace:teardown()
+    self:_stop_tracking()
+
+    local events = self._core._deps.events
+    for _, entry in ipairs(self._event_handlers) do
+        pcall(events.off, entry.event, entry.handler)
+    end
+    self._event_handlers = {}
+
+    local task_ids = {}
+    for _, unit in ipairs(self._config_units) do
+        if unit._task_id then
+            task_ids[#task_ids + 1] = unit._task_id
+        end
+    end
+
+    self._build_dir_locks = {}
+    self._status_cursor_row = nil
+
+    return self:stop_tasks_then(task_ids)
+end
+
 --- Handle a tracked file change.
 --- @param path string absolute file path that changed
 --- @param content string|nil new raw content
