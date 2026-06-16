@@ -167,6 +167,18 @@ These are implementation-specific details not covered by the spec or architectur
   (projects, profiles, config sets, config units, profile projects, tools,
   build dirs) and all business logic (sync, merge, cache, operations, deletion,
   task tracking, tool scanning). Domain objects store a `_workspace` back-reference.
+- **Workspace lifecycle**: `Workspace:on(event, handler)` is the registration
+  helper for any subscriber that should detach on workspace swap or
+  `:LoomworksReload` — i.e. any subscriber that mutates workspace state or
+  closes over a workspace object. Plugin-global subscribers (UI re-render,
+  lualine) keep using `events.on` directly. `Workspace:teardown` walks
+  `_event_handlers`, stops the file tracker, cancels in-flight overseer
+  tasks, and drops `_build_dir_locks`. Core calls it on workspace swap
+  (cwd change) and shutdown. The dev hatch `:LoomworksReload`
+  (`lua/loomworks/reload.lua`) calls `core:shutdown()` then delegates to
+  `lazy.reload` for `package.loaded` clearing + config re-execution.
+  Overseer task_tracker subscribers are not detached — they fail fast
+  against a torn-down workspace; acceptable leak for a dev-only feature.
 - **Core is infrastructure-only**: `Core.new(deps)` with injectable
   dependencies for testing. Owns I/O, modules, events, file tracking, setup.
   Thin delegation wrappers forward to Workspace so init.lua callers continue
