@@ -63,12 +63,14 @@ end, {
   nargs = "?",
   complete = "dir",
   desc = "loomworks: initialize workspace from directory (default: cwd)",
+  force = true,
 })
 
 vim.api.nvim_create_user_command("LoomworksInfo", function()
   require("loomworks").open()
 end, {
   desc = "loomworks: show workspace status page",
+  force = true,
 })
 
 vim.api.nvim_create_user_command("LoomworksFidgetClear", function()
@@ -88,6 +90,7 @@ vim.api.nvim_create_user_command("LoomworksFidgetClear", function()
   end
 end, {
   desc = "loomworks: cancel any stuck fidget progress popups",
+  force = true,
 })
 
 vim.api.nvim_create_user_command("LoomworksLog", function()
@@ -138,6 +141,14 @@ vim.api.nvim_create_user_command("LoomworksLog", function()
   end, { buffer = buf })
 end, {
   desc = "loomworks: open workspace log file",
+  force = true,
+})
+
+vim.api.nvim_create_user_command("LoomworksReload", function()
+  require("loomworks.reload").reload()
+end, {
+  desc = "loomworks: tear down active workspace and reload plugin code (dev hatch)",
+  force = true,
 })
 
 -- Auto-load: check cwd on plugin load, directory changes, and session restore

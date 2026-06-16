@@ -21,8 +21,11 @@
 --- @field _refresh_scheduled boolean
 --- @field _event_handlers table[] { event_name, handler } for cleanup
 --- @field _ns number namespace id
---- @field _remember_cursor boolean restore cursor row across open/close cycles
---- @field _saved_cursor number[]|nil last-known cursor position (1-based row, 0-based col)
+--- @field _cursor_storage { get: fun():integer?, set: fun(row: integer) }|nil
+---     opt-in cursor-row persistence across open/close cycles.
+---     `get` is called after the first refresh to seed the cursor;
+---     `set` is called from `_cleanup` with the row at close time.
+---     Storage lives outside the view — typically on the workspace.
 local View = {}
 View.__index = View
 
@@ -49,8 +52,7 @@ function View.new(opts)
         _event_handlers = {},
         _cursor_autocmd = nil,
         _ns = vim.api.nvim_create_namespace("loomworks_view"),
-        _remember_cursor = opts.remember_cursor or false,
-        _saved_cursor = nil,
+        _cursor_storage = opts.cursor_storage,
     }, View)
 end
 
@@ -152,14 +154,16 @@ function View:open(win_overrides)
         })
     end
     self:refresh()
-    if self._remember_cursor and self._saved_cursor then
-        local line_count = vim.api.nvim_buf_line_count(self._bufnr)
-        local row = math.min(self._saved_cursor[1], line_count)
-        if row >= 1 then
-            pcall(vim.api.nvim_win_set_cursor, self._snacks_win.win,
-                { row, self._saved_cursor[2] or 0 })
+    if self._cursor_storage then
+        local row = self._cursor_storage.get()
+        if row then
+            local line_count = vim.api.nvim_buf_line_count(self._bufnr)
+            local clamped = math.min(row, line_count)
+            if clamped >= 1 then
+                pcall(vim.api.nvim_win_set_cursor, self._snacks_win.win, { clamped, 0 })
+            end
+            if self._lock_to_items then self:_snap_cursor() end
         end
-        if self._lock_to_items then self:_snap_cursor() end
     end
 end
 
@@ -426,9 +430,9 @@ function View:_setup_events()
 end
 
 function View:_cleanup()
-    if self._remember_cursor and self._snacks_win and self._snacks_win:valid() then
+    if self._cursor_storage and self._snacks_win and self._snacks_win:valid() then
         local ok, cur = pcall(vim.api.nvim_win_get_cursor, self._snacks_win.win)
-        if ok then self._saved_cursor = cur end
+        if ok then self._cursor_storage.set(cur[1]) end
     end
     if self._timer then
         vim.fn.timer_stop(self._timer)

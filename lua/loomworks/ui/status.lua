@@ -93,7 +93,16 @@ local tree = Tree.new(render_fn)
 
 local view = View.new({
     widget = tree,
-    remember_cursor = true,
+    cursor_storage = {
+        get = function()
+            local ws = require("loomworks").get_workspace()
+            return ws and ws._status_cursor_row
+        end,
+        set = function(row)
+            local ws = require("loomworks").get_workspace()
+            if ws then ws._status_cursor_row = row end
+        end,
+    },
     win = {
         position = "float",
         width = 100,
