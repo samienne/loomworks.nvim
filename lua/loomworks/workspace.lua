@@ -454,6 +454,7 @@ end
 --- @field _user_cs_names table<string, boolean> config_set names from user.json
 --- @field _user_provenance table<string, table> per-project sub-item provenance from merge
 --- @field _shared_baseline table|nil raw parsed loomworks.json for modified-state computation
+--- @field _status_cursor_row integer|nil last cursor row on the status page; runtime-only, not persisted
 local Workspace = {}
 Workspace.__index = Workspace
 
@@ -492,6 +493,7 @@ function Workspace.new(core, data)
     self._user_cs_names = {}
     self._user_provenance = {}
     self._shared_baseline = nil
+    self._status_cursor_row = nil
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
