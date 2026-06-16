@@ -433,6 +433,7 @@ automatically from your system.
 |---|---|
 | `:LoomworksInit [path]` | Initialize workspace from directory (default: cwd) |
 | `:LoomworksInfo` | Open workspace status page |
+| `:LoomworksReload` | Tear down active workspace and reload plugin code (dev hatch — requires lazy.nvim) |
 
 ## Status Page
 
