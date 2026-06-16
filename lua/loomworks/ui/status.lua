@@ -93,6 +93,7 @@ local tree = Tree.new(render_fn)
 
 local view = View.new({
     widget = tree,
+    remember_cursor = true,
     win = {
         position = "float",
         width = 100,

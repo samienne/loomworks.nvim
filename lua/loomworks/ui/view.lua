@@ -21,6 +21,8 @@
 --- @field _refresh_scheduled boolean
 --- @field _event_handlers table[] { event_name, handler } for cleanup
 --- @field _ns number namespace id
+--- @field _remember_cursor boolean restore cursor row across open/close cycles
+--- @field _saved_cursor number[]|nil last-known cursor position (1-based row, 0-based col)
 local View = {}
 View.__index = View
 
@@ -47,6 +49,8 @@ function View.new(opts)
         _event_handlers = {},
         _cursor_autocmd = nil,
         _ns = vim.api.nvim_create_namespace("loomworks_view"),
+        _remember_cursor = opts.remember_cursor or false,
+        _saved_cursor = nil,
     }, View)
 end
 
@@ -148,6 +152,15 @@ function View:open(win_overrides)
         })
     end
     self:refresh()
+    if self._remember_cursor and self._saved_cursor then
+        local line_count = vim.api.nvim_buf_line_count(self._bufnr)
+        local row = math.min(self._saved_cursor[1], line_count)
+        if row >= 1 then
+            pcall(vim.api.nvim_win_set_cursor, self._snacks_win.win,
+                { row, self._saved_cursor[2] or 0 })
+        end
+        if self._lock_to_items then self:_snap_cursor() end
+    end
 end
 
 --- Close the view window if open.
@@ -413,6 +426,10 @@ function View:_setup_events()
 end
 
 function View:_cleanup()
+    if self._remember_cursor and self._snacks_win and self._snacks_win:valid() then
+        local ok, cur = pcall(vim.api.nvim_win_get_cursor, self._snacks_win.win)
+        if ok then self._saved_cursor = cur end
+    end
     if self._timer then
         vim.fn.timer_stop(self._timer)
         self._timer = nil
