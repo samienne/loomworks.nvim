@@ -455,6 +455,11 @@ end
 --- @field _user_provenance table<string, table> per-project sub-item provenance from merge
 --- @field _shared_baseline table|nil raw parsed loomworks.json for modified-state computation
 --- @field _status_cursor_row integer|nil last cursor row on the status page; runtime-only, not persisted
+--- @field _event_handlers { event: string, handler: function }[]
+---     event-bus subscriptions recorded for teardown. Mirrors the same
+---     pattern on View. Populated only via `Workspace:on`, walked in
+---     `Workspace:teardown` to call `events.off` per entry. Allows
+---     a workspace swap or `:LoomworksReload` to detach cleanly.
 local Workspace = {}
 Workspace.__index = Workspace
 
@@ -494,6 +499,7 @@ function Workspace.new(core, data)
     self._user_provenance = {}
     self._shared_baseline = nil
     self._status_cursor_row = nil
+    self._event_handlers = {}
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
     self._delete_waiters = {}
@@ -5489,6 +5495,30 @@ function Workspace:_stop_tracking()
         self._tracker:stop()
         self._tracker = nil
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- Subscription registry
+-- ---------------------------------------------------------------------------
+
+--- Subscribe to an event for this workspace's lifetime. The handler is
+--- recorded in `_event_handlers` so `teardown` can detach cleanly. Use
+--- this instead of `events.on` for any subscriber whose validity is
+--- bound to this workspace — anything that mutates workspace state or
+--- closes over a workspace object reference.
+---
+--- Plugin-global subscribers (UI re-render hooks, lualine components)
+--- should keep using `events.on` directly; they fan out to whichever
+--- workspace is current at emission time and survive swaps.
+--- @param event string event name
+--- @param handler function called with the event payload
+function Workspace:on(event, handler)
+    local events = self._core._deps.events
+    events.on(event, handler)
+    self._event_handlers[#self._event_handlers + 1] = {
+        event = event,
+        handler = handler,
+    }
 end
 
 --- Handle a tracked file change.
