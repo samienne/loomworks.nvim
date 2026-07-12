@@ -6,10 +6,14 @@
 ---
 --- Commands: profiles | build [profile] | test [profile]
 
--- Make loomworks requireable regardless of runtimepath (we run under -u NONE).
+-- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
+-- Under the luvi host the source is a "bundle:" path and require resolves via
+-- luvi's bundle loader, so skip the package.path dance there.
 local src = debug.getinfo(1, "S").source:sub(2):gsub("\\", "/")
-local lua_dir = src:gsub("loomworks/cli%.lua$", "")
-package.path = lua_dir .. "?.lua;" .. lua_dir .. "?/init.lua;" .. package.path
+if not src:match("^bundle:") then
+  local lua_dir = src:gsub("loomworks/cli%.lua$", "")
+  package.path = lua_dir .. "?.lua;" .. lua_dir .. "?/init.lua;" .. package.path
+end
 
 local uv = vim.uv or vim.loop
 
@@ -158,7 +162,9 @@ local function main()
     die("usage: lw <profiles|build|test> [profile]", command and 0 or 1)
   end
 
-  local root = find_root()
+  -- LW_ROOT lets a launcher pass the user's directory when the process
+  -- itself must run from elsewhere (the luvi host runs from the bundle dir).
+  local root = find_root(os.getenv("LW_ROOT"))
   if not root then die("no loomworks.json found (searched up from cwd)") end
 
   local ws = load_workspace(root)
