@@ -152,6 +152,19 @@ local function which(exe)
   return nil
 end
 
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+
+--- Spawning a program via a FORWARD-slash path breaks cmd.exe: it reads the
+--- "/..." path components as switches ("The syntax of the command is
+--- incorrect"). Modules wrap npm/npx/tsc as `cmd /c ...`, so this is on the
+--- build path. Use backslashes for the executable on Windows.
+--- @param path string
+--- @return string
+local function win_exe(path)
+  if IS_WINDOWS then return (path:gsub("/", "\\")) end
+  return path
+end
+
 vim.fn = vim.fn or {}
 function vim.fn.has(feat)
   if feat == "win32" or feat == "win64" then
@@ -188,14 +201,18 @@ function vim.fn.system(cmd)
   -- Synchronous run; sets vim.v.shell_error. Accepts list or string.
   local argv = cmd
   if type(cmd) == "string" then argv = { cmd } end
-  local exe = which(argv[1]) or argv[1]
+  local exe = win_exe(which(argv[1]) or argv[1])
   local args = {}
   for i = 2, #argv do args[#args + 1] = argv[i] end
   local out = {}
   local so = uv.new_pipe(false)
   local done, code = false, -1
   local handle
-  handle = uv.spawn(exe, { args = args, stdio = { nil, so, nil } }, function(c)
+  handle = uv.spawn(exe, {
+    args = args,
+    stdio = { nil, so, nil },
+    hide = IS_WINDOWS,
+  }, function(c)
     code = c
     so:read_stop(); so:close(); handle:close()
     done = true
@@ -223,13 +240,19 @@ end
 
 function vim.system(cmd, opts, on_exit)
   opts = opts or {}
-  local exe = which(cmd[1]) or cmd[1]
+  local exe = win_exe(which(cmd[1]) or cmd[1])
   local args = {}
   for i = 2, #cmd do args[#args + 1] = cmd[i] end
   local so, se = uv.new_pipe(false), uv.new_pipe(false)
   local out, err = {}, {}
   local result, handle
-  handle = uv.spawn(exe, { args = args, stdio = { nil, so, se }, cwd = opts.cwd, env = opts.env }, function(code)
+  handle = uv.spawn(exe, {
+    args = args,
+    stdio = { nil, so, se },
+    cwd = opts.cwd,
+    env = opts.env,
+    hide = IS_WINDOWS,
+  }, function(code)
     so:read_stop(); se:read_stop(); so:close(); se:close(); handle:close()
     result = { code = code, stdout = table.concat(out), stderr = table.concat(err) }
     if on_exit then on_exit(result) end
