@@ -818,9 +818,11 @@ runtime; it detects, never installs, C/C++ toolchains.
 
 ### Planned file additions
 
-`lua/loomworks/cli.lua`, `lua/loomworks/shim/`, `bin/lw`, `bin/lw.bat`,
-`install/install.sh`, `install/install.ps1`. (Not yet present; recorded here
-so the layout below stays the source of truth for what exists.)
+`lua/loomworks/cli.lua`, `bin/lw`, `bin/lw.cmd` exist as of the
+dev/nvim-hosted stage (the launcher runs the CLI under headless Neovim and
+resolves `LOOMWORKS_HOME`). Still pending: `lua/loomworks/shim/`,
+`install/install.sh`, `install/install.ps1`, and swapping the launcher's
+runtime from Neovim to luvi.
 
 ---
 
