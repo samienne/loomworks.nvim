@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [master, unstable]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim (stable)
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Install plenary.nvim
+        shell: pwsh
+        run: |
+          $dest = "$env:LOCALAPPDATA\nvim-data\lazy\plenary.nvim"
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim $dest
+
+      - name: Run test suite
+        shell: pwsh
+        run: |
+          nvim --headless -u tests/minimal_init.lua `
+            -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
