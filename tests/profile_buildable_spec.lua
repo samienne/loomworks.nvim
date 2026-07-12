@@ -132,15 +132,17 @@ describe("Profile:assert_buildable", function()
         assert.is_false(ok)
     end)
 
-    it("error message points the user at the status page", function()
-        -- Action-oriented error text. The user needs to know what
-        -- to do next, not just that something is wrong.
+    it("error message names the profile and why it is unbuildable", function()
+        -- The error must be descriptive: identify the profile and cite the
+        -- unmet requirement (the reasons from is_valid), not fail silently.
         local profile = make_profile({
             { type = "kt", mod = module({ id = "kt", has_keyed_tools = true }), has_tool = false },
         })
-        local _, err = profile:assert_buildable()
-        assert.is_truthy(err:lower():find("status page", 1, true)
-            or err:lower():find("assign", 1, true),
-            "error suggests what to do (assign tool/SDK)")
+        local ok, err = profile:assert_buildable()
+        assert.is_false(ok)
+        assert.is_truthy(err, "returns an error message")
+        assert.is_truthy(err:find("test-profile", 1, true), "names the profile")
+        assert.is_truthy(err:lower():find("not buildable", 1, true),
+            "states that it is not buildable")
     end)
 end)
