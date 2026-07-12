@@ -5,6 +5,30 @@ they don't get lost.
 
 ---
 
+## Standalone CLI — deferred pieces
+
+The standalone command-line runner ([specification.md §16](specification.md),
+ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
+(`build`, `test`, `profiles`). Deferred beyond v1:
+
+- **Headless third-party module loading.** v1 bundles only the core modules;
+  external module plugins (e.g. OHOS / harmony) are editor-only. A discovery /
+  loading mechanism (bundling into the dist, or a configured module search
+  path) is needed for headless external-module builds (spec §16.8).
+- **Project-committed wrapper.** `lw init` writing `./lw` +
+  `wrapper.properties` into a project, with project-pin-wins version
+  resolution. v1 is system-wide (per-user, on PATH) only.
+- **`lw run` launch + device targets.** Non-debug launch (build → deploy →
+  execute) is a fast-follow; debug launch (DAP) and device install / launch
+  stay editor-only.
+- **Keyless signing / provenance.** v1 signs a `SHA256SUMS` manifest with
+  minisign; Sigstore / GitHub artifact attestations are a later upgrade.
+- **Cross-process build-dir locking.** v1 does not serialize concurrent
+  editor + CLI access to a shared build directory (spec §16.6); an advisory
+  fail-fast lock is a possible addition.
+
+---
+
 ## UI v2 redesign (in design phase)
 
 The current status-page UI evolved feature-by-feature and accumulated

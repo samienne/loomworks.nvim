@@ -39,6 +39,7 @@ restart at §1.
 | How a single SDK provider detects, validates, and answers capability queries | the matching file in [`spec/sdks/`](spec/sdks/) |
 | Adding a new module, LSP server, DAP adapter, or SDK provider | a new file under the corresponding `spec/` subdirectory; touch core only if the contract itself needs a new field or hook |
 | A deferred / planned feature that is not yet implemented | [`BACKLOG.md`](BACKLOG.md), not core spec |
+| How the system behaves when run outside the editor (headless / standalone) | `specification.md` §16 |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in
@@ -3187,3 +3188,85 @@ when the user explicitly publishes (`:w`).
     Neovim UI thread. File reads use async I/O. Tool detection runs
     as a background task. Only JSON parsing and merge (both fast,
     CPU-bound operations) run synchronously within callbacks.
+
+---
+
+## 16. Headless / Standalone Execution
+
+The system runs in two execution environments: the **interactive editor
+host** and a **non-interactive (headless) host**. All contracts in §1–§15
+hold in both, except those explicitly scoped to the editor — UI (§6),
+Neovim commands (§14), LSP integration (§9), auto-load (§13), and live
+file-tracking reconciliation (§2.5). A headless host performs a bounded
+subset of behavior: resolve a profile and run its build / clean / test
+tasks to completion, reporting a process exit status.
+
+### 16.1 Runtime-host neutrality
+
+The behavioral contract is independent of the host that provides the Lua
+and asynchronous runtime. Any host supplying the required primitives — a
+structured filesystem, process spawning, an asynchronous I/O event loop,
+and JSON encoding/decoding that distinguishes object, array, and null
+(including the empty-object vs empty-array distinction, §1.9) — MUST
+produce identical results. State serialized by one host MUST be readable,
+with identical meaning, by any other host.
+
+### 16.2 Source of truth without the working copy
+
+A headless invocation MUST be able to resolve any **published** profile to
+its build commands from the published snapshot (§2.1) plus the cache (§2.3)
+alone, with no working copy (§2.2) present. Publishing (§2.4) therefore
+MUST emit a snapshot self-sufficient for this resolution. When a working
+copy is present it MAY be read as input, but a headless invocation MUST NOT
+create or modify it.
+
+### 16.3 Explicit profile selection
+
+The active profile is working-copy state (§4.2) and is not assumed in a
+headless invocation. The profile to operate on MUST be selected explicitly
+by the caller. Absent an explicit selection, the invocation is an error
+unless exactly one published profile exists — the system never guesses a
+default.
+
+### 16.4 Cache-cold vs cache-warm
+
+Build-unit readiness derives from the cache (§3.1). For a build unit with
+no valid cache entry, a headless invocation MUST perform the full readiness
+sequence — tool detection (§3.3) then configure (§5.2) — before build. For
+a unit with a valid cache entry it MAY build directly. Tool identity
+resolves from live detection when available, otherwise from cached tool
+data (§1.5, §2.3); resolution MUST succeed from cache alone when detection
+has not run.
+
+### 16.5 Toolchain provisioning boundary
+
+A headless host detects toolchains present on the system; it does not
+install them. Provisioning build tools is outside the system's contract,
+except SDK-provided toolchains (§10).
+
+### 16.6 Non-invasiveness
+
+A headless build is read-only toward project sources and toward the working
+copy. Only the cache and build directories are written, under the safety
+rules of §2.3 and §5.3. This contract does not serialize cross-process
+concurrent access to a shared build directory; a host MAY add advisory
+exclusion.
+
+### 16.7 Reporting
+
+Success or failure is reported via process exit status; task output streams
+to standard output and standard error. No editor UI is required or
+produced.
+
+### 16.8 Host-determined module availability
+
+The set of modules available to a host is determined by that host. A build
+unit whose module is unavailable in the current host is reported and
+skipped; consistent with §8.0, its declaration is preserved and does not
+invalidate the workspace or other units.
+
+### 16.9 No configuration authoring
+
+A headless host does not create or modify projects, configurations,
+configuration sets, or profiles (§16.2). Authoring occurs in the editor or
+by manual file edit (§2).
