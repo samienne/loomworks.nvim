@@ -15,6 +15,21 @@ local Tool = require("loomworks.tool")
 local Module = {}
 Module.__index = Module
 
+--- Compare two dotted numeric version strings component-wise.
+--- Missing trailing components count as 0 (`19.1` == `19.1.0`).
+--- @param a string
+--- @param b string
+--- @return boolean a_gt_b true when a > b
+local function version_gt(a, b)
+    local ga, gb = a:gmatch("%d+"), b:gmatch("%d+")
+    while true do
+        local sa, sb = ga(), gb()
+        if sa == nil and sb == nil then return false end
+        local na, nb = tonumber(sa) or 0, tonumber(sb) or 0
+        if na ~= nb then return na > nb end
+    end
+end
+
 --- Create a new Module.
 --- @param id string module type identifier
 --- @param impl table raw module function table
@@ -44,11 +59,30 @@ function Module:primary_language()
     return self.languages[1]
 end
 
---- Look up a Tool by key.
+--- Look up a Tool by key (spec §1.5.2). Exact match first, then a
+--- dotted-version prefix fallback: a coarse pin like `ninja-clang-19`
+--- matches any registered tool whose version extends it on a component
+--- boundary (`ninja-clang-19.1.5`). Fully-specified keys only exact-match
+--- (they never relax). Highest matching version wins.
 --- @param tool_key string|nil tool identifier (nil for default tools)
 --- @return loomworks.Tool|nil
 function Module:find_tool(tool_key)
-    return self._tools[tool_key or ""]
+    local rk = tool_key or ""
+    local exact = self._tools[rk]
+    if exact then return exact end
+    if rk == "" then return nil end
+
+    local prefix = rk .. "."
+    local best, best_ver
+    for key, tool in pairs(self._tools) do
+        if key:sub(1, #prefix) == prefix then
+            local ver = key:match("(%d[%d%.]*)$") or ""
+            if not best or version_gt(ver, best_ver) then
+                best, best_ver = tool, ver
+            end
+        end
+    end
+    return best
 end
 
 --- Get or create a Tool in this module's registry.

@@ -724,6 +724,42 @@ local function filter_unconfigured_tasks(all_tasks)
     return needs_configure
 end
 
+--- Build an ordered, overseer-free execution plan for a profile "build".
+--- Mirrors run_profile_action("build") sequencing: configure the units that
+--- need it (unconfigured / failed / stale), then build. Each step carries a
+--- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners
+--- (specification.md §16) — it requires no overseer.nvim and launches nothing.
+--- @param profile loomworks.Profile
+--- @return table[]|nil steps list of { kind, name, unit, cmd, cwd, env }
+function M.plan_profile_build(profile)
+    local all_tasks = collect_profile_tasks(profile)
+    if not all_tasks then return nil end
+    local needs_configure = filter_unconfigured_tasks(all_tasks)
+
+    local steps = {}
+    local function add(task_defs, kind)
+        for _, td in ipairs(task_defs or {}) do
+            if td.builder then
+                local ok, spec = pcall(td.builder)
+                if ok and type(spec) == "table" and type(spec.cmd) == "table" then
+                    steps[#steps + 1] = {
+                        kind = kind,
+                        name = td.name,
+                        unit = td.loomworks and td.loomworks.unit or nil,
+                        cmd = spec.cmd,
+                        cwd = (type(spec.cwd) == "string" and spec.cwd ~= "")
+                            and spec.cwd or nil,
+                        env = spec.env,
+                    }
+                end
+            end
+        end
+    end
+    add(needs_configure, "configure")
+    add(all_tasks.build, "build")
+    return steps
+end
+
 --- Run an action for a single project configuration.
 --- Creates a pinned profile entry if needed, then launches overseer tasks.
 --- If building and the configuration is unconfigured, configures first.

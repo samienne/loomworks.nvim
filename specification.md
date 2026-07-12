@@ -306,6 +306,23 @@ provides. Auto-detection from build-system metadata (cmake file-api,
 meson introspect) is a future refinement — a soft diagnostic, not
 authoritative.
 
+### 1.5.2 Version matching
+
+A profile pins tools by key. A pinned key resolves to a registered tool by
+**exact match first**, then by **dotted-version prefix**: a pin matches any
+registered tool whose key extends the pinned version on a component
+boundary — `ninja-clang-19` matches `ninja-clang-19.1.5`, and
+`ninja-clang-19.1` matches `ninja-clang-19.1.9`. A fully-specified pin
+(`ninja-clang-19.1.5`) matches only that exact version — it never relaxes.
+When several tools match a prefix pin, the highest version wins; pin more
+specifically to disambiguate.
+
+Pinning at a coarse granularity (major version) makes a profile portable
+across machines whose exact patch releases differ — the intended form for
+shared profiles. The **resolved** tool is always the concrete full-version
+one, and it — not the pin — determines the build directory and cache key
+(§2.3), so build directories stay fully versioned and isolated.
+
 ### 1.6 Profile
 
 A profile is a fully resolved buildable unit. Every profile stores its
@@ -3270,3 +3287,12 @@ invalidate the workspace or other units.
 A headless host does not create or modify projects, configurations,
 configuration sets, or profiles (§16.2). Authoring occurs in the editor or
 by manual file edit (§2).
+
+### 16.10 Explicit toolchain override
+
+A headless invocation MAY override tool resolution (§1.5.2) for a build by
+supplying a concrete toolchain as `key → path`, where `key` is the tool key
+the profile pins and `path` is a toolchain/compiler executable. The provided
+toolchain is identified by probing the executable and satisfies the pin
+directly, bypassing detection — allowing a build machine to supply a
+compiler absent from search paths, or to select one deterministically.
