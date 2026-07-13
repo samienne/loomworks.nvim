@@ -83,7 +83,12 @@ encode_value = function(v)
   elseif t == "string" then
     return encode_string(v)
   elseif t == "table" then
-    if getmetatable(v) == M._empty_dict_mt then
+    -- The empty_dict marker only disambiguates a *genuinely empty* table as an
+    -- object ({}) rather than an array ([]). nvim serializes keys if present, so
+    -- a marked table that later gained keys (e.g. a decoded {} deepcopied and
+    -- extended) must encode as a normal object — matching nvim, and avoiding
+    -- silently dropping the added keys.
+    if getmetatable(v) == M._empty_dict_mt and next(v) == nil then
       return "{}"
     end
     local arr, n = is_array(v)

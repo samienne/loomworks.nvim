@@ -4,7 +4,8 @@
 --- (`nvim --headless -u NONE -l lua/loomworks/cli.lua <cmd> [args]`); the
 --- luvi + shim host is layered on later without changing this file.
 ---
---- Commands: (status) | init | project <add|remove|list> | profiles |
+--- Commands: (status) | init | project <add|remove|list|show> |
+---           configuration <list|add|show|get|set|unset|remove> | profiles |
 ---           profile <list|select> | build [profile] | publish |
 ---           test [profile] | config <...> | help
 
@@ -333,7 +334,74 @@ function M.cmd_publish(root)
 end
 
 -- ---------------------------------------------------------------------------
--- Projects (add / remove / list) — explicit management, writes user.json (§16.9)
+-- Shared lookups + small formatting helpers
+-- ---------------------------------------------------------------------------
+
+--- Resolve a project by exact key, or die listing the existing ones.
+local function resolve_project(ws, name)
+  local names = {}
+  for _, p in pairs(ws._projects) do
+    if p.key == name then return p end
+    names[#names + 1] = p.key
+  end
+  table.sort(names)
+  die("no project named '" .. tostring(name) .. "'. Existing: " ..
+    (next(names) and table.concat(names, ", ") or "(none)"))
+end
+
+--- Resolve a configuration in a project: exact canonical name, else an
+--- unambiguous base name. When `require_user`, refuse non-user configs.
+local function resolve_config(proj, name, require_user)
+  local exact, base_hits = nil, {}
+  for _, c in ipairs(proj:get_configurations()) do
+    if c.name == name then exact = c end
+    if c.base_name == name and c.name ~= name then base_hits[#base_hits + 1] = c end
+  end
+  local cfg = exact or base_hits[1]
+  if not exact and #base_hits > 1 then
+    local ns = {}
+    for _, c in ipairs(base_hits) do ns[#ns + 1] = c.name end
+    die("'" .. name .. "' is ambiguous in '" .. proj.key .. "': " .. table.concat(ns, ", "))
+  end
+  if not cfg then
+    local ns = {}
+    for _, c in ipairs(proj:get_configurations()) do ns[#ns + 1] = c.name end
+    table.sort(ns)
+    die("no configuration '" .. name .. "' in project '" .. proj.key ..
+      "'. Have: " .. (next(ns) and table.concat(ns, ", ") or "(none)"))
+  end
+  if require_user and not cfg.is_user then
+    local kind = cfg:is_auto_gen() and "module-generated" or "from a preset"
+    die("'" .. cfg.name .. "' is " .. kind ..
+      " and can't be edited — create a user configuration that inherits it:\n" ..
+      "  lw configuration add " .. proj.key .. " <name> " ..
+      (cfg.module_config and cfg.module_config.variant or "") .. "\n" ..
+      "  lw configuration set " .. proj.key .. " <name> inherits " .. cfg.name)
+  end
+  return cfg
+end
+
+--- Print a string→string dict, sorted, one `k = v` per line at `indent`.
+local function print_dict(indent, d)
+  local keys = {}
+  for k in pairs(d or {}) do keys[#keys + 1] = k end
+  if #keys == 0 then out(indent .. "(none)"); return end
+  table.sort(keys)
+  for _, k in ipairs(keys) do out(string.format("%s%s = %s", indent, k, tostring(d[k]))) end
+end
+
+--- Split a comma-separated list, trimming whitespace; drops empty entries.
+local function split_csv(s)
+  local list = {}
+  for item in tostring(s):gmatch("[^,]+") do
+    local t = item:gsub("^%s+", ""):gsub("%s+$", "")
+    if t ~= "" then list[#list + 1] = t end
+  end
+  return list
+end
+
+-- ---------------------------------------------------------------------------
+-- Projects (add / remove / list / show) — explicit management, user.json (§16.9)
 -- ---------------------------------------------------------------------------
 
 --- Pick a module type interactively. `detected` is the detect_all_types result
@@ -475,12 +543,298 @@ function M.cmd_project_list(root)
   return 0
 end
 
---- `lw project <add|remove|list>`
+--- Configuration sets that map a configuration for `proj`, as
+--- `{ set = <name>, config = <config name> }` rows.
+local function config_set_rows(ws, proj)
+  local rows = {}
+  for _, cs in ipairs(ws._config_sets or {}) do
+    local mapped = cs.mappings and cs.mappings[proj]
+    if mapped then rows[#rows + 1] = { set = cs.name, config = mapped.name } end
+  end
+  table.sort(rows, function(a, b) return a.set < b.set end)
+  return rows
+end
+
+--- `lw project show <name>` — project detail: type, path, configurations, and
+--- the configuration sets that map it.
+function M.cmd_project_show(root, name)
+  if not name then die("usage: lw project show <name>") end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, name)
+  local t = proj.type or (proj._module and proj._module.id) or "?"
+  out(string.format("%s  (%s)", proj.key, t))
+  out("  path            " .. (proj.path or "."))
+  if proj._intent then out("  intent          " .. proj._intent) end
+
+  local cfgs = proj:get_configurations()
+  table.sort(cfgs, function(a, b) return a.name < b.name end)
+  out("")
+  out("  Configurations:")
+  if #cfgs == 0 then
+    out("    (none)")
+  else
+    for _, c in ipairs(cfgs) do
+      local kind = c.is_user and "user" or (c:is_auto_gen() and "auto" or "preset")
+      local variant = c.module_config and c.module_config.variant
+      out(string.format("    %-22s %-7s%s", c.name, kind,
+        variant and ("  variant=" .. variant) or (c:is_abstract() and "  (abstract)" or "")))
+    end
+  end
+
+  local rows = config_set_rows(ws, proj)
+  out("")
+  out("  Configuration sets:")
+  if #rows == 0 then
+    out("    (not mapped in any set — map it to build)")
+  else
+    for _, r in ipairs(rows) do out(string.format("    %-22s -> %s", r.set, r.config)) end
+  end
+  return 0
+end
+
+--- `lw project <add|remove|list|show>`
 function M.cmd_project(sub, root, a3, a4, a5)
   if sub == "add" then return M.cmd_project_add(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_project_remove(root, a3) end
+  if sub == "show" then return M.cmd_project_show(root, a3) end
   if sub == nil or sub == "list" then return M.cmd_project_list(root) end
-  die("unknown project subcommand '" .. tostring(sub) .. "' — use add|remove|list")
+  die("unknown project subcommand '" .. tostring(sub) .. "' — use add|remove|list|show")
+end
+
+-- ---------------------------------------------------------------------------
+-- Configurations (list / add / show / get / set / unset / remove)
+-- ---------------------------------------------------------------------------
+
+--- Reconstruct the user-override data table (save_configuration's input shape)
+--- from a live Configuration, so set/unset can read-modify-write.
+local function config_to_data(cfg)
+  local data = {}
+  for k, v in pairs(cfg.module_config or {}) do data[k] = v end
+  if cfg.inherits_names and #cfg.inherits_names > 0 then
+    data.inherits = (#cfg.inherits_names == 1) and cfg.inherits_names[1]
+        or vim.deepcopy(cfg.inherits_names)
+  end
+  if cfg.options and next(cfg.options) then data.options = vim.deepcopy(cfg.options) end
+  if cfg.variables and next(cfg.variables) then data.variables = vim.deepcopy(cfg.variables) end
+  if cfg.languages and #cfg.languages > 0 then data.languages = vim.deepcopy(cfg.languages) end
+  if cfg.role then data.role = cfg.role end
+  return data
+end
+
+--- Apply one `param`/`value` to a config data table (value nil clears). Param
+--- namespaces: options.<KEY>, variables.<NAME>, inherits, languages (CSV), and
+--- any other bare name → module field.
+local function apply_param(data, param, value)
+  if param == "options" or param == "variables" then
+    die("specify a key: " .. param .. ".<KEY>")
+  end
+  local dictname, key = param:match("^(options)%.(.+)$")
+  if not dictname then dictname, key = param:match("^(variables)%.(.+)$") end
+  if dictname then
+    data[dictname] = data[dictname] or {}
+    data[dictname][key] = value
+    if not next(data[dictname]) then data[dictname] = nil end
+  elseif param == "inherits" then
+    if not value or value == "" then
+      data.inherits = nil
+    else
+      local list = split_csv(value)
+      data.inherits = (#list == 1) and list[1] or list
+    end
+  elseif param == "languages" then
+    -- empty clears the override → inherit languages from the module
+    data.languages = (value and value ~= "") and split_csv(value) or nil
+  else
+    data[param] = value -- module field (variant, toolchain, generator, ...)
+  end
+end
+
+--- Read one `param` off a Configuration. Returns a string, a dict, or nil.
+local function get_param(cfg, param)
+  if param == "inherits" then
+    return (cfg.inherits_names and #cfg.inherits_names > 0)
+        and table.concat(cfg.inherits_names, ",") or nil
+  elseif param == "languages" then
+    return (cfg.languages and #cfg.languages > 0) and table.concat(cfg.languages, ",") or nil
+  elseif param == "options" or param == "variables" then
+    return cfg[param]
+  end
+  local key = param:match("^options%.(.+)$")
+  if key then return cfg.options and cfg.options[key] end
+  key = param:match("^variables%.(.+)$")
+  if key then return cfg.variables and cfg.variables[key] end
+  return cfg.module_config and cfg.module_config[param]
+end
+
+--- `lw configuration list [project]` — configs for one project, or all.
+function M.cmd_configuration_list(root, proj_name)
+  local ws = load_workspace(root, false)
+  local projs = {}
+  if proj_name then
+    projs = { resolve_project(ws, proj_name) }
+  else
+    for _, p in ipairs(ws._projects or {}) do projs[#projs + 1] = p end
+    table.sort(projs, function(a, b) return a.key < b.key end)
+  end
+  if #projs == 0 then out("(no projects)"); return 0 end
+  for _, proj in ipairs(projs) do
+    if not proj_name then out(proj.key .. ":") end
+    local cfgs = proj:get_configurations()
+    table.sort(cfgs, function(a, b) return a.name < b.name end)
+    local pad = proj_name and "  " or "    "
+    if #cfgs == 0 then
+      out(pad .. "(none)")
+    else
+      for _, c in ipairs(cfgs) do
+        local kind = c.is_user and "user" or (c:is_auto_gen() and "auto" or "preset")
+        local variant = c.module_config and c.module_config.variant
+        out(string.format("%s%-22s %-7s%s", pad, c.name, kind,
+          variant and ("  variant=" .. variant) or ""))
+      end
+    end
+  end
+  return 0
+end
+
+--- `lw configuration add <project> <name> [variant]`
+function M.cmd_configuration_add(root, proj_name, name, variant)
+  if not proj_name or not name then
+    die("usage: lw configuration add <project> <name> [variant]")
+  end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local data = {}
+  if variant then data.variant = variant end
+  local ok, err = proj:save_configuration(name, data)
+  if not ok then die("could not add configuration: " .. tostring(err)) end
+  out(string.format("added configuration '%s' to project '%s'%s", name, proj.key,
+    variant and ("  (variant " .. variant .. ")") or ""))
+  if not variant then
+    out("  no variant set — it is abstract (a mixin) until you set one:")
+    out("    lw configuration set " .. proj.key .. " " .. name .. " variant <name>")
+  end
+  out("  map it into a configuration set to build it; `lw publish` to share.")
+  return 0
+end
+
+--- `lw configuration show <project> <name>`
+function M.cmd_configuration_show(root, proj_name, cfg_name)
+  if not proj_name or not cfg_name then die("usage: lw configuration show <project> <name>") end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local cfg = resolve_config(proj, cfg_name, false)
+  local kind = cfg.is_user and "user" or (cfg:is_auto_gen() and "module-generated" or "preset")
+  out(string.format("%s / %s", proj.key, cfg.name))
+  out("  kind            " .. kind .. (cfg._source_missing and "  (source missing)" or ""))
+  if cfg._intent then out("  intent          " .. cfg._intent) end
+  local variant = cfg.module_config and cfg.module_config.variant
+  out("  variant         " .. (variant or (cfg:is_abstract() and "(abstract / mixin)" or "-")))
+  if cfg.inherits_names and #cfg.inherits_names > 0 then
+    out("  inherits        " .. table.concat(cfg.inherits_names, ", "))
+    local unresolved = cfg:unresolved_inherits_names()
+    if #unresolved > 0 then out("    unresolved    " .. table.concat(unresolved, ", ")) end
+  end
+  out("  languages       " .. (function()
+    local eff = cfg:effective_languages()
+    local base = (#eff > 0) and table.concat(eff, ", ") or "(none)"
+    return base .. ((cfg.languages and #cfg.languages > 0) and "" or "  (inherited)")
+  end)())
+  -- Other module fields beyond variant.
+  local extra = {}
+  for k, v in pairs(cfg.module_config or {}) do
+    if k ~= "variant" then extra[k] = v end
+  end
+  if next(extra) then out("  module fields:"); print_dict("    ", extra) end
+  if cfg.options and next(cfg.options) then out("  options:"); print_dict("    ", cfg.options) end
+  if cfg.variables and next(cfg.variables) then out("  variables:"); print_dict("    ", cfg.variables) end
+  local ok, reasons = cfg:is_valid()
+  if not ok then out("  invalid: " .. table.concat(reasons, "; ")) end
+  local rows = config_set_rows(ws, proj)
+  local using = {}
+  for _, r in ipairs(rows) do if r.config == cfg.name then using[#using + 1] = r.set end end
+  if #using > 0 then out("  used by sets    " .. table.concat(using, ", ")) end
+  return 0
+end
+
+--- `lw configuration get <project> <name> <param>`
+function M.cmd_configuration_get(root, proj_name, cfg_name, param)
+  if not (proj_name and cfg_name and param) then
+    die("usage: lw configuration get <project> <name> <param>")
+  end
+  local ws = load_workspace(root, false)
+  local cfg = resolve_config(resolve_project(ws, proj_name), cfg_name, false)
+  local v = get_param(cfg, param)
+  if v == nil then
+    out("(unset)")
+  elseif type(v) == "table" then
+    print_dict("  ", v)
+  else
+    out(tostring(v))
+  end
+  return 0
+end
+
+--- Shared read-modify-write for set/unset.
+local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local cfg = resolve_config(proj, cfg_name, true)
+  local data = config_to_data(cfg)
+  apply_param(data, param, value)
+  local ok, err = proj:save_configuration(cfg.name, data)
+  if not ok then die("could not " .. verb .. ": " .. tostring(err)) end
+  if verb == "set" then
+    out(string.format("%s/%s: set %s = %s", proj.key, cfg.name, param, value))
+  else
+    out(string.format("%s/%s: unset %s", proj.key, cfg.name, param))
+  end
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
+--- `lw configuration set <project> <name> <param> <value>`
+function M.cmd_configuration_set(root, proj_name, cfg_name, param, value)
+  if not (proj_name and cfg_name and param) or value == nil then
+    die("usage: lw configuration set <project> <name> <param> <value>\n" ..
+      "  (use `lw configuration unset` to clear a value)")
+  end
+  return edit_configuration(root, proj_name, cfg_name, param, value, "set")
+end
+
+--- `lw configuration unset <project> <name> <param>`
+function M.cmd_configuration_unset(root, proj_name, cfg_name, param)
+  if not (proj_name and cfg_name and param) then
+    die("usage: lw configuration unset <project> <name> <param>")
+  end
+  return edit_configuration(root, proj_name, cfg_name, param, nil, "unset")
+end
+
+--- `lw configuration remove <project> <name>`
+function M.cmd_configuration_remove(root, proj_name, cfg_name)
+  if not proj_name or not cfg_name then
+    die("usage: lw configuration remove <project> <name>")
+  end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local cfg = resolve_config(proj, cfg_name, true)
+  local ok, err = proj:delete_configuration(cfg.name)
+  if not ok then die("could not remove configuration: " .. tostring(err)) end
+  out(string.format("removed configuration '%s' from project '%s'", cfg.name, proj.key))
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
+--- `lw configuration <list|add|show|get|set|unset|remove>`
+function M.cmd_configuration(sub, root, a3, a4, a5, a6)
+  if sub == nil or sub == "list" then return M.cmd_configuration_list(root, a3) end
+  if sub == "add" then return M.cmd_configuration_add(root, a3, a4, a5) end
+  if sub == "show" then return M.cmd_configuration_show(root, a3, a4) end
+  if sub == "get" then return M.cmd_configuration_get(root, a3, a4, a5) end
+  if sub == "set" then return M.cmd_configuration_set(root, a3, a4, a5, a6) end
+  if sub == "unset" then return M.cmd_configuration_unset(root, a3, a4, a5) end
+  if sub == "remove" or sub == "rm" then return M.cmd_configuration_remove(root, a3, a4) end
+  die("unknown configuration subcommand '" .. tostring(sub) ..
+    "' — use list|add|show|get|set|unset|remove")
 end
 
 --- `lw profile select` — interactive picker that sets the active profile.
@@ -632,7 +986,7 @@ the workspace already exists.]],
 
 Write the shared loomworks.json from the working copy — the same snapshot the
 editor produces on :w. This is the file you commit and that CI reads.]],
-  project = [[lw project <add|remove|list>
+  project = [[lw project <add|remove|list|show>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
 `lw publish` shares the result.
@@ -645,7 +999,31 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         it errors). Missing-and-required args are prompted only on a terminal.
   remove <name>
         Drop a project. <name> is the unique project key (`lw project list`).
-  list  Show all projects: key, type, path.]],
+  list  Show all projects: key, type, path.
+  show <name>
+        Detail one project: type, path, its configurations, and the
+        configuration sets that map it.]],
+  configuration = [[lw configuration <list|add|show|get|set|unset|remove>   (alias: cfg)
+
+Manage a project's build configurations in the working copy; `lw publish`
+shares the result. Configs are addressed by name (an unambiguous base name
+works too). set/unset/remove act on user configs only.
+
+  list [project]                     configs for one project, or all
+  add <project> <name> [variant]     create a user configuration
+  show <project> <name>              detail: variant, inherits, options, ...
+  get <project> <name> <param>       print one value
+  set <project> <name> <param> <value>
+  unset <project> <name> <param>     clear one value
+  remove <project> <name>            delete a user configuration
+
+Params for get/set/unset:
+  variant            the module variant (cmake/meson: Debug, Release, ...)
+  inherits           comma-separated base configs (a mixin chain)
+  languages          comma-separated; empty inherits from the module
+  options.<KEY>      a generic build option
+  variables.<NAME>   a project variable override
+  <other>            any module-specific field (e.g. toolchain, generator)]],
   profile = [[lw profile <list|select>
 
   list      same as `lw profiles`
@@ -679,7 +1057,8 @@ Usage: lw [command] [args]
 
   (no command)      workspace status + active profile
   init              initialize the workspace working copy
-  project <sub>     add | remove | list projects
+  project <sub>     add | remove | list | show projects
+  configuration     add | set | get | show | ... project configurations
   profiles          list profiles and their buildability
   profile <sub>     list | select (set the active profile)
   build [profile]   build a profile (configure if needed, then build)
@@ -730,9 +1109,12 @@ local function main()
   if command == "publish" then
     finish(M.cmd_publish(root))
   end
-  -- `project` manages its own workspace load (no tool detection needed).
+  -- `project` / `configuration` manage their own workspace load (no tools).
   if command == "project" then
     finish(M.cmd_project(a[2], root, a[3], a[4], a[5]))
+  end
+  if command == "configuration" or command == "cfg" then
+    finish(M.cmd_configuration(a[2], root, a[3], a[4], a[5], a[6]))
   end
 
   local ws = load_workspace(root)

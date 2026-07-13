@@ -369,9 +369,12 @@ function Project:save_configuration(config_name, config_data)
         return false, "invalid configuration name: " .. verr
     end
 
-    -- Build the data table for Configuration._update (user override format)
+    -- Build the data table for Configuration._update (user override format).
+    -- Generic fields get their empty-aware handling; every other key is a
+    -- module-specific field (cmake: variant/toolchain/generator; other
+    -- modules define their own) and is forwarded generically — no hardcoded
+    -- field list, so callers can set any module field the module understands.
     local clean = { is_user = true }
-    if config_data.variant then clean.variant = config_data.variant end
     if config_data.inherits then clean.inherits = config_data.inherits end
     if config_data.options and next(config_data.options) then
         clean.options = config_data.options
@@ -379,11 +382,18 @@ function Project:save_configuration(config_name, config_data)
     if config_data.variables and next(config_data.variables) then
         clean.variables = config_data.variables
     end
-    if config_data.toolchain then clean.toolchain = config_data.toolchain end
-    if config_data.generator then clean.generator = config_data.generator end
     -- Languages: non-nil array = explicit override, nil = inherit
-    -- from module. We pass through whatever the editor produced.
+    -- from module. We pass through whatever the caller produced.
     if config_data.languages ~= nil then clean.languages = config_data.languages end
+    if config_data.role ~= nil then clean.role = config_data.role end
+    local generic_keys = {
+        is_user = true, is_default = true, from_preset = true, role = true,
+        inherits = true, options = true, variables = true, languages = true,
+        prefix = true, base_name = true,
+    }
+    for k, v in pairs(config_data) do
+        if not generic_keys[k] then clean[k] = v end
+    end
 
     -- Create or update Configuration domain object
     local existing = self:get_configuration(config_name)
