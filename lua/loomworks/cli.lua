@@ -1203,46 +1203,99 @@ function M.cmd_config(sub, key, value)
   die("unknown config subcommand '" .. tostring(sub) .. "' — use list|get|set|unset")
 end
 
---- Bare `lw` — workspace status. Works outside a workspace too.
+--- Truncate `s` to about `w` columns with an ellipsis. Byte-approximate —
+--- fine for the ASCII-ish content on the status page.
+local function trunc(s, w)
+  s = tostring(s)
+  if #s <= w then return s end
+  return s:sub(1, math.max(1, w - 1)) .. "…"
+end
+
+--- Print a capped section: a blank line, "Title (N)", up to `max` rows via
+--- `row_fn`, then a "+K more · <hint>" line when the list was truncated.
+local function status_section(title, items, max, row_fn, more_hint)
+  out("")
+  out(string.format("%s (%d)", title, #items))
+  if #items == 0 then out("  (none)"); return end
+  local shown = math.min(#items, max)
+  for i = 1, shown do out(row_fn(items[i])) end
+  if #items > shown then
+    out(string.format("  +%d more · %s", #items - shown, more_hint))
+  end
+end
+
+--- `lw status` (also bare `lw`) — one-screen workspace overview. Works outside
+--- a workspace too. Every section is capped to keep it to a single page.
 function M.cmd_status(root)
   if not root then
-    out("loomworks — no workspace here (no loomworks.json found)")
+    out("loomworks — no workspace here (no loomworks.json / .nvim/loomworks.user.json)")
     out("")
-    out("Run `lw help` for commands.")
+    out("Run `lw init` to start one, or `lw help` for commands.")
     return 0
   end
-  local ws = load_workspace(root, false) -- pinned info only; skip detection
+  local ws = load_workspace(root, false) -- pinned info only; skip tool detection
   out(string.format("loomworks — %s  (%s)", ws.name or "?", ws.root))
-  out("")
+
+  local MAX = 6
   local profiles = ws._profiles or {}
-  local active = ws._active_profile_key
+  local active_key = ws._active_profile_key
   local ap
-  for _, p in ipairs(profiles) do if p.key == active then ap = p end end
-  if ap then
-    out("  Active profile   " .. ap.key)
-    out("    set            " .. (ap._configuration_set_name or "?"))
-    out("    tools          " .. table.concat(ap._tool_keys or {}, ", "))
-    local builds = {}
-    for _, pp in ipairs(ap:projects()) do
-      local proj = pp._project
-      if proj then
-        local t = proj.type or (proj._module and proj._module.id) or "?"
-        builds[#builds + 1] = proj.key .. " (" .. t .. ")"
-      end
-    end
-    if #builds > 0 then out("    builds         " .. table.concat(builds, ", ")) end
-  elseif #profiles > 0 then
-    out("  No active profile — run `lw profile select` to pick one")
-  else
-    out("  No profiles defined")
-  end
+  for _, p in ipairs(profiles) do if p.key == active_key then ap = p end end
+
   out("")
-  if #profiles > 0 then
-    out(string.format("  %d profile%s defined · `lw profiles` to list",
-      #profiles, #profiles == 1 and "" or "s"))
-    out("")
+  if ap then
+    out("Active profile   " .. trunc(ap.key, 44) ..
+      "   (set " .. (ap._configuration_set_name or "?") .. ")")
+  elseif #profiles > 0 then
+    out("Active profile   (none) — `lw profile select`")
+  else
+    out("Active profile   (no profiles) — `lw profile create <set> <tool>`")
   end
-  out("Run `lw help` for commands · `lw help <command>` for details.")
+
+  -- Profiles: active first (so it's always visible under the cap), then the
+  -- rest by key; active marked with `*`.
+  local plist = {}
+  if ap then plist[#plist + 1] = ap end
+  local rest = {}
+  for _, p in ipairs(profiles) do if p ~= ap then rest[#rest + 1] = p end end
+  table.sort(rest, function(a, b) return a.key < b.key end)
+  for _, p in ipairs(rest) do plist[#plist + 1] = p end
+  status_section("Profiles", plist, MAX, function(p)
+    local mark = (p.key == active_key) and "*" or " "
+    return string.format(" %s %-38s set=%s", mark, trunc(p.key, 38),
+      trunc(p._configuration_set_name or "?", 22))
+  end, "lw profiles")
+
+  -- Configuration sets: name + compact mappings.
+  local sets = {}
+  for _, cs in ipairs(ws._config_sets or {}) do sets[#sets + 1] = cs end
+  table.sort(sets, function(a, b) return a.name < b.name end)
+  status_section("Configuration sets", sets, MAX, function(cs)
+    local rows = {}
+    for project, cfg in pairs(cs.mappings or {}) do rows[#rows + 1] = project.key .. "→" .. cfg.name end
+    table.sort(rows)
+    return string.format("  %-14s %s", trunc(cs.name, 14),
+      trunc(next(rows) and table.concat(rows, ", ") or "(empty)", 56))
+  end, "lw cs list")
+
+  -- Projects with their configurations (first few names, then +K).
+  local projs = {}
+  for _, p in ipairs(ws._projects or {}) do projs[#projs + 1] = p end
+  table.sort(projs, function(a, b) return a.key < b.key end)
+  status_section("Projects", projs, MAX, function(p)
+    local t = p.type or (p._module and p._module.id) or "?"
+    local names = {}
+    for _, c in ipairs(p:get_configurations()) do names[#names + 1] = c.name end
+    table.sort(names)
+    local head = {}
+    for i = 1, math.min(#names, 3) do head[#head + 1] = names[i] end
+    local cfgstr = (#names == 0) and "(no configs)" or table.concat(head, ", ")
+    if #names > 3 then cfgstr = cfgstr .. " +" .. (#names - 3) end
+    return string.format("  %-14s %-6s %s", trunc(p.key, 14), t, trunc(cfgstr, 50))
+  end, "lw project list")
+
+  out("")
+  out("`lw help` for commands · `lw help <command>` for details.")
   return 0
 end
 
@@ -1251,10 +1304,12 @@ end
 -- ---------------------------------------------------------------------------
 
 local HELP = {
-  status = [[lw   (no command)
+  status = [[lw status   (also: bare `lw`)
 
-Show workspace status: the active profile, its configuration set, tools,
-and the projects it builds.]],
+One-screen workspace overview: the active profile, then capped lists of
+profiles (active marked `*`), configuration sets, and projects with their
+configurations. Each section is limited to fit a page — use `lw profiles`,
+`lw cs list`, or `lw project list` for the full lists.]],
   profiles = [[lw profiles
 
 List the workspace's profiles, marking the active one with `*` and flagging
@@ -1417,8 +1472,8 @@ local function main()
   -- runs from elsewhere (the luvi host runs from the bundle dir).
   local root = find_root(os.getenv("LW_ROOT"))
 
-  -- Bare `lw` → status (also fine outside a workspace).
-  if not command then
+  -- Bare `lw` and `lw status` → status (also fine outside a workspace).
+  if not command or command == "status" then
     finish(M.cmd_status(root))
   end
 
