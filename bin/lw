@@ -33,7 +33,7 @@ fi
 if [ -n "$luvi" ]; then
   orig=$PWD
   cd "$lua_dir"
-  LW_LUA="$lua_dir" LW_ROOT="$orig" exec "$luvi" . --main loomworks/cli_main.lua -- "$@"
+  LW_ROOT="$orig" exec "$luvi" . -- "$@"
 fi
 
 if ! command -v nvim >/dev/null 2>&1; then

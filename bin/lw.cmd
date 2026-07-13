@@ -22,13 +22,6 @@ if not exist "%CLI%" (
   exit /b 1
 )
 
-rem Put the console into UTF-8 so diagnostic text (em dashes, arrows) renders
-rem correctly; restore the previous code page on the way out.
-set "LW_OLDCP="
-for /f "tokens=2 delims=:" %%C in ('chcp') do set "LW_OLDCP=%%C"
-set "LW_OLDCP=%LW_OLDCP: =%"
-chcp 65001 >nul
-
 rem --- RUNTIME: prefer standalone luvi (no Neovim), else headless Neovim ----
 set "LUVI=%LW_LUVI%"
 if defined LUVI goto runluvi
@@ -37,25 +30,18 @@ if defined LUVI goto runluvi
 goto runnvim
 
 :runluvi
-set "LW_LUA=%LUA_DIR%"
 set "LW_ROOT=%CD%"
 pushd "%LUA_DIR%"
-"%LUVI%" . --main loomworks/cli_main.lua -- %*
+"%LUVI%" . -- %*
 set "RC=%ERRORLEVEL%"
 popd
-goto done
+exit /b %RC%
 
 :runnvim
 where nvim >nul 2>nul
 if errorlevel 1 (
   echo lw: neither luvi nor nvim found ^(set LW_LUVI, or install one^) 1>&2
-  set "RC=1"
-  goto done
+  exit /b 1
 )
 nvim --headless -u NONE -l "%CLI%" %*
-set "RC=%ERRORLEVEL%"
-goto done
-
-:done
-if defined LW_OLDCP chcp %LW_OLDCP% >nul
-exit /b %RC%
+exit /b %ERRORLEVEL%
