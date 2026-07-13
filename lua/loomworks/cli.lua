@@ -5,7 +5,8 @@
 --- luvi + shim host is layered on later without changing this file.
 ---
 --- Commands: (status) | init | project <add|remove|list|show> |
----           configuration <list|add|show|get|set|unset|remove> | profiles |
+---           configuration <list|add|show|get|set|unset|remove> |
+---           configuration-set <list|show|create|map|unmap|remove> | profiles |
 ---           profile <list|select|create> | build [profile] | publish |
 ---           test [profile] | config <...> | help
 
@@ -837,6 +838,164 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6)
     "' — use list|add|show|get|set|unset|remove")
 end
 
+-- ---------------------------------------------------------------------------
+-- Configuration sets (list / show / create / map / unmap / remove)
+-- ---------------------------------------------------------------------------
+
+--- Resolve a configuration set by name, or die listing the existing ones.
+local function resolve_config_set(ws, name)
+  local names = {}
+  for _, cs in ipairs(ws._config_sets or {}) do
+    if cs.name == name then return cs end
+    names[#names + 1] = cs.name
+  end
+  table.sort(names)
+  die("no configuration set '" .. tostring(name) .. "'. Existing: " ..
+    (next(names) and table.concat(names, ", ") or "(none)"))
+end
+
+--- Profiles that reference `cs` by name.
+local function profiles_using_set(ws, cs)
+  local using = {}
+  for _, p in pairs(ws._profiles or {}) do
+    if p._configuration_set_name == cs.name then using[#using + 1] = p.key end
+  end
+  table.sort(using)
+  return using
+end
+
+--- `lw configuration-set list` — all sets with their mappings.
+function M.cmd_cset_list(root)
+  local ws = load_workspace(root, false)
+  local sets = {}
+  for _, cs in ipairs(ws._config_sets or {}) do sets[#sets + 1] = cs end
+  if #sets == 0 then out("(no configuration sets)"); return 0 end
+  table.sort(sets, function(a, b) return a.name < b.name end)
+  for _, cs in ipairs(sets) do
+    local rows = {}
+    for project, cfg in pairs(cs.mappings or {}) do rows[#rows + 1] = project.key .. "→" .. cfg.name end
+    table.sort(rows)
+    out(string.format("  %-16s %s", cs.name, next(rows) and table.concat(rows, ", ") or "(empty)"))
+  end
+  return 0
+end
+
+--- `lw configuration-set show <name>`
+function M.cmd_cset_show(root, name)
+  if not name then die("usage: lw configuration-set show <name>") end
+  local ws = load_workspace(root, false)
+  local cs = resolve_config_set(ws, name)
+  out(cs.name)
+  if cs._intent then out("  intent          " .. cs._intent) end
+  out("  Mappings:")
+  local rows = {}
+  for project, cfg in pairs(cs.mappings or {}) do
+    rows[#rows + 1] = { p = project.key, c = cfg.name, stale = (cfg._source_missing or cfg._removed) }
+  end
+  table.sort(rows, function(a, b) return a.p < b.p end)
+  if #rows == 0 then
+    out("    (empty — add with `lw configuration-set map " .. cs.name .. " <project> <config>`)")
+  else
+    for _, r in ipairs(rows) do
+      out(string.format("    %-20s -> %s%s", r.p, r.c, r.stale and "   (stale)" or ""))
+    end
+  end
+  local ok, reasons = cs:is_valid()
+  if not ok then out("  invalid: " .. table.concat(reasons, "; ")) end
+  local using = profiles_using_set(ws, cs)
+  if #using > 0 then out("  used by profiles " .. table.concat(using, ", ")) end
+  return 0
+end
+
+--- Parse and validate a `project=config` mapping spec against the workspace.
+--- @return string project_key, string config_name (canonical)
+local function parse_mapping(ws, spec)
+  local pk, cfgname = spec:match("^([^=]+)=(.+)$")
+  if not pk then die("bad mapping '" .. spec .. "' — use project=config") end
+  local project = resolve_project(ws, pk)
+  local cfg = resolve_config(project, cfgname, false)
+  return project.key, cfg.name
+end
+
+--- `lw configuration-set create <name> [project=config ...]`
+function M.cmd_cset_create(root, args)
+  local name = args[3]
+  if not name then die("usage: lw configuration-set create <name> [project=config ...]") end
+  local ws = load_workspace(root, false)
+  local raw = {}
+  for i = 4, #args do
+    local pk, cfgname = parse_mapping(ws, args[i])
+    raw[pk] = cfgname
+  end
+  local cs, err = ws:add_configuration_set(name, raw)
+  if not cs then die("could not create configuration set: " .. tostring(err)) end
+  out("created configuration set '" .. cs.name .. "'" ..
+    (next(raw) and "" or " (empty)"))
+  if not next(raw) then
+    out("  add mappings: lw configuration-set map " .. cs.name .. " <project> <config>")
+  end
+  out("`lw publish` to share it; `lw profile create " .. cs.name .. " <tool>` to build it.")
+  return 0
+end
+
+--- `lw configuration-set map <name> <project> <config>`
+function M.cmd_cset_map(root, name, pk, cfgname)
+  if not (name and pk and cfgname) then
+    die("usage: lw configuration-set map <name> <project> <config>")
+  end
+  local ws = load_workspace(root, false)
+  local cs = resolve_config_set(ws, name)
+  local project = resolve_project(ws, pk)
+  local cfg = resolve_config(project, cfgname, false)
+  local ok, err = cs:update_mapping(project, cfg)
+  if not ok then die("could not map: " .. tostring(err)) end
+  out(string.format("%s: %s -> %s", cs.name, project.key, cfg.name))
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
+--- `lw configuration-set unmap <name> <project>`
+function M.cmd_cset_unmap(root, name, pk)
+  if not (name and pk) then die("usage: lw configuration-set unmap <name> <project>") end
+  local ws = load_workspace(root, false)
+  local cs = resolve_config_set(ws, name)
+  local project = resolve_project(ws, pk)
+  if not cs.mappings[project] then die("'" .. pk .. "' is not mapped in '" .. cs.name .. "'") end
+  local ok, err = cs:update_mapping(project, nil)
+  if not ok then die("could not unmap: " .. tostring(err)) end
+  out(cs.name .. ": removed mapping for " .. project.key)
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
+--- `lw configuration-set remove <name>`
+function M.cmd_cset_remove(root, name)
+  if not name then die("usage: lw configuration-set remove <name>") end
+  local ws = load_workspace(root, false)
+  local cs = resolve_config_set(ws, name)
+  local using = profiles_using_set(ws, cs)
+  local ok, err = ws:remove_configuration_set(cs)
+  if not ok then die("could not remove configuration set: " .. tostring(err)) end
+  out("removed configuration set '" .. cs.name .. "'")
+  if #using > 0 then
+    out("  note: these profiles now reference a missing set: " .. table.concat(using, ", "))
+  end
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
+--- `lw configuration-set <list|show|create|map|unmap|remove>` (alias: cs)
+function M.cmd_cset(sub, root, args)
+  if sub == nil or sub == "list" then return M.cmd_cset_list(root) end
+  if sub == "show" then return M.cmd_cset_show(root, args[3]) end
+  if sub == "create" then return M.cmd_cset_create(root, args) end
+  if sub == "map" then return M.cmd_cset_map(root, args[3], args[4], args[5]) end
+  if sub == "unmap" then return M.cmd_cset_unmap(root, args[3], args[4]) end
+  if sub == "remove" or sub == "rm" then return M.cmd_cset_remove(root, args[3]) end
+  die("unknown configuration-set subcommand '" .. tostring(sub) ..
+    "' — use list|show|create|map|unmap|remove")
+end
+
 --- `lw profile select` — interactive picker that sets the active profile.
 --- Writes user.json (explicit management, spec §16.9).
 function M.select_profile(ws)
@@ -1160,6 +1319,21 @@ Params for get/set/unset:
   options.<KEY>      a generic build option
   variables.<NAME>   a project variable override
   <other>            any module-specific field (e.g. toolchain, generator)]],
+  ["configuration-set"] = [[lw configuration-set <list|show|create|map|unmap|remove>   (alias: cs)
+
+A configuration set maps each project to one of its configurations — the
+cross-project selection a profile builds. Managed in the working copy;
+`lw publish` shares it.
+
+  list                                all sets and their mappings
+  show <name>                         one set: mappings, validity, profiles
+  create <name> [project=config ...]  create a set (optionally with mappings)
+  map <name> <project> <config>       set/replace one project's mapping
+  unmap <name> <project>              drop a project's mapping
+  remove <name>                       delete the set
+
+<config> is a configuration name (an unambiguous base name works, so `Debug`
+resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
   profile = [[lw profile <list|select|create>
 
   list      same as `lw profiles`
@@ -1191,6 +1365,9 @@ Keys:
 }
 
 function M.cmd_help(cmd)
+  -- Normalize command aliases to their canonical help topic.
+  local alias = { cs = "configuration-set", cfg = "configuration" }
+  cmd = cmd and (alias[cmd] or cmd) or nil
   if cmd and HELP[cmd] then
     out(HELP[cmd])
     return 0
@@ -1204,6 +1381,7 @@ Usage: lw [command] [args]
   init              initialize the workspace working copy
   project <sub>     add | remove | list | show projects
   configuration     add | set | get | show | ... project configurations
+  configuration-set create | map | show | ... sets  (cs)
   profiles          list profiles and their buildability
   profile <sub>     list | select | create profiles
   build [profile]   build a profile (configure if needed, then build)
@@ -1260,6 +1438,9 @@ local function main()
   end
   if command == "configuration" or command == "cfg" then
     finish(M.cmd_configuration(a[2], root, a[3], a[4], a[5], a[6]))
+  end
+  if command == "configuration-set" or command == "cs" then
+    finish(M.cmd_cset(a[2], root, a))
   end
 
   local ws = load_workspace(root)
