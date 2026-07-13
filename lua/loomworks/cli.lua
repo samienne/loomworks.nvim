@@ -5,7 +5,7 @@
 --- luvi + shim host is layered on later without changing this file.
 ---
 --- Commands: (status) | init | profiles | profile <list|select> |
----           build [profile] | test [profile] | config <...> | help [command]
+---           build [profile] | publish | test [profile] | config <...> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -57,7 +57,12 @@ end
 local function find_root(start)
   local dir = (start or uv.cwd()):gsub("\\", "/"):gsub("/+$", "")
   while dir ~= "" do
-    if uv.fs_stat(dir .. "/loomworks.json") then return dir end
+    -- A workspace is recognized by the published snapshot OR the working copy
+    -- (spec §2.2/§2.4) — a not-yet-published `lw init` has only the latter.
+    if uv.fs_stat(dir .. "/loomworks.json")
+        or uv.fs_stat(dir .. "/.nvim/loomworks.user.json") then
+      return dir
+    end
     local parent = dir:gsub("/[^/]*$", "")
     if parent == dir then break end
     dir = parent
@@ -231,14 +236,26 @@ function M.cmd_build(ws, profile_name)
   return 0
 end
 
---- `lw init` — stamp an empty loomworks.json in the working directory.
+--- `lw init` — initialize the working copy (.nvim/loomworks.user.json).
+--- loomworks.json is written later by `lw publish` (working-copy model, §2.4).
 function M.cmd_init()
   local dir = (os.getenv("LW_ROOT") or uv.cwd()):gsub("\\", "/"):gsub("/+$", "")
-  local ok, err = require("loomworks.workspace").create_workspace_config(dir)
-  if not ok then die(err or "failed to create loomworks.json") end
-  out("created " .. dir .. "/loomworks.json")
+  local ok, err = require("loomworks.workspace").init_workspace(dir)
+  if not ok then die(err or "failed to initialize workspace") end
+  out("initialized workspace at " .. dir)
+  out("  created .nvim/loomworks.user.json (working copy)")
   out("")
-  out("Declare projects in it, then `lw profile select` and `lw build`.")
+  out("Add projects/profiles (editor or manual edit), then `lw publish` to")
+  out("write the shared loomworks.json.")
+  return 0
+end
+
+--- `lw publish` — write the shared loomworks.json from the working copy.
+function M.cmd_publish(root)
+  local ws = load_workspace(root, false)
+  local ok, err = ws:publish()
+  if not ok then die("publish failed: " .. tostring(err)) end
+  out("published " .. ws.root .. "/loomworks.json")
   return 0
 end
 
@@ -384,8 +401,13 @@ exit on any failure.]],
 Build the profile's test target and run it, reporting a real exit code.]],
   init = [[lw init
 
-Stamp an empty loomworks.json in the current directory. Fails if one
-already exists.]],
+Initialize the workspace working copy (.nvim/loomworks.user.json). The shared
+loomworks.json is written later by `lw publish` (working-copy model). Fails if
+the workspace already exists.]],
+  publish = [[lw publish
+
+Write the shared loomworks.json from the working copy — the same snapshot the
+editor produces on :w. This is the file you commit and that CI reads.]],
   profile = [[lw profile <list|select>
 
   list      same as `lw profiles`
@@ -418,10 +440,11 @@ function M.cmd_help(cmd)
 Usage: lw [command] [args]
 
   (no command)      workspace status + active profile
-  init              stamp an empty loomworks.json here
+  init              initialize the workspace working copy
   profiles          list profiles and their buildability
   profile <sub>     list | select (set the active profile)
   build [profile]   build a profile (configure if needed, then build)
+  publish           write loomworks.json from the working copy
   test  [profile]   build and run tests                     (coming)
   config <...>      get/set lw configuration
   help  [command]   this help, or details for a command
@@ -464,6 +487,9 @@ local function main()
   -- `profile` manages its own workspace load (select skips tool detection).
   if command == "profile" then
     finish(M.cmd_profile(a[2], root))
+  end
+  if command == "publish" then
+    finish(M.cmd_publish(root))
   end
 
   local ws = load_workspace(root)
