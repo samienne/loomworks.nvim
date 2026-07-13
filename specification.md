@@ -3234,8 +3234,9 @@ A headless invocation MUST be able to resolve any **published** profile to
 its build commands from the published snapshot (§2.1) plus the cache (§2.3)
 alone, with no working copy (§2.2) present. Publishing (§2.4) therefore
 MUST emit a snapshot self-sufficient for this resolution. When a working
-copy is present it MAY be read as input, but a headless invocation MUST NOT
-create or modify it.
+copy is present it MAY be read as input. A **build** (§16.4) MUST NOT create
+or modify it — build invocations are non-mutating so CI runs stay
+reproducible; an explicit **management** operation MAY write it (§16.9).
 
 ### 16.3 Explicit profile selection
 
@@ -3282,11 +3283,19 @@ unit whose module is unavailable in the current host is reported and
 skipped; consistent with §8.0, its declaration is preserved and does not
 invalidate the workspace or other units.
 
-### 16.9 No configuration authoring
+### 16.9 Builds are read-only; management may author
 
-A headless host does not create or modify projects, configurations,
-configuration sets, or profiles (§16.2). Authoring occurs in the editor or
-by manual file edit (§2).
+A **build** (§16.4) is read-only toward configuration: it never creates or
+modifies projects, configurations, configuration sets, or profiles. This is
+what keeps CI runs non-mutating and lets the headless host coexist with the
+editor.
+
+An **explicit management** operation MAY author — bootstrap a workspace,
+select the active profile, or (where supported) create/edit items — but only
+when the caller invokes it directly; it is never part of a build. Management
+writes follow the same working-copy model as the editor (§2.4): they land in
+the working copy (§2.2), and the published snapshot (§2.1) changes only on an
+explicit publish. A read-only / CI invocation runs no management operation.
 
 ### 16.10 Explicit toolchain override
 

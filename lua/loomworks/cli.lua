@@ -4,8 +4,8 @@
 --- (`nvim --headless -u NONE -l lua/loomworks/cli.lua <cmd> [args]`); the
 --- luvi + shim host is layered on later without changing this file.
 ---
---- Commands: (status) | profiles | build [profile] | test [profile] |
----           config <list|get|set|unset> | help [command]
+--- Commands: (status) | init | profiles | profile <list|select> |
+---           build [profile] | test [profile] | config <...> | help [command]
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -159,8 +159,8 @@ function M.cmd_profiles(ws)
   return 0
 end
 
---- Resolve which profile to operate on (spec §16.3):
---- explicit name → user.json active → single published → error.
+--- Resolve which profile to operate on (spec §16.3): explicit name (exact,
+--- then unambiguous substring) → user.json active → single → error.
 --- @param ws table
 --- @param name string|nil
 --- @return table profile
@@ -170,7 +170,18 @@ local function resolve_profile(ws, name)
     for _, p in ipairs(profiles) do
       if p.key == name then return p end
     end
-    die("no profile named '" .. name .. "'. Run `lw profiles` to list.")
+    -- Substring match — profile keys are long, so `lw build clang-19` works.
+    local matches = {}
+    for _, p in ipairs(profiles) do
+      if p.key:find(name, 1, true) then matches[#matches + 1] = p end
+    end
+    if #matches == 1 then return matches[1] end
+    if #matches > 1 then
+      local keys = {}
+      for _, p in ipairs(matches) do keys[#keys + 1] = p.key end
+      die("'" .. name .. "' matches multiple profiles: " .. table.concat(keys, ", "))
+    end
+    die("no profile matching '" .. name .. "'. Run `lw profiles` to list.")
   end
   local active = ws._active_profile_key
   if active then
@@ -179,7 +190,7 @@ local function resolve_profile(ws, name)
     end
   end
   if #profiles == 1 then return profiles[1] end
-  die("no profile specified and no unambiguous default — run `lw profiles`, then `lw build <profile>`")
+  die("no profile specified and no unambiguous default — run `lw profile select`")
 end
 
 --- Spawn one step's command, streaming output; return its exit code.
@@ -218,6 +229,51 @@ function M.cmd_build(ws, profile_name)
   end
   out("BUILD OK: " .. profile.key)
   return 0
+end
+
+--- `lw init` — stamp an empty loomworks.json in the working directory.
+function M.cmd_init()
+  local dir = (os.getenv("LW_ROOT") or uv.cwd()):gsub("\\", "/"):gsub("/+$", "")
+  local ok, err = require("loomworks.workspace").create_workspace_config(dir)
+  if not ok then die(err or "failed to create loomworks.json") end
+  out("created " .. dir .. "/loomworks.json")
+  out("")
+  out("Declare projects in it, then `lw profile select` and `lw build`.")
+  return 0
+end
+
+--- `lw profile select` — interactive picker that sets the active profile.
+--- Writes user.json (explicit management, spec §16.9).
+function M.select_profile(ws)
+  local profiles = ws._profiles or {}
+  if #profiles == 0 then die("no profiles to select — run `lw profiles`") end
+  local active = ws._active_profile_key
+  out("Select a profile:")
+  out("")
+  for i, p in ipairs(profiles) do
+    out(string.format("  %d) %s%s", i, p.key, (p.key == active) and "   (current)" or ""))
+  end
+  out("")
+  io.write("Enter number (blank to cancel): ")
+  io.stdout:flush()
+  local line = io.read("*l")
+  if not line or line:match("^%s*$") then out("cancelled"); return 0 end
+  local n = tonumber(line)
+  if not n or not profiles[n] then die("invalid selection: " .. tostring(line)) end
+  profiles[n]:activate()
+  out("active profile: " .. profiles[n].key)
+  return 0
+end
+
+--- `lw profile <list|select>`
+function M.cmd_profile(sub, root)
+  if sub == "select" then
+    return M.select_profile(load_workspace(root, false))
+  end
+  if sub == nil or sub == "list" then
+    return M.cmd_profiles(load_workspace(root))
+  end
+  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select")
 end
 
 --- `lw config <list|get|set|unset> [key] [value]`
@@ -286,7 +342,7 @@ function M.cmd_status(root)
     end
     if #builds > 0 then out("    builds         " .. table.concat(builds, ", ")) end
   elseif #profiles > 0 then
-    out("  No active profile — run `lw profiles` to pick one")
+    out("  No active profile — run `lw profile select` to pick one")
   else
     out("  No profiles defined")
   end
@@ -326,6 +382,17 @@ exit on any failure.]],
   test = [[lw test [profile]   (coming soon)
 
 Build the profile's test target and run it, reporting a real exit code.]],
+  init = [[lw init
+
+Stamp an empty loomworks.json in the current directory. Fails if one
+already exists.]],
+  profile = [[lw profile <list|select>
+
+  list      same as `lw profiles`
+  select    interactive picker; sets the active profile (writes user.json)
+
+The active profile is the default for `lw build`. `lw build` also accepts a
+substring, so `lw build clang-19` works when it's unambiguous.]],
   config = [[lw config <list|get|set|unset> [key] [value]
 
 Read or write lw's user configuration (]] .. config_path() .. [[).
@@ -351,7 +418,9 @@ function M.cmd_help(cmd)
 Usage: lw [command] [args]
 
   (no command)      workspace status + active profile
+  init              stamp an empty loomworks.json here
   profiles          list profiles and their buildability
+  profile <sub>     list | select (set the active profile)
   build [profile]   build a profile (configure if needed, then build)
   test  [profile]   build and run tests                     (coming)
   config <...>      get/set lw configuration
@@ -376,6 +445,9 @@ local function main()
   if command == "config" then
     finish(M.cmd_config(a[2], a[3], a[4]))
   end
+  if command == "init" then
+    finish(M.cmd_init())
+  end
 
   -- LW_ROOT lets a launcher pass the user's directory when the process itself
   -- runs from elsewhere (the luvi host runs from the bundle dir).
@@ -387,9 +459,14 @@ local function main()
   end
 
   -- Workspace commands.
-  if not root then die("no loomworks.json found (searched up from cwd)") end
-  local ws = load_workspace(root)
+  if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
 
+  -- `profile` manages its own workspace load (select skips tool detection).
+  if command == "profile" then
+    finish(M.cmd_profile(a[2], root))
+  end
+
+  local ws = load_workspace(root)
   if command == "profiles" then
     finish(M.cmd_profiles(ws))
   elseif command == "build" then
