@@ -7,8 +7,8 @@
 --- Commands: (status) | init | project <add|remove|list|show> |
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
----           profile <list|select|create> | build [profile] | publish |
----           test [profile] | config <...> | help
+---           profile <list|select|create> | tools | build [profile] |
+---           publish | test [profile] | config <...> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -1212,16 +1212,19 @@ local function trunc(s, w)
 end
 
 --- Print a capped section: a blank line, "Title (N)", up to `max` rows via
---- `row_fn`, then a "+K more · <hint>" line when the list was truncated.
-local function status_section(title, items, max, row_fn, more_hint)
+--- `row_fn`, then a "+K more · <more_hint>" line when the list was truncated,
+--- and always a short `help` line (how to add — doubles as the empty-state
+--- hint, like the active-profile line shows with no profiles).
+local function status_section(title, items, max, row_fn, more_hint, help)
   out("")
   out(string.format("%s (%d)", title, #items))
-  if #items == 0 then out("  (none)"); return end
+  if #items == 0 then out("  " .. help); return end
   local shown = math.min(#items, max)
   for i = 1, shown do out(row_fn(items[i])) end
   if #items > shown then
     out(string.format("  +%d more · %s", #items - shown, more_hint))
   end
+  out("  " .. help)
 end
 
 --- `lw status` (also bare `lw`) — one-screen workspace overview. Works outside
@@ -1264,7 +1267,7 @@ function M.cmd_status(root)
     local mark = (p.key == active_key) and "*" or " "
     return string.format(" %s %-38s set=%s", mark, trunc(p.key, 38),
       trunc(p._configuration_set_name or "?", 22))
-  end, "lw profiles")
+  end, "lw profiles", "create a profile · lw profile create <set> <tool>")
 
   -- Configuration sets: name + compact mappings.
   local sets = {}
@@ -1276,7 +1279,7 @@ function M.cmd_status(root)
     table.sort(rows)
     return string.format("  %-14s %s", trunc(cs.name, 14),
       trunc(next(rows) and table.concat(rows, ", ") or "(empty)", 56))
-  end, "lw cs list")
+  end, "lw cs list", "create a set · lw configuration-set create <name> [project=config …]")
 
   -- Projects with their configurations (first few names, then +K).
   local projs = {}
@@ -1292,10 +1295,41 @@ function M.cmd_status(root)
     local cfgstr = (#names == 0) and "(no configs)" or table.concat(head, ", ")
     if #names > 3 then cfgstr = cfgstr .. " +" .. (#names - 3) end
     return string.format("  %-14s %-6s %s", trunc(p.key, 14), t, trunc(cfgstr, 50))
-  end, "lw project list")
+  end, "lw project list", "add a project · lw project add <path> [type]")
 
   out("")
   out("`lw help` for commands · `lw help <command>` for details.")
+  return 0
+end
+
+--- `lw tools` — list detected toolchains, grouped by module. Tools are scanned
+--- per workspace module, so a module only appears once a project uses it.
+function M.cmd_tools(root)
+  local ws = load_workspace(root) -- wait for tool detection
+  local mods = {}
+  for _, m in pairs(ws._modules or {}) do mods[#mods + 1] = m end
+  table.sort(mods, function(a, b) return a.id < b.id end)
+  if #mods == 0 then
+    out("(no modules yet — add a project first: lw project add <path> [type])")
+    return 0
+  end
+  for _, mod in ipairs(mods) do
+    out(mod.id .. (mod.has_keyed_tools and "" or "   (single default toolchain)"))
+    local tools = mod:tools()
+    table.sort(tools, function(a, b) return (a.key or "") < (b.key or "") end)
+    if #tools == 0 then
+      out("  (none detected)")
+    else
+      for _, t in ipairs(tools) do
+        local langs = (t.languages and #t.languages > 0)
+            and ("  [" .. table.concat(t.languages, ", ") .. "]") or ""
+        local label = t.label and ("   " .. t.label) or ""
+        out(string.format("  %-26s%s%s", t.key or "(default)", label, langs))
+      end
+    end
+    out("")
+  end
+  out("Pin a tool in a profile: lw profile create <set> <tool>  (version prefixes match)")
   return 0
 end
 
@@ -1314,6 +1348,13 @@ configurations. Each section is limited to fit a page — use `lw profiles`,
 
 List the workspace's profiles, marking the active one with `*` and flagging
 any that aren't buildable (an unavailable module or an unresolved tool).]],
+  tools = [[lw tools
+
+List the toolchains detected on this machine, grouped by module (cmake,
+meson, …). Each row is a tool key, its label, and the languages it provides.
+Tools are scanned per workspace module, so a module only appears once a
+project uses it. Pin one in a profile with `lw profile create <set> <tool>`;
+version prefixes match (ninja-clang-19 -> ninja-clang-19.1.5).]],
   build = [[lw build [profile]
 
 Build a profile's projects. With no profile: the active profile (user.json),
@@ -1439,6 +1480,7 @@ Usage: lw [command] [args]
   configuration-set create | map | show | ... sets  (cs)
   profiles          list profiles and their buildability
   profile <sub>     list | select | create profiles
+  tools             list detected toolchains by module
   build [profile]   build a profile (configure if needed, then build)
   publish           write loomworks.json from the working copy
   test  [profile]   build and run tests                     (coming)
@@ -1496,6 +1538,10 @@ local function main()
   end
   if command == "configuration-set" or command == "cs" then
     finish(M.cmd_cset(a[2], root, a))
+  end
+
+  if command == "tools" then
+    finish(M.cmd_tools(root))
   end
 
   local ws = load_workspace(root)
