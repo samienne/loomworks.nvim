@@ -4,8 +4,9 @@
 --- (`nvim --headless -u NONE -l lua/loomworks/cli.lua <cmd> [args]`); the
 --- luvi + shim host is layered on later without changing this file.
 ---
---- Commands: (status) | init | profiles | profile <list|select> |
----           build [profile] | publish | test [profile] | config <...> | help
+--- Commands: (status) | init | project <add|remove|list> | profiles |
+---           profile <list|select> | build [profile] | publish |
+---           test [profile] | config <...> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -70,11 +71,83 @@ local function find_root(start)
   return nil
 end
 
+local function is_windows() return package.config:sub(1, 1) == "\\" end
+
+-- ---------------------------------------------------------------------------
+-- Path helpers + interactive prompts
+-- ---------------------------------------------------------------------------
+
+--- The directory the user typed paths relative to. Under the luvi host the
+--- process runs from the bundle dir, so the launcher passes the real cwd in
+--- LW_ROOT; under `nvim -l` the process already runs in the user's cwd.
+local function user_cwd()
+  local d = os.getenv("LW_ROOT")
+  if d and #d > 0 then return (d:gsub("\\", "/"):gsub("/+$", "")) end
+  return (uv.cwd():gsub("\\", "/"):gsub("/+$", ""))
+end
+
+local function basename(p)
+  return (p:gsub("/+$", ""):match("[^/]+$")) or p
+end
+
+--- Normalize for prefix comparison: forward slashes, no trailing slash,
+--- lowercased on Windows (matches deps.normalize's case folding).
+local function norm_cmp(p)
+  p = p:gsub("\\", "/"):gsub("/+$", "")
+  if is_windows() then p = p:lower() end
+  return p
+end
+
+--- Resolve `p` (relative to `base`, or absolute) to a real absolute path.
+--- @return string|nil abs forward-slashed real path, or nil if it doesn't exist
+local function resolve_abs(p, base)
+  p = p:gsub("\\", "/")
+  local joined = (p:match("^%a:/") or p:sub(1, 1) == "/") and p or (base .. "/" .. p)
+  local real = uv.fs_realpath(joined)
+  return real and (real:gsub("\\", "/")) or nil
+end
+
+--- Return `abs` made relative to workspace `root` ("." if equal), or nil if
+--- `abs` is not inside `root`. `root`/`abs` are real, same-cased forward paths.
+local function rel_to_root(root, abs)
+  local nr, na = norm_cmp(root), norm_cmp(abs)
+  if na == nr then return "." end
+  if na:sub(1, #nr + 1) == nr .. "/" then return abs:sub(#root + 2) end
+  return nil
+end
+
+--- Mirror workspace_view.derive_key_and_path (kept inline to avoid pulling
+--- editor-only requires into the standalone host).
+local function derive_key_and_path(root, abs, name)
+  local rel = abs:sub(#root + 2)
+  if rel == "" then return name, "."
+  elseif rel == name then return name, nil
+  else return (rel:gsub("/", "_")), rel end
+end
+
+--- Is stdin an interactive terminal? Gates prompting: interactive → ask;
+--- non-interactive (CI, pipe) → the caller errors instead of blocking.
+local function is_tty()
+  local ok, h = pcall(uv.guess_handle, 0)
+  return ok and h == "tty"
+end
+
+--- Prompt for a line. Blank input returns `default` (nil if none). Returns nil
+--- only on EOF. Trims surrounding whitespace.
+local function prompt_line(question, default)
+  io.write(question)
+  if default and default ~= "" then io.write(" [" .. default .. "]") end
+  io.write(": ")
+  io.stdout:flush()
+  local line = io.read("*l")
+  if line == nil then return nil end
+  if line:match("^%s*$") then return default end
+  return (line:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
 -- ---------------------------------------------------------------------------
 -- User config (~/.config/loomworks/config.json, %APPDATA%\loomworks on Windows)
 -- ---------------------------------------------------------------------------
-
-local function is_windows() return package.config:sub(1, 1) == "\\" end
 
 local function config_dir()
   if is_windows() then
@@ -259,6 +332,157 @@ function M.cmd_publish(root)
   return 0
 end
 
+-- ---------------------------------------------------------------------------
+-- Projects (add / remove / list) — explicit management, writes user.json (§16.9)
+-- ---------------------------------------------------------------------------
+
+--- Pick a module type interactively. `detected` is the detect_all_types result
+--- (nil → offer all installed modules). Non-interactive callers can't pick, so
+--- this errors with the explicit-argument hint instead of blocking.
+--- @param detected { type: string, marker: string }[]|nil
+--- @return string type
+local function pick_type(detected)
+  local modules = require("loomworks.modules")
+  local options = {}
+  if detected then
+    for _, d in ipairs(detected) do options[#options + 1] = d.type end
+  else
+    options = modules.list()
+  end
+  if #options == 0 then die("no modules available to add a project as") end
+  if not is_tty() then
+    die("could not determine the project type — pass it explicitly:\n" ..
+      "  lw project add <path> <type>   (types: " .. table.concat(options, ", ") .. ")")
+  end
+  out(detected and "Multiple project types detected:" or
+    "No type detected — select one:")
+  for i, t in ipairs(options) do
+    local marker = detected and ("   (" .. detected[i].marker .. ")") or ""
+    out(string.format("  %d) %s%s", i, t, marker))
+  end
+  out("")
+  local line = prompt_line("Enter number (blank to cancel)")
+  if not line or line == "" then out("cancelled"); finish(0) end
+  local n = tonumber(line)
+  if not n or not options[n] then die("invalid selection: " .. tostring(line)) end
+  return options[n]
+end
+
+--- Find a free project key. On collision: prompt for a new one (interactive) or
+--- error (non-interactive). Suggests `<key>-<type>` since a same-folder second
+--- project of another type is the common cause.
+local function resolve_free_key(ws, key, mtype)
+  local function taken(k)
+    for _, p in pairs(ws._projects) do if p.key == k then return true end end
+    return false
+  end
+  if not taken(key) then return key end
+  if not is_tty() then
+    die("project '" .. key .. "' already exists — pass a distinct name:\n" ..
+      "  lw project add <path> <type> <name>")
+  end
+  local suggestion = key .. "-" .. mtype
+  while true do
+    local ans = prompt_line("project '" .. key .. "' exists; new name", suggestion)
+    if not ans or ans == "" then out("cancelled"); finish(0) end
+    if not taken(ans) then return ans end
+    io.stderr:write("lw: '" .. ans .. "' also exists\n")
+    suggestion = ans .. "-2"
+  end
+end
+
+--- `lw project add <path> [type] [name]` — register an existing directory as a
+--- project in the working copy. Path is inspected to detect/validate the type.
+function M.cmd_project_add(root, path_arg, type_arg, name_arg)
+  if not path_arg then die("usage: lw project add <path> [type] [name]") end
+  local abs = resolve_abs(path_arg, user_cwd())
+  local st = abs and uv.fs_stat(abs)
+  if not st or st.type ~= "directory" then die("not a directory: " .. path_arg) end
+  local root_real = (uv.fs_realpath(root) or root):gsub("\\", "/")
+  local rel = rel_to_root(root_real, abs)
+  if not rel then die("project path must be inside the workspace (" .. root .. ")") end
+
+  local modules = require("loomworks.modules")
+  local detected = modules.detect_all_types(abs)
+
+  -- Resolve type: explicit (validated) or detected/prompted.
+  local mtype = type_arg
+  if mtype then
+    local mod = modules.get(mtype)
+    if not mod then die("unknown module type '" .. mtype .. "'") end
+    if mod.detect and not mod.detect(abs) then
+      io.stderr:write("lw: warning: no " .. mtype .. " marker found in " .. rel .. "\n")
+    end
+  elseif #detected == 1 then
+    mtype = detected[1].type
+    out(string.format("detected %s (%s)", mtype, detected[1].marker))
+  else
+    mtype = pick_type(#detected > 1 and detected or nil)
+  end
+
+  -- Resolve key + stored path. Explicit name wins; else derive like the editor.
+  local key, store_path
+  if name_arg then
+    key, store_path = name_arg, rel
+  else
+    key, store_path = derive_key_and_path(root_real, abs, basename(abs))
+  end
+
+  local ws = load_workspace(root, false) -- no tools needed to author user.json
+  key = resolve_free_key(ws, key, mtype)
+
+  local project, err = ws:add_project(key, mtype, store_path)
+  if not project then die("could not add project: " .. tostring(err)) end
+  out(string.format("added project '%s' (%s) at %s", key, mtype, store_path or key))
+  out("")
+  out("Working copy updated (.nvim/loomworks.user.json). Map it into a")
+  out("configuration set to build it, then `lw publish` to share it.")
+  return 0
+end
+
+--- `lw project remove <name>` — drop a project from the working copy.
+function M.cmd_project_remove(root, name_arg)
+  if not name_arg then die("usage: lw project remove <name>") end
+  local ws = load_workspace(root, false)
+  local proj, names = nil, {}
+  for _, p in pairs(ws._projects) do
+    names[#names + 1] = p.key
+    if p.key == name_arg then proj = p end
+  end
+  if not proj then
+    table.sort(names)
+    die("no project named '" .. name_arg .. "'. Existing: " ..
+      (next(names) and table.concat(names, ", ") or "(none)"))
+  end
+  local ok, err = ws:remove_project(proj)
+  if not ok then die("could not remove project: " .. tostring(err)) end
+  out("removed project '" .. proj.key .. "'")
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
+--- `lw project [list]` — list the workspace's projects.
+function M.cmd_project_list(root)
+  local ws = load_workspace(root, false)
+  local sorted = {}
+  for _, p in ipairs(ws._projects or {}) do sorted[#sorted + 1] = p end
+  if #sorted == 0 then out("(no projects)"); return 0 end
+  table.sort(sorted, function(a, b) return a.key < b.key end)
+  for _, p in ipairs(sorted) do
+    local t = p.type or (p._module and p._module.id) or "?"
+    out(string.format("  %-20s %-10s %s", p.key, t, p.path or "."))
+  end
+  return 0
+end
+
+--- `lw project <add|remove|list>`
+function M.cmd_project(sub, root, a3, a4, a5)
+  if sub == "add" then return M.cmd_project_add(root, a3, a4, a5) end
+  if sub == "remove" or sub == "rm" then return M.cmd_project_remove(root, a3) end
+  if sub == nil or sub == "list" then return M.cmd_project_list(root) end
+  die("unknown project subcommand '" .. tostring(sub) .. "' — use add|remove|list")
+end
+
 --- `lw profile select` — interactive picker that sets the active profile.
 --- Writes user.json (explicit management, spec §16.9).
 function M.select_profile(ws)
@@ -408,6 +632,20 @@ the workspace already exists.]],
 
 Write the shared loomworks.json from the working copy — the same snapshot the
 editor produces on :w. This is the file you commit and that CI reads.]],
+  project = [[lw project <add|remove|list>
+
+Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
+`lw publish` shares the result.
+
+  add <path> [type] [name]
+        Register an existing directory as a project. The path is inspected to
+        detect the type (CMakeLists.txt -> cmake, meson.build -> meson, ...);
+        pass <type> to override or when nothing is detected. <name> defaults to
+        the directory basename; on a clash you're prompted (or, non-interactive,
+        it errors). Missing-and-required args are prompted only on a terminal.
+  remove <name>
+        Drop a project. <name> is the unique project key (`lw project list`).
+  list  Show all projects: key, type, path.]],
   profile = [[lw profile <list|select>
 
   list      same as `lw profiles`
@@ -441,6 +679,7 @@ Usage: lw [command] [args]
 
   (no command)      workspace status + active profile
   init              initialize the workspace working copy
+  project <sub>     add | remove | list projects
   profiles          list profiles and their buildability
   profile <sub>     list | select (set the active profile)
   build [profile]   build a profile (configure if needed, then build)
@@ -490,6 +729,10 @@ local function main()
   end
   if command == "publish" then
     finish(M.cmd_publish(root))
+  end
+  -- `project` manages its own workspace load (no tool detection needed).
+  if command == "project" then
+    finish(M.cmd_project(a[2], root, a[3], a[4], a[5]))
   end
 
   local ws = load_workspace(root)

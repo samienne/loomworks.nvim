@@ -33,6 +33,9 @@ end
 local devdir = dev_lua_dir()
 if devdir then
   devdir = devdir:gsub("\\", "/"):gsub("/+$", "")
+  -- Expose the dev root to the shim so nvim_get_runtime_file (module/SDK
+  -- discovery) can list `<devdir>/loomworks/<kind>/*.lua` off disk.
+  _G.__loomworks_devdir = devdir
   table.insert(loaders, 1, function(modname)
     local base = devdir .. "/" .. modname:gsub("%.", "/")
     for _, cand in ipairs({ base .. ".lua", base .. "/init.lua" }) do

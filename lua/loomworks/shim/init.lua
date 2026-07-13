@@ -278,13 +278,22 @@ end
 -- ---------------------------------------------------------------------------
 
 local sched_q, idle = {}, nil
+local function drain_scheduled()
+  while #sched_q > 0 do table.remove(sched_q, 1)() end
+end
 function vim.schedule(fn)
   sched_q[#sched_q + 1] = fn
   if not idle then
     idle = uv.new_idle()
     idle:start(function()
-      while #sched_q > 0 do table.remove(sched_q, 1)() end
-      idle:stop(); idle:close(); idle = nil
+      -- Capture the handle and clear the upvalue BEFORE running callbacks: a
+      -- scheduled fn may call vim.wait (which pumps uv.run) and re-enter this
+      -- idle. Re-entry then arms a fresh handle instead of double-closing this
+      -- one and nil-indexing `idle`.
+      local h = idle
+      idle = nil
+      h:stop(); h:close()
+      drain_scheduled()
     end)
   end
 end
@@ -328,10 +337,65 @@ function vim.notify(msg, level)
 end
 function vim.notify_once(msg, level) vim.notify(msg, level) end
 
--- Editor-only surface: present but inert. The build/detect path never calls
--- these; they exist so any load-time closure that references vim.api doesn't
--- nil-index. If one is actually invoked, that's a real gap to fix.
-vim.api = setmetatable({}, {
+-- `nvim_get_runtime_file` is the one api function the detect path needs:
+-- module/SDK discovery globs `lua/loomworks/<kind>/*.lua` off the runtime
+-- path. Here the "runtime path" is the loomworks Lua root, reachable two
+-- ways — a dev override dir on disk (`_G.__loomworks_devdir`, set by
+-- main.lua) and the luvi bundle (the embedded zip, or the source dir on
+-- disk when run as `luvi . --`). Both are rooted at the `lua/` dir, so we
+-- strip the leading `lua/` and list that subdir in each.
+local function glob_to_pat(glob)
+  return "^" .. glob
+      :gsub("([%.%-%+%(%)%[%]%%])", "%%%1")
+      :gsub("%*", ".*")
+      :gsub("%?", ".") .. "$"
+end
+
+local function runtime_files(pattern)
+  local rel = pattern:gsub("^lua/", "")
+  local dir, glob = rel:match("^(.*)/([^/]*)$")
+  if not dir then dir, glob = "", rel end
+  local pat = glob_to_pat(glob)
+  local files, seen = {}, {}
+  local function add(full)
+    if not seen[full] then seen[full] = true; files[#files + 1] = full end
+  end
+
+  local devdir = _G.__loomworks_devdir
+  if devdir then
+    local abs = devdir .. "/" .. dir
+    local fs = uv.fs_scandir(abs)
+    if fs then
+      while true do
+        local nm = uv.fs_scandir_next(fs)
+        if not nm then break end
+        if nm:match(pat) then add(abs .. "/" .. nm) end
+      end
+    end
+  end
+
+  local ok_luvi, luvi = pcall(require, "luvi")
+  if ok_luvi and luvi.bundle and luvi.bundle.readdir then
+    local entries = luvi.bundle.readdir(dir)
+    if entries then
+      for _, nm in ipairs(entries) do
+        if nm:match(pat) then add(dir .. "/" .. nm) end
+      end
+    end
+  end
+  return files
+end
+
+-- The rest of the api surface is editor-only: present but inert, so a
+-- load-time closure referencing vim.api doesn't nil-index. Invoking one is a
+-- real gap to fix.
+vim.api = setmetatable({
+  nvim_get_runtime_file = function(pattern, all)
+    local files = runtime_files(pattern)
+    if all then return files end
+    return files[1] and { files[1] } or {}
+  end,
+}, {
   __index = function(_, k)
     return function()
       error("vim.api." .. k .. " is not available in the standalone host", 2)
