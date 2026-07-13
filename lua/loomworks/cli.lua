@@ -6,7 +6,7 @@
 ---
 --- Commands: (status) | init | project <add|remove|list|show> |
 ---           configuration <list|add|show|get|set|unset|remove> | profiles |
----           profile <list|select> | build [profile] | publish |
+---           profile <list|select|create> | build [profile] | publish |
 ---           test [profile] | config <...> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
@@ -860,15 +860,151 @@ function M.select_profile(ws)
   return 0
 end
 
---- `lw profile <list|select>`
-function M.cmd_profile(sub, root)
+--- Resolve a config set by name, or materialize an auto-detected candidate of
+--- that name (so `create` works from a fresh init with no set command yet).
+local function resolve_or_materialize_set(ws, name)
+  for _, cs in ipairs(ws._config_sets or {}) do
+    if cs.name == name then return cs, false end
+  end
+  local auto = ws:generate_default_config_sets()
+  if auto and auto[name] then
+    local cs, err = ws:add_configuration_set(name, auto[name])
+    if not cs then die("could not create configuration set '" .. name .. "': " .. tostring(err)) end
+    return cs, true
+  end
+  local existing, autos = {}, {}
+  for _, cs in ipairs(ws._config_sets or {}) do existing[#existing + 1] = cs.name end
+  for n in pairs(auto or {}) do autos[#autos + 1] = n end
+  table.sort(existing); table.sort(autos)
+  die("no configuration set '" .. name .. "'.\n" ..
+    "  existing: " .. (next(existing) and table.concat(existing, ", ") or "(none)") .. "\n" ..
+    "  auto-detected: " .. (next(autos) and table.concat(autos, ", ") or "(none)"))
+end
+
+--- Sorted list of a module's tool keys, for error/pick messages.
+local function tool_keys_of(mod)
+  local keys = {}
+  for _, t in ipairs(mod:tools()) do keys[#keys + 1] = t.key or "(default)" end
+  table.sort(keys)
+  return keys
+end
+
+--- Pick a toolchain for `mod`. `qualify` true prints the module: prefix in the
+--- non-interactive hint (multiple keyed modules in the set).
+local function pick_tool(mod, qualify)
+  local tools = mod:tools()
+  table.sort(tools, function(a, b) return (a.key or "") < (b.key or "") end)
+  if #tools == 0 then die("no " .. mod.id .. " toolchains detected — install one, then retry") end
+  if not is_tty() then
+    die("no " .. mod.id .. " toolchain specified — pass one:\n  lw profile create <set> " ..
+      (qualify and (mod.id .. ":") or "") .. "<tool>   (available: " ..
+      table.concat(tool_keys_of(mod), ", ") .. ")")
+  end
+  out("Select a " .. mod.id .. " toolchain:")
+  for i, t in ipairs(tools) do
+    out(string.format("  %d) %s%s", i, t.key or "(default)", t.label and ("   " .. t.label) or ""))
+  end
+  out("")
+  local line = prompt_line("Enter number (blank to cancel)")
+  if not line or line == "" then out("cancelled"); finish(0) end
+  local n = tonumber(line)
+  if not n or not tools[n] then die("invalid selection: " .. tostring(line)) end
+  return tools[n]
+end
+
+--- `lw profile create <config-set> [tool ...] [--activate]` — synthesize a
+--- profile (config set + toolchains) in the working copy.
+function M.cmd_profile_create(root, args)
+  local set_name = args[3]
+  if not set_name then
+    die("usage: lw profile create <config-set> [tool ...] [--activate]")
+  end
+  local activate, tool_specs = false, {}
+  for i = 4, #args do
+    local a = args[i]
+    if a == "--activate" or a == "-a" then activate = true
+    else tool_specs[#tool_specs + 1] = a end
+  end
+
+  local ws = load_workspace(root) -- wait for tool detection (needed to resolve tools)
+  local cs, materialized = resolve_or_materialize_set(ws, set_name)
+  if materialized then out("materialized auto-detected configuration set '" .. cs.name .. "'") end
+
+  -- Distinct keyed-tool module types the set's projects require.
+  local keyed, order = {}, {}
+  for project in pairs(cs.mappings or {}) do
+    local mod = project._module
+    if mod and mod.has_keyed_tools and not keyed[mod.id] then
+      keyed[mod.id] = mod
+      order[#order + 1] = mod.id
+    end
+  end
+  table.sort(order)
+
+  -- Parse tool specs into module-qualified (module:key) and bare keys.
+  local by_mod, bare = {}, {}
+  for _, spec in ipairs(tool_specs) do
+    local m, k = spec:match("^([^:]+):(.+)$")
+    if m then by_mod[m] = k else bare[#bare + 1] = spec end
+  end
+  if #order > 1 and #bare > 0 then
+    die("this set needs multiple toolchains (" .. table.concat(order, ", ") ..
+      ") — qualify each: e.g. " .. order[1] .. ":<tool>")
+  end
+  if #bare > 1 then die("too many toolchains for one module — pass a single tool key") end
+
+  -- Resolve one Tool per required keyed module.
+  local resolved = {}
+  for _, mtype in ipairs(order) do
+    local mod = keyed[mtype]
+    local key = by_mod[mtype] or (#order == 1 and bare[1]) or nil
+    local tool
+    if key then
+      tool = mod:find_tool(key)
+      if not tool then
+        die("no " .. mtype .. " toolchain matching '" .. key .. "'. Available: " ..
+          table.concat(tool_keys_of(mod), ", "))
+      end
+    else
+      tool = pick_tool(mod, #order > 1)
+    end
+    resolved[mtype] = tool
+  end
+
+  -- Build the profile: first tool via ensure_profile, the rest via add_tool.
+  local first_entry
+  if order[1] then
+    local t = resolved[order[1]]
+    first_entry = { tool_key = t.key, tool_data = t.data, tool_label = t.label, tool_mod_type = order[1] }
+  end
+  local existed = cs:find_profile(first_entry) ~= nil
+  local profile = cs:ensure_profile(first_entry)
+  if not profile then die("failed to create profile for set '" .. cs.name .. "'") end
+  for i = 2, #order do profile:add_tool(resolved[order[i]].key) end
+  profile._intent = "local"
+  if activate then profile:activate() else ws:_save_user() end
+
+  out((existed and "profile already exists: " or "created profile: ") .. profile.key ..
+    (activate and "  (active)" or ""))
+  local ok, reasons = true, nil
+  if profile.is_valid then ok, reasons = profile:is_valid() end
+  if not ok then out("  not yet buildable: " .. table.concat(reasons or {}, "; ")) end
+  out("`lw publish` to share it" .. (activate and "" or "; `lw profile select` or --activate to activate") .. ".")
+  return 0
+end
+
+--- `lw profile <list|select|create>`
+function M.cmd_profile(sub, root, args)
   if sub == "select" then
     return M.select_profile(load_workspace(root, false))
+  end
+  if sub == "create" then
+    return M.cmd_profile_create(root, args)
   end
   if sub == nil or sub == "list" then
     return M.cmd_profiles(load_workspace(root))
   end
-  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select")
+  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select|create")
 end
 
 --- `lw config <list|get|set|unset> [key] [value]`
@@ -1024,10 +1160,19 @@ Params for get/set/unset:
   options.<KEY>      a generic build option
   variables.<NAME>   a project variable override
   <other>            any module-specific field (e.g. toolchain, generator)]],
-  profile = [[lw profile <list|select>
+  profile = [[lw profile <list|select|create>
 
   list      same as `lw profiles`
   select    interactive picker; sets the active profile (writes user.json)
+  create <config-set> [tool ...] [--activate]
+            Create a profile (a config set + toolchains) in the working copy.
+            If <config-set> doesn't exist but is auto-detectable, it's
+            materialized first. Each [tool] is a tool key (version prefixes
+            match, e.g. ninja-clang-19) or module:key when the set spans
+            several toolchains (cmake:..., meson:...). A required toolchain
+            left unspecified is prompted on a terminal (errors otherwise).
+            The profile key is derived from the set + tools. --activate also
+            makes it active.
 
 The active profile is the default for `lw build`. `lw build` also accepts a
 substring, so `lw build clang-19` works when it's unambiguous.]],
@@ -1060,7 +1205,7 @@ Usage: lw [command] [args]
   project <sub>     add | remove | list | show projects
   configuration     add | set | get | show | ... project configurations
   profiles          list profiles and their buildability
-  profile <sub>     list | select (set the active profile)
+  profile <sub>     list | select | create profiles
   build [profile]   build a profile (configure if needed, then build)
   publish           write loomworks.json from the working copy
   test  [profile]   build and run tests                     (coming)
@@ -1104,7 +1249,7 @@ local function main()
 
   -- `profile` manages its own workspace load (select skips tool detection).
   if command == "profile" then
-    finish(M.cmd_profile(a[2], root))
+    finish(M.cmd_profile(a[2], root, a))
   end
   if command == "publish" then
     finish(M.cmd_publish(root))
