@@ -238,6 +238,36 @@ end
 -- process (vim.system async, over uv.spawn)
 -- ---------------------------------------------------------------------------
 
+--- Build the child environment for uv.spawn from nvim's `vim.system` `env`
+--- (a { NAME=VALUE } dict). Two libuv facts to reconcile with nvim semantics:
+---   1. uv.spawn wants an ARRAY of "NAME=VALUE" strings — a dict yields an
+---      empty env array, i.e. a near-empty environment for the child.
+---   2. uv.spawn REPLACES the environment; nvim's vim.system EXTENDS the parent.
+--- So overlay the caller's entries on the parent env, then flatten. Without
+--- this, a tool that pins only CC/CXX/PATH drops inherited vars a child needs —
+--- e.g. a pip --user meson needs %APPDATA% to find its user-site `mesonbuild`.
+--- @param env table|nil { NAME=VALUE }
+--- @param clear_env boolean|nil start from an empty base instead of the parent
+--- @return string[]|nil array of "NAME=VALUE", or nil to inherit unchanged
+local function build_spawn_env(env, clear_env)
+  if not env then return nil end
+  local merged = clear_env and {} or uv.os_environ()
+  for k, v in pairs(env) do
+    if IS_WINDOWS then
+      -- Windows env names are case-insensitive; drop an inherited key that only
+      -- differs in case (e.g. Path) so the caller's value replaces it.
+      local lk = k:lower()
+      for ek in pairs(merged) do
+        if ek ~= k and ek:lower() == lk then merged[ek] = nil end
+      end
+    end
+    merged[k] = v
+  end
+  local list = {}
+  for k, v in pairs(merged) do list[#list + 1] = k .. "=" .. tostring(v) end
+  return list
+end
+
 function vim.system(cmd, opts, on_exit)
   opts = opts or {}
   local exe = win_exe(which(cmd[1]) or cmd[1])
@@ -250,7 +280,7 @@ function vim.system(cmd, opts, on_exit)
     args = args,
     stdio = { nil, so, se },
     cwd = opts.cwd,
-    env = opts.env,
+    env = build_spawn_env(opts.env, opts.clear_env),
     hide = IS_WINDOWS,
   }, function(code)
     so:read_stop(); se:read_stop(); so:close(); se:close(); handle:close()
