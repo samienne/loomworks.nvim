@@ -63,6 +63,33 @@ describe("meson module", function()
         end)
     end)
 
+    describe("resolve_build_dir", function()
+        -- Regression: canonical config names contain ':' (variant:Debug), which
+        -- is invalid in a Windows path and broke `meson setup` (WinError 267).
+        -- meson.resolve_build_dir sanitizes like cmake's.
+        it("sanitizes ':' in the config name (variant:Debug -> variant_Debug)", function()
+            local dir = meson.resolve_build_dir("App", "variant:Debug", nil, "/root", nil)
+            assert.equals("/root/.nvim/build/App/variant_Debug", dir)
+        end)
+
+        it("strips every Windows-illegal char from path components", function()
+            local dir = meson.resolve_build_dir('a:b', 'x<>:"|?*y', nil, "/root", nil)
+            local tail = dir:sub(#"/root/.nvim/build/" + 1)
+            assert.is_nil(tail:find('[<>:"|?*]'))
+        end)
+
+        it("includes a sanitized tool segment when tool_data has an id", function()
+            local dir = meson.resolve_build_dir("App", "variant:Debug", nil, "/root",
+                { id = "gcc:14" })
+            assert.equals("/root/.nvim/build/App/gcc_14/variant_Debug", dir)
+        end)
+
+        it("omits the tool segment when tool_data has no id", function()
+            local dir = meson.resolve_build_dir("App", "Debug", nil, "/root", {})
+            assert.equals("/root/.nvim/build/App/Debug", dir)
+        end)
+    end)
+
     describe("resolve_configurations", function()
         it("emits canonical `variant:Debug` keys for defaults", function()
             local cfgs = meson.resolve_configurations(

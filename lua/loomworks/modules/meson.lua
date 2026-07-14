@@ -329,6 +329,37 @@ function M.tools_match(a, b)
     return (a.compiler_path or "") == (b.compiler_path or "")
 end
 
+--- Resolve the build directory for a meson configuration.
+---
+--- Mirrors the core default formula (project/[tool]/config) but sanitizes each
+--- path component the way cmake.resolve_build_dir does. Configuration names are
+--- canonical (`variant:Debug`) and the colon — plus < > " | ? * — is invalid in
+--- a Windows path; without sanitizing, `meson setup` fails with
+--- "WinError 267: The directory name is invalid". Defining this here (rather
+--- than in the core default) keeps the core formula opaque for never-built /
+--- unknown modules while giving a real buildable module filesystem-safe paths.
+--- @param project_name string
+--- @param config_name string|nil canonical configuration name
+--- @param config_info table|nil unused (meson has no preset binary_dir)
+--- @param workspace_root string
+--- @param tool_data table|nil primary tool data (may carry _effective_keys)
+--- @return string absolute build directory
+function M.resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data)
+    local function san(s) return (tostring(s):gsub('[:<>"|?*]', "_")) end
+    local base = workspace_root .. "/.nvim/build/" .. san(project_name)
+    local segment
+    if tool_data and tool_data._effective_keys and #tool_data._effective_keys > 1 then
+        segment = table.concat(tool_data._effective_keys, "+")
+    elseif tool_data and tool_data.id then
+        segment = tool_data.id
+    end
+    local config_part = san(config_name or "default")
+    if segment then
+        return base .. "/" .. san(segment) .. "/" .. config_part
+    end
+    return base .. "/" .. config_part
+end
+
 -- ---------------------------------------------------------------------------
 -- Task generation
 -- ---------------------------------------------------------------------------
