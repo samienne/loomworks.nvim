@@ -720,6 +720,13 @@ end
 function M.parse_targets(ctx)
     local build_dir = ctx and ctx.build_dir
     if not build_dir then return nil end
+    -- Only a configured build tree has targets to introspect. Every profile has
+    -- a computed build-dir path before its first build, so guard on the
+    -- `meson-info/` that `meson setup` creates — otherwise we spawn meson (and,
+    -- via find_meson, python) on every workspace load just to have introspect
+    -- fail on a directory that isn't there. That was ~2s per CLI invocation.
+    local uv2 = vim.uv or vim.loop
+    if not uv2.fs_stat(build_dir .. "/meson-info") then return nil end
     local meson_prefix = find_meson()
     if not meson_prefix then return nil end
 

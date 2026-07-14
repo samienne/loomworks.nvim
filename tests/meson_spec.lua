@@ -340,6 +340,14 @@ describe("meson module", function()
                 if n == "meson" then return "/fake/meson" end
                 return ""
             end
+            -- parse_targets only introspects a *configured* tree (meson-info/).
+            local uv = vim.uv or vim.loop
+            local orig_fs_stat = uv.fs_stat
+            ---@diagnostic disable-next-line: duplicate-set-field
+            uv.fs_stat = function(p)
+                if p == "/build/meson-info" then return { type = "directory" } end
+                return orig_fs_stat(p)
+            end
             ---@diagnostic disable-next-line: duplicate-set-field
             vim.fn.system = function(cmd)
                 -- Only answer the introspect --targets call with our
@@ -357,6 +365,8 @@ describe("meson module", function()
 
             ---@diagnostic disable-next-line: duplicate-set-field
             vim.fn.exepath = orig_exepath
+            ---@diagnostic disable-next-line: duplicate-set-field
+            uv.fs_stat = orig_fs_stat
 
             assert.is_not_nil(targets)
             local t = targets.arrange_test
@@ -368,6 +378,31 @@ describe("meson module", function()
                 },
                 t.sources
             )
+        end)
+
+        it("returns nil without spawning when the build dir isn't configured", function()
+            -- No meson-info/ → unconfigured tree. Must not spawn meson/python.
+            local uv = vim.uv or vim.loop
+            local orig_fs_stat = uv.fs_stat
+            local orig_system = vim.fn.system
+            local spawned = false
+            ---@diagnostic disable-next-line: duplicate-set-field
+            uv.fs_stat = function(p)
+                if p == "/unbuilt/meson-info" then return nil end
+                return orig_fs_stat(p)
+            end
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.system = function() spawned = true; return "" end
+
+            local targets = meson.parse_targets({ build_dir = "/unbuilt" })
+
+            ---@diagnostic disable-next-line: duplicate-set-field
+            uv.fs_stat = orig_fs_stat
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.system = orig_system
+
+            assert.is_nil(targets)
+            assert.is_false(spawned)
         end)
     end)
 
