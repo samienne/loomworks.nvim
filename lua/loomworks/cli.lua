@@ -1677,6 +1677,7 @@ function M.cmd_completion(shell)
 _lw_complete() {
   local reply
   reply=$(LW_NO_INPUT=1 lw __complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)
+  reply=${reply//$'\r'/}   # strip CR: lw's stdout is CRLF on Windows
   case "$reply" in
     __dirs__)  COMPREPLY=( $(compgen -d -- "${COMP_WORDS[COMP_CWORD]}") ); return ;;
     __files__) COMPREPLY=( $(compgen -f -- "${COMP_WORDS[COMP_CWORD]}") ); return ;;
