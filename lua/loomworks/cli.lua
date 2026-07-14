@@ -272,6 +272,19 @@ local function resolve_profile(ws, name)
     end
     die("no profile matching '" .. name .. "'. Run `lw profiles` to list.")
   end
+  -- No profile given. Non-interactive mode deliberately does NOT fall back to
+  -- the active/selected profile (or the single-profile shortcut): the active
+  -- profile is mutable shared state in user.json that a parallel run or a
+  -- committed dev setting could change under a CI build, so we require it
+  -- spelled out for a deterministic, contention-free result.
+  if not interactive() then
+    local keys = {}
+    for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
+    table.sort(keys)
+    die("no profile specified — non-interactive mode does not use the active profile.\n" ..
+      "  pass one explicitly (a unique substring works): lw build <profile>\n" ..
+      "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)"))
+  end
   local active = ws._active_profile_key
   if active then
     for _, p in ipairs(profiles) do
@@ -1374,11 +1387,13 @@ project uses it. Pin one in a profile with `lw profile create <set> <tool>`;
 version prefixes match (ninja-clang-19 -> ninja-clang-19.1.5).]],
   build = [[lw build [profile]
 
-Build a profile's projects. With no profile: the active profile (user.json),
-else the only profile, else an error listing candidates.
+Build a profile's projects. Interactively, with no profile given, it uses the
+active profile (user.json), else the only profile, else errors. In
+non-interactive mode (--no-input / LW_NO_INPUT / CI, or piped stdin) the active
+profile is NOT used — pass the profile explicitly for a deterministic build.
 
-  profile   e.g. Debug:ninja-clang-19  (major pins resolve to the installed
-            patch version)
+  profile   e.g. Debug:ninja-clang-19  (a unique substring works too; major
+            pins resolve to the installed patch version)
 
 Configures first if the build dir isn't configured, then builds. Non-zero
 exit on any failure.]],
@@ -1506,7 +1521,8 @@ Usage: lw [command] [args]
 
 Global: --no-input (alias --non-interactive) never prompts — a missing
 required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
-Otherwise prompting is on only when stdin is a terminal.
+Otherwise prompting is on only when stdin is a terminal. In non-interactive
+mode `lw build` also ignores the active profile — pass the profile explicitly.
 
 `lw help <command>` for details.]])
   return cmd and 1 or 0
