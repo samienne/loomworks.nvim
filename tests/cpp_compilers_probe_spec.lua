@@ -168,3 +168,37 @@ describe("cpp_compilers.probe_path", function()
         end)
     end)
 end)
+
+describe("cpp_compilers.detect PATH scan", function()
+    -- Regression: the C-driver counterpart of a C++ driver was derived with the
+    -- gsub passes in the wrong order — `g%+%+` ran before `clang%+%+`, so
+    -- "clang++" (which contains the substring "g++") became "clangcc", the
+    -- probe failed, and c_path fell back to the C++ driver. Result: CC=clang++,
+    -- and meson compiled C sources as C++ ("cannot compile programs").
+    it("derives the clang C driver as clang, not clang++", function()
+        cpp.clear_cache()
+        with_stubs({
+            -- Only LLVM clang++/clang exist (no gcc/g++, no versioned names).
+            ["vim.fn.executable"] = function(name)
+                return (name == "clang++" or name == "clang") and 1 or 0
+            end,
+            ["vim.fn.exepath"] = function(name)
+                if name == "clang++" then return "C:/LLVM/bin/clang++.exe" end
+                if name == "clang" then return "C:/LLVM/bin/clang.exe" end
+                return ""
+            end,
+            ["vim.fn.system"] = function() return "clang version 18.1.7\n" end,
+            ["vim.v"] = { shell_error = 0 },
+            ["vim.uv.fs_stat"] = function() return nil end,
+        }, function()
+            local clang
+            for _, c in ipairs(cpp.detect()) do
+                if c.family == "clang" then clang = c end
+            end
+            assert.is_not_nil(clang)
+            assert.equals("C:/LLVM/bin/clang++.exe", clang.path)
+            assert.equals("C:/LLVM/bin/clang.exe", clang.c_path)
+        end)
+        cpp.clear_cache()
+    end)
+end)
