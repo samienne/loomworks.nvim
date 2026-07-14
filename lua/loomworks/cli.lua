@@ -315,6 +315,9 @@ local function load_workspace(root, wait_tools)
       io.stderr:write(tostring(msg) .. "\n")
     end
   end
+  -- The CLI never surfaces build targets, so skip target introspection — it can
+  -- spawn a per-build-dir meson/python subprocess (~2s) on every load.
+  core._deps.scan_targets = false
   -- Serve tools from the machine-level cache. A load that won't wait for tools
   -- never probes — serve cache only (never spend seconds for a command that
   -- doesn't need live tools). Install the wrapper before setup triggers a scan.

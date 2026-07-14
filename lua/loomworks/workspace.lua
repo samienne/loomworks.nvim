@@ -2864,7 +2864,13 @@ end
 --- Scan targets for all ConfigUnits that have a build directory.
 --- Runs asynchronously, processing units sequentially to avoid blocking.
 --- Results stored on ConfigUnit.targets (runtime only, not cached).
+---
+--- Opt-out: hosts that never surface targets (the standalone CLI) can set
+--- `deps.scan_targets = false` to skip this entirely. Target introspection can
+--- spawn a per-build-dir subprocess (meson introspect + python), which is pure
+--- waste for a build/status/completion command. Defaults to enabled.
 function Workspace:_scan_targets_async()
+    if self._core._deps.scan_targets == false then return end
     -- Collect scannable units. Modules that read from build_dir (cmake) get
     -- scanned per-unit. Modules that read from project files (typescript)
     -- get scanned once per project. The module reads whichever context it
