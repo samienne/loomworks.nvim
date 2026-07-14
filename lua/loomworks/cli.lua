@@ -192,6 +192,114 @@ local function write_config(cfg)
   return true
 end
 
+-- ---------------------------------------------------------------------------
+-- Tool cache (machine-level: ~/.cache/loomworks/tools.json, %LOCALAPPDATA% on
+-- Windows). Detecting toolchains probes compilers, vswhere, and vcvarsall —
+-- seconds of work redone in every fresh process. We persist the last scan so
+-- the fast paths (profile create, profiles, later completion) reuse it.
+-- `lw tools` always does a real scan and rewrites the cache (deliberate = real
+-- result); `lw tools --cached` reads it. Compilers are a machine fact, not a
+-- workspace one, so the cache is shared across workspaces, keyed by module type.
+-- ---------------------------------------------------------------------------
+
+local TOOL_CACHE_VERSION = 1
+-- "auto"   serve the cache when it covers the needed modules, else scan+write
+-- "force"  always scan + write (`lw tools`)
+-- "cached" never scan; serve whatever is cached (`lw tools --cached`, and any
+--          command that doesn't wait for tools — no point probing)
+local tool_cache_mode = "auto"
+
+local function tool_cache_dir()
+  if is_windows() then
+    local lad = os.getenv("LOCALAPPDATA")
+    if lad and #lad > 0 then return (lad:gsub("\\", "/")) .. "/loomworks/cache" end
+  end
+  local xdg = os.getenv("XDG_CACHE_HOME")
+  if xdg and #xdg > 0 then return (xdg:gsub("\\", "/")) .. "/loomworks" end
+  local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
+  return (home:gsub("\\", "/")) .. "/.cache/loomworks"
+end
+
+local function tool_cache_path() return tool_cache_dir() .. "/tools.json" end
+
+--- @return table|nil { version, timestamp, scanned_types, tools_by_type }
+local function read_tool_cache()
+  local f = io.open(tool_cache_path(), "r")
+  if not f then return nil end
+  local content = f:read("*a"); f:close()
+  if not content or content == "" then return nil end
+  local ok, data = pcall(vim.json.decode, content)
+  if not ok or type(data) ~= "table" or data.version ~= TOOL_CACHE_VERSION then return nil end
+  return data
+end
+
+--- Merge a fresh scan of `scanned_types` into the on-disk cache. Per-type merge
+--- keeps entries for module types this workspace didn't scan (machine cache),
+--- while refreshing the ones it did — including clearing a type that now has no
+--- tools (its tools_by_type entry becomes absent but it stays "scanned").
+local function write_tool_cache(tools_by_type, scanned_types)
+  local existing = read_tool_cache() or {}
+  local tbt = existing.tools_by_type or {}
+  local scanned = existing.scanned_types or {}
+  for mod_type in pairs(scanned_types) do
+    scanned[mod_type] = true
+    tbt[mod_type] = tools_by_type[mod_type] -- nil clears a now-empty type
+  end
+  vim.fn.mkdir(tool_cache_dir(), "p")
+  local f = io.open(tool_cache_path(), "w")
+  if not f then return end
+  f:write(vim.json.encode({
+    version = TOOL_CACHE_VERSION,
+    timestamp = os.time(),
+    scanned_types = scanned,
+    tools_by_type = tbt,
+  }))
+  f:close()
+end
+
+--- Module types the workspace needs tools for, from the reconstructed config.
+local function config_needed_types(config)
+  local t = {}
+  if config and config.projects then
+    for _, p in pairs(config.projects) do
+      if p.type then t[p.type] = true end
+    end
+  end
+  return t
+end
+
+--- True when the cache has scanned every needed module type (an empty result
+--- for a type still counts as covered — scanned_types records it).
+local function cache_covers(cache, needed)
+  local scanned = cache and cache.scanned_types or {}
+  for mod_type in pairs(needed) do
+    if not scanned[mod_type] then return false end
+  end
+  return true
+end
+
+--- The real detect_tools_async, captured before we wrap it.
+local orig_detect_tools_async = nil
+
+--- Caching wrapper around core's detect_tools_async, honoring tool_cache_mode.
+local function cached_detect_tools_async(config, cfg_cache, callback)
+  local needed = config_needed_types(config)
+  if tool_cache_mode ~= "force" then
+    local cache = read_tool_cache()
+    if cache and (tool_cache_mode == "cached" or cache_covers(cache, needed)) then
+      return callback(cache.tools_by_type or {})
+    end
+    if tool_cache_mode == "cached" then
+      return callback({}) -- told not to scan and nothing cached
+    end
+  end
+  -- Real scan; record which types we scanned so "scanned but empty" is cached.
+  orig_detect_tools_async(config, cfg_cache, function(tools_by_type)
+    write_tool_cache(tools_by_type, needed)
+    callback(tools_by_type)
+  end)
+end
+
 --- Bootstrap a live, remerged Workspace headlessly. Waits for tool detection
 --- unless `wait_tools` is false (status only needs pinned info, not live tools).
 --- @param root string
@@ -206,6 +314,16 @@ local function load_workspace(root, wait_tools)
     if not level or level >= vim.log.levels.WARN then
       io.stderr:write(tostring(msg) .. "\n")
     end
+  end
+  -- Serve tools from the machine-level cache. A load that won't wait for tools
+  -- never probes — serve cache only (never spend seconds for a command that
+  -- doesn't need live tools). Install the wrapper before setup triggers a scan.
+  if wait_tools == false and tool_cache_mode == "auto" then
+    tool_cache_mode = "cached"
+  end
+  if core._deps.detect_tools_async ~= cached_detect_tools_async then
+    orig_detect_tools_async = core._deps.detect_tools_async
+    core._deps.detect_tools_async = cached_detect_tools_async
   end
   core:setup({ root = root })
   local ok = vim.wait(15000, function()
@@ -1332,10 +1450,33 @@ function M.cmd_status(root)
   return 0
 end
 
---- `lw tools` — list detected toolchains, grouped by module. Tools are scanned
---- per workspace module, so a module only appears once a project uses it.
-function M.cmd_tools(root)
-  local ws = load_workspace(root) -- wait for tool detection
+--- Human-readable age, e.g. "45s", "12m", "3h", "2d".
+local function human_age(secs)
+  if secs < 60 then return secs .. "s" end
+  if secs < 3600 then return math.floor(secs / 60) .. "m" end
+  if secs < 86400 then return math.floor(secs / 3600) .. "h" end
+  return math.floor(secs / 86400) .. "d"
+end
+
+--- `lw tools [--cached]` — list detected toolchains, grouped by module.
+--- Default: a full scan (and it refreshes the machine-level cache). --cached:
+--- read the cached result instantly (with its age) instead of probing.
+function M.cmd_tools(root, args)
+  local cached = false
+  for _, v in ipairs(args or {}) do if v == "--cached" then cached = true end end
+  tool_cache_mode = cached and "cached" or "force"
+
+  if cached then
+    local c = read_tool_cache()
+    if not c then
+      out("(no cached tools — run `lw tools` to scan)")
+      return 0
+    end
+    out(string.format("(cached %s ago — `lw tools` to rescan)",
+      human_age(os.time() - (c.timestamp or os.time()))))
+  end
+
+  local ws = load_workspace(root) -- served from cache or scanned per the mode
   local mods = {}
   for _, m in pairs(ws._modules or {}) do mods[#mods + 1] = m end
   table.sort(mods, function(a, b) return a.id < b.id end)
@@ -1378,13 +1519,19 @@ configurations. Each section is limited to fit a page — use `lw profiles`,
 
 List the workspace's profiles, marking the active one with `*` and flagging
 any that aren't buildable (an unavailable module or an unresolved tool).]],
-  tools = [[lw tools
+  tools = [[lw tools [--cached]
 
 List the toolchains detected on this machine, grouped by module (cmake,
 meson, …). Each row is a tool key, its label, and the languages it provides.
 Tools are scanned per workspace module, so a module only appears once a
 project uses it. Pin one in a profile with `lw profile create <set> <tool>`;
-version prefixes match (ninja-clang-19 -> ninja-clang-19.1.5).]],
+version prefixes match (ninja-clang-19 -> ninja-clang-19.1.5).
+
+Probing compilers/vcvarsall is slow, so the result is cached
+(~/.cache/loomworks/tools.json). `lw tools` always does a real scan and
+refreshes that cache; other commands (profile create, profiles) read it.
+  --cached   print the cached result instantly (with its age); don't scan.
+Installed a new compiler? run `lw tools` to refresh.]],
   build = [[lw build [profile]
 
 Build a profile's projects. Interactively, with no profile given, it uses the
@@ -1519,7 +1666,7 @@ Usage: lw [command] [args]
   configuration-set create | map | show | ... sets  (cs)
   profiles          list profiles and their buildability
   profile <sub>     list | select | create profiles
-  tools             list detected toolchains by module
+  tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   build [profile]   build a profile (configure if needed, then build)
   publish           write loomworks.json from the working copy
   test  [profile]   build and run tests                     (coming)
@@ -1617,7 +1764,7 @@ local function main()
   end
 
   if command == "tools" then
-    finish(M.cmd_tools(root))
+    finish(M.cmd_tools(root, a))
   end
 
   local ws = load_workspace(root)
