@@ -1396,7 +1396,8 @@ profile is NOT used — pass the profile explicitly for a deterministic build.
             pins resolve to the installed patch version)
 
 Configures first if the build dir isn't configured, then builds. Non-zero
-exit on any failure.]],
+exit on any failure. Artifacts land under
+.nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
   test = [[lw test [profile]   (coming soon)
 
 Build the profile's test target and run it, reporting a real exit code.]],
@@ -1420,6 +1421,8 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         pass <type> to override or when nothing is detected. <name> defaults to
         the directory basename; on a clash you're prompted (or, non-interactive,
         it errors). Missing-and-required args are prompted only on a terminal.
+        A cmake/meson project comes with auto configurations (Debug, Release, …)
+        ready to map — see `lw configuration list <name>`.
   remove <name>
         Drop a project. <name> is the unique project key (`lw project list`).
   list  Show all projects: key, type, path.
@@ -1431,6 +1434,10 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
 Manage a project's build configurations in the working copy; `lw publish`
 shares the result. Configs are addressed by name (an unambiguous base name
 works too). set/unset/remove act on user configs only.
+
+cmake/meson projects already expose auto configurations (variant:Debug,
+variant:Release, …) that you can map into a set directly — `add` is only for
+custom variants.
 
   list [project]                     configs for one project, or all
   add <project> <name> [variant]     create a user configuration
@@ -1518,6 +1525,17 @@ Usage: lw [command] [args]
   test  [profile]   build and run tests                     (coming)
   config <...>      get/set lw configuration
   help  [command]   this help, or details for a command
+
+Quickstart (empty dir -> first build):
+  lw init                                  initialize the workspace
+  lw project add <path>                    register a project (type auto-detected)
+  lw cs create <name> <project>=<config>   map a config set (e.g. app=Debug)
+  lw profile create <name> <tool>          make a buildable profile (`lw tools`)
+  lw build <profile>                       build it
+
+New cmake/meson projects already expose configurations (Debug, Release, …) to
+map — `lw configuration list <project>` shows them; you only add configurations
+for custom variants.
 
 Global: --no-input (alias --non-interactive) never prompts — a missing
 required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
