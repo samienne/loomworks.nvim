@@ -127,9 +127,18 @@ local function derive_key_and_path(root, abs, name)
   else return (rel:gsub("/", "_")), rel end
 end
 
---- Is stdin an interactive terminal? Gates prompting: interactive → ask;
---- non-interactive (CI, pipe) → the caller errors instead of blocking.
-local function is_tty()
+--- Forced non-interactive mode. Set by main() from `--no-input` /
+--- `--non-interactive`, or the LW_NO_INPUT / CI environment. Belt-and-braces
+--- over TTY detection: a CI runner can allocate a pseudo-terminal (docker -t,
+--- ssh -t, some runners), which reads as a tty even though no human is there —
+--- so prompting would block forever. Forcing this makes prompts error with an
+--- explicit-argument hint instead.
+local force_noninteractive = false
+
+--- May we prompt the user? False when forced non-interactive, or when stdin
+--- isn't a terminal (piped / redirected / closed — the common CI case).
+local function interactive()
+  if force_noninteractive then return false end
   local ok, h = pcall(uv.guess_handle, 0)
   return ok and h == "tty"
 end
@@ -419,7 +428,7 @@ local function pick_type(detected)
     options = modules.list()
   end
   if #options == 0 then die("no modules available to add a project as") end
-  if not is_tty() then
+  if not interactive() then
     die("could not determine the project type — pass it explicitly:\n" ..
       "  lw project add <path> <type>   (types: " .. table.concat(options, ", ") .. ")")
   end
@@ -446,7 +455,7 @@ local function resolve_free_key(ws, key, mtype)
     return false
   end
   if not taken(key) then return key end
-  if not is_tty() then
+  if not interactive() then
     die("project '" .. key .. "' already exists — pass a distinct name:\n" ..
       "  lw project add <path> <type> <name>")
   end
@@ -1001,6 +1010,14 @@ end
 function M.select_profile(ws)
   local profiles = ws._profiles or {}
   if #profiles == 0 then die("no profiles to select — run `lw profiles`") end
+  if not interactive() then
+    local keys = {}
+    for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
+    die("`lw profile select` needs an interactive terminal.\n" ..
+      "  set the active profile with `lw profile create <set> <tool> --activate`, or\n" ..
+      "  build a specific profile with `lw build <profile>`.\n" ..
+      "  profiles: " .. table.concat(keys, ", "))
+  end
   local active = ws._active_profile_key
   out("Select a profile:")
   out("")
@@ -1054,7 +1071,7 @@ local function pick_tool(mod, qualify)
   local tools = mod:tools()
   table.sort(tools, function(a, b) return (a.key or "") < (b.key or "") end)
   if #tools == 0 then die("no " .. mod.id .. " toolchains detected — install one, then retry") end
-  if not is_tty() then
+  if not interactive() then
     die("no " .. mod.id .. " toolchain specified — pass one:\n  lw profile create <set> " ..
       (qualify and (mod.id .. ":") or "") .. "<tool>   (available: " ..
       table.concat(tool_keys_of(mod), ", ") .. ")")
@@ -1487,6 +1504,10 @@ Usage: lw [command] [args]
   config <...>      get/set lw configuration
   help  [command]   this help, or details for a command
 
+Global: --no-input (alias --non-interactive) never prompts — a missing
+required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
+Otherwise prompting is on only when stdin is a terminal.
+
 `lw help <command>` for details.]])
   return cmd and 1 or 0
 end
@@ -1495,8 +1516,29 @@ end
 -- Dispatch
 -- ---------------------------------------------------------------------------
 
+--- True for env values that mean "yes/on" (present + not an explicit false).
+local function env_truthy(name)
+  local v = os.getenv(name)
+  return v ~= nil and v ~= "" and v ~= "0" and v:lower() ~= "false"
+end
+
 local function main()
-  local a = _G.arg or {}
+  -- Non-interactive control (CI-safe): strip the global `--no-input` /
+  -- `--non-interactive` flags from anywhere in the args, and honor the
+  -- LW_NO_INPUT and conventional CI environment variables. Any of these makes
+  -- prompts error with an explicit-argument hint instead of blocking.
+  local a = {}
+  for _, v in ipairs(_G.arg or {}) do
+    if v == "--no-input" or v == "--non-interactive" then
+      force_noninteractive = true
+    else
+      a[#a + 1] = v
+    end
+  end
+  if env_truthy("LW_NO_INPUT") or env_truthy("CI") then
+    force_noninteractive = true
+  end
+
   local command = a[1]
 
   -- Global commands — no workspace required.
