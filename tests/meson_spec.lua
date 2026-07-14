@@ -78,13 +78,22 @@ describe("meson module", function()
             assert.is_nil(tail:find('[<>:"|?*]'))
         end)
 
-        it("includes a sanitized tool segment when tool_data has an id", function()
+        it("scopes the build dir by compiler (compiler_id segment)", function()
             local dir = meson.resolve_build_dir("App", "variant:Debug", nil, "/root",
-                { id = "gcc:14" })
-            assert.equals("/root/.nvim/build/App/gcc_14/variant_Debug", dir)
+                { compiler_id = "gcc-14.2.0" })
+            assert.equals("/root/.nvim/build/App/gcc-14.2.0/variant_Debug", dir)
         end)
 
-        it("omits the tool segment when tool_data has no id", function()
+        it("gives cl and clang-cl distinct build dirs for the same config", function()
+            local cl = meson.resolve_build_dir("R", "variant:Debug", nil, "/root",
+                { compiler_id = "msvc-17-2022-enterprise" })
+            local clcl = meson.resolve_build_dir("R", "variant:Debug", nil, "/root",
+                { compiler_id = "clang-cl-18.1.7" })
+            assert.are_not.equal(cl, clcl)
+            assert.equals("/root/.nvim/build/R/msvc-17-2022-enterprise/variant_Debug", cl)
+        end)
+
+        it("omits the compiler segment when tool_data has no id", function()
             local dir = meson.resolve_build_dir("App", "Debug", nil, "/root", {})
             assert.equals("/root/.nvim/build/App/Debug", dir)
         end)
