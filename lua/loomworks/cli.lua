@@ -8,7 +8,7 @@
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
 ---           profile <list|select|create> | tools | build [profile] |
----           publish | test [profile] | config <...> | help
+---           publish | test [profile] | config <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -209,6 +209,10 @@ local TOOL_CACHE_VERSION = 1
 --          command that doesn't wait for tools — no point probing)
 local tool_cache_mode = "auto"
 
+-- Set while serving `lw __complete`: load_workspace returns nil instead of
+-- dying on a broken/absent workspace, so shell completion never errors out.
+local completion_mode = false
+
 local function tool_cache_dir()
   if is_windows() then
     local lad = os.getenv("LOCALAPPDATA")
@@ -332,9 +336,13 @@ local function load_workspace(root, wait_tools)
   local ok = vim.wait(15000, function()
     return core._state == "initialized" or core._state == "uninitialized"
   end, 25)
-  if not ok then die("timed out loading workspace at " .. root) end
+  if not ok then
+    if completion_mode then return nil end
+    die("timed out loading workspace at " .. root)
+  end
   local ws = lw.get_workspace()
   if not ws then
+    if completion_mode then return nil end
     local e = core.get_setup_error and core:get_setup_error()
     die("failed to load workspace" .. (e and e.message and (": " .. e.message) or ""))
   end
@@ -1508,6 +1516,181 @@ function M.cmd_tools(root, args)
 end
 
 -- ---------------------------------------------------------------------------
+-- Shell completion
+-- ---------------------------------------------------------------------------
+
+--- Load a workspace for completion — tolerant (nil on any problem) and quiet.
+local function comp_ws(root)
+  if not root then return nil end
+  return load_workspace(root, false)
+end
+
+--- Sorted, de-duplicated list.
+local function sorted_unique(t)
+  local seen, out_list = {}, {}
+  for _, v in ipairs(t) do
+    if v and v ~= "" and not seen[v] then seen[v] = true; out_list[#out_list + 1] = v end
+  end
+  table.sort(out_list)
+  return out_list
+end
+
+local function comp_project_names(ws)
+  local t = {}
+  if ws then for _, p in pairs(ws._projects or {}) do t[#t + 1] = p.key end end
+  return sorted_unique(t)
+end
+
+local function comp_set_names(ws)
+  local t = {}
+  if ws then for _, cs in ipairs(ws._config_sets or {}) do t[#t + 1] = cs.name end end
+  return sorted_unique(t)
+end
+
+local function comp_profile_names(ws)
+  local t = {}
+  if ws then for _, p in ipairs(ws._profiles or {}) do t[#t + 1] = p.key end end
+  return sorted_unique(t)
+end
+
+--- Configuration names for a project (canonical + base names, incl. auto-gens).
+local function comp_config_names(ws, project_key)
+  local t = {}
+  if ws and project_key then
+    for _, p in pairs(ws._projects or {}) do
+      if p.key == project_key then
+        for _, c in ipairs(p:get_configurations()) do
+          t[#t + 1] = c.name
+          if c.base_name and c.base_name ~= c.name then t[#t + 1] = c.base_name end
+        end
+        break
+      end
+    end
+  end
+  return sorted_unique(t)
+end
+
+--- Tool keys straight from the machine cache (no scan — instant).
+local function comp_tool_keys()
+  local c = read_tool_cache()
+  local t = {}
+  if c and c.tools_by_type then
+    for _, list in pairs(c.tools_by_type) do
+      for _, e in ipairs(list) do if e.tool_key then t[#t + 1] = e.tool_key end end
+    end
+  end
+  return sorted_unique(t)
+end
+
+local COMP_COMMANDS = {
+  "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
+  "profiles", "profile", "tools", "build", "publish", "config", "help", "--no-input",
+}
+
+--- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
+--- the token at `cword` (0-based into the COMP_WORDS passed after it). A lone
+--- `__dirs__` / `__files__` line tells the shell to do path completion.
+--- Never blocks (non-interactive) and never errors out (tolerant loads).
+function M.cmd_complete(cword, words)
+  force_noninteractive = true
+  completion_mode = true
+  cword = tonumber(cword) or 0
+  -- Completed tokens before the cursor, excluding the "lw" at words[1].
+  local a = {}
+  for i = 2, cword do a[#a + 1] = words[i] or "" end
+  local n = #a
+  local function emit(list) for _, c in ipairs(list) do out(c) end end
+  local function has(set, v) for _, x in ipairs(set) do if x == v then return true end end end
+
+  if n == 0 then emit(COMP_COMMANDS); return 0 end
+
+  local cmd, sub = a[1], a[2]
+  local root = find_root(os.getenv("LW_ROOT"))
+
+  if cmd == "help" then
+    if n == 1 then emit(COMP_COMMANDS) end
+    return 0
+  elseif cmd == "tools" then
+    if n == 1 then emit({ "--cached" }) end
+    return 0
+  elseif cmd == "config" then
+    if n == 1 then emit({ "list", "get", "set", "unset" }) end
+    if n == 2 and has({ "get", "set", "unset" }, sub) then emit({ "dev-lua" }) end
+    return 0
+  elseif cmd == "build" then
+    if n == 1 then emit(comp_profile_names(comp_ws(root))) end
+    return 0
+  elseif cmd == "project" then
+    if n == 1 then emit({ "add", "remove", "rm", "list", "show" }); return 0 end
+    if sub == "add" then
+      if n == 2 then out("__dirs__") -- <path>
+      elseif n == 3 then emit(require("loomworks.modules").list()) end -- [type]
+    elseif (sub == "remove" or sub == "rm" or sub == "show") and n == 2 then
+      emit(comp_project_names(comp_ws(root)))
+    end
+    return 0
+  elseif cmd == "profile" then
+    if n == 1 then emit({ "list", "select", "create" }); return 0 end
+    if sub == "create" then
+      if n == 2 then emit(comp_set_names(comp_ws(root)))       -- <config-set>
+      elseif n >= 3 then                                       -- [tool ...] / --activate
+        local list = comp_tool_keys(); list[#list + 1] = "--activate"; emit(list)
+      end
+    end
+    return 0
+  elseif cmd == "configuration" or cmd == "cfg" then
+    if n == 1 then emit({ "list", "add", "show", "get", "set", "unset", "remove" }); return 0 end
+    if n == 2 then emit(comp_project_names(comp_ws(root))); return 0 end -- <project>
+    if n == 3 and has({ "show", "get", "set", "unset", "remove" }, sub) then
+      emit(comp_config_names(comp_ws(root), a[3])); return 0            -- <config>
+    end
+    if n == 4 and has({ "get", "set", "unset" }, sub) then
+      emit({ "variant", "inherits", "languages", "toolchain", "generator",
+        "options.", "variables." })                                     -- <param>
+    end
+    return 0
+  elseif cmd == "configuration-set" or cmd == "cs" then
+    if n == 1 then emit({ "list", "show", "create", "map", "unmap", "remove" }); return 0 end
+    if n == 2 and has({ "show", "map", "unmap", "remove" }, sub) then
+      emit(comp_set_names(comp_ws(root))); return 0                      -- <name>
+    end
+    if n == 3 and (sub == "map" or sub == "unmap") then
+      emit(comp_project_names(comp_ws(root))); return 0                  -- <project>
+    end
+    if n == 4 and sub == "map" then
+      emit(comp_config_names(comp_ws(root), a[4]))                       -- <config>
+    end
+    return 0
+  end
+  return 0
+end
+
+--- `lw completion <bash|zsh>` — print a completion script to source/eval. It
+--- writes nothing itself; enable with `eval "$(lw completion bash)"`.
+function M.cmd_completion(shell)
+  shell = shell or "bash"
+  if shell == "bash" or shell == "zsh" then
+    if shell == "zsh" then
+      out("autoload -U +X bashcompinit && bashcompinit")
+    end
+    out([[# loomworks (lw) completion. Enable with:  eval "$(lw completion ]] .. shell .. [[)"
+_lw_complete() {
+  local reply
+  reply=$(LW_NO_INPUT=1 lw __complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)
+  case "$reply" in
+    __dirs__)  COMPREPLY=( $(compgen -d -- "${COMP_WORDS[COMP_CWORD]}") ); return ;;
+    __files__) COMPREPLY=( $(compgen -f -- "${COMP_WORDS[COMP_CWORD]}") ); return ;;
+  esac
+  local IFS=$'\n'
+  COMPREPLY=( $(compgen -W "$reply" -- "${COMP_WORDS[COMP_CWORD]}") )
+}
+complete -F _lw_complete lw]])
+    return 0
+  end
+  die("unknown shell '" .. tostring(shell) .. "' — use bash or zsh")
+end
+
+-- ---------------------------------------------------------------------------
 -- Help
 -- ---------------------------------------------------------------------------
 
@@ -1647,6 +1830,18 @@ Read or write lw's user configuration (]] .. config_path() .. [[).
 Keys:
   dev-lua   directory to load loomworks Lua from (development override).
             Precedence: LOOMWORKS_LUA env > dev-lua > cache > bundled.]],
+  completion = [[lw completion <bash|zsh>
+
+Print a shell completion script to stdout. It writes nothing to your shell
+config — you choose how to enable it, so nothing is installed behind your back:
+
+  eval "$(lw completion bash)"      # this session only
+  echo 'eval "$(lw completion bash)"' >> ~/.bashrc   # persist it yourself
+
+Completes commands, subcommands, project / configuration-set / profile names,
+toolchains (from the cache — no scan), configuration names, module types, and
+paths. `lw` must be on PATH so the completion can call it back. Completion is
+non-interactive and never blocks; names come from a fast (~250ms) load.]],
 }
 
 function M.cmd_help(cmd)
@@ -1674,6 +1869,7 @@ Usage: lw [command] [args]
   publish           write loomworks.json from the working copy
   test  [profile]   build and run tests                     (coming)
   config <...>      get/set lw configuration
+  completion <shell> print a shell completion script (bash|zsh)
   help  [command]   this help, or details for a command
 
 Quickstart (empty dir -> first build):
@@ -1707,12 +1903,21 @@ local function env_truthy(name)
 end
 
 local function main()
+  local raw = _G.arg or {}
+  -- Shell completion runs before flag-stripping so the passed COMP_WORDS reach
+  -- the completer verbatim (a word being completed may itself be `--no-input`).
+  if raw[1] == "__complete" then
+    local words = {}
+    for i = 3, #raw do words[#words + 1] = raw[i] end
+    finish(M.cmd_complete(raw[2], words))
+  end
+
   -- Non-interactive control (CI-safe): strip the global `--no-input` /
   -- `--non-interactive` flags from anywhere in the args, and honor the
   -- LW_NO_INPUT and conventional CI environment variables. Any of these makes
   -- prompts error with an explicit-argument hint instead of blocking.
   local a = {}
-  for _, v in ipairs(_G.arg or {}) do
+  for _, v in ipairs(raw) do
     if v == "--no-input" or v == "--non-interactive" then
       force_noninteractive = true
     else
@@ -1734,6 +1939,9 @@ local function main()
   end
   if command == "init" then
     finish(M.cmd_init())
+  end
+  if command == "completion" then
+    finish(M.cmd_completion(a[2]))
   end
 
   -- LW_ROOT lets a launcher pass the user's directory when the process itself
