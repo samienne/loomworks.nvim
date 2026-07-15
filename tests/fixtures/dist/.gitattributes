@@ -1,0 +1,5 @@
+# Verifier fixtures are byte-exact and MUST NOT be EOL-converted: the manifest
+# signature is computed over manifest.json's exact bytes, and artifact SHA-256s
+# are over exact bytes. CRLF conversion on checkout would break verification on
+# one platform but not another. Treat everything here as binary.
+* -text
