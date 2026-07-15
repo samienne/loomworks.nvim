@@ -1584,7 +1584,8 @@ end
 
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
-  "profiles", "profile", "tools", "build", "publish", "config", "help", "--no-input",
+  "profiles", "profile", "tools", "build", "publish", "config", "completion",
+  "version", "self-update", "help", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -1850,6 +1851,29 @@ Completes commands, subcommands, project / configuration-set / profile names,
 toolchains (from the cache — no scan), configuration names, module types, and
 paths. `lw` must be on PATH so the completion can call it back. Completion is
 non-interactive and never blocks; names come from a fast (~250ms) load.]],
+  version = [[lw version
+
+Print the host version and which system-Lua source is active — one of:
+  dev      a checked-out tree (--dev / default-source=dev / LOOMWORKS_LUA)
+  release  a verified release bundle (lua-<ver>/ under the data dir)
+  fused    the copy bundled into the lw binary (a full-fused/dev build)
+
+A host command, handled by the lw binary itself (spec §16.11).]],
+  ["self-update"] = [[lw self-update [--force]
+
+Download the current release, verify its signature and hashes, and activate
+it (spec §16.12–16.13). Fetches manifest.json + manifest.json.sig, checks the
+signature against the key built into lw, downloads the bundle, verifies its
+SHA-256 against the (trusted) manifest, then extracts it into a new
+lua-<version>/ under the data dir — never overwriting a running copy. Integrity
+rests on the signature, not the transport, so it is safe behind a proxy;
+set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
+
+  --force   reinstall even if that version is already present
+
+Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` config key,
+else the built-in default. A local directory works as an offline mirror.
+Not applicable to a development source. A host command (handled by lw itself).]],
 }
 
 function M.cmd_help(cmd)
@@ -1878,6 +1902,8 @@ Usage: lw [command] [args]
   test  [profile]   build and run tests                     (coming)
   config <...>      get/set lw configuration
   completion <shell> print a shell completion script (bash|zsh)
+  version           host version + which system-Lua source is in use
+  self-update       download + verify the latest release bundle
   help  [command]   this help, or details for a command
 
 Quickstart (empty dir -> first build):
@@ -1953,6 +1979,14 @@ local function main()
   end
   if command == "completion" then
     finish(M.cmd_completion(a[2]))
+  end
+  -- `version` / `self-update` are host commands: on the luvi host the bootstrap
+  -- (main.lua) intercepts them before we run. Reaching here means the
+  -- nvim-hosted fallback, where they don't apply.
+  if command == "version" or command == "self-update" then
+    io.stderr:write("lw: `" .. command .. "` is provided by the standalone lw " ..
+      "binary; it is not available in the nvim-hosted fallback.\n")
+    finish(1)
   end
 
   -- LW_ROOT lets a launcher pass the user's directory when the process itself

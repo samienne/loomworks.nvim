@@ -883,12 +883,14 @@ detects, never installs, C/C++ toolchains.
 
 ### File additions
 
-`lua/main.lua` (bootstrap), `lua/boot/` (bootstrap-only modules: `json.lua`
-decoder, `verify.lua` ECDSA-P256 manifest verifier), `lua/loomworks/shim/`,
-`bin/lw`, `bin/lw.cmd` exist. Distribution work still adds: a downloader under
-`boot/`, a `self-update` / `version` command surface, and a CI release workflow
-under `.github/workflows/`. The one-line installers (`install/install.sh`,
-`install/install.ps1`) are deferred.
+`lua/main.lua` (bootstrap), `lua/boot/` (bootstrap-only modules: `paths.lua`
+data-dir/version/mkdir helpers, `json.lua` decoder, `verify.lua` ECDSA-P256
+manifest verifier, `download.lua` curl/local fetch, `update.lua` self-update +
+miniz extraction), `lua/loomworks/shim/`, `bin/lw`, `bin/lw.cmd` exist. The
+bootstrap intercepts the host commands `lw version` / `lw self-update`.
+Distribution work still adds: a CI release workflow under `.github/workflows/`.
+The one-line installers (`install/install.sh`, `install/install.ps1`) are
+deferred.
 
 ---
 

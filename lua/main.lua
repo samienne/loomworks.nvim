@@ -1,32 +1,44 @@
--- Universal luvi entry point — the host **bootstrap** (spec §16.11).
+-- Universal luvi entry point — the host **bootstrap** (spec §16.11–16.14).
 --
--- This is the only Lua fused into the host binary. It carries no behavioral
--- logic; it resolves the *system Lua* (the loomworks implementation) from one
--- of two kinds of source and then runs the CLI:
+-- The only Lua fused into the host binary. It carries no behavioral logic; it
+-- (1) resolves where *system Lua* (the loomworks implementation) comes from,
+-- (2) handles the host-level commands `version` and `self-update` (which must
+-- work even with no bundle installed), and (3) runs the CLI from the resolved
+-- source.
 --
---   1. a development source — a working tree on disk, opted into explicitly
---      (LOOMWORKS_LUA env, a `--dev` flag, or config `default-source=dev`);
---      verification is skipped (it is the caller's own checkout).
---   2. the release source — the highest-versioned bundle under the data dir
---      (`<data>/loomworks/lua-<ver>/`). In a later slice these arrive verified
---      via `lw self-update`; here they are simply resolved if present.
+-- System-Lua source precedence (spec §16.11):
+--   LOOMWORKS_LUA env > `--dev[=PATH]` > config `default-source=dev`
+--     > newest verified release bundle (<data>/loomworks/lua-<ver>/)
+--     > fused luvi bundle (a full-fused dev exe / `luvi . --` source run).
+-- A resolved on-disk root is authoritative — no silent bundle fallback.
 --
--- If neither resolves, the fused luvi bundle (the embedded zip, or the source
--- dir on disk when run as `luvi . --`) is the last-resort fallback, so a
--- dev/full-fused exe and the nvim-hosted path keep working unchanged.
---
--- The resolved on-disk root (dev or release) is published as
--- `_G.__loomworks_luaroot` so the shim's `nvim_get_runtime_file` can discover
--- `<root>/loomworks/<kind>/*.lua` off disk.
+-- Bootstrap-only modules live under `lua/boot/` (verify, download, update,
+-- json, paths); they load from the fused host regardless of the chosen source,
+-- via the boot searcher below. They are NOT part of the release bundle they
+-- verify (spec §16.12).
 
 local uv_ok, uv = pcall(require, "uv")
 if not uv_ok then uv = require("luv") end
-
-local is_windows = package.config:sub(1, 1) == "\\"
 local loaders = package.loaders or package.searchers
+local bundle = require("luvi").bundle
+
+-- ---- boot searcher: always resolve boot.* from the fused/source bundle ------
+table.insert(loaders, function(modname)
+  if modname ~= "boot" and modname:sub(1, 5) ~= "boot." then return nil end
+  local base = modname:gsub("%.", "/")
+  for _, cand in ipairs({ base .. ".lua", base .. "/init.lua" }) do
+    local src = bundle.readfile(cand)
+    if src then
+      local chunk, err = loadstring(src, "bundle:" .. cand)
+      return chunk or ("\n\t" .. tostring(err))
+    end
+  end
+  return "\n\tno bundle file for '" .. modname .. "'"
+end)
+
+local paths = require("boot.paths")
 
 -- ---- args: peel off the bootstrap-level `--dev[=PATH]` flag -----------------
--- Everything else is forwarded verbatim to the CLI.
 local forwarded = {}
 local dev_flag, dev_flag_path = false, nil
 for _, v in ipairs({ ... }) do
@@ -39,92 +51,14 @@ for _, v in ipairs({ ... }) do
   end
 end
 
--- ---- host configuration -----------------------------------------------------
--- Read with a plain pattern (not the JSON lib): this runs before any Lua loads.
-local function config_file()
-  if is_windows then
-    local ad = os.getenv("APPDATA")
-    if ad and #ad > 0 then return (ad:gsub("\\", "/")) .. "/loomworks/config.json" end
-  end
-  local xdg = os.getenv("XDG_CONFIG_HOME")
-  local base = (xdg and #xdg > 0) and xdg
-    or ((os.getenv("HOME") or os.getenv("USERPROFILE") or ".") .. "/.config")
-  return (base:gsub("\\", "/")) .. "/loomworks/config.json"
-end
-
-local function read_config()
-  local f = io.open(config_file(), "r")
-  if not f then return {} end
-  local content = f:read("*a"); f:close()
-  content = content or ""
-  return {
-    dev_lua = content:match('"dev%-lua"%s*:%s*"([^"]*)"'),
-    default_source = content:match('"default%-source"%s*:%s*"([^"]*)"'),
-  }
-end
-
-local cfg = read_config()
-
-local function norm(p)
-  if not p or #p == 0 then return nil end
-  return (p:gsub("\\", "/"):gsub("/+$", ""))
-end
-
--- ---- data dir (where release bundles live) ----------------------------------
-local function data_dir()
-  if is_windows then
-    local lad = os.getenv("LOCALAPPDATA")
-    if lad and #lad > 0 then return (lad:gsub("\\", "/")) .. "/loomworks" end
-  end
-  local xdg = os.getenv("XDG_DATA_HOME")
-  if xdg and #xdg > 0 then return (xdg:gsub("\\", "/")) .. "/loomworks" end
-  local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
-  return (home:gsub("\\", "/")) .. "/.local/share/loomworks"
-end
-
--- Compare dotted-numeric versions ("1.10.0" > "1.9.0"); non-numeric parts sort
--- as 0. Returns true when `a` is strictly newer than `b`.
-local function version_gt(a, b)
-  local ai, bi = {}, {}
-  for n in a:gmatch("%d+") do ai[#ai + 1] = tonumber(n) end
-  for n in b:gmatch("%d+") do bi[#bi + 1] = tonumber(n) end
-  for i = 1, math.max(#ai, #bi) do
-    local x, y = ai[i] or 0, bi[i] or 0
-    if x ~= y then return x > y end
-  end
-  return false
-end
-
--- Highest-versioned `<data>/loomworks/lua-<ver>/` directory, or nil.
-local function newest_release_root()
-  local base = data_dir()
-  local scan = uv.fs_scandir(base)
-  if not scan then return nil end
-  local best_ver, best_dir
-  while true do
-    local name, typ = uv.fs_scandir_next(scan)
-    if not name then break end
-    local ver = name:match("^lua%-(.+)$")
-    -- fs_scandir_next may not report the type on every platform; stat to be sure.
-    local is_dir = typ == "directory"
-      or (uv.fs_stat(base .. "/" .. name) or {}).type == "directory"
-    if ver and is_dir then
-      if not best_ver or version_gt(ver, best_ver) then
-        best_ver, best_dir = ver, base .. "/" .. name
-      end
-    end
-  end
-  return best_dir
-end
-
 -- ---- resolve the system-Lua source (spec §16.11) ----------------------------
--- Dev is used only on explicit opt-in; the default is the release source.
-local env_lua = norm(os.getenv("LOOMWORKS_LUA"))
-local dev_opt_in = env_lua ~= nil or dev_flag or cfg.default_source == "dev"
+local cfg = paths.read_config()
+local env_lua = paths.norm(os.getenv("LOOMWORKS_LUA"))
+local dev_opt_in = env_lua ~= nil or dev_flag or cfg["default-source"] == "dev"
 
 local luaroot, source_kind
 if dev_opt_in then
-  luaroot = env_lua or norm(dev_flag_path) or norm(cfg.dev_lua)
+  luaroot = env_lua or paths.norm(dev_flag_path) or paths.norm(cfg["dev-lua"])
   source_kind = "dev"
   if not luaroot then
     io.stderr:write(
@@ -133,8 +67,6 @@ if dev_opt_in then
       "    or export LOOMWORKS_LUA=<path>.\n")
     os.exit(1)
   end
-  -- A dev root is authoritative (no bundle fallback), so validate it up front
-  -- rather than surfacing a bare `require` traceback later.
   if not uv.fs_stat(luaroot .. "/loomworks") then
     io.stderr:write(
       "lw: development source '" .. luaroot .. "' is not a loomworks `lua/` " ..
@@ -142,14 +74,46 @@ if dev_opt_in then
     os.exit(1)
   end
 else
-  luaroot = newest_release_root()
+  luaroot = paths.newest_release_root()
   source_kind = luaroot and "release" or nil
 end
 
--- ---- install searchers ------------------------------------------------------
--- On-disk root (dev or release) is authoritative; the fused bundle is only a
--- fallback. A disk searcher rooted at `<luaroot>/loomworks/...`:
+-- ---- host commands: version / self-update (work without a bundle) -----------
+local function exit(code)
+  io.stdout:flush()
+  os.exit(code)
+end
+
+local command = forwarded[1]
+if command == "version" then
+  local info = require("boot.update").version_info(luaroot, source_kind)
+  io.write(string.format("lw — host v%d · source: %s · bundle: %s\n",
+    info.host_version, info.source, info.bundle))
+  exit(0)
+elseif command == "self-update" then
+  if source_kind == "dev" then
+    io.stderr:write("lw: self-update does not apply to a development source " ..
+      "(--dev / default-source=dev).\n")
+    exit(1)
+  end
+  local force = false
+  for _, v in ipairs(forwarded) do if v == "--force" then force = true end end
+  io.write("lw: checking for updates…\n")
+  local res, err = require("boot.update").self_update({ force = force })
+  if not res then
+    io.stderr:write("lw: self-update failed: " .. tostring(err) .. "\n")
+    exit(1)
+  end
+  io.write(res.updated
+    and ("lw: installed loomworks " .. res.version .. "\n")
+    or ("lw: already up to date (" .. res.version .. ")\n"))
+  exit(0)
+end
+
+-- ---- install the loomworks searcher + run -----------------------------------
 if luaroot then
+  -- On-disk root (dev or release) is authoritative; no bundle fallback, so a
+  -- partial tree fails loudly instead of silently mixing in bundled code.
   _G.__loomworks_luaroot = luaroot
   table.insert(loaders, 1, function(modname)
     local base = luaroot .. "/" .. modname:gsub("%.", "/")
@@ -163,16 +127,16 @@ if luaroot then
     end
     return "\n\tno " .. source_kind .. " file for '" .. modname .. "'"
   end)
-end
-
--- luvi bundle searcher — the last-resort fallback, used only when no on-disk
--- root resolved (a full-fused dev exe, or the `luvi . --` source-dir run).
--- When a dev or release root IS resolved it is authoritative and complete, so
--- we do not also consult the bundle: a partial on-disk tree fails loudly rather
--- than silently mixing in bundled code. Standard `require` can't read a luvi
--- bundle, so back the searcher with the bundle API.
-if not luaroot then
-  local bundle = require("luvi").bundle
+else
+  -- No on-disk root. Fall back to a full-fused bundle (dev exe / source run);
+  -- if there is no fused loomworks either, this is a bootstrap-only host with
+  -- nothing installed yet — guide the user to fetch a release.
+  if not bundle.readfile("loomworks/cli.lua") then
+    io.stderr:write(
+      "lw: no loomworks release is installed.\n" ..
+      "    Run `lw self-update` to download and verify the current release.\n")
+    exit(1)
+  end
   table.insert(loaders, function(modname)
     local base = modname:gsub("%.", "/")
     for _, cand in ipairs({ base .. ".lua", base .. "/init.lua" }) do
@@ -186,7 +150,6 @@ if not luaroot then
   end)
 end
 
--- ---- run --------------------------------------------------------------------
 if not _G.vim then
   _G.vim = require("loomworks.shim")
 end

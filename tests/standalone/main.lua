@@ -9,6 +9,9 @@ package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.pa
 
 local verify = require("boot.verify")
 local json = require("boot.json")
+local paths = require("boot.paths")
+local download = require("boot.download")
+local update = require("boot.update")
 
 local FX = root .. "/tests/fixtures/dist/"
 local function readfile(p)
@@ -81,6 +84,69 @@ do
   ok(not verify.verify_artifact(bytes .. "x", name, m), "tampered artifact rejected")
   ok(not verify.verify_artifact(bytes, "nope.zip", m), "unknown artifact rejected")
   ok(verify.verify_artifact_file(FX .. name, name, m), "artifact file on disk verifies")
+end
+
+print("boot.download — local fetch")
+do
+  local bytes = download.fetch(FX .. "manifest.json")
+  ok(bytes == manifest_bytes, "fetch(local path) returns exact file bytes")
+  local miss = download.fetch(FX .. "does-not-exist")
+  ok(miss == nil, "fetch(missing local) returns nil")
+end
+
+print("boot.update — extract_zip")
+do
+  local dest = root .. "/tests/.tmp-extract"
+  paths.rm_rf(dest)
+  local okx, ex = update.extract_zip(FX .. "loomworks-lua-0.0.0-test.zip", dest)
+  ok(okx, "extract_zip ok" .. (ex and (" — " .. ex) or ""))
+  local m = io.open(dest .. "/loomworks/_release_marker.lua", "rb")
+  ok(m ~= nil, "nested file extracted")
+  if m then m:close() end
+  paths.rm_rf(dest)
+end
+
+print("boot.update — self_update (isolated sandbox, local release)")
+do
+  local sandbox = root .. "/tests/.tmp-update"
+  paths.rm_rf(sandbox)
+  paths.mkdirp(sandbox)
+  -- Redirect the data dir + config to a sandbox and point the release URL at
+  -- the local fixtures dir, so the whole flow is hermetic (no network).
+  uv.os_setenv("LOCALAPPDATA", sandbox)     -- data dir on Windows
+  uv.os_setenv("XDG_DATA_HOME", sandbox)    -- data dir elsewhere
+  uv.os_setenv("APPDATA", sandbox)          -- config dir on Windows
+  uv.os_setenv("XDG_CONFIG_HOME", sandbox)  -- config dir elsewhere
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", FX:gsub("/$", ""))
+
+  local data = paths.data_dir()
+  local res, err = update.self_update({})
+  ok(res ~= nil, "self_update installs" .. (err and (" — " .. err) or ""))
+  if res then
+    eq(res.version, "0.0.0-test", "installed version")
+    ok(res.updated == true, "reports updated=true")
+    local m = io.open(data .. "/lua-0.0.0-test/loomworks/_release_marker.lua", "rb")
+    ok(m ~= nil, "release activated at lua-<ver>/loomworks/")
+    if m then m:close() end
+  end
+  local res2 = update.self_update({})
+  ok(res2 and res2.updated == false, "second run is a no-op (already installed)")
+
+  -- tampered manifest at the mirror must be rejected (no install)
+  local good = readfile(FX .. "manifest.json")
+  local badmirror = sandbox .. "/badmirror"
+  paths.mkdirp(badmirror)
+  local function put(name, bytes) local f = io.open(badmirror .. "/" .. name, "wb"); f:write(bytes); f:close() end
+  put("manifest.json", (good:gsub("0%.0%.0%-test", "6.6.6-evil")))
+  put("manifest.json.sig", readfile(FX .. "manifest.json.sig"))
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", badmirror)
+  local bad, berr = update.self_update({})
+  ok(bad == nil and type(berr) == "string", "tampered mirror rejected (signature)")
+
+  local info = update.version_info(data .. "/lua-0.0.0-test", "release")
+  eq(info.bundle, "0.0.0-test", "version_info parses bundle version")
+
+  paths.rm_rf(sandbox)
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))
