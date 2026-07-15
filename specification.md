@@ -643,6 +643,14 @@ declaration. A project can be partly published (some configs `local+shared`,
 others `local`). Configuration sets carry one intent (atomic). Profiles
 carry one intent and default to `local` (profiles are personal by default).
 
+**Configuration sets are the portable shared unit.** A profile is a
+configuration set plus a *machine-specific* tool; a published profile may
+therefore resolve as an incomplete profile on a machine that lacks that tool
+(§3, incomplete-profile handling). Teams share configuration sets (and
+projects), and each machine — including each CI runner — turns a set into a
+buildable profile by selecting a locally-available tool. A profile MAY still
+be published when a team deliberately standardizes on a toolchain.
+
 #### Intent stickiness
 
 Intent represents the user's **wish**, not a function of current file
@@ -654,6 +662,19 @@ or when the item is deleted from the workspace.
 This guarantees that `:w` after a branch switch behaves predictably: items
 the user marked `local+shared` are republished on `:w`, even if the new
 loomworks.json on disk doesn't currently contain them.
+
+#### Initial intent (host-determined)
+
+The intent an item receives **at creation** reflects the creating host's
+purpose, and is sticky thereafter (per the rule above). The interactive
+editor creates items `local` — the user adds things privately and later
+chooses what to publish. A non-interactive authoring host (the command-line
+runner) creates items `local+shared` — its purpose is to author the shared
+contract, so a created item that never reached loomworks.json would be a
+silent surprise. Either default is an explicit creation-time assignment, not
+a file-presence computation, and a host MUST let the user override it at
+creation (e.g. a `local` / `shared` selector). Changing an existing item's
+intent afterward is an explicit user action in any host.
 
 #### Effective intent (transitive)
 

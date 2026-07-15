@@ -135,6 +135,12 @@ end
 --- explicit-argument hint instead.
 local force_noninteractive = false
 
+--- Creation intent for `add`/`create` commands. nil = the CLI default,
+--- `local+shared` (spec §2.4: the CLI authors the shared contract). Set to
+--- `local` by `--local` or to `local+shared` by `--shared` in main().
+local create_intent = nil
+local function created_intent() return create_intent or "local+shared" end
+
 --- May we prompt the user? False when forced non-interactive, or when stdin
 --- isn't a terminal (piped / redirected / closed — the common CI case).
 local function interactive()
@@ -476,12 +482,37 @@ function M.cmd_init()
   return 0
 end
 
---- `lw publish` — write the shared loomworks.json from the working copy.
+--- True when the published snapshot would carry no shared items.
+local function snapshot_empty(ws)
+  local snap = ws:_serialize_config_internal()
+  local function empty(t) return not t or not next(t) end
+  return empty(snap.projects) and empty(snap.configuration_sets) and empty(snap.profiles)
+end
+
+--- `lw publish` — regenerate the shared loomworks.json from the working copy.
 function M.cmd_publish(root)
   local ws = load_workspace(root, false)
+  local empty = snapshot_empty(ws)
   local ok, err = ws:publish()
   if not ok then die("publish failed: " .. tostring(err)) end
   out("published " .. ws.root .. "/loomworks.json")
+  if empty then
+    out("")
+    io.stderr:write("lw: note: loomworks.json is empty — nothing is marked shared.\n")
+    io.stderr:write("    Share items with `lw <project|profile|configuration-set> publish <name>`,\n")
+    io.stderr:write("    or create them with --shared (the CLI default). See `lw help publish`.\n")
+  end
+  return 0
+end
+
+--- Mark `item` shared (local+shared) and regenerate loomworks.json. The
+--- publishability closure pulls transitive dependencies (a profile's set +
+--- projects), so publishing a profile writes everything it needs (spec §2.4).
+local function publish_item(ws, item, label)
+  item._intent = "local+shared"
+  local ok, err = ws:publish()
+  if not ok then die("publish failed: " .. tostring(err)) end
+  out("published " .. label .. " → " .. ws.root .. "/loomworks.json")
   return 0
 end
 
@@ -653,10 +684,16 @@ function M.cmd_project_add(root, path_arg, type_arg, name_arg)
 
   local project, err = ws:add_project(key, mtype, store_path)
   if not project then die("could not add project: " .. tostring(err)) end
-  out(string.format("added project '%s' (%s) at %s", key, mtype, store_path or key))
+  project._intent = created_intent()
+  ws:_save_user()
+  out(string.format("added project '%s' (%s) at %s  [%s]", key, mtype, store_path or key, project._intent))
   out("")
-  out("Working copy updated (.nvim/loomworks.user.json). Map it into a")
-  out("configuration set to build it, then `lw publish` to share it.")
+  if project._intent == "local" then
+    out("Working copy only (--local). `lw project publish " .. key .. "` shares it later.")
+  else
+    out("Map it into a configuration set to build it, then `lw publish` writes it")
+    out("to the shared loomworks.json.")
+  end
   return 0
 end
 
@@ -745,12 +782,21 @@ function M.cmd_project_show(root, name)
 end
 
 --- `lw project <add|remove|list|show>`
+--- `lw project publish <name>` — mark a project shared and write loomworks.json.
+function M.cmd_project_publish(root, name)
+  if not name then die("usage: lw project publish <name>") end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, name)
+  return publish_item(ws, proj, "project '" .. proj.key .. "'")
+end
+
 function M.cmd_project(sub, root, a3, a4, a5)
   if sub == "add" then return M.cmd_project_add(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_project_remove(root, a3) end
   if sub == "show" then return M.cmd_project_show(root, a3) end
+  if sub == "publish" then return M.cmd_project_publish(root, a3) end
   if sub == nil or sub == "list" then return M.cmd_project_list(root) end
-  die("unknown project subcommand '" .. tostring(sub) .. "' — use add|remove|list|show")
+  die("unknown project subcommand '" .. tostring(sub) .. "' — use add|remove|list|show|publish")
 end
 
 -- ---------------------------------------------------------------------------
@@ -977,6 +1023,18 @@ function M.cmd_configuration_remove(root, proj_name, cfg_name)
 end
 
 --- `lw configuration <list|add|show|get|set|unset|remove>`
+--- `lw configuration publish <project> <name>` — mark a configuration (and its
+--- project) shared and write loomworks.json.
+function M.cmd_configuration_publish(root, proj_name, cfg_name)
+  if not (proj_name and cfg_name) then die("usage: lw configuration publish <project> <name>") end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local cfg = resolve_config(proj, cfg_name, false)
+  -- A configuration can't be published without its project.
+  if proj._intent == "local" or proj._intent == nil then proj._intent = "local+shared" end
+  return publish_item(ws, cfg, "configuration '" .. proj.key .. ":" .. cfg.name .. "'")
+end
+
 function M.cmd_configuration(sub, root, a3, a4, a5, a6)
   if sub == nil or sub == "list" then return M.cmd_configuration_list(root, a3) end
   if sub == "add" then return M.cmd_configuration_add(root, a3, a4, a5) end
@@ -985,8 +1043,9 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6)
   if sub == "set" then return M.cmd_configuration_set(root, a3, a4, a5, a6) end
   if sub == "unset" then return M.cmd_configuration_unset(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_configuration_remove(root, a3, a4) end
+  if sub == "publish" then return M.cmd_configuration_publish(root, a3, a4) end
   die("unknown configuration subcommand '" .. tostring(sub) ..
-    "' — use list|add|show|get|set|unset|remove")
+    "' — use list|add|show|get|set|unset|remove|publish")
 end
 
 -- ---------------------------------------------------------------------------
@@ -1080,12 +1139,17 @@ function M.cmd_cset_create(root, args)
   end
   local cs, err = ws:add_configuration_set(name, raw)
   if not cs then die("could not create configuration set: " .. tostring(err)) end
-  out("created configuration set '" .. cs.name .. "'" ..
+  cs._intent = created_intent()
+  ws:_save_user()
+  out("created configuration set '" .. cs.name .. "'  [" .. cs._intent .. "]" ..
     (next(raw) and "" or " (empty)"))
   if not next(raw) then
     out("  add mappings: lw configuration-set map " .. cs.name .. " <project> <config>")
   end
-  out("`lw publish` to share it; `lw profile create " .. cs.name .. " <tool>` to build it.")
+  if cs._intent == "local" then
+    out("`lw configuration-set publish " .. cs.name .. "` shares it. ")
+  end
+  out("`lw profile create " .. cs.name .. " <tool>` to build it.")
   return 0
 end
 
@@ -1136,6 +1200,15 @@ function M.cmd_cset_remove(root, name)
 end
 
 --- `lw configuration-set <list|show|create|map|unmap|remove>` (alias: cs)
+--- `lw configuration-set publish <name>` — mark a set shared and write
+--- loomworks.json (pulls its mapped projects + configs via the closure).
+function M.cmd_cset_publish(root, name)
+  if not name then die("usage: lw configuration-set publish <name>") end
+  local ws = load_workspace(root, false)
+  local cs = resolve_config_set(ws, name)
+  return publish_item(ws, cs, "configuration set '" .. cs.name .. "'")
+end
+
 function M.cmd_cset(sub, root, args)
   if sub == nil or sub == "list" then return M.cmd_cset_list(root) end
   if sub == "show" then return M.cmd_cset_show(root, args[3]) end
@@ -1143,8 +1216,9 @@ function M.cmd_cset(sub, root, args)
   if sub == "map" then return M.cmd_cset_map(root, args[3], args[4], args[5]) end
   if sub == "unmap" then return M.cmd_cset_unmap(root, args[3], args[4]) end
   if sub == "remove" or sub == "rm" then return M.cmd_cset_remove(root, args[3]) end
+  if sub == "publish" then return M.cmd_cset_publish(root, args[3]) end
   die("unknown configuration-set subcommand '" .. tostring(sub) ..
-    "' — use list|show|create|map|unmap|remove")
+    "' — use list|show|create|map|unmap|remove|publish")
 end
 
 --- `lw profile select` — interactive picker that sets the active profile.
@@ -1299,19 +1373,33 @@ function M.cmd_profile_create(root, args)
   local profile = cs:ensure_profile(first_entry)
   if not profile then die("failed to create profile for set '" .. cs.name .. "'") end
   for i = 2, #order do profile:add_tool(resolved[order[i]].key) end
-  profile._intent = "local"
+  profile._intent = created_intent()
   if activate then profile:activate() else ws:_save_user() end
 
   out((existed and "profile already exists: " or "created profile: ") .. profile.key ..
-    (activate and "  (active)" or ""))
+    "  [" .. profile._intent .. "]" .. (activate and "  (active)" or ""))
   local ok, reasons = true, nil
   if profile.is_valid then ok, reasons = profile:is_valid() end
   if not ok then out("  not yet buildable: " .. table.concat(reasons or {}, "; ")) end
-  out("`lw publish` to share it" .. (activate and "" or "; `lw profile select` or --activate to activate") .. ".")
+  if profile._intent == "local" then
+    out("`lw profile publish " .. profile.key .. "` shares it (pulls its set + projects).")
+  else
+    out("`lw publish` writes it to loomworks.json (with its set + projects)" ..
+      (activate and "" or "; `lw profile select` or --activate to activate") .. ".")
+  end
   return 0
 end
 
---- `lw profile <list|select|create>`
+--- `lw profile publish <key>` — mark a profile shared and write loomworks.json
+--- (pulls its configuration set + projects via the closure, spec §2.4).
+function M.cmd_profile_publish(root, name)
+  if not name then die("usage: lw profile publish <key>") end
+  local ws = load_workspace(root, false)
+  local profile = resolve_profile(ws, name)
+  return publish_item(ws, profile, "profile '" .. profile.key .. "'")
+end
+
+--- `lw profile <list|select|create|publish>`
 function M.cmd_profile(sub, root, args)
   if sub == "select" then
     return M.select_profile(load_workspace(root, false))
@@ -1319,10 +1407,13 @@ function M.cmd_profile(sub, root, args)
   if sub == "create" then
     return M.cmd_profile_create(root, args)
   end
+  if sub == "publish" then
+    return M.cmd_profile_publish(root, args[3])
+  end
   if sub == nil or sub == "list" then
     return M.cmd_profiles(load_workspace(root))
   end
-  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select|create")
+  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select|create|publish")
 end
 
 --- `lw config <list|get|set|unset> [key] [value]`
@@ -1622,27 +1713,29 @@ function M.cmd_complete(cword, words)
     if n == 1 then emit(comp_profile_names(comp_ws(root))) end
     return 0
   elseif cmd == "project" then
-    if n == 1 then emit({ "add", "remove", "rm", "list", "show" }); return 0 end
+    if n == 1 then emit({ "add", "remove", "rm", "list", "show", "publish" }); return 0 end
     if sub == "add" then
       if n == 2 then out("__dirs__") -- <path>
       elseif n == 3 then emit(require("loomworks.modules").list()) end -- [type]
-    elseif (sub == "remove" or sub == "rm" or sub == "show") and n == 2 then
+    elseif (sub == "remove" or sub == "rm" or sub == "show" or sub == "publish") and n == 2 then
       emit(comp_project_names(comp_ws(root)))
     end
     return 0
   elseif cmd == "profile" then
-    if n == 1 then emit({ "list", "select", "create" }); return 0 end
+    if n == 1 then emit({ "list", "select", "create", "publish" }); return 0 end
     if sub == "create" then
       if n == 2 then emit(comp_set_names(comp_ws(root)))       -- <config-set>
       elseif n >= 3 then                                       -- [tool ...] / --activate
         local list = comp_tool_keys(); list[#list + 1] = "--activate"; emit(list)
       end
+    elseif sub == "publish" and n == 2 then
+      emit(comp_profile_names(comp_ws(root)))                  -- <key>
     end
     return 0
   elseif cmd == "configuration" or cmd == "cfg" then
-    if n == 1 then emit({ "list", "add", "show", "get", "set", "unset", "remove" }); return 0 end
+    if n == 1 then emit({ "list", "add", "show", "get", "set", "unset", "remove", "publish" }); return 0 end
     if n == 2 then emit(comp_project_names(comp_ws(root))); return 0 end -- <project>
-    if n == 3 and has({ "show", "get", "set", "unset", "remove" }, sub) then
+    if n == 3 and has({ "show", "get", "set", "unset", "remove", "publish" }, sub) then
       emit(comp_config_names(comp_ws(root), a[3])); return 0            -- <config>
     end
     if n == 4 and has({ "get", "set", "unset" }, sub) then
@@ -1651,8 +1744,8 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "configuration-set" or cmd == "cs" then
-    if n == 1 then emit({ "list", "show", "create", "map", "unmap", "remove" }); return 0 end
-    if n == 2 and has({ "show", "map", "unmap", "remove" }, sub) then
+    if n == 1 then emit({ "list", "show", "create", "map", "unmap", "remove", "publish" }); return 0 end
+    if n == 2 and has({ "show", "map", "unmap", "remove", "publish" }, sub) then
       emit(comp_set_names(comp_ws(root))); return 0                      -- <name>
     end
     if n == 3 and (sub == "map" or sub == "unmap") then
@@ -1743,27 +1836,53 @@ loomworks.json is written later by `lw publish` (working-copy model). Fails if
 the workspace already exists.]],
   publish = [[lw publish
 
-Write the shared loomworks.json from the working copy — the same snapshot the
-editor produces on :w. This is the file you commit and that CI reads.]],
-  project = [[lw project <add|remove|list|show>
+Regenerate the shared loomworks.json from the working copy — the same snapshot
+the editor produces on :w. This is the file you commit and that CI reads.
+
+Only items whose INTENT includes `shared` are written. Every item (project,
+configuration set, profile, configuration) carries an intent:
+  local          working copy only (.nvim/loomworks.user.json) — private
+  local+shared   both files — the CLI default (`lw` authors the shared config)
+  shared         loomworks.json only (rare; reference-only)
+In the CLI, `add`/`create` default to local+shared, so `lw publish` writes them.
+Use --local at creation to keep something private, or --shared to be explicit.
+
+To share an item created --local (or made in the editor), publish it by name:
+  lw project publish <name>
+  lw configuration-set publish <name> (also writes its mapped projects/configs)
+  lw configuration publish <project> <name>
+  lw profile publish <key>            (also writes its set + projects)
+Each marks the item local+shared and regenerates loomworks.json.
+
+Configuration sets are the portable unit teams share: a profile pins a
+machine-specific tool, so publishing config sets (+ projects) lets everyone —
+and each CI runner — pick a local tool and create their own profile
+(`lw profile create <set> <tool>`). You CAN publish a profile too; it just
+resolves as incomplete for anyone without that tool.
+
+Bare `lw publish` warns if the result is empty (nothing is shared yet).]],
+  project = [[lw project <add|remove|list|show|publish>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
-`lw publish` shares the result.
+`lw publish` writes the shared ones to loomworks.json.
 
-  add <path> [type] [name]
+  add <path> [type] [name] [--shared|--local]
         Register an existing directory as a project. The path is inspected to
         detect the type (CMakeLists.txt -> cmake, meson.build -> meson, ...);
         pass <type> to override or when nothing is detected. <name> defaults to
         the directory basename; on a clash you're prompted (or, non-interactive,
         it errors). Missing-and-required args are prompted only on a terminal.
+        New projects default to local+shared (--local keeps them private).
         A cmake/meson project comes with auto configurations (Debug, Release, …)
         ready to map — see `lw configuration list <name>`.
   remove <name>
         Drop a project. <name> is the unique project key (`lw project list`).
   list  Show all projects: key, type, path.
   show <name>
-        Detail one project: type, path, its configurations, and the
-        configuration sets that map it.]],
+        Detail one project: type, path, its configurations, the sets that map
+        it, and its intent.
+  publish <name>
+        Mark the project shared (local+shared) and regenerate loomworks.json.]],
   configuration = [[lw configuration <list|add|show|get|set|unset|remove>   (alias: cfg)
 
 Manage a project's build configurations in the working copy; `lw publish`
@@ -1929,12 +2048,18 @@ Usage: lw [command] [args]
   self-update       download + verify the latest release bundle
   help  [command]   this help, or details for a command
 
-Quickstart (empty dir -> first build):
+Quickstart (empty dir -> first build -> shared config):
   lw init                                  initialize the workspace
   lw project add <path>                    register a project (type auto-detected)
   lw cs create <name> <project>=<config>   map a config set (e.g. app=Debug)
   lw profile create <name> <tool>          make a buildable profile (`lw tools`)
   lw build <profile>                       build it
+  lw publish                               write the shared loomworks.json
+
+Items you add/create default to local+shared, so `lw publish` writes them to the
+committed loomworks.json. Use --local to keep something private; share it later
+with `lw <project|profile|configuration-set> publish <name>`. See `lw help
+publish` for the intent model.
 
 New cmake/meson projects already expose configurations (Debug, Release, …) to
 map — `lw configuration list <project>` shows them; you only add configurations
@@ -1977,6 +2102,10 @@ local function main()
   for _, v in ipairs(raw) do
     if v == "--no-input" or v == "--non-interactive" then
       force_noninteractive = true
+    elseif v == "--shared" then
+      create_intent = "local+shared"
+    elseif v == "--local" then
+      create_intent = "local"
     elseif v == "--dev" or v:sub(1, 6) == "--dev=" then
       -- Source selection is resolved by the host bootstrap (main.lua) before
       -- we run; ignore it here so the nvim-hosted path doesn't choke on it.

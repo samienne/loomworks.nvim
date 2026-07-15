@@ -372,3 +372,4 @@
 --- @field cache_version_mismatch boolean
 --- @field cache_inconsistent boolean
 --- @field user_version_mismatch boolean
+--- @field user_projects_invalid string|nil structural error message, if any

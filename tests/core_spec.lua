@@ -2947,6 +2947,39 @@ describe("Core", function()
         end)
     end)
 
+    describe("user.json structurally invalid projects", function()
+        -- Regression: a project object with two type-candidate keys (e.g. a
+        -- hand-added `intent`) used to be silently dropped, and a later save
+        -- persisted the drop — data loss. The load must now refuse instead.
+        local function make_invalid_projects_core(dep_overrides)
+            local files = {
+                ["loomworks.json"] = h.make_config_json(),
+                ["loomworks.user.json"] = vim.json.encode({
+                    _meta = { version = 2 },
+                    projects = { app = { cmake = vim.empty_dict(), intent = "shared" } },
+                }),
+            }
+            local deps = h.make_test_deps(files, dep_overrides)
+            return Core.new(deps), deps
+        end
+
+        it("refuses to load rather than dropping the project", function()
+            local core = make_invalid_projects_core()
+            core:setup({ root = "/test" })
+            assert.equals("uninitialized", core:state())
+            assert.is_nil(core:get_workspace())
+        end)
+
+        it("stores a setup error naming the invalid project", function()
+            local core = make_invalid_projects_core()
+            core:setup({ root = "/test" })
+            local err = core:get_setup_error()
+            assert.is_not_nil(err)
+            assert.matches("user.json is invalid", err.message)
+            assert.matches("app", err.message)
+        end)
+    end)
+
     describe("user.json version mismatch", function()
         local function make_user_mismatch_core(dep_overrides)
             local files = {

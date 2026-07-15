@@ -375,13 +375,16 @@ function M.assemble(root, config_content, user_content, cache_content)
         user_version_mismatch = false
     end
 
-    -- Normalize user projects from raw JSON format to internal format
+    -- Normalize user projects from raw JSON format to internal format. On a
+    -- structural error, flag it rather than silently dropping the projects — a
+    -- later save would persist the drop and lose the user's data (data loss).
+    local user_projects_invalid = nil
     if user_data.projects and next(user_data.projects) then
         local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
         if normalized then
             user_data.projects = normalized
         else
-            vim.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
+            user_projects_invalid = norm_err or "unknown"
             user_data.projects = nil
         end
     end
@@ -416,6 +419,7 @@ function M.assemble(root, config_content, user_content, cache_content)
         cache_version_mismatch = cache_version_mismatch,
         cache_inconsistent = not cache_consistent,
         user_version_mismatch = user_version_mismatch,
+        user_projects_invalid = user_projects_invalid,
     }, nil
 end
 
@@ -3305,11 +3309,17 @@ function Workspace:_serialize_config()
     end
     if next(sets) then raw.configuration_sets = sets end
 
-    -- Profiles: preserve existing explicit profiles from loomworks.json
-    -- (profile publishing is not supported — profiles are always user-only)
+    -- Profiles: those with effective intent shared (spec §2.4). A profile pins
+    -- a machine-specific tool, so config-sets are the primary shared unit and
+    -- profiles default to local; but a profile MAY be published (it degrades to
+    -- an "incomplete profile" for anyone lacking the tool). Prefer a preserved
+    -- raw def (round-trips a profile that came from loomworks.json), else
+    -- serialize the live one.
     local profiles = {}
     for _, profile in pairs(self._profiles) do
-        if profile.explicit_def then
+        if pub.profiles[profile] then
+            profiles[profile.key] = profile.explicit_def or profile:to_config_def()
+        elseif profile.explicit_def then
             profiles[profile.key] = profile.explicit_def
         end
     end
