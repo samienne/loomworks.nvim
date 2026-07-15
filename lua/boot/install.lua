@@ -30,7 +30,15 @@ function M.target_path()
   return homedir() .. "/.local/bin/lw"
 end
 
-local function norm(p) return p and (p:gsub("\\", "/"):gsub("/+$", "")) or p end
+local function norm(p)
+  if not p then return p end
+  p = p:gsub("\\", "/"):gsub("/+$", "")
+  if paths.is_windows then
+    p = p:gsub("^/(%a)/", "%1:/")  -- git-bash/MSYS /c/foo -> c:/foo
+    p = p:lower()                  -- Windows paths are case-insensitive
+  end
+  return p
+end
 
 --- Is `dir` on the current PATH?
 function M.dir_on_path(dir)
@@ -112,7 +120,16 @@ function M.install(opts)
   local out = {}
   local function say(s) out[#out + 1] = s end
 
-  local exe = uv.exepath()
+  local exe = opts.exe_path or uv.exepath()  -- exe_path overridable for tests
+  -- Guard: install copies the running binary. If that is bare luvi (the dev
+  -- launcher runs `luvi . --`), the copy would be a non-working lw. Installing
+  -- must be done from a real fused host.
+  local exebase = (exe:match("([^/\\]+)$") or ""):lower():gsub("%.exe$", "")
+  if exebase == "luvi" then
+    return nil, "install must be run from a built lw binary, not the dev luvi " ..
+      "launcher.\n    From the repo run `make install`; otherwise download a " ..
+      "release binary and run its `install`."
+  end
   local dest = M.target_path()
   if not dest then return nil, "cannot determine install location (LOCALAPPDATA unset?)" end
   local bindir = dest:match("^(.*)/[^/]*$")

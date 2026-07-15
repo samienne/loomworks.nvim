@@ -1,7 +1,7 @@
 TESTS_DIR := tests
 INIT_FILE := tests/minimal_init.lua
 
-.PHONY: test test-file test-standalone test-all
+.PHONY: test test-file test-standalone test-all install dist
 
 ## Run all tests (nvim/busted suite)
 test:
@@ -19,6 +19,12 @@ test-standalone:
 
 ## Run both suites.
 test-all: test test-standalone
+
+## Build a fused-everything lw host from the working tree and install it for the
+## current user (frozen snapshot; use `lw --dev` for the live repo). Re-run to
+## update the installed snapshot.
+install:
+	bash scripts/dev-install.sh
 
 ## Dry-run a release build into dist/ using the TEST key + local luvi. CI passes
 ## the real version and signing key (see .github/workflows/release.yml).

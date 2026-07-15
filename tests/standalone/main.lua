@@ -182,10 +182,14 @@ do
   uv.os_setenv("SHELL", "/bin/bash")
   ok(install.shell_rc():match("/%.bashrc$"), "shell_rc: bash -> .bashrc")
 
-  -- --dry-run writes nothing
+  -- guard: refuse to install bare luvi
+  local g, gerr = install.install({ exe_path = "/some/dir/luvi.exe", no_bundle = true })
+  ok(g == nil and type(gerr) == "string" and gerr:find("luvi"), "refuses to install bare luvi")
+
+  -- --dry-run writes nothing (exe_path stands in for a real fused host)
   uv.os_setenv("LOCALAPPDATA", sb)
   uv.os_setenv("HOME", sb)
-  local rep = install.install({ dry_run = true, no_bundle = true, no_modify_path = true })
+  local rep = install.install({ exe_path = sb .. "/lw", dry_run = true, no_bundle = true, no_modify_path = true })
   ok(type(rep) == "table" and #rep > 0, "install --dry-run returns a report")
   ok(not io.open(install.target_path(), "rb"), "install --dry-run wrote no binary")
 

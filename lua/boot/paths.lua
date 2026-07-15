@@ -15,9 +15,13 @@ M.is_windows = package.config:sub(1, 1) == "\\"
 --- latter is how the tests sandbox the data/config dirs. Empty is treated as
 --- unset. Falls back to os.getenv if libuv lacks the call.
 function M.getenv(name)
+  -- Prefer libuv's view (sees in-process uv.os_setenv, used for test sandboxing)
+  -- but only when it actually has a value: on Windows luvi returns empty for
+  -- some inherited vars (notably PATH), so fall back to os.getenv, which reads
+  -- the real inherited environment.
   if uv.os_getenv then
     local ok, v = pcall(uv.os_getenv, name)
-    if ok then return (v ~= nil and v ~= "") and v or nil end
+    if ok and v ~= nil and v ~= "" then return v end
   end
   local v = os.getenv(name)
   return (v ~= nil and v ~= "") and v or nil
