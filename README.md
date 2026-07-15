@@ -435,6 +435,38 @@ automatically from your system.
 | `:LoomworksInfo` | Open workspace status page |
 | `:LoomworksReload` | Tear down active workspace and reload plugin code (dev hatch — requires lazy.nvim) |
 
+## Standalone `lw` runner
+
+`lw` runs loomworks builds outside the editor — CI, a plain shell — from the
+same `loomworks.json`. It is a single self-contained binary (a luvi host with
+a small fused bootstrap); it needs no Neovim and no Lua install.
+
+**Two sources of the runner's own code** (spec §16.11):
+
+- **release** (default) — the runner uses a cryptographically **verified**
+  release bundle it downloads and caches per user. `lw self-update` fetches
+  and verifies the latest; a bundle whose signature or hash does not match is
+  never executed (spec §16.12).
+- **dev** — point the runner at a checked-out loomworks tree. Configure it
+  once:
+
+  ```
+  lw config set dev-lua C:/src/nvim-plugins/loomworks.nvim/lua
+  ```
+
+  Then `lw --dev <command>` runs from that tree (verification skipped — it's
+  your local checkout). `lw config set default-source dev` makes `--dev` the
+  default, or use `LOOMWORKS_LUA=<dir>` for a one-off override.
+
+Releases are cut from `master`; CI builds the host binary for Linux, macOS,
+and Windows and publishes the signed bundle. See
+[ARCHITECTURE.md](ARCHITECTURE.md#standalone-runner--distribution) for the
+release layout and update flow.
+
+> The one-line installer is not yet available; for now place a host binary on
+> your `PATH` (or build one from a checkout with `luvi`) and run
+> `lw self-update` to fetch the first bundle.
+
 ## Status Page
 
 `:LoomworksInfo` opens a status page with the following sections:

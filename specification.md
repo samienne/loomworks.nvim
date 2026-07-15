@@ -3305,3 +3305,52 @@ the profile pins and `path` is a toolchain/compiler executable. The provided
 toolchain is identified by probing the executable and satisfies the pin
 directly, bypassing detection — allowing a build machine to supply a
 compiler absent from search paths, or to select one deterministically.
+
+### 16.11 Runner distribution and system-Lua resolution
+
+The standalone runner separates a **generic runtime host** (the Lua VM and
+asynchronous primitives of §16.1) from the **system Lua** (the behavioral
+implementation of §1–§15). The host carries no behavioral logic of its own;
+per invocation it resolves system Lua from exactly one source, chosen by
+precedence:
+
+1. an explicit caller override naming a directory;
+2. a **development source** — a working tree designated in host
+   configuration — when the caller opts into it;
+3. otherwise the **release source** — a verified release bundle.
+
+Absent (1) and (2), the release source is used. The chosen source is fixed
+for the whole invocation. The resolution is a host concern: it does not
+affect any §1–§15 contract, and system Lua behaves identically whichever
+source supplied it.
+
+### 16.12 Release integrity
+
+A release bundle MUST be cryptographically verified against a trusted public
+key carried by the host before any of its Lua executes. Verification covers
+a signed manifest that binds the identity and content hash of every bundle
+artifact; an artifact whose hash does not match, or a manifest whose
+signature does not verify, MUST NOT execute. Verification integrity MUST NOT
+depend on transport security: a bundle obtained over an untrusted or
+intercepted channel is accepted if and only if its signature verifies. A
+development source (§16.11) is exempt from verification — it is local,
+explicit, and caller-owned. The component that performs verification is part
+of the host, never part of the bundle it verifies.
+
+### 16.13 Acquisition and activation
+
+Acquiring a release bundle — an initial install or an update — MUST verify
+it (§16.12) before it becomes active. Activation MUST be atomic and MUST NOT
+overwrite the code of a running invocation; a failed or partial acquisition
+MUST leave the previously active bundle intact, so a runner is never left
+without a working system Lua. Acquisition and activation are management
+operations (§16.9): they are never performed as part of a build (§16.4), so
+a read-only or CI invocation neither fetches nor mutates the active bundle.
+
+### 16.14 Host/bundle compatibility
+
+A release bundle declares the minimum runtime-host capability it requires. A
+host that does not meet a bundle's minimum MUST refuse to execute it — rather
+than fail unpredictably — and MUST report that a host update is required.
+Within its compatible range a single host build executes any bundle, so
+behavioral updates ship as bundles without replacing the host.
