@@ -370,9 +370,9 @@ function vim.notify_once(msg, level) vim.notify(msg, level) end
 -- `nvim_get_runtime_file` is the one api function the detect path needs:
 -- module/SDK discovery globs `lua/loomworks/<kind>/*.lua` off the runtime
 -- path. Here the "runtime path" is the loomworks Lua root, reachable two
--- ways — a dev override dir on disk (`_G.__loomworks_devdir`, set by
--- main.lua) and the luvi bundle (the embedded zip, or the source dir on
--- disk when run as `luvi . --`). Both are rooted at the `lua/` dir, so we
+-- ways — an on-disk root (`_G.__loomworks_luaroot`, set by main.lua for a dev
+-- or release source) and the luvi bundle (the embedded zip, or the source dir
+-- on disk when run as `luvi . --`). Both are rooted at the `lua/` dir, so we
 -- strip the leading `lua/` and list that subdir in each.
 local function glob_to_pat(glob)
   return "^" .. glob
@@ -391,9 +391,9 @@ local function runtime_files(pattern)
     if not seen[full] then seen[full] = true; files[#files + 1] = full end
   end
 
-  local devdir = _G.__loomworks_devdir
-  if devdir then
-    local abs = devdir .. "/" .. dir
+  local luaroot = _G.__loomworks_luaroot
+  if luaroot then
+    local abs = luaroot .. "/" .. dir
     local fs = uv.fs_scandir(abs)
     if fs then
       while true do

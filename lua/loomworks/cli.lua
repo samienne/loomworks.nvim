@@ -1615,7 +1615,7 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "config" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
-    if n == 2 and has({ "get", "set", "unset" }, sub) then emit({ "dev-lua" }) end
+    if n == 2 and has({ "get", "set", "unset" }, sub) then emit({ "dev-lua", "default-source" }) end
     return 0
   elseif cmd == "build" then
     if n == 1 then emit(comp_profile_names(comp_ws(root))) end
@@ -1829,8 +1829,15 @@ Read or write lw's user configuration (]] .. config_path() .. [[).
   unset <key>          remove a setting
 
 Keys:
-  dev-lua   directory to load loomworks Lua from (development override).
-            Precedence: LOOMWORKS_LUA env > dev-lua > cache > bundled.]],
+  dev-lua         a checked-out loomworks `lua/` directory to run from
+                  (the development source, spec §16.11).
+  default-source  `dev` or `release`. `dev` makes `lw` use dev-lua without
+                  needing `--dev` each time; `release` (default) uses the
+                  verified release bundle.
+
+Source precedence (resolved by the host before commands run):
+  LOOMWORKS_LUA env > `--dev[=PATH]` > default-source=dev > release bundle.
+Dev sources are your own checkout and are not signature-verified.]],
   completion = [[lw completion <bash|zsh>
 
 Print a shell completion script to stdout. It writes nothing to your shell
@@ -1921,6 +1928,9 @@ local function main()
   for _, v in ipairs(raw) do
     if v == "--no-input" or v == "--non-interactive" then
       force_noninteractive = true
+    elseif v == "--dev" or v:sub(1, 6) == "--dev=" then
+      -- Source selection is resolved by the host bootstrap (main.lua) before
+      -- we run; ignore it here so the nvim-hosted path doesn't choke on it.
     else
       a[#a + 1] = v
     end
