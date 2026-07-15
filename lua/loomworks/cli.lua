@@ -448,9 +448,99 @@ local function run_spec(step, root)
   return res.code
 end
 
+--- Interactive picker among the workspace's configuration sets.
+local function pick_config_set(ws)
+  local sets = {}
+  for _, s in ipairs(ws._config_sets or {}) do sets[#sets + 1] = s end
+  table.sort(sets, function(a, b) return a.name < b.name end)
+  if #sets == 1 then return sets[1] end
+  out("Select a configuration set to build:")
+  for i, s in ipairs(sets) do out(string.format("  %d) %s", i, s.name)) end
+  out("")
+  local line = prompt_line("Enter number (blank to cancel)")
+  if not line or line == "" then out("cancelled"); finish(0) end
+  local n = tonumber(line)
+  if not n or not sets[n] then die("invalid selection: " .. tostring(line)) end
+  return sets[n]
+end
+
+--- Resolve the profile to build. When no profile exists yet, onboard one from a
+--- configuration set (interactively): pick a set, create+activate a profile
+--- (prompting for the tool), then build it. Non-interactive/CI never creates —
+--- it defers to resolve_profile's strict, explicit error (spec §16.9: builds
+--- are read-only there). Returns (profile, ws); ws may be a fresh reload.
+local function resolve_build_target(ws, name)
+  local profiles = ws._profiles or {}
+
+  -- A concrete profile match (exact key or unambiguous substring) always wins.
+  if name then
+    for _, p in ipairs(profiles) do if p.key == name then return p, ws end end
+    local matches = {}
+    for _, p in ipairs(profiles) do if p.key:find(name, 1, true) then matches[#matches + 1] = p end end
+    if #matches == 1 then return matches[1], ws end
+    if #matches > 1 then
+      local keys = {}
+      for _, p in ipairs(matches) do keys[#keys + 1] = p.key end
+      die("'" .. name .. "' matches multiple profiles: " .. table.concat(keys, ", "))
+    end
+  else
+    if not interactive() then return resolve_profile(ws, nil), ws end
+    local active = ws._active_profile_key
+    if active then for _, p in ipairs(profiles) do if p.key == active then return p, ws end end end
+    if #profiles == 1 then return profiles[1], ws end
+    if #profiles > 1 then
+      die("no profile specified and no active default — `lw profile select`, or `lw build <profile>`")
+    end
+  end
+
+  -- No profile matched. Non-interactive → strict error with the exact commands.
+  if not interactive() then
+    if name then
+      for _, s in ipairs(ws._config_sets or {}) do
+        if s.name == name then
+          die("'" .. name .. "' is a configuration set with no profile yet — " ..
+            "create one:\n  lw profile create " .. name .. " <tool> --activate   " ..
+            "(tools: `lw tools`)\n  then: lw build")
+        end
+      end
+    end
+    return resolve_profile(ws, name), ws
+  end
+
+  -- Onboard: build a config set by creating a profile for it.
+  local sets = ws._config_sets or {}
+  if not next(sets) then
+    die("no profiles or configuration sets yet.\n" ..
+      "  create a set:  lw configuration-set create <name> <project>=<config>")
+  end
+  local cs
+  if name then
+    for _, s in ipairs(sets) do if s.name == name then cs = s; break end end
+    if not cs then
+      die("no profile or configuration set matching '" .. name .. "'.\n" ..
+        "  `lw profiles` / `lw configuration-set list`")
+    end
+  else
+    cs = pick_config_set(ws)
+  end
+
+  out("No profile for '" .. cs.name .. "' yet — let's create one.")
+  M.cmd_profile_create(ws.root, { "profile", "create", cs.name, "--activate" })
+  out("")
+
+  -- Reload to pick up the newly created + activated profile.
+  local ws2 = load_workspace(ws.root)
+  local active = ws2._active_profile_key
+  for _, p in ipairs(ws2._profiles or {}) do
+    if p.key == active then return p, ws2 end
+  end
+  die("profile creation did not yield an active profile")
+end
+
 function M.cmd_build(ws, profile_name)
   local overseer = require("loomworks.overseer")
-  local profile = resolve_profile(ws, profile_name)
+  local profile
+  profile, ws = resolve_build_target(ws, profile_name)
   local steps = overseer.plan_profile_build(profile)
   if not steps or #steps == 0 then
     die("nothing to build for profile '" .. profile.key ..
@@ -1710,7 +1800,12 @@ function M.cmd_complete(cword, words)
     if n == 2 and has({ "get", "set", "unset" }, sub) then emit({ "dev-lua", "default-source" }) end
     return 0
   elseif cmd == "build" then
-    if n == 1 then emit(comp_profile_names(comp_ws(root))) end
+    if n == 1 then
+      local ws = comp_ws(root)
+      local names = comp_profile_names(ws)
+      for _, s in ipairs(comp_set_names(ws)) do names[#names + 1] = s end -- onboarding form
+      emit(sorted_unique(names))
+    end
     return 0
   elseif cmd == "project" then
     if n == 1 then emit({ "add", "remove", "rm", "list", "show", "publish" }); return 0 end
@@ -1813,15 +1908,22 @@ Probing compilers/vcvarsall is slow, so the result is cached
 refreshes that cache; other commands (profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile]
+  build = [[lw build [profile | config-set]
 
 Build a profile's projects. Interactively, with no profile given, it uses the
-active profile (user.json), else the only profile, else errors. In
-non-interactive mode (--no-input / LW_NO_INPUT / CI, or piped stdin) the active
-profile is NOT used — pass the profile explicitly for a deterministic build.
+active profile (user.json), else the only profile. With NO profile yet, it
+onboards one: pick a configuration set, choose a tool, and it creates +
+activates the profile, then builds — so a freshly-cloned project goes from
+`lw build` to building. `lw build <config-set>` does the same for a named set.
 
-  profile   e.g. Debug:ninja-clang-19  (a unique substring works too; major
-            pins resolve to the installed patch version)
+In non-interactive mode (--no-input / LW_NO_INPUT / CI, or piped stdin) the
+active profile is NOT used and nothing is created — pass a profile explicitly
+for a deterministic build (§16.9). The CI pattern is:
+  lw profile create <set> <tool> --activate  &&  lw build
+
+  profile     e.g. Debug:ninja-clang-19  (a unique substring works too; major
+              pins resolve to the installed patch version)
+  config-set  a set name; onboards a profile for it (interactive)
 
 Configures first if the build dir isn't configured, then builds. Non-zero
 exit on any failure. Artifacts land under
