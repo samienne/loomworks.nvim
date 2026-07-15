@@ -463,9 +463,38 @@ and Windows and publishes the signed bundle. See
 [ARCHITECTURE.md](ARCHITECTURE.md#standalone-runner--distribution) for the
 release layout and update flow.
 
-> The one-line installer is not yet available; for now place a host binary on
-> your `PATH` (or build one from a checkout with `luvi`) and run
-> `lw self-update` to fetch the first bundle.
+### Installing `lw`
+
+`lw` installs itself: download the binary for your platform, **verify its
+hash** (from the release's `SHA256SUMS`), then let the verified binary place
+itself on PATH and fetch the first bundle. The command shows exactly what it
+does — nothing is piped from an unread script.
+
+Linux / macOS:
+
+```sh
+curl -fsSL https://github.com/samienne/loomworks.nvim/releases/latest/download/lw-linux-x86_64 -o /tmp/lw \
+  && echo "<sha256-from-SHA256SUMS>  /tmp/lw" | sha256sum -c \
+  && chmod +x /tmp/lw && /tmp/lw install
+```
+
+Windows (PowerShell):
+
+```powershell
+$u = "https://github.com/samienne/loomworks.nvim/releases/latest/download/lw-windows-x86_64.exe"
+Invoke-WebRequest $u -OutFile $env:TEMP\lw.exe
+if ((Get-FileHash $env:TEMP\lw.exe -Algorithm SHA256).Hash -ieq "<sha256-from-SHA256SUMS>") {
+  & $env:TEMP\lw.exe install
+} else { Write-Error "hash mismatch" }
+```
+
+`lw install` copies the binary to a per-user location — `~/.local/bin/lw`
+(Unix) or `%LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe` (Windows, already on
+PATH) — ensures it is on PATH (prompting first; `-y` to apply non-interactively,
+`--no-modify-path` to skip), and runs `lw self-update` to fetch the verified
+release bundle. `--dry-run` shows what it would do; `--no-bundle` skips the
+fetch. No admin required. Then enable completion with `lw completion bash`
+(see [above](#standalone-lw-runner) / `lw help completion`).
 
 ## Status Page
 

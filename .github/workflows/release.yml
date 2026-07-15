@@ -117,6 +117,16 @@ jobs:
           find incoming -type f -exec cp {} release/ \;
           ls -la release
 
+      - name: Generate SHA256SUMS
+        shell: bash
+        working-directory: release
+        run: |
+          # Per-asset hashes so the install one-liner can verify a host binary
+          # by hash before running it (spec §16.15). The bundle is additionally
+          # signature-verified by the host; these cover the host binaries too.
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:

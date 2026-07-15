@@ -868,9 +868,17 @@ runs as part of `lw build` (spec §16.9, §16.13).
 
 ### Install security
 
-Trust rests on **signature verification, not transport**: the host embeds an
-ECDSA P-256 public key and verifies the signed manifest before executing any
-bundle Lua; a hash mismatch or bad signature aborts. The private key is
+The host cannot verify itself (the verifier is inside it), so its own integrity
+is established out-of-band (spec §16.15): the release publishes a `SHA256SUMS`,
+and the documented install is a transparent one-liner — download the binary,
+verify its hash, then run the verified binary's `lw install`, which copies
+itself to a per-user location (`~/.local/bin/lw`, or `%LOCALAPPDATA%\Microsoft\
+WindowsApps\lw.exe` on Windows — already on PATH), ensures PATH (prompting;
+`-y`/`--no-modify-path`), and fetches the first bundle. No `curl | sh`.
+
+Bundle trust rests on **signature verification, not transport**: the host
+embeds an ECDSA P-256 public key and verifies the signed manifest before
+executing any bundle Lua; a hash mismatch or bad signature aborts. The private key is
 generated offline and held only as a tag-gated CI secret; the production
 public key is injected into `boot/verify.lua` at release-build time (the
 committed source carries a throwaway test key, so the verifier tests are
@@ -886,16 +894,18 @@ detects, never installs, C/C++ toolchains.
 `lua/main.lua` (bootstrap), `lua/boot/` (bootstrap-only modules: `paths.lua`
 data-dir/version/mkdir helpers, `json.lua` decoder, `verify.lua` ECDSA-P256
 manifest verifier, `download.lua` curl/local fetch, `update.lua` self-update +
-miniz extraction), `lua/loomworks/shim/`, `bin/lw`, `bin/lw.cmd` exist. The
-bootstrap intercepts the host commands `lw version` / `lw self-update`.
+miniz extraction, `install.lua` self-install), `lua/loomworks/shim/`, `bin/lw`,
+`bin/lw.cmd` exist. The bootstrap intercepts the host commands `lw version` /
+`lw install` / `lw self-update`.
 The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
 manifest) and `scripts/release/fuse_host.sh` (inject the production key + fuse
 one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix
 builds a host per platform (each fetching the matching luvi), a job builds the
-signed bundle, and a publish job attaches everything to a GitHub Release. The
-maintainer supplies the signing key (see `keys/README.md`). `make dist` is a
-local dry-run. The one-line installers (`install/install.sh`,
-`install/install.ps1`) are deferred.
+signed bundle, and a publish job attaches everything (plus a `SHA256SUMS`) to a
+GitHub Release. The maintainer supplies the signing key (see `keys/README.md`).
+`make dist` is a local dry-run. Installation is the transparent
+download-verify-`lw install` one-liner (spec §16.15), so no hosted installer
+script is needed.
 
 ---
 

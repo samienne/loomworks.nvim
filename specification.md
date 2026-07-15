@@ -3354,3 +3354,14 @@ host that does not meet a bundle's minimum MUST refuse to execute it — rather
 than fail unpredictably — and MUST report that a host update is required.
 Within its compatible range a single host build executes any bundle, so
 behavioral updates ship as bundles without replacing the host.
+
+### 16.15 Host acquisition integrity
+
+The host cannot verify itself — the component that checks a signature (§16.12)
+is inside the host. A host binary's integrity is therefore established
+out-of-band: it is obtained and checked against a hash published through a
+trusted channel *before* its first execution, and only a matching binary is
+run. Installation is that binary placing itself where it can be invoked; it is
+not part of the verified-bundle chain and MUST NOT be assumed to have verified
+the running binary. Once trusted this way, the host bootstraps the bundle chain
+(§16.12–16.13).

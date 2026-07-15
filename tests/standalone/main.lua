@@ -12,6 +12,7 @@ local json = require("boot.json")
 local paths = require("boot.paths")
 local download = require("boot.download")
 local update = require("boot.update")
+local install = require("boot.install")
 
 local FX = root .. "/tests/fixtures/dist/"
 local function readfile(p)
@@ -147,6 +148,48 @@ do
   eq(info.bundle, "0.0.0-test", "version_info parses bundle version")
 
   paths.rm_rf(sandbox)
+end
+
+print("boot.install — mechanics")
+do
+  local sb = root .. "/tests/.tmp-install"
+  paths.rm_rf(sb); paths.mkdirp(sb)
+
+  -- copy_binary
+  local src, dst = sb .. "/src.bin", sb .. "/nested/dst.bin"
+  local f = io.open(src, "wb"); f:write("BIN\0ARY\0DATA"); f:close()
+  ok(install.copy_binary(src, dst) == true, "copy_binary ok (creates parents)")
+  local g = io.open(dst, "rb"); local d = g:read("*a"); g:close()
+  ok(d == "BIN\0ARY\0DATA", "copied bytes match exactly")
+
+  -- dir_on_path
+  local sep = paths.is_windows and ";" or ":"
+  uv.os_setenv("PATH", "/foo" .. sep .. "/bar/" .. sep .. "/baz")
+  ok(install.dir_on_path("/bar"), "dir_on_path finds a member (trailing slash ok)")
+  ok(not install.dir_on_path("/nope"), "dir_on_path rejects a non-member")
+
+  -- append_path_line (idempotent)
+  local rc = sb .. "/rcfile"
+  local line = 'export PATH="/x/bin:$PATH"'
+  ok(install.append_path_line(rc, line) == true, "append_path_line adds")
+  ok(install.append_path_line(rc, line) == false, "append_path_line idempotent")
+  local rf = io.open(rc, "r"); local rc_body = rf:read("*a"); rf:close()
+  ok(rc_body:find(line, 1, true) ~= nil, "PATH line written")
+
+  -- shell_rc picks the right file by $SHELL
+  uv.os_setenv("SHELL", "/usr/bin/zsh")
+  ok(install.shell_rc():match("/%.zshrc$"), "shell_rc: zsh -> .zshrc")
+  uv.os_setenv("SHELL", "/bin/bash")
+  ok(install.shell_rc():match("/%.bashrc$"), "shell_rc: bash -> .bashrc")
+
+  -- --dry-run writes nothing
+  uv.os_setenv("LOCALAPPDATA", sb)
+  uv.os_setenv("HOME", sb)
+  local rep = install.install({ dry_run = true, no_bundle = true, no_modify_path = true })
+  ok(type(rep) == "table" and #rep > 0, "install --dry-run returns a report")
+  ok(not io.open(install.target_path(), "rb"), "install --dry-run wrote no binary")
+
+  paths.rm_rf(sb)
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

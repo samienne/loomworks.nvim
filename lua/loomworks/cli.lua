@@ -1585,7 +1585,7 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
   "profiles", "profile", "tools", "build", "publish", "config", "completion",
-  "version", "self-update", "help", "--no-input",
+  "version", "install", "self-update", "help", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -1859,6 +1859,28 @@ Print the host version and which system-Lua source is active — one of:
   fused    the copy bundled into the lw binary (a full-fused/dev build)
 
 A host command, handled by the lw binary itself (spec §16.11).]],
+  install = [[lw install [-y] [--no-modify-path] [--no-bundle] [--dry-run]
+
+Install the running lw binary for the current user and make it usable
+(spec §16.15). It copies itself to a per-user location, ensures that location
+is on PATH, and fetches the first release bundle. No admin required.
+
+  location   Windows: %LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe (on PATH)
+             Unix:    ~/.local/bin/lw
+
+  -y                 apply PATH changes without prompting (needed with --no-input)
+  --no-modify-path   install the binary but never touch PATH / shell rc
+  --no-bundle        skip fetching the release bundle (do `lw self-update` later)
+  --dry-run          print what would happen, change nothing
+
+Typical bootstrap (download, verify by hash, then let the verified binary
+install itself) — from the release page for your platform, e.g.:
+
+  curl -fsSL <url>/lw-linux-x86_64 -o /tmp/lw \
+    && echo "<sha256>  /tmp/lw" | sha256sum -c \
+    && chmod +x /tmp/lw && /tmp/lw install
+
+A host command (handled by lw itself).]],
   ["self-update"] = [[lw self-update [--force]
 
 Download the current release, verify its signature and hashes, and activate
@@ -1903,6 +1925,7 @@ Usage: lw [command] [args]
   config <...>      get/set lw configuration
   completion <shell> print a shell completion script (bash|zsh)
   version           host version + which system-Lua source is in use
+  install           install the lw binary on PATH + fetch the first bundle
   self-update       download + verify the latest release bundle
   help  [command]   this help, or details for a command
 
@@ -1983,7 +2006,7 @@ local function main()
   -- `version` / `self-update` are host commands: on the luvi host the bootstrap
   -- (main.lua) intercepts them before we run. Reaching here means the
   -- nvim-hosted fallback, where they don't apply.
-  if command == "version" or command == "self-update" then
+  if command == "version" or command == "self-update" or command == "install" then
     io.stderr:write("lw: `" .. command .. "` is provided by the standalone lw " ..
       "binary; it is not available in the nvim-hosted fallback.\n")
     finish(1)

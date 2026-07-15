@@ -108,6 +108,21 @@ elseif command == "self-update" then
     and ("lw: installed loomworks " .. res.version .. "\n")
     or ("lw: already up to date (" .. res.version .. ")\n"))
   exit(0)
+elseif command == "install" then
+  local opts = { dry_run = false, no_modify_path = false, no_bundle = false }
+  for _, v in ipairs(forwarded) do
+    if v == "-y" or v == "--yes" then opts.assume_yes = true
+    elseif v == "--no-modify-path" then opts.no_modify_path = true
+    elseif v == "--no-bundle" then opts.no_bundle = true
+    elseif v == "--dry-run" then opts.dry_run = true end
+  end
+  local report, err = require("boot.install").install(opts)
+  if not report then
+    io.stderr:write("lw: install failed: " .. tostring(err) .. "\n")
+    exit(1)
+  end
+  for _, line in ipairs(report) do io.write(line .. "\n") end
+  exit(0)
 end
 
 -- ---- install the loomworks searcher + run -----------------------------------
