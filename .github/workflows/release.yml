@@ -1,0 +1,124 @@
+name: release
+
+# Cut a release from a tag on master: build the lw host binary for each
+# platform (luvi + fused bootstrap), build the signed system-Lua bundle, and
+# publish them all to a GitHub Release. See ARCHITECTURE.md "Standalone Runner
+# & Distribution" and keys/README.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (no leading v), e.g. 1.2.3'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  LUVI_VERSION: v2.15.0
+
+jobs:
+  # One host binary per platform. `luvi --output` fuses the *running* luvi, so
+  # each leg must run on its own OS/arch (no cross-fusing).
+  hosts:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: luvi-Linux-x86_64-luajit-regular
+            luvi: luvi
+            out: lw-linux-x86_64
+          # arm64 Linux: add an entry with `os: ubuntu-24.04-arm` and
+          # asset `luvi-Linux-aarch64-luajit-regular` once that runner is
+          # available to you (luvi ships the binary).
+          - os: macos-13
+            asset: luvi-Darwin-x86_64-luajit-regular
+            luvi: luvi
+            out: lw-macos-x86_64
+          - os: macos-14
+            asset: luvi-Darwin-arm64-luajit-regular
+            luvi: luvi
+            out: lw-macos-arm64
+          - os: windows-latest
+            asset: luvi-Windows-amd64-luajit-regular.exe
+            luvi: luvi.exe
+            out: lw-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch luvi
+        shell: bash
+        run: |
+          curl -fsSL -o "${{ matrix.luvi }}" \
+            "https://github.com/luvit/luvi/releases/download/${LUVI_VERSION}/${{ matrix.asset }}"
+          chmod +x "${{ matrix.luvi }}" || true
+
+      - name: Fuse host binary
+        shell: bash
+        run: bash scripts/release/fuse_host.sh "./${{ matrix.luvi }}" keys/loomworks-release.pub.pem "${{ matrix.out }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: ${{ matrix.out }}
+          if-no-files-found: error
+
+  # The platform-independent, signed system-Lua bundle + manifest.
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: v
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write signing key
+        shell: bash
+        run: printf '%s\n' "${{ secrets.LOOMWORKS_SIGNING_KEY }}" > sign.key
+
+      - name: Build bundle + signed manifest
+        shell: bash
+        run: bash scripts/release/build_bundle.sh "${{ steps.v.outputs.version }}" dist sign.key
+
+      - name: Drop signing key
+        if: always()
+        run: rm -f sign.key
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [hosts, bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: incoming
+
+      - name: Collect assets
+        shell: bash
+        run: |
+          mkdir -p release
+          find incoming -type f -exec cp {} release/ \;
+          ls -la release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          fail_on_unmatched_files: true

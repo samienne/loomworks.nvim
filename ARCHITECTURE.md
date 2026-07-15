@@ -888,9 +888,14 @@ data-dir/version/mkdir helpers, `json.lua` decoder, `verify.lua` ECDSA-P256
 manifest verifier, `download.lua` curl/local fetch, `update.lua` self-update +
 miniz extraction), `lua/loomworks/shim/`, `bin/lw`, `bin/lw.cmd` exist. The
 bootstrap intercepts the host commands `lw version` / `lw self-update`.
-Distribution work still adds: a CI release workflow under `.github/workflows/`.
-The one-line installers (`install/install.sh`, `install/install.ps1`) are
-deferred.
+The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
+manifest) and `scripts/release/fuse_host.sh` (inject the production key + fuse
+one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix
+builds a host per platform (each fetching the matching luvi), a job builds the
+signed bundle, and a publish job attaches everything to a GitHub Release. The
+maintainer supplies the signing key (see `keys/README.md`). `make dist` is a
+local dry-run. The one-line installers (`install/install.sh`,
+`install/install.ps1`) are deferred.
 
 ---
 

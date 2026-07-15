@@ -32,3 +32,21 @@ jobs:
         run: |
           nvim --headless -u tests/minimal_init.lua `
             -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
+
+  standalone:
+    name: Standalone bootstrap tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The boot modules (verify/json/paths/download/update) depend on luvi's
+      # OpenSSL, so they run under luvi rather than the nvim/busted suite. Running
+      # on Linux also guards the byte-exact signature fixtures against EOL drift.
+      - name: Fetch luvi
+        run: |
+          curl -fsSL -o luvi \
+            https://github.com/luvit/luvi/releases/download/v2.15.0/luvi-Linux-x86_64-luajit-regular
+          chmod +x luvi
+
+      - name: Run standalone suite
+        run: ./luvi tests/standalone
