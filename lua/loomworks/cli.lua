@@ -1790,7 +1790,12 @@ function M.cmd_complete(cword, words)
   local root = find_root(os.getenv("LW_ROOT"))
 
   if cmd == "help" then
-    if n == 1 then emit(COMP_COMMANDS) end
+    if n == 1 then
+      local topics = {}
+      for _, v in ipairs(COMP_COMMANDS) do topics[#topics + 1] = v end
+      topics[#topics + 1] = "agent" -- help-only topic (no command)
+      emit(topics)
+    end
     return 0
   elseif cmd == "tools" then
     if n == 1 then emit({ "--cached" }) end
@@ -2117,6 +2122,41 @@ set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` config key,
 else the built-in default. A local directory works as an offline mirror.
 Not applicable to a development source. A host command (handled by lw itself).]],
+  agent = [[lw help agent — driving lw from an automation agent
+
+Run EVERY command with --no-input (or export LW_NO_INPUT=1). In this mode lw
+never prompts and never falls back to the user's active profile, so it cannot
+block and will not change the user's interactive state. A missing required
+value errors with the exact command to run, instead of waiting.
+
+Contract: stdout is the parseable result; warnings/errors go to stderr; exit
+code is 0 on success, non-zero on failure. Prefer exact names/keys over
+substrings for determinism.
+
+Read-only — safe any time (no writes to user.json / loomworks.json):
+  lw                              status + active profile
+  lw project list | show <name>   lw profiles       lw tools [--cached]
+  lw configuration list|show|get  lw configuration-set list|show
+  lw build <profile>              builds; read-only toward config (writes only
+                                  the build dir + cache)
+  lw version
+
+Mutating — only when the task asks (these write the working copy / shared file):
+  init · project add|remove · configuration add|set|unset|remove ·
+  configuration-set create|map|unmap|remove · profile create ·
+  <kind> publish · publish · config set
+
+Do NOT change the user's active profile:
+  - Build by explicit key:  lw --no-input build Debug:ninja-clang-19
+  - Avoid `lw profile select` and `profile create --activate` (both set the
+    active profile). Create without --activate, then build by key.
+  - With --no-input, `lw build` (no profile) errors instead of onboarding — you
+    stay in control; create/choose the profile explicitly.
+
+Intent: items you create default to local+shared and reach the committed
+loomworks.json on publish. Pass --local to keep something out of the shared
+file, and don't `publish` unless the task is to change the shared contract.
+See `lw help publish`.]],
 }
 
 function M.cmd_help(cmd)
@@ -2171,6 +2211,9 @@ Global: --no-input (alias --non-interactive) never prompts — a missing
 required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
 Otherwise prompting is on only when stdin is a terminal. In non-interactive
 mode `lw build` also ignores the active profile — pass the profile explicitly.
+
+Automation agent? See `lw help agent` — run with --no-input so you never block
+or change the user's settings.
 
 `lw help <command>` for details.]])
   return cmd and 1 or 0
