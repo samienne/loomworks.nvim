@@ -59,11 +59,13 @@ describe("meson test integration", function()
     end)
 
     describe("run_command_all (native `meson test` runner, §8.9.2)", function()
-        it("builds `meson test -C <build_dir>`", function()
+        it("builds `meson test --print-errorlogs -C <build_dir>`", function()
             local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
             local spec = tu:run_command_all()
             assert.is_not_nil(spec)
-            assert.same({ "/usr/bin/meson", "test", "-C", "/build/App/Debug" }, spec.cmd)
+            assert.same(
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug" },
+                spec.cmd)
             assert.equals("/build/App/Debug", spec.cwd)
         end)
 
@@ -71,7 +73,8 @@ describe("meson test integration", function()
             local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
             local spec = tu:run_command_all({ filter = "MyTest" })
             assert.same(
-                { "/usr/bin/meson", "test", "-C", "/build/App/Debug", "MyTest" }, spec.cmd)
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug", "MyTest" },
+                spec.cmd)
         end)
     end)
 

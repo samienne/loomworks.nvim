@@ -696,6 +696,9 @@ function MesonTestUnit:run_command_all(opts)
     if not prefix or not self._build_dir then return nil end
     local cmd = vim.list_extend({}, prefix)
     cmd[#cmd + 1] = "test"
+    -- Print failing tests' output on the console (ctest's --output-on-failure
+    -- equivalent); otherwise meson only writes it to meson-logs/testlog.txt.
+    cmd[#cmd + 1] = "--print-errorlogs"
     cmd[#cmd + 1] = "-C"
     cmd[#cmd + 1] = self._build_dir
     if opts.filter then cmd[#cmd + 1] = opts.filter end  -- meson filters by test name
