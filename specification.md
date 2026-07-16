@@ -1950,12 +1950,16 @@ defines how to run the project after building. Two types:
 `parse_targets`): `Target:launch()` resolves the artifact path from
 the build directory and runs it. Before running, core composes a **run
 environment** and prepends to `PATH`: (1) the build tree's shared-library and
-module-library output directories — so a DLL/`.so`-dependent executable finds
-its siblings, the same directories the test runner uses — derived generically
-from `parse_targets`; and (2) any `runtime_path()` directories the module
-supplies for the toolchain runtime (§8.4). Resolution
-(`Target:resolve_run_spec`) is shared with the headless runner (§16.17); only
-the executor differs (overseer in the editor, direct spawn headless).
+module-library output directories — so a DLL-dependent executable finds its
+siblings, the same directories the test runner uses — derived generically from
+`parse_targets`; and (2) any `runtime_path()` directories the module supplies
+for the toolchain runtime (§8.4). This applies on **Windows only**, where the
+loader searches `PATH`; on Linux/macOS shared libraries are resolved through
+the rpath the build system bakes into the build tree, so no environment setup
+is needed. Directories are added in a deterministic (sorted) order so `PATH`
+precedence is stable. Resolution (`Target:resolve_run_spec`) is shared with the
+headless runner (§16.17); only the executor differs (overseer in the editor,
+direct spawn headless).
 
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.

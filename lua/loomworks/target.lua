@@ -112,12 +112,21 @@ end
 --- Compose the run environment for an executable target (§8.7): prepend to
 --- PATH (1) the toolchain runtime dirs the module supplies via `runtime_path`
 --- and (2) the build tree's shared-library / module-library output dirs, so a
---- DLL/.so-dependent executable finds its siblings. Returns nil when there is
+--- DLL-dependent executable finds its siblings. Returns nil when there is
 --- nothing to add (leave the process env inherited as-is).
+---
+--- Windows only: on Linux/macOS shared libraries are resolved via the rpath
+--- meson/cmake bake into the build tree (and LD_LIBRARY_PATH / DYLD_*), NOT via
+--- PATH, so there is nothing to do — rpath already makes the binary runnable
+--- in place. Breadth here matches `meson devenv` (the whole build tree's lib
+--- dirs); dirs are added in a deterministic (sorted) order so PATH precedence
+--- is stable rather than hash-order dependent.
 --- @param unit loomworks.ConfigUnit
 --- @param build_dir string
 --- @return table<string,string>|nil
 local function compose_run_env(unit, build_dir)
+    if vim.fn.has("win32") ~= 1 then return nil end
+
     local prefix, seen = {}, {}
     local function add(dir)
         if type(dir) == "string" and dir ~= "" and not seen[dir] then
@@ -140,11 +149,16 @@ local function compose_run_env(unit, build_dir)
     end
 
     -- (2) Shared-library sibling output dirs (generic, from parse_targets).
+    -- Sorted so PATH precedence is deterministic (parse output is unordered).
+    local lib_dirs = {}
     for _, t in pairs(unit.targets or {}) do
         if (t.type == "shared_library" or t.type == "module_library") and t.artifact then
-            add(artifact_dir(build_dir, t.artifact))
+            local d = artifact_dir(build_dir, t.artifact)
+            if d then lib_dirs[#lib_dirs + 1] = d end
         end
     end
+    table.sort(lib_dirs)
+    for _, d in ipairs(lib_dirs) do add(d) end
 
     if #prefix == 0 then return nil end
     return require("loomworks.runenv").compose(prefix)

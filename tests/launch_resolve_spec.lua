@@ -63,6 +63,10 @@ describe("Target run environment (§8.7)", function()
         }
     end
 
+    -- PATH composition is Windows-only (POSIX resolves .so via rpath); guard
+    -- the dir-on-PATH assertions so the suite is correct on every platform.
+    local is_win = vim.fn.has("win32") == 1
+
     local function path_of(env)
         assert.is_table(env)
         local p = env.PATH or env.Path
@@ -79,13 +83,32 @@ describe("Target run environment (§8.7)", function()
         })
         local spec = Target.new(unit, "app",
             { type = "executable", artifact = "src/app/app.exe" }):resolve_run_spec()
+        if not is_win then
+            assert.is_nil(spec.env, "POSIX relies on rpath, not PATH")
+            return
+        end
         local p = path_of(spec.env)
         assert.is_truthy(p:find("/b/sub", 1, true), "shared-lib dir on PATH")
         assert.is_truthy(p:find("/b/plug", 1, true), "module-lib dir on PATH")
         assert.is_nil(p:find("/b/libs", 1, true), "static-lib dir NOT on PATH")
     end)
 
+    it("orders shared-lib dirs deterministically (sorted)", function()
+        if not is_win then return end
+        local unit = unit_with({
+            app = { type = "executable", artifact = "app.exe" },
+            z   = { type = "shared_library", artifact = "zzz/z.dll" },
+            a   = { type = "shared_library", artifact = "aaa/a.dll" },
+        })
+        local spec = Target.new(unit, "app",
+            { type = "executable", artifact = "app.exe" }):resolve_run_spec()
+        local p = path_of(spec.env)
+        assert.is_truthy(p:find("/b/aaa", 1, true) < p:find("/b/zzz", 1, true),
+            "aaa before zzz on PATH (sorted, not hash order)")
+    end)
+
     it("prepends the module's runtime_path dirs (toolchain runtime)", function()
+        if not is_win then return end
         local unit = unit_with(
             { app = { type = "executable", artifact = "app.exe" } },
             { module = { runtime_path = function() return { "/toolchain/bin" } end } })
