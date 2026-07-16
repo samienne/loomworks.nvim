@@ -43,4 +43,12 @@ describe("CTestUnit ctest -C configuration", function()
         }))
         assert.equals("Debug", tu._configuration)
     end)
+
+    it("reports run_command_all_rebuilds() false (ctest does not build)", function()
+        local tu = CTestUnit.new(stub_unit({
+            build_dir = "/b", config_name = "Debug",
+            configuration = { module_config = { variant = "Debug" } },
+        }))
+        assert.is_false(tu:run_command_all_rebuilds())
+    end)
 end)

@@ -489,6 +489,14 @@ function CTestUnit:run_command_all(opts)
     return { cmd = cmd, cwd = self._build_dir }
 end
 
+--- `ctest` does not build — it assumes an already-built tree — so a headless
+--- test run (§16.16) must build this unit before running (the default, stated
+--- explicitly here for contrast with the meson runner).
+--- @return boolean
+function CTestUnit:run_command_all_rebuilds()
+    return false
+end
+
 --- Parse test results from gtest XML output.
 --- @param output_path string
 --- @return table[]|nil

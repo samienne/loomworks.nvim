@@ -389,17 +389,23 @@ end
 --- Execute deploy steps for a single phase. Returns a Future.
 --- @param phase "pre_build"|"post_build"
 --- @return loomworks.Future
-function LaunchTarget:_deploy_phase(phase)
+--- @param phase "pre_build"|"post_build"
+--- @param on_complete? fun(ok: boolean, err?: string) invoked synchronously
+---   (deploy is synchronous). Lets the headless runner drive deploy without
+---   depending on Future scheduling, which needs an event loop the CLI does
+---   not pump. The editor omits it and consumes the returned Future.
+function LaunchTarget:_deploy_phase(phase, on_complete)
     local future_mod = require("loomworks.future")
     local deploy = self:_resolved_deploy()
-    if not deploy then return future_mod.resolved(true) end
+    if not deploy then if on_complete then on_complete(true) end; return future_mod.resolved(true) end
 
     local deploy_mod = require("loomworks.deploy")
     local pre_dict, post_dict = deploy_mod.partition_by_phase(deploy)
     local phase_dict = phase == "pre_build" and pre_dict or post_dict
-    if not next(phase_dict) then return future_mod.resolved(true) end
+    if not next(phase_dict) then if on_complete then on_complete(true) end; return future_mod.resolved(true) end
 
     if not self._project then
+        if on_complete then on_complete(false, "no project for deploy") end
         return future_mod.rejected("no project for deploy")
     end
 
@@ -410,12 +416,38 @@ function LaunchTarget:_deploy_phase(phase)
         launch_project = self._project,
     }
 
-    local f = deploy_mod.execute_deploy_steps(
-        phase_dict, ctx, ws._deploy_records, ws._core._deps.normalize)
+    -- Persist deploy records exactly once, whichever settlement path fires
+    -- first (synchronous on_complete for the CLI, or the Future for the editor).
+    local saved = false
+    local function save_once() if not saved then saved = true; ws:_save_cache() end end
 
-    f:next(function() ws:_save_cache() end)
+    local cb = on_complete and function(ok, err)
+        if ok then save_once() end
+        on_complete(ok, err)
+    end or nil
+
+    local f = deploy_mod.execute_deploy_steps(
+        phase_dict, ctx, ws._deploy_records, ws._core._deps.normalize, cb)
+
+    f:next(function() save_once() end)
 
     return f
+end
+
+--- Run every deploy phase synchronously and return (ok, err). Headless seam
+--- (§16.17): the editor drives pre-build deploy inside build() and post-build
+--- deploy via deploy(); a headless run has already built the profile, so it
+--- runs both phases here. Funnels through the same _deploy_phase code path.
+--- @return boolean ok, string|nil err
+function LaunchTarget:deploy_sync()
+    local ok, err = true, nil
+    for _, phase in ipairs({ "pre_build", "post_build" }) do
+        self:_deploy_phase(phase, function(o, e)
+            if not o then ok, err = false, e end
+        end)
+        if not ok then break end
+    end
+    return ok, err
 end
 
 --- Execute post-build deploy steps before launching. Returns a Future.
@@ -443,10 +475,17 @@ function LaunchTarget:launch()
     end
 end
 
---- Launch from a command-type config (loomworks.json launch section).
-function LaunchTarget:_launch_command()
+--- Resolve a command-type launch config to a run spec (command, args,
+--- working directory, environment) with all variables expanded. Pure —
+--- spawns no task. Shared seam for `_launch_command` (editor) and the
+--- headless runner (§16.17).
+--- @return { cmd: string, args: string[], cwd: string, env: table }|nil spec
+--- @return string|nil err
+function LaunchTarget:resolve_command_spec()
     local cfg = self._launch_config
-    if not cfg or not cfg.command then return end
+    if not cfg or not cfg.command then
+        return nil, "launch configuration has no command"
+    end
 
     local ws = self._workspace
 
@@ -471,6 +510,52 @@ function LaunchTarget:_launch_command()
     end
 
     local env = expand.expand_dict(cfg.env, ctx)
+
+    return { cmd = cmd, args = args, cwd = cwd, env = env }
+end
+
+--- Resolve this launch target to a normalized run spec, dispatching between a
+--- command launch configuration and an executable build target. Pure — spawns
+--- no task. `opts.extra_args` are appended to the argument list (the headless
+--- runner forwards `-- args` here, §16.17; a command config's own declared
+--- arguments precede them). The editor calls with no extra args.
+--- @param opts? { extra_args?: string[] }
+--- @return { cmd: string, args: string[], cwd: string, env: table|nil, name: string }|nil spec
+--- @return string|nil err
+function LaunchTarget:resolve_launch_spec(opts)
+    opts = opts or {}
+    local spec, err
+    if self._launch_config then
+        spec, err = self:resolve_command_spec()
+        if spec then
+            spec.name = self._project.key .. ": " .. (self._launch_name or "launch")
+        end
+    elseif self._target and self._target:is_executable() then
+        local tspec, terr = self._target:resolve_run_spec()
+        if tspec then
+            spec = { cmd = tspec.cmd, args = {}, cwd = tspec.cwd, env = nil, name = tspec.name }
+        else
+            err = terr
+        end
+    else
+        return nil, "launch target is neither a command configuration nor an executable target"
+    end
+    if not spec then return nil, err end
+
+    if opts.extra_args then
+        for _, a in ipairs(opts.extra_args) do
+            spec.args[#spec.args + 1] = a
+        end
+    end
+    return spec
+end
+
+--- Launch from a command-type config (loomworks.json launch section).
+function LaunchTarget:_launch_command()
+    local spec = self:resolve_command_spec()
+    if not spec then return end
+
+    local cmd, args, cwd, env = spec.cmd, spec.args, spec.cwd, spec.env
 
     -- Dispose previous completed launch task
     if self._launch_task_id then

@@ -693,12 +693,18 @@ function Workspace:_serialize_cache()
         if bd:has_state() then
             local entry = bd:serialize()
             if entry.module_info then entry.module_info.targets = nil end
-            -- Enrich with live Configuration snapshot if a ConfigUnit references this BD
+            -- Enrich with live Configuration metadata if a ConfigUnit references
+            -- this BD. IMPORTANT: options / module_config are the *configured*
+            -- snapshot (frozen by record_task_result and written by bd:serialize)
+            -- — the staleness baseline. Do NOT overwrite them with the live
+            -- Configuration; that would corrupt the snapshot to the current
+            -- (possibly edited) options, so is_stale could never detect a change
+            -- after a reload. Only fill them when the BuildDir has none.
             local unit = unit_for_bd[bd]
             if unit and unit._configuration and not unit._configuration._removed then
                 local cfg = unit._configuration
-                if cfg.options then entry.options = cfg.options end
-                if cfg.module_config and next(cfg.module_config) then
+                if entry.options == nil and cfg.options then entry.options = cfg.options end
+                if entry.module_config == nil and cfg.module_config and next(cfg.module_config) then
                     entry.module_config = cfg.module_config
                 end
                 if cfg.is_user then entry.is_user = true end

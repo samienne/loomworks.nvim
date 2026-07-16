@@ -29,6 +29,26 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
 
 ---
 
+## Module-signalled build staleness
+
+Today loomworks tracks *configure* staleness (options snapshot vs live config)
+but not *build* staleness (did a source change since the last build?). The
+build tool (ninja/meson) is the authority, so build tasks always run — a fast
+incremental no-op, but still a spawned step. `lw test` was made cheaper by
+letting a runner declare `run_command_all_rebuilds` so its build is skipped
+(§16.16), but the general build path still always runs.
+
+Idea from sami: let a **module signal build staleness** — a module could
+report a unit as "always stale to build" (cmake) or compute real staleness
+(compare source mtimes / a stamp file against the last build). The generic
+build/test path would then skip the build step when the module reports "up to
+date", instead of relying on the build tool's own no-op. Needs more thought:
+where the staleness signal lives (Module vs ConfigUnit), how it interacts with
+the cache, and whether reimplementing "is a rebuild needed?" is worth it when
+ninja already answers that in milliseconds.
+
+---
+
 ## UI v2 redesign (in design phase)
 
 The current status-page UI evolved feature-by-feature and accumulated

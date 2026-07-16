@@ -100,27 +100,49 @@ function Target:build(on_complete)
     return f
 end
 
+--- Resolve the run spec (artifact path + working directory) for this
+--- executable target. Pure — expands nothing, spawns no task. Shared seam
+--- for `Target:launch` (editor) and the headless runner (§16.17): both
+--- resolve the same spec, then execute it via their own runner.
+--- @return { cmd: string, cwd: string, name: string }|nil spec
+--- @return string|nil err
+function Target:resolve_run_spec()
+    if not self:is_executable() then
+        return nil, "target '" .. tostring(self.id) .. "' is not an executable"
+    end
+    if not self.artifact then
+        return nil, "target '" .. tostring(self.id) .. "' has no built artifact"
+    end
+    local unit = self._config_unit
+    if not unit then
+        return nil, "target '" .. tostring(self.id) .. "' has no config unit"
+    end
+    local build_dir = unit:build_dir()
+    if not build_dir then
+        return nil, "no build directory for target '" .. tostring(self.id) .. "'"
+    end
+    local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
+    return {
+        cmd = build_dir .. "/" .. self.artifact,
+        cwd = build_dir,
+        name = project_name .. ": run " .. self.id,
+    }
+end
+
 --- Launch this target (run the built artifact).
 --- Only works for executables with an artifact path.
 function Target:launch()
-    if not self:is_executable() or not self.artifact then return end
-    local unit = self._config_unit
-    if not unit then return end
-
-    local build_dir = unit:build_dir()
-    if not build_dir then
-        vim.notify("loomworks: no build directory for " .. self.id, vim.log.levels.WARN)
+    local spec, err = self:resolve_run_spec()
+    if not spec then
+        if err then vim.notify("loomworks: " .. err, vim.log.levels.WARN) end
         return
     end
 
-    local artifact_path = build_dir .. "/" .. self.artifact
-    local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
-
     local overseer = require("loomworks.overseer")
     return overseer.launch_run_task({
-        name = project_name .. ": run " .. self.id,
-        cmd = artifact_path,
-        cwd = build_dir,
+        name = spec.name,
+        cmd = spec.cmd,
+        cwd = spec.cwd,
     })
 end
 

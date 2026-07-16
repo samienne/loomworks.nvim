@@ -776,13 +776,25 @@ replaces it, which would drop `PATH`).
 - `lw test [profile]` — build the test target and run it; real exit code.
 - `lw profiles` — list profiles (name, configuration set, tools) and flag
   which are buildable in this host vs editor-only.
+- `lw run <profile> [target] [-- args…]` — non-debug launch (build → deploy →
+  execute). The target is the profile's default (§8.6) when unnamed, else a
+  named build target or command launch config; `project:name`, `--project`,
+  and `--target`/`--launch` disambiguate. Args after `--` are forwarded to the
+  program. Routes through the editor's `LaunchTarget` seams
+  (`resolve_launch_spec`, `deploy_sync`) so headless and editor launches stay
+  identical; the runner only swaps the executor (direct `vim.system` vs
+  overseer).
+- `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
+  profile's default launch target (writes `user.json`; spec §16.9 authoring).
 
-Fast-follow: `lw run [target]` — non-debug launch (build → deploy →
-execute). Out of scope for the standalone: debug launch (DAP, needs
-nvim-dap), device install / launch, and all configuration authoring
-(spec §16.9). No-argument `lw build` resolves the profile as: explicit
-argument → `user.json` active profile (if present) → the single published
-profile → otherwise an error listing candidates.
+Out of scope for the standalone: debug launch (DAP, needs nvim-dap), device
+install / launch, and (except the default target above) configuration
+authoring (spec §16.9). Deploy sources outside the active profile and
+pre-build "deploy feeds build" ordering are a known limitation (a headless run
+builds the profile up front, then runs both deploy phases). No-argument
+`lw build` resolves the profile as: explicit argument → `user.json` active
+profile (if present) → the single published profile → otherwise an error
+listing candidates.
 
 ### Module bundling
 

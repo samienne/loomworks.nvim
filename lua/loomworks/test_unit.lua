@@ -38,6 +38,15 @@ function TestUnit:test_command_all(opts) end
 --- @return table|nil { cmd, env?, cwd? }
 function TestUnit:run_command_all(opts) end
 
+--- Whether `run_command_all` rebuilds this unit's test targets before running
+--- (e.g. `meson test`). When true, a headless test run (§16.16) skips its own
+--- separate build of the unit as redundant. Defaults false — the runner
+--- assumes an already-built tree (e.g. `ctest`, which does not build).
+--- @return boolean
+function TestUnit:run_command_all_rebuilds()
+    return false
+end
+
 --- Parse test results from output.
 --- @param output_path string
 --- @return table[]|nil TestResult entries

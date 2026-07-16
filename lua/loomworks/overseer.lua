@@ -724,17 +724,56 @@ local function filter_unconfigured_tasks(all_tasks)
     return needs_configure
 end
 
+--- Whether a unit's tests build themselves when run headlessly — true iff the
+--- unit has at least one native batch runner and every such runner reports
+--- `run_command_all_rebuilds()`. When true, a headless test run (§16.16) can
+--- skip its separate build of the unit as redundant. Runners without a native
+--- batch command (no `run_command_all`) don't run headlessly and so don't
+--- count toward "self-rebuilding".
+--- @param unit loomworks.ConfigUnit
+--- @return boolean
+function M._unit_tests_self_rebuild(unit)
+    if not unit or type(unit.test_units) ~= "function" then return false end
+    local ok, tus = pcall(function() return unit:test_units() end)
+    if not ok or type(tus) ~= "table" or #tus == 0 then return false end
+    local any_runner = false
+    for _, tu in ipairs(tus) do
+        if tu.run_command_all then
+            any_runner = true
+            if not (tu.run_command_all_rebuilds and tu:run_command_all_rebuilds()) then
+                return false
+            end
+        end
+    end
+    return any_runner
+end
+
 --- Build an ordered, overseer-free execution plan for a profile "build".
 --- Mirrors run_profile_action("build") sequencing: configure the units that
 --- need it (unconfigured / failed / stale), then build. Each step carries a
 --- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners
 --- (specification.md §16) — it requires no overseer.nvim and launches nothing.
 --- @param profile loomworks.Profile
+--- @param opts? table { for_test?: boolean } for_test drops the build step of
+---   any unit whose native test runner self-rebuilds (§16.16) — configuration
+---   is still planned for every unit.
 --- @return table[]|nil steps list of { kind, name, unit, cmd, cwd, env }
-function M.plan_profile_build(profile)
+function M.plan_profile_build(profile, opts)
+    opts = opts or {}
     local all_tasks = collect_profile_tasks(profile)
     if not all_tasks then return nil end
     local needs_configure = filter_unconfigured_tasks(all_tasks)
+
+    local build_tasks = all_tasks.build
+    if opts.for_test then
+        build_tasks = {}
+        for _, td in ipairs(all_tasks.build or {}) do
+            local unit = td.loomworks and td.loomworks.unit
+            if not (unit and M._unit_tests_self_rebuild(unit)) then
+                build_tasks[#build_tasks + 1] = td
+            end
+        end
+    end
 
     local steps = {}
     local function add(task_defs, kind)
@@ -746,6 +785,7 @@ function M.plan_profile_build(profile)
                         kind = kind,
                         name = td.name,
                         unit = td.loomworks and td.loomworks.unit or nil,
+                        build_dir = td.loomworks and td.loomworks.build_dir or nil,
                         cmd = spec.cmd,
                         cwd = (type(spec.cwd) == "string" and spec.cwd ~= "")
                             and spec.cwd or nil,
@@ -756,7 +796,7 @@ function M.plan_profile_build(profile)
         end
     end
     add(needs_configure, "configure")
-    add(all_tasks.build, "build")
+    add(build_tasks, "build")
     return steps
 end
 

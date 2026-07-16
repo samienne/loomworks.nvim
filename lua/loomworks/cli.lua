@@ -7,8 +7,9 @@
 --- Commands: (status) | init | project <add|remove|list|show> |
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
----           profile <list|select|create> | tools | build [profile] |
----           publish | test [profile] | config <...> | completion <shell> | help
+---           profile <list|select|create|target> | tools | build [profile] |
+---           run <profile> [target] | publish | test [profile] |
+---           config <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -549,23 +550,32 @@ local function resolve_project(ws, name)
     (next(names) and table.concat(names, ", ") or "(none)"))
 end
 
+--- Persist a headless step's outcome (state + config snapshot for staleness)
+--- to the cache via Workspace:record_task_result, so a later invocation skips
+--- an already-done, unchanged configure (headless builds may write the cache,
+--- spec §16.6). build_dir is set on the unit but not passed as result.build_dir
+--- (that triggers the post-configure parse_targets scan the CLI opts out of).
+local function record_step(ws, step, ok)
+  if not step.unit then return end
+  if step.build_dir then step.unit.build_dir_value = step.build_dir end
+  pcall(function()
+    ws:record_task_result({ unit = step.unit, action = step.kind, success = ok })
+  end)
+end
+
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
----
---- NOTE: configure is re-run every invocation. Skipping it needs reliable
---- "config unchanged" detection, but loomworks' staleness model is editor
---- (single-process, in-memory) oriented and does not currently work across
---- separate headless invocations — skipping unsafely would silently miss a
---- `lw configuration set` change. The re-configure is a fast near-no-op
---- (cmake reconfigure / `meson setup --reconfigure`). See BACKLOG.
-local function run_build_steps(profile, ws)
+--- @param opts? table { for_test?: boolean } for_test skips building units
+---   whose native test runner rebuilds itself (§16.16).
+local function run_build_steps(profile, ws, opts)
   local overseer = require("loomworks.overseer")
-  local steps = overseer.plan_profile_build(profile)
+  local steps = overseer.plan_profile_build(profile, opts)
   if not steps or #steps == 0 then return 0 end
   out("building profile: " .. profile.key)
   for _, step in ipairs(steps) do
     out(string.format("==> [%s] %s", step.kind, step.name or "?"))
     local code = run_spec(step, ws.root)
+    record_step(ws, step, code == 0)
     if code ~= 0 then
       die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?"), code)
     end
@@ -590,7 +600,9 @@ function M.cmd_test(ws, profile_name)
   local overseer = require("loomworks.overseer")
   local profile
   profile, ws = resolve_build_target(ws, profile_name)
-  run_build_steps(profile, ws) -- ensure test binaries exist; dies on build failure
+  -- Ensure configured + built, but skip building units whose native test
+  -- runner rebuilds itself (§16.16) — e.g. `meson test`. Dies on build failure.
+  run_build_steps(profile, ws, { for_test = true })
 
   local test_steps, units = overseer.plan_profile_test(profile)
   if not test_steps or #test_steps == 0 then
@@ -620,20 +632,61 @@ end
 -- Launch configurations + run
 -- ---------------------------------------------------------------------------
 
---- Command-type launch configs in scope for `profile` (its mapped projects):
---- a list of { project, name, cfg }.
-local function launch_candidates(ws, profile)
+--- Ensure a config unit's build targets are parsed — the headless equivalent
+--- of the editor's post-configure scan (workspace.lua). No-op if already
+--- parsed or the module exposes no target introspection. Requires a configured
+--- build dir, so the caller must build first.
+local function ensure_unit_targets(ws, unit)
+  if not unit or unit.targets then return end
+  local project = unit._project
+  local mod = project and project._module and project._module.impl
+  local build_dir = unit.build_dir and unit:build_dir()
+  if not (mod and mod.parse_targets and build_dir) then return end
+  -- config_name is the module build type (e.g. "Debug"); matters for
+  -- multi-config generators, ignored by single-config ones.
+  local cfg = unit.configuration and unit:configuration()
+  local config_name = (cfg and cfg.module_config and cfg.module_config.variant)
+    or (unit._cached_module_config and unit._cached_module_config.variant)
+    or (unit.variant and unit:variant())
+  local ok, targets = pcall(mod.parse_targets, {
+    build_dir = build_dir,
+    project_path = ws.root .. "/" .. (project.path or project.key),
+    config_name = config_name,
+  })
+  if ok and targets then unit:set_targets(targets) end
+end
+
+--- Enumerate launchable targets in a profile: command launch configs and
+--- executable build targets across the profile's mapped projects. Each entry:
+--- `{ kind = "launch"|"target", project = Project, name = string, target_id? = string }`.
+--- Parses targets on demand (build first).
+local function launchable_targets(ws, profile)
   local list = {}
-  for _, project in pairs(ws._projects) do
-    local in_profile = profile.mappings and profile.mappings[project.key] ~= nil
-    if in_profile and type(project.launch) == "table" then
-      local names = {}
-      for lname in pairs(project.launch) do names[#names + 1] = lname end
-      table.sort(names)
-      for _, lname in ipairs(names) do
-        local cfg = project.launch[lname]
-        if type(cfg) == "table" and cfg.command then
-          list[#list + 1] = { project = project, name = lname, cfg = cfg }
+  for _, pp in ipairs(profile:projects()) do
+    local unit = pp._config_unit
+    local project = unit and unit._project
+    if project then
+      if type(project.launch) == "table" then
+        local names = {}
+        for lname, cfg in pairs(project.launch) do
+          if type(cfg) == "table" and cfg.command then names[#names + 1] = lname end
+        end
+        table.sort(names)
+        for _, lname in ipairs(names) do
+          list[#list + 1] = { kind = "launch", project = project, name = lname }
+        end
+      end
+      ensure_unit_targets(ws, unit)
+      if type(unit.targets) == "table" then
+        local ids = {}
+        for id in pairs(unit.targets) do ids[#ids + 1] = id end
+        table.sort(ids)
+        for _, id in ipairs(ids) do
+          local t = unit.targets[id]
+          if t and t.is_executable and t:is_executable() then
+            local dname = (t.display_name and t:display_name()) or id
+            list[#list + 1] = { kind = "target", project = project, name = dname, target_id = id }
+          end
         end
       end
     end
@@ -641,74 +694,118 @@ local function launch_candidates(ws, profile)
   return list
 end
 
---- `lw run [name] [--profile <key>]` — build a profile, then execute a
---- command-type launch configuration in it (spec §16.17). Returns the
---- launched process's exit code.
+--- Format a candidate for messages: `project:name (kind)`.
+local function fmt_cand(c)
+  return c.project.key .. ":" .. c.name .. " (" .. c.kind .. ")"
+end
+
+--- Build a LaunchTarget object from a resolved candidate.
+local function candidate_launch_target(ws, profile, c)
+  local descriptor = { project = c.project.key }
+  if c.kind == "target" then descriptor.target = c.target_id else descriptor.launch = c.name end
+  return require("loomworks.launch_target").new(ws, profile, descriptor)
+end
+
+--- `lw run <profile> [target] [-- prog-args…]` — resolve a profile and a
+--- launch target (the profile's default when unnamed, else a named build
+--- target or command launch config), then build → deploy → execute. Args
+--- after `--` are forwarded to the program. Returns its exit code (spec
+--- §16.17). Routes through the editor's LaunchTarget seams (resolve_launch_spec
+--- / deploy_sync) so headless and editor launches stay identical.
 function M.cmd_run(ws, args)
-  local launch_name, profile_flag
-  local i = 2 -- args[1] == "run"
-  while args[i] do
-    if args[i] == "--profile" then profile_flag = args[i + 1]; i = i + 2
-    elseif not launch_name then launch_name = args[i]; i = i + 1
-    else i = i + 1 end
+  -- Split on `--`: everything after is forwarded verbatim to the program.
+  local pre, extra_args, seen_sep = {}, {}, false
+  for i = 2, #args do
+    if not seen_sep and args[i] == "--" then seen_sep = true
+    elseif seen_sep then extra_args[#extra_args + 1] = args[i]
+    else pre[#pre + 1] = args[i] end
   end
+  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`);
+  -- remaining pre-`--` tokens are positional (profile, then optional target).
+  local positionals, proj_scope, kind = {}, nil, nil
+  local i = 1
+  while pre[i] do
+    if pre[i] == "--project" then proj_scope = pre[i + 1]; i = i + 2
+    elseif pre[i] == "--target" then kind = "target"; i = i + 1
+    elseif pre[i] == "--launch" then kind = "launch"; i = i + 1
+    else positionals[#positionals + 1] = pre[i]; i = i + 1 end
+  end
+  local profile_name, target_name = positionals[1], positionals[2]
 
   local profile
-  profile, ws = resolve_build_target(ws, profile_flag)
+  profile, ws = resolve_build_target(ws, profile_name)
 
-  local cands = launch_candidates(ws, profile)
-  if #cands == 0 then
-    die("no launch configurations in profile '" .. profile.key .. "'.\n" ..
-      "  add one: lw launch add <project> <name> <command> [args…]")
-  end
+  -- Build the profile first (configures + builds); dies on failure. Build
+  -- targets and the default target's artifact resolve against the built tree.
+  run_build_steps(profile, ws)
 
-  local target
-  if launch_name then
-    local matches = {}
-    for _, c in ipairs(cands) do if c.name == launch_name then matches[#matches + 1] = c end end
-    if #matches == 1 then target = matches[1]
-    elseif #matches == 0 then
-      local ns = {}; for _, c in ipairs(cands) do ns[#ns + 1] = c.project.key .. ":" .. c.name end
-      die("no launch config '" .. launch_name .. "'. Available: " .. table.concat(ns, ", "))
-    else
-      local ns = {}; for _, c in ipairs(matches) do ns[#ns + 1] = c.project.key .. ":" .. c.name end
-      die("'" .. launch_name .. "' is ambiguous across projects: " .. table.concat(ns, ", "))
+  local lt
+  if target_name then
+    -- Optional `project:name` scoping — split only when the prefix is a known
+    -- project in this profile (target ids may themselves contain ':').
+    local scope, bare = proj_scope, target_name
+    if not scope then
+      local pfx, rest = target_name:match("^([^:]+):(.+)$")
+      if pfx and profile:project(pfx) then scope, bare = pfx, rest end
     end
-  elseif #cands == 1 then
-    target = cands[1]
-  elseif interactive() then
-    out("Select a launch configuration:")
-    for idx, c in ipairs(cands) do out(string.format("  %d) %s  (%s)", idx, c.name, c.project.key)) end
-    out("")
-    local line = prompt_line("Enter number (blank to cancel)")
-    if not line or line == "" then out("cancelled"); return 0 end
-    local n = tonumber(line)
-    if not n or not cands[n] then die("invalid selection: " .. tostring(line)) end
-    target = cands[n]
+    local all = launchable_targets(ws, profile)
+    local matches = {}
+    for _, c in ipairs(all) do
+      if c.name == bare and (not scope or c.project.key == scope)
+        and (not kind or c.kind == kind) then matches[#matches + 1] = c end
+    end
+    if #matches == 0 then
+      local labels = {}
+      for _, c in ipairs(all) do labels[#labels + 1] = fmt_cand(c) end
+      die("no launch target '" .. target_name .. "' in profile '" .. profile.key .. "'.\n" ..
+        "  available: " .. (next(labels) and table.concat(labels, ", ") or "(none)"))
+    elseif #matches > 1 then
+      local labels = {}
+      for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
+      die("'" .. target_name .. "' is ambiguous: " .. table.concat(labels, ", ") ..
+        "\n  qualify with `--target`/`--launch`, `--project <key>`, or `<project>:<name>`.")
+    end
+    lt = candidate_launch_target(ws, profile, matches[1])
   else
-    local ns = {}; for _, c in ipairs(cands) do ns[#ns + 1] = c.name end
-    die("multiple launch configs — name one: lw run <name>  (" .. table.concat(ns, ", ") .. ")")
+    -- No name → the profile's default target.
+    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
+    lt = profile:default_target()
+    if not lt then
+      local cands = launchable_targets(ws, profile)
+      if #cands == 1 then
+        lt = candidate_launch_target(ws, profile, cands[1])
+      elseif #cands == 0 then
+        die("nothing to run in profile '" .. profile.key ..
+          "' — no launch configs or executable targets.")
+      else
+        local labels = {}
+        for _, c in ipairs(cands) do labels[#labels + 1] = fmt_cand(c) end
+        die("no default target set for profile '" .. profile.key .. "'.\n" ..
+          "  set one:      lw profile target " .. profile.key .. " <target>\n" ..
+          "  or name one:  lw run " .. profile.key .. " <target>\n" ..
+          "  candidates:   " .. table.concat(labels, ", "))
+      end
+    end
   end
 
-  run_build_steps(profile, ws) -- ensure the target is built; dies on build failure
-
-  local expand = require("loomworks.expand")
-  local ctx = expand.launch_context(ws, profile, target.project)
-  local cmd = expand.expand_string(target.cfg.command, ctx)
-  local run_args = expand.expand_array(target.cfg.args, ctx) or {}
-  local cwd
-  if target.cfg.working_dir then
-    local ex = expand.expand_string(target.cfg.working_dir, ctx)
-    cwd = (ex:match("^/") or ex:match("^%a:")) and ex or (ws.root .. "/" .. ex)
-  else
-    cwd = ws.root .. "/" .. (target.project.path or target.project.key)
+  -- Validity gate (stale descriptor / invalid profile or configuration).
+  local ok, reasons = lt:is_valid()
+  if not ok then
+    die("launch target is not runnable: " ..
+      table.concat(type(reasons) == "table" and reasons or { "invalid" }, "; "))
   end
-  local env = expand.expand_dict(target.cfg.env, ctx)
 
-  local full = { cmd }
-  for _, a in ipairs(run_args) do full[#full + 1] = a end
-  out(string.format("running %s: %s", target.name, table.concat(full, " ")))
-  return run_spec({ cmd = full, cwd = cwd, env = env }, ws.root)
+  -- Deploy (both phases), then execute the resolved spec.
+  local dok, derr = lt:deploy_sync()
+  if not dok then die("deploy failed: " .. tostring(derr)) end
+
+  local spec, serr = lt:resolve_launch_spec({ extra_args = extra_args })
+  if not spec then die("cannot resolve launch: " .. tostring(serr)) end
+
+  local full = { spec.cmd }
+  for _, a in ipairs(spec.args or {}) do full[#full + 1] = a end
+  out(string.format("running %s: %s", spec.name, table.concat(full, " ")))
+  return run_spec({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
 end
 
 --- `lw launch list [project]` — list command-type launch configs.
@@ -1729,7 +1826,83 @@ function M.cmd_profile_publish(root, name)
   return publish_item(ws, profile, "profile '" .. profile.key .. "'")
 end
 
---- `lw profile <list|select|create|publish>`
+--- `lw profile <list|select|create|publish|target>`
+--- `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
+--- profile's default launch target (spec §16.17, §8.6). With no target name,
+--- prints the current default. Resolves a build target or command launch
+--- config the same way `lw run` does (parsing targets on demand — build the
+--- profile first so its build targets are known).
+function M.cmd_profile_target(root, args)
+  -- args: { "profile", "target", <profile>, <target?>, flags… }
+  local pos, scope, clear, kind = {}, nil, false, nil
+  local i = 3
+  while args[i] do
+    if args[i] == "--clear" then clear = true; i = i + 1
+    elseif args[i] == "--project" then scope = args[i + 1]; i = i + 2
+    elseif args[i] == "--target" then kind = "target"; i = i + 1
+    elseif args[i] == "--launch" then kind = "launch"; i = i + 1
+    else pos[#pos + 1] = args[i]; i = i + 1 end
+  end
+  local profile_name, target_name = pos[1], pos[2]
+  if not profile_name then
+    die("usage: lw profile target <profile> [<target>|--clear]")
+  end
+
+  local ws = load_workspace(root, false)
+  local profile = resolve_profile(ws, profile_name)
+
+  if clear then
+    profile:clear_default_target()
+    out("cleared default target for profile '" .. profile.key .. "'")
+    return 0
+  end
+
+  if not target_name then
+    if not profile:has_default_target_override() then
+      out("profile '" .. profile.key .. "' has no default target set.")
+    else
+      local lt = profile:default_target()
+      out("default target for '" .. profile.key .. "': " ..
+        (lt and tostring(lt) or "(set but unresolved — build the profile?)"))
+    end
+    return 0
+  end
+
+  -- Resolve <target> to a candidate (same rules as `lw run`).
+  local bare = target_name
+  if not scope then
+    local pfx, rest = target_name:match("^([^:]+):(.+)$")
+    if pfx and profile:project(pfx) then scope, bare = pfx, rest end
+  end
+  local all = launchable_targets(ws, profile)
+  local matches = {}
+  for _, c in ipairs(all) do
+    if c.name == bare and (not scope or c.project.key == scope)
+      and (not kind or c.kind == kind) then matches[#matches + 1] = c end
+  end
+  if #matches == 0 then
+    local labels = {}
+    for _, c in ipairs(all) do labels[#labels + 1] = fmt_cand(c) end
+    die("no launch target '" .. target_name .. "' in profile '" .. profile.key .. "'.\n" ..
+      "  available: " .. (next(labels) and table.concat(labels, ", ")
+        or "(none — build the profile so its targets are known)"))
+  elseif #matches > 1 then
+    local labels = {}
+    for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
+    die("'" .. target_name .. "' is ambiguous: " .. table.concat(labels, ", ") ..
+      "\n  qualify with `--target`/`--launch`, `--project <key>`, or `<project>:<name>`.")
+  end
+
+  local c = matches[1]
+  if c.kind == "target" then
+    profile:set_default_target(c.project, c.target_id, nil)
+  else
+    profile:set_default_target(c.project, nil, c.name)
+  end
+  out("default target for '" .. profile.key .. "' set to " .. fmt_cand(c))
+  return 0
+end
+
 function M.cmd_profile(sub, root, args)
   if sub == "select" then
     return M.select_profile(load_workspace(root, false))
@@ -1740,10 +1913,13 @@ function M.cmd_profile(sub, root, args)
   if sub == "publish" then
     return M.cmd_profile_publish(root, args[3])
   end
+  if sub == "target" then
+    return M.cmd_profile_target(root, args)
+  end
   if sub == nil or sub == "list" then
     return M.cmd_profiles(load_workspace(root))
   end
-  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select|create|publish")
+  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select|create|publish|target")
 end
 
 --- `lw config <list|get|set|unset> [key] [value]`
@@ -2067,10 +2243,10 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "run" then
     if n == 1 then
-      local names = comp_launch_names(comp_ws(root)); names[#names + 1] = "--profile"
-      emit(sorted_unique(names))
-    elseif sub == "--profile" and n == 2 then
-      emit(comp_profile_names(comp_ws(root)))
+      emit(comp_profile_names(comp_ws(root)))                    -- <profile>
+    elseif n == 2 then
+      emit(sorted_unique(comp_launch_names(comp_ws(root))))      -- [target] (launch configs;
+                                                                 -- build targets need a build)
     end
     return 0
   elseif cmd == "launch" then
@@ -2092,7 +2268,7 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "profile" then
-    if n == 1 then emit({ "list", "select", "create", "publish" }); return 0 end
+    if n == 1 then emit({ "list", "select", "create", "publish", "target" }); return 0 end
     if sub == "create" then
       if n == 2 then emit(comp_set_names(comp_ws(root)))       -- <config-set>
       elseif n >= 3 then                                       -- [tool ...] / --activate
@@ -2100,6 +2276,10 @@ function M.cmd_complete(cword, words)
       end
     elseif sub == "publish" and n == 2 then
       emit(comp_profile_names(comp_ws(root)))                  -- <key>
+    elseif sub == "target" then
+      if n == 2 then emit(comp_profile_names(comp_ws(root)))   -- <profile>
+      elseif n == 3 then emit(sorted_unique(comp_launch_names(comp_ws(root)))) -- [target]
+      end
     end
     return 0
   elseif cmd == "configuration" or cmd == "cfg" then
@@ -2203,20 +2383,30 @@ for a deterministic build (§16.9). The CI pattern is:
 Configures first if the build dir isn't configured, then builds. Non-zero
 exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
-  run = [[lw run [name] [--profile <key>]
+  run = [[lw run <profile> [target] [-- prog-args…]
 
-Build a profile, then execute one of its launch configurations — a runner you
-declared with `lw launch add` (spec §16.17). Variables in the command, args,
-working dir, and env are expanded in the profile's context. The launched
-process's exit code becomes lw's exit code; output streams through.
+Resolve a profile and a launch target, then build -> deploy -> execute (spec
+§16.17). The target is EITHER a build target (its executable) OR a command
+launch configuration declared with `lw launch add`; variables are expanded in
+the profile's context. The launched process's exit code becomes lw's exit
+code; output streams through.
 
-  name         the launch config to run. Omit it when exactly one is in scope;
-               otherwise pick (interactive) or name it.
-  --profile K  run under profile K. Otherwise the active/only profile is used
-               (interactive may create one); --no-input requires --profile.
+  profile      required (a unique substring works), like `lw build`.
+  target       which target to launch. Omit to use the profile's DEFAULT
+               target (`lw profile target`); if none is set and exactly one
+               target is in scope, that one runs, else it errors.
+  -- args…     everything after `--` is forwarded verbatim to the program
+               (a command config's own declared args come first). Required to
+               pass args, so a target name is never mistaken for one.
 
-Deploy steps are not run (build -> execute only). To run a built binary,
-declare its path as the command, e.g. `lw launch add app run '${build_dir}/app'`.]],
+Disambiguating a name present more than once:
+  <project>:<target>     scope to a project
+  --project <key>        same, as a flag
+  --target | --launch    force the kind when a build target and a launch
+                         config share a name in one project
+
+Deploy steps declared on the target run before launch. Debug (DAP) and device
+launches are editor-only.]],
   launch = [[lw launch <list|add|show|remove>
 
 Define and manage a project's launch configurations (the runners `lw run`
@@ -2342,7 +2532,7 @@ cross-project selection a profile builds. Managed in the working copy;
 
 <config> is a configuration name (an unambiguous base name works, so `Debug`
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
-  profile = [[lw profile <list|select|create>
+  profile = [[lw profile <list|select|create|target>
 
   list      same as `lw profiles`
   select    interactive picker; sets the active profile (writes user.json)
@@ -2355,6 +2545,13 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
             left unspecified is prompted on a terminal (errors otherwise).
             The profile key is derived from the set + tools. --activate also
             makes it active.
+  target <profile> [<target>|--clear]
+            Show, set, or clear a profile's DEFAULT launch target — what
+            `lw run <profile>` runs with no target named. With no target, prints
+            the current default; `--clear` unsets it. Resolves a build target or
+            command launch config like `lw run` (build the profile first so its
+            build targets are known); `--target`/`--launch`/`--project`
+            disambiguate.
 
 The active profile is the default for `lw build`. `lw build` also accepts a
 substring, so `lw build clang-19` works when it's unambiguous.]],

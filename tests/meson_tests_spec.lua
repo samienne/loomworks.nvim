@@ -76,6 +76,11 @@ describe("meson test integration", function()
                 { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug", "MyTest" },
                 spec.cmd)
         end)
+
+        it("reports run_command_all_rebuilds() true (`meson test` rebuilds)", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            assert.is_true(tu:run_command_all_rebuilds())
+        end)
     end)
 
     describe("parse_meson_tests (via discovery shape)", function()

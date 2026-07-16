@@ -709,6 +709,13 @@ function MesonTestUnit:run_command_all(opts)
     }
 end
 
+--- `meson test` rebuilds test dependencies before running, so a headless test
+--- run (§16.16) need not build this unit separately.
+--- @return boolean
+function MesonTestUnit:run_command_all_rebuilds()
+    return true
+end
+
 --- @param output_path string|nil
 --- @return table[]|nil
 function MesonTestUnit:parse_results(output_path)

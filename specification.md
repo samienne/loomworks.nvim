@@ -2289,6 +2289,15 @@ Distinct from `test_command_all`, which targets structured UI results. Returns
 nil when the module has no native batch runner. `opts.filter` for name
 filtering.
 
+**`run_command_all_rebuilds() → boolean`**
+
+Whether executing `run_command_all` rebuilds the unit's test targets first
+(e.g. `meson test`, which builds test dependencies before running). A headless
+test run (§16.16) skips its own separate build of such units, as it would be
+redundant. Defaults **false** — the runner assumes an already-built tree
+(e.g. `ctest`, which does not build). Configuration is still ensured either
+way; this only governs the build.
+
 **`parse_results(output_path) → TestResult[]|nil`**
 
 Parse structured test output into results.
@@ -3402,9 +3411,13 @@ the running binary. Once trusted this way, the host bootstraps the bundle chain
 
 ### 16.16 Headless test runs
 
-A headless **test** invocation resolves and builds a profile (§16.4), then runs
-each buildable unit's tests through the native batch runner (`run_command_all`,
-§8.9.2) — not the editor's structured per-test path. Each runner's process exit
+A headless **test** invocation resolves a profile and ensures it is configured
+and built (§16.4) — **skipping the build of any unit whose native batch runner
+rebuilds its own targets (§8.9.2), since that build would be redundant** — then
+runs each buildable unit's tests through the native batch runner
+(`run_command_all`, §8.9.2) — not the editor's structured per-test path.
+Configuration is still ensured for every unit: a self-rebuilding runner assumes
+an already-configured build directory, not an unconfigured one. Each runner's process exit
 status is authoritative; the invocation's exit status is success iff the build
 succeeded and every runner reported success. A unit whose module exposes no
 batch runner contributes no tests; a profile with no test runners at all is
@@ -3413,14 +3426,41 @@ toward configuration (§16.9).
 
 ### 16.17 Headless launch (run)
 
-A headless **run** invocation resolves a profile, builds it (§16.4), then
-executes a named **launch configuration** (§8.7) resolved in that profile's
-context — expanding its command, arguments, working directory, and environment
-through the same variable context as the editor. The launched process's exit
-status is the invocation's exit status; its output streams to standard
-output/error. Selection is explicit: absent a launch name the invocation errors
-unless exactly one launch configuration is in scope — the system never guesses.
-A run executes only what a launch configuration already declares; it is
-read-only toward configuration (§16.9) and, like the editor's non-debug launch,
-excludes debugger attachment. (Deploy steps, §8, are not part of this contract
-and may be layered on later.)
+A headless **run** invocation resolves a profile (§16.3) and a **launch
+target**, then runs the editor's launch chain (§8.6, "Build flow"): build the
+target and its dependencies (§16.4), execute **deploy** steps (§8), and launch.
+The launched process's exit status is the invocation's exit status; its output
+streams to standard output/error. The run is read-only toward configuration
+(§16.9) and, like the editor's non-debug launch, excludes debugger attachment
+and device targets (both deferred).
+
+**Launch target selection.** The launch target is one of:
+
+- the profile's **default target** (§8.6) when none is named;
+- a **named target** — either a **build target** (its executable artifact,
+  resolved via the module) or a **command launch configuration** (§8.7).
+
+A configuration pins exactly one configuration per project, so a target
+reference needs no configuration qualifier; it resolves within the profile.
+Project qualification (`project:target`) disambiguates a bare name that is
+present in more than one project. A bare name matching **both** a build target
+and a command launch configuration is an error until qualified. Selection is
+explicit throughout: with no named target and no default set, the invocation
+errors unless exactly one launchable target is in scope — the system never
+guesses.
+
+**Argument forwarding.** Positional arguments after a `--` separator are
+forwarded verbatim to the launched program (a command configuration's own
+declared arguments precede them). The separator is required to pass arguments,
+so the optional target-name positional is never ambiguous with program
+arguments.
+
+**Shared code paths.** Resolution, dependency build, deploy, and the launch
+command/spec are the same seams the editor drives; the headless runner differs
+only in executing the resolved spec directly rather than through the editor's
+task runner (§16.1).
+
+**Setting the default target** is a management operation (§16.9): it selects,
+per profile, the default build target and writes it to the working copy
+(§8.6, "Default target storage"). No target is ever named "default" — the
+default is a property of the profile, not a reserved target name.
