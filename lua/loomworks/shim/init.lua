@@ -176,6 +176,7 @@ end
 function vim.fn.executable(name) return which(name) and 1 or 0 end
 function vim.fn.exepath(name) return which(name) or "" end
 function vim.fn.getcwd() return (uv.cwd():gsub("\\", "/")) end
+function vim.fn.environ() return uv.os_environ() end
 function vim.fn.isdirectory(p) local st = uv.fs_stat(p); return (st and st.type == "directory") and 1 or 0 end
 function vim.fn.filereadable(p) local st = uv.fs_stat(p); return (st and st.type == "file") and 1 or 0 end
 function vim.fn.mkdir(path, flags)

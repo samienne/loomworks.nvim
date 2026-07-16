@@ -196,5 +196,19 @@ do
   paths.rm_rf(sb)
 end
 
+print("loomworks.shim — vim.fn surface used on the build/test path")
+do
+  -- Regression: the meson test runner calls vim.fn.environ(); it was missing
+  -- from the shim, so `lw test` on meson crashed (masked as "no test runner").
+  -- These run under luvi (the real shim), which nvim-hosted busted can't catch.
+  local vim = require("loomworks.shim")
+  ok(type(vim.fn.environ) == "function", "vim.fn.environ exists")
+  local env = vim.fn.environ()
+  ok(type(env) == "table", "vim.fn.environ() returns a table")
+  ok(env.PATH ~= nil or env.Path ~= nil, "vim.fn.environ() includes PATH")
+  ok(type(vim.fn.exepath) == "function" and type(vim.fn.getcwd) == "function",
+    "vim.fn.exepath / getcwd present")
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -783,7 +783,16 @@ function M.plan_profile_test(profile)
         for _, tu in ipairs(unit:test_units()) do
             if tu.run_command_all then
                 local ok, spec = pcall(function() return tu:run_command_all() end)
-                if ok and type(spec) == "table" and type(spec.cmd) == "table" then
+                if not ok then
+                    -- A throwing runner is a bug, not "no tests" — surface it
+                    -- instead of silently dropping the unit.
+                    local ws = unit._workspace
+                    if ws and ws._core and ws._core._deps.notify then
+                        ws._core._deps.notify(
+                            "loomworks: test runner for " .. label .. " errored: " .. tostring(spec),
+                            vim.log.levels.WARN)
+                    end
+                elseif type(spec) == "table" and type(spec.cmd) == "table" then
                     steps[#steps + 1] = {
                         kind = "test",
                         name = label,
