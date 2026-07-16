@@ -58,6 +58,23 @@ describe("meson test integration", function()
         end)
     end)
 
+    describe("run_command_all (native `meson test` runner, §8.9.2)", function()
+        it("builds `meson test -C <build_dir>`", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            local spec = tu:run_command_all()
+            assert.is_not_nil(spec)
+            assert.same({ "/usr/bin/meson", "test", "-C", "/build/App/Debug" }, spec.cmd)
+            assert.equals("/build/App/Debug", spec.cwd)
+        end)
+
+        it("appends a filter as a test-name argument", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            local spec = tu:run_command_all({ filter = "MyTest" })
+            assert.same(
+                { "/usr/bin/meson", "test", "-C", "/build/App/Debug", "MyTest" }, spec.cmd)
+        end)
+    end)
+
     describe("parse_meson_tests (via discovery shape)", function()
         -- We can't directly test the private parser, but we can assert
         -- that a MesonTestUnit initialized with a known JSON produces

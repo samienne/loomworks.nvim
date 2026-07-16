@@ -686,6 +686,26 @@ function MesonTestUnit:test_command_all(opts)
     return self:_build_plain_run(exe)
 end
 
+--- Native meson test run: authoritative exit code, streaming output
+--- (spec §8.9.2). `meson test -C <build_dir>` runs every declared test.
+--- @param opts? table { filter?: string }
+--- @return table|nil { cmd, env, cwd }
+function MesonTestUnit:run_command_all(opts)
+    opts = opts or {}
+    local prefix = meson_prefix_for(self._config_unit)
+    if not prefix or not self._build_dir then return nil end
+    local cmd = vim.list_extend({}, prefix)
+    cmd[#cmd + 1] = "test"
+    cmd[#cmd + 1] = "-C"
+    cmd[#cmd + 1] = self._build_dir
+    if opts.filter then cmd[#cmd + 1] = opts.filter end  -- meson filters by test name
+    return {
+        cmd = cmd,
+        env = compose_env(nil, nil, self:_compiler_bin_dir()),
+        cwd = self._build_dir,
+    }
+end
+
 --- @param output_path string|nil
 --- @return table[]|nil
 function MesonTestUnit:parse_results(output_path)

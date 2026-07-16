@@ -537,15 +537,12 @@ local function resolve_build_target(ws, name)
   die("profile creation did not yield an active profile")
 end
 
-function M.cmd_build(ws, profile_name)
+--- Run a profile's build steps (configure + build), dying on any failure.
+--- Returns the number of steps run (0 = nothing buildable).
+local function run_build_steps(profile, ws)
   local overseer = require("loomworks.overseer")
-  local profile
-  profile, ws = resolve_build_target(ws, profile_name)
   local steps = overseer.plan_profile_build(profile)
-  if not steps or #steps == 0 then
-    die("nothing to build for profile '" .. profile.key ..
-      "' — no buildable projects (unavailable module or unresolved tool?)")
-  end
+  if not steps or #steps == 0 then return 0 end
   out("building profile: " .. profile.key)
   for _, step in ipairs(steps) do
     out(string.format("==> [%s] %s", step.kind, step.name or "?"))
@@ -554,7 +551,48 @@ function M.cmd_build(ws, profile_name)
       die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?"), code)
     end
   end
+  return #steps
+end
+
+function M.cmd_build(ws, profile_name)
+  local profile
+  profile, ws = resolve_build_target(ws, profile_name)
+  if run_build_steps(profile, ws) == 0 then
+    die("nothing to build for profile '" .. profile.key ..
+      "' — no buildable projects (unavailable module or unresolved tool?)")
+  end
   out("BUILD OK: " .. profile.key)
+  return 0
+end
+
+--- `lw test [profile]` — build a profile, then run its tests via each module's
+--- native runner, reporting a real exit code (spec §16.16).
+function M.cmd_test(ws, profile_name)
+  local overseer = require("loomworks.overseer")
+  local profile
+  profile, ws = resolve_build_target(ws, profile_name)
+  run_build_steps(profile, ws) -- ensure test binaries exist; dies on build failure
+
+  local test_steps, units = overseer.plan_profile_test(profile)
+  if not test_steps or #test_steps == 0 then
+    out("no tests to run for profile '" .. profile.key .. "'" ..
+      ((units and units > 0) and " — its modules expose no test runner" or ""))
+    return 0
+  end
+
+  local failed = {}
+  for _, step in ipairs(test_steps) do
+    out(string.format("==> [test] %s", step.name or "?"))
+    local code = run_spec(step, ws.root)
+    if code ~= 0 then failed[#failed + 1] = step.name or "?" end
+  end
+
+  if #failed > 0 then
+    die(string.format("%d of %d test run(s) failed: %s",
+      #failed, #test_steps, table.concat(failed, ", ")), 1)
+  end
+  out(string.format("TESTS OK: %s (%d run%s)", profile.key, #test_steps,
+    #test_steps == 1 and "" or "s"))
   return 0
 end
 
@@ -1765,7 +1803,7 @@ end
 
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
-  "profiles", "profile", "tools", "build", "publish", "config", "completion",
+  "profiles", "profile", "tools", "build", "test", "publish", "config", "completion",
   "version", "install", "self-update", "help", "--no-input",
 }
 
@@ -1804,7 +1842,7 @@ function M.cmd_complete(cword, words)
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then emit({ "dev-lua", "default-source" }) end
     return 0
-  elseif cmd == "build" then
+  elseif cmd == "build" or cmd == "test" then
     if n == 1 then
       local ws = comp_ws(root)
       local names = comp_profile_names(ws)
@@ -1933,9 +1971,20 @@ for a deterministic build (§16.9). The CI pattern is:
 Configures first if the build dir isn't configured, then builds. Non-zero
 exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
-  test = [[lw test [profile]   (coming soon)
+  test = [[lw test [profile | config-set]
 
-Build the profile's test target and run it, reporting a real exit code.]],
+Build a profile, then run its tests through each module's NATIVE runner (cmake
+-> ctest, meson -> `meson test`), streaming output and reporting a REAL exit
+code: 0 iff the build succeeded and every runner passed, non-zero otherwise
+(spec §16.16). A profile whose modules expose no test runner reports "no tests"
+and exits 0 — not a failure.
+
+Profile resolution and onboarding match `lw build`: interactively it can create
+a profile from a configuration set; in --no-input / CI it needs an explicit
+profile (`lw profile create <set> <tool> --activate && lw test`).
+
+  profile     e.g. Debug:ninja-clang-19  (unique substring works)
+  config-set  a set name (interactive: onboards a profile, then tests)]],
   init = [[lw init
 
 Initialize the workspace working copy (.nvim/loomworks.user.json). The shared
@@ -2181,8 +2230,8 @@ Usage: lw [command] [args]
   profile <sub>     list | select | create profiles
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   build [profile]   build a profile (configure if needed, then build)
+  test  [profile]   build a profile, then run its tests (real exit code)
   publish           write loomworks.json from the working copy
-  test  [profile]   build and run tests                     (coming)
   config <...>      get/set lw configuration
   completion <shell> print a shell completion script (bash|zsh)
   version           host version + which system-Lua source is in use
@@ -2325,6 +2374,8 @@ local function main()
     finish(M.cmd_profiles(ws))
   elseif command == "build" then
     finish(M.cmd_build(ws, a[2]))
+  elseif command == "test" then
+    finish(M.cmd_test(ws, a[2]))
   else
     die("unknown command '" .. command .. "' — run `lw help`")
   end

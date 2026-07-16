@@ -455,6 +455,22 @@ function CTestUnit:test_command_all(opts)
     }
 end
 
+--- Native ctest run: authoritative exit code, streaming output (spec §8.9.2).
+--- nil when the build dir has no configured test set (no CTestTestfile.cmake).
+--- @param opts? table { filter?: string }
+--- @return table|nil { cmd, cwd }
+function CTestUnit:run_command_all(opts)
+    opts = opts or {}
+    if not self:_find_ctest_dir() then return nil end
+    local cmd = self:_base_cmd()          -- ctest --test-dir <dir> [-C <config>]
+    cmd[#cmd + 1] = "--output-on-failure"
+    if opts.filter then
+        cmd[#cmd + 1] = "-R"
+        cmd[#cmd + 1] = opts.filter
+    end
+    return { cmd = cmd, cwd = self._build_dir }
+end
+
 --- Parse test results from gtest XML output.
 --- @param output_path string
 --- @return table[]|nil

@@ -2274,7 +2274,20 @@ Construct the command to run a specific test. Returns
 
 **`test_command_all(opts?) → RunSpec|nil`**
 
-Construct the command to run all tests. `opts.filter` for name filtering.
+Construct the command to run all tests as structured, per-test output (for the
+editor UI): typically the test executable run under a framework harness that
+emits a machine-readable results file. `opts.filter` for name filtering.
+Returns `{ cmd, env, cwd, output_path }` or nil.
+
+**`run_command_all(opts?) → { cmd, env?, cwd? }|nil`**
+
+Construct the module's **native** "run all tests" command — the one whose
+**process exit status is authoritative** (0 iff every test passed), streaming
+human-readable output. This is the headless-runner seam (§16): a batch runner
+executes it and reports its exit code, without discovery or result parsing.
+Distinct from `test_command_all`, which targets structured UI results. Returns
+nil when the module has no native batch runner. `opts.filter` for name
+filtering.
 
 **`parse_results(output_path) → TestResult[]|nil`**
 
@@ -3386,3 +3399,14 @@ run. Installation is that binary placing itself where it can be invoked; it is
 not part of the verified-bundle chain and MUST NOT be assumed to have verified
 the running binary. Once trusted this way, the host bootstraps the bundle chain
 (§16.12–16.13).
+
+### 16.16 Headless test runs
+
+A headless **test** invocation resolves and builds a profile (§16.4), then runs
+each buildable unit's tests through the native batch runner (`run_command_all`,
+§8.9.2) — not the editor's structured per-test path. Each runner's process exit
+status is authoritative; the invocation's exit status is success iff the build
+succeeded and every runner reported success. A unit whose module exposes no
+batch runner contributes no tests; a profile with no test runners at all is
+reported as such, not a failure. Like a build (§16.4), a test run is read-only
+toward configuration (§16.9).

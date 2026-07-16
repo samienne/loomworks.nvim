@@ -760,6 +760,45 @@ function M.plan_profile_build(profile)
     return steps
 end
 
+--- Build a headless "run all tests" plan for a profile: one step per buildable
+--- unit's native test runner (TestUnit:run_command_all, spec §16.16). Assumes
+--- the profile has already been built. Returns the test steps plus the number
+--- of buildable units seen, so a caller can tell "all passed" from "no tests".
+--- @param profile loomworks.Profile
+--- @return table[]|nil steps, integer units_seen
+function M.plan_profile_test(profile)
+    local all_tasks = collect_profile_tasks(profile)
+    if not all_tasks then return nil, 0 end
+
+    -- Unique ConfigUnits from the build tasks.
+    local seen, units = {}, {}
+    for _, td in ipairs(all_tasks.build or {}) do
+        local unit = td.loomworks and td.loomworks.unit
+        if unit and not seen[unit] then seen[unit] = true; units[#units + 1] = unit end
+    end
+
+    local steps = {}
+    for _, unit in ipairs(units) do
+        local label = (unit._project and unit._project.key or "?") .. ":" .. tostring(unit:variant())
+        for _, tu in ipairs(unit:test_units()) do
+            if tu.run_command_all then
+                local ok, spec = pcall(function() return tu:run_command_all() end)
+                if ok and type(spec) == "table" and type(spec.cmd) == "table" then
+                    steps[#steps + 1] = {
+                        kind = "test",
+                        name = label,
+                        unit = unit,
+                        cmd = spec.cmd,
+                        cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
+                        env = spec.env,
+                    }
+                end
+            end
+        end
+    end
+    return steps, #units
+end
+
 --- Run an action for a single project configuration.
 --- Creates a pinned profile entry if needed, then launches overseer tasks.
 --- If building and the configuration is unconfigured, configures first.
