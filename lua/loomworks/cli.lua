@@ -551,6 +551,13 @@ end
 
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
+---
+--- NOTE: configure is re-run every invocation. Skipping it needs reliable
+--- "config unchanged" detection, but loomworks' staleness model is editor
+--- (single-process, in-memory) oriented and does not currently work across
+--- separate headless invocations — skipping unsafely would silently miss a
+--- `lw configuration set` change. The re-configure is a fast near-no-op
+--- (cmake reconfigure / `meson setup --reconfigure`). See BACKLOG.
 local function run_build_steps(profile, ws)
   local overseer = require("loomworks.overseer")
   local steps = overseer.plan_profile_build(profile)
