@@ -18,6 +18,24 @@ local uv = vim.uv or vim.loop
 local CTestUnit = setmetatable({}, { __index = TestUnit })
 CTestUnit.__index = CTestUnit
 
+--- The build type for `ctest -C`. For a multi-config generator (Visual Studio)
+--- ctest must be told the config it was built as (e.g. "Debug") — the cmake
+--- BUILD TYPE, i.e. the module variant, NOT the loomworks configuration name
+--- (`variant:Debug`), which points at a config dir that doesn't exist. This
+--- mirrors what the cmake module passes to `cmake --build --config`. Single
+--- config generators (Ninja) ignore -C, so the value is harmless there.
+--- @param config_unit loomworks.ConfigUnit
+--- @return string|nil
+local function ctest_config(config_unit)
+    local cfg = config_unit:configuration()
+    if cfg and cfg.module_config and cfg.module_config.variant then
+        return cfg.module_config.variant
+    end
+    local cached = config_unit._cached_module_config
+    if cached and cached.variant then return cached.variant end
+    return config_unit:variant()
+end
+
 --- @param config_unit loomworks.ConfigUnit
 --- @return loomworks.CTestUnit
 function CTestUnit.new(config_unit)
@@ -26,7 +44,7 @@ function CTestUnit.new(config_unit)
     self._entries = nil
     self._framework_cache = {}
     self._build_dir = config_unit:build_dir()
-    self._configuration = config_unit:variant()
+    self._configuration = ctest_config(config_unit)
     self._ctest_dir = nil
     self._source_files_by_exe = {}
     self._exec_specs = {}
@@ -484,7 +502,7 @@ function CTestUnit:invalidate()
     self._ctest_dir = nil
     self._exec_specs = {}
     self._build_dir = self._config_unit:build_dir()
-    self._configuration = self._config_unit:variant()
+    self._configuration = ctest_config(self._config_unit)
 end
 
 return CTestUnit
