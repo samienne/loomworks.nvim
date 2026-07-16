@@ -141,39 +141,18 @@ end
 --- @param compiler_bin_dir string|nil toolchain bin dir (for runtime DLLs)
 --- @return table<string, string>
 local function compose_env(base_env, extra_paths, compiler_bin_dir)
-    local env = {}
-    local current = vim.fn.environ()
-    if type(current) == "table" then
-        for k, v in pairs(current) do
-            if type(k) == "string" and k:sub(1, 1) ~= "=" then
-                env[k] = v
-            end
-        end
-    end
-    for k, v in pairs(base_env or {}) do env[k] = v end
-
-    local is_win = vim.fn.has("win32") == 1
-    local sep = is_win and ";" or ":"
-
-    -- Build the prefix: compiler bin dir FIRST (for runtime DLLs),
-    -- then extra_paths (for project's shared libs). Both are
-    -- prepended so they take priority over whatever was inherited.
+    -- Prefix: compiler bin dir FIRST (for runtime DLLs), then extra_paths (for
+    -- the project's shared libs). Both prepended so they win over inherited
+    -- PATH. Shared PATH-composition lives in loomworks.runenv (also used by
+    -- build-target launches, §8.7).
     local prefix_parts = {}
     if compiler_bin_dir and compiler_bin_dir ~= "" then
         prefix_parts[#prefix_parts + 1] = compiler_bin_dir
     end
-    if extra_paths and #extra_paths > 0 then
-        for _, p in ipairs(extra_paths) do
-            prefix_parts[#prefix_parts + 1] = p
-        end
+    for _, p in ipairs(extra_paths or {}) do
+        prefix_parts[#prefix_parts + 1] = p
     end
-    if #prefix_parts > 0 then
-        local existing = env.PATH or env.Path or ""
-        env.PATH = table.concat(prefix_parts, sep)
-            .. (existing ~= "" and (sep .. existing) or "")
-        if is_win then env.Path = nil end
-    end
-    return env
+    return require("loomworks.runenv").compose(prefix_parts, base_env)
 end
 
 --- Parse `meson introspect --tests` JSON into test entries.

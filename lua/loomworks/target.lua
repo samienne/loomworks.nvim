@@ -100,11 +100,61 @@ function Target:build(on_complete)
     return f
 end
 
---- Resolve the run spec (artifact path + working directory) for this
---- executable target. Pure — expands nothing, spawns no task. Shared seam
---- for `Target:launch` (editor) and the headless runner (§16.17): both
---- resolve the same spec, then execute it via their own runner.
---- @return { cmd: string, cwd: string, name: string }|nil spec
+--- Directory of a build-relative artifact path, or nil.
+--- @param build_dir string
+--- @param artifact string
+--- @return string|nil
+local function artifact_dir(build_dir, artifact)
+    local full = (build_dir .. "/" .. artifact):gsub("\\", "/")
+    return full:match("^(.*)/[^/]*$")
+end
+
+--- Compose the run environment for an executable target (§8.7): prepend to
+--- PATH (1) the toolchain runtime dirs the module supplies via `runtime_path`
+--- and (2) the build tree's shared-library / module-library output dirs, so a
+--- DLL/.so-dependent executable finds its siblings. Returns nil when there is
+--- nothing to add (leave the process env inherited as-is).
+--- @param unit loomworks.ConfigUnit
+--- @param build_dir string
+--- @return table<string,string>|nil
+local function compose_run_env(unit, build_dir)
+    local prefix, seen = {}, {}
+    local function add(dir)
+        if type(dir) == "string" and dir ~= "" and not seen[dir] then
+            seen[dir] = true
+            prefix[#prefix + 1] = dir
+        end
+    end
+
+    -- (1) Toolchain runtime dirs (module-specific, e.g. compiler bin dir).
+    local mod = unit._project and unit._project._module and unit._project._module.impl
+    if mod and mod.runtime_path then
+        local ok, dirs = pcall(mod.runtime_path, {
+            build_dir = build_dir,
+            tool_data = unit._tool_data,
+            config_name = unit.variant and unit:variant() or nil,
+        })
+        if ok and type(dirs) == "table" then
+            for _, d in ipairs(dirs) do add(d) end
+        end
+    end
+
+    -- (2) Shared-library sibling output dirs (generic, from parse_targets).
+    for _, t in pairs(unit.targets or {}) do
+        if (t.type == "shared_library" or t.type == "module_library") and t.artifact then
+            add(artifact_dir(build_dir, t.artifact))
+        end
+    end
+
+    if #prefix == 0 then return nil end
+    return require("loomworks.runenv").compose(prefix)
+end
+
+--- Resolve the run spec (artifact path, working directory, and run
+--- environment) for this executable target. Pure — expands nothing, spawns no
+--- task. Shared seam for `Target:launch` (editor) and the headless runner
+--- (§16.17): both resolve the same spec, then execute it via their own runner.
+--- @return { cmd: string, cwd: string, name: string, env: table|nil }|nil spec
 --- @return string|nil err
 function Target:resolve_run_spec()
     if not self:is_executable() then
@@ -126,6 +176,7 @@ function Target:resolve_run_spec()
         cmd = build_dir .. "/" .. self.artifact,
         cwd = build_dir,
         name = project_name .. ": run " .. self.id,
+        env = compose_run_env(unit, build_dir),
     }
 end
 
@@ -143,6 +194,7 @@ function Target:launch()
         name = spec.name,
         cmd = spec.cmd,
         cwd = spec.cwd,
+        env = spec.env,
     })
 end
 

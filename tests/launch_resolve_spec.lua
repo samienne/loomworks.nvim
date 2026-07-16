@@ -48,6 +48,77 @@ describe("Target:resolve_run_spec", function()
     end)
 end)
 
+describe("Target run environment (§8.7)", function()
+    local function unit_with(targets, opts)
+        opts = opts or {}
+        return {
+            build_dir = function() return opts.build_dir or "/b" end,
+            variant = function() return opts.variant end,
+            _tool_data = opts.tool_data,
+            _project = {
+                key = opts.project or "app",
+                _module = opts.module and { impl = opts.module } or nil,
+            },
+            targets = targets,
+        }
+    end
+
+    local function path_of(env)
+        assert.is_table(env)
+        local p = env.PATH or env.Path
+        assert.is_string(p)
+        return p
+    end
+
+    it("prepends sibling shared/module-library dirs to PATH (not static libs)", function()
+        local unit = unit_with({
+            app  = { type = "executable", artifact = "src/app/app.exe" },
+            foo  = { type = "shared_library", artifact = "sub/foo.dll" },
+            bar  = { type = "module_library", artifact = "plug/bar.dll" },
+            slib = { type = "static_library", artifact = "libs/s.a" }, -- ignored
+        })
+        local spec = Target.new(unit, "app",
+            { type = "executable", artifact = "src/app/app.exe" }):resolve_run_spec()
+        local p = path_of(spec.env)
+        assert.is_truthy(p:find("/b/sub", 1, true), "shared-lib dir on PATH")
+        assert.is_truthy(p:find("/b/plug", 1, true), "module-lib dir on PATH")
+        assert.is_nil(p:find("/b/libs", 1, true), "static-lib dir NOT on PATH")
+    end)
+
+    it("prepends the module's runtime_path dirs (toolchain runtime)", function()
+        local unit = unit_with(
+            { app = { type = "executable", artifact = "app.exe" } },
+            { module = { runtime_path = function() return { "/toolchain/bin" } end } })
+        local spec = Target.new(unit, "app",
+            { type = "executable", artifact = "app.exe" }):resolve_run_spec()
+        assert.is_truthy(path_of(spec.env):find("/toolchain/bin", 1, true))
+    end)
+
+    it("leaves env nil when there is nothing to add", function()
+        local unit = unit_with({ app = { type = "executable", artifact = "app.exe" } })
+        local spec = Target.new(unit, "app",
+            { type = "executable", artifact = "app.exe" }):resolve_run_spec()
+        assert.is_nil(spec.env)
+    end)
+end)
+
+describe("module runtime_path (§8.4)", function()
+    it("meson returns the compiler bin dir from tool_data", function()
+        local meson = require("loomworks.modules.meson")
+        assert.same({ "/opt/gcc/bin" },
+            meson.runtime_path({ tool_data = { compiler_bin_dir = "/opt/gcc/bin" } }))
+        assert.is_nil(meson.runtime_path({ tool_data = {} }))
+        assert.is_nil(meson.runtime_path({}))
+    end)
+
+    it("cmake returns the compiler_path's directory", function()
+        local cmake = require("loomworks.modules.cmake")
+        assert.same({ "C:/tc/bin" },
+            cmake.runtime_path({ tool_data = { compiler_path = "C:/tc/bin/clang++.exe" } }))
+        assert.is_nil(cmake.runtime_path({ tool_data = {} }))
+    end)
+end)
+
 describe("LaunchTarget:resolve_launch_spec", function()
     -- Construct a LaunchTarget instance directly, bypassing descriptor
     -- resolution — the dispatcher only reads _launch_config / _target.

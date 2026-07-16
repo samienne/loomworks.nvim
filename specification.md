@@ -1887,6 +1887,16 @@ Only project-owned build targets are included (executables and libraries).
 Imported, alias, and utility targets are excluded. Dependencies list only
 project-owned targets that this target links against.
 
+**`runtime_path(ctx) → string[]?`** *(optional)*
+
+Directories that must be on `PATH` to run the module's built executables
+locally — typically the compiler's runtime bin directory (e.g. the gcc
+toolchain bin holding `libstdc++`/`libgcc`/`libwinpthread`). Returns a list of
+absolute directories, or `nil`. `ctx` carries `build_dir` and the
+configuration's `tool_data`. This covers only the *toolchain* runtime; the
+build tree's own shared-library output directories are added generically by
+core (derived from `parse_targets`), so a module need not enumerate them.
+
 ### 8.5 Module implementations
 
 Each module that ships with loomworks documents its implementation of
@@ -1938,7 +1948,14 @@ defines how to run the project after building. Two types:
 
 **Module targets** (executables discovered by the module's
 `parse_targets`): `Target:launch()` resolves the artifact path from
-the build directory and runs it via overseer.
+the build directory and runs it. Before running, core composes a **run
+environment** and prepends to `PATH`: (1) the build tree's shared-library and
+module-library output directories — so a DLL/`.so`-dependent executable finds
+its siblings, the same directories the test runner uses — derived generically
+from `parse_targets`; and (2) any `runtime_path()` directories the module
+supplies for the toolchain runtime (§8.4). Resolution
+(`Target:resolve_run_spec`) is shared with the headless runner (§16.17); only
+the executor differs (overseer in the editor, direct spawn headless).
 
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.

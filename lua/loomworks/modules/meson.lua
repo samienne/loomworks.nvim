@@ -795,6 +795,21 @@ local function option_value_type(meson_type)
     return "string"
 end
 
+--- Toolchain runtime directories for launching built executables (§8.4): the
+--- pinned compiler's bin dir holds the C++ runtime DLLs (libstdc++-6.dll,
+--- libgcc_s_seh-1.dll, libwinpthread-1.dll, …). Core adds the build tree's own
+--- shared-library dirs generically, so only the toolchain dir is needed here.
+--- @param ctx { tool_data?: table }
+--- @return string[]|nil
+function M.runtime_path(ctx)
+    local td = ctx and ctx.tool_data
+    if type(td) == "table" and type(td.compiler_bin_dir) == "string"
+        and td.compiler_bin_dir ~= "" then
+        return { td.compiler_bin_dir }
+    end
+    return nil
+end
+
 --- Extract build options via `meson introspect --buildoptions`.
 --- Groups by `section` (core, base, compiler, directory, user, test).
 --- @param build_dir string

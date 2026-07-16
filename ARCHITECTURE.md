@@ -783,7 +783,11 @@ replaces it, which would drop `PATH`).
   program. Routes through the editor's `LaunchTarget` seams
   (`resolve_launch_spec`, `deploy_sync`) so headless and editor launches stay
   identical; the runner only swaps the executor (direct `vim.system` vs
-  overseer).
+  overseer). Build-target launches set up a run environment (§8.7): core
+  prepends the build tree's shared-library output dirs plus the module's
+  `runtime_path()` (toolchain runtime) to `PATH`, composed via
+  `loomworks.runenv` (shared with the meson test runner), so DLL/`.so`-dependent
+  executables run without a manual dev shell.
 - `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
   profile's default launch target (writes `user.json`; spec §16.9 authoring).
 

@@ -533,7 +533,7 @@ function LaunchTarget:resolve_launch_spec(opts)
     elseif self._target and self._target:is_executable() then
         local tspec, terr = self._target:resolve_run_spec()
         if tspec then
-            spec = { cmd = tspec.cmd, args = {}, cwd = tspec.cwd, env = nil, name = tspec.name }
+            spec = { cmd = tspec.cmd, args = {}, cwd = tspec.cwd, env = tspec.env, name = tspec.name }
         else
             err = terr
         end
