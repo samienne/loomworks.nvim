@@ -26,6 +26,22 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
 - **Cross-process build-dir locking.** v1 does not serialize concurrent
   editor + CLI access to a shared build directory (spec §16.6); an advisory
   fail-fast lock is a possible addition.
+- **Precise run-env scoping (Windows launch, §8.7).** Build-target launches
+  currently prepend *every* shared-library output dir in the build tree to
+  `PATH` (Windows only; matches `meson devenv` breadth). This can be narrowed
+  to only the dirs the executable actually links. The data is available:
+  meson `introspect --targets` → `target_sources[].parameters` lists the
+  flattened link line as path-qualified `.lib` import libs, **including
+  subproject libs** (freetype, tracy) — the `depends`/`dependencies` fields do
+  NOT (empty / external-only). Dir of each `.lib` = its DLL dir. Est. ~1–2 h
+  for clang-cl "link-line dirs" (enough for reactive); ~3–5 h for a robust
+  DLL→DLL transitive walk + mingw/gcc `-L`/`-l` parsing. cmake would be
+  separate (file-api dependency graph, cleaner). **Deferred on purpose:**
+  precise scoping trades over-inclusion (narrow same-name-DLL ambiguity, already
+  mitigated by Windows-gate + deterministic order + exe-dir-first) for
+  *under*-inclusion (a runtime-only transitive DLL not on the link line → the
+  binary fails to load it) — a worse, harder-to-debug failure mode. Only worth
+  doing if the same-name case actually bites.
 
 ---
 
