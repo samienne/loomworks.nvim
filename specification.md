@@ -3410,3 +3410,17 @@ succeeded and every runner reported success. A unit whose module exposes no
 batch runner contributes no tests; a profile with no test runners at all is
 reported as such, not a failure. Like a build (§16.4), a test run is read-only
 toward configuration (§16.9).
+
+### 16.17 Headless launch (run)
+
+A headless **run** invocation resolves a profile, builds it (§16.4), then
+executes a named **launch configuration** (§8.7) resolved in that profile's
+context — expanding its command, arguments, working directory, and environment
+through the same variable context as the editor. The launched process's exit
+status is the invocation's exit status; its output streams to standard
+output/error. Selection is explicit: absent a launch name the invocation errors
+unless exactly one launch configuration is in scope — the system never guesses.
+A run executes only what a launch configuration already declares; it is
+read-only toward configuration (§16.9) and, like the editor's non-debug launch,
+excludes debugger attachment. (Deploy steps, §8, are not part of this contract
+and may be layered on later.)

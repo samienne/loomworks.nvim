@@ -537,6 +537,18 @@ local function resolve_build_target(ws, name)
   die("profile creation did not yield an active profile")
 end
 
+--- Resolve a project by exact key, or die listing the existing ones.
+local function resolve_project(ws, name)
+  local names = {}
+  for _, p in pairs(ws._projects) do
+    if p.key == name then return p end
+    names[#names + 1] = p.key
+  end
+  table.sort(names)
+  die("no project named '" .. tostring(name) .. "'. Existing: " ..
+    (next(names) and table.concat(names, ", ") or "(none)"))
+end
+
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
 local function run_build_steps(profile, ws)
@@ -597,6 +609,201 @@ function M.cmd_test(ws, profile_name)
 end
 
 --- `lw init` — initialize the working copy (.nvim/loomworks.user.json).
+-- ---------------------------------------------------------------------------
+-- Launch configurations + run
+-- ---------------------------------------------------------------------------
+
+--- Command-type launch configs in scope for `profile` (its mapped projects):
+--- a list of { project, name, cfg }.
+local function launch_candidates(ws, profile)
+  local list = {}
+  for _, project in pairs(ws._projects) do
+    local in_profile = profile.mappings and profile.mappings[project.key] ~= nil
+    if in_profile and type(project.launch) == "table" then
+      local names = {}
+      for lname in pairs(project.launch) do names[#names + 1] = lname end
+      table.sort(names)
+      for _, lname in ipairs(names) do
+        local cfg = project.launch[lname]
+        if type(cfg) == "table" and cfg.command then
+          list[#list + 1] = { project = project, name = lname, cfg = cfg }
+        end
+      end
+    end
+  end
+  return list
+end
+
+--- `lw run [name] [--profile <key>]` — build a profile, then execute a
+--- command-type launch configuration in it (spec §16.17). Returns the
+--- launched process's exit code.
+function M.cmd_run(ws, args)
+  local launch_name, profile_flag
+  local i = 2 -- args[1] == "run"
+  while args[i] do
+    if args[i] == "--profile" then profile_flag = args[i + 1]; i = i + 2
+    elseif not launch_name then launch_name = args[i]; i = i + 1
+    else i = i + 1 end
+  end
+
+  local profile
+  profile, ws = resolve_build_target(ws, profile_flag)
+
+  local cands = launch_candidates(ws, profile)
+  if #cands == 0 then
+    die("no launch configurations in profile '" .. profile.key .. "'.\n" ..
+      "  add one: lw launch add <project> <name> <command> [args…]")
+  end
+
+  local target
+  if launch_name then
+    local matches = {}
+    for _, c in ipairs(cands) do if c.name == launch_name then matches[#matches + 1] = c end end
+    if #matches == 1 then target = matches[1]
+    elseif #matches == 0 then
+      local ns = {}; for _, c in ipairs(cands) do ns[#ns + 1] = c.project.key .. ":" .. c.name end
+      die("no launch config '" .. launch_name .. "'. Available: " .. table.concat(ns, ", "))
+    else
+      local ns = {}; for _, c in ipairs(matches) do ns[#ns + 1] = c.project.key .. ":" .. c.name end
+      die("'" .. launch_name .. "' is ambiguous across projects: " .. table.concat(ns, ", "))
+    end
+  elseif #cands == 1 then
+    target = cands[1]
+  elseif interactive() then
+    out("Select a launch configuration:")
+    for idx, c in ipairs(cands) do out(string.format("  %d) %s  (%s)", idx, c.name, c.project.key)) end
+    out("")
+    local line = prompt_line("Enter number (blank to cancel)")
+    if not line or line == "" then out("cancelled"); return 0 end
+    local n = tonumber(line)
+    if not n or not cands[n] then die("invalid selection: " .. tostring(line)) end
+    target = cands[n]
+  else
+    local ns = {}; for _, c in ipairs(cands) do ns[#ns + 1] = c.name end
+    die("multiple launch configs — name one: lw run <name>  (" .. table.concat(ns, ", ") .. ")")
+  end
+
+  run_build_steps(profile, ws) -- ensure the target is built; dies on build failure
+
+  local expand = require("loomworks.expand")
+  local ctx = expand.launch_context(ws, profile, target.project)
+  local cmd = expand.expand_string(target.cfg.command, ctx)
+  local run_args = expand.expand_array(target.cfg.args, ctx) or {}
+  local cwd
+  if target.cfg.working_dir then
+    local ex = expand.expand_string(target.cfg.working_dir, ctx)
+    cwd = (ex:match("^/") or ex:match("^%a:")) and ex or (ws.root .. "/" .. ex)
+  else
+    cwd = ws.root .. "/" .. (target.project.path or target.project.key)
+  end
+  local env = expand.expand_dict(target.cfg.env, ctx)
+
+  local full = { cmd }
+  for _, a in ipairs(run_args) do full[#full + 1] = a end
+  out(string.format("running %s: %s", target.name, table.concat(full, " ")))
+  return run_spec({ cmd = full, cwd = cwd, env = env }, ws.root)
+end
+
+--- `lw launch list [project]` — list command-type launch configs.
+function M.cmd_launch_list(ws, proj_name)
+  local projs = {}
+  for _, p in pairs(ws._projects) do
+    if (not proj_name or p.key == proj_name) and type(p.launch) == "table" and next(p.launch) then
+      projs[#projs + 1] = p
+    end
+  end
+  table.sort(projs, function(a, b) return a.key < b.key end)
+  local any = false
+  for _, p in ipairs(projs) do
+    local names = {}
+    for n in pairs(p.launch) do names[#names + 1] = n end
+    table.sort(names)
+    for _, n in ipairs(names) do
+      any = true
+      local cfg = p.launch[n]
+      local cmdstr = (type(cfg) == "table" and cfg.command)
+        and (cfg.command .. " " .. table.concat(cfg.args or {}, " ")):gsub("%s+$", "")
+        or "(no command)"
+      out(string.format("  %-18s %s  [%s]", n, cmdstr, p.key))
+    end
+  end
+  if not any then
+    out("no launch configurations" .. (proj_name and (" for '" .. proj_name .. "'") or "") ..
+      ".\n  add one: lw launch add <project> <name> <command> [args…]")
+  end
+  return 0
+end
+
+--- `lw launch add <project> <name> <command> [args…] [--working-dir D] [--env K=V]`
+function M.cmd_launch_add(root, args)
+  local proj_name, name = args[3], args[4]
+  if not (proj_name and name and args[5]) then
+    die("usage: lw launch add <project> <name> <command> [args…] [--working-dir D] [--env K=V]")
+  end
+  local ws = load_workspace(root, false)
+  local project = resolve_project(ws, proj_name)
+
+  local command, cmd_args, working_dir, env = nil, {}, nil, nil
+  local i = 5
+  while args[i] do
+    local v = args[i]
+    if v == "--working-dir" or v == "--cwd" then working_dir = args[i + 1]; i = i + 2
+    elseif v == "--env" then
+      local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
+      if not k then die("bad --env '" .. tostring(args[i + 1]) .. "' — use KEY=VALUE") end
+      env = env or {}; env[k] = val; i = i + 2
+    elseif not command then command = v; i = i + 1
+    else cmd_args[#cmd_args + 1] = v; i = i + 1 end
+  end
+
+  local cfg = { command = command }
+  if #cmd_args > 0 then cfg.args = cmd_args end
+  if working_dir then cfg.working_dir = working_dir end
+  if env then cfg.env = env end
+
+  local ok, err = project:save_launch_config(name, cfg)
+  if not ok then die("could not save launch config: " .. tostring(err)) end
+  out(string.format("added launch config '%s' on project '%s'", name, project.key))
+  out("  run it: lw run " .. name)
+  return 0
+end
+
+--- `lw launch show <project> <name>`
+function M.cmd_launch_show(root, proj_name, name)
+  if not (proj_name and name) then die("usage: lw launch show <project> <name>") end
+  local ws = load_workspace(root, false)
+  local project = resolve_project(ws, proj_name)
+  local cfg = project.launch and project.launch[name]
+  if not cfg then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
+  out("launch config '" .. name .. "'  (project " .. project.key .. ")")
+  out("  command      " .. tostring(cfg.command))
+  if cfg.args then out("  args         " .. table.concat(cfg.args, " ")) end
+  if cfg.working_dir then out("  working_dir  " .. cfg.working_dir) end
+  if type(cfg.env) == "table" then
+    for k, v in pairs(cfg.env) do out("  env." .. k .. " = " .. tostring(v)) end
+  end
+  return 0
+end
+
+--- `lw launch remove <project> <name>`
+function M.cmd_launch_remove(root, proj_name, name)
+  if not (proj_name and name) then die("usage: lw launch remove <project> <name>") end
+  local ws = load_workspace(root, false)
+  local project = resolve_project(ws, proj_name)
+  local ok, err = project:delete_launch_config(name)
+  if not ok then die(tostring(err)) end
+  out("removed launch config '" .. name .. "' from project '" .. project.key .. "'")
+  return 0
+end
+
+function M.cmd_launch(sub, root, args)
+  if sub == nil or sub == "list" then return M.cmd_launch_list(load_workspace(root, false), args[3]) end
+  if sub == "add" then return M.cmd_launch_add(root, args) end
+  if sub == "show" then return M.cmd_launch_show(root, args[3], args[4]) end
+  if sub == "remove" or sub == "rm" then return M.cmd_launch_remove(root, args[3], args[4]) end
+  die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|show|remove")
+end
+
 --- loomworks.json is written later by `lw publish` (working-copy model, §2.4).
 function M.cmd_init()
   local dir = (os.getenv("LW_ROOT") or uv.cwd()):gsub("\\", "/"):gsub("/+$", "")
@@ -647,18 +854,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Shared lookups + small formatting helpers
 -- ---------------------------------------------------------------------------
-
---- Resolve a project by exact key, or die listing the existing ones.
-local function resolve_project(ws, name)
-  local names = {}
-  for _, p in pairs(ws._projects) do
-    if p.key == name then return p end
-    names[#names + 1] = p.key
-  end
-  table.sort(names)
-  die("no project named '" .. tostring(name) .. "'. Existing: " ..
-    (next(names) and table.concat(names, ", ") or "(none)"))
-end
 
 --- Resolve a configuration in a project: exact canonical name, else an
 --- unambiguous base name. When `require_user`, refuse non-user configs.
@@ -1772,6 +1967,19 @@ local function comp_profile_names(ws)
   return sorted_unique(t)
 end
 
+--- Launch config names across all projects (optionally one project).
+local function comp_launch_names(ws, project_key)
+  local t = {}
+  if ws then
+    for _, p in pairs(ws._projects or {}) do
+      if (not project_key or p.key == project_key) and type(p.launch) == "table" then
+        for n in pairs(p.launch) do t[#t + 1] = n end
+      end
+    end
+  end
+  return sorted_unique(t)
+end
+
 --- Configuration names for a project (canonical + base names, incl. auto-gens).
 local function comp_config_names(ws, project_key)
   local t = {}
@@ -1803,8 +2011,8 @@ end
 
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
-  "profiles", "profile", "tools", "build", "test", "publish", "config", "completion",
-  "version", "install", "self-update", "help", "--no-input",
+  "profiles", "profile", "tools", "build", "test", "run", "launch", "publish",
+  "config", "completion", "version", "install", "self-update", "help", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -1848,6 +2056,23 @@ function M.cmd_complete(cword, words)
       local names = comp_profile_names(ws)
       for _, s in ipairs(comp_set_names(ws)) do names[#names + 1] = s end -- onboarding form
       emit(sorted_unique(names))
+    end
+    return 0
+  elseif cmd == "run" then
+    if n == 1 then
+      local names = comp_launch_names(comp_ws(root)); names[#names + 1] = "--profile"
+      emit(sorted_unique(names))
+    elseif sub == "--profile" and n == 2 then
+      emit(comp_profile_names(comp_ws(root)))
+    end
+    return 0
+  elseif cmd == "launch" then
+    if n == 1 then emit({ "list", "add", "show", "remove" }); return 0 end
+    if n == 2 and has({ "add", "show", "remove", "rm", "list" }, sub) then
+      emit(comp_project_names(comp_ws(root))); return 0                     -- <project>
+    end
+    if n == 3 and has({ "show", "remove", "rm" }, sub) then
+      emit(comp_launch_names(comp_ws(root), a[3]))                         -- <name>
     end
     return 0
   elseif cmd == "project" then
@@ -1971,6 +2196,37 @@ for a deterministic build (§16.9). The CI pattern is:
 Configures first if the build dir isn't configured, then builds. Non-zero
 exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
+  run = [[lw run [name] [--profile <key>]
+
+Build a profile, then execute one of its launch configurations — a runner you
+declared with `lw launch add` (spec §16.17). Variables in the command, args,
+working dir, and env are expanded in the profile's context. The launched
+process's exit code becomes lw's exit code; output streams through.
+
+  name         the launch config to run. Omit it when exactly one is in scope;
+               otherwise pick (interactive) or name it.
+  --profile K  run under profile K. Otherwise the active/only profile is used
+               (interactive may create one); --no-input requires --profile.
+
+Deploy steps are not run (build -> execute only). To run a built binary,
+declare its path as the command, e.g. `lw launch add app run '${build_dir}/app'`.]],
+  launch = [[lw launch <list|add|show|remove>
+
+Define and manage a project's launch configurations (the runners `lw run`
+executes). A launch config is command-type: a command, optional args, working
+directory, and environment, all variable-expanded (${build_dir}, ${variant},
+project variables, …).
+
+  list [project]
+        List launch configs (all projects, or one).
+  add <project> <name> <command> [args…] [--working-dir D] [--env K=V]
+        Declare a launch config. Repeat --env for multiple variables.
+        e.g. lw launch add app serve node server.js --env PORT=8080
+  show <project> <name>       Detail one config.
+  remove <project> <name>     Delete one config.
+
+Configs live in the project's working copy; they reach loomworks.json when the
+project is published (`lw project publish <project>`).]],
   test = [[lw test [profile | config-set]
 
 Build a profile, then run its tests through each module's NATIVE runner (cmake
@@ -2231,6 +2487,8 @@ Usage: lw [command] [args]
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   build [profile]   build a profile (configure if needed, then build)
   test  [profile]   build a profile, then run its tests (real exit code)
+  run   [name]      build, then execute a launch configuration
+  launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   config <...>      get/set lw configuration
   completion <shell> print a shell completion script (bash|zsh)
@@ -2368,6 +2626,10 @@ local function main()
   if command == "tools" then
     finish(M.cmd_tools(root, a))
   end
+  -- `launch` manages launch configs in the working copy (no tools needed).
+  if command == "launch" then
+    finish(M.cmd_launch(a[2], root, a))
+  end
 
   local ws = load_workspace(root)
   if command == "profiles" then
@@ -2376,6 +2638,8 @@ local function main()
     finish(M.cmd_build(ws, a[2]))
   elseif command == "test" then
     finish(M.cmd_test(ws, a[2]))
+  elseif command == "run" then
+    finish(M.cmd_run(ws, a))
   else
     die("unknown command '" .. command .. "' — run `lw help`")
   end
