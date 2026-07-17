@@ -54,31 +54,51 @@ pick_tool() {
     printf '%s' "$t"
 }
 
+# Record a failure: print the captured output ($TMP/out.txt) and, under GitHub
+# Actions, emit an ::error:: annotation (readable via the API without the
+# repo-admin rights that downloading job logs requires).
+note_fail() { # $1 = description   $2 = exit code
+    bad "$1 (exit $2)"
+    { echo "  --- output of the failing step ---"; tail -n 25 "$TMP/out.txt" | sed 's/^/  | /'; } >&2
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        printf '::error title=cli-e2e: %s::%s\n' "$1" \
+            "$(tail -n 10 "$TMP/out.txt" | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-500)"
+    fi
+}
+
 # Drive one module's project through the full CLI flow.
 #   $1 = module (meson|cmake)   $2 = workspace dir with app/ inside
 run_case() {
-    local mod="$1" ws="$2"
+    local mod="$1" ws="$2" out="$TMP/out.txt" rc
     say "$mod project"
     cd "$ws" || { bad "$mod: cd"; return; }
 
-    run_lw init >/dev/null 2>&1 || { bad "$mod init"; return; }
-    run_lw project add ./app "$mod" >/dev/null 2>&1 || { bad "$mod project add"; return; }
+    run_lw init > "$out" 2>&1 || { note_fail "$mod init" $?; return; }
+    run_lw project add ./app "$mod" > "$out" 2>&1 || { note_fail "$mod project add" $?; return; }
 
     local tool
     tool=$(pick_tool)
-    if [ -z "$tool" ]; then bad "$mod: no toolchain detected"; return; fi
+    if [ -z "$tool" ]; then
+        run_lw tools > "$out" 2>&1 # capture what was (not) detected
+        note_fail "$mod: no toolchain detected" 0
+        return
+    fi
     ok "$mod toolchain: $tool"
 
-    run_lw configuration-set create Debug app=variant:Debug >/dev/null 2>&1 \
-        || { bad "$mod configuration-set create"; return; }
-    run_lw profile create Debug "$tool" >/dev/null 2>&1 \
-        || { bad "$mod profile create"; return; }
+    run_lw configuration-set create Debug app=variant:Debug > "$out" 2>&1 \
+        || { note_fail "$mod configuration-set create" $?; return; }
+    run_lw profile create Debug "$tool" > "$out" 2>&1 \
+        || { note_fail "$mod profile create" $?; return; }
     local prof="Debug:$tool"
 
-    if run_lw build "$prof" 2>&1 | grep -q "BUILD OK"; then ok "$mod build"; else bad "$mod build"; return; fi
-    if run_lw run "$prof" app 2>&1 | grep -q "APP-RAN-$mod"; then ok "$mod run"; else bad "$mod run"; fi
-    if run_lw test "$prof" 2>&1 | grep -q "TESTS OK"; then ok "$mod test"; else bad "$mod test"; fi
-    if run_lw clean "$prof" 2>&1 | grep -q "CLEAN OK"; then ok "$mod clean"; else bad "$mod clean"; fi
+    run_lw build "$prof" > "$out" 2>&1; rc=$?
+    if grep -q "BUILD OK" "$out"; then ok "$mod build"; else note_fail "$mod build" "$rc"; return; fi
+    run_lw run "$prof" app > "$out" 2>&1; rc=$?
+    if grep -q "APP-RAN-$mod" "$out"; then ok "$mod run"; else note_fail "$mod run" "$rc"; fi
+    run_lw test "$prof" > "$out" 2>&1; rc=$?
+    if grep -q "TESTS OK" "$out"; then ok "$mod test"; else note_fail "$mod test" "$rc"; fi
+    run_lw clean "$prof" > "$out" 2>&1; rc=$?
+    if grep -q "CLEAN OK" "$out"; then ok "$mod clean"; else note_fail "$mod clean" "$rc"; fi
 }
 
 # --- meson project ---------------------------------------------------------
