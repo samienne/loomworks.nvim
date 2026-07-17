@@ -1383,6 +1383,41 @@ function Workspace:release_build_dir_lock(dir, lock_type)
     self:_dequeue_build_dir_lock(dir)
 end
 
+--- Acquire the cross-process file lock (spec §16.6) for a build dir, refcounted
+--- per dir so concurrent same-process shared builds share one OS-level lock
+--- (a second acquire of our own lockfile would otherwise get EEXIST). This
+--- complements the in-process queue lock above — together they serialize a
+--- build dir both within this process and across processes (editor + CLI).
+--- Fail-fast: returns (false, reason) when another live process holds it.
+--- @param dir string normalized build dir
+--- @param action string "configure"|"build"|"clean"
+--- @return boolean ok, string|nil reason
+function Workspace:_acquire_file_lock(dir, action)
+    self._build_dir_file_locks = self._build_dir_file_locks or {}
+    local entry = self._build_dir_file_locks[dir]
+    if entry then
+        entry.refs = entry.refs + 1
+        return true
+    end
+    local handle, err = require("loomworks.build_lock").acquire(dir, action)
+    if not handle then return false, err end
+    self._build_dir_file_locks[dir] = { handle = handle, refs = 1 }
+    return true
+end
+
+--- Release one reference to the cross-process file lock; frees it at zero refs.
+--- @param dir string normalized build dir
+function Workspace:_release_file_lock(dir)
+    local locks = self._build_dir_file_locks
+    local entry = locks and locks[dir]
+    if not entry then return end
+    entry.refs = entry.refs - 1
+    if entry.refs <= 0 then
+        require("loomworks.build_lock").release(entry.handle)
+        locks[dir] = nil
+    end
+end
+
 --- Dequeue and run compatible operations from the build dir lock queue.
 --- @param dir string
 function Workspace:_dequeue_build_dir_lock(dir)
@@ -5586,6 +5621,16 @@ function Workspace:teardown()
     end
 
     self._build_dir_locks = {}
+
+    -- Release any held cross-process file locks (§16.6) so a workspace swap /
+    -- shutdown doesn't leave lockfiles behind.
+    if self._build_dir_file_locks then
+        local build_lock = require("loomworks.build_lock")
+        for _, entry in pairs(self._build_dir_file_locks) do
+            build_lock.release(entry.handle)
+        end
+        self._build_dir_file_locks = {}
+    end
     self._status_cursor_row = nil
 
     return self:stop_tasks_then(task_ids)

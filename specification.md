@@ -3352,9 +3352,15 @@ except SDK-provided toolchains (§10).
 
 A headless build is read-only toward project sources and toward the working
 copy. Only the cache and build directories are written, under the safety
-rules of §2.3 and §5.3. This contract does not serialize cross-process
+rules of §2.3 and §5.3. This contract does not itself serialize cross-process
 concurrent access to a shared build directory; a host MAY add advisory
-exclusion.
+exclusion. loomworks does: configure/build/clean hold a **per-build-directory
+advisory lockfile** — an `O_EXCL` create (atomic across processes) with an
+mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
+editor and the CLI share this lock, so neither builds a directory the other is
+building; acquisition is **fail-fast** (the loser reports the holder and
+declines rather than waiting). A stale lock is reclaimed automatically after
+the heartbeat window; `lw unlock` clears one immediately.
 
 ### 16.7 Reporting
 

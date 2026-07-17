@@ -442,6 +442,26 @@ local function start_one_task(overseer, task_def, on_complete)
                 return
             end
 
+            -- Cross-process gate (§16.6): in addition to the in-process lock,
+            -- hold a lockfile so a CLI (or another editor) can't build the same
+            -- directory concurrently. Fail-fast — release the in-process lock
+            -- and reject if another live process holds it.
+            if lw_meta.build_dir then
+                local ws = unit._workspace
+                if ws and ws._acquire_file_lock then
+                    local dir = ws._core._deps.normalize(lw_meta.build_dir)
+                    local ok_fl, fl_err = ws:_acquire_file_lock(dir, lw_meta.action)
+                    if not ok_fl then
+                        ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                        vim.schedule(function()
+                            vim.notify("loomworks: " .. tostring(fl_err), vim.log.levels.WARN)
+                        end)
+                        reject(fl_err)
+                        return
+                    end
+                end
+            end
+
             local build_result = task_def.builder()
             apply_nice(build_result, lw_meta.action)
             build_result.components = build_result.components or { "default" }
@@ -466,6 +486,7 @@ local function start_one_task(overseer, task_def, on_complete)
                 if ws then
                     local dir = ws._core._deps.normalize(lw_meta.build_dir)
                     ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                    if ws._release_file_lock then ws:_release_file_lock(dir) end
                 end
             end
 

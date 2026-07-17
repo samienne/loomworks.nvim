@@ -23,9 +23,11 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   stay editor-only.
 - **Keyless signing / provenance.** v1 signs a `SHA256SUMS` manifest with
   minisign; Sigstore / GitHub artifact attestations are a later upgrade.
-- **Cross-process build-dir locking.** v1 does not serialize concurrent
-  editor + CLI access to a shared build directory (spec §16.6); an advisory
-  fail-fast lock is a possible addition.
+- ~~**Cross-process build-dir locking.**~~ DONE — `lua/loomworks/build_lock.lua`:
+  a per-build-dir `O_EXCL` advisory lockfile with an mtime heartbeat (crash
+  reclaim), shared by the editor (`Workspace:_acquire_file_lock`, refcounted,
+  wired into overseer) and the CLI (`with_build_locks` around build/clean/test/
+  run). Fail-fast; `lw unlock <profile>|--all` to force-clear. Spec §16.6.
 - **Precise run-env scoping (Windows launch, §8.7).** Build-target launches
   currently prepend *every* shared-library output dir in the build tree to
   `PATH` (Windows only; matches `meson devenv` breadth). This can be narrowed

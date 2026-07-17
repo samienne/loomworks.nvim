@@ -9,7 +9,7 @@
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
 ---           profile <list|select|create|target> | tools | build [profile] |
 ---           clean [profile] | run <profile> [target] | publish | test [profile] |
----           config <...> | completion <shell> | help
+---           unlock <profile>|--all | config <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -37,10 +37,20 @@ end
 
 local M = {}
 
+-- Cleanups run before any os.exit() (both finish() and die()), so a build-dir
+-- lock is always released even when a step fails and we bail out.
+local _exit_hooks = {}
+local function on_exit(fn) _exit_hooks[#_exit_hooks + 1] = fn end
+local function run_exit_hooks()
+  for i = #_exit_hooks, 1, -1 do pcall(_exit_hooks[i]) end
+  _exit_hooks = {}
+end
+
 --- Exit, flushing stdout first. Under `nvim -l`, print() is fully buffered on
 --- a pipe and os.exit() skips the flush; luvi is fine but this keeps both hosts
 --- reliable.
 local function finish(code)
+  run_exit_hooks()
   io.stdout:flush()
   os.exit(code or 0)
 end
@@ -57,6 +67,7 @@ local function trunc(s, w)
 end
 
 local function die(msg, code)
+  run_exit_hooks()
   io.stdout:flush()
   io.stderr:write("lw: " .. tostring(msg) .. "\n")
   os.exit(code or 1)
@@ -610,10 +621,54 @@ local function run_build_steps(profile, ws, opts)
   return #steps
 end
 
+--- The distinct build directories a profile's projects map to.
+--- @param profile loomworks.Profile
+--- @return string[]
+local function profile_build_dirs(profile)
+  local dirs, seen = {}, {}
+  for _, pp in ipairs(profile:projects()) do
+    local bd = pp.build_dir and pp:build_dir()
+    if bd and not seen[bd] then seen[bd] = true; dirs[#dirs + 1] = bd end
+  end
+  return dirs
+end
+
+--- Hold a cross-process lock (spec §16.6) on every build directory of `profile`
+--- for the duration of `fn`, then release. Fail-fast: if any dir is in use by
+--- another process, dies with a clear message (releasing any already held). A
+--- release is also registered as an exit hook so a `die()` inside `fn` frees
+--- the locks too.
+--- @param profile loomworks.Profile
+--- @param action "build"|"clean"
+--- @param fn fun()
+local function with_build_locks(profile, action, fn)
+  local build_lock = require("loomworks.build_lock")
+  local held = {}
+  local function release_all()
+    for _, h in ipairs(held) do build_lock.release(h) end
+    held = {}
+  end
+  on_exit(release_all)
+  for _, bd in ipairs(profile_build_dirs(profile)) do
+    local h, err = build_lock.acquire(bd, action)
+    if not h then
+      release_all()
+      die("cannot " .. action .. ": " .. tostring(err))
+    end
+    held[#held + 1] = h
+  end
+  fn()
+  release_all()
+end
+
 function M.cmd_build(ws, profile_name)
   local profile
   profile, ws = resolve_build_target(ws, profile_name)
-  if run_build_steps(profile, ws) == 0 then
+  local built = 0
+  with_build_locks(profile, "build", function()
+    built = run_build_steps(profile, ws)
+  end)
+  if built == 0 then
     die("nothing to build for profile '" .. profile.key ..
       "' — no buildable projects (unavailable module or unresolved tool?)")
   end
@@ -634,15 +689,63 @@ function M.cmd_clean(ws, profile_name)
     die("nothing to clean for profile '" .. profile.key ..
       "' — no configured build directories.")
   end
-  out("cleaning profile: " .. profile.key)
-  for _, step in ipairs(steps) do
-    out(string.format("==> [clean] %s", step.name or "?"))
-    local code = run_spec(step, ws.root)
-    if code ~= 0 then
-      die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
+  with_build_locks(profile, "clean", function()
+    out("cleaning profile: " .. profile.key)
+    for _, step in ipairs(steps) do
+      out(string.format("==> [clean] %s", step.name or "?"))
+      local code = run_spec(step, ws.root)
+      if code ~= 0 then
+        die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
+      end
+    end
+  end)
+  out("CLEAN OK: " .. profile.key)
+  return 0
+end
+
+--- `lw unlock <profile> | --all` — force-remove build-dir locks (§16.6),
+--- for recovery after a crash left a stale lock. Warns before clearing a lock
+--- that still looks active (fresh heartbeat).
+function M.cmd_unlock(ws, args)
+  local build_lock = require("loomworks.build_lock")
+  local all, profile_name = false, nil
+  for i = 2, #args do
+    if args[i] == "--all" then all = true
+    elseif not profile_name then profile_name = args[i] end
+  end
+
+  local function unlock_dir(bd)
+    local info = build_lock.read(bd)
+    if not info then return false end
+    if not info.stale then
+      io.stderr:write(string.format(
+        "lw: forcing an ACTIVE lock (pid %s, %s, %ss ago): %s\n",
+        tostring(info.pid), tostring(info.action), tostring(info.age), bd))
+    end
+    build_lock.force(bd)
+    out("unlocked " .. bd)
+    return true
+  end
+
+  local targets = {}
+  if all then
+    for _, p in ipairs(ws._profiles or {}) do
+      for _, bd in ipairs(profile_build_dirs(p)) do targets[bd] = true end
+    end
+  else
+    if not profile_name then
+      die("usage: lw unlock <profile> | --all")
+    end
+    for _, bd in ipairs(profile_build_dirs(resolve_profile(ws, profile_name))) do
+      targets[bd] = true
     end
   end
-  out("CLEAN OK: " .. profile.key)
+
+  local removed = 0
+  for bd in pairs(targets) do
+    if unlock_dir(bd) then removed = removed + 1 end
+  end
+  if removed == 0 then out("no build-dir locks to clear") end
   return 0
 end
 
@@ -652,30 +755,35 @@ function M.cmd_test(ws, profile_name)
   local overseer = require("loomworks.overseer")
   local profile
   profile, ws = resolve_build_target(ws, profile_name)
-  -- Ensure configured + built, but skip building units whose native test
-  -- runner rebuilds itself (§16.16) — e.g. `meson test`. Dies on build failure.
-  run_build_steps(profile, ws, { for_test = true })
+  -- Hold the build-dir lock across build AND test: a native runner like
+  -- `meson test` rebuilds, so the whole run must be exclusive of other
+  -- processes touching the same build dir (§16.6).
+  with_build_locks(profile, "build", function()
+    -- Ensure configured + built, but skip building units whose native test
+    -- runner rebuilds itself (§16.16) — e.g. `meson test`. Dies on build failure.
+    run_build_steps(profile, ws, { for_test = true })
 
-  local test_steps, units = overseer.plan_profile_test(profile)
-  if not test_steps or #test_steps == 0 then
-    out("no tests to run for profile '" .. profile.key .. "'" ..
-      ((units and units > 0) and " — its modules expose no test runner" or ""))
-    return 0
-  end
+    local test_steps, units = overseer.plan_profile_test(profile)
+    if not test_steps or #test_steps == 0 then
+      out("no tests to run for profile '" .. profile.key .. "'" ..
+        ((units and units > 0) and " — its modules expose no test runner" or ""))
+      return
+    end
 
-  local failed = {}
-  for _, step in ipairs(test_steps) do
-    out(string.format("==> [test] %s", step.name or "?"))
-    local code = run_spec(step, ws.root)
-    if code ~= 0 then failed[#failed + 1] = step.name or "?" end
-  end
+    local failed = {}
+    for _, step in ipairs(test_steps) do
+      out(string.format("==> [test] %s", step.name or "?"))
+      local code = run_spec(step, ws.root)
+      if code ~= 0 then failed[#failed + 1] = step.name or "?" end
+    end
 
-  if #failed > 0 then
-    die(string.format("%d of %d test run(s) failed: %s",
-      #failed, #test_steps, table.concat(failed, ", ")), 1)
-  end
-  out(string.format("TESTS OK: %s (%d run%s)", profile.key, #test_steps,
-    #test_steps == 1 and "" or "s"))
+    if #failed > 0 then
+      die(string.format("%d of %d test run(s) failed: %s",
+        #failed, #test_steps, table.concat(failed, ", ")), 1)
+    end
+    out(string.format("TESTS OK: %s (%d run%s)", profile.key, #test_steps,
+      #test_steps == 1 and "" or "s"))
+  end)
   return 0
 end
 
@@ -791,7 +899,11 @@ function M.cmd_run(ws, args)
 
   -- Build the profile first (configures + builds); dies on failure. Build
   -- targets and the default target's artifact resolve against the built tree.
-  run_build_steps(profile, ws)
+  -- The build-dir lock is held only for the build — released before the launch,
+  -- which just executes the artifact and may run indefinitely.
+  with_build_locks(profile, "build", function()
+    run_build_steps(profile, ws)
+  end)
 
   local lt
   if target_name then
@@ -2387,7 +2499,7 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
   "profiles", "profile", "tools", "build", "clean", "test", "run", "launch", "publish",
-  "config", "completion", "version", "install", "self-update", "help", "--no-input",
+  "unlock", "config", "completion", "version", "install", "self-update", "help", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -2430,6 +2542,12 @@ function M.cmd_complete(cword, words)
       local ws = comp_ws(root)
       local names = comp_profile_names(ws)
       for _, s in ipairs(comp_set_names(ws)) do names[#names + 1] = s end -- onboarding form
+      emit(sorted_unique(names))
+    end
+    return 0
+  elseif cmd == "unlock" then
+    if n == 1 then
+      local names = comp_profile_names(comp_ws(root)); names[#names + 1] = "--all"
       emit(sorted_unique(names))
     end
     return 0
@@ -2586,6 +2704,18 @@ created are skipped. Non-zero exit on any failure.
 Profile resolution matches `lw build` (a unique substring works; --no-input
 requires an explicit profile). To remove a build directory entirely rather than
 just its artifacts, delete `.nvim/build/<project>/<tool>/<config>/`.]],
+  unlock = [[lw unlock <profile> | --all
+
+Force-remove build-directory locks. loomworks serializes configure/build/clean
+on a build dir across processes (editor + CLI) with an advisory lockfile
+(spec §16.6); a crashed process's lock is normally reclaimed automatically once
+its heartbeat goes stale (~20s). Use `unlock` to clear one immediately.
+
+  <profile>   clear locks on that profile's build dirs
+  --all       clear locks on every profile's build dirs
+
+Warns (on stderr) before clearing a lock that still looks active — meaning a
+build may really be running elsewhere.]],
   run = [[lw run <profile> [target] [-- prog-args…]
 
 Resolve a profile and a launch target, then build -> deploy -> execute (spec
@@ -3063,6 +3193,8 @@ local function main()
     finish(M.cmd_build(ws, a[2]))
   elseif command == "clean" then
     finish(M.cmd_clean(ws, a[2]))
+  elseif command == "unlock" then
+    finish(M.cmd_unlock(ws, a))
   elseif command == "test" then
     finish(M.cmd_test(ws, a[2]))
   elseif command == "run" then
