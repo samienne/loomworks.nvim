@@ -50,3 +50,58 @@ jobs:
 
       - name: Run standalone suite
         run: ./luvi tests/standalone
+
+  cli-e2e:
+    name: CLI e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            luvi_asset: luvi-Linux-x86_64-luajit-regular
+          - os: macos-latest
+            luvi_asset: luvi-Darwin-arm64-luajit-regular
+          - os: windows-latest
+            luvi_asset: luvi-Windows-amd64-luajit-regular.exe
+    steps:
+      - uses: actions/checkout@v5
+
+      # A C/C++ toolchain + cmake/meson/ninja so the CLI can actually configure
+      # and build the sample projects. On Windows we use mingw (self-contained
+      # gcc — no VS dev-shell needed) which also exercises the run-env DLL setup.
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build meson g++
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja meson
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ninja mingw -y
+          python -m pip install --upgrade meson
+
+      - name: Fetch luvi
+        shell: bash
+        run: |
+          asset="${{ matrix.luvi_asset }}"
+          out="luvi"; [ "${asset##*.}" = "exe" ] && out="luvi.exe"
+          curl -fsSL -o "$out" \
+            "https://github.com/luvit/luvi/releases/download/v2.15.0/${asset}"
+          chmod +x "$out" || true
+
+      - name: Fuse the lw binary
+        shell: bash
+        run: |
+          if [ -f luvi.exe ]; then ./luvi.exe lua --output lw.exe; else ./luvi lua --output lw; fi
+
+      - name: Run CLI end-to-end (meson + cmake, build/run/test/clean)
+        shell: bash
+        run: |
+          export LOOMWORKS_LUA="$PWD/lua"
+          lw="./lw"; [ -f lw.exe ] && lw="./lw.exe"
+          LW="$lw" bash scripts/ci/cli-e2e.sh
