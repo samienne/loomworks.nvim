@@ -97,11 +97,18 @@ jobs:
       - name: Fuse the lw binary
         shell: bash
         run: |
-          if [ -f luvi.exe ]; then ./luvi.exe lua --output lw.exe; else ./luvi lua --output lw; fi
+          if [ -f luvi.exe ]; then ./luvi.exe lua --output lw.exe; else ./luvi lua --output lw && chmod +x lw; fi
+
+      - name: Smoke test — the fused binary runs
+        shell: bash
+        run: |
+          export LOOMWORKS_LUA="$PWD/lua"
+          lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
+          "$lw" version
 
       - name: Run CLI end-to-end (meson + cmake, build/run/test/clean)
         shell: bash
         run: |
           export LOOMWORKS_LUA="$PWD/lua"
-          lw="./lw"; [ -f lw.exe ] && lw="./lw.exe"
+          lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
           LW="$lw" bash scripts/ci/cli-e2e.sh

@@ -13,6 +13,17 @@
 set -u
 
 LW="${LW:-lw --dev}"
+
+# The runner drives each project from inside its own temp workspace (cd below),
+# so a relative binary like `./lw` would stop resolving. Make the binary
+# absolute up front; a bare command found on PATH (e.g. `lw`) is left as-is.
+set -- $LW
+_bin="$1"; shift
+if [ -e "$_bin" ]; then
+    _bin="$(cd "$(dirname "$_bin")" && pwd)/$(basename "$_bin")"
+fi
+LW="$_bin${*:+ $*}"
+
 PASS=0
 FAIL=0
 
