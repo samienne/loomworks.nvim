@@ -785,9 +785,11 @@ replaces it, which would drop `PATH`).
   identical; the runner only swaps the executor (direct `vim.system` vs
   overseer). Build-target launches set up a run environment (§8.7): core
   prepends the build tree's shared-library output dirs plus the module's
-  `runtime_path()` (toolchain runtime) to `PATH`, composed via
-  `loomworks.runenv` (shared with the meson test runner), so DLL/`.so`-dependent
-  executables run without a manual dev shell.
+  `runtime_path()` (toolchain runtime) to `PATH`. `ConfigUnit:run_env()` is the
+  single source of truth (composed via `loomworks.runenv`); both target launches
+  and the test runners use it, so a DLL/`.so`-dependent executable resolves its
+  siblings identically whether run or tested. `ctest`, unlike `meson test`, does
+  not set this up itself, so `lw test` must parse targets before planning.
 - `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
   profile's default launch target (writes `user.json`; spec §16.9 authoring).
 

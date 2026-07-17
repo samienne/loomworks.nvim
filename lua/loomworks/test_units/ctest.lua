@@ -486,7 +486,11 @@ function CTestUnit:run_command_all(opts)
         cmd[#cmd + 1] = "-R"
         cmd[#cmd + 1] = opts.filter
     end
-    return { cmd = cmd, cwd = self._build_dir }
+    -- On Windows the test executables loaded by ctest must find their sibling
+    -- DLLs (shared libraries built into subfolders of the tree); ctest does not
+    -- set this up itself, so we prepend the same run environment a target launch
+    -- uses (§8.7). Nil on POSIX / when nothing needs adding — inherit as-is.
+    return { cmd = cmd, cwd = self._build_dir, env = self._config_unit:run_env() }
 end
 
 --- `ctest` does not build — it assumes an already-built tree — so a headless

@@ -4,12 +4,16 @@
 
 local Target = require("loomworks.target")
 local LaunchTarget = require("loomworks.launch_target")
+local ConfigUnit = require("loomworks.config_unit")
 
---- Minimal ConfigUnit stub: only what resolve_run_spec touches.
+--- Minimal ConfigUnit stub: only what resolve_run_spec touches. The real
+--- `run_env` method reads solely `self`-fields the stubs provide, so we attach
+--- it verbatim — resolve_run_spec then exercises the true run-env logic.
 local function stub_unit(build_dir, project_key)
     return {
         build_dir = function() return build_dir end,
         _project = { key = project_key },
+        run_env = ConfigUnit.run_env,
     }
 end
 
@@ -51,6 +55,7 @@ describe("Target:resolve_run_spec", function()
         local unit = {
             build_dir = function() return "/b" end,
             _project = { key = "app", abs_path = function() return "/ws/app" end },
+            run_env = ConfigUnit.run_env,
         }
         local t = Target.new(unit, "app", { type = "executable", artifact = "app.exe" })
         assert.equals("/ws/app", t:resolve_run_spec().cwd)
@@ -60,6 +65,7 @@ describe("Target:resolve_run_spec", function()
         local unit = {
             build_dir = function() return "/b" end,
             _project = { key = "app", abs_path = function() return "/ws/app" end },
+            run_env = ConfigUnit.run_env,
         }
         local t = Target.new(unit, "app", { type = "executable", artifact = "app.exe" })
         assert.equals("/custom/run", t:resolve_run_spec({ working_dir = "/custom/run" }).cwd)
@@ -78,6 +84,7 @@ describe("Target run environment (§8.7)", function()
                 _module = opts.module and { impl = opts.module } or nil,
             },
             targets = targets,
+            run_env = ConfigUnit.run_env,
         }
     end
 

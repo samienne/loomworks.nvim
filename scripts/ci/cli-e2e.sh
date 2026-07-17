@@ -69,41 +69,72 @@ note_fail() { # $1 = description   $2 = exit code
 }
 
 # Drive one module's project through the full CLI flow.
-#   $1 = module (meson|cmake)   $2 = workspace dir with app/ inside
+#   $1 = label (for messages)   $2 = module (meson|cmake)
+#   $3 = workspace dir with app/ inside   $4 = marker to grep in `lw run` output
 run_case() {
-    local mod="$1" ws="$2" out="$TMP/out.txt" rc
-    say "$mod project"
-    cd "$ws" || { bad "$mod: cd"; return; }
+    local label="$1" mod="$2" ws="$3" marker="$4" out="$TMP/out.txt" rc
+    say "$label project"
+    cd "$ws" || { bad "$label: cd"; return; }
 
-    run_lw init > "$out" 2>&1 || { note_fail "$mod init" $?; return; }
-    run_lw project add ./app "$mod" > "$out" 2>&1 || { note_fail "$mod project add" $?; return; }
+    run_lw init > "$out" 2>&1 || { note_fail "$label init" $?; return; }
+    run_lw project add ./app "$mod" > "$out" 2>&1 || { note_fail "$label project add" $?; return; }
 
     local tool
     tool=$(pick_tool)
     if [ -z "$tool" ]; then
         run_lw tools > "$out" 2>&1 # capture what was (not) detected
-        note_fail "$mod: no toolchain detected" 0
+        note_fail "$label: no toolchain detected" 0
         return
     fi
-    ok "$mod toolchain: $tool"
+    ok "$label toolchain: $tool"
 
     run_lw configuration-set create Debug app=variant:Debug > "$out" 2>&1 \
-        || { note_fail "$mod configuration-set create" $?; return; }
+        || { note_fail "$label configuration-set create" $?; return; }
     run_lw profile create Debug "$tool" > "$out" 2>&1 \
-        || { note_fail "$mod profile create" $?; return; }
+        || { note_fail "$label profile create" $?; return; }
     local prof="Debug:$tool"
 
     run_lw build "$prof" > "$out" 2>&1; rc=$?
-    if grep -q "BUILD OK" "$out"; then ok "$mod build"; else note_fail "$mod build" "$rc"; return; fi
+    if grep -q "BUILD OK" "$out"; then ok "$label build"; else note_fail "$label build" "$rc"; return; fi
     run_lw run "$prof" app > "$out" 2>&1; rc=$?
-    if grep -q "APP-RAN-$mod" "$out"; then ok "$mod run"; else note_fail "$mod run" "$rc"; fi
+    if grep -q "$marker" "$out"; then ok "$label run"; else note_fail "$label run" "$rc"; fi
     run_lw test "$prof" > "$out" 2>&1; rc=$?
-    if grep -q "TESTS OK" "$out"; then ok "$mod test"; else note_fail "$mod test" "$rc"; fi
+    if grep -q "TESTS OK" "$out"; then ok "$label test"; else note_fail "$label test" "$rc"; fi
     run_lw clean "$prof" > "$out" 2>&1; rc=$?
-    if grep -q "CLEAN OK" "$out"; then ok "$mod clean"; else note_fail "$mod clean" "$rc"; fi
+    if grep -q "CLEAN OK" "$out"; then ok "$label clean"; else note_fail "$label clean" "$rc"; fi
 }
 
-# --- meson project ---------------------------------------------------------
+# A shared library's exported symbol. Exported on Windows via __declspec;
+# default-visible everywhere else. Guarded so the same source builds under
+# MSVC, mingw-gcc, gcc and clang.
+greet_lib_source() {
+    cat <<'CPP'
+#ifdef _WIN32
+#  define GREET_API __declspec(dllexport)
+#else
+#  define GREET_API
+#endif
+extern "C" GREET_API const char *greet() { return "LINKED-OK"; }
+CPP
+}
+
+# main.cpp for a multi-lib app: calls into the shared library in ../lib.
+# Prints LINKED-OK only if the .dll/.so was found and loaded at runtime,
+# which on Windows depends on `lw run` putting the lib dir on PATH.
+multilib_main_source() {
+    cat <<'CPP'
+#include <cstdio>
+#ifdef _WIN32
+#  define GREET_API __declspec(dllimport)
+#else
+#  define GREET_API
+#endif
+extern "C" GREET_API const char *greet();
+int main() { printf("greeting=%s\n", greet()); return 0; }
+CPP
+}
+
+# --- meson project (single executable) -------------------------------------
 mkdir -p "$TMP/meson/app"
 cat > "$TMP/meson/app/meson.build" <<'MB'
 project('app', 'cpp')
@@ -114,9 +145,9 @@ cat > "$TMP/meson/app/main.cpp" <<'CPP'
 #include <cstdio>
 int main() { printf("APP-RAN-meson\n"); return 0; }
 CPP
-run_case meson "$TMP/meson"
+run_case meson meson "$TMP/meson" "APP-RAN-meson"
 
-# --- cmake project ---------------------------------------------------------
+# --- cmake project (single executable) -------------------------------------
 mkdir -p "$TMP/cmake/app"
 cat > "$TMP/cmake/app/CMakeLists.txt" <<'CM'
 cmake_minimum_required(VERSION 3.16)
@@ -129,7 +160,43 @@ cat > "$TMP/cmake/app/main.cpp" <<'CPP'
 #include <cstdio>
 int main() { printf("APP-RAN-cmake\n"); return 0; }
 CPP
-run_case cmake "$TMP/cmake"
+run_case cmake cmake "$TMP/cmake" "APP-RAN-cmake"
+
+# --- meson multi-lib (shared library in a subfolder) -----------------------
+# The exe links a shared library built under app/lib/, so its .dll/.so lands
+# in a build subdir, NOT next to the exe. Exercises the run-environment:
+# Windows needs the lib dir on PATH (`lw run`); POSIX relies on rpath.
+mkdir -p "$TMP/meson-ml/app/lib"
+cat > "$TMP/meson-ml/app/meson.build" <<'MB'
+project('app', 'cpp')
+subdir('lib')
+exe = executable('app', 'main.cpp', link_with: greetlib)
+test('t', exe)
+MB
+cat > "$TMP/meson-ml/app/lib/meson.build" <<'MB'
+greetlib = shared_library('greet', 'greet.cpp')
+MB
+greet_lib_source   > "$TMP/meson-ml/app/lib/greet.cpp"
+multilib_main_source > "$TMP/meson-ml/app/main.cpp"
+run_case meson-multilib meson "$TMP/meson-ml" "LINKED-OK"
+
+# --- cmake multi-lib (shared library in a subfolder) -----------------------
+mkdir -p "$TMP/cmake-ml/app/lib"
+cat > "$TMP/cmake-ml/app/CMakeLists.txt" <<'CM'
+cmake_minimum_required(VERSION 3.16)
+project(app CXX)
+enable_testing()
+add_subdirectory(lib)
+add_executable(app main.cpp)
+target_link_libraries(app PRIVATE greet)
+add_test(NAME t COMMAND app)
+CM
+cat > "$TMP/cmake-ml/app/lib/CMakeLists.txt" <<'CM'
+add_library(greet SHARED greet.cpp)
+CM
+greet_lib_source   > "$TMP/cmake-ml/app/lib/greet.cpp"
+multilib_main_source > "$TMP/cmake-ml/app/main.cpp"
+run_case cmake-multilib cmake "$TMP/cmake-ml" "LINKED-OK"
 
 printf '\n=== summary: %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -299,6 +299,65 @@ function ConfigUnit:build_dir()
     return self.build_dir_value
 end
 
+--- Compose the run environment for this unit's built executables (§8.7):
+--- prepend to `PATH` (1) the build tree's shared-library / module-library
+--- output directories — so a DLL-dependent executable finds its siblings —
+--- derived generically from parsed targets, and (2) any `runtime_path()`
+--- directories the owning module supplies for the toolchain runtime (§8.4).
+---
+--- Windows only: on Linux/macOS shared libraries are resolved via the rpath the
+--- build system bakes into the tree, so nothing is prepended. Directories are
+--- added in a deterministic (sorted) order so `PATH` precedence is stable.
+---
+--- The single source of truth for the run environment. Both target launches
+--- (`Target:resolve_run_spec`) and the test runner use it, so a DLL-dependent
+--- executable resolves its siblings identically whether run or tested. Returns
+--- nil when there is nothing to add (leave the process env inherited as-is).
+--- @return table<string,string>|nil
+function ConfigUnit:run_env()
+    if vim.fn.has("win32") ~= 1 then return nil end
+
+    local build_dir = self:build_dir()
+    if not build_dir or build_dir == "" then return nil end
+
+    local prefix, seen = {}, {}
+    local function add(dir)
+        if type(dir) == "string" and dir ~= "" and not seen[dir] then
+            seen[dir] = true
+            prefix[#prefix + 1] = dir
+        end
+    end
+
+    -- (1) Toolchain runtime dirs (module-specific, e.g. compiler bin dir).
+    local mod = self._project and self._project._module and self._project._module.impl
+    if mod and mod.runtime_path then
+        local ok, dirs = pcall(mod.runtime_path, {
+            build_dir = build_dir,
+            tool_data = self._tool_data,
+            config_name = self.variant and self:variant() or nil,
+        })
+        if ok and type(dirs) == "table" then
+            for _, d in ipairs(dirs) do add(d) end
+        end
+    end
+
+    -- (2) Shared-library sibling output dirs (generic, from parse_targets).
+    -- Sorted so PATH precedence is deterministic (parse output is unordered).
+    local lib_dirs = {}
+    for _, t in pairs(self.targets or {}) do
+        if (t.type == "shared_library" or t.type == "module_library") and t.artifact then
+            local full = (build_dir .. "/" .. t.artifact):gsub("\\", "/")
+            local d = full:match("^(.*)/[^/]*$")
+            if d then lib_dirs[#lib_dirs + 1] = d end
+        end
+    end
+    table.sort(lib_dirs)
+    for _, d in ipairs(lib_dirs) do add(d) end
+
+    if #prefix == 0 then return nil end
+    return require("loomworks.runenv").compose(prefix)
+end
+
 --- Get the Tool domain object for this unit.
 --- @return loomworks.Tool|nil
 function ConfigUnit:tool_object()

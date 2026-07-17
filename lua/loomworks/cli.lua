@@ -749,6 +749,30 @@ function M.cmd_unlock(ws, args)
   return 0
 end
 
+--- Ensure a config unit's build targets are parsed — the headless equivalent
+--- of the editor's post-configure scan (workspace.lua). No-op if already
+--- parsed or the module exposes no target introspection. Requires a configured
+--- build dir, so the caller must build first.
+local function ensure_unit_targets(ws, unit)
+  if not unit or unit.targets then return end
+  local project = unit._project
+  local mod = project and project._module and project._module.impl
+  local build_dir = unit.build_dir and unit:build_dir()
+  if not (mod and mod.parse_targets and build_dir) then return end
+  -- config_name is the module build type (e.g. "Debug"); matters for
+  -- multi-config generators, ignored by single-config ones.
+  local cfg = unit.configuration and unit:configuration()
+  local config_name = (cfg and cfg.module_config and cfg.module_config.variant)
+    or (unit._cached_module_config and unit._cached_module_config.variant)
+    or (unit.variant and unit:variant())
+  local ok, targets = pcall(mod.parse_targets, {
+    build_dir = build_dir,
+    project_path = ws.root .. "/" .. (project.path or project.key),
+    config_name = config_name,
+  })
+  if ok and targets then unit:set_targets(targets) end
+end
+
 --- `lw test [profile]` — build a profile, then run its tests via each module's
 --- native runner, reporting a real exit code (spec §16.16).
 function M.cmd_test(ws, profile_name)
@@ -762,6 +786,12 @@ function M.cmd_test(ws, profile_name)
     -- Ensure configured + built, but skip building units whose native test
     -- runner rebuilds itself (§16.16) — e.g. `meson test`. Dies on build failure.
     run_build_steps(profile, ws, { for_test = true })
+
+    -- Parse build targets before planning: the test step's run environment
+    -- (§8.7 — sibling DLL dirs on Windows) is derived from parsed targets, and
+    -- ctest, unlike `meson test`, does not set that up itself. Without this a
+    -- DLL-dependent test executable fails in the loader (0xc0000135).
+    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
 
     local test_steps, units = overseer.plan_profile_test(profile)
     if not test_steps or #test_steps == 0 then
@@ -791,30 +821,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Launch configurations + run
 -- ---------------------------------------------------------------------------
-
---- Ensure a config unit's build targets are parsed — the headless equivalent
---- of the editor's post-configure scan (workspace.lua). No-op if already
---- parsed or the module exposes no target introspection. Requires a configured
---- build dir, so the caller must build first.
-local function ensure_unit_targets(ws, unit)
-  if not unit or unit.targets then return end
-  local project = unit._project
-  local mod = project and project._module and project._module.impl
-  local build_dir = unit.build_dir and unit:build_dir()
-  if not (mod and mod.parse_targets and build_dir) then return end
-  -- config_name is the module build type (e.g. "Debug"); matters for
-  -- multi-config generators, ignored by single-config ones.
-  local cfg = unit.configuration and unit:configuration()
-  local config_name = (cfg and cfg.module_config and cfg.module_config.variant)
-    or (unit._cached_module_config and unit._cached_module_config.variant)
-    or (unit.variant and unit:variant())
-  local ok, targets = pcall(mod.parse_targets, {
-    build_dir = build_dir,
-    project_path = ws.root .. "/" .. (project.path or project.key),
-    config_name = config_name,
-  })
-  if ok and targets then unit:set_targets(targets) end
-end
 
 --- Enumerate launchable targets in a profile: command launch configs and
 --- executable build targets across the profile's mapped projects. Each entry:
