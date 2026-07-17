@@ -916,6 +916,72 @@ function M.cmd_launch_add(root, args)
   return 0
 end
 
+--- `lw launch set <project> <name> [flags]` — modify an existing launch config
+--- in place (§8.7). Reads the config, applies only the given changes, saves it
+--- back to the project's working copy.
+---   --working-dir D | --clear-working-dir
+---   --env K=V (add/update, repeatable) | --unset-env K (remove, repeatable)
+---   --command C | --from-target T   (switch kind)
+---   trailing positionals replace args | --clear-args
+function M.cmd_launch_set(root, args)
+  local proj_name, name = args[3], args[4]
+  if not (proj_name and name) then
+    die("usage: lw launch set <project> <name> [--working-dir D|--clear-working-dir] " ..
+      "[--env K=V] [--unset-env K] [--command C|--from-target T] [args…|--clear-args]")
+  end
+  local ws = load_workspace(root, false)
+  local project = resolve_project(ws, proj_name)
+  local cur = project.launch and project.launch[name]
+  if type(cur) ~= "table" then
+    die("no launch config '" .. name .. "' on project '" .. project.key ..
+      "' — create it with `lw launch add`")
+  end
+
+  -- Copy so a save failure leaves the in-memory config untouched. Preserve
+  -- fields we don't edit (e.g. deploy, debug); deep-copy the mutated tables.
+  local new = {}
+  for k, v in pairs(cur) do new[k] = v end
+  if type(new.env) == "table" then
+    local e = {}; for k, v in pairs(new.env) do e[k] = v end; new.env = e
+  end
+  if type(new.args) == "table" then
+    local a = {}; for i, v in ipairs(new.args) do a[i] = v end; new.args = a
+  end
+
+  local new_args, touched = nil, false
+  local i = 5
+  while args[i] do
+    local v = args[i]
+    if v == "--working-dir" or v == "--cwd" then new.working_dir = args[i + 1]; touched = true; i = i + 2
+    elseif v == "--clear-working-dir" then new.working_dir = nil; touched = true; i = i + 1
+    elseif v == "--env" then
+      local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
+      if not k then die("bad --env '" .. tostring(args[i + 1]) .. "' — use KEY=VALUE") end
+      new.env = new.env or {}; new.env[k] = val; touched = true; i = i + 2
+    elseif v == "--unset-env" then
+      local k = args[i + 1]
+      if not k then die("--unset-env needs a KEY") end
+      if type(new.env) == "table" then
+        new.env[k] = nil
+        if not next(new.env) then new.env = nil end
+      end
+      touched = true; i = i + 2
+    elseif v == "--clear-args" then new.args = nil; touched = true; i = i + 1
+    elseif v == "--command" then new.command = args[i + 1]; new.target = nil; touched = true; i = i + 2
+    elseif v == "--from-target" then new.target = args[i + 1]; new.command = nil; touched = true; i = i + 2
+    else new_args = new_args or {}; new_args[#new_args + 1] = v; i = i + 1 end
+  end
+  if new_args then new.args = new_args; touched = true end
+  if not touched then
+    die("nothing to change — pass e.g. --working-dir D, --env K=V, --unset-env K")
+  end
+
+  local ok, err = project:save_launch_config(name, new)
+  if not ok then die("could not save launch config: " .. tostring(err)) end
+  out(string.format("updated launch config '%s' on project '%s'", name, project.key))
+  return M.cmd_launch_show(root, project.key, name)
+end
+
 --- `lw launch show <project> <name>`
 function M.cmd_launch_show(root, proj_name, name)
   if not (proj_name and name) then die("usage: lw launch show <project> <name>") end
@@ -951,9 +1017,10 @@ end
 function M.cmd_launch(sub, root, args)
   if sub == nil or sub == "list" then return M.cmd_launch_list(load_workspace(root, false), args[3]) end
   if sub == "add" then return M.cmd_launch_add(root, args) end
+  if sub == "set" or sub == "edit" then return M.cmd_launch_set(root, args) end
   if sub == "show" then return M.cmd_launch_show(root, args[3], args[4]) end
   if sub == "remove" or sub == "rm" then return M.cmd_launch_remove(root, args[3], args[4]) end
-  die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|show|remove")
+  die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|set|show|remove")
 end
 
 --- loomworks.json is written later by `lw publish` (working-copy model, §2.4).
@@ -2328,11 +2395,11 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "launch" then
-    if n == 1 then emit({ "list", "add", "show", "remove" }); return 0 end
-    if n == 2 and has({ "add", "show", "remove", "rm", "list" }, sub) then
+    if n == 1 then emit({ "list", "add", "set", "show", "remove" }); return 0 end
+    if n == 2 and has({ "add", "set", "show", "remove", "rm", "list" }, sub) then
       emit(comp_project_names(comp_ws(root))); return 0                     -- <project>
     end
-    if n == 3 and has({ "show", "remove", "rm" }, sub) then
+    if n == 3 and has({ "set", "show", "remove", "rm" }, sub) then
       emit(comp_launch_names(comp_ws(root), a[3]))                         -- <name>
     end
     return 0
@@ -2506,6 +2573,13 @@ args/env/working-dir layered on top — no hand-written path.
   add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]
         Declare a target-backed launch config from a build target (by name).
         e.g. lw launch add app run --from-target app --working-dir . --env FOO=bar
+  set <project> <name> [flags]   Modify an existing config in place (only the
+        given fields change). Flags:
+          --working-dir D | --clear-working-dir
+          --env K=V (add/update, repeat) | --unset-env K (remove, repeat)
+          --command C | --from-target T   (switch kind)
+          trailing args replace the arg list | --clear-args
+        e.g. lw launch set app run --env PORT=9090 --unset-env FOO --working-dir .
   show <project> <name>       Detail one config.
   remove <project> <name>     Delete one config.
 
