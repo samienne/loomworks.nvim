@@ -49,6 +49,13 @@ end
 --- CLI output (the parseable part) must use io.write on both hosts.
 local function out(s) io.write((s or "") .. "\n") end
 
+--- Truncate `s` to width `w`, appending an ellipsis when it overflows.
+local function trunc(s, w)
+  s = tostring(s)
+  if #s <= w then return s end
+  return s:sub(1, math.max(1, w - 1)) .. "…"
+end
+
 local function die(msg, code)
   io.stdout:flush()
   io.stderr:write("lw: " .. tostring(msg) .. "\n")
@@ -840,28 +847,51 @@ function M.cmd_launch_list(ws, proj_name)
     end
   end
   table.sort(projs, function(a, b) return a.key < b.key end)
-  local any = false
+
+  -- Collect rows as (project, name, runs) so PROJECT and NAME lead, in the same
+  -- order you pass them to `lw launch show|set <project> <name>`.
+  local rows = {}
   for _, p in ipairs(projs) do
     local names = {}
     for n in pairs(p.launch) do names[#names + 1] = n end
     table.sort(names)
     for _, n in ipairs(names) do
-      any = true
       local cfg = p.launch[n]
-      local cmdstr
+      local runs
       if type(cfg) == "table" and cfg.target then
-        cmdstr = ("target:" .. cfg.target .. " " .. table.concat(cfg.args or {}, " ")):gsub("%s+$", "")
+        runs = "target:" .. cfg.target
       elseif type(cfg) == "table" and cfg.command then
-        cmdstr = (cfg.command .. " " .. table.concat(cfg.args or {}, " ")):gsub("%s+$", "")
+        runs = cfg.command
       else
-        cmdstr = "(no command)"
+        runs = "(no command)"
       end
-      out(string.format("  %-18s %s  [%s]", n, cmdstr, p.key))
+      if type(cfg) == "table" and cfg.args and #cfg.args > 0 then
+        runs = runs .. " " .. table.concat(cfg.args, " ")
+      end
+      rows[#rows + 1] = { project = p.key, name = n, runs = runs }
     end
   end
-  if not any then
+
+  if #rows == 0 then
     out("no launch configurations" .. (proj_name and (" for '" .. proj_name .. "'") or "") ..
-      ".\n  add one: lw launch add <project> <name> <command> [args…]")
+      ".\n  add one: lw launch add <project> <name> <command|--from-target T> [args…]")
+    return 0
+  end
+
+  -- Size the PROJECT / NAME columns to their contents (capped).
+  local pw, nw = #"PROJECT", #"NAME"
+  for _, r in ipairs(rows) do
+    pw = math.max(pw, #r.project)
+    nw = math.max(nw, #r.name)
+  end
+  pw = math.min(pw, 20); nw = math.min(nw, 24)
+  local fmt = "  %-" .. pw .. "s  %-" .. nw .. "s  %s"
+
+  out("Launch configs — pass PROJECT and NAME to `lw launch show|set`:")
+  out("")
+  out(string.format(fmt, "PROJECT", "NAME", "RUNS"))
+  for _, r in ipairs(rows) do
+    out(string.format(fmt, trunc(r.project, pw), trunc(r.name, nw), trunc(r.runs, 46)))
   end
   return 0
 end
@@ -2089,14 +2119,6 @@ function M.cmd_config(sub, key, value)
     return 0
   end
   die("unknown config subcommand '" .. tostring(sub) .. "' — use list|get|set|unset")
-end
-
---- Truncate `s` to about `w` columns with an ellipsis. Byte-approximate —
---- fine for the ASCII-ish content on the status page.
-local function trunc(s, w)
-  s = tostring(s)
-  if #s <= w then return s end
-  return s:sub(1, math.max(1, w - 1)) .. "…"
 end
 
 --- Print a capped section: a blank line, "Title (N)", up to `max` rows via
