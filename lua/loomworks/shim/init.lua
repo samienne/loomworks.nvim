@@ -180,11 +180,14 @@ function vim.fn.environ() return uv.os_environ() end
 function vim.fn.isdirectory(p) local st = uv.fs_stat(p); return (st and st.type == "directory") and 1 or 0 end
 function vim.fn.filereadable(p) local st = uv.fs_stat(p); return (st and st.type == "file") and 1 or 0 end
 function vim.fn.mkdir(path, flags)
+  local p = path:gsub("\\", "/")
+  -- Preserve a leading "/" (POSIX absolute) — gmatch("[^/]+") would otherwise
+  -- drop it and turn /tmp/x into a *relative* tmp/x. Windows absolute paths
+  -- keep their "C:" first segment, so they need no prefix.
+  local prefix = (p:sub(1, 1) == "/") and "/" or ""
   local acc = ""
-  local first = true
-  for seg in path:gsub("\\", "/"):gmatch("[^/]+") do
-    acc = first and seg or (acc .. "/" .. seg)
-    first = false
+  for seg in p:gmatch("[^/]+") do
+    acc = (acc == "") and (prefix .. seg) or (acc .. "/" .. seg)
     if not uv.fs_stat(acc) then pcall(uv.fs_mkdir, acc, 493) end
   end
   return 1
