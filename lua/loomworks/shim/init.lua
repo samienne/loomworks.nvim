@@ -269,29 +269,56 @@ local function build_spawn_env(env, clear_env)
   return list
 end
 
+--- Extension over nvim's `vim.system` for the headless launcher (spec §16.17):
+--- `opts.stdio == "inherit"` connects the child to this process's own
+--- stdin/stdout/stderr (fds 0/1/2) instead of capturing into pipes — so a
+--- launched program streams output live, reads stdin, and (with `opts.hide =
+--- false`) shows its window, exactly like a direct terminal launch. Build/test
+--- keep the default: captured pipes and, on Windows, hidden (no flashing
+--- console windows). `opts.hide` overrides the default hide behavior.
 function vim.system(cmd, opts, on_exit)
   opts = opts or {}
   local exe = win_exe(which(cmd[1]) or cmd[1])
   local args = {}
   for i = 2, #cmd do args[#args + 1] = cmd[i] end
-  local so, se = uv.new_pipe(false), uv.new_pipe(false)
+  local inherit = opts.stdio == "inherit"
+  local hide = opts.hide
+  if hide == nil then hide = IS_WINDOWS end
+
+  local so, se
+  local stdio
+  if inherit then
+    stdio = { 0, 1, 2 } -- inherit parent stdin/stdout/stderr
+  else
+    so, se = uv.new_pipe(false), uv.new_pipe(false)
+    stdio = { nil, so, se }
+  end
+
   local out, err = {}, {}
   local result, handle
   handle = uv.spawn(exe, {
     args = args,
-    stdio = { nil, so, se },
+    stdio = stdio,
     cwd = opts.cwd,
     env = build_spawn_env(opts.env, opts.clear_env),
-    hide = IS_WINDOWS,
+    hide = hide,
   }, function(code)
-    so:read_stop(); se:read_stop(); so:close(); se:close(); handle:close()
-    result = { code = code, stdout = table.concat(out), stderr = table.concat(err) }
+    if not inherit then
+      so:read_stop(); se:read_stop(); so:close(); se:close()
+    end
+    handle:close()
+    result = {
+      code = code,
+      stdout = inherit and "" or table.concat(out),
+      stderr = inherit and "" or table.concat(err),
+    }
     if on_exit then on_exit(result) end
   end)
   if not handle then
+    if not inherit then so:close(); se:close() end
     result = { code = 127, stdout = "", stderr = "spawn failed: " .. tostring(exe) }
     if on_exit then on_exit(result) end
-  else
+  elseif not inherit then
     uv.read_start(so, function(_, d) if d then out[#out + 1] = d end end)
     uv.read_start(se, function(_, d) if d then err[#err + 1] = d end end)
   end

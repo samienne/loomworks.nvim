@@ -3472,10 +3472,13 @@ toward configuration (§16.9).
 A headless **run** invocation resolves a profile (§16.3) and a **launch
 target**, then runs the editor's launch chain (§8.6, "Build flow"): build the
 target and its dependencies (§16.4), execute **deploy** steps (§8), and launch.
-The launched process's exit status is the invocation's exit status; its output
-streams to standard output/error. The run is read-only toward configuration
-(§16.9) and, like the editor's non-debug launch, excludes debugger attachment
-and device targets (both deferred).
+The launched process's exit status is the invocation's exit status. It runs
+**attached to the invoking terminal** — inherited standard input/output/error,
+and (on Windows) not hidden — so its output streams live, it can read input,
+and a GUI window appears, exactly like launching the binary directly. This is
+distinct from the build/test steps, whose tool output is captured. The run is
+read-only toward configuration (§16.9) and, like the editor's non-debug launch,
+excludes debugger attachment and device targets (both deferred).
 
 **Launch target selection.** The launch target is one of:
 

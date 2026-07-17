@@ -435,9 +435,29 @@ end
 --- @param step table { cmd, cwd, env }
 --- @param root string
 --- @return integer code
-local function run_spec(step, root)
+--- Spawn `step` and wait for it. Default: capture stdout/stderr and print them
+--- (build/test steps). `opts.launch` (spec §16.17): attach the child to this
+--- terminal (inherited stdio, window shown) so a launched program streams
+--- output live, reads stdin, and shows its GUI window — like a direct launch,
+--- not the hidden/captured spawn used for build tools.
+--- @param opts? { launch?: boolean }
+local function run_spec(step, root, opts)
   -- An empty env table would wipe PATH; inherit the parent env instead.
   local env = (step.env and next(step.env)) and step.env or nil
+  if opts and opts.launch then
+    -- Flush our own buffered output first: the child inherits the terminal and
+    -- writes directly, so anything we printed must land before its output
+    -- (otherwise our block-buffered stdout flushes only at exit, after the
+    -- child's live output).
+    io.stdout:flush(); io.stderr:flush()
+    local res = vim.system(step.cmd, {
+      cwd = step.cwd or root,
+      env = env,
+      stdio = "inherit",
+      hide = false,
+    }):wait()
+    return res.code
+  end
   local res = vim.system(step.cmd, {
     cwd = step.cwd or root,
     env = env,
@@ -808,7 +828,7 @@ function M.cmd_run(ws, args)
   for _, a in ipairs(spec.args or {}) do full[#full + 1] = a end
   out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
     table.concat(full, " ")))
-  return run_spec({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
+  return run_spec({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root, { launch = true })
 end
 
 --- `lw launch list [project]` — list command-type launch configs.
