@@ -168,9 +168,12 @@ end
 --- environment) for this executable target. Pure — expands nothing, spawns no
 --- task. Shared seam for `Target:launch` (editor) and the headless runner
 --- (§16.17): both resolve the same spec, then execute it via their own runner.
+--- @param opts? { working_dir?: string } working_dir is a pre-resolved
+---   absolute cwd override (§8.7); absent → the owning project's directory.
 --- @return { cmd: string, cwd: string, name: string, env: table|nil }|nil spec
 --- @return string|nil err
-function Target:resolve_run_spec()
+function Target:resolve_run_spec(opts)
+    opts = opts or {}
     if not self:is_executable() then
         return nil, "target '" .. tostring(self.id) .. "' is not an executable"
     end
@@ -185,10 +188,18 @@ function Target:resolve_run_spec()
     if not build_dir then
         return nil, "no build directory for target '" .. tostring(self.id) .. "'"
     end
-    local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
+    local project = unit._project
+    local project_name = project and project.key or unit._init_project_key or "?"
+    -- Working directory (§8.7): explicit override, else the project directory
+    -- (consistent with command-type launches), falling back to the build dir
+    -- only if the project dir can't be resolved.
+    local cwd = opts.working_dir
+    if not cwd or cwd == "" then
+        cwd = (project and project.abs_path and project:abs_path()) or build_dir
+    end
     return {
         cmd = build_dir .. "/" .. self.artifact,
-        cwd = build_dir,
+        cwd = cwd,
         name = project_name .. ": run " .. self.id,
         env = compose_run_env(unit, build_dir),
     }
@@ -196,8 +207,9 @@ end
 
 --- Launch this target (run the built artifact).
 --- Only works for executables with an artifact path.
-function Target:launch()
-    local spec, err = self:resolve_run_spec()
+--- @param opts? { working_dir?: string } pre-resolved absolute cwd override (§8.7)
+function Target:launch(opts)
+    local spec, err = self:resolve_run_spec(opts)
     if not spec then
         if err then vim.notify("loomworks: " .. err, vim.log.levels.WARN) end
         return

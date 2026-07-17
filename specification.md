@@ -1920,9 +1920,11 @@ Each profile can have a **default target** — a single executable target
 that `build_target()` builds instead of the full project.
 
 **Default target storage**:
-- `loomworks.user.json`: `default_target = { "<profile_key>": { "project": "<key>", "target": "<id>" } }`
-- Published profile definitions: `default_target = { "project": "<key>", "target": "<id>" }`
+- `loomworks.user.json`: `default_target = { "<profile_key>": { "project": "<key>", "target": "<id>", "working_dir"?: "<dir>" } }`
+- Published profile definitions: `default_target = { "project": "<key>", "target": "<id>", "working_dir"?: "<dir>" }`
 - User.json overrides published config.
+- `working_dir` is optional; absent means the default (the project directory,
+  §8.7). Absolute or workspace-root-relative, variable-expanded at launch.
 
 **Resolution**: `Profile:default_target()` returns a `LaunchTarget` object
 that holds direct references to the `Project`, `ConfigUnit`, and `Target`
@@ -1960,6 +1962,16 @@ is needed. Directories are added in a deterministic (sorted) order so `PATH`
 precedence is stable. Resolution (`Target:resolve_run_spec`) is shared with the
 headless runner (§16.17); only the executor differs (overseer in the editor,
 direct spawn headless).
+
+A module target runs with its **working directory** set to the owning
+project's directory (`workspace_root/<project.path>`) by default — the same
+default as a command-type launch (below), so both launch kinds are consistent.
+The default-target descriptor (§8.6) may carry an optional `working_dir` to
+override this persistently; it is stored in the working copy and published like
+the rest of the descriptor. A headless run (§16.17) may also override the
+working directory for a single invocation. Precedence: per-invocation override
+→ descriptor `working_dir` → project directory. An override may be absolute or
+workspace-root-relative and is variable-expanded in the launch context.
 
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.

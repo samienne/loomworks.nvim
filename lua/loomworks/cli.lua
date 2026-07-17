@@ -720,14 +720,16 @@ function M.cmd_run(ws, args)
     elseif seen_sep then extra_args[#extra_args + 1] = args[i]
     else pre[#pre + 1] = args[i] end
   end
-  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`);
-  -- remaining pre-`--` tokens are positional (profile, then optional target).
-  local positionals, proj_scope, kind = {}, nil, nil
+  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`) and a
+  -- per-invocation `--cwd <dir>` (§8.7); remaining pre-`--` tokens are
+  -- positional (profile, then optional target).
+  local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
   local i = 1
   while pre[i] do
     if pre[i] == "--project" then proj_scope = pre[i + 1]; i = i + 2
     elseif pre[i] == "--target" then kind = "target"; i = i + 1
     elseif pre[i] == "--launch" then kind = "launch"; i = i + 1
+    elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then cwd_override = pre[i + 1]; i = i + 2
     else positionals[#positionals + 1] = pre[i]; i = i + 1 end
   end
   local profile_name, target_name = positionals[1], positionals[2]
@@ -799,12 +801,13 @@ function M.cmd_run(ws, args)
   local dok, derr = lt:deploy_sync()
   if not dok then die("deploy failed: " .. tostring(derr)) end
 
-  local spec, serr = lt:resolve_launch_spec({ extra_args = extra_args })
+  local spec, serr = lt:resolve_launch_spec({ extra_args = extra_args, working_dir = cwd_override })
   if not spec then die("cannot resolve launch: " .. tostring(serr)) end
 
   local full = { spec.cmd }
   for _, a in ipairs(spec.args or {}) do full[#full + 1] = a end
-  out(string.format("running %s: %s", spec.name, table.concat(full, " ")))
+  out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
+    table.concat(full, " ")))
   return run_spec({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
 end
 
@@ -1834,13 +1837,14 @@ end
 --- profile first so its build targets are known).
 function M.cmd_profile_target(root, args)
   -- args: { "profile", "target", <profile>, <target?>, flags… }
-  local pos, scope, clear, kind = {}, nil, false, nil
+  local pos, scope, clear, kind, working_dir = {}, nil, false, nil, nil
   local i = 3
   while args[i] do
     if args[i] == "--clear" then clear = true; i = i + 1
     elseif args[i] == "--project" then scope = args[i + 1]; i = i + 2
     elseif args[i] == "--target" then kind = "target"; i = i + 1
     elseif args[i] == "--launch" then kind = "launch"; i = i + 1
+    elseif args[i] == "--cwd" or args[i] == "--working-dir" then working_dir = args[i + 1]; i = i + 2
     else pos[#pos + 1] = args[i]; i = i + 1 end
   end
   local profile_name, target_name = pos[1], pos[2]
@@ -1860,10 +1864,17 @@ function M.cmd_profile_target(root, args)
   if not target_name then
     if not profile:has_default_target_override() then
       out("profile '" .. profile.key .. "' has no default target set.")
-    else
-      local lt = profile:default_target()
-      out("default target for '" .. profile.key .. "': " ..
-        (lt and tostring(lt) or "(set but unresolved — build the profile?)"))
+      return 0
+    end
+    local lt = profile:default_target()
+    if not lt then
+      out("default target for '" .. profile.key .. "': (set but unresolved — build the profile?)")
+      return 0
+    end
+    out("default target for '" .. profile.key .. "': " .. tostring(lt))
+    if lt:is_module_target() then
+      out("  working dir: " .. (lt:working_directory() or "?") ..
+        (lt:has_working_dir_override() and "" or "  (default: project dir)"))
     end
     return 0
   end
@@ -1895,11 +1906,20 @@ function M.cmd_profile_target(root, args)
 
   local c = matches[1]
   if c.kind == "target" then
-    profile:set_default_target(c.project, c.target_id, nil)
+    profile:set_default_target(c.project, c.target_id, nil, working_dir)
   else
+    if working_dir then
+      out("note: --cwd is ignored for a command launch config — set its " ..
+        "working_dir on the launch config itself (`lw launch add … --working-dir`).")
+    end
     profile:set_default_target(c.project, nil, c.name)
   end
   out("default target for '" .. profile.key .. "' set to " .. fmt_cand(c))
+  local lt = profile:default_target()
+  if lt and lt:is_module_target() then
+    out("  working dir: " .. (lt:working_directory() or "?") ..
+      (lt:has_working_dir_override() and "" or "  (default: project dir)"))
+  end
   return 0
 end
 
@@ -2395,6 +2415,10 @@ code; output streams through.
   target       which target to launch. Omit to use the profile's DEFAULT
                target (`lw profile target`); if none is set and exactly one
                target is in scope, that one runs, else it errors.
+  --cwd <dir>  working directory for this run (absolute or workspace-root-
+               relative, variable-expanded). Overrides the target's stored /
+               default working dir just for this invocation. Default: the
+               owning project's directory.
   -- args…     everything after `--` is forwarded verbatim to the program
                (a command config's own declared args come first). Required to
                pass args, so a target name is never mistaken for one.
@@ -2545,13 +2569,15 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
             left unspecified is prompted on a terminal (errors otherwise).
             The profile key is derived from the set + tools. --activate also
             makes it active.
-  target <profile> [<target>|--clear]
+  target <profile> [<target>|--clear] [--cwd <dir>]
             Show, set, or clear a profile's DEFAULT launch target — what
             `lw run <profile>` runs with no target named. With no target, prints
-            the current default; `--clear` unsets it. Resolves a build target or
-            command launch config like `lw run` (build the profile first so its
-            build targets are known); `--target`/`--launch`/`--project`
-            disambiguate.
+            the current default and its working directory; `--clear` unsets it.
+            Resolves a build target or command launch config like `lw run`
+            (build the profile first so its build targets are known);
+            `--target`/`--launch`/`--project` disambiguate. `--cwd <dir>` stores
+            a persistent working directory for a build-target default (absolute
+            or workspace-root-relative); default is the project directory.
 
 The active profile is the default for `lw build`. `lw build` also accepts a
 substring, so `lw build clang-19` works when it's unambiguous.]],

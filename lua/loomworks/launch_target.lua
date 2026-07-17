@@ -44,6 +44,7 @@ function LaunchTarget:_update(descriptor)
     self._launch_name = descriptor.launch
     self._device_target_id = descriptor.device_target
     self._device_target_label = descriptor.device_target_label
+    self._working_dir = descriptor.working_dir
 
     -- Resolve project from descriptor key (deserialization from user.json)
     self._project = nil
@@ -471,7 +472,7 @@ function LaunchTarget:launch()
     if self._launch_config then
         self:_launch_command()
     elseif self._target and self._target:is_executable() then
-        self._target:launch()
+        self._target:launch({ working_dir = self:_effective_cwd() })
     end
 end
 
@@ -514,12 +515,53 @@ function LaunchTarget:resolve_command_spec()
     return { cmd = cmd, args = args, cwd = cwd, env = env }
 end
 
+--- Resolve the effective working directory for a **module-target** launch
+--- (§8.7): per-invocation `override` → the descriptor's `working_dir` → nil
+--- (let the target default to the project directory). Variable-expanded in the
+--- launch context; an absolute result is used as-is, otherwise it is taken
+--- relative to the workspace root. Returns an absolute path, or nil.
+--- @param override? string raw per-invocation working dir (may hold variables)
+--- @return string|nil
+function LaunchTarget:_effective_cwd(override)
+    local raw = override or self._working_dir
+    if not raw or raw == "" then return nil end
+    local ws = self._workspace
+    local ctx = expand.launch_context(ws, self._profile, self._project)
+    local ex = expand.expand_string(raw, ctx)
+    if ex:match("^/") or ex:match("^%a:") then return ex end
+    if ex == "." or ex == "./" then return ws.root end
+    return ws.root .. "/" .. ex
+end
+
+--- Whether this launch target is a module build target (executable), as
+--- opposed to a command launch configuration.
+--- @return boolean
+function LaunchTarget:is_module_target()
+    return self._target_id ~= nil and self._launch_name == nil
+end
+
+--- Effective working directory of a module-target launch, for display and the
+--- editor path: the descriptor's `working_dir` (expanded) or the project
+--- directory default (§8.7). Absolute, or nil if unresolvable.
+--- @return string|nil
+function LaunchTarget:working_directory()
+    return self:_effective_cwd() or (self._project and self._project:abs_path()) or nil
+end
+
+--- Whether this launch target carries an explicit `working_dir` override (vs
+--- defaulting to the project directory, §8.7).
+--- @return boolean
+function LaunchTarget:has_working_dir_override()
+    return self._working_dir ~= nil and self._working_dir ~= ""
+end
+
 --- Resolve this launch target to a normalized run spec, dispatching between a
 --- command launch configuration and an executable build target. Pure — spawns
 --- no task. `opts.extra_args` are appended to the argument list (the headless
 --- runner forwards `-- args` here, §16.17; a command config's own declared
---- arguments precede them). The editor calls with no extra args.
---- @param opts? { extra_args?: string[] }
+--- arguments precede them). `opts.working_dir` overrides the working directory
+--- for a module-target launch. The editor calls with no extra args.
+--- @param opts? { extra_args?: string[], working_dir?: string }
 --- @return { cmd: string, args: string[], cwd: string, env: table|nil, name: string }|nil spec
 --- @return string|nil err
 function LaunchTarget:resolve_launch_spec(opts)
@@ -531,7 +573,9 @@ function LaunchTarget:resolve_launch_spec(opts)
             spec.name = self._project.key .. ": " .. (self._launch_name or "launch")
         end
     elseif self._target and self._target:is_executable() then
-        local tspec, terr = self._target:resolve_run_spec()
+        local tspec, terr = self._target:resolve_run_spec({
+            working_dir = self:_effective_cwd(opts.working_dir),
+        })
         if tspec then
             spec = { cmd = tspec.cmd, args = {}, cwd = tspec.cwd, env = tspec.env, name = tspec.name }
         else

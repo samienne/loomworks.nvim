@@ -46,6 +46,24 @@ describe("Target:resolve_run_spec", function()
         assert.is_nil(spec)
         assert.is_truthy(err:find("no build directory"))
     end)
+
+    it("defaults the working dir to the project directory (§8.7)", function()
+        local unit = {
+            build_dir = function() return "/b" end,
+            _project = { key = "app", abs_path = function() return "/ws/app" end },
+        }
+        local t = Target.new(unit, "app", { type = "executable", artifact = "app.exe" })
+        assert.equals("/ws/app", t:resolve_run_spec().cwd)
+    end)
+
+    it("honors an explicit working_dir override", function()
+        local unit = {
+            build_dir = function() return "/b" end,
+            _project = { key = "app", abs_path = function() return "/ws/app" end },
+        }
+        local t = Target.new(unit, "app", { type = "executable", artifact = "app.exe" })
+        assert.equals("/custom/run", t:resolve_run_spec({ working_dir = "/custom/run" }).cwd)
+    end)
 end)
 
 describe("Target run environment (§8.7)", function()
