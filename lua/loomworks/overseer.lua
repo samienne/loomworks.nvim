@@ -800,6 +800,38 @@ function M.plan_profile_build(profile, opts)
     return steps
 end
 
+--- Build an overseer-free "clean" plan for a profile: one step per project's
+--- module clean task (e.g. `meson compile --clean`, `cmake --build --target
+--- clean`). Skips build dirs that don't exist on disk (nothing to clean —
+--- e.g. never configured). Intended for the headless runner (§16). Each step
+--- carries a ready-to-spawn `{cmd, cwd, env}`.
+--- @param profile loomworks.Profile
+--- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env }
+function M.plan_profile_clean(profile)
+    local tasks = collect_profile_clean_tasks(profile)
+    if not tasks then return nil end
+    local uv = vim.uv or vim.loop
+    local steps = {}
+    for _, td in ipairs(tasks) do
+        local build_dir = td.loomworks and td.loomworks.build_dir or nil
+        -- Nothing to clean if the build dir was never created.
+        if td.builder and (not build_dir or uv.fs_stat(build_dir)) then
+            local ok, spec = pcall(td.builder)
+            if ok and type(spec) == "table" and type(spec.cmd) == "table" then
+                steps[#steps + 1] = {
+                    kind = "clean",
+                    name = td.name,
+                    build_dir = build_dir,
+                    cmd = spec.cmd,
+                    cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
+                    env = spec.env,
+                }
+            end
+        end
+    end
+    return steps
+end
+
 --- Build a headless "run all tests" plan for a profile: one step per buildable
 --- unit's native test runner (TestUnit:run_command_all, spec §16.16). Assumes
 --- the profile has already been built. Returns the test steps plus the number

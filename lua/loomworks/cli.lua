@@ -8,7 +8,7 @@
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
 ---           profile <list|select|create|target> | tools | build [profile] |
----           run <profile> [target] | publish | test [profile] |
+---           clean [profile] | run <profile> [target] | publish | test [profile] |
 ---           config <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
@@ -618,6 +618,31 @@ function M.cmd_build(ws, profile_name)
       "' — no buildable projects (unavailable module or unresolved tool?)")
   end
   out("BUILD OK: " .. profile.key)
+  return 0
+end
+
+--- `lw clean [profile]` — run each project's build-system clean (e.g.
+--- `meson compile --clean`, `cmake --build --target clean`) on the profile's
+--- configured build dirs. Removes build artifacts but keeps the configuration
+--- (a later build reconfigures only if stale). Dies on any failure.
+function M.cmd_clean(ws, profile_name)
+  local overseer = require("loomworks.overseer")
+  local profile
+  profile, ws = resolve_build_target(ws, profile_name)
+  local steps = overseer.plan_profile_clean(profile)
+  if not steps or #steps == 0 then
+    die("nothing to clean for profile '" .. profile.key ..
+      "' — no configured build directories.")
+  end
+  out("cleaning profile: " .. profile.key)
+  for _, step in ipairs(steps) do
+    out(string.format("==> [clean] %s", step.name or "?"))
+    local code = run_spec(step, ws.root)
+    if code ~= 0 then
+      die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
+    end
+  end
+  out("CLEAN OK: " .. profile.key)
   return 0
 end
 
@@ -2361,7 +2386,7 @@ end
 
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
-  "profiles", "profile", "tools", "build", "test", "run", "launch", "publish",
+  "profiles", "profile", "tools", "build", "clean", "test", "run", "launch", "publish",
   "config", "completion", "version", "install", "self-update", "help", "--no-input",
 }
 
@@ -2400,7 +2425,7 @@ function M.cmd_complete(cword, words)
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then emit({ "dev-lua", "default-source" }) end
     return 0
-  elseif cmd == "build" or cmd == "test" then
+  elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
       local ws = comp_ws(root)
       local names = comp_profile_names(ws)
@@ -2550,6 +2575,17 @@ for a deterministic build (§16.9). The CI pattern is:
 Configures first if the build dir isn't configured, then builds. Non-zero
 exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
+  clean = [[lw clean [profile | config-set]
+
+Run each project's build-system clean on the profile's build directories
+(cmake -> `cmake --build <dir> --target clean`; meson -> `meson compile
+--clean`). Removes build artifacts but KEEPS the configuration — a later
+`lw build` reconfigures only if something changed. Build dirs that were never
+created are skipped. Non-zero exit on any failure.
+
+Profile resolution matches `lw build` (a unique substring works; --no-input
+requires an explicit profile). To remove a build directory entirely rather than
+just its artifacts, delete `.nvim/build/<project>/<tool>/<config>/`.]],
   run = [[lw run <profile> [target] [-- prog-args…]
 
 Resolve a profile and a launch target, then build -> deploy -> execute (spec
@@ -3025,6 +3061,8 @@ local function main()
     finish(M.cmd_profiles(ws))
   elseif command == "build" then
     finish(M.cmd_build(ws, a[2]))
+  elseif command == "clean" then
+    finish(M.cmd_clean(ws, a[2]))
   elseif command == "test" then
     finish(M.cmd_test(ws, a[2]))
   elseif command == "run" then
