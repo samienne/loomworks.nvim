@@ -14,7 +14,9 @@ local debug_mod = require("loomworks.debug")
 --- @field _target loomworks.Target|nil direct reference (module targets)
 --- @field _target_id string|nil fallback identifier for re-resolution
 --- @field _launch_config table|nil launch config from loomworks.json
+--- @field _config_target loomworks.Target|nil target a target-backed launch config references (§8.7)
 --- @field _launch_name string|nil name of the launch config
+--- @field _working_dir string|nil descriptor working-dir override (module targets, §8.7)
 --- @field _device_target_id string|nil device target ID (module-generated)
 --- @field _device_target_label string|nil display label for device target
 --- @field _launch_task_id number|nil overseer task ID of running launch
@@ -62,19 +64,42 @@ function LaunchTarget:_update(descriptor)
         local pp = self._profile:project(descriptor.project)
         if pp then
             self._config_unit = pp._config_unit
-            if self._config_unit and self._config_unit.targets and self._target_id then
-                self._target = self._config_unit.targets[self._target_id]
+            if self._config_unit and self._target_id then
+                self._target = self:_resolve_target_ref(self._target_id)
             end
         end
     end
 
-    -- Resolve launch config from project domain object
+    -- Resolve launch config from project domain object. A launch config may be
+    -- command-type (`command`) or target-backed (`target`, §8.7); resolve the
+    -- referenced target for the latter.
     self._launch_config = nil
+    self._config_target = nil
     if self._launch_name and self._project then
-        if self._project.launch and self._project.launch[self._launch_name] then
-            self._launch_config = self._project.launch[self._launch_name]
+        local cfg = self._project.launch and self._project.launch[self._launch_name]
+        if cfg then
+            self._launch_config = cfg
+            if cfg.target and self._config_unit then
+                self._config_target = self:_resolve_target_ref(cfg.target)
+            end
         end
     end
+end
+
+--- Resolve a target reference (a descriptor's `target` id or a target-backed
+--- launch config's `target`) against the config unit's parsed targets — by
+--- exact key first, then by display name — so a friendly name typed at
+--- `lw launch add --from-target` resolves without knowing the module's opaque id.
+--- @param ref string
+--- @return loomworks.Target|nil
+function LaunchTarget:_resolve_target_ref(ref)
+    local targets = self._config_unit and self._config_unit.targets
+    if not targets or not ref then return nil end
+    if targets[ref] then return targets[ref] end
+    for _, t in pairs(targets) do
+        if t.display_name and t:display_name() == ref then return t end
+    end
+    return nil
 end
 
 function LaunchTarget:__tostring()
@@ -484,33 +509,59 @@ end
 --- @return string|nil err
 function LaunchTarget:resolve_command_spec()
     local cfg = self._launch_config
-    if not cfg or not cfg.command then
-        return nil, "launch configuration has no command"
-    end
+    if not cfg then return nil, "no launch configuration" end
 
     local ws = self._workspace
-
-    -- Build expansion context
     local ctx = expand.launch_context(ws, self._profile, self._project)
 
-    -- Expand variables
-    local cmd = expand.expand_string(cfg.command, ctx)
+    -- A launch config is either command-type (`command`) or target-backed
+    -- (`target`, §8.7). For target-backed, the command is the target's built
+    -- artifact and we inherit the build-tree run environment (DLL paths); the
+    -- config's args/env/working_dir layer on top.
+    local cmd, base_env, default_cwd
+    if cfg.target then
+        local target = self._config_target
+        if not target then
+            return nil, "launch config '" .. tostring(self._launch_name)
+                .. "' references target '" .. tostring(cfg.target)
+                .. "' — not found (build the profile so its targets are known)"
+        end
+        local tspec, terr = target:resolve_run_spec()
+        if not tspec then return nil, terr end
+        cmd, base_env, default_cwd = tspec.cmd, tspec.env, tspec.cwd
+    elseif cfg.command then
+        cmd = expand.expand_string(cfg.command, ctx)
+        default_cwd = ws.root .. "/" .. (self._project.path or self._project.key)
+    else
+        return nil, "launch configuration has neither command nor target"
+    end
+
     local args = expand.expand_array(cfg.args, ctx) or {}
 
-    local cwd
+    local cwd = default_cwd
     if cfg.working_dir then
         local expanded_cwd = expand.expand_string(cfg.working_dir, ctx)
-        -- If expansion produced an absolute path, use as-is; otherwise prepend workspace root
+        -- Absolute → as-is; otherwise workspace-root-relative.
         if expanded_cwd:match("^/") or expanded_cwd:match("^%a:") then
             cwd = expanded_cwd
+        elseif expanded_cwd == "." or expanded_cwd == "./" then
+            cwd = ws.root
         else
             cwd = ws.root .. "/" .. expanded_cwd
         end
-    else
-        cwd = ws.root .. "/" .. (self._project.path or self._project.key)
     end
 
-    local env = expand.expand_dict(cfg.env, ctx)
+    -- Env: for a target-backed config start from the run environment (a full
+    -- env table) and layer declared vars over it; for a command config, just
+    -- the declared vars (unchanged behavior).
+    local decl = expand.expand_dict(cfg.env, ctx)
+    local env
+    if base_env then
+        env = base_env
+        for k, v in pairs(decl or {}) do env[k] = v end
+    else
+        env = decl
+    end
 
     return { cmd = cmd, args = args, cwd = cwd, env = env }
 end

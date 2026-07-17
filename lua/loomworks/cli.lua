@@ -669,7 +669,7 @@ local function launchable_targets(ws, profile)
       if type(project.launch) == "table" then
         local names = {}
         for lname, cfg in pairs(project.launch) do
-          if type(cfg) == "table" and cfg.command then names[#names + 1] = lname end
+          if type(cfg) == "table" and (cfg.command or cfg.target) then names[#names + 1] = lname end
         end
         table.sort(names)
         for _, lname in ipairs(names) do
@@ -828,9 +828,14 @@ function M.cmd_launch_list(ws, proj_name)
     for _, n in ipairs(names) do
       any = true
       local cfg = p.launch[n]
-      local cmdstr = (type(cfg) == "table" and cfg.command)
-        and (cfg.command .. " " .. table.concat(cfg.args or {}, " ")):gsub("%s+$", "")
-        or "(no command)"
+      local cmdstr
+      if type(cfg) == "table" and cfg.target then
+        cmdstr = ("target:" .. cfg.target .. " " .. table.concat(cfg.args or {}, " ")):gsub("%s+$", "")
+      elseif type(cfg) == "table" and cfg.command then
+        cmdstr = (cfg.command .. " " .. table.concat(cfg.args or {}, " ")):gsub("%s+$", "")
+      else
+        cmdstr = "(no command)"
+      end
       out(string.format("  %-18s %s  [%s]", n, cmdstr, p.key))
     end
   end
@@ -842,36 +847,52 @@ function M.cmd_launch_list(ws, proj_name)
 end
 
 --- `lw launch add <project> <name> <command> [args…] [--working-dir D] [--env K=V]`
+--- or  `lw launch add <project> <name> --from-target <target> [args…] [flags]`
+--- (target-backed launch config, §8.7 — runs the target's built artifact with
+--- the build-tree run environment; args/env/working_dir layer on top).
 function M.cmd_launch_add(root, args)
   local proj_name, name = args[3], args[4]
-  if not (proj_name and name and args[5]) then
-    die("usage: lw launch add <project> <name> <command> [args…] [--working-dir D] [--env K=V]")
-  end
+  local usage = "usage: lw launch add <project> <name> <command> [args…] [--working-dir D] [--env K=V]\n" ..
+    "   or: lw launch add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]"
+  if not (proj_name and name) then die(usage) end
   local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
 
-  local command, cmd_args, working_dir, env = nil, {}, nil, nil
+  local positionals, from_target, working_dir, env = {}, nil, nil, nil
   local i = 5
   while args[i] do
     local v = args[i]
     if v == "--working-dir" or v == "--cwd" then working_dir = args[i + 1]; i = i + 2
+    elseif v == "--from-target" then from_target = args[i + 1]; i = i + 2
     elseif v == "--env" then
       local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
       if not k then die("bad --env '" .. tostring(args[i + 1]) .. "' — use KEY=VALUE") end
       env = env or {}; env[k] = val; i = i + 2
-    elseif not command then command = v; i = i + 1
-    else cmd_args[#cmd_args + 1] = v; i = i + 1 end
+    else positionals[#positionals + 1] = v; i = i + 1 end
   end
 
-  local cfg = { command = command }
-  if #cmd_args > 0 then cfg.args = cmd_args end
+  local cfg
+  if from_target then
+    -- Target-backed: no command positional; remaining positionals are args.
+    cfg = { target = from_target }
+    if #positionals > 0 then cfg.args = positionals end
+  else
+    if #positionals == 0 then die(usage) end
+    cfg = { command = positionals[1] }
+    if #positionals > 1 then
+      local a = {}
+      for k = 2, #positionals do a[#a + 1] = positionals[k] end
+      cfg.args = a
+    end
+  end
   if working_dir then cfg.working_dir = working_dir end
   if env then cfg.env = env end
 
   local ok, err = project:save_launch_config(name, cfg)
   if not ok then die("could not save launch config: " .. tostring(err)) end
-  out(string.format("added launch config '%s' on project '%s'", name, project.key))
-  out("  run it: lw run " .. name)
+  out(string.format("added launch config '%s' on project '%s'%s", name, project.key,
+    from_target and (" (target: " .. from_target .. ")") or ""))
+  out("  run it: lw run <profile> " .. name)
   return 0
 end
 
@@ -883,7 +904,11 @@ function M.cmd_launch_show(root, proj_name, name)
   local cfg = project.launch and project.launch[name]
   if not cfg then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   out("launch config '" .. name .. "'  (project " .. project.key .. ")")
-  out("  command      " .. tostring(cfg.command))
+  if cfg.target then
+    out("  target       " .. tostring(cfg.target) .. "  (runs the built artifact + run env)")
+  else
+    out("  command      " .. tostring(cfg.command))
+  end
   if cfg.args then out("  args         " .. table.concat(cfg.args, " ")) end
   if cfg.working_dir then out("  working_dir  " .. cfg.working_dir) end
   if type(cfg.env) == "table" then
@@ -2434,15 +2459,20 @@ launches are editor-only.]],
   launch = [[lw launch <list|add|show|remove>
 
 Define and manage a project's launch configurations (the runners `lw run`
-executes). A launch config is command-type: a command, optional args, working
-directory, and environment, all variable-expanded (${build_dir}, ${variant},
-project variables, …).
+executes). A launch config is either **command-type** (a command, args, working
+dir, env — all variable-expanded: ${build_dir}, ${variant}, project variables…)
+or **target-backed** (`--from-target`): it runs a build target's executable
+with the build-tree run environment (DLL paths) set up automatically, and your
+args/env/working-dir layered on top — no hand-written path.
 
   list [project]
         List launch configs (all projects, or one).
   add <project> <name> <command> [args…] [--working-dir D] [--env K=V]
-        Declare a launch config. Repeat --env for multiple variables.
+        Declare a command-type launch config. Repeat --env for more variables.
         e.g. lw launch add app serve node server.js --env PORT=8080
+  add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]
+        Declare a target-backed launch config from a build target (by name).
+        e.g. lw launch add app run --from-target app --working-dir . --env FOO=bar
   show <project> <name>       Detail one config.
   remove <project> <name>     Delete one config.
 

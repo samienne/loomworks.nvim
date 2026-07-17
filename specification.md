@@ -1976,6 +1976,16 @@ workspace-root-relative and is variable-expanded in the launch context.
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.
 
+A launch configuration is either **command-type** — it carries a `command` —
+or **target-backed** — it carries a `target` (a build target name/id) instead.
+A target-backed launch runs that target's built artifact and inherits the
+build-tree **run environment** (§8.7, the DLL-path setup), then layers the
+config's `args`, `env` (over the run environment), and `working_dir` on top —
+so a launch configuration for a built executable needs no hand-written path and
+runs on Windows without a dev shell. The target reference resolves against the
+configuration's parsed targets by name (or opaque id). Its default working
+directory is the project directory, like a command-type launch.
+
 ```json
 "ScenePluginTest": {
     "typescript": {},

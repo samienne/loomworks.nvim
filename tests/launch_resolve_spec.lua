@@ -222,3 +222,29 @@ describe("LaunchTarget:resolve_launch_spec", function()
         assert.is_truthy(err:find("no build directory"))
     end)
 end)
+
+describe("LaunchTarget:_resolve_target_ref (target-backed launch, §8.7)", function()
+    local function with_targets(targets)
+        return setmetatable({ _config_unit = { targets = targets } }, LaunchTarget)
+    end
+    local app = { display_name = function() return "app" end }
+    local lib = { display_name = function() return "lib" end }
+    local subject = with_targets({ ["app::@a1b2"] = app, ["lib::@c3d4"] = lib })
+
+    it("resolves by exact key (opaque module id)", function()
+        assert.equals(app, subject:_resolve_target_ref("app::@a1b2"))
+    end)
+
+    it("resolves by display name (friendly name from --from-target)", function()
+        assert.equals(app, subject:_resolve_target_ref("app"))
+        assert.equals(lib, subject:_resolve_target_ref("lib"))
+    end)
+
+    it("returns nil for an unknown reference", function()
+        assert.is_nil(subject:_resolve_target_ref("nope"))
+    end)
+
+    it("returns nil when no targets are parsed", function()
+        assert.is_nil(with_targets(nil):_resolve_target_ref("app"))
+    end)
+end)
