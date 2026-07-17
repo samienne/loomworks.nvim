@@ -248,3 +248,21 @@ describe("LaunchTarget:_resolve_target_ref (target-backed launch, §8.7)", funct
         assert.is_nil(with_targets(nil):_resolve_target_ref("app"))
     end)
 end)
+
+describe("LaunchTarget:describe (status/listing)", function()
+    local function lt(fields) return setmetatable(fields, LaunchTarget) end
+
+    it("describes a module target", function()
+        assert.equals("app:app (target)",
+            lt({ _project = { key = "app" }, _target_id = "app" }):describe())
+    end)
+
+    it("describes a command/target-backed launch config", function()
+        assert.equals("app:run (launch config)",
+            lt({ _project = { key = "app" }, _launch_name = "run" }):describe())
+    end)
+
+    it("falls back to unresolved when nothing is set", function()
+        assert.equals("app (unresolved)", lt({ _project = { key = "app" } }):describe())
+    end)
+end)

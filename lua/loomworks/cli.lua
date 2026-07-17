@@ -2050,6 +2050,19 @@ function M.cmd_status(root)
   if ap then
     out("Active profile   " .. trunc(ap.key, 44) ..
       "   (set " .. (ap._configuration_set_name or "?") .. ")")
+    -- The active profile's default launch target (what `lw run <profile>` runs
+    -- with no target named). Descriptor-based, so it shows without a build.
+    local ok_lt, lt = pcall(function() return ap:default_target() end)
+    if ok_lt and lt then
+      local line = "Default target   " .. lt:describe()
+      if lt:is_module_target() then
+        local cwd = lt:working_directory()
+        if cwd then line = line .. "   cwd: " .. trunc(cwd, 34) end
+      end
+      out(line)
+    else
+      out("Default target   (none) — `lw profile target " .. trunc(ap.key, 26) .. " <target>`")
+    end
   elseif #profiles > 0 then
     out("Active profile   (none) — `lw profile select`")
   else

@@ -606,6 +606,18 @@ function LaunchTarget:has_working_dir_override()
     return self._working_dir ~= nil and self._working_dir ~= ""
 end
 
+--- One-line human description for status/listings, e.g. "app:app (target)" or
+--- "app:run (launch config)". Uses the stored reference, so it works without
+--- the target being resolved/built.
+--- @return string
+function LaunchTarget:describe()
+    local proj = self._project and self._project.key or "?"
+    if self._launch_name then return proj .. ":" .. self._launch_name .. " (launch config)" end
+    if self._target_id then return proj .. ":" .. tostring(self._target_id) .. " (target)" end
+    if self._device_target_id then return proj .. ":" .. tostring(self._device_target_id) .. " (device)" end
+    return proj .. " (unresolved)"
+end
+
 --- Resolve this launch target to a normalized run spec, dispatching between a
 --- command launch configuration and an executable build target. Pure — spawns
 --- no task. `opts.extra_args` are appended to the argument list (the headless
