@@ -45,7 +45,9 @@ pick_tool() {
     run_lw tools > "$list" 2>/dev/null
     # Tool keys are the first token of each indented line (module headers, the
     # trailing hint, and blank lines are flush-left / empty).
-    awk 'NF>0 && /^[[:space:]]/ {print $1}' "$list" > "$keys"
+    # Real tool keys start with a letter/digit; a "(none detected)" placeholder
+    # line does not, so it's filtered out (leaving an empty pick → clean error).
+    awk 'NF>0 && /^[[:space:]]/ && $1 ~ /^[A-Za-z0-9]/ {print $1}' "$list" > "$keys"
     local t
     # Prefer a self-contained gcc/clang toolchain (msvc and clang-cl need a VS
     # dev environment); take the full key so e.g. "ninja-appleclang-15" survives.

@@ -137,12 +137,21 @@ function vim.fs.normalize(p)
   return p
 end
 
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+
 local function which(exe)
   if exe:find("[/\\]") then return exe end
+  -- Platform-specific PATH search: Windows splits PATH on ";" and tries PATHEXT
+  -- extensions; POSIX splits on ":" and uses the bare name. (Splitting a POSIX
+  -- PATH on ";" collapsed it into a single bogus entry, so no binary — gcc,
+  -- clang, cmake, meson — ever resolved, and tool detection found nothing.)
+  local sep = IS_WINDOWS and ";" or ":"
   local exts = { "" }
-  local pe = os.getenv("PATHEXT")
-  if pe then for e in pe:gmatch("[^;]+") do exts[#exts + 1] = e:lower() end end
-  for dir in (os.getenv("PATH") or ""):gmatch("[^;]+") do
+  if IS_WINDOWS then
+    local pe = os.getenv("PATHEXT")
+    if pe then for e in pe:gmatch("[^;]+") do exts[#exts + 1] = e:lower() end end
+  end
+  for dir in (os.getenv("PATH") or ""):gmatch("[^" .. sep .. "]+") do
     for _, ext in ipairs(exts) do
       local p = dir .. "/" .. exe .. ext
       local st = uv.fs_stat(p)
@@ -151,8 +160,6 @@ local function which(exe)
   end
   return nil
 end
-
-local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 
 --- Spawning a program via a FORWARD-slash path breaks cmd.exe: it reads the
 --- "/..." path components as switches ("The syntax of the command is
