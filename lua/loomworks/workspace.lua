@@ -4853,11 +4853,14 @@ function Workspace:remove_project(project)
     return true
 end
 
---- Rename a project. Updates the project's key + path (when path defaulted),
---- profile mappings keyed by the project key string, and ConfigUnit ids.
---- ConfigurationSet.mappings is keyed by Project object reference so it
---- doesn't need rebuilding. Persists user.json + cache atomically; rolls
---- back on save failure.
+--- Rename a project. Changes the project's identity (key), profile mappings
+--- keyed by the project key string, and ConfigUnit ids. ConfigurationSet.mappings
+--- is keyed by Project object reference so it doesn't need rebuilding.
+--- The rename never moves the project's files — loomworks is read-only toward
+--- project sources and never renames folders — so a path that resolved to the
+--- old directory (nil, or equal to the old key) is pinned to the old key,
+--- keeping the project bound to the same on-disk folder. Persists user.json +
+--- cache atomically; rolls back on save failure.
 --- @param project loomworks.Project
 --- @param new_key string
 --- @return boolean ok, string|nil err
@@ -4881,9 +4884,11 @@ function Workspace:rename_project(project, new_key)
     local old_key = project.key
     local old_path = project.path
 
-    -- Mutate domain objects.
+    -- Mutate domain objects. Pin the path to the old directory when it resolved
+    -- there by default (nil or == old_key), so the rename changes identity only,
+    -- not the folder we resolve to. An explicitly-different path is left alone.
     project.key = new_key
-    if project.path == old_key then project.path = new_key end
+    if (project.path or old_key) == old_key then project.path = old_key end
 
     for _, profile in pairs(self._profiles) do
         if profile.mappings and profile.mappings[old_key] ~= nil then

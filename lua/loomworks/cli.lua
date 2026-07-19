@@ -1433,6 +1433,22 @@ function M.cmd_project_remove(root, name_arg)
   return 0
 end
 
+--- `lw project rename <old> <new>` — rename a project key in the working copy.
+--- Delegates to the same atomic mutation the editor uses (Workspace:rename_project),
+--- which propagates the new key to profile mappings and config units and rolls
+--- back on save failure. Config-set mappings are object-keyed, so they follow
+--- automatically.
+function M.cmd_project_rename(root, old_name, new_name)
+  if not old_name or not new_name then die("usage: lw project rename <old-name> <new-name>") end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, old_name)
+  local ok, err = ws:rename_project(proj, new_name)
+  if not ok then die("could not rename project: " .. tostring(err)) end
+  out(string.format("renamed project '%s' -> '%s'", old_name, new_name))
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
 --- `lw project [list]` — list the workspace's projects.
 function M.cmd_project_list(root)
   local ws = load_workspace(root, false)
@@ -1508,10 +1524,11 @@ end
 function M.cmd_project(sub, root, a3, a4, a5)
   if sub == "add" then return M.cmd_project_add(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_project_remove(root, a3) end
+  if sub == "rename" or sub == "mv" then return M.cmd_project_rename(root, a3, a4) end
   if sub == "show" then return M.cmd_project_show(root, a3) end
   if sub == "publish" then return M.cmd_project_publish(root, a3) end
   if sub == nil or sub == "list" then return M.cmd_project_list(root) end
-  die("unknown project subcommand '" .. tostring(sub) .. "' — use add|remove|list|show|publish")
+  die("unknown project subcommand '" .. tostring(sub) .. "' — use add|remove|rename|list|show|publish")
 end
 
 -- ---------------------------------------------------------------------------
@@ -2825,7 +2842,7 @@ and each CI runner — pick a local tool and create their own profile
 resolves as incomplete for anyone without that tool.
 
 Bare `lw publish` warns if the result is empty (nothing is shared yet).]],
-  project = [[lw project <add|remove|list|show|publish>
+  project = [[lw project <add|remove|rename|list|show|publish>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
 `lw publish` writes the shared ones to loomworks.json.
@@ -2841,6 +2858,9 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         ready to map — see `lw configuration list <name>`.
   remove <name>
         Drop a project. <name> is the unique project key (`lw project list`).
+  rename <old-name> <new-name>       (alias: mv)
+        Rename a project's key. Updates every profile mapping and configuration
+        set that references it; `lw publish` then rewrites loomworks.json.
   list  Show all projects: key, type, path.
   show <name>
         Detail one project: type, path, its configurations, the sets that map
