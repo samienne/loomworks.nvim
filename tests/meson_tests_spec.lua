@@ -81,6 +81,27 @@ describe("meson test integration", function()
             local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
             assert.is_true(tu:run_command_all_rebuilds())
         end)
+
+        it("forwards extra_args after the base command (spec §16.16)", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            local spec = tu:run_command_all({ extra_args = { "--num-processes", "4" } })
+            assert.same(
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug",
+                  "--num-processes", "4" },
+                spec.cmd)
+        end)
+
+        it("reports its fixed JUnit location as junit_out only when requested", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            -- meson takes no output-path flag, so JUnit is opt-in via junit_out.
+            assert.is_nil(tu:run_command_all().junit_out)
+            local spec = tu:run_command_all({ junit = "/anywhere/report.xml" })
+            assert.equals("/build/App/Debug/meson-logs/testlog.junit.xml", spec.junit_out)
+            -- The command itself is unchanged (no flag exists to redirect it).
+            assert.same(
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug" },
+                spec.cmd)
+        end)
     end)
 
     describe("parse_meson_tests (via discovery shape)", function()

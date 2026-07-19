@@ -475,8 +475,8 @@ end
 
 --- Native ctest run: authoritative exit code, streaming output (spec §8.9.2).
 --- nil when the build dir has no configured test set (no CTestTestfile.cmake).
---- @param opts? table { filter?: string }
---- @return table|nil { cmd, cwd }
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- @return table|nil { cmd, cwd, env, junit_out }
 function CTestUnit:run_command_all(opts)
     opts = opts or {}
     if not self:_find_ctest_dir() then return nil end
@@ -486,11 +486,21 @@ function CTestUnit:run_command_all(opts)
         cmd[#cmd + 1] = "-R"
         cmd[#cmd + 1] = opts.filter
     end
+    -- ctest writes JUnit XML directly to the requested path (CMake ≥ 3.21), so
+    -- junit_out equals the request — the core copies nothing (§16.16).
+    local junit_out
+    if opts.junit then
+        cmd[#cmd + 1] = "--output-junit"
+        cmd[#cmd + 1] = opts.junit
+        junit_out = opts.junit
+    end
+    -- Caller args (from `lw test -- …`) go last so they layer on top.
+    if opts.extra_args then vim.list_extend(cmd, opts.extra_args) end
     -- On Windows the test executables loaded by ctest must find their sibling
     -- DLLs (shared libraries built into subfolders of the tree); ctest does not
     -- set this up itself, so we prepend the same run environment a target launch
     -- uses (§8.7). Nil on POSIX / when nothing needs adding — inherit as-is.
-    return { cmd = cmd, cwd = self._build_dir, env = self._config_unit:run_env() }
+    return { cmd = cmd, cwd = self._build_dir, env = self._config_unit:run_env(), junit_out = junit_out }
 end
 
 --- `ctest` does not build — it assumes an already-built tree — so a headless

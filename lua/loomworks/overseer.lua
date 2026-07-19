@@ -853,13 +853,36 @@ function M.plan_profile_clean(profile)
     return steps
 end
 
+--- Resolve the per-unit JUnit output path (spec §16.16). One unit → the caller's
+--- path verbatim; several → insert a sanitized label before the extension so the
+--- files don't clobber (result.xml → result.app-Debug.xml).
+--- @param base string caller-supplied JUnit path (absolute)
+--- @param label string unit label (e.g. "app:Debug")
+--- @param multi boolean true when more than one unit produces JUnit
+--- @return string
+local function junit_dest_for(base, label, multi)
+    if not multi then return base end
+    local slug = label:gsub("[^%w%-_.]", "-")
+    local dir, name = base:match("^(.*)/([^/]+)$")
+    if not name then name = base end
+    local stem, ext = name:match("^(.+)%.([^.]+)$")
+    local newname = stem and (stem .. "." .. slug .. "." .. ext) or (name .. "." .. slug)
+    return dir and (dir .. "/" .. newname) or newname
+end
+M._junit_dest_for = junit_dest_for  -- exported for tests
+
 --- Build a headless "run all tests" plan for a profile: one step per buildable
 --- unit's native test runner (TestUnit:run_command_all, spec §16.16). Assumes
 --- the profile has already been built. Returns the test steps plus the number
 --- of buildable units seen, so a caller can tell "all passed" from "no tests".
+--- `opts.extra_args` forwards caller args to each runner; `opts.junit` (an
+--- absolute path) requests JUnit output — each step carries `junit_dest` (where
+--- the caller wants it) and `junit_out` (where the runner actually wrote it).
 --- @param profile loomworks.Profile
+--- @param opts? table { extra_args?: string[], junit?: string }
 --- @return table[]|nil steps, integer units_seen
-function M.plan_profile_test(profile)
+function M.plan_profile_test(profile, opts)
+    opts = opts or {}
     local all_tasks = collect_profile_tasks(profile)
     if not all_tasks then return nil, 0 end
 
@@ -870,32 +893,46 @@ function M.plan_profile_test(profile)
         if unit and not seen[unit] then seen[unit] = true; units[#units + 1] = unit end
     end
 
-    local steps = {}
+    -- Pass 1: enumerate every runnable test unit up front, so the JUnit-path
+    -- assignment below knows whether to use a single file or per-unit files.
+    local runnable = {}
     for _, unit in ipairs(units) do
         local label = (unit._project and unit._project.key or "?") .. ":" .. tostring(unit:variant())
         for _, tu in ipairs(unit:test_units()) do
             if tu.run_command_all then
-                local ok, spec = pcall(function() return tu:run_command_all() end)
-                if not ok then
-                    -- A throwing runner is a bug, not "no tests" — surface it
-                    -- instead of silently dropping the unit.
-                    local ws = unit._workspace
-                    if ws and ws._core and ws._core._deps.notify then
-                        ws._core._deps.notify(
-                            "loomworks: test runner for " .. label .. " errored: " .. tostring(spec),
-                            vim.log.levels.WARN)
-                    end
-                elseif type(spec) == "table" and type(spec.cmd) == "table" then
-                    steps[#steps + 1] = {
-                        kind = "test",
-                        name = label,
-                        unit = unit,
-                        cmd = spec.cmd,
-                        cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
-                        env = spec.env,
-                    }
-                end
+                runnable[#runnable + 1] = { unit = unit, tu = tu, label = label }
             end
+        end
+    end
+    local multi = #runnable > 1
+
+    -- Pass 2: build the steps, threading extra args + the resolved JUnit dest.
+    local steps = {}
+    for _, r in ipairs(runnable) do
+        local junit_dest = opts.junit and junit_dest_for(opts.junit, r.label, multi) or nil
+        local ok, spec = pcall(function()
+            return r.tu:run_command_all({ extra_args = opts.extra_args, junit = junit_dest })
+        end)
+        if not ok then
+            -- A throwing runner is a bug, not "no tests" — surface it
+            -- instead of silently dropping the unit.
+            local ws = r.unit._workspace
+            if ws and ws._core and ws._core._deps.notify then
+                ws._core._deps.notify(
+                    "loomworks: test runner for " .. r.label .. " errored: " .. tostring(spec),
+                    vim.log.levels.WARN)
+            end
+        elseif type(spec) == "table" and type(spec.cmd) == "table" then
+            steps[#steps + 1] = {
+                kind = "test",
+                name = r.label,
+                unit = r.unit,
+                cmd = spec.cmd,
+                cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
+                env = spec.env,
+                junit_dest = junit_dest,
+                junit_out = spec.junit_out,
+            }
         end
     end
     return steps, #units

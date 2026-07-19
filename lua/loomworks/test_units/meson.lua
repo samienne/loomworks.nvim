@@ -667,8 +667,8 @@ end
 
 --- Native meson test run: authoritative exit code, streaming output
 --- (spec §8.9.2). `meson test -C <build_dir>` runs every declared test.
---- @param opts? table { filter?: string }
---- @return table|nil { cmd, env, cwd }
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- @return table|nil { cmd, env, cwd, junit_out }
 function MesonTestUnit:run_command_all(opts)
     opts = opts or {}
     local prefix = meson_prefix_for(self._config_unit)
@@ -681,10 +681,16 @@ function MesonTestUnit:run_command_all(opts)
     cmd[#cmd + 1] = "-C"
     cmd[#cmd + 1] = self._build_dir
     if opts.filter then cmd[#cmd + 1] = opts.filter end  -- meson filters by test name
+    -- Caller args (from `lw test -- …`, e.g. `--num-processes N`) go last.
+    if opts.extra_args then vim.list_extend(cmd, opts.extra_args) end
     return {
         cmd = cmd,
         env = compose_env(nil, nil, self:_compiler_bin_dir()),
         cwd = self._build_dir,
+        -- meson has no output-path flag: it always writes JUnit to this fixed
+        -- location under the build dir. Reported only when JUnit was requested,
+        -- so the core copies it to the caller's path (§16.16).
+        junit_out = opts.junit and (self._build_dir .. "/meson-logs/testlog.junit.xml") or nil,
     }
 end
 

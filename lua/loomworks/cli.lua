@@ -139,6 +139,15 @@ local function resolve_abs(p, base)
   return real and (real:gsub("\\", "/")) or nil
 end
 
+--- Like `resolve_abs` but for an OUTPUT path that need not exist yet (e.g. a
+--- JUnit file to be written): join against `base`, forward-slash, no realpath.
+--- @return string absolute forward-slashed path
+local function resolve_abs_out(p, base)
+  p = p:gsub("\\", "/")
+  local joined = (p:match("^%a:/") or p:sub(1, 1) == "/") and p or (base .. "/" .. p)
+  return (joined:gsub("/+$", ""))
+end
+
 --- Return `abs` made relative to workspace `root` ("." if equal), or nil if
 --- `abs` is not inside `root`. `root`/`abs` are real, same-cased forward paths.
 local function rel_to_root(root, abs)
@@ -784,10 +793,37 @@ local function ensure_unit_targets(ws, unit)
   if ok and targets then unit:set_targets(targets) end
 end
 
---- `lw test [profile]` — build a profile, then run its tests via each module's
---- native runner, reporting a real exit code (spec §16.16).
-function M.cmd_test(ws, profile_name)
+--- `lw test [profile] [--junit <file>] [-- <args>]` — build a profile, then run
+--- its tests via each module's native runner, reporting a real exit code (spec
+--- §16.16). Args after `--` are forwarded to the native batch runner (e.g.
+--- `-- -j 4` / `-- --num-processes 4`). `--junit <file>` writes JUnit XML for CI
+--- (one file per unit — a label suffix when a profile runs several).
+function M.cmd_test(ws, args)
   local overseer = require("loomworks.overseer")
+  -- Split on `--`: everything after is forwarded to the native test runner.
+  local pre, extra, seen_sep = {}, {}, false
+  for i = 2, #args do
+    if not seen_sep and args[i] == "--" then seen_sep = true
+    elseif seen_sep then extra[#extra + 1] = args[i]
+    else pre[#pre + 1] = args[i] end
+  end
+  -- Pre-`--` tokens: `--junit <file>` and a positional profile.
+  local profile_name, junit
+  local i = 1
+  while pre[i] do
+    if pre[i] == "--junit" then
+      junit = pre[i + 1]
+      if not junit then die("--junit requires a file path") end
+      i = i + 2
+    elseif not profile_name then
+      profile_name = pre[i]; i = i + 1
+    else
+      die("unexpected argument '" .. tostring(pre[i]) ..
+        "' — usage: lw test [profile] [--junit <file>] [-- args…]")
+    end
+  end
+  if junit then junit = resolve_abs_out(junit, user_cwd()) end
+
   local profile
   profile, ws = resolve_build_target(ws, profile_name)
   -- Hold the build-dir lock across build AND test: a native runner like
@@ -804,19 +840,46 @@ function M.cmd_test(ws, profile_name)
     -- DLL-dependent test executable fails in the loader (0xc0000135).
     for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
 
-    local test_steps, units = overseer.plan_profile_test(profile)
+    local test_steps, units = overseer.plan_profile_test(profile,
+      { extra_args = (#extra > 0) and extra or nil, junit = junit })
     if not test_steps or #test_steps == 0 then
       out("no tests to run for profile '" .. profile.key .. "'" ..
         ((units and units > 0) and " — its modules expose no test runner" or ""))
       return
     end
 
-    local failed = {}
+    -- ctest's --output-junit and the meson copy target both need the directory
+    -- to exist up front.
+    if junit then
+      local dir = junit:match("^(.*)/[^/]+$")
+      if dir then vim.fn.mkdir(dir, "p") end
+    end
+
+    local failed, wrote = {}, {}
     for _, step in ipairs(test_steps) do
       out(string.format("==> [test] %s", step.name or "?"))
       local code = run_spec(step, ws.root)
       if code ~= 0 then failed[#failed + 1] = step.name or "?" end
+      -- Materialize JUnit at the caller's path. When the runner wrote it to its
+      -- own fixed location (meson), copy it over; when it wrote there directly
+      -- (ctest), just confirm. Runs even for failed tests — CI wants the report.
+      if step.junit_dest and step.junit_out then
+        if norm_cmp(step.junit_out) ~= norm_cmp(step.junit_dest) then
+          if uv.fs_stat(step.junit_out) then
+            uv.fs_copyfile(step.junit_out, step.junit_dest)
+            wrote[#wrote + 1] = step.junit_dest
+          else
+            io.stderr:write("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
+          end
+        elseif uv.fs_stat(step.junit_dest) then
+          wrote[#wrote + 1] = step.junit_dest
+        else
+          io.stderr:write("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
+        end
+      end
     end
+
+    for _, p in ipairs(wrote) do out("JUnit: " .. p) end
 
     if #failed > 0 then
       die(string.format("%d of %d test run(s) failed: %s",
@@ -2843,7 +2906,7 @@ args/env/working-dir layered on top — no hand-written path.
 
 Configs live in the project's working copy; they reach loomworks.json when the
 project is published (`lw project publish <project>`).]],
-  test = [[lw test [profile | config-set]
+  test = [[lw test [profile | config-set] [--junit <file>] [-- runner-args…]
 
 Build a profile, then run its tests through each module's NATIVE runner (cmake
 -> ctest, meson -> `meson test`), streaming output and reporting a REAL exit
@@ -2855,13 +2918,35 @@ Profile resolution and onboarding match `lw build`: interactively it can create
 a profile from a configuration set; in --no-input / CI it needs an explicit
 profile (`lw profile create <set> <tool> --activate && lw test`).
 
-  profile     e.g. Debug:ninja-clang-19  (unique substring works)
-  config-set  a set name (interactive: onboards a profile, then tests)]],
-  init = [[lw init
+  profile        e.g. Debug:ninja-clang-19  (unique substring works)
+  config-set     a set name (interactive: onboards a profile, then tests)
+  --junit <file> Write JUnit XML for CI reporters. ctest maps to
+                 --output-junit; meson's fixed testlog is copied here. One file
+                 per invocation; when a profile runs several test units a label
+                 suffix is inserted (report.xml -> report.app-Debug.xml).
+  -- args…       Everything after `--` is forwarded to the native batch runner,
+                 e.g. `-- -j 4` (ctest) or `-- --num-processes 4` (meson).
+
+CI example (JUnit + 4-way parallel ctest):
+  lw --no-input test Debug:ninja-gcc-12 --junit results.xml -- -j 4]],
+  init = [[lw init [--name <name>]
 
 Initialize the workspace working copy (.nvim/loomworks.user.json). The shared
 loomworks.json is written later by `lw publish` (working-copy model). Fails if
-the workspace already exists.]],
+the workspace already exists.
+
+  --name <name>   Set the workspace display name. Defaults to the directory
+                  basename — set this when the directory name isn't the name
+                  you want published (e.g. a git worktree). Change it later
+                  with `lw workspace rename <name>`.]],
+  workspace = [[lw workspace [rename <name>]   (alias: ws)
+
+Workspace-level settings, stored in the working copy.
+
+  (no args)        Print the current workspace name.
+  rename <name>    Set the workspace display name. `lw publish` then writes it
+                   to the shared loomworks.json. The name defaults to the
+                   directory basename when never set.]],
   publish = [[lw publish
 
 Regenerate the shared loomworks.json from the working copy — the same snapshot
@@ -3273,7 +3358,7 @@ local function main()
   elseif command == "unlock" then
     finish(M.cmd_unlock(ws, a))
   elseif command == "test" then
-    finish(M.cmd_test(ws, a[2]))
+    finish(M.cmd_test(ws, a))
   elseif command == "run" then
     finish(M.cmd_run(ws, a))
   else

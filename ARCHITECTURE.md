@@ -775,7 +775,14 @@ replaces it, which would drop `PATH`).
 ### v1 command surface
 
 - `lw build [profile]` — resolve and build a profile.
-- `lw test [profile]` — build the test target and run it; real exit code.
+- `lw test [profile] [--junit <file>] [-- args…]` — build the test target and
+  run it; real exit code. Args after `--` forward to the native batch runner
+  (`-j N` / `--num-processes N`); `--junit <file>` requests JUnit XML for CI.
+  `plan_profile_test` threads both into each `TestUnit:run_command_all(opts)`:
+  ctest maps `--junit` to `--output-junit` (writes directly), meson reports its
+  fixed `meson-logs/testlog.junit.xml` as `junit_out` and the CLI copies it to
+  the requested path — so the core stays module-agnostic. One file per unit
+  (label-suffixed when a profile runs several).
 - `lw profiles` — list profiles (name, configuration set, tools) and flag
   which are buildable in this host vs editor-only.
 - `lw run <profile> [target] [-- args…]` — non-debug launch (build → deploy →

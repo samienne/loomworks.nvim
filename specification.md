@@ -2337,7 +2337,7 @@ editor UI): typically the test executable run under a framework harness that
 emits a machine-readable results file. `opts.filter` for name filtering.
 Returns `{ cmd, env, cwd, output_path }` or nil.
 
-**`run_command_all(opts?) → { cmd, env?, cwd? }|nil`**
+**`run_command_all(opts?) → { cmd, env?, cwd?, junit_out? }|nil`**
 
 Construct the module's **native** "run all tests" command — the one whose
 **process exit status is authoritative** (0 iff every test passed), streaming
@@ -2345,7 +2345,10 @@ human-readable output. This is the headless-runner seam (§16): a batch runner
 executes it and reports its exit code, without discovery or result parsing.
 Distinct from `test_command_all`, which targets structured UI results. Returns
 nil when the module has no native batch runner. `opts.filter` for name
-filtering.
+filtering; `opts.extra_args` appends caller-forwarded arguments (§16.16);
+`opts.junit` requests JUnit XML at that path. `junit_out` reports where the run
+actually writes JUnit — the requested path when the runner writes there
+directly, or the runner's fixed location for the caller to copy across.
 
 **`run_command_all_rebuilds() → boolean`**
 
@@ -3487,6 +3490,13 @@ succeeded and every runner reported success. A unit whose module exposes no
 batch runner contributes no tests; a profile with no test runners at all is
 reported as such, not a failure. Like a build (§16.4), a test run is read-only
 toward configuration (§16.9).
+
+A headless test invocation MAY forward caller-supplied arguments to the native
+batch runner (e.g. a parallelism knob), and MAY request machine-readable
+(JUnit XML) results written to a caller-specified location — a single file per
+invocation, or one file per unit (a label suffix distinguishing them) when a
+profile runs several. The runner maps both to its native mechanism; a runner
+that cannot emit JUnit reports that without failing the run.
 
 ### 16.17 Headless launch (run)
 

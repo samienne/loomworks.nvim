@@ -34,8 +34,12 @@ function TestUnit:test_command_all(opts) end
 --- human-readable output. The headless-runner seam (spec §8.9.2, §16.16): a
 --- batch runner executes it and reports its exit code, with no discovery or
 --- result parsing. nil when the module has no native batch runner.
---- @param opts? table { filter?: string }
---- @return table|nil { cmd, env?, cwd? }
+--- `opts.extra_args` forwards caller args to the runner; `opts.junit` requests
+--- JUnit XML output. `junit_out` in the result is where the runner actually
+--- wrote it (the requested path when the runner writes there directly, else the
+--- runner's own fixed location, which the caller copies to the request).
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- @return table|nil { cmd, env?, cwd?, junit_out?: string }
 function TestUnit:run_command_all(opts) end
 
 --- Whether `run_command_all` rebuilds this unit's test targets before running

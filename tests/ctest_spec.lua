@@ -73,3 +73,40 @@ describe("CTestUnit run environment (§8.7)", function()
         assert.equals(sentinel, spec.env)
     end)
 end)
+
+describe("CTestUnit run_command_all args + JUnit (spec §16.16)", function()
+    local function tu_for()
+        local tu = CTestUnit.new(stub_unit({
+            build_dir = "/b", config_name = "Debug",
+            configuration = { module_config = { variant = "Debug" } },
+        }))
+        tu._find_ctest_dir = function() return "/b/ctestdir" end
+        tu._base_cmd = function() return { "ctest", "--test-dir", "/b/ctestdir" } end
+        return tu
+    end
+
+    it("maps --junit to ctest --output-junit; junit_out equals the request", function()
+        local spec = tu_for():run_command_all({ junit = "/out/report.xml" })
+        assert.same(
+            { "ctest", "--test-dir", "/b/ctestdir", "--output-on-failure",
+              "--output-junit", "/out/report.xml" },
+            spec.cmd)
+        assert.equals("/out/report.xml", spec.junit_out)
+    end)
+
+    it("forwards extra_args after the built-in flags", function()
+        local spec = tu_for():run_command_all({ extra_args = { "-j", "4" } })
+        assert.same(
+            { "ctest", "--test-dir", "/b/ctestdir", "--output-on-failure", "-j", "4" },
+            spec.cmd)
+        assert.is_nil(spec.junit_out)
+    end)
+
+    it("combines --junit and forwarded args (junit first)", function()
+        local spec = tu_for():run_command_all({ junit = "/o/r.xml", extra_args = { "-j", "2" } })
+        assert.same(
+            { "ctest", "--test-dir", "/b/ctestdir", "--output-on-failure",
+              "--output-junit", "/o/r.xml", "-j", "2" },
+            spec.cmd)
+    end)
+end)

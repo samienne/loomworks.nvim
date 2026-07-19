@@ -423,6 +423,27 @@ describe("_unit_tests_self_rebuild", function()
     end)
 end)
 
+describe("junit_dest_for (spec §16.16 per-unit JUnit paths)", function()
+    local f = require("loomworks.overseer")._junit_dest_for
+
+    it("returns the path verbatim for a single unit", function()
+        assert.equals("/out/report.xml", f("/out/report.xml", "app:Debug", false))
+    end)
+
+    it("inserts a sanitized label before the extension for multiple units", function()
+        assert.equals("/out/report.app-Debug.xml", f("/out/report.xml", "app:Debug", true))
+        assert.equals("/out/report.lib-Release.xml", f("/out/report.xml", "lib:Release", true))
+    end)
+
+    it("handles a path with no extension", function()
+        assert.equals("/out/report.app-Debug", f("/out/report", "app:Debug", true))
+    end)
+
+    it("handles a bare filename with no directory", function()
+        assert.equals("r.app-Debug.xml", f("r.xml", "app:Debug", true))
+    end)
+end)
+
 -- ---------------------------------------------------------------------------
 -- Test: record_task_result does not downgrade built → configured
 -- ---------------------------------------------------------------------------
