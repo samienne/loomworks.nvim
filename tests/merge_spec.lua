@@ -49,6 +49,49 @@ describe("merge", function()
         end)
     end)
 
+    describe("match_profile (spec §16.3 deterministic selector)", function()
+        local keys = {
+            "Debug:ninja-clang-18.1.7",
+            "Debug:ninja-gcc-14.2.0",
+            "Release:ninja-clang-18.1.7",
+        }
+
+        it("matches an exact key", function()
+            assert.equals("Debug:ninja-gcc-14.2.0", merge.match_profile(keys, "Debug:ninja-gcc-14.2.0"))
+        end)
+
+        it("resolves a major-version selector to its patch (boundary '.')", function()
+            assert.equals("Debug:ninja-clang-18.1.7", merge.match_profile(keys, "Debug:ninja-clang-18"))
+        end)
+
+        it("never crosses into a different major (…-1 does not match …-18)", function()
+            local hit, amb = merge.match_profile(keys, "Debug:ninja-clang-1")
+            assert.is_nil(hit)
+            assert.is_nil(amb)
+        end)
+
+        it("keeps interactive shorthand via boundary-aligned substring", function()
+            assert.equals("Debug:ninja-gcc-14.2.0", merge.match_profile(keys, "gcc-14"))
+        end)
+
+        it("reports ambiguity when a selector matches several profiles", function()
+            local hit, amb = merge.match_profile(keys, "clang-18")
+            assert.is_nil(hit)
+            assert.same(
+                { "Debug:ninja-clang-18.1.7", "Release:ninja-clang-18.1.7" }, amb)
+        end)
+
+        it("treats the set name as a boundary-aligned selector (':')", function()
+            assert.equals("Debug:ninja-gcc-14.2.0", merge.match_profile(keys, "Debug:ninja-gcc"))
+        end)
+
+        it("returns nil,nil for no match", function()
+            local hit, amb = merge.match_profile(keys, "msvc")
+            assert.is_nil(hit)
+            assert.is_nil(amb)
+        end)
+    end)
+
     -- parse_profile_key was removed (zero runtime callers)
 
     describe("get_all_profiles", function()

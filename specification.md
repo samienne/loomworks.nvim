@@ -3350,6 +3350,16 @@ by the caller. Absent an explicit selection, the invocation is an error
 unless exactly one published profile exists — the system never guesses a
 default.
 
+A profile MAY be named by a **version-truncated tool selector** — a compiler
+family plus major version (e.g. a `ninja-clang-18` toolchain), rather than the
+exact detected patch. Such a selector resolves deterministically to the
+installed toolchain with the **highest matching patch**, so a CI matrix names a
+toolchain by major version without pinning the exact patch present on a given
+runner. Matching is **anchored at version-component boundaries**: a truncated
+selector never resolves a different major version (a `…-1` selector does not
+match a `…-18` toolchain). When a selector matches more than one profile the
+invocation is an ambiguity error, never an arbitrary pick.
+
 ### 16.4 Cache-cold vs cache-warm
 
 Build-unit readiness derives from the cache (§3.1). For a build unit with
@@ -3541,3 +3551,16 @@ task runner (§16.1).
 per profile, the default build target and writes it to the working copy
 (§8.6, "Default target storage"). No target is ever named "default" — the
 default is a property of the profile, not a reserved target name.
+
+### 16.18 Headless introspection
+
+A headless invocation MAY **query** read-only facts about a resolved profile
+(§16.3) as deterministic, machine-readable output for scripting — most usefully
+a project's **build directory**, so a CI job can locate build artifacts without
+reconstructing the layout. A query performs no build and no management writes
+(§16.9); the build directory it reports is the same deterministic path a build
+would use, known once the profile pins a toolchain, so the query is valid before
+any build has run. Introspection is scoped to a `(profile, project)` pair, since
+a build directory is a per-project coordinate; the reported facts a caller MAY
+request include the build directory, the pinned configuration, the last known
+build state, and the resolved toolchain.

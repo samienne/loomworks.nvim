@@ -71,6 +71,20 @@ describe("Module", function()
             assert.is_nil(mod:find_tool("nonexistent"))
         end)
 
+        it("find_tool resolves a major-version prefix to the highest patch (spec §16.3)", function()
+            local mod = Module.new("cmake", make_impl())
+            mod:get_or_create_tool("ninja-clang-18.1.0", {}, nil)
+            local hi = mod:get_or_create_tool("ninja-clang-18.1.7", {}, nil)
+            assert.is_true(rawequal(hi, mod:find_tool("ninja-clang-18")))
+        end)
+
+        it("find_tool major prefix stops at the version boundary (18 != 1)", function()
+            local mod = Module.new("cmake", make_impl())
+            mod:get_or_create_tool("ninja-clang-18.1.7", {}, nil)
+            -- A truncated selector must not cross into a different major.
+            assert.is_nil(mod:find_tool("ninja-clang-1"))
+        end)
+
         it("nil tool_key uses default slot", function()
             local mod = Module.new("ets", { id = "ets" })
             local tool = mod:get_or_create_tool(nil, {}, nil)

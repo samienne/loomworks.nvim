@@ -801,10 +801,25 @@ replaces it, which would drop `PATH`).
   not set this up itself, so `lw test` must parse targets before planning.
 - `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
   profile's default launch target (writes `user.json`; spec §16.9 authoring).
+- `lw profile query <profile> <project> <field>` — read-only introspection
+  (spec §16.18): prints one machine-readable fact (`build-dir` / `config` /
+  `state` / `tool`) for scripting, e.g. locating CI artifacts. No build.
+- Profile/tool **selection** (spec §16.3) is a boundary-anchored matcher
+  (`merge.match_profile` for profile keys, `Module:find_tool` for tool keys):
+  a version-truncated selector (`ninja-clang-18`) resolves to the highest
+  matching patch and never crosses a version boundary. `build`/`test`/`run`/
+  `query` and `profile create` all route through it.
+- Management/authoring commands (spec §16.9, write the working copy; reach
+  `loomworks.json` on `lw publish`): `lw init [--name <name>]`,
+  `lw workspace rename <name>`, `lw project <add|remove|rename>`,
+  `lw configuration <add|set|unset|remove>`,
+  `lw configuration-set <create|map|unmap|remove>`, `lw profile create`,
+  `lw launch <add|set|remove>`, and per-item `lw <kind> publish`. Each delegates
+  to the same atomic `Workspace` mutation the editor uses (e.g. project rename →
+  `Workspace:rename_project`, workspace name → `Workspace:rename_workspace`).
 
-Out of scope for the standalone: debug launch (DAP, needs nvim-dap), device
-install / launch, and (except the default target above) configuration
-authoring (spec §16.9). Deploy sources outside the active profile and
+Out of scope for the standalone: debug launch (DAP, needs nvim-dap) and device
+install / launch. Deploy sources outside the active profile and
 pre-build "deploy feeds build" ordering are a known limitation (a headless run
 builds the profile up front, then runs both deploy phases). No-argument
 `lw build` resolves the profile as: explicit argument → `user.json` active

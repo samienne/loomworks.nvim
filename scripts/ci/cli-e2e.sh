@@ -128,10 +128,20 @@ run_case() {
 
     run_lw build "$prof" > "$out" 2>&1; rc=$?
     if grep -q "BUILD OK" "$out"; then ok "$label build"; else note_fail "$label build" "$rc"; return; fi
+    # Introspection (§16.18): query the build dir and assert it's a real path.
+    # Also confirms the deterministic selector resolves the profile.
+    local qbd; qbd=$(run_lw profile query "$prof" app build-dir 2>"$out")
+    if [ -n "$qbd" ] && [ -d "$qbd" ]; then ok "$label query build-dir"
+    else cp "$out" "$TMP/out.txt"; note_fail "$label query build-dir ('$qbd' not a dir)" 0; fi
     run_lw run "$prof" app > "$out" 2>&1; rc=$?
     if grep -q "$marker" "$out"; then ok "$label run"; else note_fail "$label run" "$rc"; fi
-    run_lw test "$prof" > "$out" 2>&1; rc=$?
+    # Exercise JUnit output (§16.16): ctest writes it directly, meson's fixed
+    # testlog is copied to the requested path — assert real <testcase> entries.
+    local junit="$TMP/junit-$label.xml"
+    run_lw test "$prof" --junit "$junit" > "$out" 2>&1; rc=$?
     if grep -q "TESTS OK" "$out"; then ok "$label test"; else note_fail "$label test" "$rc"; fi
+    if grep -q "<testcase" "$junit" 2>/dev/null; then ok "$label junit"
+    else cp "$out" "$TMP/out.txt"; note_fail "$label junit (no <testcase> in $junit)" 0; fi
     run_lw clean "$prof" > "$out" 2>&1; rc=$?
     if grep -q "CLEAN OK" "$out"; then ok "$label clean"; else note_fail "$label clean" "$rc"; fi
 }

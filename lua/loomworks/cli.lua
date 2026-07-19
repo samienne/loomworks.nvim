@@ -4,10 +4,11 @@
 --- (`nvim --headless -u NONE -l lua/loomworks/cli.lua <cmd> [args]`); the
 --- luvi + shim host is layered on later without changing this file.
 ---
---- Commands: (status) | init | project <add|remove|list|show> |
+--- Commands: (status) | init | workspace <rename> |
+---           project <add|remove|rename|list|show> |
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
----           profile <list|select|create|target> | tools | build [profile] |
+---           profile <list|select|create|target|query> | tools | build [profile] |
 ---           clean [profile] | run <profile> [target] | publish | test [profile] |
 ---           unlock <profile>|--all | config <...> | completion <shell> | help
 
@@ -430,19 +431,15 @@ end
 local function resolve_profile(ws, name)
   local profiles = ws._profiles or {}
   if name then
-    for _, p in ipairs(profiles) do
-      if p.key == name then return p end
-    end
-    -- Substring match — profile keys are long, so `lw build clang-19` works.
-    local matches = {}
-    for _, p in ipairs(profiles) do
-      if p.key:find(name, 1, true) then matches[#matches + 1] = p end
-    end
-    if #matches == 1 then return matches[1] end
-    if #matches > 1 then
-      local keys = {}
-      for _, p in ipairs(matches) do keys[#keys + 1] = p.key end
-      die("'" .. name .. "' matches multiple profiles: " .. table.concat(keys, ", "))
+    -- Boundary-anchored selector (spec §16.3): exact key, else a segment-aligned
+    -- match, so `Debug:ninja-clang-18` deterministically resolves the highest
+    -- matching patch and `clang-1` never crosses into `clang-18`.
+    local keys, by_key = {}, {}
+    for _, p in ipairs(profiles) do keys[#keys + 1] = p.key; by_key[p.key] = p end
+    local hit, ambiguous = require("loomworks.merge").match_profile(keys, name)
+    if hit then return by_key[hit] end
+    if ambiguous then
+      die("'" .. name .. "' matches multiple profiles: " .. table.concat(ambiguous, ", "))
     end
     die("no profile matching '" .. name .. "'. Run `lw profiles` to list.")
   end
@@ -2335,12 +2332,62 @@ function M.cmd_profile_target(root, args)
   return 0
 end
 
+--- `lw profile query <profile> <project> <field>` — print a single machine-
+--- readable fact about a project within a resolved profile (spec §16.18). Read-
+--- only introspection for scripting (e.g. locating CI artifacts). Fields:
+--- build-dir | config | state | tool.
+function M.cmd_profile_query(root, args)
+  -- args: { "profile", "query", <profile>, <project>, <field> }
+  local profile_name, project_key, field = args[3], args[4], args[5]
+  if not (profile_name and project_key and field) then
+    die("usage: lw profile query <profile> <project> <field>\n" ..
+      "  fields: build-dir | config | state | tool")
+  end
+  local ws = load_workspace(root, false)
+  local profile = resolve_profile(ws, profile_name)
+
+  local pp, projects = nil, {}
+  for _, p in ipairs(profile:projects()) do
+    projects[#projects + 1] = p:project_key()
+    if p:project_key() == project_key then pp = p end
+  end
+  if not pp then
+    table.sort(projects)
+    die("project '" .. project_key .. "' is not mapped in profile '" .. profile.key ..
+      "'. Projects: " .. (next(projects) and table.concat(projects, ", ") or "(none)"))
+  end
+
+  local value
+  if field == "build-dir" then
+    value = pp:build_dir()
+    if not value or value == "" then
+      die("build dir not resolved for '" .. project_key .. "' in '" .. profile.key ..
+        "' — the profile is incomplete or unbuildable (`lw profiles`).")
+    end
+    value = value:gsub("\\", "/")
+  elseif field == "config" then
+    value = pp:variant_name()
+  elseif field == "state" then
+    value = pp:status()
+  elseif field == "tool" then
+    local t = pp:tool_object()
+    value = t and t.key or ""
+  else
+    die("unknown field '" .. field .. "' — use build-dir | config | state | tool")
+  end
+  out(value or "")
+  return 0
+end
+
 function M.cmd_profile(sub, root, args)
   if sub == "select" then
     return M.select_profile(load_workspace(root, false))
   end
   if sub == "create" then
     return M.cmd_profile_create(root, args)
+  end
+  if sub == "query" then
+    return M.cmd_profile_query(root, args)
   end
   if sub == "publish" then
     return M.cmd_profile_publish(root, args[3])
@@ -2351,7 +2398,7 @@ function M.cmd_profile(sub, root, args)
   if sub == nil or sub == "list" then
     return M.cmd_profiles(load_workspace(root))
   end
-  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select|create|publish|target")
+  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select|create|publish|target|query")
 end
 
 --- `lw config <list|get|set|unset> [key] [value]`
@@ -3039,7 +3086,7 @@ cross-project selection a profile builds. Managed in the working copy;
 
 <config> is a configuration name (an unambiguous base name works, so `Debug`
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
-  profile = [[lw profile <list|select|create|target>
+  profile = [[lw profile <list|select|create|target|query>
 
   list      same as `lw profiles`
   select    interactive picker; sets the active profile (writes user.json)
@@ -3061,9 +3108,19 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
             `--target`/`--launch`/`--project` disambiguate. `--cwd <dir>` stores
             a persistent working directory for a build-target default (absolute
             or workspace-root-relative); default is the project directory.
+  query <profile> <project> <field>
+            Print one machine-readable fact for scripting (e.g. CI artifact
+            collection). Read-only; no build. Fields:
+              build-dir  absolute build directory (known before building)
+              config     the pinned configuration name
+              state      last known build state (unconfigured/configured/built…)
+              tool       the resolved toolchain key
+            e.g. BD=$(lw profile query Debug:ninja-clang-18 app build-dir)
 
-The active profile is the default for `lw build`. `lw build` also accepts a
-substring, so `lw build clang-19` works when it's unambiguous.]],
+The active profile is the default for `lw build`. Profiles resolve by a
+version-truncated tool selector: `lw build ninja-clang-18` picks the highest
+`18.x` deterministically (a `…-1` selector never matches `…-18`), and a
+substring like `lw build clang-19` works when unambiguous.]],
   config = [[lw config <list|get|set|unset> [key] [value]
 
 Read or write lw's user configuration (]] .. config_path() .. [[).
@@ -3153,14 +3210,17 @@ substrings for determinism.
 
 Read-only — safe any time (no writes to user.json / loomworks.json):
   lw                              status + active profile
+  lw workspace                    print the workspace name
   lw project list | show <name>   lw profiles       lw tools [--cached]
   lw configuration list|show|get  lw configuration-set list|show
+  lw profile query <profile> <project> <field>   (build-dir | config | state | tool)
   lw build <profile>              builds; read-only toward config (writes only
                                   the build dir + cache)
   lw version
 
 Mutating — only when the task asks (these write the working copy / shared file):
-  init · project add|remove · configuration add|set|unset|remove ·
+  init · workspace rename · project add|remove|rename ·
+  configuration add|set|unset|remove ·
   configuration-set create|map|unmap|remove · profile create ·
   <kind> publish · publish · config set
 
@@ -3192,11 +3252,12 @@ Usage: lw [command] [args]
 
   (no command)      workspace status + active profile
   init              initialize the workspace working copy
-  project <sub>     add | remove | list | show projects
+  workspace <sub>   show / rename the workspace  (ws)
+  project <sub>     add | remove | rename | list | show projects
   configuration     add | set | get | show | ... project configurations
   configuration-set create | map | show | ... sets  (cs)
   profiles          list profiles and their buildability
-  profile <sub>     list | select | create profiles
+  profile <sub>     list | select | create | target | query profiles
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   build [profile]   build a profile (configure if needed, then build)
   test  [profile]   build a profile, then run its tests (real exit code)
