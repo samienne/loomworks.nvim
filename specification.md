@@ -3350,15 +3350,22 @@ by the caller. Absent an explicit selection, the invocation is an error
 unless exactly one published profile exists — the system never guesses a
 default.
 
-A profile MAY be named by a **version-truncated tool selector** — a compiler
-family plus major version (e.g. a `ninja-clang-18` toolchain), rather than the
-exact detected patch. Such a selector resolves deterministically to the
-installed toolchain with the **highest matching patch**, so a CI matrix names a
-toolchain by major version without pinning the exact patch present on a given
-runner. Matching is **anchored at version-component boundaries**: a truncated
-selector never resolves a different major version (a `…-1` selector does not
-match a `…-18` toolchain). When a selector matches more than one profile the
-invocation is an ambiguity error, never an arbitrary pick.
+A profile MAY be named by a **truncated tool selector** — a prefix of a tool
+key that omits trailing detail, such as a compiler family plus major version
+(`ninja-clang-18`) or a toolchain family plus major version without its
+edition (`msvc-17`). A CI matrix can therefore name a toolchain without
+pinning either the exact patch version or the specific edition installed on a
+given runner image.
+
+Matching is **anchored at segment boundaries**: the selector must be followed
+in the candidate key by a version separator or a segment separator, so a
+truncated selector never resolves a different segment (a `…-1` selector
+matches neither `…-18` nor `msvc-17`). It is a prefix, not a substring —
+`msvc-17` does not match `ninja-msvc-17-…`. Among candidates the highest
+matching version wins; when candidates carry no distinguishing version (two
+editions of the same toolchain) the choice MUST still be deterministic and
+independent of enumeration order. When a selector matches more than one
+**profile** the invocation is an ambiguity error, never an arbitrary pick.
 
 ### 16.4 Cache-cold vs cache-warm
 

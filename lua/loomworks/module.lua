@@ -59,11 +59,16 @@ function Module:primary_language()
     return self.languages[1]
 end
 
---- Look up a Tool by key (spec §1.5.2). Exact match first, then a
---- dotted-version prefix fallback: a coarse pin like `ninja-clang-19`
---- matches any registered tool whose version extends it on a component
---- boundary (`ninja-clang-19.1.5`). Fully-specified keys only exact-match
---- (they never relax). Highest matching version wins.
+--- Look up a Tool by key (spec §1.5.2). Exact match first, then a coarse-pin
+--- fallback: a truncated key matches any registered tool that extends it on a
+--- SEGMENT BOUNDARY — either a dotted version (`ninja-clang-19` →
+--- `ninja-clang-19.1.5`) or a dashed segment (`msvc-17` →
+--- `msvc-17-2022-enterprise`), so a CI matrix can name a toolchain without
+--- pinning the patch version or the Visual Studio edition of the runner image.
+--- A truncated selector never crosses a boundary (`…-1` never matches `…-18`).
+--- Among candidates the highest trailing version wins; ties (e.g. two MSVC
+--- editions, which carry no trailing version) break on the lowest key so the
+--- choice is deterministic rather than dependent on table order.
 --- @param tool_key string|nil tool identifier (nil for default tools)
 --- @return loomworks.Tool|nil
 function Module:find_tool(tool_key)
@@ -72,13 +77,15 @@ function Module:find_tool(tool_key)
     if exact then return exact end
     if rk == "" then return nil end
 
-    local prefix = rk .. "."
-    local best, best_ver
+    local best, best_ver, best_key
     for key, tool in pairs(self._tools) do
-        if key:sub(1, #prefix) == prefix then
+        local nxt = key:sub(#rk + 1, #rk + 1)
+        if key:sub(1, #rk) == rk and (nxt == "." or nxt == "-") then
             local ver = key:match("(%d[%d%.]*)$") or ""
-            if not best or version_gt(ver, best_ver) then
-                best, best_ver = tool, ver
+            if not best
+                or version_gt(ver, best_ver)
+                or (ver == best_ver and key < best_key) then
+                best, best_ver, best_key = tool, ver, key
             end
         end
     end
