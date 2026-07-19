@@ -2356,6 +2356,107 @@ function M.cmd_profile_target(root, args)
   return 0
 end
 
+-- ---------------------------------------------------------------------------
+-- SDKs (user-declared toolchain installations)
+-- ---------------------------------------------------------------------------
+
+--- SDK providers shipped with core. The registry discovers providers by
+--- scanning runtimepath, which only exists under the editor host — the
+--- standalone runner has no runtimepath (and no plugin ecosystem), so these are
+--- probed directly as a fallback.
+local CORE_SDK_PROVIDERS = { "cpp_compiler" }
+
+--- Provider ids available on this host (core + any plugin-supplied).
+local function sdk_provider_ids()
+  local ok, registry = pcall(require, "loomworks.sdks")
+  if not ok then return {} end
+  local ids, seen = {}, {}
+  -- Editor host: runtimepath discovery finds core + plugin providers.
+  local ok_list, listed = pcall(registry.list)
+  if ok_list and type(listed) == "table" then
+    for _, id in ipairs(listed) do
+      if not seen[id] then seen[id] = true; ids[#ids + 1] = id end
+    end
+  end
+  for _, id in ipairs(CORE_SDK_PROVIDERS) do
+    if not seen[id] and registry.get(id) then seen[id] = true; ids[#ids + 1] = id end
+  end
+  table.sort(ids)
+  return ids
+end
+
+--- `lw sdk <types|list|add|remove>` — declare toolchain installations that
+--- auto-detection cannot find (a compiler at an arbitrary path, a
+--- cross-compiler). A declared SDK produces a kit, so it shows up in
+--- `lw tools` and can be pinned by `lw profile create`.
+function M.cmd_sdk(sub, root, args)
+  local ids = sdk_provider_ids()
+
+  if sub == "types" then
+    if #ids == 0 then out("(no SDK providers available)"); return 0 end
+    for _, id in ipairs(ids) do out("  " .. id) end
+    return 0
+  end
+
+  if sub == nil or sub == "list" then
+    local ws = load_workspace(root, false)
+    local sdks = ws._sdks or {}
+    if #sdks == 0 then
+      out("(no SDKs declared — `lw sdk add <type> <path>`)")
+      return 0
+    end
+    for _, sdk in ipairs(sdks) do
+      out(string.format("  %-42s %s", sdk.key, sdk._path or "?"))
+    end
+    return 0
+  end
+
+  if sub == "add" then
+    -- args: { "sdk", "add", <type>, <path>, flags… }
+    local pos, force, family, version = {}, false, nil, nil
+    local i = 3
+    while args[i] do
+      if args[i] == "--force" then force = true; i = i + 1
+      elseif args[i] == "--family" then family = args[i + 1]; i = i + 2
+      elseif args[i] == "--version" then version = args[i + 1]; i = i + 2
+      else pos[#pos + 1] = args[i]; i = i + 1 end
+    end
+    local sdk_type, path = pos[1], pos[2]
+    if not (sdk_type and path) then
+      die("usage: lw sdk add <type> <path> [--force [--family <f>] [--version <v>]]\n" ..
+        "  types: " .. (next(ids) and table.concat(ids, ", ") or "(none)"))
+    end
+    local abs = resolve_abs(path, user_cwd()) or resolve_abs_out(path, user_cwd())
+    local ws = load_workspace(root, false)
+    local sdk, err = ws:add_sdk(sdk_type, abs,
+      { force = force, family = family, version = version })
+    if not sdk then die("could not add SDK: " .. tostring(err)) end
+    out("declared SDK: " .. sdk.key)
+    out("  path: " .. (sdk._path or abs))
+    if force then
+      out("  (registered with --force — it did not identify itself; version-based")
+      out("   selection is unavailable, pin it by its full key)")
+    end
+    out("")
+    out("It provides a toolchain — `lw tools` lists it, then:")
+    out("  lw profile create <config-set> " .. sdk.key)
+    return 0
+  end
+
+  if sub == "remove" or sub == "rm" then
+    local key = args[3]
+    if not key then die("usage: lw sdk remove <key>  (`lw sdk list` shows keys)") end
+    local ws = load_workspace(root, false)
+    if not ws:remove_sdk(key) then
+      die("no SDK with key '" .. key .. "'. Run `lw sdk list`.")
+    end
+    out("removed SDK '" .. key .. "'")
+    return 0
+  end
+
+  die("unknown sdk subcommand '" .. tostring(sub) .. "' — use types|list|add|remove")
+end
+
 --- `lw profile remove <profile>` — drop a profile from the working copy.
 --- Removes user intent only; build directories are left alone (`lw clean` /
 --- the editor's delete plan handle artifacts).
@@ -2724,7 +2825,7 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
   "profiles", "profile", "tools", "build", "clean", "test", "run", "launch", "publish",
-  "unlock", "config", "completion", "version", "install", "self-update", "help", "--no-input",
+  "unlock", "config", "completion", "version", "install", "self-update", "help", "sdk", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -3286,6 +3387,7 @@ Mutating — only when the task asks (these write the working copy / shared file
   init · workspace rename · project add|remove|rename ·
   configuration add|set|unset|remove ·
   configuration-set create|map|unmap|remove · profile create|remove ·
+  sdk add|remove ·
   <kind> publish · publish · config set
 
 Do NOT change the user's active profile:
@@ -3299,6 +3401,34 @@ Intent: items you create default to local+shared and reach the committed
 loomworks.json on publish. Pass --local to keep something out of the shared
 file, and don't `publish` unless the task is to change the shared contract.
 See `lw help publish`.]],
+  sdk = [[lw sdk <types|list|add|remove>
+
+Declare a toolchain installation that auto-detection cannot find — a compiler
+at an arbitrary path, a custom build, or a cross-compiler. A declared SDK
+produces a toolchain, so it appears in `lw tools` and can be pinned by
+`lw profile create`. Declarations live in the working copy (machine-local).
+
+  types                 SDK provider ids available on this host. Plugins add
+                        more by shipping a provider (e.g. a platform SDK).
+  list                  declared SDKs and their paths
+  add <type> <path>     Probe the path, derive a key, and declare it.
+        [--force]       Register even when the path fails to identify itself
+                        (an exotic driver or a wrapper script). The path must
+                        still exist. Such an SDK has no discovered version, so
+                        version-based selection is unavailable — pin it by its
+                        full key.
+        [--family <f>] [--version <v>]
+                        With --force, supply what probing could not discover,
+                        so the key stays meaningful.
+  remove <key>          Drop a declaration (`lw sdk list` shows keys).
+
+The key is DERIVED, not chosen: <type>-<family>-<version>-<path token>, e.g.
+cpp_compiler-clang-19.1.0-vendor-clang. Two builds of the same version at
+different paths therefore stay distinct, and the version stays selectable
+(`cpp_compiler-clang-19` resolves it). `add` prints the key it produced.
+
+  lw sdk add cpp_compiler /opt/compilers/clang-19/bin/clang++
+  lw profile create Debug cpp_compiler-clang-19]],
   ci = [[lw help ci — driving CI jobs with lw
 
 Model: commit the CONFIGURATION SETS (the portable unit) and the projects.
@@ -3379,6 +3509,7 @@ Usage: lw [command] [args]
   profiles          list profiles and their buildability
   profile <sub>     list | select | create | remove | publish | target | query
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
+  sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
   test  [profile]   build a profile, then run its tests (real exit code)
   run   [name]      build, then execute a launch configuration
@@ -3519,6 +3650,10 @@ local function main()
   -- `workspace` manages workspace-level settings (name) in the working copy.
   if command == "workspace" or command == "ws" then
     finish(M.cmd_workspace(a[2], root, a))
+  end
+  -- `sdk` declares toolchain installations detection can't find.
+  if command == "sdk" then
+    finish(M.cmd_sdk(a[2], root, a))
   end
 
   if command == "tools" then

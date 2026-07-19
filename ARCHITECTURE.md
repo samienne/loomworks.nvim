@@ -801,6 +801,13 @@ replaces it, which would drop `PATH`).
   not set this up itself, so `lw test` must parse targets before planning.
 - `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
   profile's default launch target (writes `user.json`; spec §16.9 authoring).
+- `lw sdk <types|list|add|remove>` — declare toolchain installations that
+  detection cannot find (a compiler at an arbitrary path, a cross-compiler).
+  Thin wrappers over `Workspace:add_sdk` / `remove_sdk`; the declared SDK
+  produces a kit, so it appears in `lw tools` and is pinnable by
+  `lw profile create`. `--force` registers a path that fails identification
+  (spec §10.1). Provider discovery scans runtimepath, which the standalone host
+  lacks, so the CLI additionally probes the providers bundled with core.
 - `lw profile query <profile> <project> <field>` — read-only introspection
   (spec §16.18): prints one machine-readable fact (`build-dir` / `config` /
   `state` / `tool`) for scripting, e.g. locating CI artifacts. No build.

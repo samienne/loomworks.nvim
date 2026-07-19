@@ -4591,9 +4591,14 @@ function Workspace:_sync_sdks(config_sdks, user_sdks)
             local info = provider.validate(path)
             if info then
                 version = info.version or version
-                -- Normalize key to include version (migration from old keyless format)
+                -- Migrate ONLY the legacy keyless format (key == the bare type).
+                -- A provider-derived key already encodes identity — family,
+                -- version AND a path token — and must be preserved: rewriting it
+                -- to `<type>-<version>` drops the token, so two installations of
+                -- the same version at different paths collapse onto one key (and
+                -- the key `add` reported would not survive a reload).
                 local resolved_key = key
-                if version and not key:match("%-[%d%.]+$") then
+                if version and key == sdk_type then
                     resolved_key = sdk_type .. "-" .. version
                 end
                 local sdk = provider.create_sdk(resolved_key, path, version)
@@ -4710,7 +4715,14 @@ end
 --- @param sdk_type string provider type
 --- @param path? string user-provided path (nil = auto-detect)
 --- @return loomworks.SDK|nil sdk, string|nil error
-function Workspace:add_sdk(sdk_type, path)
+--- Declare an SDK installation. `opts.force` registers a path that fails
+--- identification, using `opts.family` / `opts.version` for the facts probing
+--- could not supply (spec §8) — such an SDK forfeits version-based selection.
+--- @param sdk_type string provider id (e.g. "cpp_compiler")
+--- @param path string|nil installation path (nil = auto-detect the first)
+--- @param opts? table { force?: boolean, family?: string, version?: string }
+--- @return loomworks.SDK|nil sdk, string|nil err
+function Workspace:add_sdk(sdk_type, path, opts)
     local sdk_registry = require("loomworks.sdks")
     local provider = sdk_registry.get(sdk_type)
     if not provider then
@@ -4733,8 +4745,21 @@ function Workspace:add_sdk(sdk_type, path)
     local sdk
     if path then
         local info = provider.validate(path)
+        if not info and opts and opts.force then
+            -- Forced registration: the installation could not identify itself
+            -- (an exotic driver or a wrapper script). Take the caller's facts
+            -- instead of refusing; derive_key degrades to `cpp`/`unknown` for
+            -- whatever is missing. The path must still EXIST, so a typo is
+            -- still caught rather than registered as a broken SDK.
+            local uv = vim.uv or vim.loop
+            if not uv.fs_stat(path) then
+                return nil, "'" .. path .. "' does not exist"
+            end
+            info = { version = opts.version, family = opts.family }
+        end
         if not info then
-            return nil, "'" .. path .. "' is not a valid " .. sdk_type .. " installation"
+            return nil, "'" .. path .. "' is not a valid " .. sdk_type ..
+                " installation (it did not identify itself; --force registers it anyway)"
         end
         local key = derive_key(info, path)
         if self:find_sdk(key) then

@@ -1244,6 +1244,98 @@ describe("project rename", function()
 end)
 
 -- =========================================================================
+-- SDK declarations (user-declared toolchain installations, spec §8)
+-- =========================================================================
+
+describe("SDK declarations", function()
+    local SDK = require("loomworks.sdk")
+
+    --- Swap the SDK registry for a stub provider, run fn, always restore.
+    --- `validates` false makes validate() fail, exercising the --force path.
+    local function with_provider(validates, fn)
+        local saved = package.loaded["loomworks.sdks"]
+        local fake = {
+            id = "fake",
+            api_version = 1,
+            detect_all = function() return {} end,
+            match_version = function() return true end,
+            validate = function()
+                if not validates then return nil end
+                return { version = "1.2.3", family = "fam", basename_token = "tok" }
+            end,
+            derive_key = function(info)
+                return "fake-" .. (info.family or "cpp") .. "-" ..
+                    (info.version or "unknown") .. "-" .. (info.basename_token or "custom")
+            end,
+            create_sdk = function(key, path, version)
+                return SDK.new({ key = key, type = "fake", version = version,
+                    path = path, resolved = true })
+            end,
+        }
+        package.loaded["loomworks.sdks"] = {
+            get = function(id) return id == "fake" and fake or nil end,
+            list = function() return { "fake" } end,
+            all = function() return { fake = fake } end,
+        }
+        local ok, err = pcall(fn)
+        package.loaded["loomworks.sdks"] = saved
+        if not ok then error(err) end
+    end
+
+    it("preserves a provider-derived key across a reload", function()
+        with_provider(true, function()
+            local ws = make_ws()
+            -- The shape _serialize_user writes for a declared SDK.
+            ws:_sync_sdks(nil, {
+                ["fake-fam-1.2.3-tok"] = { type = "fake", path = "/opt/x", version = "1.2.3" },
+            })
+            assert.equals(1, #ws._sdks)
+            -- Regression: a "migration" rewrote any key not ending in digits to
+            -- <type>-<version>, dropping the path token — so the key `add`
+            -- reported didn't survive a reload, and two installations of the
+            -- same version at different paths collapsed onto one key.
+            assert.equals("fake-fam-1.2.3-tok", ws._sdks[1].key)
+        end)
+    end)
+
+    it("still migrates the legacy keyless format", function()
+        with_provider(true, function()
+            local ws = make_ws()
+            ws:_sync_sdks(nil, { fake = { type = "fake", path = "/opt/x", version = "1.2.3" } })
+            assert.equals("fake-1.2.3", ws._sdks[1].key)
+        end)
+    end)
+
+    it("add_sdk refuses a path that fails identification", function()
+        with_provider(false, function()
+            local ws = make_ws()
+            local sdk, err = ws:add_sdk("fake", "README.md")
+            assert.is_nil(sdk)
+            assert.matches("did not identify itself", err)
+        end)
+    end)
+
+    it("add_sdk --force registers it using the caller's facts", function()
+        with_provider(false, function()
+            local ws = make_ws()
+            local sdk, err = ws:add_sdk("fake", "README.md",
+                { force = true, family = "gcc", version = "12.3.0" })
+            assert.is_not_nil(sdk, err)
+            assert.equals("fake-gcc-12.3.0-custom", sdk.key)
+        end)
+    end)
+
+    it("add_sdk --force still rejects a path that does not exist", function()
+        with_provider(false, function()
+            local ws = make_ws()
+            local sdk, err = ws:add_sdk("fake", "no/such/compiler", { force = true })
+            assert.is_nil(sdk)
+            assert.matches("does not exist", err)
+        end)
+    end)
+end)
+
+-- =========================================================================
 -- Workspace name
 -- =========================================================================
 

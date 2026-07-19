@@ -2798,6 +2798,21 @@ Each provider table exposes:
 | `create_sdk(key, path, version) → SDK` | Construct a `loomworks.SDK` domain object from a validated installation |
 | `query_capabilities(sdk, module_id) → table\|nil` | Return opaque capability data this SDK can offer to a given module, or `nil` if it has nothing for that module. `module_id == nil` returns the supported module ids array |
 
+**Declaring an installation.** An SDK is normally declared by supplying a path,
+which the provider validates — identifying the installation and deriving the
+facts (such as version) that the key is built from. A provider MAY derive a key
+that encodes more than the version (for instance a path-derived token, so two
+installations of the same version at different paths stay distinct); a
+provider-derived key is the installation's identity and MUST be preserved
+verbatim across save/load.
+
+A user MAY **force** a declaration whose path fails identification — an
+installation that cannot report on itself — by supplying the identifying facts
+explicitly. The path MUST still exist, so a mistyped path is still refused. A
+forced declaration carries only the facts the user gave: where a version was not
+supplied it is unknown, and the installation therefore forfeits version-based
+selection (§16.3) and is referenced by its full key.
+
 ### 10.2 SDK domain object
 
 `loomworks.SDK` (`lua/loomworks/sdk.lua`) wraps a resolved
