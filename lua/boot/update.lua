@@ -15,10 +15,9 @@ local download = require("boot.download")
 
 local M = {}
 
--- Where releases are fetched from. PLACEHOLDER — the real owner/repo is wired
--- in at release time (S4). Overridable via LOOMWORKS_RELEASE_URL or the
--- `release-url` config key; a local directory works as an offline mirror.
-M.DEFAULT_RELEASE_URL = "https://github.com/OWNER/loomworks.nvim/releases/latest/download"
+-- Where releases are fetched from. Overridable via LOOMWORKS_RELEASE_URL or
+-- the `release-url` config key; a local directory works as an offline mirror.
+M.DEFAULT_RELEASE_URL = "https://github.com/samienne/loomworks.nvim/releases/latest/download"
 
 local function release_base(opts)
   local base = (opts and opts.url)

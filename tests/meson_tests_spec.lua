@@ -91,6 +91,35 @@ describe("meson test integration", function()
                 spec.cmd)
         end)
 
+        -- Regression: `meson test` rebuilds stale targets itself, which is why a
+        -- headless test run skips building the unit (§16.16). The test command
+        -- therefore needs the same toolchain env a build gets — without MSVC's
+        -- vcvars the implicit ninja rebuild fails with "CreateProcess failed"
+        -- (cl not on PATH), so `lw test` on a stale tree always false-failed.
+        it("carries the toolchain environment its own rebuild needs (MSVC vcvars)", function()
+            local saved = package.loaded["loomworks.msvc"]
+            package.loaded["loomworks.msvc"] = {
+                vcvars_env = function()
+                    return { INCLUDE = "C:/vs/include", LIB = "C:/vs/lib", PATH = "C:/vs/bin" }
+                end,
+            }
+            local unit = stub_config_unit("/build/App/Debug")
+            unit._tool_data = {
+                meson = { "/usr/bin/meson" },
+                vcvarsall = "C:/vs/vcvarsall.bat",
+                arch = "x64",
+            }
+            local tu = meson.create_test_unit(unit)
+            local ok, spec = pcall(function() return tu:run_command_all() end)
+            package.loaded["loomworks.msvc"] = saved
+            assert.is_true(ok, spec)
+            assert.equals("C:/vs/include", spec.env.INCLUDE)
+            assert.equals("C:/vs/lib", spec.env.LIB)
+            assert.equals("cl", spec.env.CXX)
+            -- vcvars' PATH must reach the runner (bin dirs may be prepended).
+            assert.is_truthy(spec.env.PATH and spec.env.PATH:find("C:/vs/bin", 1, true))
+        end)
+
         it("reports its fixed JUnit location as junit_out only when requested", function()
             local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
             -- meson takes no output-path flag, so JUnit is opt-in via junit_out.

@@ -2547,6 +2547,21 @@ function M.cmd_profile(sub, root, args)
     "' — use list|select|create|remove|publish|target|query")
 end
 
+--- The value a config key falls back to when unset, so `lw config get` can
+--- report it. Only keys with a discoverable built-in default are listed.
+--- @param key string
+--- @return string|nil
+local function effective_config_default(key)
+  if key == "release-url" then
+    local ok, update = pcall(require, "boot.update")
+    if ok and update.DEFAULT_RELEASE_URL then
+      return os.getenv("LOOMWORKS_RELEASE_URL") or update.DEFAULT_RELEASE_URL
+    end
+    return os.getenv("LOOMWORKS_RELEASE_URL")
+  end
+  return nil
+end
+
 --- `lw config <list|get|set|unset> [key] [value]`
 function M.cmd_config(sub, key, value)
   local cfg = read_config()
@@ -2563,7 +2578,11 @@ function M.cmd_config(sub, key, value)
     return 0
   elseif sub == "get" then
     if not key then die("usage: lw config get <key>") end
-    out(cfg[key] == nil and "(unset)" or tostring(cfg[key]))
+    if cfg[key] ~= nil then out(tostring(cfg[key])); return 0 end
+    -- Unset keys still have an effective value; print it so a setting like the
+    -- release URL is discoverable from the CLI instead of reading the source.
+    local eff = effective_config_default(key)
+    out(eff and ("(unset — using default: " .. eff .. ")") or "(unset)")
     return 0
   elseif sub == "set" then
     if not key or value == nil then die("usage: lw config set <key> <value>") end
@@ -3512,7 +3531,7 @@ Usage: lw [command] [args]
   sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
   test  [profile]   build a profile, then run its tests (real exit code)
-  run   [name]      build, then execute a launch configuration
+  run <profile> [target]  build, then execute a launch target
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   config <...>      get/set lw configuration
@@ -3612,7 +3631,8 @@ local function main()
   -- `version` / `self-update` are host commands: on the luvi host the bootstrap
   -- (main.lua) intercepts them before we run. Reaching here means the
   -- nvim-hosted fallback, where they don't apply.
-  if command == "version" or command == "self-update" or command == "install" then
+  if command == "version" or command == "--version" or command == "-v"
+      or command == "self-update" or command == "install" then
     io.stderr:write("lw: `" .. command .. "` is provided by the standalone lw " ..
       "binary; it is not available in the nvim-hosted fallback.\n")
     finish(1)

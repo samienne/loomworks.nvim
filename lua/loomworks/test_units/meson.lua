@@ -683,9 +683,18 @@ function MesonTestUnit:run_command_all(opts)
     if opts.filter then cmd[#cmd + 1] = opts.filter end  -- meson filters by test name
     -- Caller args (from `lw test -- …`, e.g. `--num-processes N`) go last.
     if opts.extra_args then vim.list_extend(cmd, opts.extra_args) end
+    -- `meson test` REBUILDS stale targets before running (§16.16 — which is why
+    -- a headless test run skips building this unit itself), so it needs the
+    -- same toolchain environment a build gets. Composed by the module so both
+    -- paths agree: without MSVC's vcvars env (INCLUDE / LIB / PATH-to-cl) the
+    -- implicit ninja rebuild dies with "CreateProcess failed" — cl is not on
+    -- PATH — turning `lw test` on a stale tree into a false failure.
+    local ok_mod, meson_mod = pcall(require, "loomworks.modules.meson")
+    local task_env = (ok_mod and meson_mod.compose_task_env)
+        and meson_mod.compose_task_env({}, self._config_unit._tool_data) or nil
     return {
         cmd = cmd,
-        env = compose_env(nil, nil, self:_compiler_bin_dir()),
+        env = compose_env(task_env, nil, self:_compiler_bin_dir()),
         cwd = self._build_dir,
         -- meson has no output-path flag: it always writes JUnit to this fixed
         -- location under the build dir. Reported only when JUnit was requested,

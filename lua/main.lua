@@ -85,6 +85,10 @@ local function exit(code)
 end
 
 local command = forwarded[1]
+-- `--version` / `-v` are the conventional spellings; accept them as aliases so
+-- they don't fall through to workspace resolution and error about a missing
+-- loomworks.json.
+if command == "--version" or command == "-v" then command = "version" end
 if command == "version" then
   local info = require("boot.update").version_info(luaroot, source_kind)
   io.write(string.format("lw — host v%d · source: %s · bundle: %s\n",
@@ -102,6 +106,15 @@ elseif command == "self-update" then
   local res, err = require("boot.update").self_update({ force = force })
   if not res then
     io.stderr:write("lw: self-update failed: " .. tostring(err) .. "\n")
+    -- A 404 here usually means this build points at a release feed that has no
+    -- releases yet, so say where it looked and how to redirect it rather than
+    -- leaving a bare curl error.
+    if tostring(err):find("404", 1, true) then
+      io.stderr:write("    Releases are fetched from: " ..
+        require("boot.update").DEFAULT_RELEASE_URL .. "\n" ..
+        "    Point it elsewhere with `lw config set release-url <url>` or\n" ..
+        "    LOOMWORKS_RELEASE_URL (a local directory works as an offline mirror).\n")
+    end
     exit(1)
   end
   io.write(res.updated

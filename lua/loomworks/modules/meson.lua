@@ -493,6 +493,9 @@ end
 --- @param base_env table<string, string>
 --- @param tool_data table|nil
 --- @return table<string, string>
+--- Exported so the meson TEST unit composes the identical environment: its
+--- native runner rebuilds (§16.16), so it needs the same toolchain env a build
+--- gets (notably MSVC's vcvars) or the rebuild cannot find the compiler.
 local function compose_task_env(base_env, tool_data)
     local env = {}
     for k, v in pairs(base_env or {}) do env[k] = v end
@@ -535,6 +538,7 @@ local function compose_task_env(base_env, tool_data)
     end
     return env
 end
+M.compose_task_env = compose_task_env  -- shared with the meson test unit
 
 --- Return overseer task templates for a project.
 --- Produces:
