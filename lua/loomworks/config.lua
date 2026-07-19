@@ -274,8 +274,13 @@ function M.validate(raw, root)
             if type(profile_def) ~= "table" then
                 return nil, "profile '" .. profile_name .. "' must be a table"
             end
+            -- Must mirror Profile:to_config_def() — whatever `publish` writes has
+            -- to survive the read, or a shared profile comes back as a stub.
             profiles[profile_name] = {
                 configuration_set = profile_def.configuration_set,
+                tools = profile_def.tools,
+                sdk = profile_def.sdk,
+                default_target = profile_def.default_target,
                 kit_id = profile_def.kit_id,
                 -- Legacy support: cmake.kit_id
                 cmake = profile_def.cmake,

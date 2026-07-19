@@ -185,6 +185,31 @@ describe("config", function()
             assert.equals("debug", result.profiles.custom.configuration_set)
             assert.equals("ninja-gcc-14", result.profiles.custom.cmake.kit_id)
         end)
+
+        -- Regression: `publish` writes a profile as { configuration_set, tools,
+        -- default_target, sdk }, but the parser whitelisted only
+        -- configuration_set + the legacy kit fields — so every SHARED profile
+        -- was read back with no tools and collapsed into an unbuildable stub
+        -- (its key re-derived from an empty tool set). Read must match write.
+        it("preserves a published profile's tools/sdk/default_target", function()
+            local json = vim.json.encode({
+                projects = { A = { cmake = {} } },
+                profiles = {
+                    ["debug:ninja-clang-18.1.7"] = {
+                        configuration_set = "debug",
+                        tools = { "ninja-clang-18.1.7" },
+                        sdk = "some-sdk",
+                        default_target = { project = "A", target = "app" },
+                    },
+                },
+            })
+            local result = config.parse(json, "/fake/root")
+            local p = result.profiles["debug:ninja-clang-18.1.7"]
+            assert.is_not_nil(p)
+            assert.same({ "ninja-clang-18.1.7" }, p.tools)
+            assert.equals("some-sdk", p.sdk)
+            assert.equals("app", p.default_target and p.default_target.target)
+        end)
     end)
 
     describe("_extract_type", function()
