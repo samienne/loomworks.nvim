@@ -4953,6 +4953,27 @@ function Workspace:rename_project(project, new_key)
     return true
 end
 
+--- Remove a profile from the working copy. Drops the profile definition (and
+--- its ProfileProjects) and clears the active selection if it pointed here.
+--- Build directories are NOT touched — this removes user intent only; use the
+--- deletion plan (`Profile:plan_deletion`) when the artifacts should go too.
+--- @param profile loomworks.Profile
+--- @return boolean ok, string|nil err
+function Workspace:remove_profile(profile)
+    if profile._removed then
+        return false, "profile '" .. tostring(profile.key) .. "' not found"
+    end
+    if self._active_profile == profile then
+        self._active_profile = nil
+        self._active_profile_key = nil
+    end
+    self:_remove_profile(profile)
+    local ok, err = self:_save_user()
+    if not ok then return false, err end
+    self:_save_cache()
+    return true
+end
+
 --- Set the workspace display name (§1.1). Stored in the working copy and
 --- written to loomworks.json on publish. Rolls back on save failure.
 --- @param new_name string non-empty display name

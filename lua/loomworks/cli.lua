@@ -8,7 +8,8 @@
 ---           project <add|remove|rename|list|show> |
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
----           profile <list|select|create|target|query> | tools | build [profile] |
+---           profile <list|select|create|remove|publish|target|query> |
+---           tools | build [profile] |
 ---           clean [profile] | run <profile> [target] | publish | test [profile] |
 ---           unlock <profile>|--all | config <...> | completion <shell> | help
 
@@ -620,14 +621,21 @@ end
 
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean } for_test skips building units
----   whose native test runner rebuilds itself (§16.16).
+--- @param opts? table { for_test?: boolean, extra_args?: string[] } for_test
+---   skips building units whose native test runner rebuilds itself (§16.16);
+---   extra_args are forwarded to the build tool.
 local function run_build_steps(profile, ws, opts)
+  opts = opts or {}
   local overseer = require("loomworks.overseer")
   local steps = overseer.plan_profile_build(profile, opts)
   if not steps or #steps == 0 then return 0 end
   out("building profile: " .. profile.key)
   for _, step in ipairs(steps) do
+    -- Caller args (`lw build -- -j 4`) go to the BUILD tool only — a configure
+    -- step would choke on them. Appended so they layer on top.
+    if opts.extra_args and step.kind == "build" then
+      step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
+    end
     out(string.format("==> [%s] %s", step.kind, step.name or "?"))
     local code = run_spec(step, ws.root)
     record_step(ws, step, code == 0)
@@ -678,12 +686,25 @@ local function with_build_locks(profile, action, fn)
   release_all()
 end
 
-function M.cmd_build(ws, profile_name)
+--- `lw build [profile] [-- <build-tool args>]` — configure if needed, then
+--- build. Args after `--` are forwarded to the build tool (e.g. `-- -j 4`).
+function M.cmd_build(ws, args)
+  -- Split on `--`: everything after goes to the build tool.
+  local pre, extra, seen_sep = {}, {}, false
+  for i = 2, #args do
+    if not seen_sep and args[i] == "--" then seen_sep = true
+    elseif seen_sep then extra[#extra + 1] = args[i]
+    else pre[#pre + 1] = args[i] end
+  end
+  if pre[2] then
+    die("unexpected argument '" .. tostring(pre[2]) ..
+      "' — usage: lw build [profile] [-- build-tool-args…]")
+  end
   local profile
-  profile, ws = resolve_build_target(ws, profile_name)
+  profile, ws = resolve_build_target(ws, pre[1])
   local built = 0
   with_build_locks(profile, "build", function()
-    built = run_build_steps(profile, ws)
+    built = run_build_steps(profile, ws, { extra_args = (#extra > 0) and extra or nil })
   end)
   if built == 0 then
     die("nothing to build for profile '" .. profile.key ..
@@ -1287,6 +1308,9 @@ function M.cmd_init(args)
   out("initialized workspace at " .. dir)
   out("  created .nvim/loomworks.user.json (working copy)")
   if name then out("  name: " .. name) end
+  out("")
+  out("Add `.nvim/` to the repo's .gitignore — it holds the working copy, the")
+  out("cache and build trees, all machine-local. Only loomworks.json is shared.")
   out("")
   out("Add projects/profiles (editor or manual edit), then `lw publish` to")
   out("write the shared loomworks.json.")
@@ -2332,6 +2356,23 @@ function M.cmd_profile_target(root, args)
   return 0
 end
 
+--- `lw profile remove <profile>` — drop a profile from the working copy.
+--- Removes user intent only; build directories are left alone (`lw clean` /
+--- the editor's delete plan handle artifacts).
+function M.cmd_profile_remove(root, args)
+  local name = args[3]
+  if not name then die("usage: lw profile remove <profile>") end
+  local ws = load_workspace(root, false)
+  local profile = resolve_profile(ws, name)
+  local key = profile.key
+  local ok, err = ws:remove_profile(profile)
+  if not ok then die("could not remove profile: " .. tostring(err)) end
+  out("removed profile '" .. key .. "'")
+  out("  build directories were left in place (`lw clean` removes artifacts).")
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
 --- `lw profile query <profile> <project> <field>` — print a single machine-
 --- readable fact about a project within a resolved profile (spec §16.18). Read-
 --- only introspection for scripting (e.g. locating CI artifacts). Fields:
@@ -2389,6 +2430,9 @@ function M.cmd_profile(sub, root, args)
   if sub == "query" then
     return M.cmd_profile_query(root, args)
   end
+  if sub == "remove" or sub == "rm" then
+    return M.cmd_profile_remove(root, args)
+  end
   if sub == "publish" then
     return M.cmd_profile_publish(root, args[3])
   end
@@ -2398,7 +2442,8 @@ function M.cmd_profile(sub, root, args)
   if sub == nil or sub == "list" then
     return M.cmd_profiles(load_workspace(root))
   end
-  die("unknown profile subcommand '" .. tostring(sub) .. "' — use list|select|create|publish|target|query")
+  die("unknown profile subcommand '" .. tostring(sub) ..
+    "' — use list|select|create|remove|publish|target|query")
 end
 
 --- `lw config <list|get|set|unset> [key] [value]`
@@ -2854,7 +2899,10 @@ Probing compilers/vcvarsall is slow, so the result is cached
 refreshes that cache; other commands (profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile | config-set]
+  build = [[lw build [profile | config-set] [-- <build-tool args>]
+
+Args after `--` are forwarded to the BUILD tool (not to configure), e.g.
+`lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI.
 
 Build a profile's projects. Interactively, with no profile given, it uses the
 active profile (user.json), else the only profile. With NO profile yet, it
@@ -2986,7 +3034,12 @@ the workspace already exists.
   --name <name>   Set the workspace display name. Defaults to the directory
                   basename — set this when the directory name isn't the name
                   you want published (e.g. a git worktree). Change it later
-                  with `lw workspace rename <name>`.]],
+                  with `lw workspace rename <name>`.
+
+Add `.nvim/` to the repo's .gitignore: it holds the working copy, the cache and
+the build trees — all machine-local. Only loomworks.json is committed. (A
+personal global gitignore can hide this from whoever sets the project up, while
+every teammate and CI runner still sees it untracked.)]],
   workspace = [[lw workspace [rename <name>]   (alias: ws)
 
 Workspace-level settings, stored in the working copy.
@@ -3087,7 +3140,7 @@ cross-project selection a profile builds. Managed in the working copy;
 
 <config> is a configuration name (an unambiguous base name works, so `Debug`
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
-  profile = [[lw profile <list|select|create|target|query>
+  profile = [[lw profile <list|select|create|remove|publish|target|query>
 
   list      same as `lw profiles`
   select    interactive picker; sets the active profile (writes user.json)
@@ -3099,7 +3152,16 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
             several toolchains (cmake:..., meson:...). A required toolchain
             left unspecified is prompted on a terminal (errors otherwise).
             The profile key is derived from the set + tools. --activate also
-            makes it active.
+            makes it active. A toolchain may be pinned coarsely — by major
+            version (ninja-clang-19) or without an edition (msvc-17); it
+            resolves to the best installed match (see the note below).
+  remove <profile>                   (alias: rm)
+            Drop a profile from the working copy. Removes the profile only —
+            its build directories are left in place (`lw clean` removes
+            artifacts). Clears the active selection if it pointed here.
+  publish <profile>
+            Mark the profile shared (local+shared) and regenerate
+            loomworks.json, including the set and projects it needs.
   target <profile> [<target>|--clear] [--cwd <dir>]
             Show, set, or clear a profile's DEFAULT launch target — what
             `lw run <profile>` runs with no target named. With no target, prints
@@ -3118,10 +3180,11 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
               tool       the resolved toolchain key
             e.g. BD=$(lw profile query Debug:ninja-clang-18 app build-dir)
 
-The active profile is the default for `lw build`. Profiles resolve by a
-version-truncated tool selector: `lw build ninja-clang-18` picks the highest
-`18.x` deterministically (a `…-1` selector never matches `…-18`), and a
-substring like `lw build clang-19` works when unambiguous.]],
+The active profile is the default for `lw build`. Profiles and toolchains
+resolve by a TRUNCATED selector, matched at segment boundaries: `ninja-clang-18`
+picks the highest `18.x`, and `msvc-17` picks an installed VS 17 without naming
+the edition. A truncated selector never crosses a boundary (`…-1` never matches
+`…-18`), and a substring like `lw build clang-19` works when unambiguous.]],
   config = [[lw config <list|get|set|unset> [key] [value]
 
 Read or write lw's user configuration (]] .. config_path() .. [[).
@@ -3215,14 +3278,14 @@ Read-only — safe any time (no writes to user.json / loomworks.json):
   lw project list | show <name>   lw profiles       lw tools [--cached]
   lw configuration list|show|get  lw configuration-set list|show
   lw profile query <profile> <project> <field>   (build-dir | config | state | tool)
-  lw build <profile>              builds; read-only toward config (writes only
+  lw build <profile> [-- args]    builds; read-only toward config (writes only
                                   the build dir + cache)
   lw version
 
 Mutating — only when the task asks (these write the working copy / shared file):
   init · workspace rename · project add|remove|rename ·
   configuration add|set|unset|remove ·
-  configuration-set create|map|unmap|remove · profile create ·
+  configuration-set create|map|unmap|remove · profile create|remove ·
   <kind> publish · publish · config set
 
 Do NOT change the user's active profile:
@@ -3255,12 +3318,16 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
    `release-url` config key) at a local mirror directory.
 
 2. Pick a toolchain deterministically (per matrix cell)
-   Name a toolchain by family + MAJOR version: it resolves to the highest
-   installed patch and never crosses a major, so you never pin an exact patch
-   (see `lw help profile`). `lw tools` lists what the runner detected.
+   Pin a toolchain COARSELY — by major version, or without an edition — and it
+   resolves to the best installed match, so the job never names the exact patch
+   or the runner image's VS edition:
      lw --no-input profile create Debug ninja-clang-18 --activate
-   Per platform, e.g.: ninja-clang-18 · ninja-gcc-12 · msvc-17 ·
-   ninja-appleclang-15  (the generator prefix + family differ by OS).
+   Key shapes differ per MODULE, so run `lw tools` on the runner to see the
+   real keys before writing the matrix:
+     cmake   generator + compiler:  ninja-clang-18 · ninja-gcc-12 ·
+             msvc-17 (any edition) · ninja-msvc-17
+     meson   compiler only (no generator):  clang-18 · gcc-12
+   A truncated pin never crosses a boundary, so `clang-1` matches nothing.
 
 3. Build and test with machine-readable output
      lw --no-input build Debug:ninja-clang-18
@@ -3275,6 +3342,11 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
      cp "$BD/app" out/
    The build directory is deterministic and known BEFORE building. Fields:
    build-dir | config | state | tool (see `lw help profile`).
+
+Gitignore `.nvim/`: it holds the working copy (loomworks.user.json), the cache,
+and the build trees — all machine-local. If it isn't in the repo's .gitignore,
+every teammate and CI runner sees it as untracked (a personal GLOBAL gitignore
+hides this from whoever set the project up). Only loomworks.json is committed.
 
 Dependency fetching / offline: lw is non-invasive — `lw build` runs your build
 system's own configure/build, so third-party fetching (cmake FetchContent,
@@ -3305,7 +3377,7 @@ Usage: lw [command] [args]
   configuration     add | set | get | show | ... project configurations
   configuration-set create | map | show | ... sets  (cs)
   profiles          list profiles and their buildability
-  profile <sub>     list | select | create | target | query profiles
+  profile <sub>     list | select | create | remove | publish | target | query
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   build [profile]   build a profile (configure if needed, then build)
   test  [profile]   build a profile, then run its tests (real exit code)
@@ -3461,7 +3533,7 @@ local function main()
   if command == "profiles" then
     finish(M.cmd_profiles(ws))
   elseif command == "build" then
-    finish(M.cmd_build(ws, a[2]))
+    finish(M.cmd_build(ws, a))
   elseif command == "clean" then
     finish(M.cmd_clean(ws, a[2]))
   elseif command == "unlock" then
