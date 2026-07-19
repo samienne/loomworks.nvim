@@ -3370,9 +3370,7 @@ function Workspace:_serialize_config()
     local profiles = {}
     for _, profile in pairs(self._profiles) do
         if pub.profiles[profile] then
-            profiles[profile.key] = profile.explicit_def or profile:to_config_def()
-        elseif profile.explicit_def then
-            profiles[profile.key] = profile.explicit_def
+            profiles[profile.key] = profile:to_config_def()
         end
     end
     if next(profiles) then raw.profiles = profiles end

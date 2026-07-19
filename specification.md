@@ -3439,14 +3439,24 @@ writes follow the same working-copy model as the editor (§2.4): they land in
 the working copy (§2.2), and the published snapshot (§2.1) changes only on an
 explicit publish. A read-only / CI invocation runs no management operation.
 
-### 16.10 Explicit toolchain override
+### 16.10 Toolchains outside the search paths
 
-A headless invocation MAY override tool resolution (§1.5.2) for a build by
-supplying a concrete toolchain as `key → path`, where `key` is the tool key
-the profile pins and `path` is a toolchain/compiler executable. The provided
-toolchain is identified by probing the executable and satisfies the pin
-directly, bypassing detection — allowing a build machine to supply a
-compiler absent from search paths, or to select one deterministically.
+*(Reserved. Section numbers §16.11+ are referenced throughout, so this number
+is retained rather than reused.)*
+
+A build machine whose toolchain is not on the host's search paths makes that
+installation usable by **declaring it** (§10.1) — the declaration is validated,
+identified, and produces a toolchain like any detected one, so the profile pins
+it and selection (§16.3) applies unchanged.
+
+A per-invocation override that satisfied a profile's pin from a bare executable
+path was considered and **deliberately rejected**: probing an executable yields
+its own identity, but not the surrounding facts a module needs to build with it
+(a build-system generator, for instance). Reconstructing those would mean either
+inferring them from the pinned key — keys are opaque identifiers and are never
+parsed (§1.5.2) — or silently assuming a default that is wrong for some
+toolchains. Declaration avoids this because the provider *constructs* the
+toolchain rather than guessing at it.
 
 ### 16.11 Runner distribution and system-Lua resolution
 
