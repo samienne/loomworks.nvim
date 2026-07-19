@@ -58,9 +58,18 @@ top-level organizational unit.
 
 - One workspace is active at a time.
 - The workspace root is the directory containing `loomworks.json`.
+- When a tool discovers the root by searching upward from a starting
+  directory, the search MUST NOT cross a git working-tree boundary: a
+  directory holding a `.git` entry but no workspace marker ends the search
+  with no root found. This keeps an invocation inside a fresh git worktree
+  (whose own working copy does not exist yet) from binding to a parent
+  checkout's workspace.
 - Opening files outside the workspace does not change the active workspace.
-- The workspace name defaults to the root directory name; may be overridden
-  via `"name"` in `loomworks.json`.
+- The workspace name defaults to the root directory name. It may be
+  overridden by a `"name"` field in the working copy (`user.json`) or the
+  published snapshot (`loomworks.json`); when both are present the working
+  copy wins. As working-copy state (§2.4), a user-set name is stored in
+  `user.json` and written to `loomworks.json` on publish.
 
 ### 1.2 Project
 

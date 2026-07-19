@@ -68,6 +68,25 @@ note_fail() { # $1 = description   $2 = exit code
     fi
 }
 
+# Root discovery must not cross a git working-tree boundary (spec §16.2): `lw`
+# in a fresh git worktree (a `.git` file, no `.nvim/` of its own) must NOT
+# silently bind to a parent checkout's workspace. Toolchain-independent.
+test_worktree_boundary() {
+    say "worktree boundary"
+    local base="$TMP/wt" out="$TMP/out.txt"
+    mkdir -p "$base/parent/wt-agent"
+    ( cd "$base/parent" && run_lw init --name parent-ws ) > "$out" 2>&1 \
+        || { note_fail "worktree: parent init" $?; return; }
+    # Simulate a linked git worktree root: a `.git` FILE, no workspace of its own.
+    printf 'gitdir: %s/.git/worktrees/wt-agent\n' "$base/parent" > "$base/parent/wt-agent/.git"
+    ( cd "$base/parent/wt-agent" && run_lw workspace ) > "$out" 2>&1
+    if grep -q "parent-ws" "$out"; then
+        note_fail "worktree: lw bound to the parent checkout across a git boundary" 0
+    else
+        ok "worktree: lw refuses to bind across a git boundary"
+    fi
+}
+
 # Drive one module's project through the full CLI flow.
 #   $1 = label (for messages)   $2 = module (meson|cmake)
 #   $3 = workspace dir with app/ inside   $4 = marker to grep in `lw run` output
@@ -210,6 +229,9 @@ CM
 greet_lib_source   > "$TMP/cmake-ml/app/lib/greet.cpp"
 multilib_main_source > "$TMP/cmake-ml/app/main.cpp"
 run_case cmake-multilib cmake "$TMP/cmake-ml" "LINKED-OK"
+
+# Toolchain-independent root-discovery regression.
+test_worktree_boundary
 
 printf '\n=== summary: %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

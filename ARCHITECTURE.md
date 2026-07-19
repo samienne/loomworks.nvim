@@ -763,7 +763,9 @@ the build path.
 ### Entry point
 
 `lua/loomworks/cli.lua`: argument parse → root discovery (walk up from the
-cwd for `loomworks.json`) → `Workspace.assemble` → `Workspace.new` +
+cwd for `loomworks.json` or `.nvim/loomworks.user.json`, stopping at a git
+working-tree boundary so a fresh worktree never binds to a parent checkout —
+spec §1.1) → `Workspace.assemble` → `Workspace.new` +
 remerge → resolve the named profile → for each buildable ConfigUnit, the
 cold path (detect → configure) or warm path per spec §16.4 →
 `overseer.build_spec_for(unit)` → spawn via a libuv runner that replaces

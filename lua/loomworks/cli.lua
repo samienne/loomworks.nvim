@@ -85,6 +85,17 @@ local function find_root(start)
         or uv.fs_stat(dir .. "/.nvim/loomworks.user.json") then
       return dir
     end
+    -- Stop at a git working-tree boundary — a directory with a `.git` entry
+    -- (a dir in a normal checkout, a FILE in a linked worktree). A workspace
+    -- must not resolve across a checkout boundary: without this, `lw` in a
+    -- fresh `git worktree` (whose `.nvim/` doesn't exist yet, is gitignored,
+    -- and isn't created by `git worktree add`) would silently walk past the
+    -- worktree and bind to the PARENT checkout's workspace, operating on the
+    -- wrong build dir. Returning nil here surfaces the "run `lw init`" hint
+    -- instead (spec §16.2).
+    if uv.fs_stat(dir .. "/.git") then
+      return nil
+    end
     local parent = dir:gsub("/[^/]*$", "")
     if parent == dir then break end
     dir = parent
