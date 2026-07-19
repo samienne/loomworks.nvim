@@ -77,7 +77,20 @@ run_case() {
     cd "$ws" || { bad "$label: cd"; return; }
 
     run_lw init > "$out" 2>&1 || { note_fail "$label init" $?; return; }
+
+    # Workspace name: rename, then read it back (name doesn't affect the build).
+    run_lw workspace rename "e2e-$mod" > "$out" 2>&1 || { note_fail "$label workspace rename" $?; return; }
+    run_lw workspace > "$out" 2>&1
+    grep -q "e2e-$mod" "$out" || { note_fail "$label workspace name not set" 0; return; }
+
     run_lw project add ./app "$mod" > "$out" 2>&1 || { note_fail "$label project add" $?; return; }
+
+    # Rename round-trip: app -> app2 -> app, asserting the new key lists and the
+    # old one restores, so downstream `app=...` mappings are undisturbed.
+    run_lw project rename app app2 > "$out" 2>&1 || { note_fail "$label project rename" $?; return; }
+    run_lw project list > "$out" 2>&1
+    grep -q "app2" "$out" || { note_fail "$label rename (app2 not listed)" 0; return; }
+    run_lw project rename app2 app > "$out" 2>&1 || { note_fail "$label rename back" $?; return; }
 
     local tool
     tool=$(pick_tool)

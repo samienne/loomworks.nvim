@@ -102,9 +102,10 @@ end
 --- Initialize a workspace by creating user.json only.
 --- No loomworks.json is created — the user publishes later with :w.
 --- @param root string workspace root directory
+--- @param name? string explicit workspace name (defaults to root dir basename)
 --- @param write_json? fun(path: string, data: table): boolean, string|nil
 --- @return boolean ok, string|nil err
-function M.init_workspace(root, write_json)
+function M.init_workspace(root, name, write_json)
     local uv = vim.uv or vim.loop
     local user_path = user_mod.filepath(root)
     local config_path = root .. "/loomworks.json"
@@ -120,8 +121,16 @@ function M.init_workspace(root, write_json)
         vim.fn.mkdir(nvim_dir, "p")
     end
 
+    local data = { _meta = { version = 2 } }
+    -- Persist the name only when it overrides the directory basename default
+    -- (§2.2); otherwise the name stays dynamic and follows the directory.
+    local dir_name = root:match("([^/]+)$") or root
+    if name and #name > 0 and name ~= dir_name then
+        data.name = name
+    end
+
     write_json = write_json or require("loomworks.io").write_json
-    return write_json(user_path, { _meta = { version = 2 } })
+    return write_json(user_path, data)
 end
 
 --- Return the file paths that a workspace root implies.
@@ -412,7 +421,9 @@ function M.assemble(root, config_content, user_content, cache_content)
 
     return {
         root = root,
-        name = config.name or dir_name,
+        -- The working copy wins over the published snapshot (§1.1/§2.2); both
+        -- fall back to the directory basename.
+        name = (user_data and user_data.name) or config.name or dir_name,
         config = config,
         user = user_data,
         cache = cache_data,
@@ -4200,6 +4211,14 @@ end
 function Workspace:_serialize_user()
     local data = { _meta = { version = 2 } }
 
+    -- Workspace name: persist only an explicit override (differs from the
+    -- directory basename), so a defaulted name stays dynamic (§1.1/§2.2) and a
+    -- genuine override round-trips (and reaches loomworks.json on publish).
+    local dir_name = self.root and self.root:match("([^/]+)$")
+    if self.name and self.name ~= dir_name then
+        data.name = self.name
+    end
+
     -- Active selection
     -- Derive from the live Profile object — `_active_profile_key`
     -- is only the post-load cache of the string; mutations
@@ -4931,6 +4950,26 @@ function Workspace:rename_project(project, new_key)
     end
     self:_save_cache()
     self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Set the workspace display name (§1.1). Stored in the working copy and
+--- written to loomworks.json on publish. Rolls back on save failure.
+--- @param new_name string non-empty display name
+--- @return boolean ok, string|nil err
+function Workspace:rename_workspace(new_name)
+    if type(new_name) ~= "string" then return false, "name must be a string" end
+    new_name = new_name:gsub("^%s+", ""):gsub("%s+$", "")
+    if #new_name == 0 then return false, "name must not be empty" end
+    if new_name == self.name then return true end
+
+    local old_name = self.name
+    self.name = new_name
+    local ok, err = self:_save_user()
+    if not ok then
+        self.name = old_name
+        return false, err
+    end
     return true
 end
 

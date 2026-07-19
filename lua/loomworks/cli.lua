@@ -1197,16 +1197,52 @@ function M.cmd_launch(sub, root, args)
 end
 
 --- loomworks.json is written later by `lw publish` (working-copy model, §2.4).
-function M.cmd_init()
+function M.cmd_init(args)
   local dir = (os.getenv("LW_ROOT") or uv.cwd()):gsub("\\", "/"):gsub("/+$", "")
-  local ok, err = require("loomworks.workspace").init_workspace(dir)
+  -- Optional `--name <name>` overrides the directory-basename default (§2.2).
+  local name
+  local i = 2
+  while args and args[i] do
+    if args[i] == "--name" then
+      name = args[i + 1]
+      if not name then die("--name requires a value") end
+      i = i + 2
+    else
+      die("unknown init argument '" .. tostring(args[i]) .. "' — usage: lw init [--name <name>]")
+    end
+  end
+  local ok, err = require("loomworks.workspace").init_workspace(dir, name)
   if not ok then die(err or "failed to initialize workspace") end
   out("initialized workspace at " .. dir)
   out("  created .nvim/loomworks.user.json (working copy)")
+  if name then out("  name: " .. name) end
   out("")
   out("Add projects/profiles (editor or manual edit), then `lw publish` to")
   out("write the shared loomworks.json.")
   return 0
+end
+
+--- `lw workspace <rename <name>>` — manage workspace-level settings.
+--- Bare `lw workspace` prints the current name.
+function M.cmd_workspace(sub, root, args)
+  if sub == nil then
+    if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
+    local ws = load_workspace(root, false)
+    out(ws.name or "(unnamed)")
+    return 0
+  end
+  if sub == "rename" or sub == "mv" then
+    local new_name = args[3]
+    if not new_name then die("usage: lw workspace rename <name>") end
+    if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
+    local ws = load_workspace(root, false)
+    local ok, err = ws:rename_workspace(new_name)
+    if not ok then die("could not rename workspace: " .. tostring(err)) end
+    out("workspace name set to '" .. ws.name .. "'")
+    out("`lw publish` to update the shared loomworks.json.")
+    return 0
+  end
+  die("unknown workspace subcommand '" .. tostring(sub) .. "' — use rename")
 end
 
 --- True when the published snapshot would carry no shared items.
@@ -3160,7 +3196,7 @@ local function main()
     finish(M.cmd_config(a[2], a[3], a[4]))
   end
   if command == "init" then
-    finish(M.cmd_init())
+    finish(M.cmd_init(a))
   end
   if command == "completion" then
     finish(M.cmd_completion(a[2]))
@@ -3202,6 +3238,10 @@ local function main()
   end
   if command == "configuration-set" or command == "cs" then
     finish(M.cmd_cset(a[2], root, a))
+  end
+  -- `workspace` manages workspace-level settings (name) in the working copy.
+  if command == "workspace" or command == "ws" then
+    finish(M.cmd_workspace(a[2], root, a))
   end
 
   if command == "tools" then

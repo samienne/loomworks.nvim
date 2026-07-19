@@ -499,7 +499,7 @@ UI or store device selections.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | No | Workspace display name (defaults to root dir name) |
+| `name` | No | Workspace display name (defaults to root dir name). Published from the working copy's `name` (§2.2); the working copy wins at load |
 | `projects` | Yes | Dict of project_key → project definition |
 | `configuration_sets` | No | Dict of set_name → { project_key → variant } |
 | `profiles` | No | Dict of profile_key → explicit profile definition |
@@ -569,6 +569,7 @@ metadata lives here. All UI mutations land here.
 ```json
 {
   "_meta": { "version": 2 },
+  "name": "reactive",
   "active_profile": "Debug:ninja-gcc-12",
   "projects": { ... },
   "configuration_sets": { ... },
@@ -586,6 +587,11 @@ The `device` field maps profile keys to device serial strings:
     "Debug:<sdk>-<platform>-<arch>": "FMR0225108000951"
 }
 ```
+
+The optional `name` field overrides the workspace display name (§1.1). It is
+present only when the user has set one explicitly (`lw init --name`,
+`lw workspace rename`, or the editor); when absent the name defaults to the
+root directory basename. Written to `loomworks.json` on publish.
 
 The `intent` field stores explicit per-item intent overrides (see §2.4).
 

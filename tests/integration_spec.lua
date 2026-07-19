@@ -1185,6 +1185,95 @@ describe("config set rename", function()
 end)
 
 -- =========================================================================
+-- Project rename
+-- =========================================================================
+
+describe("project rename", function()
+    it("changes the key but keeps the project bound to its on-disk folder", function()
+        -- App's path defaults to its key (no explicit path stored), so it
+        -- resolves to <root>/App. Renaming must NOT move that binding —
+        -- loomworks never renames folders on disk.
+        local ws = make_ws()
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local old_abs = app:abs_path()
+
+        local ok, err = ws:rename_project(app, "Service")
+        assert.is_true(ok, err)
+        assert.equals("Service", app.key)
+        -- Regression: the resolved directory must be unchanged (still <root>/App).
+        assert.equals(old_abs, app:abs_path())
+        assert.equals("App", app.path)
+    end)
+
+    it("persists the pinned path so the folder survives a reload", function()
+        -- The pin is only meaningful if it round-trips: _serialize_user must
+        -- emit path (it now differs from the key) so a reload resolves to the
+        -- real folder rather than a nonexistent <root>/Service.
+        local ws = make_ws({ projects = { App = { cmake = {} } } },
+            { projects = { App = { cmake = {} } } })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_true(ws:rename_project(app, "Service"))
+
+        local user_data = ws:_serialize_user()
+        assert.is_not_nil(user_data.projects.Service, "renamed project should serialize")
+        assert.equals("App", user_data.projects.Service.path,
+            "path must be stored so the rename doesn't require a folder rename")
+    end)
+
+    it("moves profile mappings to the new key", function()
+        local ws = make_ws(
+            { configuration_sets = { Debug = { App = "Debug" } } },
+            { active_profile = "Debug", profiles = { Debug = { configuration_set = "Debug" } } }
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_true(ws:rename_project(app, "Service"))
+        for _, profile in pairs(ws._profiles) do
+            if profile.mappings then
+                assert.is_nil(profile.mappings.App, "old key must be gone from mappings")
+            end
+        end
+    end)
+
+    it("rejects a rename to an in-use key", function()
+        local ws = make_ws({ projects = { App = { cmake = {} }, Other = { cmake = {} } } })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ok, err = ws:rename_project(app, "Other")
+        assert.is_falsy(ok)
+        assert.matches("already in use", err)
+    end)
+end)
+
+-- =========================================================================
+-- Workspace name
+-- =========================================================================
+
+describe("workspace name", function()
+    it("rename sets the name and serializes it to the working copy", function()
+        local ws = make_ws()
+        assert.equals("root", ws.name) -- basename of "/root"
+        assert.is_true(ws:rename_workspace("reactive"))
+        assert.equals("reactive", ws.name)
+        assert.equals("reactive", ws:_serialize_user().name)
+    end)
+
+    it("does not persist a name equal to the directory basename", function()
+        -- A defaulted name must stay dynamic (follow the directory), so it is
+        -- never written to the working copy.
+        local ws = make_ws()
+        assert.is_nil(ws:_serialize_user().name)
+    end)
+
+    it("trims and rejects an empty name", function()
+        local ws = make_ws()
+        assert.is_true(ws:rename_workspace("  Reactive Core  "))
+        assert.equals("Reactive Core", ws.name)
+        local ok, err = ws:rename_workspace("   ")
+        assert.is_falsy(ok)
+        assert.matches("empty", err)
+    end)
+end)
+
+-- =========================================================================
 -- Case collision prevention
 -- =========================================================================
 
