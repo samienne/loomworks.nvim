@@ -2706,7 +2706,8 @@ function M.cmd_complete(cword, words)
     if n == 1 then
       local topics = {}
       for _, v in ipairs(COMP_COMMANDS) do topics[#topics + 1] = v end
-      topics[#topics + 1] = "agent" -- help-only topic (no command)
+      topics[#topics + 1] = "agent" -- help-only topics (no command)
+      topics[#topics + 1] = "ci"
       emit(topics)
     end
     return 0
@@ -3235,6 +3236,53 @@ Intent: items you create default to local+shared and reach the committed
 loomworks.json on publish. Pass --local to keep something out of the shared
 file, and don't `publish` unless the task is to change the shared contract.
 See `lw help publish`.]],
+  ci = [[lw help ci — driving CI jobs with lw
+
+Model: commit the CONFIGURATION SETS (the portable unit) and the projects.
+Each matrix cell then picks a local toolchain by major version and creates its
+own profile — profiles are per-machine and need not be committed. Run every
+command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
+`lw help agent` for the non-interactive contract.
+
+1. Bootstrap lw on the runner
+   Download a PINNED binary for the platform, verify it by hash, then let the
+   verified binary install itself (details + one-liner in `lw help install`):
+     curl -fsSL <url>/lw-linux-x86_64 -o /tmp/lw \
+       && echo "<sha256>  /tmp/lw" | sha256sum -c \
+       && chmod +x /tmp/lw && /tmp/lw install -y
+   Pin the version by using a specific release URL + sha256 and NOT running
+   `lw self-update`. Air-gapped runner: point LOOMWORKS_RELEASE_URL (or the
+   `release-url` config key) at a local mirror directory.
+
+2. Pick a toolchain deterministically (per matrix cell)
+   Name a toolchain by family + MAJOR version: it resolves to the highest
+   installed patch and never crosses a major, so you never pin an exact patch
+   (see `lw help profile`). `lw tools` lists what the runner detected.
+     lw --no-input profile create Debug ninja-clang-18 --activate
+   Per platform, e.g.: ninja-clang-18 · ninja-gcc-12 · msvc-17 ·
+   ninja-appleclang-15  (the generator prefix + family differ by OS).
+
+3. Build and test with machine-readable output
+     lw --no-input build Debug:ninja-clang-18
+     lw --no-input test  Debug:ninja-clang-18 --junit results.xml -- -j 4
+   `--junit <file>` writes JUnit XML for your reporter (one file per test unit);
+   everything after `--` forwards to the native runner (ctest `-j N`, meson
+   `--num-processes N`). The exit code is real: 0 iff build + every test passed.
+   The profile selector (`ninja-clang-18`) resolves the same here as on create.
+
+4. Collect build artifacts
+     BD=$(lw --no-input profile query Debug:ninja-clang-18 app build-dir)
+     cp "$BD/app" out/
+   The build directory is deterministic and known BEFORE building. Fields:
+   build-dir | config | state | tool (see `lw help profile`).
+
+Dependency fetching / offline: lw is non-invasive — `lw build` runs your build
+system's own configure/build, so third-party fetching (cmake FetchContent,
+meson subprojects/wrap) is done by cmake/meson, NOT by lw. A first configure
+that pulls deps needs network; lw adds no separate download step, dependency
+cache, or offline mode of its own. Fetched deps land inside the build dir
+(e.g. cmake's _deps/), so caching .nvim/build/<project>/ between runs reuses
+both fetched sources and compiled objects.]],
 }
 
 function M.cmd_help(cmd)
@@ -3294,7 +3342,7 @@ Otherwise prompting is on only when stdin is a terminal. In non-interactive
 mode `lw build` also ignores the active profile — pass the profile explicitly.
 
 Automation agent? See `lw help agent` — run with --no-input so you never block
-or change the user's settings.
+or change the user's settings. Driving CI? See `lw help ci`.
 
 `lw help <command>` for details.]])
   return cmd and 1 or 0
