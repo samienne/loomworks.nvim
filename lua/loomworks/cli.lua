@@ -1761,6 +1761,25 @@ function M.cmd_configuration_list(root, proj_name)
   return 0
 end
 
+--- Reject a canonical configuration name passed where a module variant is
+--- wanted. `inherits` takes canonical names (`variant:Debug`) while `variant`
+--- takes the module's own build type (`Debug`), and the two sit next to each
+--- other, so the mix-up is easy. It used to be accepted silently and written
+--- straight through — cmake then got CMAKE_BUILD_TYPE=variant:Debug and the
+--- build failed with an error pointing nowhere near the cause.
+--- @param proj loomworks.Project
+--- @param value string|nil
+local function check_variant_value(proj, value)
+  if type(value) ~= "string" or not value:find(":", 1, true) then return end
+  local cfg = proj:get_configuration(value)
+  local suggestion = cfg and cfg.base_name
+  die("invalid variant '" .. value .. "'.\n" ..
+    "  `variant` takes the module's own build type" ..
+    (suggestion and (" — you probably want '" .. suggestion .. "'.") or ".") ..
+    "\n  Canonical names like '" .. value .. "' belong to `inherits`:\n" ..
+    "    lw configuration set " .. proj.key .. " <name> inherits " .. value)
+end
+
 --- `lw configuration add <project> <name> [variant]`
 function M.cmd_configuration_add(root, proj_name, name, variant)
   if not proj_name or not name then
@@ -1768,6 +1787,7 @@ function M.cmd_configuration_add(root, proj_name, name, variant)
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
+  check_variant_value(proj, variant)
   local data = {}
   if variant then data.variant = variant end
   local ok, err = proj:save_configuration(name, data)
@@ -1844,6 +1864,7 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, true)
+  if param == "variant" then check_variant_value(proj, value) end
   local data = config_to_data(cfg)
   apply_param(data, param, value)
   local ok, err = proj:save_configuration(cfg.name, data)

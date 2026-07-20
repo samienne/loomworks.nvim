@@ -129,12 +129,18 @@ elseif command == "install" then
     elseif v == "--no-bundle" then opts.no_bundle = true
     elseif v == "--dry-run" then opts.dry_run = true end
   end
+  -- install may report progress AND fail: the binary can be placed while the
+  -- bundle fetch dies. Print whatever it got done, then honour the error —
+  -- exiting 0 on a partial install is what leaves a job to fail later with a
+  -- confusing "no loomworks release is installed".
   local report, err = require("boot.install").install(opts)
-  if not report then
+  if report then
+    for _, line in ipairs(report) do io.write(line .. "\n") end
+  end
+  if err then
     io.stderr:write("lw: install failed: " .. tostring(err) .. "\n")
     exit(1)
   end
-  for _, line in ipairs(report) do io.write(line .. "\n") end
   exit(0)
 end
 

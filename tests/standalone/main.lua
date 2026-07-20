@@ -193,7 +193,49 @@ do
   ok(type(rep) == "table" and #rep > 0, "install --dry-run returns a report")
   ok(not io.open(install.target_path(), "rb"), "install --dry-run wrote no binary")
 
+  -- A failed bundle fetch must FAIL the install. Exiting 0 here leaves a
+  -- binary that cannot run anything, and the job dies later at an unrelated
+  -- command with "no loomworks release is installed".
+  do
+    local update_mod = require("boot.update")
+    local real = update_mod.self_update
+    update_mod.self_update = function()
+      return nil, "curl failed (56) for https://example/bundle: Connection reset"
+    end
+    local f2 = io.open(sb .. "/lw2", "wb"); f2:write("HOST"); f2:close()
+    local rep2, err2 = install.install({ exe_path = sb .. "/lw2", no_modify_path = true })
+    update_mod.self_update = real
+    ok(type(err2) == "string" and err2:find("bundle fetch failed", 1, true) ~= nil,
+      "install reports an error when the bundle fetch fails")
+    ok(type(rep2) == "table", "install still returns its progress report on failure")
+    local joined = table.concat(rep2 or {}, "\n")
+    ok(joined:find("Connection reset", 1, true) ~= nil,
+      "the underlying fetch error is surfaced, not swallowed")
+    ok(joined:find("Done.", 1, true) == nil,
+      "a failed install must not claim it is done")
+  end
+
   paths.rm_rf(sb)
+end
+
+print("boot.download — transient failures are retried, permanent ones are not")
+do
+  -- curl -f exits 22 for every HTTP status >= 400, so the classifier has to
+  -- read the status out of stderr to tell "no such release" (never going to
+  -- work) from "briefly unwell" (worth another go).
+  ok(download.is_transient(56, "curl: (56) Recv failure: Connection reset"),
+    "connection reset is transient")
+  ok(download.is_transient(28, "curl: (28) Operation timed out"),
+    "timeout is transient")
+  ok(download.is_transient(22, "The requested URL returned error: 503"),
+    "503 is transient")
+  ok(download.is_transient(22, "The requested URL returned error: 429"),
+    "429 invites a retry")
+  ok(not download.is_transient(22, "The requested URL returned error: 404"),
+    "404 is permanent — retrying only delays a certain failure")
+  ok(not download.is_transient(22, "The requested URL returned error: 403"),
+    "403 is permanent")
+  ok(not download.is_transient(0, ""), "success is not a retry candidate")
 end
 
 print("loomworks.shim — vim.fn surface used on the build/test path")
