@@ -110,4 +110,26 @@ describe("msvc.clang_cl", function()
         end)
         msvc.clear_cache()
     end)
+
+    -- Regression: `vim.fn.exepath` returns the extension in the casing
+    -- PATHEXT carries, i.e. `clang-cl.EXE`. meson matches the compiler
+    -- basename against `clang-cl.exe` case-sensitively; given the uppercase
+    -- spelling it does not recognise the MSVC driver, falls back to probing a
+    -- GNU-style linker, and configure dies with
+    --   "Unable to detect linker for compiler `...clang-cl.EXE -Wl,--version`".
+    it("lowercases the executable extension exepath reports", function()
+        msvc.clear_cache()
+        with({
+            ["vim.fn.exepath"] = function()
+                return "C:\\Program Files\\LLVM\\bin\\clang-cl.EXE"
+            end,
+            ["vim.system"] = system_returning("clang version 18.1.7\n"),
+        }, function()
+            local cc = msvc.clang_cl()
+            assert.is_not_nil(cc)
+            assert.equals("C:/Program Files/LLVM/bin/clang-cl.exe", cc.path,
+                "an uppercase .EXE breaks meson's clang-cl detection")
+        end)
+        msvc.clear_cache()
+    end)
 end)
