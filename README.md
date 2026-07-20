@@ -496,6 +496,64 @@ release bundle. `--dry-run` shows what it would do; `--no-bundle` skips the
 fetch. No admin required. Then enable completion with `lw completion bash`
 (see [above](#standalone-lw-runner) / `lw help completion`).
 
+### Commands
+
+`lw` with no command prints workspace status and the active profile. Every
+command has detail under `lw help <command>`.
+
+| Command | Description |
+|---|---|
+| `lw init` | Initialize the workspace working copy (`--name` overrides the directory name) |
+| `lw workspace <sub>` | Show / rename the workspace (alias `ws`) |
+| `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` |
+| `lw configuration <sub>` | `add` \| `set` \| `get` \| `show` project configurations |
+| `lw configuration-set <sub>` | `create` \| `map` \| `show` (alias `cs`) |
+| `lw profile <sub>` | `list` \| `select` \| `create` \| `remove` \| `publish` \| `target` \| `query` |
+| `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
+| `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
+| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool |
+| `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
+| `lw run <profile> [target]` | Build, then execute a launch target (omit `target` for the profile default) |
+| `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
+| `lw publish` | Write `loomworks.json` from the working copy |
+| `lw config <...>` | Get/set `lw`'s own configuration |
+
+A first run, from an empty directory:
+
+```sh
+lw init
+lw project add ./app              # type auto-detected (cmake, meson, …)
+lw cs create dev app=Debug        # map a configuration set
+lw profile create dev ninja-gcc   # set + toolchain; `lw tools` lists them
+lw build dev
+lw publish                        # write the shared loomworks.json
+```
+
+Items you add default to `local+shared`, so `lw publish` writes them to the
+committed `loomworks.json`; `--local` keeps one private. See `lw help publish`
+for the intent model and [Workspace File Layout](#workspace-file-layout).
+
+### Using `lw` in CI
+
+`lw help ci` is the full guide. The essentials:
+
+- Pass `--no-input` (or set `CI=1`, which implies it) so a missing value errors
+  instead of blocking on a prompt. In non-interactive mode `lw build` also
+  ignores the active profile — name the profile explicitly.
+- Commit `loomworks.json` — the projects and configuration sets are the
+  portable unit. Keep `.nvim/` (working copy and cache) out of version control.
+  Profiles are per-machine: each matrix cell creates its own with
+  `lw --no-input profile create <set> <tool> --activate`.
+- `lw test --junit results.xml` produces a report most CI systems ingest
+  directly, and exits non-zero when tests fail.
+- Profiles and toolchains resolve by a **truncated selector** matched at
+  segment boundaries, so a job need not pin an exact version: `ninja-clang-18`
+  picks the highest installed `18.x`, and `msvc-17` picks a VS 17 without
+  naming the edition.
+- `lw profile query <profile> <project> build-dir` prints one machine-readable
+  fact — also `config`, `state`, `tool` — for archiving artifacts without
+  parsing build output.
+
 ## Status Page
 
 `:LoomworksInfo` opens a status page with the following sections:
