@@ -1415,6 +1415,44 @@ describe("name validation and collision prevention", function()
         assert.is_false(ok)
         assert.matches("slashes", err)
     end)
+
+    -- Regression: a configuration carrying no overrides yet — an abstract
+    -- mixin, the base of an inheritance chain — serialized to nil, and the
+    -- user.json writer dropped configs that serialized to nil. So
+    -- `lw configuration add app base` reported success and persisted nothing;
+    -- the follow-up `set ... inherits base` then failed with "no configuration
+    -- 'base'". The published serializer already wrote `{}` for this case.
+    it("persists a configuration that has no overrides yet", function()
+        local ws = make_ws()
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local ok = project:save_configuration("mixin-base", {})
+        assert.is_true(ok)
+
+        local user = ws:_serialize_user()
+        local configs = user.projects
+            and user.projects.App
+            and user.projects.App.cmake
+            and user.projects.App.cmake.configurations
+        assert.is_not_nil(configs, "user.json must carry the project's configs")
+        assert.is_not_nil(configs["mixin-base"],
+            "a config with no overrides must still be recorded, or it "
+            .. "silently vanishes and cannot be inherited from")
+    end)
+
+    it("keeps a bare configuration available to inherit from", function()
+        local ws = make_ws()
+        local project = h.find_project_in(ws:get_projects(), "App")
+        assert.is_true(project:save_configuration("mixin-base", {}))
+        -- The whole point of an abstract config: something inherits it.
+        local ok, err = project:save_configuration("asan",
+            { inherits = { "mixin-base" } })
+        assert.is_true(ok, tostring(err))
+
+        local cfg = project:get_configuration("asan")
+        assert.is_not_nil(cfg)
+        assert.same({}, cfg:unresolved_inherits_names(),
+            "the base must resolve, not dangle")
+    end)
 end)
 
 -- =========================================================================

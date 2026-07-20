@@ -4174,10 +4174,13 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
         -- raw reference still survives via raw_mappings() on the
         -- ConfigurationSet (or wherever the original referrer is).
         if needed_config_names[cfg.name] and not cfg._source_missing then
-            local override = cfg:serialize_user_override()
-            if override then
-                configs_dict[cfg.name] = override
-            end
+            -- An override of nil means "nothing beyond the bare default" —
+            -- which is exactly an abstract mixin, the base of an inheritance
+            -- chain. Record it as an empty object rather than dropping it, or
+            -- the config silently fails to persist and nothing can inherit
+            -- from it. The published serializer already does this.
+            configs_dict[cfg.name] = cfg:serialize_user_override()
+                or vim.empty_dict()
         end
     end
     if next(configs_dict) then

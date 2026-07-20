@@ -132,9 +132,14 @@ function Project:_sync_configurations()
         existing_by_name[cfg.name] = cfg
     end
 
-    -- Mark removed (absent from config sources)
+    -- Mark removed (absent from config sources). User-declared configs are a
+    -- source in their own right, not module output, so absence from the
+    -- module's emitted set says nothing about them: a freshly saved one (and
+    -- any abstract mixin, which no module ever emits) would otherwise be
+    -- dropped from the model the moment it was created, and only reappear
+    -- after a reload re-read it from user.json.
     for _, cfg in ipairs(self._configurations) do
-        if not all_config_data[cfg.name] then
+        if not all_config_data[cfg.name] and not cfg.is_user then
             cfg._removed = true
         end
     end
@@ -148,6 +153,14 @@ function Project:_sync_configurations()
             new_arr[#new_arr + 1] = existing
         else
             new_arr[#new_arr + 1] = Configuration.new(self, name, info)
+        end
+    end
+
+    -- Carry over user-declared configs the module doesn't emit (see above).
+    -- Ones the module *does* emit were matched by name in the loop above.
+    for _, cfg in ipairs(self._configurations) do
+        if cfg.is_user and not all_config_data[cfg.name] and not cfg._removed then
+            new_arr[#new_arr + 1] = cfg
         end
     end
 

@@ -164,7 +164,10 @@ needed" (rare).
 Variant (CMAKE_BUILD_TYPE) is derived from the first base with a variant.
 Options merge depth-first left-to-right: project-wide → bases → own
 (later values override). Configs without a variant-providing base are
-abstract mixins — not directly buildable, only usable as bases.
+abstract mixins — not directly buildable, only usable as bases. A
+user-declared configuration is a source in its own right and MUST survive a
+resync of module-emitted configurations even when it carries no fields yet;
+an abstract mixin is exactly that case, and no module ever emits one.
 
 **Default configurations**: always present, auto-generated from
 `CMAKE_CONFIGURATION_TYPES` in CMakeLists.txt or standard cmake defaults
