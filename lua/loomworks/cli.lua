@@ -630,6 +630,14 @@ end
 ---   extra_args are forwarded to the build tool.
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
+  -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
+  -- The CLI plans steps directly, so without this an unbuildable profile —
+  -- e.g. one mapping an abstract configuration — would build anyway, on
+  -- whatever default the module picked (spec §1.4).
+  if profile.assert_buildable then
+    local buildable, why = profile:assert_buildable()
+    if not buildable then die(tostring(why)) end
+  end
   local overseer = require("loomworks.overseer")
   local steps = overseer.plan_profile_build(profile, opts)
   if not steps or #steps == 0 then return 0 end

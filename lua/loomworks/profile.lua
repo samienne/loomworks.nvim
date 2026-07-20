@@ -1107,6 +1107,25 @@ function Profile:is_valid()
             .. table.concat(legacy_missing, ", ")
     end
 
+    -- Abstract configurations (spec §1.4): a configuration with no variant —
+    -- declared or inherited — is a mixin, usable only as a base. Building one
+    -- is not a partial success: the module has nothing to derive a build type
+    -- from and quietly falls back to its own default (meson picks
+    -- `buildtype=debug`), so the user gets a Debug build from a configuration
+    -- that never said Debug. Refuse instead of guessing.
+    local abstract = {}
+    for _, pp in ipairs(self:projects()) do
+        local cfg = pp._configuration
+        if cfg and not cfg._removed and cfg.is_abstract and cfg:is_abstract() then
+            local pk = pp._project and pp._project.key or "?"
+            abstract[#abstract + 1] = pk .. "/" .. (cfg.name or "?")
+        end
+    end
+    if #abstract > 0 then
+        reasons[#reasons + 1] = "abstract configuration (no variant, so nothing "
+            .. "to build) mapped for: " .. table.concat(abstract, ", ")
+    end
+
     -- Referenced ConfigurationSet validity
     if self._config_set_ref and self._config_set_ref.is_valid then
         local set_ok, set_reasons = self._config_set_ref:is_valid()

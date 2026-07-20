@@ -17,7 +17,7 @@ local Profile = require("loomworks.profile").Profile
 --- Build a minimal Profile-shaped object that exposes just enough
 --- for is_complete / assert_buildable. The real Profile ctor needs
 --- an extensive workspace fixture; we don't exercise it here.
---- @param projects { type: string, mod: table, has_tool: boolean }[]
+--- @param projects { type: string, mod: table, has_tool: boolean, configuration: table? }[]
 --- @return loomworks.Profile
 local function make_profile(projects)
     local pps = {}
@@ -26,7 +26,9 @@ local function make_profile(projects)
             _project = {
                 _module = p.mod,
                 type = p.type,
+                key = p.type .. "-proj",
             },
+            _configuration = p.configuration,
             _has_tool = p.has_tool,
         }
     end
@@ -144,5 +146,70 @@ describe("Profile:assert_buildable", function()
         assert.is_truthy(err:find("test-profile", 1, true), "names the profile")
         assert.is_truthy(err:lower():find("not buildable", 1, true),
             "states that it is not buildable")
+    end)
+end)
+
+describe("Profile:is_valid — abstract configurations", function()
+    --- A Configuration-shaped stub. `variant` nil = abstract mixin.
+    local function configuration(name, variant)
+        return {
+            name = name,
+            _removed = false,
+            module_config = variant and { variant = variant } or nil,
+            is_abstract = function(self)
+                return not self.module_config or self.module_config.variant == nil
+            end,
+            effective_languages = function() return {} end,
+        }
+    end
+
+    -- specification.md §1.4: a configuration with no variant — declared or
+    -- inherited — is an abstract mixin, "not directly buildable, only usable
+    -- as bases". Nothing enforced that on the build path: mapping a mixin into
+    -- a configuration set produced a profile that built happily, with the
+    -- module silently falling back to its own default (meson chose
+    -- -Dbuildtype=debug). A guessed build type from a config that never named
+    -- one is exactly the fallback guessing this project rules out.
+    it("refuses a profile whose configuration is an abstract mixin", function()
+        local profile = make_profile({
+            { type = "meson", mod = module({ id = "meson" }), has_tool = true,
+              configuration = configuration("mixin", nil) },
+        })
+        local ok, reasons = profile:is_valid()
+        assert.is_false(ok, "an abstract configuration must not be buildable")
+        assert.is_truthy(table.concat(reasons, "; "):lower():find("abstract", 1, true),
+            "the reason must say the configuration is abstract, got: "
+            .. table.concat(reasons, "; "))
+    end)
+
+    it("names the project and configuration in the reason", function()
+        local profile = make_profile({
+            { type = "meson", mod = module({ id = "meson" }), has_tool = true,
+              configuration = configuration("mixin", nil) },
+        })
+        local _, reasons = profile:is_valid()
+        local joined = table.concat(reasons, "; ")
+        assert.is_truthy(joined:find("mixin", 1, true), "names the configuration")
+        assert.is_truthy(joined:find("meson-proj", 1, true), "names the project")
+    end)
+
+    it("accepts a configuration that declares its own variant", function()
+        -- Declaring `variant` directly and inheriting one from a base are two
+        -- routes to the same concrete result; neither is abstract.
+        local profile = make_profile({
+            { type = "meson", mod = module({ id = "meson" }), has_tool = true,
+              configuration = configuration("Release", "Release") },
+        })
+        assert.is_true((profile:is_valid()))
+    end)
+
+    it("ignores projects with no configuration resolved", function()
+        -- An unresolved configuration is a different failure, already
+        -- reported elsewhere; this check must not double-report it.
+        local profile = make_profile({
+            { type = "meson", mod = module({ id = "meson" }), has_tool = true },
+        })
+        local _, reasons = profile:is_valid()
+        assert.is_falsy(table.concat(reasons, "; "):lower():find("abstract", 1, true))
     end)
 end)

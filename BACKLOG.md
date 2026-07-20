@@ -184,6 +184,34 @@ Deferred ergonomics not implemented (revisit if friction shows up):
 
 Supersedes the narrower "[stale] badge for source-missing configurations".
 
+---
+
+## One route to a variant: inherit it, don't declare it
+
+A user configuration can become concrete two ways: declare
+`variant: Release` on itself, or inherit a base that provides one
+(`inherits: variant:Release`). Both are supported today —
+`Configuration:is_abstract()` only asks whether a variant exists, by either
+route, and the meson/cmake modules propagate from a base only when the
+config doesn't declare its own.
+
+Sami's preference (2026-07-20) is to support **only inheriting**: the
+built-in `variant:*` configurations are the declared source of build types,
+and a hand-written `variant` field duplicates that with no way to check it
+against what the module actually offers. Deferred rather than done because
+it breaks existing workspaces — `c:/src/reactive/loomworks.json` declares
+`variant` directly on all four of its configurations, and any such file
+would stop resolving.
+
+If picked up: needs a migration (rewrite `variant: X` → `inherits:
+variant:X` where a matching auto-gen exists), a deprecation path for the
+`lw configuration set <p> <n> variant` param, and a decision about modules
+whose variants aren't enumerable up front.
+
+Related and DONE: an abstract configuration is no longer buildable — a
+profile mapping one reports itself unbuildable instead of letting the module
+pick a default build type (spec §1.4).
+
 ## Plugin-based loomtest adapter discovery
 
 Mirror the existing plugin-based module registry idea: loomtest should
