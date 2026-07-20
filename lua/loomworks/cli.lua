@@ -1805,18 +1805,32 @@ local function reject_variant_param(proj, value)
   }, "\n"))
 end
 
---- `lw configuration add <project> <name> [base]`
---- The optional third argument is a BASE to inherit (e.g. `variant:Release`),
+--- `lw configuration add <project> <name> [base...]`
+--- Trailing arguments are BASES to inherit (e.g. `variant:Release asan`),
 --- which is how a configuration becomes concrete — see `reject_variant_param`.
-function M.cmd_configuration_add(root, proj_name, name, base)
+--- Several bases form a mixin chain, merged left to right (later wins), the
+--- same order `set … inherits a,b` produces. Each argument may itself be a
+--- comma-separated list, so both spellings work.
+--- @param bases string[]|string|nil
+function M.cmd_configuration_add(root, proj_name, name, bases)
   if not proj_name or not name then
-    die("usage: lw configuration add <project> <name> [base]")
+    die("usage: lw configuration add <project> <name> [base...]")
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local data = {}
-  if base and base ~= "" then
-    -- Resolve the base up front: an unresolvable `inherits` would otherwise
+
+  -- Accept `a b`, `a,b`, and `a, b` alike.
+  local wanted = {}
+  for _, arg in ipairs(type(bases) == "table" and bases or { bases }) do
+    if type(arg) == "string" and arg ~= "" then
+      for _, part in ipairs(split_csv(arg)) do wanted[#wanted + 1] = part end
+    end
+  end
+
+  local resolved = {}
+  for _, base in ipairs(wanted) do
+    -- Resolve each base up front: an unresolvable `inherits` would otherwise
     -- produce a config that looks created but can never build.
     local target = proj:get_configuration(base)
     if not target then
@@ -1835,12 +1849,17 @@ function M.cmd_configuration_add(root, proj_name, name, base)
         .. "\n  `lw configuration list " .. proj.key .. "` shows the bases "
         .. "available to inherit.")
     end
-    data.inherits = target.name
+    resolved[#resolved + 1] = target.name
+  end
+  if #resolved == 1 then
+    data.inherits = resolved[1]
+  elseif #resolved > 1 then
+    data.inherits = resolved
   end
   local ok, err = proj:save_configuration(name, data)
   if not ok then die("could not add configuration: " .. tostring(err)) end
   out(string.format("added configuration '%s' to project '%s'%s", name, proj.key,
-    data.inherits and ("  (inherits " .. data.inherits .. ")") or ""))
+    #resolved > 0 and ("  (inherits " .. table.concat(resolved, ", ") .. ")") or ""))
   if not data.inherits then
     out("  no base — it is abstract (a mixin) and cannot be built until it")
     out("  inherits one that provides a variant:")
@@ -1971,9 +1990,16 @@ function M.cmd_configuration_publish(root, proj_name, cfg_name)
   return publish_item(ws, cfg, "configuration '" .. proj.key .. ":" .. cfg.name .. "'")
 end
 
-function M.cmd_configuration(sub, root, a3, a4, a5, a6)
+function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   if sub == nil or sub == "list" then return M.cmd_configuration_list(root, a3) end
-  if sub == "add" then return M.cmd_configuration_add(root, a3, a4, a5) end
+  if sub == "add" then
+    -- Bases are variadic: everything after <project> <name>. argv is
+    -- { "configuration", sub, project, name, base... }.
+    local bases = {}
+    for i = 5, #(argv or {}) do bases[#bases + 1] = argv[i] end
+    if #bases == 0 and a5 then bases[1] = a5 end
+    return M.cmd_configuration_add(root, a3, a4, bases)
+  end
   if sub == "show" then return M.cmd_configuration_show(root, a3, a4) end
   if sub == "get" then return M.cmd_configuration_get(root, a3, a4, a5) end
   if sub == "set" then return M.cmd_configuration_set(root, a3, a4, a5, a6) end
@@ -3310,8 +3336,11 @@ variant:Release, …) that you can map into a set directly — `add` is only for
 custom variants.
 
   list [project]                     configs for one project, or all
-  add <project> <name> [base]        create a user configuration, optionally
-                                     inheriting <base> (e.g. variant:Release)
+  add <project> <name> [base...]     create a user configuration, inheriting
+                                     the given bases (e.g. variant:Release
+                                     asan). Several bases form a mixin chain
+                                     merged left to right; a comma-separated
+                                     list works too.
   show <project> <name>              detail: variant, inherits, options, ...
   get <project> <name> <param>       print one value
   set <project> <name> <param> <value>
@@ -3751,7 +3780,7 @@ local function main()
     finish(M.cmd_project(a[2], root, a[3], a[4], a[5]))
   end
   if command == "configuration" or command == "cfg" then
-    finish(M.cmd_configuration(a[2], root, a[3], a[4], a[5], a[6]))
+    finish(M.cmd_configuration(a[2], root, a[3], a[4], a[5], a[6], a))
   end
   if command == "configuration-set" or command == "cs" then
     finish(M.cmd_cset(a[2], root, a))

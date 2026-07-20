@@ -468,12 +468,25 @@ local function build_option_args(project, active_config)
         project_path = project.path or project.name,
     }
 
-    -- Apply project-wide, then config-specific (config wins)
+    -- Project-wide first, then the inheritance chain bases-first
+    -- left-to-right, then the config's own — later values win. Without the
+    -- chain a mixin that exists purely to carry options contributes nothing,
+    -- and the build silently omits the options the config named.
     local merged = {}
     for k, v in pairs(project_opts) do merged[k] = v end
-    if active.options then
-        for k, v in pairs(active.options) do merged[k] = v end
+    local function apply_inherited(name, visited)
+        if visited[name] then return end -- circular guard
+        visited[name] = true
+        local cfg = configs[name]
+        if not cfg then return end
+        for _, base_name in ipairs(normalize_inherits(cfg.inherits)) do
+            apply_inherited(base_name, visited)
+        end
+        if cfg.options then
+            for k, v in pairs(cfg.options) do merged[k] = v end
+        end
     end
+    apply_inherited(active_config, {})
     for k, v in pairs(merged) do
         args[#args + 1] = "-D" .. k .. "=" .. expand_str(tostring(v), opt_ctx)
     end
