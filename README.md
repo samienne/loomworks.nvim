@@ -9,9 +9,10 @@ modifies your project files and collaborators don't need to know it exists.
 
 ## Status
 
-Early development (v0.0.1-dev). The cmake and meson modules are fully
+Early development (v0.1.1). The cmake and meson modules are fully
 implemented; shell provides a generic command runner for self-managed builds;
-typescript is a shim.
+typescript is a shim. The standalone `lw` runner ships as a signed release for
+Linux x86_64, macOS arm64, and Windows x86_64.
 
 ## Features
 
