@@ -1360,6 +1360,77 @@ local function snapshot_empty(ws)
 end
 
 --- `lw publish` — regenerate the shared loomworks.json from the working copy.
+--- `lw migrate [--check] [-y]` — rewrite the workspace files from a still-valid
+--- older shape into the current recommended one (spec §16.19). Form changes,
+--- meaning does not.
+function M.cmd_migrate(root, args)
+  local check, yes = false, false
+  for _, v in ipairs(args or {}) do
+    if v == "--check" then check = true
+    elseif v == "-y" or v == "--yes" then yes = true end
+  end
+  local ws = load_workspace(root, false)
+  local migrate = require("loomworks.migrate")
+  local plan = migrate.plan(ws)
+
+  for _, skip in ipairs(plan.skipped) do
+    out(string.format("skipped  %s/%s", skip.project, skip.item))
+    out("         " .. skip.reason)
+  end
+
+  if #plan.changes == 0 then
+    out(#plan.skipped > 0
+      and "nothing to migrate automatically (see skipped above)"
+      or "already up to date — nothing to migrate")
+    return 0
+  end
+
+  -- Always show the rewrites before touching anything.
+  out((check and "pending migrations:" or "migrations to apply:"))
+  for _, c in ipairs(plan.changes) do
+    out(string.format("  %s/%s  [%s]", c.project, c.item, c.rule))
+    out("      - " .. c.before)
+    out("      + " .. c.after)
+  end
+
+  if check then
+    -- Signal through the exit status so this works as a CI lint.
+    out("")
+    out(#plan.changes .. " migration(s) pending; run `lw migrate` to apply")
+    return 1
+  end
+
+  -- A management write, so it needs explicit consent when it cannot ask
+  -- (spec §16.9 / §16.19).
+  if not yes then
+    if not interactive() then
+      die("refusing to rewrite the workspace files without confirmation.\n"
+        .. "  Re-run with -y to apply, or --check to see what is pending.")
+    end
+    local answer = prompt_line(
+      string.format("Rewrite %d configuration(s)? [y/N]", #plan.changes))
+    answer = (answer or ""):lower()
+    if answer ~= "y" and answer ~= "yes" then
+      die("aborted — nothing was written")
+    end
+  end
+
+  local applied, err = migrate.apply(plan)
+  if err then die("migration failed after " .. applied .. " change(s): " .. err) end
+
+  -- The published snapshot is regenerated from the working copy (§2.4), so a
+  -- migration that touches published items rewrites it wholesale.
+  local pub_ok, pub_err = ws:publish()
+  if not pub_ok then
+    die("migrated the working copy, but publishing failed: " .. tostring(pub_err)
+      .. "\n  Run `lw publish` once resolved.")
+  end
+  out("")
+  out("migrated " .. applied .. " configuration(s); wrote the working copy and "
+    .. "regenerated loomworks.json")
+  return 0
+end
+
 function M.cmd_publish(root)
   local ws = load_workspace(root, false)
   local empty = snapshot_empty(ws)
@@ -3270,6 +3341,33 @@ Workspace-level settings, stored in the working copy.
   rename <name>    Set the workspace display name. `lw publish` then writes it
                    to the shared loomworks.json. The name defaults to the
                    directory basename when never set.]],
+  migrate = [[lw migrate [--check] [-y]
+
+Rewrite the workspace files from a still-valid older shape into the current
+recommended one. Form changes, meaning does not: a migrated workspace resolves
+to the same projects, configurations, options and build types as before. Safe
+to re-run — an already-migrated workspace reports nothing pending.
+
+Every rewrite is printed as its before/after before anything is written, and
+applying asks for confirmation (-y to skip; required when not on a terminal).
+Because loomworks.json is regenerated from the working copy, a migration that
+touches published items rewrites that file wholesale rather than patching it.
+
+  --check    report what is pending and exit non-zero if anything is —
+             use it as a CI lint so files don't drift back
+  -y         apply without asking
+
+Cases a rule cannot rewrite without risking a behaviour change are reported
+and left alone, never guessed at.
+
+Rules:
+  variant-inherits   A configuration declares its build type by INHERITING a
+                     base that provides it (`inherits: variant:Release`), not
+                     by naming it (`variant: Release`), so the build type has
+                     one declared source. Rewrites the old shape onto the
+                     matching `variant:*` base. Skips a variant no
+                     configuration provides, and a chain where adding the base
+                     could change which option wins.]],
   publish = [[lw publish
 
 Regenerate the shared loomworks.json from the working copy — the same snapshot
@@ -3651,6 +3749,7 @@ Usage: lw [command] [args]
   run <profile> [target]  build, then execute a launch target
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
+  migrate [--check] bring the workspace files up to current conventions
   config <...>      get/set lw configuration
   completion <shell> print a shell completion script (bash|zsh)
   version           host version + which system-Lua source is in use
@@ -3774,6 +3873,9 @@ local function main()
   end
   if command == "publish" then
     finish(M.cmd_publish(root))
+  end
+  if command == "migrate" then
+    finish(M.cmd_migrate(root, a))
   end
   -- `project` / `configuration` manage their own workspace load (no tools).
   if command == "project" then

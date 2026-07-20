@@ -3642,3 +3642,35 @@ any build has run. Introspection is scoped to a `(profile, project)` pair, since
 a build directory is a per-project coordinate; the reported facts a caller MAY
 request include the build directory, the pinned configuration, the last known
 build state, and the resolved toolchain.
+
+### 16.19 Convention migration
+
+Recommended shapes for the workspace files change over time while older
+shapes remain valid to read — the data model MUST keep resolving what it
+resolved before. A management host (§16.9) therefore offers an explicit
+**migration** operation that rewrites the workspace files from a still-valid
+older shape into the current recommended one, changing form and never
+meaning: a migrated workspace resolves to the same projects, configurations,
+options and build types as before.
+
+Migration is a set of named rules, each able to report what it would change
+without changing it. The operation MUST:
+
+- **Report before it writes.** Every rewrite is shown as its before and after,
+  attributed to the rule that produced it. A non-interactive invocation
+  requires explicit consent (§16.9 — it is a management write, never part of
+  a build).
+- **Refuse where it cannot preserve meaning.** A case a rule cannot rewrite
+  without risking a change in behaviour is reported and left alone, never
+  guessed at. Examples: a declared value with no equivalent to migrate onto,
+  or a rewrite that would reorder an inheritance chain and so change which
+  value wins.
+- **Be idempotent.** Running it on an already-migrated workspace changes
+  nothing and reports nothing pending.
+- **Offer a check mode** that reports pending migrations and signals, through
+  its exit status, whether any remain — so a project can keep its files from
+  drifting back without granting write access.
+
+Because the published snapshot is regenerated from the working copy (§2.4), a
+migration that changes published items rewrites that snapshot wholesale rather
+than patching it in place.
