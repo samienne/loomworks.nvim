@@ -18,11 +18,22 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
 - **Project-committed wrapper.** `lw init` writing `./lw` +
   `wrapper.properties` into a project, with project-pin-wins version
   resolution. v1 is system-wide (per-user, on PATH) only.
-- **`lw run` launch + device targets.** Non-debug launch (build → deploy →
-  execute) is a fast-follow; debug launch (DAP) and device install / launch
-  stay editor-only.
-- **Keyless signing / provenance.** v1 signs a `SHA256SUMS` manifest with
-  minisign; Sigstore / GitHub artifact attestations are a later upgrade.
+- **`lw run` device targets.** Non-debug launch is DONE — `lw run <profile>
+  [target]` builds then executes a launch target, and `lw launch` manages the
+  configs (spec §16.17). Still deferred: debug launch (DAP) and device install
+  / launch, which stay editor-only.
+- ~~**Keyless signing / provenance.**~~ DONE (v0.1.2) — and not with minisign:
+  the host verifies with **ECDSA P-256 + SHA-256** because luvi's bundled
+  lua-openssl cannot do Ed25519's one-shot verify, and minisign isn't a
+  dependency worth adding when the openssl CLI is already there. `SHA256SUMS`
+  is signed with the release key and published as `SHA256SUMS.sig`, with the
+  public key embedded in the README so the documented install commands never
+  need editing per release (spec §16.15). GitHub artifact attestations ship
+  too (`actions/attest-build-provenance`), so `gh attestation verify` works
+  with no key material and an anchor outside this repo — the recommended CI
+  path. CI verifies each signature against the committed public key right
+  after signing, so a drifted secret fails the release rather than a user's
+  `lw self-update`.
 - ~~**Cross-process build-dir locking.**~~ DONE — `lua/loomworks/build_lock.lua`:
   a per-build-dir `O_EXCL` advisory lockfile with an mtime heartbeat (crash
   reclaim), shared by the editor (`Workspace:_acquire_file_lock`, refcounted,
