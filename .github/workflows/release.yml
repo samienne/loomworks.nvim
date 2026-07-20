@@ -35,10 +35,11 @@ jobs:
           # arm64 Linux: add an entry with `os: ubuntu-24.04-arm` and
           # asset `luvi-Linux-aarch64-luajit-regular` once that runner is
           # available to you (luvi ships the binary).
-          - os: macos-13
-            asset: luvi-Darwin-x86_64-luajit-regular
-            luvi: luvi
-            out: lw-macos-x86_64
+          # Intel macOS: the `macos-13` label no longer schedules (v0.1.0 sat
+          # queued for an hour with no runner assigned), and `publish` needs
+          # every host leg, so one dead label blocks the entire release.
+          # Re-add an Intel entry once a label is confirmed to schedule — luvi
+          # ships the Darwin-x86_64 binary either way.
           - os: macos-14
             asset: luvi-Darwin-arm64-luajit-regular
             luvi: luvi
@@ -115,7 +116,15 @@ jobs:
   publish:
     needs: [hosts, bundle]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the release
+      id-token: write       # mint the Sigstore token for attestation
+      attestations: write   # record build provenance
     steps:
+      - uses: actions/checkout@v5
+        with:
+          path: repo        # for the public key; keep it out of release/
+
       - uses: actions/download-artifact@v4
         with:
           path: incoming
@@ -131,11 +140,39 @@ jobs:
         shell: bash
         working-directory: release
         run: |
-          # Per-asset hashes so the install one-liner can verify a host binary
-          # by hash before running it (spec §16.15). The bundle is additionally
+          # Per-asset hashes so the install commands can verify a host binary
+          # before its first execution (spec §16.15). The bundle is additionally
           # signature-verified by the host; these cover the host binaries too.
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
+
+      - name: Sign SHA256SUMS
+        shell: bash
+        run: |
+          # Signing the hash list moves the install-time trust anchor from a
+          # per-release hash to the long-lived release key, so the documented
+          # commands never need editing when a release is cut (spec §16.15).
+          printf '%s\n' "${{ secrets.LOOMWORKS_SIGNING_KEY }}" > sign.key
+          openssl dgst -sha256 -sign sign.key \
+            -out release/SHA256SUMS.sig release/SHA256SUMS
+          rm -f sign.key
+          # Same guard as the bundle job: prove the signature verifies under the
+          # public key that ships in the host binaries, not just under whatever
+          # key happens to be in the secret.
+          openssl dgst -sha256 -verify repo/keys/loomworks-release.pub.pem \
+            -signature release/SHA256SUMS.sig release/SHA256SUMS
+
+      - name: Drop signing key
+        if: always()
+        run: rm -f sign.key
+
+      # Provenance anchored in Sigstore's public transparency log — independent
+      # of this repo, so `gh attestation verify` needs no key material and no
+      # per-release hash. Preinstalled `gh` makes this the CI install path.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'release/lw-*'
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

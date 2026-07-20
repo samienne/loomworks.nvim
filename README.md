@@ -465,28 +465,91 @@ release layout and update flow.
 
 ### Installing `lw`
 
-`lw` installs itself: download the binary for your platform, **verify its
-hash** (from the release's `SHA256SUMS`), then let the verified binary place
-itself on PATH and fetch the first bundle. The command shows exactly what it
-does — nothing is piped from an unread script.
+`lw` installs itself: download the binary for your platform, **verify it**,
+then let the verified binary place itself on PATH and fetch the first bundle.
+The commands show exactly what they do — nothing is piped from an unread
+script.
+
+A host binary cannot verify itself (the checker is inside it), so its
+integrity is established before first execution: each release publishes a
+`SHA256SUMS` list, **signed** with the loomworks release key. Verify that
+signature with the public key below, then check the binary against the list.
+Because the anchor is the key and not a digest, **these commands never change**
+— copy them as-is, for any release.
 
 Linux / macOS:
 
 ```sh
-curl -fsSL https://github.com/samienne/loomworks.nvim/releases/latest/download/lw-linux-x86_64 -o /tmp/lw \
-  && echo "<sha256-from-SHA256SUMS>  /tmp/lw" | sha256sum -c \
-  && chmod +x /tmp/lw && /tmp/lw install
+base=https://github.com/samienne/loomworks.nvim/releases/latest/download
+bin=lw-linux-x86_64          # or lw-macos-arm64
+d="$(mktemp -d)" && cd "$d"
+curl -fsSLO "$base/$bin" && curl -fsSLO "$base/SHA256SUMS" \
+  && curl -fsSLO "$base/SHA256SUMS.sig"
+cat > lw.pub.pem <<'PEM'
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8MhoZlT5ww82JmplPiRyta32R8HY
+meq3+ZL1wAo7PHHBnHHzXIE+Kab49ClyLvDUGsOR3LG+kU1lH6nxunmO2A==
+-----END PUBLIC KEY-----
+PEM
+# macOS ships `shasum`, not GNU `sha256sum`.
+if command -v sha256sum >/dev/null; then check="sha256sum -c -"
+else check="shasum -a 256 -c -"; fi
+openssl dgst -sha256 -verify lw.pub.pem -signature SHA256SUMS.sig SHA256SUMS \
+  && grep -E "[ *]$bin\$" SHA256SUMS | $check \
+  && chmod +x "$bin" && "./$bin" install
 ```
 
 Windows (PowerShell):
 
 ```powershell
-$u = "https://github.com/samienne/loomworks.nvim/releases/latest/download/lw-windows-x86_64.exe"
-Invoke-WebRequest $u -OutFile $env:TEMP\lw.exe
-if ((Get-FileHash $env:TEMP\lw.exe -Algorithm SHA256).Hash -ieq "<sha256-from-SHA256SUMS>") {
-  & $env:TEMP\lw.exe install
-} else { Write-Error "hash mismatch" }
+$base = "https://github.com/samienne/loomworks.nvim/releases/latest/download"
+$bin  = "lw-windows-x86_64.exe"
+$d = New-Item -ItemType Directory (Join-Path $env:TEMP (New-Guid))
+"$bin","SHA256SUMS","SHA256SUMS.sig" | ForEach-Object {
+  Invoke-WebRequest "$base/$_" -OutFile (Join-Path $d $_)
+}
+$pub = @"
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8MhoZlT5ww82JmplPiRyta32R8HY
+meq3+ZL1wAo7PHHBnHHzXIE+Kab49ClyLvDUGsOR3LG+kU1lH6nxunmO2A==
+-----END PUBLIC KEY-----
+"@
+$ec = [System.Security.Cryptography.ECDsa]::Create()
+$ec.ImportFromPem($pub)
+$sums = [IO.File]::ReadAllBytes((Join-Path $d "SHA256SUMS"))
+$sig  = [IO.File]::ReadAllBytes((Join-Path $d "SHA256SUMS.sig"))
+if (-not $ec.VerifyData($sums, $sig,
+      [Security.Cryptography.HashAlgorithmName]::SHA256,
+      [Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence)) {
+  throw "SHA256SUMS signature does not verify"
+}
+$want = ((Get-Content (Join-Path $d "SHA256SUMS") |
+  Select-String " $bin$") -split '\s+')[0]
+$got = (Get-FileHash (Join-Path $d $bin) -Algorithm SHA256).Hash
+if ($got -ine $want) { throw "hash mismatch for $bin" }
+& (Join-Path $d $bin) install
 ```
+
+`ImportFromPem` needs PowerShell 7 / .NET 5+; Windows PowerShell 5.1 does not
+have it. Run the block in `pwsh`, or use the `gh` route below — which is the
+simpler choice on Windows generally.
+
+**On GitHub Actions** (or anywhere `gh` is authenticated) the release is also
+covered by build provenance recorded in Sigstore's public transparency log —
+verification needs no key and no hashes, and the anchor is independent of this
+repository:
+
+```sh
+gh release download --repo samienne/loomworks.nvim -p lw-linux-x86_64
+gh attestation verify lw-linux-x86_64 --repo samienne/loomworks.nvim
+chmod +x lw-linux-x86_64 && ./lw-linux-x86_64 install -y
+```
+
+Pin a release in CI by passing an explicit tag (`gh release download v0.1.0`,
+or a versioned URL instead of `latest`) and not running `lw self-update`.
+Signature and provenance both establish *who built this*; where the signing key
+lives on the same platform that serves the artifacts, they are not a defense
+against that platform itself.
 
 `lw install` copies the binary to a per-user location — `~/.local/bin/lw`
 (Unix) or `%LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe` (Windows, already on
