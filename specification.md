@@ -163,8 +163,13 @@ needed" (rare).
 **Inheritance model** (cmake): custom configs inherit from one or more bases.
 Variant (CMAKE_BUILD_TYPE) is derived from the first base with a variant.
 Options merge depth-first left-to-right: project-wide → bases → own
-(later values override). Configs without a variant-providing base are
-abstract mixins — not directly buildable, only usable as bases. A
+(later values override). A configuration with no variant — whether declared
+on the configuration itself or inherited from a base — is an abstract mixin:
+usable only as a base, never built directly. A profile whose configuration
+set maps an abstract configuration MUST report itself unbuildable and name
+the offending project/configuration; it MUST NOT fall through to a
+module-chosen default build type, which would silently produce a build the
+configuration never asked for. A
 user-declared configuration is a source in its own right and MUST survive a
 resync of module-emitted configurations even when it carries no fields yet;
 an abstract mixin is exactly that case, and no module ever emits one.
