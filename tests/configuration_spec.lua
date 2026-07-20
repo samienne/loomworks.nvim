@@ -632,3 +632,63 @@ describe("ConfigurationSet mappings store Configuration objects", function()
         assert.is_nil(cs:configuration(project))
     end)
 end)
+
+describe("Configuration derived module fields", function()
+    local function make_project()
+        local ws = h.make_mock_workspace({})
+        local project = Project.new(ws, "App", {
+            type = "cmake",
+            path = "App",
+            status = "unconfigured",
+            configurations = {
+                Debug = { variant = "Debug", is_default = true },
+            },
+            cached_configurations = {},
+        })
+        return project
+    end
+
+    -- A variant reached through `inherits` is DERIVED, not declared. Modules
+    -- propagate it onto the config so the build path has something concrete,
+    -- but persisting it would write a copy of the base's value into user.json
+    -- / loomworks.json: if the base later changed, the stale copy would win
+    -- silently. The module marks what it propagated; serialization skips it.
+    it("omits derived module fields from the user override", function()
+        local project = make_project()
+        local cfg = Configuration.new(project, "custom", {
+            is_user = true,
+            inherits = "variant:Debug",
+            variant = "Debug",
+            _derived = { variant = true },
+            options = { X = "1" },
+        })
+        local entry = cfg:serialize_user_override()
+        assert.is_nil(entry.variant,
+            "a variant obtained from a base must not be written back as if declared")
+        assert.equals("variant:Debug", entry.inherits)
+        assert.same({ X = "1" }, entry.options)
+    end)
+
+    it("keeps the derived value available at runtime", function()
+        local project = make_project()
+        local cfg = Configuration.new(project, "custom", {
+            is_user = true,
+            inherits = "variant:Debug",
+            variant = "Debug",
+            _derived = { variant = true },
+        })
+        assert.equals("Debug", cfg.module_config.variant,
+            "the build path still needs a concrete variant")
+        assert.is_false(cfg:is_abstract(),
+            "inheriting a variant makes a config concrete")
+    end)
+
+    it("still persists a variant the user declared themselves", function()
+        local project = make_project()
+        local cfg = Configuration.new(project, "custom", {
+            is_user = true,
+            variant = "Release",
+        })
+        assert.equals("Release", cfg:serialize_user_override().variant)
+    end)
+end)

@@ -131,10 +131,19 @@ run_case() {
     grep -q "mixin-base" "$out" \
         || { note_fail "$label mixin-base did not persist" 0; return; }
 
-    # A canonical configuration name passed as a variant must be refused, not
-    # written through to produce CMAKE_BUILD_TYPE=variant:Debug.
-    if run_lw configuration add app bogus variant:Debug > "$out" 2>&1; then
-        note_fail "$label accepted a canonical name as a variant" 0; return
+    # The variant is not settable: a config becomes concrete by inheriting a
+    # base that provides one, so the build type has a single declared source.
+    if run_lw configuration set app mixin-base variant Debug > "$out" 2>&1; then
+        note_fail "$label accepted a directly-set variant" 0; return
+    fi
+
+    # Inheriting a base is the supported route, and the derived variant must
+    # NOT be written back as if declared here — persisting it would freeze a
+    # copy of the base's value.
+    run_lw configuration add app inherited variant:Debug > "$out" 2>&1 \
+        || { note_fail "$label configuration add with a base" $?; return; }
+    if grep -q '"variant"' .nvim/loomworks.user.json; then
+        note_fail "$label persisted a derived variant as if declared" 0; return
     fi
 
     run_lw configuration-set create Debug app=variant:Debug > "$out" 2>&1 \

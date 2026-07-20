@@ -130,9 +130,15 @@ function M.resolve_configurations(defaults, config)
             for _, base_name in ipairs(bases) do
                 local base = result[base_name]
                 if base and base.variant then
+                    -- Mark propagated values as derived so they are not
+                    -- written back as if the user had declared them
+                    -- (Configuration._derived).
+                    cfg._derived = cfg._derived or {}
                     cfg.variant = base.variant
+                    cfg._derived.variant = true
                     if not cfg.buildtype and base.buildtype then
                         cfg.buildtype = base.buildtype
+                        cfg._derived.buildtype = true
                     end
                     break
                 end
@@ -491,7 +497,7 @@ end
 --- Base env from the project (currently `env = tool_data.env` which
 ---- Lowercase a trailing `.EXE`. meson matches a compiler's basename against
 --- `clang-cl.exe` case-sensitively, and `vim.fn.exepath` reports whatever
---- casing PATHEXT carries — see `msvc.normalize_exe` for the full story. Kept
+--- casing PATHEXT carries ï¿½ see `msvc.normalize_exe` for the full story. Kept
 --- local so composing an environment does not depend on the msvc module
 --- loading.
 local function normalize_exe(p)

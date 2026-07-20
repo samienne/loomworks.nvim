@@ -1682,7 +1682,13 @@ end
 --- from a live Configuration, so set/unset can read-modify-write.
 local function config_to_data(cfg)
   local data = {}
-  for k, v in pairs(cfg.module_config or {}) do data[k] = v end
+  for k, v in pairs(cfg.module_config or {}) do
+    -- Values the module propagated from a base are not this config's to
+    -- restate: copying them into the edit round-trip would re-declare them
+    -- (freezing the base's value), which is exactly what `_derived` prevents
+    -- at serialization. The module re-derives them on the next refresh.
+    if not (cfg._derived and cfg._derived[k]) then data[k] = v end
+  end
   if cfg.inherits_names and #cfg.inherits_names > 0 then
     data.inherits = (#cfg.inherits_names == 1) and cfg.inherits_names[1]
         or vim.deepcopy(cfg.inherits_names)
@@ -1769,42 +1775,76 @@ function M.cmd_configuration_list(root, proj_name)
   return 0
 end
 
---- Reject a canonical configuration name passed where a module variant is
---- wanted. `inherits` takes canonical names (`variant:Debug`) while `variant`
---- takes the module's own build type (`Debug`), and the two sit next to each
---- other, so the mix-up is easy. It used to be accepted silently and written
---- straight through — cmake then got CMAKE_BUILD_TYPE=variant:Debug and the
---- build failed with an error pointing nowhere near the cause.
+--- Reject `variant` as a settable field. A configuration becomes concrete by
+--- inheriting a base that provides a variant (`inherits: variant:Release`),
+--- not by naming one itself: the built-in `variant:*` configurations are the
+--- declared source of build types, and a hand-written copy duplicates one with
+--- nothing to check it against. Reading a declared `variant` still works, so
+--- existing hand-written files keep resolving (spec 1.4).
 --- @param proj loomworks.Project
---- @param value string|nil
-local function check_variant_value(proj, value)
-  if type(value) ~= "string" or not value:find(":", 1, true) then return end
-  local cfg = proj:get_configuration(value)
-  local suggestion = cfg and cfg.base_name
-  die("invalid variant '" .. value .. "'.\n" ..
-    "  `variant` takes the module's own build type" ..
-    (suggestion and (" — you probably want '" .. suggestion .. "'.") or ".") ..
-    "\n  Canonical names like '" .. value .. "' belong to `inherits`:\n" ..
-    "    lw configuration set " .. proj.key .. " <name> inherits " .. value)
+--- @param value string|nil the variant the caller tried to set
+local function reject_variant_param(proj, value)
+  local base = nil
+  if type(value) == "string" and value ~= "" then
+    -- Point at the base that provides this variant, if one exists.
+    for _, c in ipairs(proj:get_configurations()) do
+      local mc = c.module_config
+      if c:is_auto_gen() and ((mc and mc.variant == value) or c.name == value) then
+        base = c.name
+        break
+      end
+    end
+  end
+  die(table.concat({
+    "`variant` is not settable - inherit it instead.",
+    "  A configuration becomes concrete by inheriting a base that provides a",
+    "  variant, so the build type has a single declared source:",
+    "    lw configuration set " .. proj.key .. " <name> inherits "
+      .. (base or "variant:<Name>"),
+    "  `lw configuration list " .. proj.key .. "` shows the available bases.",
+  }, "\n"))
 end
 
---- `lw configuration add <project> <name> [variant]`
-function M.cmd_configuration_add(root, proj_name, name, variant)
+--- `lw configuration add <project> <name> [base]`
+--- The optional third argument is a BASE to inherit (e.g. `variant:Release`),
+--- which is how a configuration becomes concrete — see `reject_variant_param`.
+function M.cmd_configuration_add(root, proj_name, name, base)
   if not proj_name or not name then
-    die("usage: lw configuration add <project> <name> [variant]")
+    die("usage: lw configuration add <project> <name> [base]")
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
-  check_variant_value(proj, variant)
   local data = {}
-  if variant then data.variant = variant end
+  if base and base ~= "" then
+    -- Resolve the base up front: an unresolvable `inherits` would otherwise
+    -- produce a config that looks created but can never build.
+    local target = proj:get_configuration(base)
+    if not target then
+      -- A bare build type (`Release`) is the likely mistake now that the
+      -- variant is inherited rather than named; point at the base providing it.
+      local suggestion
+      for _, c in ipairs(proj:get_configurations()) do
+        local mc = c.module_config
+        if c:is_auto_gen() and mc and mc.variant == base then
+          suggestion = c.name
+          break
+        end
+      end
+      die("no configuration '" .. base .. "' in project '" .. proj.key .. "'"
+        .. (suggestion and (" — did you mean '" .. suggestion .. "'?") or ".")
+        .. "\n  `lw configuration list " .. proj.key .. "` shows the bases "
+        .. "available to inherit.")
+    end
+    data.inherits = target.name
+  end
   local ok, err = proj:save_configuration(name, data)
   if not ok then die("could not add configuration: " .. tostring(err)) end
   out(string.format("added configuration '%s' to project '%s'%s", name, proj.key,
-    variant and ("  (variant " .. variant .. ")") or ""))
-  if not variant then
-    out("  no variant set — it is abstract (a mixin) until you set one:")
-    out("    lw configuration set " .. proj.key .. " " .. name .. " variant <name>")
+    data.inherits and ("  (inherits " .. data.inherits .. ")") or ""))
+  if not data.inherits then
+    out("  no base — it is abstract (a mixin) and cannot be built until it")
+    out("  inherits one that provides a variant:")
+    out("    lw configuration set " .. proj.key .. " " .. name .. " inherits <base>")
   end
   out("  map it into a configuration set to build it; `lw publish` to share.")
   return 0
@@ -1872,7 +1912,7 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, true)
-  if param == "variant" then check_variant_value(proj, value) end
+  if param == "variant" then reject_variant_param(proj, value) end
   local data = config_to_data(cfg)
   apply_param(data, param, value)
   local ok, err = proj:save_configuration(cfg.name, data)
@@ -3270,15 +3310,20 @@ variant:Release, …) that you can map into a set directly — `add` is only for
 custom variants.
 
   list [project]                     configs for one project, or all
-  add <project> <name> [variant]     create a user configuration
+  add <project> <name> [base]        create a user configuration, optionally
+                                     inheriting <base> (e.g. variant:Release)
   show <project> <name>              detail: variant, inherits, options, ...
   get <project> <name> <param>       print one value
   set <project> <name> <param> <value>
   unset <project> <name> <param>     clear one value
   remove <project> <name>            delete a user configuration
 
+A config becomes concrete by INHERITING a base that provides a variant; the
+variant is not settable directly, so the build type has one declared source
+(the built-in `variant:*` configs). Without a base a config is an abstract
+mixin — usable as a base, never built.
+
 Params for get/set/unset:
-  variant            the module variant (cmake/meson: Debug, Release, ...)
   inherits           comma-separated base configs (a mixin chain)
   languages          comma-separated; empty inherits from the module
   options.<KEY>      a generic build option
