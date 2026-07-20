@@ -92,6 +92,16 @@ jobs:
         shell: bash
         run: bash scripts/release/build_bundle.sh "${{ steps.v.outputs.version }}" dist sign.key
 
+      - name: Verify the signature with the committed public key
+        shell: bash
+        run: |
+          # The hosts job bakes keys/loomworks-release.pub.pem into every
+          # binary, so a signing secret that does not match it would produce a
+          # release no host can verify — and we would only find out when a user
+          # ran `lw self-update`. Fail here instead.
+          openssl dgst -sha256 -verify keys/loomworks-release.pub.pem \
+            -signature dist/manifest.json.sig dist/manifest.json
+
       - name: Drop signing key
         if: always()
         run: rm -f sign.key
