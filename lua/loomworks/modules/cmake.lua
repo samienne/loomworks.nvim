@@ -1329,6 +1329,22 @@ local CMAKE_LANG_CANONICAL = {
 
 --- Detect the set of languages a cmake configuration actually
 --- enabled. Walks every target's compileGroups in the file-api
+--- Toolchain runtime directories for launching built executables (§8.4).
+--- cmake tool_data carries `compiler_path` (the compiler executable); its
+--- directory holds the runtime DLLs for gcc/clang toolchains. Core adds the
+--- build tree's own shared-library dirs generically.
+--- @param ctx { tool_data?: table }
+--- @return string[]|nil
+function M.runtime_path(ctx)
+    local td = ctx and ctx.tool_data
+    local cp = type(td) == "table" and td.compiler_path or nil
+    if type(cp) == "string" and cp ~= "" then
+        local dir = cp:gsub("\\", "/"):match("^(.*)/[^/]*$")
+        if dir and dir ~= "" then return { dir } end
+    end
+    return nil
+end
+
 --- codemodel reply, unions the `language` fields, and normalizes
 --- to canonical strings. The configuration must have been
 --- successfully configured at least once (file-api reply must

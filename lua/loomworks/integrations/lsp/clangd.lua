@@ -483,6 +483,49 @@ function M.on_workspace_changed()
     restart_clients(clients)
 end
 
+--- Whether a clangd client started with `resolved` args needs a restart to pick
+--- up `desired` compile-commands-dir. Pure (given the module's `normalize`), so
+--- it's unit-testable. Only acts when we have something to apply (`desired` set)
+--- AND the client actually went through our cmd_factory (`resolved` is a table,
+--- so `--compile-commands-dir` would be present if it had been resolvable) but
+--- is missing or pointing elsewhere. Returning false when `resolved` is nil
+--- avoids churning a clangd the user started outside loomworks.
+--- @param resolved string[]|nil the args cmd_factory recorded for this client
+--- @param desired string|nil the compile-commands-dir loomworks now resolves
+--- @return boolean
+function M._needs_restart_for_dir(resolved, desired)
+    if not desired then return false end
+    if type(resolved) ~= "table" then return false end
+    local have = nil
+    for _, a in ipairs(resolved) do
+        if type(a) == "string" then
+            local d = a:match("^%-%-compile%-commands%-dir=(.+)$")
+            if d then have = d end
+        end
+    end
+    if have and normalize(have) == normalize(desired) then return false end
+    return true
+end
+
+--- Reconcile a just-attached clangd client against loomworks' current
+--- resolution (called from lsp.lua's LspAttach). Fixes the startup race: when
+--- clangd starts before the workspace finishes loading it caches a command
+--- without `--compile-commands-dir`; once loomworks is ready, the next attach
+--- restarts it exactly once with the correct dir. Guarded so it can't loop —
+--- after the restart, cmd_factory records the dir and this becomes a no-op.
+--- @param client vim.lsp.Client
+function M.reconcile_on_attach(client)
+    if not client or not client.root_dir then return end
+    local project, entry = find_by_root(client.root_dir)
+    if not entry then return end
+    local desired = resolve_compile_commands_dir(entry)
+    local resolved = _resolved_cmd[normalize(client.root_dir)]
+    if not M._needs_restart_for_dir(resolved, desired) then return end
+    vim.notify("loomworks: restarting clangd for " .. (project and project.key or "?")
+        .. " — applying compile-commands-dir (was started before the workspace loaded)")
+    restart_clients({ client })
+end
+
 --- Restart every clangd client when a user option that affects the
 --- cmd line changes. The new cmd is computed by `cmd_factory` on the
 --- next start; we don't need to teach this function which option

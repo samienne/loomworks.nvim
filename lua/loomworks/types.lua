@@ -79,6 +79,7 @@
 --- Parsed loomworks.user.json structure.
 --- @class loomworks.UserData
 --- @field _meta { version: number }
+--- @field name? string workspace name override (working copy wins; see spec §2.2)
 --- @field active_profile? string
 --- @field default_target? table<string, table> profile_key -> descriptor
 --- @field lsp? table<string, table> per-server option overrides
@@ -372,3 +373,4 @@
 --- @field cache_version_mismatch boolean
 --- @field cache_inconsistent boolean
 --- @field user_version_mismatch boolean
+--- @field user_projects_invalid string|nil structural error message, if any

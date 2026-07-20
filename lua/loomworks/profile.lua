@@ -698,10 +698,12 @@ end
 --- @param project loomworks.Project
 --- @param target_id? string opaque target identifier (module targets)
 --- @param launch_name? string launch config name (command launches)
-function Profile:set_default_target(project, target_id, launch_name)
+--- @param working_dir? string optional persistent working-dir override (§8.7)
+function Profile:set_default_target(project, target_id, launch_name, working_dir)
     local descriptor = { project = project.key }
     if target_id then descriptor.target = target_id end
     if launch_name then descriptor.launch = launch_name end
+    if working_dir and working_dir ~= "" then descriptor.working_dir = working_dir end
     self._default_target_descriptor = descriptor
     self._workspace:_save_user()
 end

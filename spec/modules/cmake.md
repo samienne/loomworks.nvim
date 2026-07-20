@@ -103,6 +103,12 @@ variable name prefixes to group paths (e.g., `"GFX": ["Media",
 "Graphics"]`). `CMAKE_`-prefixed variables are automatically
 separated into a "CMake Options" group.
 
+## 5a. Launch runtime path (`runtime_path`)
+
+Returns the directory of the kit's `compiler_path` (from `tool_data`) so
+build-target launches find the toolchain runtime DLLs for gcc/clang toolchains.
+Core adds the build tree's own shared-library dirs generically (core §8.7).
+
 ## 6. Inheritance model
 
 Custom configurations inherit from one or more bases. Variant

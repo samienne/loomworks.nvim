@@ -71,6 +71,46 @@ describe("Module", function()
             assert.is_nil(mod:find_tool("nonexistent"))
         end)
 
+        it("find_tool resolves a major-version prefix to the highest patch (spec §16.3)", function()
+            local mod = Module.new("cmake", make_impl())
+            mod:get_or_create_tool("ninja-clang-18.1.0", {}, nil)
+            local hi = mod:get_or_create_tool("ninja-clang-18.1.7", {}, nil)
+            assert.is_true(rawequal(hi, mod:find_tool("ninja-clang-18")))
+        end)
+
+        it("find_tool major prefix stops at the version boundary (18 != 1)", function()
+            local mod = Module.new("cmake", make_impl())
+            mod:get_or_create_tool("ninja-clang-18.1.7", {}, nil)
+            -- A truncated selector must not cross into a different major.
+            assert.is_nil(mod:find_tool("ninja-clang-1"))
+        end)
+
+        it("find_tool resolves an edition-agnostic MSVC pin on a dash boundary", function()
+            -- CI images differ in VS edition; `msvc-17` must resolve without the
+            -- job hardcoding enterprise/buildtools (spec §16.3).
+            local mod = Module.new("cmake", make_impl())
+            local bt = mod:get_or_create_tool("msvc-17-2022-buildtools", {}, nil)
+            mod:get_or_create_tool("msvc-17-2022-enterprise", {}, nil)
+            local found = mod:find_tool("msvc-17")
+            assert.is_not_nil(found)
+            -- Deterministic tie-break (no trailing version -> lowest key).
+            assert.is_true(rawequal(bt, found))
+        end)
+
+        it("find_tool dash pin is anchored, not a substring", function()
+            local mod = Module.new("cmake", make_impl())
+            mod:get_or_create_tool("ninja-msvc-17-enterprise", {}, nil)
+            -- `msvc-17` must not match a key that merely contains it.
+            assert.is_nil(mod:find_tool("msvc-17"))
+            assert.is_not_nil(mod:find_tool("ninja-msvc-17"))
+        end)
+
+        it("find_tool dash pin does not cross a numeric boundary (17 != 1)", function()
+            local mod = Module.new("cmake", make_impl())
+            mod:get_or_create_tool("msvc-17-2022-enterprise", {}, nil)
+            assert.is_nil(mod:find_tool("msvc-1"))
+        end)
+
         it("nil tool_key uses default slot", function()
             local mod = Module.new("ets", { id = "ets" })
             local tool = mod:get_or_create_tool(nil, {}, nil)

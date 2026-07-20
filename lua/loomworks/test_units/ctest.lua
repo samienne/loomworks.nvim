@@ -18,6 +18,24 @@ local uv = vim.uv or vim.loop
 local CTestUnit = setmetatable({}, { __index = TestUnit })
 CTestUnit.__index = CTestUnit
 
+--- The build type for `ctest -C`. For a multi-config generator (Visual Studio)
+--- ctest must be told the config it was built as (e.g. "Debug") — the cmake
+--- BUILD TYPE, i.e. the module variant, NOT the loomworks configuration name
+--- (`variant:Debug`), which points at a config dir that doesn't exist. This
+--- mirrors what the cmake module passes to `cmake --build --config`. Single
+--- config generators (Ninja) ignore -C, so the value is harmless there.
+--- @param config_unit loomworks.ConfigUnit
+--- @return string|nil
+local function ctest_config(config_unit)
+    local cfg = config_unit:configuration()
+    if cfg and cfg.module_config and cfg.module_config.variant then
+        return cfg.module_config.variant
+    end
+    local cached = config_unit._cached_module_config
+    if cached and cached.variant then return cached.variant end
+    return config_unit:variant()
+end
+
 --- @param config_unit loomworks.ConfigUnit
 --- @return loomworks.CTestUnit
 function CTestUnit.new(config_unit)
@@ -26,7 +44,7 @@ function CTestUnit.new(config_unit)
     self._entries = nil
     self._framework_cache = {}
     self._build_dir = config_unit:build_dir()
-    self._configuration = config_unit:variant()
+    self._configuration = ctest_config(config_unit)
     self._ctest_dir = nil
     self._source_files_by_exe = {}
     self._exec_specs = {}
@@ -455,6 +473,44 @@ function CTestUnit:test_command_all(opts)
     }
 end
 
+--- Native ctest run: authoritative exit code, streaming output (spec §8.9.2).
+--- nil when the build dir has no configured test set (no CTestTestfile.cmake).
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- @return table|nil { cmd, cwd, env, junit_out }
+function CTestUnit:run_command_all(opts)
+    opts = opts or {}
+    if not self:_find_ctest_dir() then return nil end
+    local cmd = self:_base_cmd()          -- ctest --test-dir <dir> [-C <config>]
+    cmd[#cmd + 1] = "--output-on-failure"
+    if opts.filter then
+        cmd[#cmd + 1] = "-R"
+        cmd[#cmd + 1] = opts.filter
+    end
+    -- ctest writes JUnit XML directly to the requested path (CMake ≥ 3.21), so
+    -- junit_out equals the request — the core copies nothing (§16.16).
+    local junit_out
+    if opts.junit then
+        cmd[#cmd + 1] = "--output-junit"
+        cmd[#cmd + 1] = opts.junit
+        junit_out = opts.junit
+    end
+    -- Caller args (from `lw test -- …`) go last so they layer on top.
+    if opts.extra_args then vim.list_extend(cmd, opts.extra_args) end
+    -- On Windows the test executables loaded by ctest must find their sibling
+    -- DLLs (shared libraries built into subfolders of the tree); ctest does not
+    -- set this up itself, so we prepend the same run environment a target launch
+    -- uses (§8.7). Nil on POSIX / when nothing needs adding — inherit as-is.
+    return { cmd = cmd, cwd = self._build_dir, env = self._config_unit:run_env(), junit_out = junit_out }
+end
+
+--- `ctest` does not build — it assumes an already-built tree — so a headless
+--- test run (§16.16) must build this unit before running (the default, stated
+--- explicitly here for contrast with the meson runner).
+--- @return boolean
+function CTestUnit:run_command_all_rebuilds()
+    return false
+end
+
 --- Parse test results from gtest XML output.
 --- @param output_path string
 --- @return table[]|nil
@@ -468,7 +524,7 @@ function CTestUnit:invalidate()
     self._ctest_dir = nil
     self._exec_specs = {}
     self._build_dir = self._config_unit:build_dir()
-    self._configuration = self._config_unit:variant()
+    self._configuration = ctest_config(self._config_unit)
 end
 
 return CTestUnit

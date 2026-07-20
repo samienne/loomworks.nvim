@@ -1,0 +1,43 @@
+#!/bin/sh
+# loomworks launcher `lw`.
+#
+# Resolves the loomworks home (a checkout or an installed dist) and runs the
+# CLI. It prefers the standalone luvi host (no Neovim); if luvi isn't
+# available it falls back to running under headless Neovim. Either way the
+# `lw <cmd>` interface is identical.
+#
+# Home resolution: $LOOMWORKS_HOME, else the parent of this script's dir
+#   (so adding bin/ to PATH works for a dev checkout).
+# luvi resolution: $LW_LUVI, else `luvi` on PATH.
+set -eu
+
+if [ -n "${LOOMWORKS_HOME:-}" ]; then
+  home=$LOOMWORKS_HOME
+else
+  home=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+fi
+
+lua_dir="$home/lua"
+cli="$lua_dir/loomworks/cli.lua"
+if [ ! -f "$cli" ]; then
+  echo "lw: cannot find the CLI at $cli" >&2
+  echo "lw: set LOOMWORKS_HOME to your loomworks.nvim checkout or dist" >&2
+  exit 1
+fi
+
+# --- RUNTIME: prefer standalone luvi (no Neovim), else headless Neovim ------
+luvi=${LW_LUVI:-}
+if [ -z "$luvi" ] && command -v luvi >/dev/null 2>&1; then
+  luvi=luvi
+fi
+if [ -n "$luvi" ]; then
+  orig=$PWD
+  cd "$lua_dir"
+  LW_ROOT="$orig" exec "$luvi" . -- "$@"
+fi
+
+if ! command -v nvim >/dev/null 2>&1; then
+  echo "lw: neither luvi nor nvim found (set LW_LUVI, or install one)" >&2
+  exit 1
+fi
+exec nvim --headless -u NONE -l "$cli" "$@"

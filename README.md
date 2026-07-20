@@ -435,6 +435,129 @@ automatically from your system.
 | `:LoomworksInfo` | Open workspace status page |
 | `:LoomworksReload` | Tear down active workspace and reload plugin code (dev hatch — requires lazy.nvim) |
 
+## Standalone `lw` runner
+
+`lw` runs loomworks builds outside the editor — CI, a plain shell — from the
+same `loomworks.json`. It is a single self-contained binary (a luvi host with
+a small fused bootstrap); it needs no Neovim and no Lua install.
+
+**Two sources of the runner's own code** (spec §16.11):
+
+- **release** (default) — the runner uses a cryptographically **verified**
+  release bundle it downloads and caches per user. `lw self-update` fetches
+  and verifies the latest; a bundle whose signature or hash does not match is
+  never executed (spec §16.12).
+- **dev** — point the runner at a checked-out loomworks tree. Configure it
+  once:
+
+  ```
+  lw config set dev-lua C:/src/nvim-plugins/loomworks.nvim/lua
+  ```
+
+  Then `lw --dev <command>` runs from that tree (verification skipped — it's
+  your local checkout). `lw config set default-source dev` makes `--dev` the
+  default, or use `LOOMWORKS_LUA=<dir>` for a one-off override.
+
+Releases are cut from `master`; CI builds the host binary for Linux, macOS,
+and Windows and publishes the signed bundle. See
+[ARCHITECTURE.md](ARCHITECTURE.md#standalone-runner--distribution) for the
+release layout and update flow.
+
+### Installing `lw`
+
+`lw` installs itself: download the binary for your platform, **verify its
+hash** (from the release's `SHA256SUMS`), then let the verified binary place
+itself on PATH and fetch the first bundle. The command shows exactly what it
+does — nothing is piped from an unread script.
+
+Linux / macOS:
+
+```sh
+curl -fsSL https://github.com/samienne/loomworks.nvim/releases/latest/download/lw-linux-x86_64 -o /tmp/lw \
+  && echo "<sha256-from-SHA256SUMS>  /tmp/lw" | sha256sum -c \
+  && chmod +x /tmp/lw && /tmp/lw install
+```
+
+Windows (PowerShell):
+
+```powershell
+$u = "https://github.com/samienne/loomworks.nvim/releases/latest/download/lw-windows-x86_64.exe"
+Invoke-WebRequest $u -OutFile $env:TEMP\lw.exe
+if ((Get-FileHash $env:TEMP\lw.exe -Algorithm SHA256).Hash -ieq "<sha256-from-SHA256SUMS>") {
+  & $env:TEMP\lw.exe install
+} else { Write-Error "hash mismatch" }
+```
+
+`lw install` copies the binary to a per-user location — `~/.local/bin/lw`
+(Unix) or `%LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe` (Windows, already on
+PATH) — ensures it is on PATH (prompting first; `-y` to apply non-interactively,
+`--no-modify-path` to skip), and runs `lw self-update` to fetch the verified
+release bundle. `--dry-run` shows what it would do; `--no-bundle` skips the
+fetch. No admin required. Then enable completion with `lw completion bash`
+(see [above](#standalone-lw-runner) / `lw help completion`).
+
+### Commands
+
+`lw` with no command prints workspace status and the active profile. Every
+command has detail under `lw help <command>`.
+
+| Command | Description |
+|---|---|
+| `lw init` | Initialize the workspace working copy (`--name` overrides the directory name) |
+| `lw workspace <sub>` | Show / rename the workspace (alias `ws`) |
+| `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` |
+| `lw configuration <sub>` | `add` \| `set` \| `get` \| `show` project configurations |
+| `lw configuration-set <sub>` | `create` \| `map` \| `show` (alias `cs`) |
+| `lw profile <sub>` | `list` \| `select` \| `create` \| `remove` \| `publish` \| `target` \| `query` |
+| `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
+| `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
+| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool |
+| `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
+| `lw run <profile> [target]` | Build, then execute a launch target (omit `target` for the profile default) |
+| `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
+| `lw publish` | Write `loomworks.json` from the working copy |
+| `lw config <...>` | Get/set `lw`'s own configuration |
+
+A first run, from an empty directory:
+
+```sh
+lw init
+lw project add ./app              # type auto-detected (cmake, meson, …)
+lw cs create dev app=Debug        # map a configuration set
+lw profile create dev ninja-gcc   # set + toolchain; `lw tools` lists them
+lw build dev
+lw publish                        # write the shared loomworks.json
+```
+
+Items you add default to `local+shared`, so `lw publish` writes them to the
+committed `loomworks.json`; `--local` keeps one private. **Profiles are the
+exception** — they default to `local`, because they pin toolchains resolved on
+your machine. Share the configuration set instead and let each machine create
+its own profile, or pass `--shared` when a profile really is portable. See
+`lw help publish` for the intent model and
+[Workspace File Layout](#workspace-file-layout).
+
+### Using `lw` in CI
+
+`lw help ci` is the full guide. The essentials:
+
+- Pass `--no-input` (or set `CI=1`, which implies it) so a missing value errors
+  instead of blocking on a prompt. In non-interactive mode `lw build` also
+  ignores the active profile — name the profile explicitly.
+- Commit `loomworks.json` — the projects and configuration sets are the
+  portable unit. Keep `.nvim/` (working copy and cache) out of version control.
+  Profiles are per-machine: each matrix cell creates its own with
+  `lw --no-input profile create <set> <tool> --activate`.
+- `lw test --junit results.xml` produces a report most CI systems ingest
+  directly, and exits non-zero when tests fail.
+- Profiles and toolchains resolve by a **truncated selector** matched at
+  segment boundaries, so a job need not pin an exact version: `ninja-clang-18`
+  picks the highest installed `18.x`, and `msvc-17` picks a VS 17 without
+  naming the edition.
+- `lw profile query <profile> <project> build-dir` prints one machine-readable
+  fact — also `config`, `state`, `tool` — for archiving artifacts without
+  parsing build output.
+
 ## Status Page
 
 `:LoomworksInfo` opens a status page with the following sections:

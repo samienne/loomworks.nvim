@@ -15,6 +15,21 @@ local Tool = require("loomworks.tool")
 local Module = {}
 Module.__index = Module
 
+--- Compare two dotted numeric version strings component-wise.
+--- Missing trailing components count as 0 (`19.1` == `19.1.0`).
+--- @param a string
+--- @param b string
+--- @return boolean a_gt_b true when a > b
+local function version_gt(a, b)
+    local ga, gb = a:gmatch("%d+"), b:gmatch("%d+")
+    while true do
+        local sa, sb = ga(), gb()
+        if sa == nil and sb == nil then return false end
+        local na, nb = tonumber(sa) or 0, tonumber(sb) or 0
+        if na ~= nb then return na > nb end
+    end
+end
+
 --- Create a new Module.
 --- @param id string module type identifier
 --- @param impl table raw module function table
@@ -44,11 +59,37 @@ function Module:primary_language()
     return self.languages[1]
 end
 
---- Look up a Tool by key.
+--- Look up a Tool by key (spec §1.5.2). Exact match first, then a coarse-pin
+--- fallback: a truncated key matches any registered tool that extends it on a
+--- SEGMENT BOUNDARY — either a dotted version (`ninja-clang-19` →
+--- `ninja-clang-19.1.5`) or a dashed segment (`msvc-17` →
+--- `msvc-17-2022-enterprise`), so a CI matrix can name a toolchain without
+--- pinning the patch version or the Visual Studio edition of the runner image.
+--- A truncated selector never crosses a boundary (`…-1` never matches `…-18`).
+--- Among candidates the highest trailing version wins; ties (e.g. two MSVC
+--- editions, which carry no trailing version) break on the lowest key so the
+--- choice is deterministic rather than dependent on table order.
 --- @param tool_key string|nil tool identifier (nil for default tools)
 --- @return loomworks.Tool|nil
 function Module:find_tool(tool_key)
-    return self._tools[tool_key or ""]
+    local rk = tool_key or ""
+    local exact = self._tools[rk]
+    if exact then return exact end
+    if rk == "" then return nil end
+
+    local best, best_ver, best_key
+    for key, tool in pairs(self._tools) do
+        local nxt = key:sub(#rk + 1, #rk + 1)
+        if key:sub(1, #rk) == rk and (nxt == "." or nxt == "-") then
+            local ver = key:match("(%d[%d%.]*)$") or ""
+            if not best
+                or version_gt(ver, best_ver)
+                or (ver == best_ver and key < best_key) then
+                best, best_ver, best_key = tool, ver, key
+            end
+        end
+    end
+    return best
 end
 
 --- Get or create a Tool in this module's registry.

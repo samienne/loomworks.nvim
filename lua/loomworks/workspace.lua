@@ -102,9 +102,10 @@ end
 --- Initialize a workspace by creating user.json only.
 --- No loomworks.json is created — the user publishes later with :w.
 --- @param root string workspace root directory
+--- @param name? string explicit workspace name (defaults to root dir basename)
 --- @param write_json? fun(path: string, data: table): boolean, string|nil
 --- @return boolean ok, string|nil err
-function M.init_workspace(root, write_json)
+function M.init_workspace(root, name, write_json)
     local uv = vim.uv or vim.loop
     local user_path = user_mod.filepath(root)
     local config_path = root .. "/loomworks.json"
@@ -120,8 +121,16 @@ function M.init_workspace(root, write_json)
         vim.fn.mkdir(nvim_dir, "p")
     end
 
+    local data = { _meta = { version = 2 } }
+    -- Persist the name only when it overrides the directory basename default
+    -- (§2.2); otherwise the name stays dynamic and follows the directory.
+    local dir_name = root:match("([^/]+)$") or root
+    if name and #name > 0 and name ~= dir_name then
+        data.name = name
+    end
+
     write_json = write_json or require("loomworks.io").write_json
-    return write_json(user_path, { _meta = { version = 2 } })
+    return write_json(user_path, data)
 end
 
 --- Return the file paths that a workspace root implies.
@@ -375,13 +384,16 @@ function M.assemble(root, config_content, user_content, cache_content)
         user_version_mismatch = false
     end
 
-    -- Normalize user projects from raw JSON format to internal format
+    -- Normalize user projects from raw JSON format to internal format. On a
+    -- structural error, flag it rather than silently dropping the projects — a
+    -- later save would persist the drop and lose the user's data (data loss).
+    local user_projects_invalid = nil
     if user_data.projects and next(user_data.projects) then
         local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
         if normalized then
             user_data.projects = normalized
         else
-            vim.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
+            user_projects_invalid = norm_err or "unknown"
             user_data.projects = nil
         end
     end
@@ -409,13 +421,16 @@ function M.assemble(root, config_content, user_content, cache_content)
 
     return {
         root = root,
-        name = config.name or dir_name,
+        -- The working copy wins over the published snapshot (§1.1/§2.2); both
+        -- fall back to the directory basename.
+        name = (user_data and user_data.name) or config.name or dir_name,
         config = config,
         user = user_data,
         cache = cache_data,
         cache_version_mismatch = cache_version_mismatch,
         cache_inconsistent = not cache_consistent,
         user_version_mismatch = user_version_mismatch,
+        user_projects_invalid = user_projects_invalid,
     }, nil
 end
 
@@ -689,12 +704,18 @@ function Workspace:_serialize_cache()
         if bd:has_state() then
             local entry = bd:serialize()
             if entry.module_info then entry.module_info.targets = nil end
-            -- Enrich with live Configuration snapshot if a ConfigUnit references this BD
+            -- Enrich with live Configuration metadata if a ConfigUnit references
+            -- this BD. IMPORTANT: options / module_config are the *configured*
+            -- snapshot (frozen by record_task_result and written by bd:serialize)
+            -- — the staleness baseline. Do NOT overwrite them with the live
+            -- Configuration; that would corrupt the snapshot to the current
+            -- (possibly edited) options, so is_stale could never detect a change
+            -- after a reload. Only fill them when the BuildDir has none.
             local unit = unit_for_bd[bd]
             if unit and unit._configuration and not unit._configuration._removed then
                 local cfg = unit._configuration
-                if cfg.options then entry.options = cfg.options end
-                if cfg.module_config and next(cfg.module_config) then
+                if entry.options == nil and cfg.options then entry.options = cfg.options end
+                if entry.module_config == nil and cfg.module_config and next(cfg.module_config) then
                     entry.module_config = cfg.module_config
                 end
                 if cfg.is_user then entry.is_user = true end
@@ -1371,6 +1392,41 @@ function Workspace:release_build_dir_lock(dir, lock_type)
 
     -- Dequeue: run as many compatible queued items as possible
     self:_dequeue_build_dir_lock(dir)
+end
+
+--- Acquire the cross-process file lock (spec §16.6) for a build dir, refcounted
+--- per dir so concurrent same-process shared builds share one OS-level lock
+--- (a second acquire of our own lockfile would otherwise get EEXIST). This
+--- complements the in-process queue lock above — together they serialize a
+--- build dir both within this process and across processes (editor + CLI).
+--- Fail-fast: returns (false, reason) when another live process holds it.
+--- @param dir string normalized build dir
+--- @param action string "configure"|"build"|"clean"
+--- @return boolean ok, string|nil reason
+function Workspace:_acquire_file_lock(dir, action)
+    self._build_dir_file_locks = self._build_dir_file_locks or {}
+    local entry = self._build_dir_file_locks[dir]
+    if entry then
+        entry.refs = entry.refs + 1
+        return true
+    end
+    local handle, err = require("loomworks.build_lock").acquire(dir, action)
+    if not handle then return false, err end
+    self._build_dir_file_locks[dir] = { handle = handle, refs = 1 }
+    return true
+end
+
+--- Release one reference to the cross-process file lock; frees it at zero refs.
+--- @param dir string normalized build dir
+function Workspace:_release_file_lock(dir)
+    local locks = self._build_dir_file_locks
+    local entry = locks and locks[dir]
+    if not entry then return end
+    entry.refs = entry.refs - 1
+    if entry.refs <= 0 then
+        require("loomworks.build_lock").release(entry.handle)
+        locks[dir] = nil
+    end
 end
 
 --- Dequeue and run compatible operations from the build dir lock queue.
@@ -2864,7 +2920,13 @@ end
 --- Scan targets for all ConfigUnits that have a build directory.
 --- Runs asynchronously, processing units sequentially to avoid blocking.
 --- Results stored on ConfigUnit.targets (runtime only, not cached).
+---
+--- Opt-out: hosts that never surface targets (the standalone CLI) can set
+--- `deps.scan_targets = false` to skip this entirely. Target introspection can
+--- spawn a per-build-dir subprocess (meson introspect + python), which is pure
+--- waste for a build/status/completion command. Defaults to enabled.
 function Workspace:_scan_targets_async()
+    if self._core._deps.scan_targets == false then return end
     -- Collect scannable units. Modules that read from build_dir (cmake) get
     -- scanned per-unit. Modules that read from project files (typescript)
     -- get scanned once per project. The module reads whichever context it
@@ -3299,12 +3361,16 @@ function Workspace:_serialize_config()
     end
     if next(sets) then raw.configuration_sets = sets end
 
-    -- Profiles: preserve existing explicit profiles from loomworks.json
-    -- (profile publishing is not supported — profiles are always user-only)
+    -- Profiles: those with effective intent shared (spec §2.4). A profile pins
+    -- a machine-specific tool, so config-sets are the primary shared unit and
+    -- profiles default to local; but a profile MAY be published (it degrades to
+    -- an "incomplete profile" for anyone lacking the tool). Prefer a preserved
+    -- raw def (round-trips a profile that came from loomworks.json), else
+    -- serialize the live one.
     local profiles = {}
     for _, profile in pairs(self._profiles) do
-        if profile.explicit_def then
-            profiles[profile.key] = profile.explicit_def
+        if pub.profiles[profile] then
+            profiles[profile.key] = profile:to_config_def()
         end
     end
     if next(profiles) then raw.profiles = profiles end
@@ -4143,6 +4209,14 @@ end
 function Workspace:_serialize_user()
     local data = { _meta = { version = 2 } }
 
+    -- Workspace name: persist only an explicit override (differs from the
+    -- directory basename), so a defaulted name stays dynamic (§1.1/§2.2) and a
+    -- genuine override round-trips (and reaches loomworks.json on publish).
+    local dir_name = self.root and self.root:match("([^/]+)$")
+    if self.name and self.name ~= dir_name then
+        data.name = self.name
+    end
+
     -- Active selection
     -- Derive from the live Profile object — `_active_profile_key`
     -- is only the post-load cache of the string; mutations
@@ -4515,9 +4589,14 @@ function Workspace:_sync_sdks(config_sdks, user_sdks)
             local info = provider.validate(path)
             if info then
                 version = info.version or version
-                -- Normalize key to include version (migration from old keyless format)
+                -- Migrate ONLY the legacy keyless format (key == the bare type).
+                -- A provider-derived key already encodes identity — family,
+                -- version AND a path token — and must be preserved: rewriting it
+                -- to `<type>-<version>` drops the token, so two installations of
+                -- the same version at different paths collapse onto one key (and
+                -- the key `add` reported would not survive a reload).
                 local resolved_key = key
-                if version and not key:match("%-[%d%.]+$") then
+                if version and key == sdk_type then
                     resolved_key = sdk_type .. "-" .. version
                 end
                 local sdk = provider.create_sdk(resolved_key, path, version)
@@ -4634,7 +4713,14 @@ end
 --- @param sdk_type string provider type
 --- @param path? string user-provided path (nil = auto-detect)
 --- @return loomworks.SDK|nil sdk, string|nil error
-function Workspace:add_sdk(sdk_type, path)
+--- Declare an SDK installation. `opts.force` registers a path that fails
+--- identification, using `opts.family` / `opts.version` for the facts probing
+--- could not supply (spec §8) — such an SDK forfeits version-based selection.
+--- @param sdk_type string provider id (e.g. "cpp_compiler")
+--- @param path string|nil installation path (nil = auto-detect the first)
+--- @param opts? table { force?: boolean, family?: string, version?: string }
+--- @return loomworks.SDK|nil sdk, string|nil err
+function Workspace:add_sdk(sdk_type, path, opts)
     local sdk_registry = require("loomworks.sdks")
     local provider = sdk_registry.get(sdk_type)
     if not provider then
@@ -4657,8 +4743,21 @@ function Workspace:add_sdk(sdk_type, path)
     local sdk
     if path then
         local info = provider.validate(path)
+        if not info and opts and opts.force then
+            -- Forced registration: the installation could not identify itself
+            -- (an exotic driver or a wrapper script). Take the caller's facts
+            -- instead of refusing; derive_key degrades to `cpp`/`unknown` for
+            -- whatever is missing. The path must still EXIST, so a typo is
+            -- still caught rather than registered as a broken SDK.
+            local uv = vim.uv or vim.loop
+            if not uv.fs_stat(path) then
+                return nil, "'" .. path .. "' does not exist"
+            end
+            info = { version = opts.version, family = opts.family }
+        end
         if not info then
-            return nil, "'" .. path .. "' is not a valid " .. sdk_type .. " installation"
+            return nil, "'" .. path .. "' is not a valid " .. sdk_type ..
+                " installation (it did not identify itself; --force registers it anyway)"
         end
         local key = derive_key(info, path)
         if self:find_sdk(key) then
@@ -4796,11 +4895,14 @@ function Workspace:remove_project(project)
     return true
 end
 
---- Rename a project. Updates the project's key + path (when path defaulted),
---- profile mappings keyed by the project key string, and ConfigUnit ids.
---- ConfigurationSet.mappings is keyed by Project object reference so it
---- doesn't need rebuilding. Persists user.json + cache atomically; rolls
---- back on save failure.
+--- Rename a project. Changes the project's identity (key), profile mappings
+--- keyed by the project key string, and ConfigUnit ids. ConfigurationSet.mappings
+--- is keyed by Project object reference so it doesn't need rebuilding.
+--- The rename never moves the project's files — loomworks is read-only toward
+--- project sources and never renames folders — so a path that resolved to the
+--- old directory (nil, or equal to the old key) is pinned to the old key,
+--- keeping the project bound to the same on-disk folder. Persists user.json +
+--- cache atomically; rolls back on save failure.
 --- @param project loomworks.Project
 --- @param new_key string
 --- @return boolean ok, string|nil err
@@ -4824,9 +4926,11 @@ function Workspace:rename_project(project, new_key)
     local old_key = project.key
     local old_path = project.path
 
-    -- Mutate domain objects.
+    -- Mutate domain objects. Pin the path to the old directory when it resolved
+    -- there by default (nil or == old_key), so the rename changes identity only,
+    -- not the folder we resolve to. An explicitly-different path is left alone.
     project.key = new_key
-    if project.path == old_key then project.path = new_key end
+    if (project.path or old_key) == old_key then project.path = old_key end
 
     for _, profile in pairs(self._profiles) do
         if profile.mappings and profile.mappings[old_key] ~= nil then
@@ -4869,6 +4973,47 @@ function Workspace:rename_project(project, new_key)
     end
     self:_save_cache()
     self._core._deps.events.emit("active_set_changed", self._active_set)
+    return true
+end
+
+--- Remove a profile from the working copy. Drops the profile definition (and
+--- its ProfileProjects) and clears the active selection if it pointed here.
+--- Build directories are NOT touched — this removes user intent only; use the
+--- deletion plan (`Profile:plan_deletion`) when the artifacts should go too.
+--- @param profile loomworks.Profile
+--- @return boolean ok, string|nil err
+function Workspace:remove_profile(profile)
+    if profile._removed then
+        return false, "profile '" .. tostring(profile.key) .. "' not found"
+    end
+    if self._active_profile == profile then
+        self._active_profile = nil
+        self._active_profile_key = nil
+    end
+    self:_remove_profile(profile)
+    local ok, err = self:_save_user()
+    if not ok then return false, err end
+    self:_save_cache()
+    return true
+end
+
+--- Set the workspace display name (§1.1). Stored in the working copy and
+--- written to loomworks.json on publish. Rolls back on save failure.
+--- @param new_name string non-empty display name
+--- @return boolean ok, string|nil err
+function Workspace:rename_workspace(new_name)
+    if type(new_name) ~= "string" then return false, "name must be a string" end
+    new_name = new_name:gsub("^%s+", ""):gsub("%s+$", "")
+    if #new_name == 0 then return false, "name must not be empty" end
+    if new_name == self.name then return true end
+
+    local old_name = self.name
+    self.name = new_name
+    local ok, err = self:_save_user()
+    if not ok then
+        self.name = old_name
+        return false, err
+    end
     return true
 end
 
@@ -5564,6 +5709,16 @@ function Workspace:teardown()
     end
 
     self._build_dir_locks = {}
+
+    -- Release any held cross-process file locks (§16.6) so a workspace swap /
+    -- shutdown doesn't leave lockfiles behind.
+    if self._build_dir_file_locks then
+        local build_lock = require("loomworks.build_lock")
+        for _, entry in pairs(self._build_dir_file_locks) do
+            build_lock.release(entry.handle)
+        end
+        self._build_dir_file_locks = {}
+    end
     self._status_cursor_row = nil
 
     return self:stop_tasks_then(task_ids)

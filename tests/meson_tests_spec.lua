@@ -58,6 +58,81 @@ describe("meson test integration", function()
         end)
     end)
 
+    describe("run_command_all (native `meson test` runner, §8.9.2)", function()
+        it("builds `meson test --print-errorlogs -C <build_dir>`", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            local spec = tu:run_command_all()
+            assert.is_not_nil(spec)
+            assert.same(
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug" },
+                spec.cmd)
+            assert.equals("/build/App/Debug", spec.cwd)
+        end)
+
+        it("appends a filter as a test-name argument", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            local spec = tu:run_command_all({ filter = "MyTest" })
+            assert.same(
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug", "MyTest" },
+                spec.cmd)
+        end)
+
+        it("reports run_command_all_rebuilds() true (`meson test` rebuilds)", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            assert.is_true(tu:run_command_all_rebuilds())
+        end)
+
+        it("forwards extra_args after the base command (spec §16.16)", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            local spec = tu:run_command_all({ extra_args = { "--num-processes", "4" } })
+            assert.same(
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug",
+                  "--num-processes", "4" },
+                spec.cmd)
+        end)
+
+        -- Regression: `meson test` rebuilds stale targets itself, which is why a
+        -- headless test run skips building the unit (§16.16). The test command
+        -- therefore needs the same toolchain env a build gets — without MSVC's
+        -- vcvars the implicit ninja rebuild fails with "CreateProcess failed"
+        -- (cl not on PATH), so `lw test` on a stale tree always false-failed.
+        it("carries the toolchain environment its own rebuild needs (MSVC vcvars)", function()
+            local saved = package.loaded["loomworks.msvc"]
+            package.loaded["loomworks.msvc"] = {
+                vcvars_env = function()
+                    return { INCLUDE = "C:/vs/include", LIB = "C:/vs/lib", PATH = "C:/vs/bin" }
+                end,
+            }
+            local unit = stub_config_unit("/build/App/Debug")
+            unit._tool_data = {
+                meson = { "/usr/bin/meson" },
+                vcvarsall = "C:/vs/vcvarsall.bat",
+                arch = "x64",
+            }
+            local tu = meson.create_test_unit(unit)
+            local ok, spec = pcall(function() return tu:run_command_all() end)
+            package.loaded["loomworks.msvc"] = saved
+            assert.is_true(ok, spec)
+            assert.equals("C:/vs/include", spec.env.INCLUDE)
+            assert.equals("C:/vs/lib", spec.env.LIB)
+            assert.equals("cl", spec.env.CXX)
+            -- vcvars' PATH must reach the runner (bin dirs may be prepended).
+            assert.is_truthy(spec.env.PATH and spec.env.PATH:find("C:/vs/bin", 1, true))
+        end)
+
+        it("reports its fixed JUnit location as junit_out only when requested", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            -- meson takes no output-path flag, so JUnit is opt-in via junit_out.
+            assert.is_nil(tu:run_command_all().junit_out)
+            local spec = tu:run_command_all({ junit = "/anywhere/report.xml" })
+            assert.equals("/build/App/Debug/meson-logs/testlog.junit.xml", spec.junit_out)
+            -- The command itself is unchanged (no flag exists to redirect it).
+            assert.same(
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug" },
+                spec.cmd)
+        end)
+    end)
+
     describe("parse_meson_tests (via discovery shape)", function()
         -- We can't directly test the private parser, but we can assert
         -- that a MesonTestUnit initialized with a known JSON produces

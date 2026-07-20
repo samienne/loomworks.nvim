@@ -17,6 +17,7 @@
 ---   @field status_extras? fun(entry: table): table              -- fields for status page
 ---   @field on_active_set_changed? fun()                         -- wired by lsp.lua
 ---   @field on_workspace_changed? fun()                          -- wired by lsp.lua
+---   @field reconcile_on_attach? fun(client: vim.lsp.Client)     -- wired by lsp.lua (LspAttach); fix stale cmd from a startup race
 ---   @field on_lsp_options_changed? fun(payload: { server: string, key: string, value: any })
 ---                                                               -- wired by lsp.lua; fires after Workspace:set_lsp_option
 ---   @field on_unexpected_exit? fun(info: loomworks.LspExitInfo): loomworks.LspRestartDecision
@@ -130,9 +131,16 @@ local function ensure_exclude_autocmd()
         group = vim.api.nvim_create_augroup("loomworks.lsp.excludes", { clear = true }),
         callback = function(args)
             local client = vim.lsp.get_client_by_id(args.data.client_id)
-            if not client or not _integrations[client.name] then return end
+            local integration = client and _integrations[client.name]
+            if not integration then return end
             if M.excluded(args.buf) then
                 vim.lsp.buf_detach_client(args.buf, client.id)
+                return
+            end
+            -- Let the integration reconcile a client that may have started
+            -- before loomworks finished loading (stale cmd — startup race).
+            if integration.reconcile_on_attach then
+                vim.schedule(function() integration.reconcile_on_attach(client) end)
             end
         end,
     })

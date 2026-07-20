@@ -141,39 +141,18 @@ end
 --- @param compiler_bin_dir string|nil toolchain bin dir (for runtime DLLs)
 --- @return table<string, string>
 local function compose_env(base_env, extra_paths, compiler_bin_dir)
-    local env = {}
-    local current = vim.fn.environ()
-    if type(current) == "table" then
-        for k, v in pairs(current) do
-            if type(k) == "string" and k:sub(1, 1) ~= "=" then
-                env[k] = v
-            end
-        end
-    end
-    for k, v in pairs(base_env or {}) do env[k] = v end
-
-    local is_win = vim.fn.has("win32") == 1
-    local sep = is_win and ";" or ":"
-
-    -- Build the prefix: compiler bin dir FIRST (for runtime DLLs),
-    -- then extra_paths (for project's shared libs). Both are
-    -- prepended so they take priority over whatever was inherited.
+    -- Prefix: compiler bin dir FIRST (for runtime DLLs), then extra_paths (for
+    -- the project's shared libs). Both prepended so they win over inherited
+    -- PATH. Shared PATH-composition lives in loomworks.runenv (also used by
+    -- build-target launches, §8.7).
     local prefix_parts = {}
     if compiler_bin_dir and compiler_bin_dir ~= "" then
         prefix_parts[#prefix_parts + 1] = compiler_bin_dir
     end
-    if extra_paths and #extra_paths > 0 then
-        for _, p in ipairs(extra_paths) do
-            prefix_parts[#prefix_parts + 1] = p
-        end
+    for _, p in ipairs(extra_paths or {}) do
+        prefix_parts[#prefix_parts + 1] = p
     end
-    if #prefix_parts > 0 then
-        local existing = env.PATH or env.Path or ""
-        env.PATH = table.concat(prefix_parts, sep)
-            .. (existing ~= "" and (sep .. existing) or "")
-        if is_win then env.Path = nil end
-    end
-    return env
+    return require("loomworks.runenv").compose(prefix_parts, base_env)
 end
 
 --- Parse `meson introspect --tests` JSON into test entries.
@@ -684,6 +663,51 @@ function MesonTestUnit:test_command_all(opts)
         return self:_build_gtest_run(exe, opts.filter)
     end
     return self:_build_plain_run(exe)
+end
+
+--- Native meson test run: authoritative exit code, streaming output
+--- (spec §8.9.2). `meson test -C <build_dir>` runs every declared test.
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- @return table|nil { cmd, env, cwd, junit_out }
+function MesonTestUnit:run_command_all(opts)
+    opts = opts or {}
+    local prefix = meson_prefix_for(self._config_unit)
+    if not prefix or not self._build_dir then return nil end
+    local cmd = vim.list_extend({}, prefix)
+    cmd[#cmd + 1] = "test"
+    -- Print failing tests' output on the console (ctest's --output-on-failure
+    -- equivalent); otherwise meson only writes it to meson-logs/testlog.txt.
+    cmd[#cmd + 1] = "--print-errorlogs"
+    cmd[#cmd + 1] = "-C"
+    cmd[#cmd + 1] = self._build_dir
+    if opts.filter then cmd[#cmd + 1] = opts.filter end  -- meson filters by test name
+    -- Caller args (from `lw test -- …`, e.g. `--num-processes N`) go last.
+    if opts.extra_args then vim.list_extend(cmd, opts.extra_args) end
+    -- `meson test` REBUILDS stale targets before running (§16.16 — which is why
+    -- a headless test run skips building this unit itself), so it needs the
+    -- same toolchain environment a build gets. Composed by the module so both
+    -- paths agree: without MSVC's vcvars env (INCLUDE / LIB / PATH-to-cl) the
+    -- implicit ninja rebuild dies with "CreateProcess failed" — cl is not on
+    -- PATH — turning `lw test` on a stale tree into a false failure.
+    local ok_mod, meson_mod = pcall(require, "loomworks.modules.meson")
+    local task_env = (ok_mod and meson_mod.compose_task_env)
+        and meson_mod.compose_task_env({}, self._config_unit._tool_data) or nil
+    return {
+        cmd = cmd,
+        env = compose_env(task_env, nil, self:_compiler_bin_dir()),
+        cwd = self._build_dir,
+        -- meson has no output-path flag: it always writes JUnit to this fixed
+        -- location under the build dir. Reported only when JUnit was requested,
+        -- so the core copies it to the caller's path (§16.16).
+        junit_out = opts.junit and (self._build_dir .. "/meson-logs/testlog.junit.xml") or nil,
+    }
+end
+
+--- `meson test` rebuilds test dependencies before running, so a headless test
+--- run (§16.16) need not build this unit separately.
+--- @return boolean
+function MesonTestUnit:run_command_all_rebuilds()
+    return true
 end
 
 --- @param output_path string|nil

@@ -19,6 +19,47 @@ function M.profile_key(set_name, tools)
     return set_name .. ":" .. table.concat(parts, "+")
 end
 
+-- Segment separators in a profile key (`set:generator-family-version+tool2`).
+-- A selector matches only when it aligns to these boundaries (or string
+-- start/end), so a version-truncated selector resolves deterministically and
+-- never crosses into a different segment.
+local PROFILE_BOUNDARY = { [":"] = true, ["-"] = true, ["."] = true, ["+"] = true }
+
+--- Match a profile selector against a list of profile keys (spec §16.3).
+--- Exact key wins; otherwise the selector must occur aligned to segment
+--- boundaries on both sides — so `Debug:ninja-clang-18` resolves to
+--- `Debug:ninja-clang-18.1.7` (the `.` boundary) and `…-clang-1` never matches
+--- `…-clang-18`. This lets a CI matrix name a toolchain by major version
+--- without pinning the runner's exact patch, while `clang-19` shorthand still
+--- works interactively.
+--- @param keys string[] candidate profile keys
+--- @param selector string
+--- @return string|nil unique_match, string[]|nil ambiguous_candidates
+function M.match_profile(keys, selector)
+    for _, k in ipairs(keys) do
+        if k == selector then return k end
+    end
+    local hits = {}
+    for _, k in ipairs(keys) do
+        local from = 1
+        while true do
+            local s, e = k:find(selector, from, true)
+            if not s then break end
+            local before = (s == 1) and "" or k:sub(s - 1, s - 1)
+            local after = (e == #k) and "" or k:sub(e + 1, e + 1)
+            if (before == "" or PROFILE_BOUNDARY[before])
+                and (after == "" or PROFILE_BOUNDARY[after]) then
+                hits[#hits + 1] = k
+                break
+            end
+            from = s + 1
+        end
+    end
+    if #hits == 1 then return hits[1] end
+    if #hits > 1 then return nil, hits end
+    return nil, nil
+end
+
 
 
 

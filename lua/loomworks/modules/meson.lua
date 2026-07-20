@@ -258,11 +258,10 @@ function M.detect_tools()
     local meson = find_meson()
     if not meson then return {} end
 
-    local compilers = require("loomworks.cpp_compilers").detect()
-    if #compilers == 0 then return {} end
-
     local tools = {}
-    for _, c in ipairs(compilers) do
+
+    -- GNU-driver compilers (gcc / clang) from PATH.
+    for _, c in ipairs(require("loomworks.cpp_compilers").detect()) do
         tools[#tools + 1] = {
             tool_data = {
                 meson = meson,
@@ -277,6 +276,50 @@ function M.detect_tools()
             },
         }
     end
+
+    -- MSVC (cl.exe) and clang-cl on Windows. These take MSVC-style flags
+    -- (/W…, /bigobj, /D…) that GNU-driver clang/gcc reject, so projects that
+    -- assume Windows == MSVC need one of them. Their environment (INCLUDE / LIB
+    -- / PATH-to-cl + the Windows SDK) is layered from vcvarsall at build time
+    -- (see compose_task_env).
+    if vim.fn.has("win32") == 1 then
+        local ok, msvc = pcall(require, "loomworks.msvc")
+        if ok then
+            local installs = msvc.detect()
+            for _, inst in ipairs(installs) do
+                tools[#tools + 1] = {
+                    tool_data = {
+                        meson = meson,
+                        compiler_id = inst.id,
+                        compiler_display = inst.display,
+                        compiler_path = inst.vcvarsall, -- identity for tools_match
+                        compiler_family = "msvc",
+                        vcvarsall = inst.vcvarsall,
+                        arch = inst.arch,
+                        -- cc/cxx default to "cl" (resolved on the vcvars PATH)
+                    },
+                }
+            end
+            -- clang-cl needs an MSVC install for the SDK/libs; pin the newest.
+            local clang_cl = msvc.clang_cl()
+            if clang_cl and installs[1] then
+                tools[#tools + 1] = {
+                    tool_data = {
+                        meson = meson,
+                        compiler_id = "clang-cl-" .. clang_cl.version,
+                        compiler_display = "clang-cl " .. clang_cl.version,
+                        compiler_path = clang_cl.path,
+                        compiler_family = "clang-cl",
+                        cc = clang_cl.path,
+                        cxx = clang_cl.path,
+                        vcvarsall = installs[1].vcvarsall,
+                        arch = installs[1].arch,
+                    },
+                }
+            end
+        end
+    end
+
     return tools
 end
 
@@ -290,6 +333,8 @@ end
 --- `detect_tools` call re-scans PATH. Called by core's rescan flow.
 function M.invalidate_tools()
     require("loomworks.cpp_compilers").clear_cache()
+    local ok, msvc = pcall(require, "loomworks.msvc")
+    if ok then msvc.clear_cache() end
 end
 
 --- Cache key suffix from tool_data. The compiler_id pins the
@@ -327,6 +372,40 @@ function M.tools_match(a, b)
     if a == nil and b == nil then return true end
     if a == nil or b == nil then return false end
     return (a.compiler_path or "") == (b.compiler_path or "")
+end
+
+--- Resolve the build directory for a meson configuration:
+--- `.nvim/build/<project>/<compiler>/<config>`.
+---
+--- The compiler segment gives each toolchain its own build dir — meson bakes
+--- the compiler into a configured build tree (switching compilers on the same
+--- dir errors), so a project built with gcc, clang, and MSVC needs three
+--- separate dirs. Every component is sanitized like cmake.resolve_build_dir:
+--- canonical config names contain ':' (variant:Debug) and the colon — plus
+--- < > " | ? * — is invalid in a Windows path, which otherwise fails
+--- `meson setup` with "WinError 267". Defining this on the module (rather than
+--- in the core default) keeps the core formula opaque for never-built / unknown
+--- modules while giving meson filesystem-safe, compiler-scoped paths.
+--- @param project_name string
+--- @param config_name string|nil canonical configuration name
+--- @param config_info table|nil unused (meson has no preset binary_dir)
+--- @param workspace_root string
+--- @param tool_data table|nil primary tool data
+--- @return string absolute build directory
+function M.resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data)
+    local function san(s) return (tostring(s):gsub('[:<>"|?*]', "_")) end
+    local base = workspace_root .. "/.nvim/build/" .. san(project_name)
+    local segment
+    if tool_data and tool_data._effective_keys and #tool_data._effective_keys > 1 then
+        segment = table.concat(tool_data._effective_keys, "+")
+    elseif tool_data and (tool_data.compiler_id or tool_data.id) then
+        segment = tool_data.compiler_id or tool_data.id
+    end
+    local config_part = san(config_name or "default")
+    if segment then
+        return base .. "/" .. san(segment) .. "/" .. config_part
+    end
+    return base .. "/" .. config_part
 end
 
 -- ---------------------------------------------------------------------------
@@ -414,10 +493,33 @@ end
 --- @param base_env table<string, string>
 --- @param tool_data table|nil
 --- @return table<string, string>
+--- Exported so the meson TEST unit composes the identical environment: its
+--- native runner rebuilds (§16.16), so it needs the same toolchain env a build
+--- gets (notably MSVC's vcvars) or the rebuild cannot find the compiler.
 local function compose_task_env(base_env, tool_data)
     local env = {}
     for k, v in pairs(base_env or {}) do env[k] = v end
     if type(tool_data) ~= "table" then return env end
+
+    -- MSVC / clang-cl: layer the environment vcvarsall establishes (INCLUDE /
+    -- LIB / LIBPATH / PATH-to-cl + the Windows SDK) so cl / clang-cl and the
+    -- linker resolve. The host merges this over the inherited environment
+    -- before spawning, so vars we don't set (e.g. %APPDATA%) are preserved.
+    if tool_data.vcvarsall then
+        local ok, msvc = pcall(require, "loomworks.msvc")
+        local venv = ok and msvc.vcvars_env(tool_data.vcvarsall, tool_data.arch or "x64") or nil
+        if venv then
+            for k, v in pairs(venv) do
+                -- Collapse to a single PATH key (Windows env is case-insensitive).
+                if k:upper() == "PATH" then env.PATH = v else env[k] = v end
+            end
+            env.Path = nil
+        end
+        -- cl serves both C and C++; clang-cl gets its explicit path.
+        env.CC = tool_data.cc or "cl"
+        env.CXX = tool_data.cxx or "cl"
+        return env
+    end
 
     if tool_data.compiler_c_path and env.CC == nil then
         env.CC = tool_data.compiler_c_path
@@ -436,6 +538,7 @@ local function compose_task_env(base_env, tool_data)
     end
     return env
 end
+M.compose_task_env = compose_task_env  -- shared with the meson test unit
 
 --- Return overseer task templates for a project.
 --- Produces:
@@ -451,11 +554,12 @@ function M.tasks(project, active_config)
     local env = compose_task_env(project.env or {}, project.tool_data)
     local meson_prefix = resolve_meson(project.tool_data)
 
-    -- Resolve build dir (default formula; no resolve_build_dir override).
-    -- project.cached_build_dir is provided by core when a cached entry exists,
-    -- so rename paths are preserved.
+    -- Build dir: core provides cached_build_dir (via M.resolve_build_dir) when a
+    -- cache entry exists, preserving rename paths. Fall back to the same formula
+    -- so the compiler-scoped, sanitized layout is consistent either way.
     local build_dir = project.cached_build_dir
-        or (project.workspace_root .. "/.nvim/build/" .. project.name .. "/" .. active_config)
+        or M.resolve_build_dir(project.name, active_config, config_info,
+            project.workspace_root, project.tool_data)
 
     -- buildtype from config or name mapping
     local buildtype = (config_info and config_info.buildtype)
@@ -620,6 +724,13 @@ end
 function M.parse_targets(ctx)
     local build_dir = ctx and ctx.build_dir
     if not build_dir then return nil end
+    -- Only a configured build tree has targets to introspect. Every profile has
+    -- a computed build-dir path before its first build, so guard on the
+    -- `meson-info/` that `meson setup` creates — otherwise we spawn meson (and,
+    -- via find_meson, python) on every workspace load just to have introspect
+    -- fail on a directory that isn't there. That was ~2s per CLI invocation.
+    local uv2 = vim.uv or vim.loop
+    if not uv2.fs_stat(build_dir .. "/meson-info") then return nil end
     local meson_prefix = find_meson()
     if not meson_prefix then return nil end
 
@@ -686,6 +797,21 @@ local function option_value_type(meson_type)
     if meson_type == "integer" then return "string" end
     if meson_type == "array" then return "string" end
     return "string"
+end
+
+--- Toolchain runtime directories for launching built executables (§8.4): the
+--- pinned compiler's bin dir holds the C++ runtime DLLs (libstdc++-6.dll,
+--- libgcc_s_seh-1.dll, libwinpthread-1.dll, …). Core adds the build tree's own
+--- shared-library dirs generically, so only the toolchain dir is needed here.
+--- @param ctx { tool_data?: table }
+--- @return string[]|nil
+function M.runtime_path(ctx)
+    local td = ctx and ctx.tool_data
+    if type(td) == "table" and type(td.compiler_bin_dir) == "string"
+        and td.compiler_bin_dir ~= "" then
+        return { td.compiler_bin_dir }
+    end
+    return nil
 end
 
 --- Extract build options via `meson introspect --buildoptions`.

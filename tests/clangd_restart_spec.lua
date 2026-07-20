@@ -131,3 +131,33 @@ describe("clangd on_unexpected_exit", function()
         end)
     end)
 end)
+
+-- _needs_restart_for_dir: the pure decision behind the LspAttach reconcile
+-- that fixes the startup race (clangd started before the workspace loaded, so
+-- its cached cmd lacks --compile-commands-dir).
+describe("clangd _needs_restart_for_dir", function()
+    local clangd = require("loomworks.integrations.lsp.clangd")
+    local DIR = "/w/build/variant_Debug"
+
+    it("false when loomworks has no dir to apply", function()
+        assert.is_false(clangd._needs_restart_for_dir({ "clangd" }, nil))
+    end)
+
+    it("false when the client wasn't started via loomworks (nil resolved args)", function()
+        assert.is_false(clangd._needs_restart_for_dir(nil, DIR))
+    end)
+
+    it("true when the desired dir is missing from the resolved cmd", function()
+        assert.is_true(clangd._needs_restart_for_dir({ "clangd", "--background-index" }, DIR))
+    end)
+
+    it("false when the resolved cmd already has the desired dir", function()
+        assert.is_false(clangd._needs_restart_for_dir(
+            { "clangd", "--compile-commands-dir=" .. DIR }, DIR))
+    end)
+
+    it("true when the resolved cmd points at a different dir (stale)", function()
+        assert.is_true(clangd._needs_restart_for_dir(
+            { "clangd", "--compile-commands-dir=/w/build/other" }, DIR))
+    end)
+end)

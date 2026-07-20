@@ -1185,6 +1185,187 @@ describe("config set rename", function()
 end)
 
 -- =========================================================================
+-- Project rename
+-- =========================================================================
+
+describe("project rename", function()
+    it("changes the key but keeps the project bound to its on-disk folder", function()
+        -- App's path defaults to its key (no explicit path stored), so it
+        -- resolves to <root>/App. Renaming must NOT move that binding —
+        -- loomworks never renames folders on disk.
+        local ws = make_ws()
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local old_abs = app:abs_path()
+
+        local ok, err = ws:rename_project(app, "Service")
+        assert.is_true(ok, err)
+        assert.equals("Service", app.key)
+        -- Regression: the resolved directory must be unchanged (still <root>/App).
+        assert.equals(old_abs, app:abs_path())
+        assert.equals("App", app.path)
+    end)
+
+    it("persists the pinned path so the folder survives a reload", function()
+        -- The pin is only meaningful if it round-trips: _serialize_user must
+        -- emit path (it now differs from the key) so a reload resolves to the
+        -- real folder rather than a nonexistent <root>/Service.
+        local ws = make_ws({ projects = { App = { cmake = {} } } },
+            { projects = { App = { cmake = {} } } })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_true(ws:rename_project(app, "Service"))
+
+        local user_data = ws:_serialize_user()
+        assert.is_not_nil(user_data.projects.Service, "renamed project should serialize")
+        assert.equals("App", user_data.projects.Service.path,
+            "path must be stored so the rename doesn't require a folder rename")
+    end)
+
+    it("moves profile mappings to the new key", function()
+        local ws = make_ws(
+            { configuration_sets = { Debug = { App = "Debug" } } },
+            { active_profile = "Debug", profiles = { Debug = { configuration_set = "Debug" } } }
+        )
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_true(ws:rename_project(app, "Service"))
+        for _, profile in pairs(ws._profiles) do
+            if profile.mappings then
+                assert.is_nil(profile.mappings.App, "old key must be gone from mappings")
+            end
+        end
+    end)
+
+    it("rejects a rename to an in-use key", function()
+        local ws = make_ws({ projects = { App = { cmake = {} }, Other = { cmake = {} } } })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ok, err = ws:rename_project(app, "Other")
+        assert.is_falsy(ok)
+        assert.matches("already in use", err)
+    end)
+end)
+
+-- =========================================================================
+-- SDK declarations (user-declared toolchain installations, spec §8)
+-- =========================================================================
+
+describe("SDK declarations", function()
+    local SDK = require("loomworks.sdk")
+
+    --- Swap the SDK registry for a stub provider, run fn, always restore.
+    --- `validates` false makes validate() fail, exercising the --force path.
+    local function with_provider(validates, fn)
+        local saved = package.loaded["loomworks.sdks"]
+        local fake = {
+            id = "fake",
+            api_version = 1,
+            detect_all = function() return {} end,
+            match_version = function() return true end,
+            validate = function()
+                if not validates then return nil end
+                return { version = "1.2.3", family = "fam", basename_token = "tok" }
+            end,
+            derive_key = function(info)
+                return "fake-" .. (info.family or "cpp") .. "-" ..
+                    (info.version or "unknown") .. "-" .. (info.basename_token or "custom")
+            end,
+            create_sdk = function(key, path, version)
+                return SDK.new({ key = key, type = "fake", version = version,
+                    path = path, resolved = true })
+            end,
+        }
+        package.loaded["loomworks.sdks"] = {
+            get = function(id) return id == "fake" and fake or nil end,
+            list = function() return { "fake" } end,
+            all = function() return { fake = fake } end,
+        }
+        local ok, err = pcall(fn)
+        package.loaded["loomworks.sdks"] = saved
+        if not ok then error(err) end
+    end
+
+    it("preserves a provider-derived key across a reload", function()
+        with_provider(true, function()
+            local ws = make_ws()
+            -- The shape _serialize_user writes for a declared SDK.
+            ws:_sync_sdks(nil, {
+                ["fake-fam-1.2.3-tok"] = { type = "fake", path = "/opt/x", version = "1.2.3" },
+            })
+            assert.equals(1, #ws._sdks)
+            -- Regression: a "migration" rewrote any key not ending in digits to
+            -- <type>-<version>, dropping the path token — so the key `add`
+            -- reported didn't survive a reload, and two installations of the
+            -- same version at different paths collapsed onto one key.
+            assert.equals("fake-fam-1.2.3-tok", ws._sdks[1].key)
+        end)
+    end)
+
+    it("still migrates the legacy keyless format", function()
+        with_provider(true, function()
+            local ws = make_ws()
+            ws:_sync_sdks(nil, { fake = { type = "fake", path = "/opt/x", version = "1.2.3" } })
+            assert.equals("fake-1.2.3", ws._sdks[1].key)
+        end)
+    end)
+
+    it("add_sdk refuses a path that fails identification", function()
+        with_provider(false, function()
+            local ws = make_ws()
+            local sdk, err = ws:add_sdk("fake", "README.md")
+            assert.is_nil(sdk)
+            assert.matches("did not identify itself", err)
+        end)
+    end)
+
+    it("add_sdk --force registers it using the caller's facts", function()
+        with_provider(false, function()
+            local ws = make_ws()
+            local sdk, err = ws:add_sdk("fake", "README.md",
+                { force = true, family = "gcc", version = "12.3.0" })
+            assert.is_not_nil(sdk, err)
+            assert.equals("fake-gcc-12.3.0-custom", sdk.key)
+        end)
+    end)
+
+    it("add_sdk --force still rejects a path that does not exist", function()
+        with_provider(false, function()
+            local ws = make_ws()
+            local sdk, err = ws:add_sdk("fake", "no/such/compiler", { force = true })
+            assert.is_nil(sdk)
+            assert.matches("does not exist", err)
+        end)
+    end)
+end)
+
+-- =========================================================================
+-- Workspace name
+-- =========================================================================
+
+describe("workspace name", function()
+    it("rename sets the name and serializes it to the working copy", function()
+        local ws = make_ws()
+        assert.equals("root", ws.name) -- basename of "/root"
+        assert.is_true(ws:rename_workspace("reactive"))
+        assert.equals("reactive", ws.name)
+        assert.equals("reactive", ws:_serialize_user().name)
+    end)
+
+    it("does not persist a name equal to the directory basename", function()
+        -- A defaulted name must stay dynamic (follow the directory), so it is
+        -- never written to the working copy.
+        local ws = make_ws()
+        assert.is_nil(ws:_serialize_user().name)
+    end)
+
+    it("trims and rejects an empty name", function()
+        local ws = make_ws()
+        assert.is_true(ws:rename_workspace("  Reactive Core  "))
+        assert.equals("Reactive Core", ws.name)
+        local ok, err = ws:rename_workspace("   ")
+        assert.is_falsy(ok)
+        assert.matches("empty", err)
+    end)
+end)
+
+-- =========================================================================
 -- Case collision prevention
 -- =========================================================================
 

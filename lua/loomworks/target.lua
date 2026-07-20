@@ -100,27 +100,63 @@ function Target:build(on_complete)
     return f
 end
 
---- Launch this target (run the built artifact).
---- Only works for executables with an artifact path.
-function Target:launch()
-    if not self:is_executable() or not self.artifact then return end
+--- Resolve the run spec (artifact path, working directory, and run
+--- environment) for this executable target. Pure — expands nothing, spawns no
+--- task. Shared seam for `Target:launch` (editor) and the headless runner
+--- (§16.17): both resolve the same spec, then execute it via their own runner.
+--- @param opts? { working_dir?: string } working_dir is a pre-resolved
+---   absolute cwd override (§8.7); absent → the owning project's directory.
+--- @return { cmd: string, cwd: string, name: string, env: table|nil }|nil spec
+--- @return string|nil err
+function Target:resolve_run_spec(opts)
+    opts = opts or {}
+    if not self:is_executable() then
+        return nil, "target '" .. tostring(self.id) .. "' is not an executable"
+    end
+    if not self.artifact then
+        return nil, "target '" .. tostring(self.id) .. "' has no built artifact"
+    end
     local unit = self._config_unit
-    if not unit then return end
-
+    if not unit then
+        return nil, "target '" .. tostring(self.id) .. "' has no config unit"
+    end
     local build_dir = unit:build_dir()
     if not build_dir then
-        vim.notify("loomworks: no build directory for " .. self.id, vim.log.levels.WARN)
+        return nil, "no build directory for target '" .. tostring(self.id) .. "'"
+    end
+    local project = unit._project
+    local project_name = project and project.key or unit._init_project_key or "?"
+    -- Working directory (§8.7): explicit override, else the project directory
+    -- (consistent with command-type launches), falling back to the build dir
+    -- only if the project dir can't be resolved.
+    local cwd = opts.working_dir
+    if not cwd or cwd == "" then
+        cwd = (project and project.abs_path and project:abs_path()) or build_dir
+    end
+    return {
+        cmd = build_dir .. "/" .. self.artifact,
+        cwd = cwd,
+        name = project_name .. ": run " .. self.id,
+        env = unit:run_env(),
+    }
+end
+
+--- Launch this target (run the built artifact).
+--- Only works for executables with an artifact path.
+--- @param opts? { working_dir?: string } pre-resolved absolute cwd override (§8.7)
+function Target:launch(opts)
+    local spec, err = self:resolve_run_spec(opts)
+    if not spec then
+        if err then vim.notify("loomworks: " .. err, vim.log.levels.WARN) end
         return
     end
 
-    local artifact_path = build_dir .. "/" .. self.artifact
-    local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
-
     local overseer = require("loomworks.overseer")
     return overseer.launch_run_task({
-        name = project_name .. ": run " .. self.id,
-        cmd = artifact_path,
-        cwd = build_dir,
+        name = spec.name,
+        cmd = spec.cmd,
+        cwd = spec.cwd,
+        env = spec.env,
     })
 end
 

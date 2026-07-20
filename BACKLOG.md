@@ -5,6 +5,68 @@ they don't get lost.
 
 ---
 
+## Standalone CLI — deferred pieces
+
+The standalone command-line runner ([specification.md §16](specification.md),
+ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
+(`build`, `test`, `profiles`). Deferred beyond v1:
+
+- **Headless third-party module loading.** v1 bundles only the core modules;
+  external module plugins (e.g. OHOS / harmony) are editor-only. A discovery /
+  loading mechanism (bundling into the dist, or a configured module search
+  path) is needed for headless external-module builds (spec §16.8).
+- **Project-committed wrapper.** `lw init` writing `./lw` +
+  `wrapper.properties` into a project, with project-pin-wins version
+  resolution. v1 is system-wide (per-user, on PATH) only.
+- **`lw run` launch + device targets.** Non-debug launch (build → deploy →
+  execute) is a fast-follow; debug launch (DAP) and device install / launch
+  stay editor-only.
+- **Keyless signing / provenance.** v1 signs a `SHA256SUMS` manifest with
+  minisign; Sigstore / GitHub artifact attestations are a later upgrade.
+- ~~**Cross-process build-dir locking.**~~ DONE — `lua/loomworks/build_lock.lua`:
+  a per-build-dir `O_EXCL` advisory lockfile with an mtime heartbeat (crash
+  reclaim), shared by the editor (`Workspace:_acquire_file_lock`, refcounted,
+  wired into overseer) and the CLI (`with_build_locks` around build/clean/test/
+  run). Fail-fast; `lw unlock <profile>|--all` to force-clear. Spec §16.6.
+- **Precise run-env scoping (Windows launch, §8.7).** Build-target launches
+  currently prepend *every* shared-library output dir in the build tree to
+  `PATH` (Windows only; matches `meson devenv` breadth). This can be narrowed
+  to only the dirs the executable actually links. The data is available:
+  meson `introspect --targets` → `target_sources[].parameters` lists the
+  flattened link line as path-qualified `.lib` import libs, **including
+  subproject libs** (freetype, tracy) — the `depends`/`dependencies` fields do
+  NOT (empty / external-only). Dir of each `.lib` = its DLL dir. Est. ~1–2 h
+  for clang-cl "link-line dirs" (enough for reactive); ~3–5 h for a robust
+  DLL→DLL transitive walk + mingw/gcc `-L`/`-l` parsing. cmake would be
+  separate (file-api dependency graph, cleaner). **Deferred on purpose:**
+  precise scoping trades over-inclusion (narrow same-name-DLL ambiguity, already
+  mitigated by Windows-gate + deterministic order + exe-dir-first) for
+  *under*-inclusion (a runtime-only transitive DLL not on the link line → the
+  binary fails to load it) — a worse, harder-to-debug failure mode. Only worth
+  doing if the same-name case actually bites.
+
+---
+
+## Module-signalled build staleness
+
+Today loomworks tracks *configure* staleness (options snapshot vs live config)
+but not *build* staleness (did a source change since the last build?). The
+build tool (ninja/meson) is the authority, so build tasks always run — a fast
+incremental no-op, but still a spawned step. `lw test` was made cheaper by
+letting a runner declare `run_command_all_rebuilds` so its build is skipped
+(§16.16), but the general build path still always runs.
+
+Idea from sami: let a **module signal build staleness** — a module could
+report a unit as "always stale to build" (cmake) or compute real staleness
+(compare source mtimes / a stamp file against the last build). The generic
+build/test path would then skip the build step when the module reports "up to
+date", instead of relying on the build tool's own no-op. Needs more thought:
+where the staleness signal lives (Module vs ConfigUnit), how it interacts with
+the cache, and whether reimplementing "is a rebuild needed?" is worth it when
+ninja already answers that in milliseconds.
+
+---
+
 ## UI v2 redesign (in design phase)
 
 The current status-page UI evolved feature-by-feature and accumulated
@@ -564,3 +626,18 @@ flag generically. Other modules that ship clangd configs (meson, and
 third-party C/C++ modules) are already in the same position; the
 pattern just isn't formalised yet.
 
+
+## Headless CLI: skip an already-done, unchanged configure
+
+`lw build` / `lw test` / `lw run` re-run the module `configure` step on every
+invocation. The staleness model (`ConfigUnit:is_stale`, BuildDir option/module
+snapshots) is designed for the single-process editor, where the snapshot stays
+frozen in memory between a configure and a later config edit. In the headless
+CLI each invocation is a fresh process that must reconstruct staleness from the
+cache, and wiring `record_task_result` into the headless build path produced
+incorrect state (recorded `failed_build` on success) and did NOT detect a
+`lw configuration set` option change — so skipping configure would silently miss
+config changes. Reverted to always-configure for correctness. A proper fix needs
+the load path to reliably populate `_cached_options` / `_cached_module_config`
+from the cache and freeze them across processes. The re-configure is a fast
+near-no-op (`cmake` reconfigure / `meson setup --reconfigure`).

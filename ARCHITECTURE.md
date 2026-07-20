@@ -737,6 +737,227 @@ Tests use the constructor injection pattern described in Design Principles §5.
 
 ---
 
+## Standalone Runner & Distribution
+
+Fulfils [specification.md §16](specification.md). One codebase, two runtime
+hosts; the domain and module layers are identical between them.
+
+### Runtime host
+
+The `vim` global is provided by either Neovim (the editor, and
+`nvim --headless -l` for tests) or a standalone LuaJIT + libuv host
+(**luvi**) plus a shim (`lua/loomworks/shim/`), loaded via
+`if not vim then require("loomworks.shim") end`. The shim:
+
+- vendors Neovim's pure-Lua modules (`shared.lua`, `fs.lua`) verbatim,
+- maps `vim.uv` to `require("luv")`,
+- hand-writes the native-backed surface: `json`, `system` (over
+  `uv.spawn`), `fn.{executable,exepath,mkdir,has,getcwd,fnamemodify}`,
+  `v.shell_error`, `schedule` (drained by `uv.run()`), `notify` / `log`.
+
+The JSON shim MUST reproduce Neovim's `empty_dict` / `NIL` / array-vs-object
+semantics (spec §16.1). A differential test uses headless Neovim as the
+oracle, which doubles as the drift guard when new `vim.*` usage appears on
+the build path.
+
+### Entry point
+
+`lua/loomworks/cli.lua`: argument parse → root discovery (walk up from the
+cwd for `loomworks.json` or `.nvim/loomworks.user.json`, stopping at a git
+working-tree boundary so a fresh worktree never binds to a parent checkout —
+spec §1.1) → `Workspace.assemble` → `Workspace.new` +
+remerge → resolve the named profile → for each buildable ConfigUnit, the
+cold path (detect → configure) or warm path per spec §16.4 →
+`overseer.build_spec_for(unit)` → spawn via a libuv runner that replaces
+overseer.nvim. An empty task `env` inherits the parent environment (it never
+replaces it, which would drop `PATH`).
+
+### v1 command surface
+
+- `lw build [profile]` — resolve and build a profile.
+- `lw test [profile] [--junit <file>] [-- args…]` — build the test target and
+  run it; real exit code. Args after `--` forward to the native batch runner
+  (`-j N` / `--num-processes N`); `--junit <file>` requests JUnit XML for CI.
+  `plan_profile_test` threads both into each `TestUnit:run_command_all(opts)`:
+  ctest maps `--junit` to `--output-junit` (writes directly), meson reports its
+  fixed `meson-logs/testlog.junit.xml` as `junit_out` and the CLI copies it to
+  the requested path — so the core stays module-agnostic. One file per unit
+  (label-suffixed when a profile runs several).
+- `lw profiles` — list profiles (name, configuration set, tools) and flag
+  which are buildable in this host vs editor-only.
+- `lw run <profile> [target] [-- args…]` — non-debug launch (build → deploy →
+  execute). The target is the profile's default (§8.6) when unnamed, else a
+  named build target or command launch config; `project:name`, `--project`,
+  and `--target`/`--launch` disambiguate. Args after `--` are forwarded to the
+  program. Routes through the editor's `LaunchTarget` seams
+  (`resolve_launch_spec`, `deploy_sync`) so headless and editor launches stay
+  identical; the runner only swaps the executor (direct `vim.system` vs
+  overseer). Build-target launches set up a run environment (§8.7): core
+  prepends the build tree's shared-library output dirs plus the module's
+  `runtime_path()` (toolchain runtime) to `PATH`. `ConfigUnit:run_env()` is the
+  single source of truth (composed via `loomworks.runenv`); both target launches
+  and the test runners use it, so a DLL/`.so`-dependent executable resolves its
+  siblings identically whether run or tested. `ctest`, unlike `meson test`, does
+  not set this up itself, so `lw test` must parse targets before planning.
+- `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
+  profile's default launch target (writes `user.json`; spec §16.9 authoring).
+- `lw sdk <types|list|add|remove>` — declare toolchain installations that
+  detection cannot find (a compiler at an arbitrary path, a cross-compiler).
+  Thin wrappers over `Workspace:add_sdk` / `remove_sdk`; the declared SDK
+  produces a kit, so it appears in `lw tools` and is pinnable by
+  `lw profile create`. `--force` registers a path that fails identification
+  (spec §10.1). Provider discovery scans runtimepath, which the standalone host
+  lacks, so the CLI additionally probes the providers bundled with core.
+- `lw profile query <profile> <project> <field>` — read-only introspection
+  (spec §16.18): prints one machine-readable fact (`build-dir` / `config` /
+  `state` / `tool`) for scripting, e.g. locating CI artifacts. No build.
+- Profile/tool **selection** (spec §16.3) is a boundary-anchored matcher
+  (`merge.match_profile` for profile keys, `Module:find_tool` for tool keys):
+  a version-truncated selector (`ninja-clang-18`) resolves to the highest
+  matching patch and never crosses a version boundary. `build`/`test`/`run`/
+  `query` and `profile create` all route through it.
+- Management/authoring commands (spec §16.9, write the working copy; reach
+  `loomworks.json` on `lw publish`): `lw init [--name <name>]`,
+  `lw workspace rename <name>`, `lw project <add|remove|rename>`,
+  `lw configuration <add|set|unset|remove>`,
+  `lw configuration-set <create|map|unmap|remove>`, `lw profile create`,
+  `lw launch <add|set|remove>`, and per-item `lw <kind> publish`. Each delegates
+  to the same atomic `Workspace` mutation the editor uses (e.g. project rename →
+  `Workspace:rename_project`, workspace name → `Workspace:rename_workspace`).
+
+Out of scope for the standalone: debug launch (DAP, needs nvim-dap) and device
+install / launch. Deploy sources outside the active profile and
+pre-build "deploy feeds build" ordering are a known limitation (a headless run
+builds the profile up front, then runs both deploy phases). No-argument
+`lw build` resolves the profile as: explicit argument → `user.json` active
+profile (if present) → the single published profile → otherwise an error
+listing candidates.
+
+### Module bundling
+
+The loomworks distribution bundles the core modules (cmake, meson, shell,
+typescript). External module plugins (e.g. OHOS / harmony) are editor-only;
+profiles referencing them degrade per spec §16.8. A headless discovery /
+loading mechanism for third-party module plugins is deferred (see BACKLOG).
+
+### Host bootstrap and source resolution
+
+`lua/main.lua` is the fused **bootstrap** — the only Lua baked into the host
+binary. It carries no behavioral logic; it (a) reads host config, (b)
+resolves the system-Lua source per spec §16.11, (c) for the release source,
+ensures a verified bundle is present (§16.12–16.13), (d) installs package
+searchers + `nvim_get_runtime_file` discovery pointed at the resolved Lua
+root, then (e) `require`s the system entry (`loomworks.cli`). Source
+precedence:
+
+1. `--dev[=PATH]` flag or `LOOMWORKS_LUA` env → a working tree on disk
+   (verification skipped);
+2. host config `default_source = "dev"` with a configured `dev.lua` path →
+   same;
+3. otherwise the **release** root — the highest-versioned verified bundle
+   under the data dir.
+
+The verifier and the trusted public key live in the bootstrap, never in the
+bundle they check (spec §16.12).
+
+### Host binary
+
+The host is **luvi** (LuaJIT + libuv + OpenSSL, statically linked) with the
+bootstrap fused in via `luvi <bootstrap> --output lw`. It is generic and
+changes rarely — only when the runtime surface changes (a libuv/OpenSSL bump
+or a new native capability). CI builds one host per platform:
+`lw-linux-x86_64`, `lw-macos-arm64`, `lw-macos-x86_64`,
+`lw-windows-x86_64.exe`. Because `luvi --output` fuses the *running* luvi,
+each asset is built on its own OS in a CI matrix (no cross-fusing).
+
+### Release layout
+
+A GitHub Release (tag on `master`) carries:
+
+- the host binaries (above);
+- `loomworks-lua-<ver>.zip` — the system Lua (`lua/loomworks/**`, shim,
+  modules): everything *except* the bootstrap;
+- `manifest.json` — release version, `min_host_version`, and a SHA-256 for
+  every asset;
+- `manifest.json.sig` — a detached **ECDSA P-256 + SHA-256** signature over the
+  exact bytes of the manifest.
+
+The manifest is the single trust anchor: its signature vouches for every
+file's hash (spec §16.12). ECDSA-P256 (not Ed25519/minisign) because luvi's
+bundled OpenSSL verifies it directly — its `verify` needs a digest, which is
+the classic RSA/ECDSA flow, whereas Ed25519 is a one-shot the binding doesn't
+expose. The verifier lives in `lua/boot/verify.lua`; see below.
+
+### On-disk layout (per user, no admin)
+
+```
+<data>/loomworks/            (%LOCALAPPDATA%\loomworks | ~/.local/share/loomworks)
+  bin/lw[.exe]               the host binary (on PATH)
+  lua-<ver>/                 verified, extracted release bundles (versioned)
+  cache/tools.json           machine-level tool cache
+<config>/loomworks/config.json   dev source + default_source (spec §16.11)
+```
+
+Release bundles are versioned directories; activation writes a *new*
+`lua-<ver>/` and never overwrites a running one (spec §16.13). "Highest
+valid version wins"; older bundles are GC'd; rollback = prefer the previous
+directory.
+
+### Acquisition & self-update
+
+`lw self-update` fetches `manifest.json` + `.sig`, verifies the
+signature with the embedded key, downloads any newer `loomworks-lua-*.zip`,
+re-checks its hash against the manifest, extracts to a new `lua-<ver>/`, and
+switches the active version atomically. If the manifest's `min_host_version`
+exceeds the running host, it reports that a new host is required rather than
+running incompatible Lua (spec §16.14). Downloads are proxy-aware; because
+integrity rests on the signature, a MITM'd or cert-relaxed transport cannot
+inject code (spec §16.12). Self-update is a management operation and never
+runs as part of `lw build` (spec §16.9, §16.13).
+
+### Install security
+
+The host cannot verify itself (the verifier is inside it), so its own integrity
+is established out-of-band (spec §16.15): the release publishes a `SHA256SUMS`,
+and the documented install is a transparent one-liner — download the binary,
+verify its hash, then run the verified binary's `lw install`, which copies
+itself to a per-user location (`~/.local/bin/lw`, or `%LOCALAPPDATA%\Microsoft\
+WindowsApps\lw.exe` on Windows — already on PATH), ensures PATH (prompting;
+`-y`/`--no-modify-path`), and fetches the first bundle. No `curl | sh`.
+
+Bundle trust rests on **signature verification, not transport**: the host
+embeds an ECDSA P-256 public key and verifies the signed manifest before
+executing any bundle Lua; a hash mismatch or bad signature aborts. The private key is
+generated offline and held only as a tag-gated CI secret; the production
+public key is injected into `boot/verify.lua` at release-build time (the
+committed source carries a throwaway test key, so the verifier tests are
+hermetic). Verification uses luvi's built-in OpenSSL, so there is no bundled
+crypto to maintain. The one-line installer
+(`install.sh` / `install.ps1`) is deferred — until then a host binary is
+placed on PATH manually (or built from a checkout) and `lw self-update`
+fetches and verifies the first bundle. `lw` installs only the runtime; it
+detects, never installs, C/C++ toolchains.
+
+### File additions
+
+`lua/main.lua` (bootstrap), `lua/boot/` (bootstrap-only modules: `paths.lua`
+data-dir/version/mkdir helpers, `json.lua` decoder, `verify.lua` ECDSA-P256
+manifest verifier, `download.lua` curl/local fetch, `update.lua` self-update +
+miniz extraction, `install.lua` self-install), `lua/loomworks/shim/`, `bin/lw`,
+`bin/lw.cmd` exist. The bootstrap intercepts the host commands `lw version` /
+`lw install` / `lw self-update`.
+The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
+manifest) and `scripts/release/fuse_host.sh` (inject the production key + fuse
+one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix
+builds a host per platform (each fetching the matching luvi), a job builds the
+signed bundle, and a publish job attaches everything (plus a `SHA256SUMS`) to a
+GitHub Release. The maintainer supplies the signing key (see `keys/README.md`).
+`make dist` is a local dry-run. Installation is the transparent
+download-verify-`lw install` one-liner (spec §16.15), so no hosted installer
+script is needed.
+
+---
+
 ## File Layout
 
 ```

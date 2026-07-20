@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [master, unstable]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Neovim (stable)
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Install plenary.nvim
+        shell: pwsh
+        run: |
+          $dest = "$env:LOCALAPPDATA\nvim-data\lazy\plenary.nvim"
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim $dest
+
+      - name: Run test suite
+        shell: pwsh
+        run: |
+          nvim --headless -u tests/minimal_init.lua `
+            -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
+
+  standalone:
+    name: Standalone bootstrap tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The boot modules (verify/json/paths/download/update) depend on luvi's
+      # OpenSSL, so they run under luvi rather than the nvim/busted suite. Running
+      # on Linux also guards the byte-exact signature fixtures against EOL drift.
+      - name: Fetch luvi
+        run: |
+          curl -fsSL -o luvi \
+            https://github.com/luvit/luvi/releases/download/v2.15.0/luvi-Linux-x86_64-luajit-regular
+          chmod +x luvi
+
+      - name: Run standalone suite
+        run: ./luvi tests/standalone
+
+  cli-e2e:
+    name: CLI e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            luvi_asset: luvi-Linux-x86_64-luajit-regular
+          - os: macos-latest
+            luvi_asset: luvi-Darwin-arm64-luajit-regular
+          - os: windows-latest
+            luvi_asset: luvi-Windows-amd64-luajit-regular.exe
+    steps:
+      - uses: actions/checkout@v5
+
+      # A C/C++ toolchain + cmake/meson/ninja so the CLI can actually configure
+      # and build the sample projects. On Windows we use mingw (self-contained
+      # gcc — no VS dev-shell needed) which also exercises the run-env DLL setup.
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build meson g++
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja meson
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ninja mingw -y
+          python -m pip install --upgrade meson
+
+      - name: Fetch luvi
+        shell: bash
+        run: |
+          asset="${{ matrix.luvi_asset }}"
+          out="luvi"; [ "${asset##*.}" = "exe" ] && out="luvi.exe"
+          curl -fsSL -o "$out" \
+            "https://github.com/luvit/luvi/releases/download/v2.15.0/${asset}"
+          chmod +x "$out" || true
+
+      - name: Fuse the lw binary
+        shell: bash
+        run: |
+          if [ -f luvi.exe ]; then ./luvi.exe lua --output lw.exe; else ./luvi lua --output lw && chmod +x lw; fi
+
+      - name: Smoke test — the fused binary runs
+        shell: bash
+        run: |
+          export LOOMWORKS_LUA="$PWD/lua"
+          lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
+          "$lw" version
+
+      - name: Run CLI end-to-end (meson + cmake, build/run/test/clean)
+        shell: bash
+        run: |
+          export LOOMWORKS_LUA="$PWD/lua"
+          lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
+          LW="$lw" bash scripts/ci/cli-e2e.sh

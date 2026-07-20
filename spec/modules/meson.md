@@ -50,6 +50,14 @@ to enumerate project-owned targets and their source files.
 
 Uses `meson introspect --buildoptions` to surface user-facing options.
 
+## 7a. Launch runtime path (`runtime_path`)
+
+Returns the pinned compiler's `bin` directory (from the kit's
+`compiler_bin_dir` in `tool_data`) so build-target launches find the toolchain
+runtime DLLs (libstdc++, libgcc, libwinpthread). Core adds the build tree's own
+shared-library dirs generically (core §8.7), so only the toolchain dir is
+reported here.
+
 ## 8. Test integration
 
 Implements the generic test interface (core §8.9) through a single

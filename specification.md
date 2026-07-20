@@ -39,6 +39,7 @@ restart at §1.
 | How a single SDK provider detects, validates, and answers capability queries | the matching file in [`spec/sdks/`](spec/sdks/) |
 | Adding a new module, LSP server, DAP adapter, or SDK provider | a new file under the corresponding `spec/` subdirectory; touch core only if the contract itself needs a new field or hook |
 | A deferred / planned feature that is not yet implemented | [`BACKLOG.md`](BACKLOG.md), not core spec |
+| How the system behaves when run outside the editor (headless / standalone) | `specification.md` §16 |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in
@@ -57,9 +58,18 @@ top-level organizational unit.
 
 - One workspace is active at a time.
 - The workspace root is the directory containing `loomworks.json`.
+- When a tool discovers the root by searching upward from a starting
+  directory, the search MUST NOT cross a git working-tree boundary: a
+  directory holding a `.git` entry but no workspace marker ends the search
+  with no root found. This keeps an invocation inside a fresh git worktree
+  (whose own working copy does not exist yet) from binding to a parent
+  checkout's workspace.
 - Opening files outside the workspace does not change the active workspace.
-- The workspace name defaults to the root directory name; may be overridden
-  via `"name"` in `loomworks.json`.
+- The workspace name defaults to the root directory name. It may be
+  overridden by a `"name"` field in the working copy (`user.json`) or the
+  published snapshot (`loomworks.json`); when both are present the working
+  copy wins. As working-copy state (§2.4), a user-set name is stored in
+  `user.json` and written to `loomworks.json` on publish.
 
 ### 1.2 Project
 
@@ -305,6 +315,23 @@ provides. Auto-detection from build-system metadata (cmake file-api,
 meson introspect) is a future refinement — a soft diagnostic, not
 authoritative.
 
+### 1.5.2 Version matching
+
+A profile pins tools by key. A pinned key resolves to a registered tool by
+**exact match first**, then by **dotted-version prefix**: a pin matches any
+registered tool whose key extends the pinned version on a component
+boundary — `ninja-clang-19` matches `ninja-clang-19.1.5`, and
+`ninja-clang-19.1` matches `ninja-clang-19.1.9`. A fully-specified pin
+(`ninja-clang-19.1.5`) matches only that exact version — it never relaxes.
+When several tools match a prefix pin, the highest version wins; pin more
+specifically to disambiguate.
+
+Pinning at a coarse granularity (major version) makes a profile portable
+across machines whose exact patch releases differ — the intended form for
+shared profiles. The **resolved** tool is always the concrete full-version
+one, and it — not the pin — determines the build directory and cache key
+(§2.3), so build directories stay fully versioned and isolated.
+
 ### 1.6 Profile
 
 A profile is a fully resolved buildable unit. Every profile stores its
@@ -481,7 +508,7 @@ UI or store device selections.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | No | Workspace display name (defaults to root dir name) |
+| `name` | No | Workspace display name (defaults to root dir name). Published from the working copy's `name` (§2.2); the working copy wins at load |
 | `projects` | Yes | Dict of project_key → project definition |
 | `configuration_sets` | No | Dict of set_name → { project_key → variant } |
 | `profiles` | No | Dict of profile_key → explicit profile definition |
@@ -551,6 +578,7 @@ metadata lives here. All UI mutations land here.
 ```json
 {
   "_meta": { "version": 2 },
+  "name": "reactive",
   "active_profile": "Debug:ninja-gcc-12",
   "projects": { ... },
   "configuration_sets": { ... },
@@ -568,6 +596,11 @@ The `device` field maps profile keys to device serial strings:
     "Debug:<sdk>-<platform>-<arch>": "FMR0225108000951"
 }
 ```
+
+The optional `name` field overrides the workspace display name (§1.1). It is
+present only when the user has set one explicitly (`lw init --name`,
+`lw workspace rename`, or the editor); when absent the name defaults to the
+root directory basename. Written to `loomworks.json` on publish.
 
 The `intent` field stores explicit per-item intent overrides (see §2.4).
 
@@ -625,6 +658,14 @@ declaration. A project can be partly published (some configs `local+shared`,
 others `local`). Configuration sets carry one intent (atomic). Profiles
 carry one intent and default to `local` (profiles are personal by default).
 
+**Configuration sets are the portable shared unit.** A profile is a
+configuration set plus a *machine-specific* tool; a published profile may
+therefore resolve as an incomplete profile on a machine that lacks that tool
+(§3, incomplete-profile handling). Teams share configuration sets (and
+projects), and each machine — including each CI runner — turns a set into a
+buildable profile by selecting a locally-available tool. A profile MAY still
+be published when a team deliberately standardizes on a toolchain.
+
 #### Intent stickiness
 
 Intent represents the user's **wish**, not a function of current file
@@ -636,6 +677,29 @@ or when the item is deleted from the workspace.
 This guarantees that `:w` after a branch switch behaves predictably: items
 the user marked `local+shared` are republished on `:w`, even if the new
 loomworks.json on disk doesn't currently contain them.
+
+#### Initial intent (host-determined)
+
+The intent an item receives **at creation** reflects the creating host's
+purpose, and is sticky thereafter (per the rule above). The interactive
+editor creates items `local` — the user adds things privately and later
+chooses what to publish. A non-interactive authoring host (the command-line
+runner) creates items `local+shared` — its purpose is to author the shared
+contract, so a created item that never reached loomworks.json would be a
+silent surprise. Either default is an explicit creation-time assignment, not
+a file-presence computation, and a host MUST let the user override it at
+creation (e.g. a `local` / `shared` selector). Changing an existing item's
+intent afterward is an explicit user action in any host.
+
+**Profiles are excepted**: every host creates a profile `local`, regardless
+of its default for other item kinds. A profile binds a configuration set to
+resolved toolchains, and a toolchain is a property of the machine that
+detected it — publishing one asserts a build environment the reader may not
+have. The portable unit is the configuration set, which each machine pairs
+with its own locally resolved toolchain. A host MUST still honour an explicit
+share request at creation, and publishing a profile afterward remains a
+normal explicit action (it pulls its set and projects along by the closure
+rule below).
 
 #### Effective intent (transitive)
 
@@ -1848,6 +1912,16 @@ Only project-owned build targets are included (executables and libraries).
 Imported, alias, and utility targets are excluded. Dependencies list only
 project-owned targets that this target links against.
 
+**`runtime_path(ctx) → string[]?`** *(optional)*
+
+Directories that must be on `PATH` to run the module's built executables
+locally — typically the compiler's runtime bin directory (e.g. the gcc
+toolchain bin holding `libstdc++`/`libgcc`/`libwinpthread`). Returns a list of
+absolute directories, or `nil`. `ctx` carries `build_dir` and the
+configuration's `tool_data`. This covers only the *toolchain* runtime; the
+build tree's own shared-library output directories are added generically by
+core (derived from `parse_targets`), so a module need not enumerate them.
+
 ### 8.5 Module implementations
 
 Each module that ships with loomworks documents its implementation of
@@ -1871,9 +1945,11 @@ Each profile can have a **default target** — a single executable target
 that `build_target()` builds instead of the full project.
 
 **Default target storage**:
-- `loomworks.user.json`: `default_target = { "<profile_key>": { "project": "<key>", "target": "<id>" } }`
-- Published profile definitions: `default_target = { "project": "<key>", "target": "<id>" }`
+- `loomworks.user.json`: `default_target = { "<profile_key>": { "project": "<key>", "target": "<id>", "working_dir"?: "<dir>" } }`
+- Published profile definitions: `default_target = { "project": "<key>", "target": "<id>", "working_dir"?: "<dir>" }`
 - User.json overrides published config.
+- `working_dir` is optional; absent means the default (the project directory,
+  §8.7). Absolute or workspace-root-relative, variable-expanded at launch.
 
 **Resolution**: `Profile:default_target()` returns a `LaunchTarget` object
 that holds direct references to the `Project`, `ConfigUnit`, and `Target`
@@ -1899,10 +1975,41 @@ defines how to run the project after building. Two types:
 
 **Module targets** (executables discovered by the module's
 `parse_targets`): `Target:launch()` resolves the artifact path from
-the build directory and runs it via overseer.
+the build directory and runs it. Before running, core composes a **run
+environment** and prepends to `PATH`: (1) the build tree's shared-library and
+module-library output directories — so a DLL-dependent executable finds its
+siblings, the same directories the test runner uses — derived generically from
+`parse_targets`; and (2) any `runtime_path()` directories the module supplies
+for the toolchain runtime (§8.4). This applies on **Windows only**, where the
+loader searches `PATH`; on Linux/macOS shared libraries are resolved through
+the rpath the build system bakes into the build tree, so no environment setup
+is needed. Directories are added in a deterministic (sorted) order so `PATH`
+precedence is stable. Resolution (`Target:resolve_run_spec`) is shared with the
+headless runner (§16.17); only the executor differs (overseer in the editor,
+direct spawn headless).
+
+A module target runs with its **working directory** set to the owning
+project's directory (`workspace_root/<project.path>`) by default — the same
+default as a command-type launch (below), so both launch kinds are consistent.
+The default-target descriptor (§8.6) may carry an optional `working_dir` to
+override this persistently; it is stored in the working copy and published like
+the rest of the descriptor. A headless run (§16.17) may also override the
+working directory for a single invocation. Precedence: per-invocation override
+→ descriptor `working_dir` → project directory. An override may be absolute or
+workspace-root-relative and is variable-expanded in the launch context.
 
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.
+
+A launch configuration is either **command-type** — it carries a `command` —
+or **target-backed** — it carries a `target` (a build target name/id) instead.
+A target-backed launch runs that target's built artifact and inherits the
+build-tree **run environment** (§8.7, the DLL-path setup), then layers the
+config's `args`, `env` (over the run environment), and `working_dir` on top —
+so a launch configuration for a built executable needs no hand-written path and
+runs on Windows without a dev shell. The target reference resolves against the
+configuration's parsed targets by name (or opaque id). Its default working
+directory is the project directory, like a command-type launch.
 
 ```json
 "ScenePluginTest": {
@@ -2235,7 +2342,32 @@ Construct the command to run a specific test. Returns
 
 **`test_command_all(opts?) → RunSpec|nil`**
 
-Construct the command to run all tests. `opts.filter` for name filtering.
+Construct the command to run all tests as structured, per-test output (for the
+editor UI): typically the test executable run under a framework harness that
+emits a machine-readable results file. `opts.filter` for name filtering.
+Returns `{ cmd, env, cwd, output_path }` or nil.
+
+**`run_command_all(opts?) → { cmd, env?, cwd?, junit_out? }|nil`**
+
+Construct the module's **native** "run all tests" command — the one whose
+**process exit status is authoritative** (0 iff every test passed), streaming
+human-readable output. This is the headless-runner seam (§16): a batch runner
+executes it and reports its exit code, without discovery or result parsing.
+Distinct from `test_command_all`, which targets structured UI results. Returns
+nil when the module has no native batch runner. `opts.filter` for name
+filtering; `opts.extra_args` appends caller-forwarded arguments (§16.16);
+`opts.junit` requests JUnit XML at that path. `junit_out` reports where the run
+actually writes JUnit — the requested path when the runner writes there
+directly, or the runner's fixed location for the caller to copy across.
+
+**`run_command_all_rebuilds() → boolean`**
+
+Whether executing `run_command_all` rebuilds the unit's test targets first
+(e.g. `meson test`, which builds test dependencies before running). A headless
+test run (§16.16) skips its own separate build of such units, as it would be
+redundant. Defaults **false** — the runner assumes an already-built tree
+(e.g. `ctest`, which does not build). Configuration is still ensured either
+way; this only governs the build.
 
 **`parse_results(output_path) → TestResult[]|nil`**
 
@@ -2675,6 +2807,21 @@ Each provider table exposes:
 | `validate(path) → boolean` | Return whether a given path looks like a valid installation of this SDK type |
 | `create_sdk(key, path, version) → SDK` | Construct a `loomworks.SDK` domain object from a validated installation |
 | `query_capabilities(sdk, module_id) → table\|nil` | Return opaque capability data this SDK can offer to a given module, or `nil` if it has nothing for that module. `module_id == nil` returns the supported module ids array |
+
+**Declaring an installation.** An SDK is normally declared by supplying a path,
+which the provider validates — identifying the installation and deriving the
+facts (such as version) that the key is built from. A provider MAY derive a key
+that encodes more than the version (for instance a path-derived token, so two
+installations of the same version at different paths stay distinct); a
+provider-derived key is the installation's identity and MUST be preserved
+verbatim across save/load.
+
+A user MAY **force** a declaration whose path fails identification — an
+installation that cannot report on itself — by supplying the identifying facts
+explicitly. The path MUST still exist, so a mistyped path is still refused. A
+forced declaration carries only the facts the user gave: where a version was not
+supplied it is unknown, and the installation therefore forfeits version-based
+selection (§16.3) and is referenced by its full key.
 
 ### 10.2 SDK domain object
 
@@ -3187,3 +3334,275 @@ when the user explicitly publishes (`:w`).
     Neovim UI thread. File reads use async I/O. Tool detection runs
     as a background task. Only JSON parsing and merge (both fast,
     CPU-bound operations) run synchronously within callbacks.
+
+---
+
+## 16. Headless / Standalone Execution
+
+The system runs in two execution environments: the **interactive editor
+host** and a **non-interactive (headless) host**. All contracts in §1–§15
+hold in both, except those explicitly scoped to the editor — UI (§6),
+Neovim commands (§14), LSP integration (§9), auto-load (§13), and live
+file-tracking reconciliation (§2.5). A headless host performs a bounded
+subset of behavior: resolve a profile and run its build / clean / test
+tasks to completion, reporting a process exit status.
+
+### 16.1 Runtime-host neutrality
+
+The behavioral contract is independent of the host that provides the Lua
+and asynchronous runtime. Any host supplying the required primitives — a
+structured filesystem, process spawning, an asynchronous I/O event loop,
+and JSON encoding/decoding that distinguishes object, array, and null
+(including the empty-object vs empty-array distinction, §1.9) — MUST
+produce identical results. State serialized by one host MUST be readable,
+with identical meaning, by any other host.
+
+### 16.2 Source of truth without the working copy
+
+A headless invocation MUST be able to resolve any **published** profile to
+its build commands from the published snapshot (§2.1) plus the cache (§2.3)
+alone, with no working copy (§2.2) present. Publishing (§2.4) therefore
+MUST emit a snapshot self-sufficient for this resolution. When a working
+copy is present it MAY be read as input. A **build** (§16.4) MUST NOT create
+or modify it — build invocations are non-mutating so CI runs stay
+reproducible; an explicit **management** operation MAY write it (§16.9).
+
+### 16.3 Explicit profile selection
+
+The active profile is working-copy state (§4.2) and is not assumed in a
+headless invocation. The profile to operate on MUST be selected explicitly
+by the caller. Absent an explicit selection, the invocation is an error
+unless exactly one published profile exists — the system never guesses a
+default.
+
+A profile MAY be named by a **truncated tool selector** — a prefix of a tool
+key that omits trailing detail, such as a compiler family plus major version
+(`ninja-clang-18`) or a toolchain family plus major version without its
+edition (`msvc-17`). A CI matrix can therefore name a toolchain without
+pinning either the exact patch version or the specific edition installed on a
+given runner image.
+
+Matching is **anchored at segment boundaries**: the selector must be followed
+in the candidate key by a version separator or a segment separator, so a
+truncated selector never resolves a different segment (a `…-1` selector
+matches neither `…-18` nor `msvc-17`). It is a prefix, not a substring —
+`msvc-17` does not match `ninja-msvc-17-…`. Among candidates the highest
+matching version wins; when candidates carry no distinguishing version (two
+editions of the same toolchain) the choice MUST still be deterministic and
+independent of enumeration order. When a selector matches more than one
+**profile** the invocation is an ambiguity error, never an arbitrary pick.
+
+### 16.4 Cache-cold vs cache-warm
+
+Build-unit readiness derives from the cache (§3.1). For a build unit with
+no valid cache entry, a headless invocation MUST perform the full readiness
+sequence — tool detection (§3.3) then configure (§5.2) — before build. For
+a unit with a valid cache entry it MAY build directly. Tool identity
+resolves from live detection when available, otherwise from cached tool
+data (§1.5, §2.3); resolution MUST succeed from cache alone when detection
+has not run.
+
+### 16.5 Toolchain provisioning boundary
+
+A headless host detects toolchains present on the system; it does not
+install them. Provisioning build tools is outside the system's contract,
+except SDK-provided toolchains (§10).
+
+### 16.6 Non-invasiveness
+
+A headless build is read-only toward project sources and toward the working
+copy. Only the cache and build directories are written, under the safety
+rules of §2.3 and §5.3. This contract does not itself serialize cross-process
+concurrent access to a shared build directory; a host MAY add advisory
+exclusion. loomworks does: configure/build/clean hold a **per-build-directory
+advisory lockfile** — an `O_EXCL` create (atomic across processes) with an
+mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
+editor and the CLI share this lock, so neither builds a directory the other is
+building; acquisition is **fail-fast** (the loser reports the holder and
+declines rather than waiting). A stale lock is reclaimed automatically after
+the heartbeat window; `lw unlock` clears one immediately.
+
+### 16.7 Reporting
+
+Success or failure is reported via process exit status; task output streams
+to standard output and standard error. No editor UI is required or
+produced.
+
+### 16.8 Host-determined module availability
+
+The set of modules available to a host is determined by that host. A build
+unit whose module is unavailable in the current host is reported and
+skipped; consistent with §8.0, its declaration is preserved and does not
+invalidate the workspace or other units.
+
+### 16.9 Builds are read-only; management may author
+
+A **build** (§16.4) is read-only toward configuration: it never creates or
+modifies projects, configurations, configuration sets, or profiles. This is
+what keeps CI runs non-mutating and lets the headless host coexist with the
+editor.
+
+An **explicit management** operation MAY author — bootstrap a workspace,
+select the active profile, or (where supported) create/edit items — but only
+when the caller invokes it directly; it is never part of a build. Management
+writes follow the same working-copy model as the editor (§2.4): they land in
+the working copy (§2.2), and the published snapshot (§2.1) changes only on an
+explicit publish. A read-only / CI invocation runs no management operation.
+
+### 16.10 Toolchains outside the search paths
+
+*(Reserved. Section numbers §16.11+ are referenced throughout, so this number
+is retained rather than reused.)*
+
+A build machine whose toolchain is not on the host's search paths makes that
+installation usable by **declaring it** (§10.1) — the declaration is validated,
+identified, and produces a toolchain like any detected one, so the profile pins
+it and selection (§16.3) applies unchanged.
+
+A per-invocation override that satisfied a profile's pin from a bare executable
+path was considered and **deliberately rejected**: probing an executable yields
+its own identity, but not the surrounding facts a module needs to build with it
+(a build-system generator, for instance). Reconstructing those would mean either
+inferring them from the pinned key — keys are opaque identifiers and are never
+parsed (§1.5.2) — or silently assuming a default that is wrong for some
+toolchains. Declaration avoids this because the provider *constructs* the
+toolchain rather than guessing at it.
+
+### 16.11 Runner distribution and system-Lua resolution
+
+The standalone runner separates a **generic runtime host** (the Lua VM and
+asynchronous primitives of §16.1) from the **system Lua** (the behavioral
+implementation of §1–§15). The host carries no behavioral logic of its own;
+per invocation it resolves system Lua from exactly one source, chosen by
+precedence:
+
+1. an explicit caller override naming a directory;
+2. a **development source** — a working tree designated in host
+   configuration — when the caller opts into it;
+3. otherwise the **release source** — a verified release bundle.
+
+Absent (1) and (2), the release source is used. The chosen source is fixed
+for the whole invocation. The resolution is a host concern: it does not
+affect any §1–§15 contract, and system Lua behaves identically whichever
+source supplied it.
+
+### 16.12 Release integrity
+
+A release bundle MUST be cryptographically verified against a trusted public
+key carried by the host before any of its Lua executes. Verification covers
+a signed manifest that binds the identity and content hash of every bundle
+artifact; an artifact whose hash does not match, or a manifest whose
+signature does not verify, MUST NOT execute. Verification integrity MUST NOT
+depend on transport security: a bundle obtained over an untrusted or
+intercepted channel is accepted if and only if its signature verifies. A
+development source (§16.11) is exempt from verification — it is local,
+explicit, and caller-owned. The component that performs verification is part
+of the host, never part of the bundle it verifies.
+
+### 16.13 Acquisition and activation
+
+Acquiring a release bundle — an initial install or an update — MUST verify
+it (§16.12) before it becomes active. Activation MUST be atomic and MUST NOT
+overwrite the code of a running invocation; a failed or partial acquisition
+MUST leave the previously active bundle intact, so a runner is never left
+without a working system Lua. Acquisition and activation are management
+operations (§16.9): they are never performed as part of a build (§16.4), so
+a read-only or CI invocation neither fetches nor mutates the active bundle.
+
+### 16.14 Host/bundle compatibility
+
+A release bundle declares the minimum runtime-host capability it requires. A
+host that does not meet a bundle's minimum MUST refuse to execute it — rather
+than fail unpredictably — and MUST report that a host update is required.
+Within its compatible range a single host build executes any bundle, so
+behavioral updates ship as bundles without replacing the host.
+
+### 16.15 Host acquisition integrity
+
+The host cannot verify itself — the component that checks a signature (§16.12)
+is inside the host. A host binary's integrity is therefore established
+out-of-band: it is obtained and checked against a hash published through a
+trusted channel *before* its first execution, and only a matching binary is
+run. Installation is that binary placing itself where it can be invoked; it is
+not part of the verified-bundle chain and MUST NOT be assumed to have verified
+the running binary. Once trusted this way, the host bootstraps the bundle chain
+(§16.12–16.13).
+
+### 16.16 Headless test runs
+
+A headless **test** invocation resolves a profile and ensures it is configured
+and built (§16.4) — **skipping the build of any unit whose native batch runner
+rebuilds its own targets (§8.9.2), since that build would be redundant** — then
+runs each buildable unit's tests through the native batch runner
+(`run_command_all`, §8.9.2) — not the editor's structured per-test path.
+Configuration is still ensured for every unit: a self-rebuilding runner assumes
+an already-configured build directory, not an unconfigured one. Each runner's process exit
+status is authoritative; the invocation's exit status is success iff the build
+succeeded and every runner reported success. A unit whose module exposes no
+batch runner contributes no tests; a profile with no test runners at all is
+reported as such, not a failure. Like a build (§16.4), a test run is read-only
+toward configuration (§16.9).
+
+A headless test invocation MAY forward caller-supplied arguments to the native
+batch runner (e.g. a parallelism knob), and MAY request machine-readable
+(JUnit XML) results written to a caller-specified location — a single file per
+invocation, or one file per unit (a label suffix distinguishing them) when a
+profile runs several. The runner maps both to its native mechanism; a runner
+that cannot emit JUnit reports that without failing the run.
+
+### 16.17 Headless launch (run)
+
+A headless **run** invocation resolves a profile (§16.3) and a **launch
+target**, then runs the editor's launch chain (§8.6, "Build flow"): build the
+target and its dependencies (§16.4), execute **deploy** steps (§8), and launch.
+The launched process's exit status is the invocation's exit status. It runs
+**attached to the invoking terminal** — inherited standard input/output/error,
+and (on Windows) not hidden — so its output streams live, it can read input,
+and a GUI window appears, exactly like launching the binary directly. This is
+distinct from the build/test steps, whose tool output is captured. The run is
+read-only toward configuration (§16.9) and, like the editor's non-debug launch,
+excludes debugger attachment and device targets (both deferred).
+
+**Launch target selection.** The launch target is one of:
+
+- the profile's **default target** (§8.6) when none is named;
+- a **named target** — either a **build target** (its executable artifact,
+  resolved via the module) or a **command launch configuration** (§8.7).
+
+A configuration pins exactly one configuration per project, so a target
+reference needs no configuration qualifier; it resolves within the profile.
+Project qualification (`project:target`) disambiguates a bare name that is
+present in more than one project. A bare name matching **both** a build target
+and a command launch configuration is an error until qualified. Selection is
+explicit throughout: with no named target and no default set, the invocation
+errors unless exactly one launchable target is in scope — the system never
+guesses.
+
+**Argument forwarding.** Positional arguments after a `--` separator are
+forwarded verbatim to the launched program (a command configuration's own
+declared arguments precede them). The separator is required to pass arguments,
+so the optional target-name positional is never ambiguous with program
+arguments.
+
+**Shared code paths.** Resolution, dependency build, deploy, and the launch
+command/spec are the same seams the editor drives; the headless runner differs
+only in executing the resolved spec directly rather than through the editor's
+task runner (§16.1).
+
+**Setting the default target** is a management operation (§16.9): it selects,
+per profile, the default build target and writes it to the working copy
+(§8.6, "Default target storage"). No target is ever named "default" — the
+default is a property of the profile, not a reserved target name.
+
+### 16.18 Headless introspection
+
+A headless invocation MAY **query** read-only facts about a resolved profile
+(§16.3) as deterministic, machine-readable output for scripting — most usefully
+a project's **build directory**, so a CI job can locate build artifacts without
+reconstructing the layout. A query performs no build and no management writes
+(§16.9); the build directory it reports is the same deterministic path a build
+would use, known once the profile pins a toolchain, so the query is valid before
+any build has run. Introspection is scoped to a `(profile, project)` pair, since
+a build directory is a per-project coordinate; the reported facts a caller MAY
+request include the build directory, the pinned configuration, the last known
+build state, and the resolved toolchain.

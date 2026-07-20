@@ -442,6 +442,26 @@ local function start_one_task(overseer, task_def, on_complete)
                 return
             end
 
+            -- Cross-process gate (§16.6): in addition to the in-process lock,
+            -- hold a lockfile so a CLI (or another editor) can't build the same
+            -- directory concurrently. Fail-fast — release the in-process lock
+            -- and reject if another live process holds it.
+            if lw_meta.build_dir then
+                local ws = unit._workspace
+                if ws and ws._acquire_file_lock then
+                    local dir = ws._core._deps.normalize(lw_meta.build_dir)
+                    local ok_fl, fl_err = ws:_acquire_file_lock(dir, lw_meta.action)
+                    if not ok_fl then
+                        ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                        vim.schedule(function()
+                            vim.notify("loomworks: " .. tostring(fl_err), vim.log.levels.WARN)
+                        end)
+                        reject(fl_err)
+                        return
+                    end
+                end
+            end
+
             local build_result = task_def.builder()
             apply_nice(build_result, lw_meta.action)
             build_result.components = build_result.components or { "default" }
@@ -466,6 +486,7 @@ local function start_one_task(overseer, task_def, on_complete)
                 if ws then
                     local dir = ws._core._deps.normalize(lw_meta.build_dir)
                     ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                    if ws._release_file_lock then ws:_release_file_lock(dir) end
                 end
             end
 
@@ -722,6 +743,199 @@ local function filter_unconfigured_tasks(all_tasks)
     end
 
     return needs_configure
+end
+
+--- Whether a unit's tests build themselves when run headlessly — true iff the
+--- unit has at least one native batch runner and every such runner reports
+--- `run_command_all_rebuilds()`. When true, a headless test run (§16.16) can
+--- skip its separate build of the unit as redundant. Runners without a native
+--- batch command (no `run_command_all`) don't run headlessly and so don't
+--- count toward "self-rebuilding".
+--- @param unit loomworks.ConfigUnit
+--- @return boolean
+function M._unit_tests_self_rebuild(unit)
+    if not unit or type(unit.test_units) ~= "function" then return false end
+    local ok, tus = pcall(function() return unit:test_units() end)
+    if not ok or type(tus) ~= "table" or #tus == 0 then return false end
+    local any_runner = false
+    for _, tu in ipairs(tus) do
+        if tu.run_command_all then
+            any_runner = true
+            if not (tu.run_command_all_rebuilds and tu:run_command_all_rebuilds()) then
+                return false
+            end
+        end
+    end
+    return any_runner
+end
+
+--- Build an ordered, overseer-free execution plan for a profile "build".
+--- Mirrors run_profile_action("build") sequencing: configure the units that
+--- need it (unconfigured / failed / stale), then build. Each step carries a
+--- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners
+--- (specification.md §16) — it requires no overseer.nvim and launches nothing.
+--- @param profile loomworks.Profile
+--- @param opts? table { for_test?: boolean } for_test drops the build step of
+---   any unit whose native test runner self-rebuilds (§16.16) — configuration
+---   is still planned for every unit.
+--- @return table[]|nil steps list of { kind, name, unit, cmd, cwd, env }
+function M.plan_profile_build(profile, opts)
+    opts = opts or {}
+    local all_tasks = collect_profile_tasks(profile)
+    if not all_tasks then return nil end
+    local needs_configure = filter_unconfigured_tasks(all_tasks)
+
+    local build_tasks = all_tasks.build
+    if opts.for_test then
+        build_tasks = {}
+        for _, td in ipairs(all_tasks.build or {}) do
+            local unit = td.loomworks and td.loomworks.unit
+            if not (unit and M._unit_tests_self_rebuild(unit)) then
+                build_tasks[#build_tasks + 1] = td
+            end
+        end
+    end
+
+    local steps = {}
+    local function add(task_defs, kind)
+        for _, td in ipairs(task_defs or {}) do
+            if td.builder then
+                local ok, spec = pcall(td.builder)
+                if ok and type(spec) == "table" and type(spec.cmd) == "table" then
+                    steps[#steps + 1] = {
+                        kind = kind,
+                        name = td.name,
+                        unit = td.loomworks and td.loomworks.unit or nil,
+                        build_dir = td.loomworks and td.loomworks.build_dir or nil,
+                        cmd = spec.cmd,
+                        cwd = (type(spec.cwd) == "string" and spec.cwd ~= "")
+                            and spec.cwd or nil,
+                        env = spec.env,
+                    }
+                end
+            end
+        end
+    end
+    add(needs_configure, "configure")
+    add(build_tasks, "build")
+    return steps
+end
+
+--- Build an overseer-free "clean" plan for a profile: one step per project's
+--- module clean task (e.g. `meson compile --clean`, `cmake --build --target
+--- clean`). Skips build dirs that don't exist on disk (nothing to clean —
+--- e.g. never configured). Intended for the headless runner (§16). Each step
+--- carries a ready-to-spawn `{cmd, cwd, env}`.
+--- @param profile loomworks.Profile
+--- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env }
+function M.plan_profile_clean(profile)
+    local tasks = collect_profile_clean_tasks(profile)
+    if not tasks then return nil end
+    local uv = vim.uv or vim.loop
+    local steps = {}
+    for _, td in ipairs(tasks) do
+        local build_dir = td.loomworks and td.loomworks.build_dir or nil
+        -- Nothing to clean if the build dir was never created.
+        if td.builder and (not build_dir or uv.fs_stat(build_dir)) then
+            local ok, spec = pcall(td.builder)
+            if ok and type(spec) == "table" and type(spec.cmd) == "table" then
+                steps[#steps + 1] = {
+                    kind = "clean",
+                    name = td.name,
+                    build_dir = build_dir,
+                    cmd = spec.cmd,
+                    cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
+                    env = spec.env,
+                }
+            end
+        end
+    end
+    return steps
+end
+
+--- Resolve the per-unit JUnit output path (spec §16.16). One unit → the caller's
+--- path verbatim; several → insert a sanitized label before the extension so the
+--- files don't clobber (result.xml → result.app-Debug.xml).
+--- @param base string caller-supplied JUnit path (absolute)
+--- @param label string unit label (e.g. "app:Debug")
+--- @param multi boolean true when more than one unit produces JUnit
+--- @return string
+local function junit_dest_for(base, label, multi)
+    if not multi then return base end
+    local slug = label:gsub("[^%w%-_.]", "-")
+    local dir, name = base:match("^(.*)/([^/]+)$")
+    if not name then name = base end
+    local stem, ext = name:match("^(.+)%.([^.]+)$")
+    local newname = stem and (stem .. "." .. slug .. "." .. ext) or (name .. "." .. slug)
+    return dir and (dir .. "/" .. newname) or newname
+end
+M._junit_dest_for = junit_dest_for  -- exported for tests
+
+--- Build a headless "run all tests" plan for a profile: one step per buildable
+--- unit's native test runner (TestUnit:run_command_all, spec §16.16). Assumes
+--- the profile has already been built. Returns the test steps plus the number
+--- of buildable units seen, so a caller can tell "all passed" from "no tests".
+--- `opts.extra_args` forwards caller args to each runner; `opts.junit` (an
+--- absolute path) requests JUnit output — each step carries `junit_dest` (where
+--- the caller wants it) and `junit_out` (where the runner actually wrote it).
+--- @param profile loomworks.Profile
+--- @param opts? table { extra_args?: string[], junit?: string }
+--- @return table[]|nil steps, integer units_seen
+function M.plan_profile_test(profile, opts)
+    opts = opts or {}
+    local all_tasks = collect_profile_tasks(profile)
+    if not all_tasks then return nil, 0 end
+
+    -- Unique ConfigUnits from the build tasks.
+    local seen, units = {}, {}
+    for _, td in ipairs(all_tasks.build or {}) do
+        local unit = td.loomworks and td.loomworks.unit
+        if unit and not seen[unit] then seen[unit] = true; units[#units + 1] = unit end
+    end
+
+    -- Pass 1: enumerate every runnable test unit up front, so the JUnit-path
+    -- assignment below knows whether to use a single file or per-unit files.
+    local runnable = {}
+    for _, unit in ipairs(units) do
+        local label = (unit._project and unit._project.key or "?") .. ":" .. tostring(unit:variant())
+        for _, tu in ipairs(unit:test_units()) do
+            if tu.run_command_all then
+                runnable[#runnable + 1] = { unit = unit, tu = tu, label = label }
+            end
+        end
+    end
+    local multi = #runnable > 1
+
+    -- Pass 2: build the steps, threading extra args + the resolved JUnit dest.
+    local steps = {}
+    for _, r in ipairs(runnable) do
+        local junit_dest = opts.junit and junit_dest_for(opts.junit, r.label, multi) or nil
+        local ok, spec = pcall(function()
+            return r.tu:run_command_all({ extra_args = opts.extra_args, junit = junit_dest })
+        end)
+        if not ok then
+            -- A throwing runner is a bug, not "no tests" — surface it
+            -- instead of silently dropping the unit.
+            local ws = r.unit._workspace
+            if ws and ws._core and ws._core._deps.notify then
+                ws._core._deps.notify(
+                    "loomworks: test runner for " .. r.label .. " errored: " .. tostring(spec),
+                    vim.log.levels.WARN)
+            end
+        elseif type(spec) == "table" and type(spec.cmd) == "table" then
+            steps[#steps + 1] = {
+                kind = "test",
+                name = r.label,
+                unit = r.unit,
+                cmd = spec.cmd,
+                cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
+                env = spec.env,
+                junit_dest = junit_dest,
+                junit_out = spec.junit_out,
+            }
+        end
+    end
+    return steps, #units
 end
 
 --- Run an action for a single project configuration.

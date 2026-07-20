@@ -376,6 +376,75 @@ describe("overseer launch_tasks", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Test: _unit_tests_self_rebuild — headless `lw test` skips the separate build
+-- of units whose native runner rebuilds itself (§16.16).
+-- ---------------------------------------------------------------------------
+
+describe("_unit_tests_self_rebuild", function()
+    local overseer_mod = require("loomworks.overseer")
+
+    --- A stub test unit. `rebuilds` may be a boolean or nil; `has_runner`
+    --- controls whether `run_command_all` is present at all.
+    local function tu(rebuilds, has_runner)
+        local t = {}
+        if has_runner ~= false then t.run_command_all = function() return {} end end
+        t.run_command_all_rebuilds = function() return rebuilds and true or false end
+        return t
+    end
+
+    --- A stub ConfigUnit exposing `test_units()`.
+    local function unit(tus)
+        return { test_units = function() return tus end }
+    end
+
+    it("true when every native runner self-rebuilds (meson)", function()
+        assert.is_true(overseer_mod._unit_tests_self_rebuild(unit({ tu(true) })))
+    end)
+
+    it("false when a native runner does not self-rebuild (ctest)", function()
+        assert.is_false(overseer_mod._unit_tests_self_rebuild(unit({ tu(false) })))
+    end)
+
+    it("false for a mixed unit (one self-rebuilds, one does not)", function()
+        assert.is_false(overseer_mod._unit_tests_self_rebuild(unit({ tu(true), tu(false) })))
+    end)
+
+    it("false when the unit has no test units", function()
+        assert.is_false(overseer_mod._unit_tests_self_rebuild(unit({})))
+    end)
+
+    it("false when no test unit has a native runner", function()
+        assert.is_false(overseer_mod._unit_tests_self_rebuild(unit({ tu(true, false) })))
+    end)
+
+    it("false for a unit that cannot enumerate test units", function()
+        assert.is_false(overseer_mod._unit_tests_self_rebuild({}))
+        assert.is_false(overseer_mod._unit_tests_self_rebuild(nil))
+    end)
+end)
+
+describe("junit_dest_for (spec §16.16 per-unit JUnit paths)", function()
+    local f = require("loomworks.overseer")._junit_dest_for
+
+    it("returns the path verbatim for a single unit", function()
+        assert.equals("/out/report.xml", f("/out/report.xml", "app:Debug", false))
+    end)
+
+    it("inserts a sanitized label before the extension for multiple units", function()
+        assert.equals("/out/report.app-Debug.xml", f("/out/report.xml", "app:Debug", true))
+        assert.equals("/out/report.lib-Release.xml", f("/out/report.xml", "lib:Release", true))
+    end)
+
+    it("handles a path with no extension", function()
+        assert.equals("/out/report.app-Debug", f("/out/report", "app:Debug", true))
+    end)
+
+    it("handles a bare filename with no directory", function()
+        assert.equals("r.app-Debug.xml", f("r.xml", "app:Debug", true))
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- Test: record_task_result does not downgrade built → configured
 -- ---------------------------------------------------------------------------
 

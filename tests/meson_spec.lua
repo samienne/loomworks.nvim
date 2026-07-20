@@ -63,6 +63,42 @@ describe("meson module", function()
         end)
     end)
 
+    describe("resolve_build_dir", function()
+        -- Regression: canonical config names contain ':' (variant:Debug), which
+        -- is invalid in a Windows path and broke `meson setup` (WinError 267).
+        -- meson.resolve_build_dir sanitizes like cmake's.
+        it("sanitizes ':' in the config name (variant:Debug -> variant_Debug)", function()
+            local dir = meson.resolve_build_dir("App", "variant:Debug", nil, "/root", nil)
+            assert.equals("/root/.nvim/build/App/variant_Debug", dir)
+        end)
+
+        it("strips every Windows-illegal char from path components", function()
+            local dir = meson.resolve_build_dir('a:b', 'x<>:"|?*y', nil, "/root", nil)
+            local tail = dir:sub(#"/root/.nvim/build/" + 1)
+            assert.is_nil(tail:find('[<>:"|?*]'))
+        end)
+
+        it("scopes the build dir by compiler (compiler_id segment)", function()
+            local dir = meson.resolve_build_dir("App", "variant:Debug", nil, "/root",
+                { compiler_id = "gcc-14.2.0" })
+            assert.equals("/root/.nvim/build/App/gcc-14.2.0/variant_Debug", dir)
+        end)
+
+        it("gives cl and clang-cl distinct build dirs for the same config", function()
+            local cl = meson.resolve_build_dir("R", "variant:Debug", nil, "/root",
+                { compiler_id = "msvc-17-2022-enterprise" })
+            local clcl = meson.resolve_build_dir("R", "variant:Debug", nil, "/root",
+                { compiler_id = "clang-cl-18.1.7" })
+            assert.are_not.equal(cl, clcl)
+            assert.equals("/root/.nvim/build/R/msvc-17-2022-enterprise/variant_Debug", cl)
+        end)
+
+        it("omits the compiler segment when tool_data has no id", function()
+            local dir = meson.resolve_build_dir("App", "Debug", nil, "/root", {})
+            assert.equals("/root/.nvim/build/App/Debug", dir)
+        end)
+    end)
+
     describe("resolve_configurations", function()
         it("emits canonical `variant:Debug` keys for defaults", function()
             local cfgs = meson.resolve_configurations(
@@ -304,6 +340,14 @@ describe("meson module", function()
                 if n == "meson" then return "/fake/meson" end
                 return ""
             end
+            -- parse_targets only introspects a *configured* tree (meson-info/).
+            local uv = vim.uv or vim.loop
+            local orig_fs_stat = uv.fs_stat
+            ---@diagnostic disable-next-line: duplicate-set-field
+            uv.fs_stat = function(p)
+                if p == "/build/meson-info" then return { type = "directory" } end
+                return orig_fs_stat(p)
+            end
             ---@diagnostic disable-next-line: duplicate-set-field
             vim.fn.system = function(cmd)
                 -- Only answer the introspect --targets call with our
@@ -321,6 +365,8 @@ describe("meson module", function()
 
             ---@diagnostic disable-next-line: duplicate-set-field
             vim.fn.exepath = orig_exepath
+            ---@diagnostic disable-next-line: duplicate-set-field
+            uv.fs_stat = orig_fs_stat
 
             assert.is_not_nil(targets)
             local t = targets.arrange_test
@@ -332,6 +378,31 @@ describe("meson module", function()
                 },
                 t.sources
             )
+        end)
+
+        it("returns nil without spawning when the build dir isn't configured", function()
+            -- No meson-info/ → unconfigured tree. Must not spawn meson/python.
+            local uv = vim.uv or vim.loop
+            local orig_fs_stat = uv.fs_stat
+            local orig_system = vim.fn.system
+            local spawned = false
+            ---@diagnostic disable-next-line: duplicate-set-field
+            uv.fs_stat = function(p)
+                if p == "/unbuilt/meson-info" then return nil end
+                return orig_fs_stat(p)
+            end
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.system = function() spawned = true; return "" end
+
+            local targets = meson.parse_targets({ build_dir = "/unbuilt" })
+
+            ---@diagnostic disable-next-line: duplicate-set-field
+            uv.fs_stat = orig_fs_stat
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.system = orig_system
+
+            assert.is_nil(targets)
+            assert.is_false(spawned)
         end)
     end)
 

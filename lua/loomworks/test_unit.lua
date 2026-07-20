@@ -23,10 +23,33 @@ function TestUnit:discover_async(callback) end
 --- @return table|nil { cmd, env, cwd, output_path }
 function TestUnit:test_command(test_id, opts) end
 
---- Construct a command to run all tests.
+--- Construct a command to run all tests as structured, per-test output (editor
+--- UI): a framework harness that emits a machine-readable results file.
 --- @param opts? table { filter?: string }
 --- @return table|nil { cmd, env, cwd, output_path }
 function TestUnit:test_command_all(opts) end
+
+--- Construct the module's NATIVE "run all tests" command — the one whose
+--- process exit status is authoritative (0 iff every test passed), streaming
+--- human-readable output. The headless-runner seam (spec §8.9.2, §16.16): a
+--- batch runner executes it and reports its exit code, with no discovery or
+--- result parsing. nil when the module has no native batch runner.
+--- `opts.extra_args` forwards caller args to the runner; `opts.junit` requests
+--- JUnit XML output. `junit_out` in the result is where the runner actually
+--- wrote it (the requested path when the runner writes there directly, else the
+--- runner's own fixed location, which the caller copies to the request).
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- @return table|nil { cmd, env?, cwd?, junit_out?: string }
+function TestUnit:run_command_all(opts) end
+
+--- Whether `run_command_all` rebuilds this unit's test targets before running
+--- (e.g. `meson test`). When true, a headless test run (§16.16) skips its own
+--- separate build of the unit as redundant. Defaults false — the runner
+--- assumes an already-built tree (e.g. `ctest`, which does not build).
+--- @return boolean
+function TestUnit:run_command_all_rebuilds()
+    return false
+end
 
 --- Parse test results from output.
 --- @param output_path string

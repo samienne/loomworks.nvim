@@ -14,7 +14,9 @@ local debug_mod = require("loomworks.debug")
 --- @field _target loomworks.Target|nil direct reference (module targets)
 --- @field _target_id string|nil fallback identifier for re-resolution
 --- @field _launch_config table|nil launch config from loomworks.json
+--- @field _config_target loomworks.Target|nil target a target-backed launch config references (§8.7)
 --- @field _launch_name string|nil name of the launch config
+--- @field _working_dir string|nil descriptor working-dir override (module targets, §8.7)
 --- @field _device_target_id string|nil device target ID (module-generated)
 --- @field _device_target_label string|nil display label for device target
 --- @field _launch_task_id number|nil overseer task ID of running launch
@@ -44,6 +46,7 @@ function LaunchTarget:_update(descriptor)
     self._launch_name = descriptor.launch
     self._device_target_id = descriptor.device_target
     self._device_target_label = descriptor.device_target_label
+    self._working_dir = descriptor.working_dir
 
     -- Resolve project from descriptor key (deserialization from user.json)
     self._project = nil
@@ -61,19 +64,42 @@ function LaunchTarget:_update(descriptor)
         local pp = self._profile:project(descriptor.project)
         if pp then
             self._config_unit = pp._config_unit
-            if self._config_unit and self._config_unit.targets and self._target_id then
-                self._target = self._config_unit.targets[self._target_id]
+            if self._config_unit and self._target_id then
+                self._target = self:_resolve_target_ref(self._target_id)
             end
         end
     end
 
-    -- Resolve launch config from project domain object
+    -- Resolve launch config from project domain object. A launch config may be
+    -- command-type (`command`) or target-backed (`target`, §8.7); resolve the
+    -- referenced target for the latter.
     self._launch_config = nil
+    self._config_target = nil
     if self._launch_name and self._project then
-        if self._project.launch and self._project.launch[self._launch_name] then
-            self._launch_config = self._project.launch[self._launch_name]
+        local cfg = self._project.launch and self._project.launch[self._launch_name]
+        if cfg then
+            self._launch_config = cfg
+            if cfg.target and self._config_unit then
+                self._config_target = self:_resolve_target_ref(cfg.target)
+            end
         end
     end
+end
+
+--- Resolve a target reference (a descriptor's `target` id or a target-backed
+--- launch config's `target`) against the config unit's parsed targets — by
+--- exact key first, then by display name — so a friendly name typed at
+--- `lw launch add --from-target` resolves without knowing the module's opaque id.
+--- @param ref string
+--- @return loomworks.Target|nil
+function LaunchTarget:_resolve_target_ref(ref)
+    local targets = self._config_unit and self._config_unit.targets
+    if not targets or not ref then return nil end
+    if targets[ref] then return targets[ref] end
+    for _, t in pairs(targets) do
+        if t.display_name and t:display_name() == ref then return t end
+    end
+    return nil
 end
 
 function LaunchTarget:__tostring()
@@ -389,17 +415,23 @@ end
 --- Execute deploy steps for a single phase. Returns a Future.
 --- @param phase "pre_build"|"post_build"
 --- @return loomworks.Future
-function LaunchTarget:_deploy_phase(phase)
+--- @param phase "pre_build"|"post_build"
+--- @param on_complete? fun(ok: boolean, err?: string) invoked synchronously
+---   (deploy is synchronous). Lets the headless runner drive deploy without
+---   depending on Future scheduling, which needs an event loop the CLI does
+---   not pump. The editor omits it and consumes the returned Future.
+function LaunchTarget:_deploy_phase(phase, on_complete)
     local future_mod = require("loomworks.future")
     local deploy = self:_resolved_deploy()
-    if not deploy then return future_mod.resolved(true) end
+    if not deploy then if on_complete then on_complete(true) end; return future_mod.resolved(true) end
 
     local deploy_mod = require("loomworks.deploy")
     local pre_dict, post_dict = deploy_mod.partition_by_phase(deploy)
     local phase_dict = phase == "pre_build" and pre_dict or post_dict
-    if not next(phase_dict) then return future_mod.resolved(true) end
+    if not next(phase_dict) then if on_complete then on_complete(true) end; return future_mod.resolved(true) end
 
     if not self._project then
+        if on_complete then on_complete(false, "no project for deploy") end
         return future_mod.rejected("no project for deploy")
     end
 
@@ -410,12 +442,38 @@ function LaunchTarget:_deploy_phase(phase)
         launch_project = self._project,
     }
 
-    local f = deploy_mod.execute_deploy_steps(
-        phase_dict, ctx, ws._deploy_records, ws._core._deps.normalize)
+    -- Persist deploy records exactly once, whichever settlement path fires
+    -- first (synchronous on_complete for the CLI, or the Future for the editor).
+    local saved = false
+    local function save_once() if not saved then saved = true; ws:_save_cache() end end
 
-    f:next(function() ws:_save_cache() end)
+    local cb = on_complete and function(ok, err)
+        if ok then save_once() end
+        on_complete(ok, err)
+    end or nil
+
+    local f = deploy_mod.execute_deploy_steps(
+        phase_dict, ctx, ws._deploy_records, ws._core._deps.normalize, cb)
+
+    f:next(function() save_once() end)
 
     return f
+end
+
+--- Run every deploy phase synchronously and return (ok, err). Headless seam
+--- (§16.17): the editor drives pre-build deploy inside build() and post-build
+--- deploy via deploy(); a headless run has already built the profile, so it
+--- runs both phases here. Funnels through the same _deploy_phase code path.
+--- @return boolean ok, string|nil err
+function LaunchTarget:deploy_sync()
+    local ok, err = true, nil
+    for _, phase in ipairs({ "pre_build", "post_build" }) do
+        self:_deploy_phase(phase, function(o, e)
+            if not o then ok, err = false, e end
+        end)
+        if not ok then break end
+    end
+    return ok, err
 end
 
 --- Execute post-build deploy steps before launching. Returns a Future.
@@ -439,38 +497,172 @@ function LaunchTarget:launch()
     if self._launch_config then
         self:_launch_command()
     elseif self._target and self._target:is_executable() then
-        self._target:launch()
+        self._target:launch({ working_dir = self:_effective_cwd() })
     end
+end
+
+--- Resolve a command-type launch config to a run spec (command, args,
+--- working directory, environment) with all variables expanded. Pure —
+--- spawns no task. Shared seam for `_launch_command` (editor) and the
+--- headless runner (§16.17).
+--- @return { cmd: string, args: string[], cwd: string, env: table }|nil spec
+--- @return string|nil err
+function LaunchTarget:resolve_command_spec()
+    local cfg = self._launch_config
+    if not cfg then return nil, "no launch configuration" end
+
+    local ws = self._workspace
+    local ctx = expand.launch_context(ws, self._profile, self._project)
+
+    -- A launch config is either command-type (`command`) or target-backed
+    -- (`target`, §8.7). For target-backed, the command is the target's built
+    -- artifact and we inherit the build-tree run environment (DLL paths); the
+    -- config's args/env/working_dir layer on top.
+    local cmd, base_env, default_cwd
+    if cfg.target then
+        local target = self._config_target
+        if not target then
+            return nil, "launch config '" .. tostring(self._launch_name)
+                .. "' references target '" .. tostring(cfg.target)
+                .. "' — not found (build the profile so its targets are known)"
+        end
+        local tspec, terr = target:resolve_run_spec()
+        if not tspec then return nil, terr end
+        cmd, base_env, default_cwd = tspec.cmd, tspec.env, tspec.cwd
+    elseif cfg.command then
+        cmd = expand.expand_string(cfg.command, ctx)
+        default_cwd = ws.root .. "/" .. (self._project.path or self._project.key)
+    else
+        return nil, "launch configuration has neither command nor target"
+    end
+
+    local args = expand.expand_array(cfg.args, ctx) or {}
+
+    local cwd = default_cwd
+    if cfg.working_dir then
+        local expanded_cwd = expand.expand_string(cfg.working_dir, ctx)
+        -- Absolute → as-is; otherwise workspace-root-relative.
+        if expanded_cwd:match("^/") or expanded_cwd:match("^%a:") then
+            cwd = expanded_cwd
+        elseif expanded_cwd == "." or expanded_cwd == "./" then
+            cwd = ws.root
+        else
+            cwd = ws.root .. "/" .. expanded_cwd
+        end
+    end
+
+    -- Env: for a target-backed config start from the run environment (a full
+    -- env table) and layer declared vars over it; for a command config, just
+    -- the declared vars (unchanged behavior).
+    local decl = expand.expand_dict(cfg.env, ctx)
+    local env
+    if base_env then
+        env = base_env
+        for k, v in pairs(decl or {}) do env[k] = v end
+    else
+        env = decl
+    end
+
+    return { cmd = cmd, args = args, cwd = cwd, env = env }
+end
+
+--- Resolve the effective working directory for a **module-target** launch
+--- (§8.7): per-invocation `override` → the descriptor's `working_dir` → nil
+--- (let the target default to the project directory). Variable-expanded in the
+--- launch context; an absolute result is used as-is, otherwise it is taken
+--- relative to the workspace root. Returns an absolute path, or nil.
+--- @param override? string raw per-invocation working dir (may hold variables)
+--- @return string|nil
+function LaunchTarget:_effective_cwd(override)
+    local raw = override or self._working_dir
+    if not raw or raw == "" then return nil end
+    local ws = self._workspace
+    local ctx = expand.launch_context(ws, self._profile, self._project)
+    local ex = expand.expand_string(raw, ctx)
+    if ex:match("^/") or ex:match("^%a:") then return ex end
+    if ex == "." or ex == "./" then return ws.root end
+    return ws.root .. "/" .. ex
+end
+
+--- Whether this launch target is a module build target (executable), as
+--- opposed to a command launch configuration.
+--- @return boolean
+function LaunchTarget:is_module_target()
+    return self._target_id ~= nil and self._launch_name == nil
+end
+
+--- Effective working directory of a module-target launch, for display and the
+--- editor path: the descriptor's `working_dir` (expanded) or the project
+--- directory default (§8.7). Absolute, or nil if unresolvable.
+--- @return string|nil
+function LaunchTarget:working_directory()
+    return self:_effective_cwd() or (self._project and self._project:abs_path()) or nil
+end
+
+--- Whether this launch target carries an explicit `working_dir` override (vs
+--- defaulting to the project directory, §8.7).
+--- @return boolean
+function LaunchTarget:has_working_dir_override()
+    return self._working_dir ~= nil and self._working_dir ~= ""
+end
+
+--- One-line human description for status/listings, e.g. "app:app (target)" or
+--- "app:run (launch config)". Uses the stored reference, so it works without
+--- the target being resolved/built.
+--- @return string
+function LaunchTarget:describe()
+    local proj = self._project and self._project.key or "?"
+    if self._launch_name then return proj .. ":" .. self._launch_name .. " (launch config)" end
+    if self._target_id then return proj .. ":" .. tostring(self._target_id) .. " (target)" end
+    if self._device_target_id then return proj .. ":" .. tostring(self._device_target_id) .. " (device)" end
+    return proj .. " (unresolved)"
+end
+
+--- Resolve this launch target to a normalized run spec, dispatching between a
+--- command launch configuration and an executable build target. Pure — spawns
+--- no task. `opts.extra_args` are appended to the argument list (the headless
+--- runner forwards `-- args` here, §16.17; a command config's own declared
+--- arguments precede them). `opts.working_dir` overrides the working directory
+--- for a module-target launch. The editor calls with no extra args.
+--- @param opts? { extra_args?: string[], working_dir?: string }
+--- @return { cmd: string, args: string[], cwd: string, env: table|nil, name: string }|nil spec
+--- @return string|nil err
+function LaunchTarget:resolve_launch_spec(opts)
+    opts = opts or {}
+    local spec, err
+    if self._launch_config then
+        spec, err = self:resolve_command_spec()
+        if spec then
+            spec.name = self._project.key .. ": " .. (self._launch_name or "launch")
+        end
+    elseif self._target and self._target:is_executable() then
+        local tspec, terr = self._target:resolve_run_spec({
+            working_dir = self:_effective_cwd(opts.working_dir),
+        })
+        if tspec then
+            spec = { cmd = tspec.cmd, args = {}, cwd = tspec.cwd, env = tspec.env, name = tspec.name }
+        else
+            err = terr
+        end
+    else
+        return nil, "launch target is neither a command configuration nor an executable target"
+    end
+    if not spec then return nil, err end
+
+    if opts.extra_args then
+        for _, a in ipairs(opts.extra_args) do
+            spec.args[#spec.args + 1] = a
+        end
+    end
+    return spec
 end
 
 --- Launch from a command-type config (loomworks.json launch section).
 function LaunchTarget:_launch_command()
-    local cfg = self._launch_config
-    if not cfg or not cfg.command then return end
+    local spec = self:resolve_command_spec()
+    if not spec then return end
 
-    local ws = self._workspace
-
-    -- Build expansion context
-    local ctx = expand.launch_context(ws, self._profile, self._project)
-
-    -- Expand variables
-    local cmd = expand.expand_string(cfg.command, ctx)
-    local args = expand.expand_array(cfg.args, ctx) or {}
-
-    local cwd
-    if cfg.working_dir then
-        local expanded_cwd = expand.expand_string(cfg.working_dir, ctx)
-        -- If expansion produced an absolute path, use as-is; otherwise prepend workspace root
-        if expanded_cwd:match("^/") or expanded_cwd:match("^%a:") then
-            cwd = expanded_cwd
-        else
-            cwd = ws.root .. "/" .. expanded_cwd
-        end
-    else
-        cwd = ws.root .. "/" .. (self._project.path or self._project.key)
-    end
-
-    local env = expand.expand_dict(cfg.env, ctx)
+    local cmd, args, cwd, env = spec.cmd, spec.args, spec.cwd, spec.env
 
     -- Dispose previous completed launch task
     if self._launch_task_id then

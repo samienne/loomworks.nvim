@@ -184,6 +184,16 @@ function Core:_on_files_read(root, paths, results)
         return
     end
 
+    -- Refuse to load when user.json has structurally invalid projects, rather
+    -- than dropping them — a later save would persist the drop (data loss).
+    -- Preserve the file and tell the user what to fix.
+    if data.user_projects_invalid then
+        local msg = "user.json is invalid: " .. data.user_projects_invalid ..
+            " — fix .nvim/loomworks.user.json and retry"
+        fail(msg, { root = root, message = msg })
+        return
+    end
+
     -- Validate projects
     local ok, val_err = self:_validate_projects(data.config, data.root)
     if not ok then
