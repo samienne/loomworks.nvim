@@ -74,11 +74,52 @@ local function read_file(path)
   return s
 end
 
+--- How many times a transient fetch is attempted, and the backoff between
+--- attempts. CI runners hit connection resets often enough that a single
+--- attempt makes `lw install` flaky through no fault of the release.
+M.MAX_ATTEMPTS = 3
+M.RETRY_DELAY_MS = 1000
+
+--- Is this curl failure worth retrying?
+---
+--- `curl -f` exits 22 for any HTTP status >= 400, so the exit code alone can't
+--- separate "this release does not exist" from "the server is briefly unwell".
+--- A 4xx is the server stating the request itself is wrong — retrying only
+--- delays a certain failure — except 408/429, which explicitly invite a retry.
+--- Everything else (resets, timeouts, DNS, 5xx) may well succeed next time.
+--- @param code integer curl exit code
+--- @param stderr string
+--- @return boolean
+function M.is_transient(code, stderr)
+  if code == 0 then return false end
+  if code ~= 22 then return true end
+  local status = tonumber((stderr or ""):match("returned error:%s*(%d%d%d)"))
+  if not status then return true end
+  if status == 408 or status == 429 then return true end
+  return not (status >= 400 and status < 500)
+end
+
+--- Run curl, retrying transient failures. Returns code, stdout, stderr, or
+--- nil, err when curl cannot be spawned at all (retrying that is pointless —
+--- a missing curl will still be missing a second later).
+local function curl_with_retry(args)
+  local code, out, err
+  for attempt = 1, M.MAX_ATTEMPTS do
+    code, out, err = run("curl", args)
+    if code == nil then return nil, out end
+    if code == 0 or not M.is_transient(code, err) then break end
+    if attempt < M.MAX_ATTEMPTS and uv.sleep then
+      uv.sleep(M.RETRY_DELAY_MS * attempt)
+    end
+  end
+  return code, out, err
+end
+
 --- Fetch `url` and return its bytes, or nil, err.
 function M.fetch(url)
   local lp = local_path(url)
   if lp then return read_file(lp) end
-  local code, out, err = run("curl", curl_args(url))
+  local code, out, err = curl_with_retry(curl_args(url))
   if code == nil then return nil, out end
   if code ~= 0 then
     return nil, "curl failed (" .. tostring(code) .. ") for " .. url ..
@@ -99,7 +140,7 @@ function M.fetch_to_file(url, dest)
     f:write(bytes); f:close()
     return true
   end
-  local code, out, err = run("curl", curl_args(url, { "-o", dest }))
+  local code, out, err = curl_with_retry(curl_args(url, { "-o", dest }))
   if code == nil then return nil, out end
   if code ~= 0 then
     return nil, "curl failed (" .. tostring(code) .. ") for " .. url ..

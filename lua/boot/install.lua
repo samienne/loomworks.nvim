@@ -176,6 +176,7 @@ function M.install(opts)
   end
 
   -- 3. fetch the first bundle so the tool is immediately usable
+  local bundle_err
   if opts.no_bundle then
     say("· bundle: skipped (--no-bundle). Run `lw self-update` when ready.")
   elseif opts.dry_run then
@@ -185,12 +186,24 @@ function M.install(opts)
     if res then
       say((res.updated and "✓ fetched loomworks " or "· loomworks already at ") .. res.version)
     else
-      say("! bundle: self-update failed (" .. tostring(err) .. ").")
-      say("        `lw self-update` again once reachable; the binary is installed.")
+      -- An install without a bundle produces a binary that cannot run any
+      -- workspace command — it fails later with "no loomworks release is
+      -- installed", far from the fetch that actually failed. Report the
+      -- failure here, and let the caller exit non-zero: a CI job must not be
+      -- told an install succeeded when the result is unusable.
+      bundle_err = tostring(err)
+      say("✗ bundle: self-update failed (" .. bundle_err .. ").")
+      say("        The binary is installed but has no release to run. Retry")
+      say("        with `lw self-update`, or use `--no-bundle` to install the")
+      say("        binary alone on purpose.")
     end
   end
 
   say("")
+  if bundle_err then
+    say("Incomplete: the binary is on PATH but no release bundle was fetched.")
+    return out, "bundle fetch failed: " .. bundle_err
+  end
   say("Done. Try `lw version`. Shell completion: `lw completion bash` (see `lw help completion`).")
   return out
 end

@@ -120,6 +120,23 @@ run_case() {
     fi
     ok "$label toolchain: $tool"
 
+    # Layered configurations: an abstract mixin (no fields at all) must
+    # persist, and a child must be able to inherit it. Both halves used to be
+    # dropped silently, which made inheritance chains unusable from the CLI.
+    run_lw configuration add app mixin-base > "$out" 2>&1 \
+        || { note_fail "$label configuration add (mixin)" $?; return; }
+    run_lw configuration set app mixin-base options.LW_E2E_LAYER ON > "$out" 2>&1 \
+        || { note_fail "$label configuration set on mixin" $?; return; }
+    run_lw configuration list app > "$out" 2>&1
+    grep -q "mixin-base" "$out" \
+        || { note_fail "$label mixin-base did not persist" 0; return; }
+
+    # A canonical configuration name passed as a variant must be refused, not
+    # written through to produce CMAKE_BUILD_TYPE=variant:Debug.
+    if run_lw configuration add app bogus variant:Debug > "$out" 2>&1; then
+        note_fail "$label accepted a canonical name as a variant" 0; return
+    fi
+
     run_lw configuration-set create Debug app=variant:Debug > "$out" 2>&1 \
         || { note_fail "$label configuration-set create" $?; return; }
     run_lw profile create Debug "$tool" > "$out" 2>&1 \
