@@ -146,6 +146,16 @@ run_case() {
         note_fail "$label persisted a derived variant as if declared" 0; return
     fi
 
+    # Several bases form a mixin chain, merged left to right. Accepted as
+    # separate arguments or as one comma-separated list.
+    run_lw configuration add app chained variant:Debug mixin-base > "$out" 2>&1 \
+        || { note_fail "$label configuration add with two bases" $?; return; }
+    run_lw configuration get app chained inherits > "$out" 2>&1
+    grep -q "mixin-base" "$out" \
+        || { note_fail "$label second base was dropped" 0; return; }
+    run_lw configuration add app chained2 "variant:Debug,mixin-base" > "$out" 2>&1 \
+        || { note_fail "$label configuration add with CSV bases" $?; return; }
+
     run_lw configuration-set create Debug app=variant:Debug > "$out" 2>&1 \
         || { note_fail "$label configuration-set create" $?; return; }
     run_lw profile create Debug "$tool" > "$out" 2>&1 \

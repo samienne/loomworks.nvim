@@ -225,6 +225,68 @@ describe("meson module", function()
             end
             assert.is_true(found_opt)
         end)
+
+        --- Collect the -D args of a configure command.
+        local function d_args(proj, config_name)
+            local found = {}
+            for _, arg in ipairs(meson.tasks(proj, config_name)[1].builder().cmd) do
+                local k, v = arg:match("^%-D([^=]+)=(.*)$")
+                if k then found[k] = v end
+            end
+            return found
+        end
+
+        -- Inheriting a base gave a config the base's variant but NOT its
+        -- options: build_option_args merged project-wide + own only, never
+        -- walking `inherits` (despite claiming to mirror cmake). A mixin whose
+        -- whole purpose is to carry options therefore contributed nothing, so
+        -- multi-base chains silently built without the options they named.
+        it("merges options from an inherited base", function()
+            local proj2 = vim.deepcopy(project)
+            proj2.configurations = {
+                ["variant:Release"] = { variant = "Release", buildtype = "release" },
+                asan = { is_user = true, options = { b_sanitize = "address" } },
+                RelAsan = {
+                    is_user = true,
+                    inherits = { "variant:Release", "asan" },
+                    buildtype = "release",
+                },
+            }
+            assert.equals("address", d_args(proj2, "RelAsan").b_sanitize)
+        end)
+
+        it("own options beat an inherited base's", function()
+            local proj2 = vim.deepcopy(project)
+            proj2.configurations = {
+                base = { is_user = true, options = { warning_level = "1" } },
+                child = {
+                    is_user = true,
+                    inherits = "base",
+                    buildtype = "debug",
+                    options = { warning_level = "3" },
+                },
+            }
+            assert.equals("3", d_args(proj2, "child").warning_level)
+        end)
+
+        it("a later base beats an earlier one", function()
+            local proj2 = vim.deepcopy(project)
+            proj2.configurations = {
+                first = { is_user = true, options = { warning_level = "1" } },
+                second = { is_user = true, options = { warning_level = "2" } },
+                child = { is_user = true, inherits = { "first", "second" }, buildtype = "debug" },
+            }
+            assert.equals("2", d_args(proj2, "child").warning_level)
+        end)
+
+        it("survives a circular inherits chain", function()
+            local proj2 = vim.deepcopy(project)
+            proj2.configurations = {
+                a = { is_user = true, inherits = "b", options = { x = "1" } },
+                b = { is_user = true, inherits = "a", buildtype = "debug" },
+            }
+            assert.equals("1", d_args(proj2, "a").x)
+        end)
     end)
 
     describe("clean_tasks", function()
