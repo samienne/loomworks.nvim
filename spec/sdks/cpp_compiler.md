@@ -40,7 +40,7 @@ key derivation:
 | Field | Source |
 |------|--------|
 | `version` | parsed from `--version` |
-| `family` | "clang" / "gcc" / nil (unknown) |
+| `family` | "clang" / "gcc" / nil (unknown) — determined from `--version` output; the binary name is only a fallback, since a name can lie (macOS ships `gcc`/`g++` as Apple clang shims) |
 | `basename_token` | sanitized parent-dir name (e.g. `cross-clang` from `/opt/cross-clang/bin/clang++`), or the binary basename when no parent dir |
 
 ## 4. Key derivation (`derive_key`)
