@@ -824,6 +824,14 @@ replaces it, which would drop `PATH`).
   `lw launch <add|set|remove>`, and per-item `lw <kind> publish`. Each delegates
   to the same atomic `Workspace` mutation the editor uses (e.g. project rename →
   `Workspace:rename_project`, workspace name → `Workspace:rename_workspace`).
+- **Convention migration** (spec §16.19): `lua/loomworks/migrate.lua` holds a
+  registry of named rules, each separating `plan` (what would change) from
+  `apply` (change it), so `lw migrate --check` can lint without write access
+  and the applying path can show every before/after first. Rules rewrite form,
+  never meaning, and report anything they cannot rewrite safely instead of
+  guessing. Rewrites go through `Project:save_configuration` like any other
+  mutation; `lw migrate` then republishes, since `loomworks.json` is
+  regenerated from the working copy rather than patched.
 
 Out of scope for the standalone: debug launch (DAP, needs nvim-dap) and device
 install / launch. Deploy sources outside the active profile and
