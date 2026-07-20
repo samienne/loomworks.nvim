@@ -56,16 +56,44 @@ local function parse_version(output)
     return output:match("(%d+%.%d+%.%d+)") or output:match("(%d+%.%d+)")
 end
 
---- Probe a candidate compiler binary by name. Returns absolute path
---- and version if it exists and reports a version. Nil otherwise.
+--- Identify the compiler family from `--version` output, falling back to the
+--- binary name when the output says nothing we recognize.
+---
+--- The output is authoritative and the name is only a hint, because a name can
+--- lie: on macOS `/usr/bin/gcc` and `/usr/bin/g++` are shims for Apple clang.
+--- Trusting the name there reports one compiler twice — honestly as clang, and
+--- again as a "GCC" that is not GCC — so a toolchain pinned to gcc silently
+--- builds with clang.
+---
+--- Order matters: "Apple clang" output still contains "clang".
+--- @param ver_output string|nil raw `--version` stdout
+--- @param name_or_path string|nil binary name or path, used only as fallback
+--- @return "gcc"|"clang"|nil
+local function family_of(ver_output, name_or_path)
+    local lower = (ver_output or ""):lower()
+    if lower:match("clang version") or lower:match("apple clang") then
+        return "clang"
+    elseif lower:match("free software foundation") or lower:match("gcc")
+        or lower:match("g%+%+") then
+        return "gcc"
+    end
+    local basename = (name_or_path or ""):match("[^/\\]+$") or ""
+    if basename:match("^clang") then return "clang"
+    elseif basename:match("^g[c%+]") then return "gcc" end
+    return nil
+end
+
+--- Probe a candidate compiler binary by name. Returns absolute path,
+--- version and the raw `--version` output if it exists and reports a
+--- version. Nil otherwise.
 --- @param name string
---- @return string|nil path, string|nil version
+--- @return string|nil path, string|nil version, string|nil ver_output
 local function probe(name)
-    if vim.fn.executable(name) ~= 1 then return nil, nil end
+    if vim.fn.executable(name) ~= 1 then return nil, nil, nil end
     local path = vim.fn.exepath(name)
-    if path == "" then return nil, nil end
-    local ver = parse_version(run({ path, "--version" }))
-    return path, ver
+    if path == "" then return nil, nil, nil end
+    local out = run({ path, "--version" })
+    return path, parse_version(out), out
 end
 
 --- Find a clangd binary alongside a compiler driver.
@@ -109,9 +137,14 @@ end
 --- Candidate binary names worth probing. Plain names + versioned
 --- variants. Kept narrow on purpose; exotic toolchains can be added
 --- when a user reports needing them.
+---
+--- Clang names come first so that when two names resolve to the same compiler
+--- (macOS ships gcc/g++ as Apple clang shims) the entry keeps the path that
+--- matches what it actually is. Elsewhere the two families produce different
+--- ids, so the order has no effect.
 local function candidate_names()
     local names = {}
-    for _, base in ipairs({ "g++", "gcc", "clang++", "clang" }) do
+    for _, base in ipairs({ "clang++", "clang", "g++", "gcc" }) do
         names[#names + 1] = base
         for v = 8, 25 do
             names[#names + 1] = base .. "-" .. v
@@ -131,13 +164,15 @@ function M.detect()
     local seen_path = {}
 
     for _, name in ipairs(candidate_names()) do
-        local path, version = probe(name)
+        local path, version, ver_output = probe(name)
         if not path or not version then goto continue end
         if seen_path[path] then goto continue end
 
-        local family
-        if name:match("^clang") then family = "clang"
-        elseif name:match("^g[c%+]") then family = "gcc" end
+        -- Ask the binary what it is rather than trusting its name — see
+        -- family_of. A shim (macOS /usr/bin/gcc → Apple clang) resolves to its
+        -- real family here, so it collides with the honest entry on `id` below
+        -- and is deduplicated instead of being listed as a second compiler.
+        local family = family_of(ver_output, name)
         if not family then goto continue end
 
         local id = family .. "-" .. version
@@ -234,20 +269,9 @@ function M.probe_path(path)
     local version = parse_version(ver_output)
     if not version then return nil end
 
-    -- Family detection: prefer signal in `--version` output (most
-    -- distros embed the family name), fall back to the basename.
-    -- Order matters: "Apple clang" output still contains "clang".
-    local family
-    local lower = ver_output:lower()
-    if lower:match("clang version") or lower:match("apple clang") then
-        family = "clang"
-    elseif lower:match("free software foundation") or lower:match("gcc") or lower:match("g%+%+") then
-        family = "gcc"
-    else
-        local basename = path:match("[^/\\]+$") or ""
-        if basename:match("^clang") then family = "clang"
-        elseif basename:match("^g[c%+]") then family = "gcc" end
-    end
+    -- Family detection: the `--version` output is authoritative, the basename
+    -- only a fallback. Shared with the PATH scan (see family_of).
+    local family = family_of(ver_output, path)
 
     -- Derive C counterpart by name only when input looks like a
     -- C++ driver. We don't `probe` (no recursive --version call) —

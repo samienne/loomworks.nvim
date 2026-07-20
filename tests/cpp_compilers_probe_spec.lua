@@ -201,4 +201,81 @@ describe("cpp_compilers.detect PATH scan", function()
         end)
         cpp.clear_cache()
     end)
+
+    -- Regression: on macOS /usr/bin/gcc and /usr/bin/g++ are shims for Apple
+    -- clang. detect() derived the family from the BINARY NAME, so the same
+    -- compiler was reported twice — once honestly as clang-17.0.0 and once as
+    -- "gcc-17.0.0 / GCC 17.0.0". A CI matrix pinning gcc-17 expecting GCC
+    -- silently got clang. Family must come from `--version`, as probe_path
+    -- already does.
+    local function macos_stubs(system)
+        return {
+            ["vim.fn.executable"] = function(name)
+                return (name == "gcc" or name == "g++"
+                    or name == "clang" or name == "clang++") and 1 or 0
+            end,
+            ["vim.fn.exepath"] = function(name) return "/usr/bin/" .. name end,
+            ["vim.fn.system"] = system,
+            ["vim.v"] = { shell_error = 0 },
+            ["vim.uv.fs_stat"] = function() return nil end,
+        }
+    end
+
+    -- Apple's shims announce themselves honestly when asked.
+    local function apple_version(cmd)
+        local path = type(cmd) == "table" and cmd[1] or tostring(cmd)
+        if path:match("gcc$") or path:match("g%+%+$") or path:match("clang") then
+            return "Apple clang version 17.0.0 (clang-1700.0.13.3)\n"
+                .. "Target: arm64-apple-darwin24.0.0\n"
+        end
+        return ""
+    end
+
+    it("does not report Apple's gcc shim as GCC", function()
+        cpp.clear_cache()
+        with_stubs(macos_stubs(apple_version), function()
+            for _, c in ipairs(cpp.detect()) do
+                assert.not_equals("gcc", c.family,
+                    "Apple clang shim must not be reported as the gcc family "
+                    .. "(id " .. tostring(c.id) .. ")")
+            end
+        end)
+        cpp.clear_cache()
+    end)
+
+    it("collapses the gcc/clang shims into a single compiler entry", function()
+        cpp.clear_cache()
+        with_stubs(macos_stubs(apple_version), function()
+            local found = cpp.detect()
+            assert.equals(1, #found,
+                "same compiler behind two names must be deduplicated")
+            assert.equals("clang-17.0.0", found[1].id)
+            -- The surviving entry keeps the honest path, not the shim's.
+            assert.equals("/usr/bin/clang++", found[1].path)
+            assert.equals("/usr/bin/clang", found[1].c_path)
+        end)
+        cpp.clear_cache()
+    end)
+
+    -- The guard must not overcorrect: a real GCC still has to be found by name
+    -- on a system where gcc is genuinely GCC.
+    it("still detects a real GCC alongside clang", function()
+        cpp.clear_cache()
+        with_stubs(macos_stubs(function(cmd)
+            local path = type(cmd) == "table" and cmd[1] or tostring(cmd)
+            if path:match("clang") then
+                return "clang version 18.1.7\n"
+            end
+            return "g++ (Homebrew GCC 14.4.0) 14.4.0\n"
+                .. "Copyright (C) 2024 Free Software Foundation, Inc.\n"
+        end), function()
+            local by_family = {}
+            for _, c in ipairs(cpp.detect()) do by_family[c.family] = c end
+            assert.is_not_nil(by_family.gcc, "real GCC must still be detected")
+            assert.equals("14.4.0", by_family.gcc.version)
+            assert.is_not_nil(by_family.clang)
+            assert.equals("18.1.7", by_family.clang.version)
+        end)
+        cpp.clear_cache()
+    end)
 end)
