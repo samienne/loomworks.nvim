@@ -134,7 +134,14 @@ function M.clang_cl()
         M._clang_cl = false
         return nil
     end
-    path = path:gsub("\\", "/")
+    -- `exepath` reports the extension in whatever casing PATHEXT carries, so
+    -- this commonly comes back as `clang-cl.EXE`. meson matches the compiler
+    -- basename against `clang-cl.exe` case-sensitively: given the uppercase
+    -- spelling it does not recognise clang's MSVC driver, probes for a
+    -- GNU-style linker instead, and configure fails with "Unable to detect
+    -- linker for compiler `... -Wl,--version`". Windows paths are
+    -- case-insensitive, so normalising the extension is free.
+    path = path:gsub("\\", "/"):gsub("%.[eE][xX][eE]$", ".exe")
     local version = parse_version(run({ path, "--version" })) or "0"
     M._clang_cl = { path = path, version = version }
     return M._clang_cl
