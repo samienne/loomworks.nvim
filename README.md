@@ -530,8 +530,12 @@ lw publish                        # write the shared loomworks.json
 ```
 
 Items you add default to `local+shared`, so `lw publish` writes them to the
-committed `loomworks.json`; `--local` keeps one private. See `lw help publish`
-for the intent model and [Workspace File Layout](#workspace-file-layout).
+committed `loomworks.json`; `--local` keeps one private. **Profiles are the
+exception** — they default to `local`, because they pin toolchains resolved on
+your machine. Share the configuration set instead and let each machine create
+its own profile, or pass `--shared` when a profile really is portable. See
+`lw help publish` for the intent model and
+[Workspace File Layout](#workspace-file-layout).
 
 ### Using `lw` in CI
 

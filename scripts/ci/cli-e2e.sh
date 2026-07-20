@@ -125,6 +125,17 @@ run_case() {
     run_lw profile create Debug "$tool" > "$out" 2>&1 \
         || { note_fail "$label profile create" $?; return; }
     local prof="Debug:$tool"
+    grep -q "\[local\]" "$out" || { note_fail "$label profile not created local" 0; return; }
+
+    # A profile pins toolchains resolved on THIS machine, so it is created
+    # `local` and `lw publish` must leave it out of the shared loomworks.json —
+    # while the configuration set, the portable unit, goes in (spec §2.4).
+    run_lw publish > "$out" 2>&1 || { note_fail "$label publish" $?; return; }
+    if grep -qF "$prof" loomworks.json; then
+        note_fail "$label publish leaked machine-specific profile '$prof'" 0; return
+    fi
+    grep -q '"Debug"' loomworks.json \
+        || { note_fail "$label publish omitted the configuration set" 0; return; }
 
     run_lw build "$prof" > "$out" 2>&1; rc=$?
     if grep -q "BUILD OK" "$out"; then ok "$label build"; else note_fail "$label build" "$rc"; return; fi

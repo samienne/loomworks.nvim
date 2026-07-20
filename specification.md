@@ -691,6 +691,16 @@ a file-presence computation, and a host MUST let the user override it at
 creation (e.g. a `local` / `shared` selector). Changing an existing item's
 intent afterward is an explicit user action in any host.
 
+**Profiles are excepted**: every host creates a profile `local`, regardless
+of its default for other item kinds. A profile binds a configuration set to
+resolved toolchains, and a toolchain is a property of the machine that
+detected it — publishing one asserts a build environment the reader may not
+have. The portable unit is the configuration set, which each machine pairs
+with its own locally resolved toolchain. A host MUST still honour an explicit
+share request at creation, and publishing a profile afterward remains a
+normal explicit action (it pulls its set and projects along by the closure
+rule below).
+
 #### Effective intent (transitive)
 
 An item's **effective intent** is the union of its explicit intent and the

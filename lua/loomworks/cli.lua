@@ -176,11 +176,15 @@ end
 --- explicit-argument hint instead.
 local force_noninteractive = false
 
---- Creation intent for `add`/`create` commands. nil = the CLI default,
---- `local+shared` (spec §2.4: the CLI authors the shared contract). Set to
+--- Creation intent for `add`/`create` commands. nil = the per-kind default,
+--- `local+shared` for most items (spec §2.4: the CLI authors the shared
+--- contract). Callers pass `default` to override that — profiles create
+--- `local`, since a profile pins toolchains resolved on this machine. Set to
 --- `local` by `--local` or to `local+shared` by `--shared` in main().
 local create_intent = nil
-local function created_intent() return create_intent or "local+shared" end
+local function created_intent(default)
+  return create_intent or default or "local+shared"
+end
 
 --- May we prompt the user? False when forced non-interactive, or when stdin
 --- isn't a terminal (piped / redirected / closed — the common CI case).
@@ -2236,7 +2240,10 @@ function M.cmd_profile_create(root, args)
   local profile = cs:ensure_profile(first_entry)
   if not profile then die("failed to create profile for set '" .. cs.name .. "'") end
   for i = 2, #order do profile:add_tool(resolved[order[i]].key) end
-  profile._intent = created_intent()
+  -- Profiles default to `local`: the toolchains they pin were resolved on
+  -- this machine, so publishing one by default would push a build environment
+  -- into the shared contract that other machines may not have (spec §2.4).
+  profile._intent = created_intent("local")
   if activate then profile:activate() else ws:_save_user() end
 
   out((existed and "profile already exists: " or "created profile: ") .. profile.key ..
@@ -3179,6 +3186,9 @@ configuration set, profile, configuration) carries an intent:
   local+shared   both files — the CLI default (`lw` authors the shared config)
   shared         loomworks.json only (rare; reference-only)
 In the CLI, `add`/`create` default to local+shared, so `lw publish` writes them.
+PROFILES are the exception: they default to local, because they pin toolchains
+resolved on THIS machine. Share the configuration set instead — each machine
+pairs it with a locally created profile.
 Use --local at creation to keep something private, or --shared to be explicit.
 
 To share an item created --local (or made in the editor), publish it by name:
@@ -3275,6 +3285,9 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
             makes it active. A toolchain may be pinned coarsely — by major
             version (ninja-clang-19) or without an edition (msvc-17); it
             resolves to the best installed match (see the note below).
+            Created `local` — a profile pins toolchains resolved here, so it
+            stays out of loomworks.json unless you pass --shared or run
+            `lw profile publish`.
   remove <profile>                   (alias: rm)
             Drop a profile from the working copy. Removes the profile only —
             its build directories are left in place (`lw clean` removes
@@ -3417,9 +3430,10 @@ Do NOT change the user's active profile:
     stay in control; create/choose the profile explicitly.
 
 Intent: items you create default to local+shared and reach the committed
-loomworks.json on publish. Pass --local to keep something out of the shared
-file, and don't `publish` unless the task is to change the shared contract.
-See `lw help publish`.]],
+loomworks.json on publish — except profiles, which default to local because
+they pin machine-resolved toolchains. Pass --local to keep something out of the
+shared file, and don't `publish` unless the task is to change the shared
+contract. See `lw help publish`.]],
   sdk = [[lw sdk <types|list|add|remove>
 
 Declare a toolchain installation that auto-detection cannot find — a compiler
@@ -3550,9 +3564,10 @@ Quickstart (empty dir -> first build -> shared config):
   lw publish                               write the shared loomworks.json
 
 Items you add/create default to local+shared, so `lw publish` writes them to the
-committed loomworks.json. Use --local to keep something private; share it later
-with `lw <project|profile|configuration-set> publish <name>`. See `lw help
-publish` for the intent model.
+committed loomworks.json — profiles excepted, as they pin toolchains found on
+this machine. Use --local to keep something private, --shared to share a
+profile; or share later with `lw <project|profile|configuration-set> publish
+<name>`. See `lw help publish` for the intent model.
 
 New cmake/meson projects already expose configurations (Debug, Release, …) to
 map — `lw configuration list <project>` shows them; you only add configurations
