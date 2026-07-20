@@ -3528,6 +3528,21 @@ not part of the verified-bundle chain and MUST NOT be assumed to have verified
 the running binary. Once trusted this way, the host bootstraps the bundle chain
 (§16.12–16.13).
 
+The published hash list is itself **signed** with the release key (§16.12), and
+the acquisition procedure verifies that signature before trusting any hash in
+it. This makes the trust anchor the long-lived public key rather than a
+per-release digest, so the documented acquisition commands are stable across
+releases — a procedure that must be edited for every release invites being
+copied stale, or "repaired" by dropping the check. The verifying public key
+MUST therefore reach the user through a channel that is not the release
+artifacts themselves (e.g. embedded in the documentation).
+
+This establishes provenance, not omnipotence: where the signing key is held by
+the same platform that serves the artifacts, a compromise of that platform
+defeats both. An acquisition procedure MAY additionally offer verification
+anchored outside the project's own infrastructure (e.g. a public transparency
+log), which is the stronger check where available.
+
 ### 16.16 Headless test runs
 
 A headless **test** invocation resolves a profile and ensures it is configured
