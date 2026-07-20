@@ -212,13 +212,21 @@ function Configuration:_update(data)
         self.languages = nil
     end
 
+    -- Module fields this configuration got from a base rather than declaring.
+    -- Modules propagate inherited values (cmake: variant/toolchain/generator,
+    -- meson: variant/buildtype) so the build path has something concrete, but
+    -- a derived value must not be serialized: that writes a copy of the base's
+    -- value into user.json, and if the base later changes the stale copy wins
+    -- silently. Runtime keeps it; `serialize_user_override` skips it.
+    self._derived = type(data._derived) == "table" and data._derived or nil
+
     -- Module-specific config: everything except the generic fields above
     local module_config = {}
     local generic = {
         is_default = true, is_user = true, from_preset = true,
         role = true, inherits = true, options = true, variables = true,
         languages = true,
-        prefix = true, base_name = true,
+        prefix = true, base_name = true, _derived = true,
     }
     for k, v in pairs(data) do
         if not generic[k] then
@@ -443,7 +451,11 @@ function Configuration:serialize_user_override()
     -- module_config holds module-specific fields (cmake: variant, toolchain, generator)
     -- excluding generic fields (is_default, is_user, from_preset, role, inherits, options)
     for k, v in pairs(self.module_config) do
-        entry[k] = v
+        -- Skip values propagated from a base (see `_derived` in `_apply`) —
+        -- they are the base's, and persisting them would freeze a copy.
+        if not (self._derived and self._derived[k]) then
+            entry[k] = v
+        end
     end
     -- Generic fields stored on the Configuration object directly
     if self.inherits_names and #self.inherits_names > 0 then

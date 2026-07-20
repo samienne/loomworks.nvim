@@ -174,6 +174,19 @@ user-declared configuration is a source in its own right and MUST survive a
 resync of module-emitted configurations even when it carries no fields yet;
 an abstract mixin is exactly that case, and no module ever emits one.
 
+**Derived values are not persisted.** A module propagates inherited values
+(variant, and whatever else it derives from a base) onto the configuration so
+the build path has something concrete, but those values MUST NOT be written to
+the workspace files: a persisted copy of a base's value silently wins if the
+base later changes, and it is indistinguishable from a value the user meant to
+declare. Only what the configuration itself declares is serialized.
+
+Consequently an **authoring host** (the command-line runner) makes a
+configuration concrete by giving it a base to inherit, and does not offer the
+variant as a settable field — the built-in `variant:*` configurations are the
+single declared source of build types. Reading a directly-declared variant
+remains supported, so hand-written and pre-existing files keep resolving.
+
 **Default configurations**: always present, auto-generated from
 `CMAKE_CONFIGURATION_TYPES` in CMakeLists.txt or standard cmake defaults
 (Debug, Release, RelWithDebInfo, MinSizeRel). User entries in

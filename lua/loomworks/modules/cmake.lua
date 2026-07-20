@@ -274,15 +274,25 @@ function M.resolve_configurations(defaults, config)
             for _, base_name in ipairs(cfg.inherits) do
                 local base = result[base_name]
                 if base then
+                    -- Values taken from a base are marked derived so they are
+                    -- not serialized as if declared here
+                    -- (Configuration._derived).
                     if not cfg.variant and base.variant then
                         cfg.variant = base.variant
+                        cfg._derived = cfg._derived or {}
+                        cfg._derived.variant = true
                     end
                     if not cfg.toolchain and base.toolchain then
                         cfg.toolchain = base.toolchain
                         cfg.toolchain_locked = base.toolchain_locked
+                        cfg._derived = cfg._derived or {}
+                        cfg._derived.toolchain = true
+                        cfg._derived.toolchain_locked = true
                     end
                     if not cfg.generator and base.generator then
                         cfg.generator = base.generator
+                        cfg._derived = cfg._derived or {}
+                        cfg._derived.generator = true
                     end
                 end
             end
