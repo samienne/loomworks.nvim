@@ -123,6 +123,28 @@ function M.vcvars_env(vcvarsall, arch)
     return env
 end
 
+--- Normalize an executable path: forward slashes, lowercase `.exe`.
+---
+--- `vim.fn.exepath` reports the extension in whatever casing PATHEXT carries,
+--- so a compiler commonly comes back as `clang-cl.EXE`. meson matches the
+--- compiler basename against `clang-cl.exe` **case-sensitively**: given the
+--- uppercase spelling it does not recognise clang's MSVC driver, probes for a
+--- GNU-style linker instead, and configure fails with "Unable to detect linker
+--- for compiler `... -Wl,--version`".
+---
+--- Applied both at detection and where a task environment is composed — the
+--- tool's paths are persisted in the cache, so a profile created before this
+--- existed still carries the uppercase spelling and would otherwise stay
+--- broken until the profile was recreated.
+---
+--- Windows paths are case-insensitive, so this costs nothing.
+--- @param path string|nil
+--- @return string|nil
+function M.normalize_exe(path)
+    if type(path) ~= "string" or path == "" then return path end
+    return (path:gsub("\\", "/"):gsub("%.[eE][xX][eE]$", ".exe"))
+end
+
 --- Locate clang-cl (clang's MSVC driver), if installed. Cached.
 --- @return { path: string, version: string }|nil
 function M.clang_cl()
@@ -134,14 +156,7 @@ function M.clang_cl()
         M._clang_cl = false
         return nil
     end
-    -- `exepath` reports the extension in whatever casing PATHEXT carries, so
-    -- this commonly comes back as `clang-cl.EXE`. meson matches the compiler
-    -- basename against `clang-cl.exe` case-sensitively: given the uppercase
-    -- spelling it does not recognise clang's MSVC driver, probes for a
-    -- GNU-style linker instead, and configure fails with "Unable to detect
-    -- linker for compiler `... -Wl,--version`". Windows paths are
-    -- case-insensitive, so normalising the extension is free.
-    path = path:gsub("\\", "/"):gsub("%.[eE][xX][eE]$", ".exe")
+    path = M.normalize_exe(path)
     local version = parse_version(run({ path, "--version" })) or "0"
     M._clang_cl = { path = path, version = version }
     return M._clang_cl

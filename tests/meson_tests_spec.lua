@@ -120,6 +120,33 @@ describe("meson test integration", function()
             assert.is_truthy(spec.env.PATH and spec.env.PATH:find("C:/vs/bin", 1, true))
         end)
 
+        -- Regression: the tool's compiler paths are PERSISTED in the cache, so
+        -- a profile created before the exepath-casing fix still carries
+        -- `clang-cl.EXE`. meson matches that basename case-sensitively and
+        -- fails to recognise the MSVC driver, so normalising only at detection
+        -- never reaches an existing profile — it has to happen where the env
+        -- is composed.
+        it("normalizes a cached compiler path's .EXE casing", function()
+            local saved = package.loaded["loomworks.msvc"]
+            package.loaded["loomworks.msvc"] = {
+                vcvars_env = function() return { PATH = "C:/vs/bin" } end,
+            }
+            local unit = stub_config_unit("/build/App/Debug")
+            unit._tool_data = {
+                meson = { "/usr/bin/meson" },
+                vcvarsall = "C:/vs/vcvarsall.bat",
+                arch = "x64",
+                cc = "C:/Program Files/LLVM/bin/clang-cl.EXE",
+                cxx = "C:/Program Files/LLVM/bin/clang-cl.EXE",
+            }
+            local tu = meson.create_test_unit(unit)
+            local ok, spec = pcall(function() return tu:run_command_all() end)
+            package.loaded["loomworks.msvc"] = saved
+            assert.is_true(ok, spec)
+            assert.equals("C:/Program Files/LLVM/bin/clang-cl.exe", spec.env.CC)
+            assert.equals("C:/Program Files/LLVM/bin/clang-cl.exe", spec.env.CXX)
+        end)
+
         it("reports its fixed JUnit location as junit_out only when requested", function()
             local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
             -- meson takes no output-path flag, so JUnit is opt-in via junit_out.

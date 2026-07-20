@@ -489,7 +489,17 @@ end
 --- from elsewhere on PATH.
 ---
 --- Base env from the project (currently `env = tool_data.env` which
---- is mostly empty) is preserved; CC/CXX/PATH keys win.
+---- Lowercase a trailing `.EXE`. meson matches a compiler's basename against
+--- `clang-cl.exe` case-sensitively, and `vim.fn.exepath` reports whatever
+--- casing PATHEXT carries — see `msvc.normalize_exe` for the full story. Kept
+--- local so composing an environment does not depend on the msvc module
+--- loading.
+local function normalize_exe(p)
+    if type(p) ~= "string" then return p end
+    return (p:gsub("%.[eE][xX][eE]$", ".exe"))
+end
+
+-- is mostly empty) is preserved; CC/CXX/PATH keys win.
 --- @param base_env table<string, string>
 --- @param tool_data table|nil
 --- @return table<string, string>
@@ -515,9 +525,12 @@ local function compose_task_env(base_env, tool_data)
             end
             env.Path = nil
         end
-        -- cl serves both C and C++; clang-cl gets its explicit path.
-        env.CC = tool_data.cc or "cl"
-        env.CXX = tool_data.cxx or "cl"
+        -- cl serves both C and C++; clang-cl gets its explicit path. Normalized
+        -- here as well as at detection because the path is persisted in the
+        -- cache: a profile created earlier still carries `clang-cl.EXE`, whose
+        -- casing stops meson recognising the MSVC driver.
+        env.CC = normalize_exe(tool_data.cc or "cl")
+        env.CXX = normalize_exe(tool_data.cxx or "cl")
         return env
     end
 
