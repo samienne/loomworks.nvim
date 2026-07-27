@@ -109,6 +109,63 @@ function M.newest_release_root()
   return rels[1] and rels[1].dir or nil
 end
 
+--- Directory holding acquired modules (spec §16.20). A sibling of the
+--- `lua-<ver>/` release roots, so a self-update never disturbs it and
+--- `installed_releases` (which matches only `lua-*`) never lists it.
+function M.modules_dir()
+  return M.data_dir() .. "/modules"
+end
+
+--- Read an acquired module's install record (`.module.json`), or {} if absent
+--- or unreadable. Records what `lw module install` wrote: version, api_version,
+--- the source url + verified sha256, and the providers the package brings.
+function M.read_module_meta(dir)
+  local f = io.open(dir .. "/.module.json", "r")
+  if not f then return {} end
+  local content = f:read("*a"); f:close()
+  if not content or content == "" then return {} end
+  local decoded = json.decode(content)
+  if type(decoded) ~= "table" or decoded == json.null then return {} end
+  return decoded
+end
+
+--- List acquired modules as { {name=, dir=, lua_root=, meta=}, ... }, sorted by
+--- name. An entry is a subdirectory of `modules_dir()` that carries a `lua/`
+--- tree; staging/download scratch dirs (dot-prefixed) are skipped.
+function M.installed_modules()
+  local base = M.modules_dir()
+  local scan = uv.fs_scandir(base)
+  local out = {}
+  if scan then
+    while true do
+      local name, typ = uv.fs_scandir_next(scan)
+      if not name then break end
+      local dir = base .. "/" .. name
+      local is_dir = typ == "directory"
+        or (uv.fs_stat(dir) or {}).type == "directory"
+      if is_dir and name:sub(1, 1) ~= "." and uv.fs_stat(dir .. "/lua") then
+        out[#out + 1] = {
+          name = name,
+          dir = dir,
+          lua_root = dir .. "/lua",
+          meta = M.read_module_meta(dir),
+        }
+      end
+    end
+  end
+  table.sort(out, function(x, y) return x.name < y.name end)
+  return out
+end
+
+--- The `lua/` roots of all acquired modules, for the host's require/runtime
+--- searchers (spec §16.20 "resolvable to the host together"). Cheap list used
+--- at startup by main.lua and the vim shim.
+function M.module_lua_roots()
+  local roots = {}
+  for _, m in ipairs(M.installed_modules()) do roots[#roots + 1] = m.lua_root end
+  return roots
+end
+
 --- Recursively create a directory (mkdir -p). Returns true or nil, err.
 function M.mkdirp(path)
   path = path:gsub("\\", "/")

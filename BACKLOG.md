@@ -11,10 +11,14 @@ The standalone command-line runner ([specification.md §16](specification.md),
 ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
 (`build`, `test`, `profiles`). Deferred beyond v1:
 
-- **Headless third-party module loading.** v1 bundles only the core modules;
-  external module plugins (e.g. OHOS / harmony) are editor-only. A discovery /
-  loading mechanism (bundling into the dist, or a configured module search
-  path) is needed for headless external-module builds (spec §16.8).
+- ~~**Headless third-party module loading.**~~ DONE — `lw module install |
+  update | remove | list` acquires external module plugins from a curated,
+  hash-pinned index (`modules.json`) into the per-user data dir, resolved
+  alongside system Lua (spec §16.20; ARCHITECTURE.md "Module acquisition").
+  The `harmony` entry is published: `samienne/loomworks-module-ohos.nvim`
+  v0.1.0, installed from its GitHub codeload archive. Remaining thoughts:
+  whether the editor grows an index-aware installer too, and provenance/signing
+  for module artifacts beyond the index-pinned hash.
 - **Project-committed wrapper.** `lw init` writing `./lw` +
   `wrapper.properties` into a project, with project-pin-wins version
   resolution. v1 is system-wide (per-user, on PATH) only.

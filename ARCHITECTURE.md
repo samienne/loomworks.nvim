@@ -841,12 +841,14 @@ builds the profile up front, then runs both deploy phases). No-argument
 profile (if present) → the single published profile → otherwise an error
 listing candidates.
 
-### Module bundling
+### Module bundling and acquisition
 
 The loomworks distribution bundles the core modules (cmake, meson, shell,
-typescript). External module plugins (e.g. OHOS / harmony) are editor-only;
-profiles referencing them degrade per spec §16.8. A headless discovery /
-loading mechanism for third-party module plugins is deferred (see BACKLOG).
+typescript). External module plugins (e.g. OHOS / harmony) ship separately.
+In the **editor**, they arrive through the plugin manager (on the runtimepath),
+so discovery is free. In the **standalone host**, `lw module install <name>`
+acquires them (spec §16.20) — see "Module acquisition" below. A profile whose
+module is present in neither place degrades per spec §16.8.
 
 ### Host bootstrap and source resolution
 
@@ -855,8 +857,10 @@ binary. It carries no behavioral logic; it (a) reads host config, (b)
 resolves the system-Lua source per spec §16.11, (c) for the release source,
 ensures a verified bundle is present (§16.12–16.13), (d) installs package
 searchers + `nvim_get_runtime_file` discovery pointed at the resolved Lua
-root, then (e) `require`s the system entry (`loomworks.cli`). Source
-precedence:
+root **and at each acquired module's `lua/` root** (via
+`_G.__loomworks_module_roots`, kept in lockstep between the require searcher
+and the shim glob), then (e) `require`s the system entry (`loomworks.cli`).
+Source precedence:
 
 1. `--dev[=PATH]` flag or `LOOMWORKS_LUA` env → a working tree on disk
    (verification skipped);
@@ -902,6 +906,7 @@ expose. The verifier lives in `lua/boot/verify.lua`; see below.
 <data>/loomworks/            (%LOCALAPPDATA%\loomworks | ~/.local/share/loomworks)
   bin/lw[.exe]               the host binary (on PATH)
   lua-<ver>/                 verified, extracted release bundles (versioned)
+  modules/<name>/lua/**      acquired modules (spec §16.20); .module.json record
   cache/tools.json           machine-level tool cache
 <config>/loomworks/config.json   dev source + default_source (spec §16.11)
 ```
@@ -922,6 +927,41 @@ running incompatible Lua (spec §16.14). Downloads are proxy-aware; because
 integrity rests on the signature, a MITM'd or cert-relaxed transport cannot
 inject code (spec §16.12). Self-update is a management operation and never
 runs as part of `lw build` (spec §16.9, §16.13).
+
+### Module acquisition
+
+`lw module install|update|remove|list` extends the host's module set from a
+**curated index** (spec §16.20). `boot/modules.lua` drives it, reusing the
+self-update primitives: `download.fetch` for the index and the archive,
+`verify.sha256_hex` for the pinned-hash check, `update.extract_zip` (miniz) for
+unpacking.
+
+- **Index** — a JSON document (`modules.json`) fetched from the loomworks repo
+  over HTTPS (default: raw on the default branch; override with `module-index`
+  config / `LOOMWORKS_MODULE_INDEX`, a local path works offline). Shape:
+  `{ schema, modules: { <name>: { version, api_version, url, sha256,
+  description?, repo?, brings? } } }`. The index is trusted because of its
+  channel; the *artifact* is trusted because its bytes match `sha256`.
+- **Artifact** — a pinned-tag source archive **zip** (GitHub codeload style),
+  so no tar dependency and `extract_zip` is reused. Install keeps only the
+  shipped `lua/` tree (module + any SDK providers / progress parsers it
+  brings), renames it into `<data>/loomworks/modules/<name>/lua`, and writes a
+  `.module.json` install record (version, api_version, verified sha256, url,
+  brings). The archive's single top-level wrapper dir is stripped.
+- **Version gate** — the index records each module's plugin-interface version
+  (§8.0); an incompatible entry is refused *before* download (`M.compatible` /
+  `M.incompatible_reason`, distinguishing "update lw" from "no compatible
+  module release yet"). Same strict-equality rule the loader applies, moved
+  earlier. `lw module update --all` skips an incompatible module with a note
+  rather than failing the run.
+- **Resolution** — installs are separate from `lua-<ver>/`, so `self-update`
+  never disturbs them and vice-versa. They become resolvable because the
+  bootstrap adds each `modules/<name>/lua` to the require searcher and the shim
+  glob (see "Host bootstrap"). A freshly installed module is picked up by the
+  *next* `lw` invocation, not the current process.
+
+`lw module` is standalone-only; it requires `boot.*` (the luvi host), so under
+the nvim-hosted fallback it errors with that hint.
 
 ### Install security
 
@@ -949,11 +989,14 @@ detects, never installs, C/C++ toolchains.
 ### File additions
 
 `lua/main.lua` (bootstrap), `lua/boot/` (bootstrap-only modules: `paths.lua`
-data-dir/version/mkdir helpers, `json.lua` decoder, `verify.lua` ECDSA-P256
-manifest verifier, `download.lua` curl/local fetch, `update.lua` self-update +
-miniz extraction, `install.lua` self-install), `lua/loomworks/shim/`, `bin/lw`,
-`bin/lw.cmd` exist. The bootstrap intercepts the host commands `lw version` /
-`lw install` / `lw self-update`.
+data-dir/version/mkdir helpers + acquired-module enumeration, `json.lua`
+decode + small encode, `verify.lua` ECDSA-P256 manifest verifier, `download.lua`
+curl/local fetch, `update.lua` self-update + miniz extraction, `install.lua`
+self-install, `modules.lua` module acquisition), `lua/loomworks/shim/`,
+`modules.json` (the curated module index), `bin/lw`, `bin/lw.cmd` exist. The
+bootstrap intercepts the host commands `lw version` / `lw install` /
+`lw self-update`; `lw module` is a CLI command (system Lua) that calls into
+`boot.modules`.
 The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
 manifest) and `scripts/release/fuse_host.sh` (inject the production key + fuse
 one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix

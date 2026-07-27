@@ -184,6 +184,32 @@ else
   end)
 end
 
+-- ---- acquired modules: resolve alongside system Lua (spec §16.20) -----------
+-- Modules installed by `lw module install` live under <data>/loomworks/modules/
+-- <name>/lua, separate from the release source so a self-update never disturbs
+-- them. Expose their roots to both resolvers — the require searcher below and
+-- the vim shim's `nvim_get_runtime_file` glob (module/SDK discovery) — via a
+-- global, so the two stay in lockstep. Appended (not inserted at 1) so core
+-- always wins a name; module packages only ever add new namespaces
+-- (loomworks.modules.<id>, loomworks.sdks.<id>, loomworks.progress.<id>).
+_G.__loomworks_module_roots = paths.module_lua_roots()
+if #_G.__loomworks_module_roots > 0 then
+  table.insert(loaders, function(modname)
+    local rel = modname:gsub("%.", "/")
+    for _, root in ipairs(_G.__loomworks_module_roots) do
+      for _, cand in ipairs({ root .. "/" .. rel .. ".lua", root .. "/" .. rel .. "/init.lua" }) do
+        local fh = io.open(cand, "r")
+        if fh then
+          local s = fh:read("*a"); fh:close()
+          local chunk, err = loadstring(s, "@" .. cand)
+          return chunk or ("\n\t" .. tostring(err))
+        end
+      end
+    end
+    return "\n\tno acquired-module file for '" .. modname .. "'"
+  end)
+end
+
 if not _G.vim then
   _G.vim = require("loomworks.shim")
 end

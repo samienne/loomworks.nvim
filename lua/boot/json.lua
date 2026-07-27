@@ -1,10 +1,11 @@
--- Minimal JSON decoder for the host bootstrap (spec §16.11–16.13).
+-- Minimal JSON codec for the host bootstrap (spec §16.11–16.13, §16.20).
 --
 -- The bootstrap parses the release manifest *before* any system Lua exists, so
 -- it cannot use the shim's `vim.json` (that lives in the very bundle being
--- verified). This is decode-only and deliberately tiny — the bootstrap only
--- ever reads its own manifest, whose bytes are already signature-verified when
--- this runs. It is not a general-purpose or Neovim-fidelity codec.
+-- verified). Decode is the primary use — reading the (signature-verified)
+-- manifest; encode is used only to write small install records the bootstrap
+-- itself controls (the module index cache, `.module.json`). Both are
+-- deliberately tiny and not a general-purpose or Neovim-fidelity codec.
 
 local M = {}
 
@@ -133,6 +134,66 @@ function M.decode(str)
   pos = skip_ws(str, pos)
   if pos <= #str then return nil, "json: trailing data at position " .. pos end
   return val
+end
+
+-- --- encode ----------------------------------------------------------------
+
+local enc_escapes = {
+  ['"'] = '\\"', ["\\"] = "\\\\", ["\b"] = "\\b", ["\f"] = "\\f",
+  ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t",
+}
+
+local function encode_string(s)
+  local out = s:gsub('[%z\1-\31"\\]', function(c)
+    return enc_escapes[c] or string.format("\\u%04x", c:byte())
+  end)
+  return '"' .. out .. '"'
+end
+
+--- Is `t` a JSON array — a table with contiguous integer keys 1..n and no
+--- others? An empty table is treated as an object (`{}`), which is what every
+--- record this bootstrap writes wants.
+local function is_array(t)
+  local n = 0
+  for _ in pairs(t) do n = n + 1 end
+  if n == 0 then return false end
+  for i = 1, n do if t[i] == nil then return false end end
+  return true
+end
+
+local function encode_value(v)
+  local ty = type(v)
+  if v == M.null then return "null" end
+  if ty == "string" then return encode_string(v) end
+  if ty == "boolean" then return v and "true" or "false" end
+  if ty == "number" then
+    return string.format(v % 1 == 0 and "%d" or "%.14g", v)
+  end
+  if ty == "table" then
+    if is_array(v) then
+      local parts = {}
+      for i = 1, #v do parts[i] = encode_value(v[i]) end
+      return "[" .. table.concat(parts, ",") .. "]"
+    end
+    -- Object: stable (sorted) key order so records diff cleanly.
+    local keys = {}
+    for k in pairs(v) do keys[#keys + 1] = tostring(k) end
+    table.sort(keys)
+    local parts = {}
+    for _, k in ipairs(keys) do
+      parts[#parts + 1] = encode_string(k) .. ":" .. encode_value(v[k])
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+  end
+  error("json.encode: cannot encode a " .. ty)
+end
+
+--- Encode a Lua value to a compact JSON string. Handles nil-free tables of
+--- strings/numbers/booleans/M.null, arrays (contiguous 1..n), and objects.
+--- @param v any
+--- @return string
+function M.encode(v)
+  return encode_value(v)
 end
 
 return M

@@ -451,6 +451,22 @@ local function runtime_files(pattern)
       end
     end
   end
+
+  -- Acquired modules (spec §16.20): each contributes a `lua/` root, so a glob
+  -- like `lua/loomworks/modules/*.lua` must also scan `<root>/<dir>`. Kept in
+  -- lockstep with the require searcher in main.lua via the same global — a
+  -- module found by one resolver but not the other would half-load.
+  for _, root in ipairs(_G.__loomworks_module_roots or {}) do
+    local abs = root .. "/" .. dir
+    local fs = uv.fs_scandir(abs)
+    if fs then
+      while true do
+        local nm = uv.fs_scandir_next(fs)
+        if not nm then break end
+        if nm:match(pat) then add(abs .. "/" .. nm) end
+      end
+    end
+  end
   return files
 end
 
