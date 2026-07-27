@@ -2,10 +2,21 @@
 
 ## Authoritative Documents
 
-- **[specification.md](specification.md)** — Core behavioral specification.
-  Defines *what* the system does at the contract level: data model, state
-  machines, module/LSP/DAP/SDK/device contracts, invariants. Contains no
-  module/tool/SDK names in normative prose.
+- **[specification.md](specification.md)** — **Index** over the core
+  behavioral specification. Defines *what* the system does at the contract
+  level: data model, state machines, module/LSP/DAP/SDK/device contracts,
+  invariants. Contains no module/tool/SDK names in normative prose. The
+  normative sections are physically partitioned into topic files under
+  [`spec/core/`](spec/core/) (section numbers keep their original global
+  values — they are NOT local to each file); `specification.md` holds the
+  preamble, routing tables, and §15 Invariants inline, plus the
+  §-range → file table. Core topic files:
+  - [`spec/core/data-model.md`](spec/core/data-model.md) — §1 Data Model
+  - [`spec/core/three-file-model.md`](spec/core/three-file-model.md) — §2 Three-File Model
+  - [`spec/core/state-lifecycle.md`](spec/core/state-lifecycle.md) — §3–§7 state machine, profile lifecycle, task execution, UI, events
+  - [`spec/core/module-interface.md`](spec/core/module-interface.md) — §8 Module Interface
+  - [`spec/core/integrations.md`](spec/core/integrations.md) — §9–§14 LSP, SDK, device, overseer, auto-load, commands
+  - [`spec/core/headless.md`](spec/core/headless.md) — §16 Headless / Standalone
 - **[spec/](spec/)** — Per-implementation specs that fulfil the core
   contracts:
   - [`spec/ui.md`](spec/ui.md) — status page, highlights, winbar
@@ -397,7 +408,7 @@ the registry's `M.get(id)` refuses to load mismatched plugins with a
 clear `vim.notify` error. No backwards compatibility — bump core's
 constant when the contract surface changes, and every plugin
 shipping that interface category bumps in lockstep. See
-[specification.md §8.0](specification.md) for the bump policy.
+[specification.md §8.0](spec/core/module-interface.md) for the bump policy.
 
 Unknown-type / rejected-module projects in `loomworks.json` are
 preserved verbatim through load → in-memory model → serialize, so

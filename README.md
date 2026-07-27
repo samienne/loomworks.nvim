@@ -831,7 +831,7 @@ require("lspconfig").clangd.setup({
 
 Drop a file into your runtime path at
 `lua/loomworks/integrations/lsp/<server>.lua` following the integration
-contract in [specification.md §9.3](specification.md). Every plugin on
+contract in [specification.md §9.3](spec/core/integrations.md). Every plugin on
 `runtimepath` is scanned at startup, so no other wiring is needed.
 
 ### Behavior

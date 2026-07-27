@@ -7,7 +7,7 @@ they don't get lost.
 
 ## Standalone CLI — deferred pieces
 
-The standalone command-line runner ([specification.md §16](specification.md),
+The standalone command-line runner ([specification.md §16](spec/core/headless.md),
 ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
 (`build`, `test`, `profiles`). Deferred beyond v1:
 
