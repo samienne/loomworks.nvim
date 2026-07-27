@@ -13,6 +13,8 @@ local paths = require("boot.paths")
 local download = require("boot.download")
 local update = require("boot.update")
 local install = require("boot.install")
+local modules = require("boot.modules")
+local miniz = require("miniz")
 
 local FX = root .. "/tests/fixtures/dist/"
 local function readfile(p)
@@ -236,6 +238,191 @@ do
   ok(not download.is_transient(22, "The requested URL returned error: 403"),
     "403 is permanent")
   ok(not download.is_transient(0, ""), "success is not a retry candidate")
+end
+
+print("boot.modules — acquisition (hermetic, local index + archive)")
+do
+  -- Close every probe handle: a leaked read handle on Windows makes the file
+  -- delete-pending, so a later rm_rf of its directory fails ENOTEMPTY.
+  local function exists(p)
+    local f = io.open(p, "rb")
+    if f then f:close(); return true end
+    return false
+  end
+  local sb = root .. "/tests/.tmp-modules"
+  paths.rm_rf(sb); paths.mkdirp(sb)
+  -- Sandbox the data dir so installs land under the temp tree, not the user's.
+  uv.os_setenv("LOCALAPPDATA", sb)
+  uv.os_setenv("XDG_DATA_HOME", sb)
+  uv.os_setenv("APPDATA", sb)
+  uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_MODULE_INDEX", "")  -- start unset
+
+  -- Build a GitHub-style archive zip: everything under one top dir, module +
+  -- an SDK provider it brings, plus a spec/ file that must be dropped on install.
+  local function make_archive(destzip, top)
+    local w = miniz.new_writer()
+    w:add(top .. "/lua/loomworks/modules/faketool.lua",
+      "return { id='faketool', api_version=1 }\n")
+    w:add(top .. "/lua/loomworks/sdks/fakesdk.lua", "return { id='fakesdk' }\n")
+    w:add(top .. "/spec/modules/faketool.md", "# faketool\n")
+    local f = assert(io.open(destzip, "wb")); f:write(w:finalize()); f:close()
+  end
+  local zip = sb .. "/faketool-0.0.1.zip"
+  make_archive(zip, "loomworks-module-faketool.nvim-0.0.1")
+  local sha = verify.sha256_hex(readfile(zip))
+
+  local entry = {
+    name = "faketool", version = "0.0.1", api_version = 1,
+    url = zip, sha256 = sha, repo = "fake/faketool",
+    brings = { sdks = { "fakesdk" } },
+  }
+
+  -- compatibility gate
+  ok(modules.compatible(entry, 1), "compatible when api matches host")
+  ok(not modules.compatible({ api_version = 2 }, 1), "incompatible when api differs")
+  local newer = modules.incompatible_reason({ name = "x", api_version = 2 }, 1)
+  ok(newer:find("update lw", 1, true) ~= nil, "future api -> 'update lw'")
+  local older = modules.incompatible_reason({ name = "x", api_version = 1 }, 2)
+  ok(older:find("no release compatible", 1, true) ~= nil, "past api -> 'no compatible release'")
+
+  -- install: verifies hash, keeps only lua/, records meta
+  local res, err = modules.install(entry)
+  ok(res ~= nil, "install succeeds" .. (err and (" — " .. err) or ""))
+  local base = paths.modules_dir() .. "/faketool"
+  ok(exists(base .. "/lua/loomworks/modules/faketool.lua"),
+    "module file installed under <data>/modules/faketool/lua")
+  ok(exists(base .. "/lua/loomworks/sdks/fakesdk.lua"),
+    "the SDK the module brings is installed too")
+  ok(not exists(base .. "/spec/modules/faketool.md"),
+    "non-lua/ archive content (spec/) is dropped")
+  local meta = paths.read_module_meta(base)
+  eq(meta.version, "0.0.1", "meta records version")
+  eq(meta.api_version, 1, "meta records api_version")
+  eq((meta.sha256 or ""):lower(), sha:lower(), "meta records the verified sha256")
+
+  -- discovery: installed_modules + module_lua_roots see it
+  local found
+  for _, m in ipairs(paths.installed_modules()) do if m.name == "faketool" then found = m end end
+  ok(found ~= nil, "installed_modules lists faketool")
+  local roots = paths.module_lua_roots()
+  local has_root = false
+  for _, r in ipairs(roots) do if r == base .. "/lua" then has_root = true end end
+  ok(has_root, "module_lua_roots includes the install's lua root")
+
+  -- the shim glob (module discovery) sees it via _G.__loomworks_module_roots
+  _G.__loomworks_module_roots = roots
+  local vim = require("loomworks.shim")
+  local hits = vim.api.nvim_get_runtime_file("lua/loomworks/modules/*.lua", true)
+  local shim_saw = false
+  for _, p in ipairs(hits) do if p:find("faketool.lua", 1, true) then shim_saw = true end end
+  ok(shim_saw, "shim runtime_files glob finds an acquired module")
+
+  -- End-to-end through the REAL registry: modules.list() globs (shim) AND
+  -- require()s each hit via M.get. Regression guard for the id-extraction bug —
+  -- the install path holds "modules" twice (…/modules/<id>/lua/loomworks/
+  -- modules/<id>.lua), so a greedy capture used to yield a slash-laden id that
+  -- failed to load and silently dropped the module.
+  local mod_searcher = function(modname)
+    local rel = modname:gsub("%.", "/")
+    for _, rt in ipairs(_G.__loomworks_module_roots or {}) do
+      for _, c in ipairs({ rt .. "/" .. rel .. ".lua", rt .. "/" .. rel .. "/init.lua" }) do
+        local fh = io.open(c, "r")
+        if fh then local s = fh:read("*a"); fh:close(); return loadstring(s, "@" .. c) end
+      end
+    end
+    return "\n\tno acquired-module file for '" .. modname .. "'"
+  end
+  table.insert(package.loaders or package.searchers, mod_searcher)
+  local listed = require("loomworks.modules").list()
+  local in_list = false
+  for _, id in ipairs(listed) do if id == "faketool" then in_list = true end end
+  ok(in_list, "modules.list() resolves an acquired module (id extracted correctly)")
+  _G.__loomworks_module_roots = nil
+
+  -- tamper: a hash mismatch installs nothing
+  modules.remove("faketool")
+  local bad = { name = "faketool", version = "0.0.1", api_version = 1,
+    url = zip, sha256 = string.rep("0", 64) }
+  local br, berr = modules.install(bad)
+  ok(br == nil and type(berr) == "string" and berr:find("mismatch", 1, true) ~= nil,
+    "sha256 mismatch is rejected")
+  ok(not exists(base .. "/lua/loomworks/modules/faketool.lua"),
+    "a rejected install leaves nothing behind")
+
+  -- name safety: a traversing name must be refused by install, remove, and the
+  -- index validator — it would otherwise write/delete outside the modules dir.
+  ok(modules.valid_name("harmony") and modules.valid_name("mod_2.0-x"),
+    "valid_name accepts plain names")
+  ok(not modules.valid_name("../evil") and not modules.valid_name("a/b")
+    and not modules.valid_name("..") and not modules.valid_name(".hidden")
+    and not modules.valid_name(""),
+    "valid_name rejects separators, '..', dotfiles, empty")
+  local ev, everr = modules.install({ name = "../evil", version = "1",
+    api_version = 1, url = zip, sha256 = sha })
+  ok(ev == nil and type(everr) == "string" and everr:find("unsafe", 1, true) ~= nil,
+    "install refuses a traversing module name")
+  local rv, rverr = modules.remove("../evil")
+  ok(rv == nil and type(rverr) == "string" and rverr:find("unsafe", 1, true) ~= nil,
+    "remove refuses a traversing module name")
+  ok(select(1, modules.load_index({ url = (function()
+      local p = sb .. "/evilidx.json"
+      local f = assert(io.open(p, "wb"))
+      f:write('{"schema":1,"modules":{"../evil":{"version":"1","api_version":1,'
+        .. '"url":"u","sha256":"ab"}}}')
+      f:close(); return p
+    end)() })) == nil,
+    "load_index rejects an entry whose name would traverse")
+
+  -- archive with no lua/ tree is refused
+  local nolua = sb .. "/nolua.zip"
+  do
+    local w = miniz.new_writer()
+    w:add("top/readme.md", "hi\n")
+    local f = assert(io.open(nolua, "wb")); f:write(w:finalize()); f:close()
+  end
+  local n2, ne = modules.install({ name = "nolua", version = "1", api_version = 1,
+    url = nolua, sha256 = verify.sha256_hex(readfile(nolua)) })
+  ok(n2 == nil and type(ne) == "string" and ne:find("lua/", 1, true) ~= nil,
+    "an archive with no lua/ tree is refused")
+
+  -- load_index: validates shape, resolves entries; rejects a broken index
+  local idxfile = sb .. "/index.json"
+  do
+    local f = assert(io.open(idxfile, "wb"))
+    f:write(json.encode({ schema = 1, modules = {
+      faketool = { version = "0.0.1", api_version = 1, url = zip, sha256 = sha,
+        description = "fake", brings = { sdks = { "fakesdk" } } },
+    } }))
+    f:close()
+  end
+  local idx, ie = modules.load_index({ url = idxfile })
+  ok(idx ~= nil, "load_index parses a valid local index" .. (ie and (" — " .. ie) or ""))
+  if idx then
+    local e = modules.entry(idx, "faketool")
+    ok(e ~= nil and e.name == "faketool", "entry() resolves + tags the name")
+    ok(select(1, modules.entry(idx, "ghost")) == nil, "entry() nil for unknown module")
+  end
+  local badidx = sb .. "/bad.json"
+  do local f = assert(io.open(badidx, "wb"))
+     f:write('{"modules":{"x":{"url":"u"}}}'); f:close() end
+  ok(select(1, modules.load_index({ url = badidx })) == nil,
+    "load_index rejects an entry missing sha256/version/api_version")
+
+  -- status merges installed + available
+  modules.install(entry)
+  local st = modules.status(idx, 1)
+  local row
+  for _, r in ipairs(st) do if r.name == "faketool" then row = r end end
+  ok(row and row.installed and row.available, "status merges installed + available")
+  ok(row and row.compatible == true, "status marks compatible")
+
+  -- remove is idempotent
+  ok(modules.remove("faketool") == true, "remove ok")
+  ok(not exists(base .. "/lua/loomworks/modules/faketool.lua"), "remove deletes the tree")
+  ok(modules.remove("faketool") == true, "remove is idempotent when absent")
+
+  paths.rm_rf(sb)
 end
 
 print("loomworks.shim — vim.fn surface used on the build/test path")

@@ -31,7 +31,10 @@ function M.list()
     local seen = {}
     local files = vim.api.nvim_get_runtime_file("lua/loomworks/sdks/*.lua", true)
     for _, path in ipairs(files) do
-        local id = path:match("sdks[/\\](.+)%.lua$")
+        -- Final path segment only (`[^/\\]+`, not `.+`): an acquired module's
+        -- SDK provider lives at …/modules/<name>/lua/loomworks/sdks/<id>.lua, so
+        -- a greedy capture from the first separator would mangle the id.
+        local id = path:match("sdks[/\\]([^/\\]+)%.lua$")
         if id and id ~= "init" and not seen[id] then
             seen[id] = true
             ids[#ids + 1] = id

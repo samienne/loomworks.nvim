@@ -3454,7 +3454,8 @@ produced.
 The set of modules available to a host is determined by that host. A build
 unit whose module is unavailable in the current host is reported and
 skipped; consistent with §8.0, its declaration is preserved and does not
-invalidate the workspace or other units.
+invalidate the workspace or other units. A management host MAY extend its
+available set by acquiring modules (§16.20).
 
 ### 16.9 Builds are read-only; management may author
 
@@ -3674,3 +3675,47 @@ without changing it. The operation MUST:
 Because the published snapshot is regenerated from the working copy (§2.4), a
 migration that changes published items rewrites that snapshot wholesale rather
 than patching it in place.
+
+### 16.20 Module acquisition
+
+Per §16.8 the set of modules available to a host is host-determined. A
+**management host** (§16.9) MAY extend that set by acquiring additional module
+implementations from a **curated index** — a listing, published through a
+trusted channel, of the modules available for acquisition and, for each, where
+to obtain it and the content hash of that artifact.
+
+Acquisition is a management operation (§16.9), never part of a build: it is
+performed only on direct invocation, and a read-only / CI build neither
+triggers nor requires it.
+
+The operation MUST:
+
+- **Verify by pinned hash.** The acquired artifact is checked against the
+  content hash the index records for it before any of its Lua is installed; a
+  mismatch aborts the acquisition and installs nothing. The trust anchor is the
+  index, obtained through a trusted channel, and not the artifact host —
+  mirroring §16.12/§16.15, where provenance is anchored to something other than
+  the served artifact itself.
+- **Enforce the interface-version gate at acquisition time.** A module package
+  declares the plugin-interface version it implements (§8.0); the index records
+  that version so an incompatible package is refused *before* download, with a
+  message distinguishing "update the host" from "the module has no compatible
+  release yet." This is the same strict-equality rule the host applies when
+  loading a module (§8.0), applied earlier so the failure is not deferred to
+  first build.
+- **Install out-of-band of the release source.** An acquired module is placed
+  where the host resolves it alongside system Lua (§16.11) but separate from the
+  release bundle, so that acquiring, updating, or removing a module never
+  disturbs the verified bundle chain (§16.12–16.13), and a host self-update
+  never disturbs acquired modules. A module package contributes its module
+  implementation and any providers it brings (SDK providers, progress parsers,
+  and the like); all become resolvable to the host together, exactly as if the
+  host had shipped them.
+- **Support update and removal.** A module may be updated to the version the
+  index currently records, or removed. A bulk update skips any module the index
+  lists as incompatible with the running host, reporting it rather than failing
+  the whole operation — one stale module does not block the rest.
+
+Acquisition applies to the standalone host. In an editor host, modules arrive
+through the editor's own plugin mechanism (§16.8); the index is informational
+there.

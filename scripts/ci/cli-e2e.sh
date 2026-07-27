@@ -87,6 +87,44 @@ test_worktree_boundary() {
     fi
 }
 
+# Module acquisition command surface (spec §16.20), against a LOCAL index so it
+# is hermetic and needs no network or artifact. Install-success (download +
+# verify + extract) is covered by the standalone harness (tests/standalone).
+# Toolchain-independent; needs no workspace.
+test_module_commands() {
+    say "module commands"
+    local out="$TMP/out.txt" idx="$TMP/mod-index.json"
+
+    # Empty index: `module list` runs and reports nothing.
+    printf '{"schema":1,"modules":{}}\n' > "$idx"
+    LOOMWORKS_MODULE_INDEX="$idx" run_lw module list > "$out" 2>&1
+    if grep -qi "no modules in the index" "$out"; then
+        ok "module list: empty index"
+    else note_fail "module list: empty index" 0; fi
+
+    # An entry the running host can't satisfy (absurd api_version): listed as
+    # incompatible, and refused at install BEFORE any download.
+    cat > "$idx" <<'JSON'
+{"schema":1,"modules":{"faketool":{"version":"9.9.9","api_version":999,
+"url":"file:///does-not-exist.zip","sha256":"00","description":"fake"}}}
+JSON
+    LOOMWORKS_MODULE_INDEX="$idx" run_lw module list > "$out" 2>&1
+    if grep -q "faketool" "$out" && grep -qi "incompatible" "$out"; then
+        ok "module list: flags an incompatible entry"
+    else note_fail "module list: incompatible marker" 0; fi
+
+    LOOMWORKS_MODULE_INDEX="$idx" run_lw module install faketool > "$out" 2>&1
+    if [ $? -ne 0 ] && grep -qi "update lw" "$out"; then
+        ok "module install: refuses an incompatible module before downloading"
+    else note_fail "module install: incompatible not refused" 0; fi
+
+    # Unknown module names the available set.
+    LOOMWORKS_MODULE_INDEX="$idx" run_lw module install ghost > "$out" 2>&1
+    if [ $? -ne 0 ] && grep -qi "no module 'ghost'" "$out"; then
+        ok "module install: unknown module errors with the available list"
+    else note_fail "module install: unknown module" 0; fi
+}
+
 # Drive one module's project through the full CLI flow.
 #   $1 = label (for messages)   $2 = module (meson|cmake)
 #   $3 = workspace dir with app/ inside   $4 = marker to grep in `lw run` output
@@ -289,6 +327,9 @@ run_case cmake-multilib cmake "$TMP/cmake-ml" "LINKED-OK"
 
 # Toolchain-independent root-discovery regression.
 test_worktree_boundary
+
+# Toolchain-independent module-acquisition command surface.
+test_module_commands
 
 printf '\n=== summary: %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

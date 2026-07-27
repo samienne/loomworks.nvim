@@ -80,7 +80,11 @@ function M.list()
     local seen = {}
     local files = vim.api.nvim_get_runtime_file("lua/loomworks/modules/*.lua", true)
     for _, path in ipairs(files) do
-        local id = path:match("modules[/\\](.+)%.lua$")
+        -- The id is the final path segment only. `[^/\\]+` (not `.+`) so a path
+        -- that contains "modules" more than once — as an acquired module's
+        -- install path does (…/modules/<id>/lua/loomworks/modules/<id>.lua) —
+        -- captures just <id>, not everything after the first "modules".
+        local id = path:match("modules[/\\]([^/\\]+)%.lua$")
         if id and id ~= "init" and not seen[id] then
             seen[id] = true
             -- Lazy-load so an invalid module doesn't poison list()

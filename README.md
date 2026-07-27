@@ -582,6 +582,8 @@ command has detail under `lw help <command>`.
 | `lw run <profile> [target]` | Build, then execute a launch target (omit `target` for the profile default) |
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
 | `lw publish` | Write `loomworks.json` from the working copy |
+| `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
+| `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw config <...>` | Get/set `lw`'s own configuration |
 
 A first run, from an empty directory:
@@ -602,6 +604,29 @@ your machine. Share the configuration set instead and let each machine create
 its own profile, or pass `--shared` when a profile really is portable. See
 `lw help publish` for the intent model and
 [Workspace File Layout](#workspace-file-layout).
+
+### Installing modules
+
+Core modules (cmake, meson, shell, typescript) ship inside `lw`. Modules for
+other platforms — e.g. HarmonyOS / OpenHarmony (`harmony`) — are separate
+plugins. In the editor they load through your plugin manager; for the
+standalone `lw` binary, acquire them with `lw module`:
+
+```sh
+lw module list                 # available (from the index) + installed
+lw module install harmony      # download, verify, install
+lw module update --all         # update installed modules; skips incompatible ones
+lw module remove harmony
+```
+
+Each release in the index pins the module archive's SHA-256; `lw` verifies the
+download against it before installing, and refuses a module built for a
+different plugin-interface version (telling you whether to update `lw` or wait
+for a module release). Modules install under `lw`'s data dir, so `lw
+self-update` never disturbs them. The index is fetched from the loomworks repo
+over HTTPS — point it at a fork or an offline mirror with `lw config set
+module-index <url-or-path>`. `lw help module` has the details. (Editor users
+don't use this — install the module plugin the usual way.)
 
 ### Using `lw` in CI
 

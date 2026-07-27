@@ -1431,6 +1431,191 @@ function M.cmd_migrate(root, args)
   return 0
 end
 
+-- ---------------------------------------------------------------------------
+-- Module acquisition (spec §16.20)
+-- ---------------------------------------------------------------------------
+
+--- boot.* is resolvable only on the standalone luvi host (main.lua installs a
+--- searcher for it); the nvim-hosted fallback has no bundle. Module management
+--- is a standalone-host feature, so fail with that hint rather than a raw
+--- require error.
+local function require_boot_modules()
+  local ok, mods = pcall(require, "boot.modules")
+  if not ok then
+    die("`lw module` is a feature of the standalone lw binary; it is not "
+      .. "available in the nvim-hosted fallback.")
+  end
+  local host_api = require("loomworks.api_versions").module
+  return mods, host_api
+end
+
+--- Compact "brings: sdks=a,b progress=c" suffix from an index/meta entry.
+local function brings_suffix(brings)
+  if type(brings) ~= "table" then return "" end
+  local parts = {}
+  for _, kind in ipairs({ "sdks", "progress" }) do
+    local v = brings[kind]
+    if type(v) == "table" and #v > 0 then
+      parts[#parts + 1] = kind .. "=" .. table.concat(v, ",")
+    end
+  end
+  return #parts > 0 and ("  (brings " .. table.concat(parts, " ") .. ")") or ""
+end
+
+function M.cmd_module_list(args)
+  local mods, host_api = require_boot_modules()
+  -- The index may be unreachable (offline); still list what is installed.
+  local idx = select(1, mods.load_index())
+  local rows = mods.status(idx, host_api)
+  if not idx then
+    out("(module index unavailable — showing installed modules only)")
+  end
+  if #rows == 0 then
+    out(idx and "no modules in the index" or "no modules installed")
+    return 0
+  end
+  for _, r in ipairs(rows) do
+    local status
+    if r.installed and r.available then
+      if r.installed.version == r.available.version then
+        status = "installed v" .. r.installed.version
+      else
+        status = "installed v" .. tostring(r.installed.version)
+          .. "  (update: v" .. r.available.version .. ")"
+      end
+    elseif r.installed then
+      status = "installed v" .. tostring(r.installed.version) .. "  (not in index)"
+    else
+      status = "available v" .. r.available.version
+    end
+    -- Compatibility is meaningful only against the index's declared api_version.
+    local compat = ""
+    if r.available and not r.compatible then
+      compat = "  [incompatible: needs module api v" .. r.available.api_version .. "]"
+    end
+    out(string.format("%-16s %s%s", r.name, status, compat))
+    if r.description and #r.description > 0 then
+      out("                 " .. trunc(r.description, 70))
+    end
+  end
+  return 0
+end
+
+function M.cmd_module_install(args)
+  local name = args[3]
+  if not name then die("usage: lw module install <name>") end
+  local force = false
+  for i = 4, #args do if args[i] == "--force" then force = true end end
+
+  local mods, host_api = require_boot_modules()
+  local idx, ierr = mods.load_index()
+  if not idx then die(ierr) end
+  local entry, eerr = mods.entry(idx, name)
+  if not entry then
+    local names = {}
+    for n in pairs(idx.modules) do names[#names + 1] = n end
+    table.sort(names)
+    die(eerr .. (#names > 0 and ("\n  available: " .. table.concat(names, ", ")) or ""))
+  end
+
+  -- Interface-version gate, before any download (spec §16.20).
+  if not mods.compatible(entry, host_api) then
+    die(mods.incompatible_reason(entry, host_api))
+  end
+
+  -- Already at this exact version? Skip unless forced.
+  local installed
+  for _, m in ipairs(require("boot.paths").installed_modules()) do
+    if m.name == name then installed = m.meta end
+  end
+  if installed and installed.version == entry.version
+      and (installed.sha256 or ""):lower() == entry.sha256:lower() and not force then
+    out(name .. " is already installed at v" .. entry.version
+      .. " (use --force to reinstall)")
+    return 0
+  end
+
+  out((installed and "updating " or "installing ") .. name .. " v" .. entry.version .. "…")
+  local res, err = mods.install(entry)
+  if not res then die("install " .. name .. " failed: " .. err) end
+  out("installed " .. res.name .. " v" .. res.version .. brings_suffix(entry.brings))
+  return 0
+end
+
+function M.cmd_module_update(args)
+  local mods, host_api = require_boot_modules()
+  local paths = require("boot.paths")
+
+  -- Build the target list: an explicit name, or every installed module for --all.
+  local targets = {}
+  local all = false
+  for i = 3, #args do if args[i] == "--all" then all = true end end
+  if all then
+    for _, m in ipairs(paths.installed_modules()) do targets[#targets + 1] = m.name end
+  elseif args[3] and args[3]:sub(1, 2) ~= "--" then
+    targets = { args[3] }
+  else
+    die("usage: lw module update <name> | --all")
+  end
+  if #targets == 0 then out("no modules installed"); return 0 end
+
+  local idx, ierr = mods.load_index()
+  if not idx then die(ierr) end
+
+  local failed = 0
+  for _, name in ipairs(targets) do
+    local entry = select(1, mods.entry(idx, name))
+    if not entry then
+      out("skip  " .. name .. " — no longer in the index")
+    elseif not mods.compatible(entry, host_api) then
+      -- Skip-and-warn: one stale module must not block the rest (spec §16.20).
+      out("skip  " .. mods.incompatible_reason(entry, host_api))
+    else
+      local cur
+      for _, m in ipairs(paths.installed_modules()) do
+        if m.name == name then cur = m.meta end
+      end
+      if cur and cur.version == entry.version
+          and (cur.sha256 or ""):lower() == entry.sha256:lower() then
+        out("ok    " .. name .. " already up to date (v" .. entry.version .. ")")
+      else
+        local res, err = mods.install(entry)
+        if not res then
+          out("FAIL  " .. name .. ": " .. err); failed = failed + 1
+        else
+          out("done  " .. name .. " -> v" .. res.version)
+        end
+      end
+    end
+  end
+  return failed > 0 and 1 or 0
+end
+
+function M.cmd_module_remove(args)
+  local name = args[3]
+  if not name then die("usage: lw module remove <name>") end
+  local mods = require_boot_modules()
+  local paths = require("boot.paths")
+  local present = false
+  for _, m in ipairs(paths.installed_modules()) do
+    if m.name == name then present = true end
+  end
+  if not present then out(name .. " is not installed"); return 0 end
+  local ok, err = mods.remove(name)
+  if not ok then die("remove " .. name .. " failed: " .. err) end
+  out("removed " .. name)
+  return 0
+end
+
+function M.cmd_module(sub, args)
+  if sub == nil or sub == "list" or sub == "ls" then return M.cmd_module_list(args) end
+  if sub == "install" or sub == "add" then return M.cmd_module_install(args) end
+  if sub == "update" or sub == "upgrade" then return M.cmd_module_update(args) end
+  if sub == "remove" or sub == "rm" then return M.cmd_module_remove(args) end
+  die("unknown module subcommand '" .. tostring(sub) .. "' — "
+    .. "expected list | install | update | remove")
+end
+
 function M.cmd_publish(root)
   local ws = load_workspace(root, false)
   local empty = snapshot_empty(ws)
@@ -3017,7 +3202,8 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
   "profiles", "profile", "tools", "build", "clean", "test", "run", "launch", "publish",
-  "unlock", "config", "completion", "version", "install", "self-update", "help", "sdk", "--no-input",
+  "unlock", "config", "completion", "version", "install", "self-update", "help", "sdk",
+  "migrate", "module", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -3054,7 +3240,9 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "config" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
-    if n == 2 and has({ "get", "set", "unset" }, sub) then emit({ "dev-lua", "default-source" }) end
+    if n == 2 and has({ "get", "set", "unset" }, sub) then
+      emit({ "dev-lua", "default-source", "release-url", "module-index" })
+    end
     return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
@@ -3132,6 +3320,21 @@ function M.cmd_complete(cword, words)
     end
     if n == 4 and sub == "map" then
       emit(comp_config_names(comp_ws(root), a[4]))                       -- <config>
+    end
+    return 0
+  elseif cmd == "module" or cmd == "mod" then
+    if n == 1 then emit({ "list", "install", "update", "remove" }); return 0 end
+    -- update/remove operate on what is installed — complete from disk (offline,
+    -- fast). install takes an index name; that needs a network fetch, so leave
+    -- it to the user rather than stall the shell.
+    if n == 2 and has({ "update", "remove", "rm", "upgrade" }, sub) then
+      local ok, paths = pcall(require, "boot.paths")
+      if ok then
+        local names = {}
+        for _, m in ipairs(paths.installed_modules()) do names[#names + 1] = m.name end
+        if sub == "update" or sub == "upgrade" then names[#names + 1] = "--all" end
+        emit(sorted_unique(names))
+      end
     end
     return 0
   end
@@ -3368,6 +3571,35 @@ Rules:
                      matching `variant:*` base. Skips a variant no
                      configuration provides, and a chain where adding the base
                      could change which option wins.]],
+  module = [[lw module <sub>   (alias: mod)
+
+Acquire third-party modules for the standalone lw host. Modules ship as
+separate plugins; this installs them so `lw` can build their project types
+(e.g. harmony / OpenHarmony). Standalone-host only — under the nvim-hosted
+fallback, install the module through your plugin manager instead.
+
+  list                 Available (from the index) and installed modules, with
+  (or no subcommand)   their versions and whether each is compatible with this
+                       lw. Works offline, showing installed modules only.
+  install <name>       Download, verify, and install a module.
+     --force             reinstall even if already at the index version
+  update <name>        Update one module to the version the index records.
+  update --all         Update every installed module; a module the index lists
+                       as incompatible with this lw is skipped with a note
+                       rather than failing the run.
+  remove <name>        Uninstall a module.
+
+Trust: the index lists, for each module, where to fetch it and the SHA-256 of
+that artifact. The download is verified against that hash before anything is
+installed; a mismatch installs nothing. The index is trusted because it comes
+from the loomworks repository over HTTPS — override it (offline mirror / a fork)
+with `lw config set module-index <url-or-path>` or LOOMWORKS_MODULE_INDEX.
+
+Modules install under the lw data dir, separate from the release bundle, so
+`lw self-update` never disturbs them and removing one never touches the core.
+An incompatible module is refused at install time (strict interface-version
+match), with a message saying whether to update lw or wait for a module
+release.]],
   publish = [[lw publish
 
 Regenerate the shared loomworks.json from the working copy — the same snapshot
@@ -3750,6 +3982,7 @@ Usage: lw [command] [args]
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   migrate [--check] bring the workspace files up to current conventions
+  module <sub>      install | update | remove | list acquirable modules (mod)
   config <...>      get/set lw configuration
   completion <shell> print a shell completion script (bash|zsh)
   version           host version + which system-Lua source is in use
@@ -3844,6 +4077,10 @@ local function main()
   end
   if command == "completion" then
     finish(M.cmd_completion(a[2]))
+  end
+  -- `module` acquires third-party modules (spec §16.20) — no workspace needed.
+  if command == "module" or command == "mod" then
+    finish(M.cmd_module(a[2], a))
   end
   -- `version` / `self-update` are host commands: on the luvi host the bootstrap
   -- (main.lua) intercepts them before we run. Reaching here means the

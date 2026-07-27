@@ -32,30 +32,45 @@ end
 function M.extract_zip(zip_path, dest_dir)
   local reader = miniz.new_reader(zip_path)
   if not reader then return nil, "'" .. zip_path .. "' is not a valid zip" end
-  local ok, err = paths.mkdirp(dest_dir)
-  if not ok then return nil, err end
-  for i = 1, reader:get_num_files() do
-    local name = reader:get_filename(i)
-    if name:find("%.%.", 1, true) or name:match("^/") or name:match("^%a:") then
-      return nil, "unsafe zip entry '" .. name .. "'"
-    end
-    local target = dest_dir .. "/" .. name
-    if reader:is_directory(i) then
-      local mok, merr = paths.mkdirp(target)
-      if not mok then return nil, merr end
-    else
-      local parent = target:match("^(.*)/[^/]*$")
-      if parent then
-        local mok, merr = paths.mkdirp(parent)
-        if not mok then return nil, merr end
+
+  -- Single exit so the reader handle is always released before we return.
+  -- miniz's reader has no close method and keeps the archive file mmapped/open
+  -- until it is garbage-collected; on Windows an open handle turns a later
+  -- unlink of `zip_path` into a lingering "delete pending" file that can't be
+  -- rewritten (Permission denied) — which bites callers that reuse a
+  -- deterministic archive path (e.g. `lw module` reinstalling the same name).
+  -- Dropping the reference and forcing a collection here is the "close".
+  local err
+  local ok = paths.mkdirp(dest_dir)
+  if not ok then err = "cannot create '" .. dest_dir .. "'" end
+  if ok then
+    for i = 1, reader:get_num_files() do
+      local name = reader:get_filename(i)
+      if name:find("%.%.", 1, true) or name:match("^/") or name:match("^%a:") then
+        err = "unsafe zip entry '" .. name .. "'"; break
       end
-      local data = reader:extract(i)
-      if data == nil then return nil, "failed to extract '" .. name .. "'" end
-      local f, oe = io.open(target, "wb")
-      if not f then return nil, "cannot write '" .. target .. "': " .. tostring(oe) end
-      f:write(data); f:close()
+      local target = dest_dir .. "/" .. name
+      if reader:is_directory(i) then
+        local mok, merr = paths.mkdirp(target)
+        if not mok then err = merr; break end
+      else
+        local parent = target:match("^(.*)/[^/]*$")
+        if parent then
+          local mok, merr = paths.mkdirp(parent)
+          if not mok then err = merr; break end
+        end
+        local data = reader:extract(i)
+        if data == nil then err = "failed to extract '" .. name .. "'"; break end
+        local f, oe = io.open(target, "wb")
+        if not f then err = "cannot write '" .. target .. "': " .. tostring(oe); break end
+        f:write(data); f:close()
+      end
     end
   end
+
+  reader = nil
+  collectgarbage("collect")
+  if err then return nil, err end
   return true
 end
 
