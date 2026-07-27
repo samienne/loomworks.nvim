@@ -74,6 +74,30 @@ function M.extract_zip(zip_path, dest_dir)
   return true
 end
 
+--- Rename `src` to `dst`, retrying transient Windows failures. Immediately
+--- after extracting a bundle, Windows Defender (or the search indexer) often
+--- holds a brief handle on a freshly written file, so `MoveFile` on the
+--- directory fails with ACCESS_DENIED (EPERM/EACCES) or a sharing violation
+--- (EBUSY). These clear once the scan finishes, so back off and retry rather
+--- than aborting the whole self-update. Returns true, or false + last error.
+--- @param src string
+--- @param dst string
+--- @param opts? { rename?: fun(a:string,b:string):boolean|nil, sleep?: fun(ms:integer), attempts?: integer }
+function M.rename_with_retry(src, dst, opts)
+  opts = opts or {}
+  local rename = opts.rename or uv.fs_rename
+  local sleep = opts.sleep or (uv.sleep and function(ms) uv.sleep(ms) end) or function() end
+  local attempts = opts.attempts or 15
+  local last
+  for i = 1, attempts do
+    local ok, err = rename(src, dst)
+    if ok then return true end
+    last = err
+    if i < attempts then sleep(math.min(60 * i, 400)) end
+  end
+  return false, last
+end
+
 --- Remove installed releases beyond the `keep` newest (never touches the
 --- version named in `except`). Best-effort.
 function M.gc(keep, except)
@@ -130,7 +154,7 @@ function M.self_update(opts)
   -- first (force/re-install); a different running invocation uses a different
   -- version dir, so this never clobbers in-use code.
   if uv.fs_stat(dest_dir) then paths.rm_rf(dest_dir) end
-  local okr, er = uv.fs_rename(stage, dest_dir)
+  local okr, er = M.rename_with_retry(stage, dest_dir)
   if not okr then paths.rm_rf(stage); return nil, "activate: " .. tostring(er) end
 
   M.gc(3, version)

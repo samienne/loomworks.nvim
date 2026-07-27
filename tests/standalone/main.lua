@@ -109,6 +109,33 @@ do
   paths.rm_rf(dest)
 end
 
+print("boot.update — rename_with_retry (Windows AV/indexer lock)")
+do
+  -- Transient EPERM (Defender holds a freshly-extracted file): rename fails a
+  -- few times, then succeeds — the retry must ride it out, not abort.
+  local calls = 0
+  local moved = update.rename_with_retry("src", "dst", {
+    sleep = function() end,  -- don't actually wait in the test
+    rename = function()
+      calls = calls + 1
+      if calls < 4 then return nil, "EPERM: operation not permitted" end
+      return true
+    end,
+  })
+  ok(moved == true, "retries past a transient rename failure")
+  eq(calls, 4, "kept trying until the rename succeeded")
+
+  -- A persistent failure still surfaces (bounded attempts), with the error.
+  local n = 0
+  local pok, perr = update.rename_with_retry("src", "dst", {
+    sleep = function() end,
+    attempts = 5,
+    rename = function() n = n + 1; return nil, "EACCES" end,
+  })
+  ok(pok == false and perr == "EACCES", "gives up after the attempt budget, returns the error")
+  eq(n, 5, "respects the attempt budget")
+end
+
 print("boot.update — self_update (isolated sandbox, local release)")
 do
   local sandbox = root .. "/tests/.tmp-update"
