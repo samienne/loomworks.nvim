@@ -514,7 +514,7 @@ Spec: [`spec/ui-v2.md`](spec/ui-v2.md).
 Workspace wraps raw merged data into domain objects that hold a `_workspace`
 reference back to the Workspace instance for live queries and registry access.
 Domain objects access infrastructure deps via `_workspace._core._deps`.
-See specification.md §1.6, §1.7 for behavioral rules.
+See [specification.md §1.6, §1.7](spec/core/data-model.md) for behavioral rules.
 
 ```
 Core (singleton via init.lua)
@@ -739,7 +739,7 @@ Tests use the constructor injection pattern described in Design Principles §5.
 
 ## Standalone Runner & Distribution
 
-Fulfils [specification.md §16](specification.md). One codebase, two runtime
+Fulfils [specification.md §16](spec/core/headless.md). One codebase, two runtime
 hosts; the domain and module layers are identical between them.
 
 ### Runtime host
