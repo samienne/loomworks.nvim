@@ -13,8 +13,7 @@
 --- * Tools: keyed by compiler. Each detected C/C++ compiler produces
 ---   a distinct tool entry so profiles can pin which toolchain meson
 ---   uses (CC/CXX set at configure time, compiler bin dir prepended
----   to PATH for builds and tests). MSVC support requires vcvarsall
----   wrapping and is tracked in BACKLOG.md.
+---   to PATH for builds and tests).
 ---
 --- Cross-compilation: user puts `machine_file` in the configuration's
 --- type_config overrides; `tasks()` passes `--cross-file <path>` to setup.
@@ -361,7 +360,7 @@ end
 function M.tool_label(tool_data)
     if not tool_data then return nil end
     if tool_data.compiler_display then return tool_data.compiler_display end
-    -- Legacy non-keyed cache entries written before compiler pinning landed
+    -- Non-keyed cache entries have no compiler_display; fall back to "meson".
     local cmd = tool_data.meson
     if type(cmd) == "table" and cmd[1] then return "meson" end
     if type(cmd) == "string" and cmd ~= "" then return "meson" end
@@ -422,8 +421,7 @@ end
 --- Falls through to a fresh find_meson if tool_data is empty. Errors
 --- out if neither form is available — per degradation policy, we
 --- refuse rather than silently fail later.
---- Accepts legacy string form for backwards compatibility with caches
---- written before the array form landed.
+--- Accepts legacy string form for backwards compatibility with older caches.
 --- @param tool_data table|nil
 --- @return string[] command prefix (copy; safe to mutate)
 local function resolve_meson(tool_data)
@@ -493,6 +491,16 @@ local function build_option_args(project, active_config)
     return args
 end
 
+--- Lowercase a trailing `.EXE`. meson matches a compiler's basename against
+--- `clang-cl.exe` case-sensitively, and `vim.fn.exepath` reports whatever
+--- casing PATHEXT carries — see `msvc.normalize_exe` for the full story. Kept
+--- local so composing an environment does not depend on the msvc module
+--- loading.
+local function normalize_exe(p)
+    if type(p) ~= "string" then return p end
+    return (p:gsub("%.[eE][xX][eE]$", ".exe"))
+end
+
 --- Compose the task env so it pins the chosen compiler.
 ---
 --- Configure step: meson reads CC/CXX when it first probes compilers.
@@ -508,22 +516,12 @@ end
 --- from elsewhere on PATH.
 ---
 --- Base env from the project (currently `env = tool_data.env` which
----- Lowercase a trailing `.EXE`. meson matches a compiler's basename against
---- `clang-cl.exe` case-sensitively, and `vim.fn.exepath` reports whatever
---- casing PATHEXT carries � see `msvc.normalize_exe` for the full story. Kept
---- local so composing an environment does not depend on the msvc module
---- loading.
-local function normalize_exe(p)
-    if type(p) ~= "string" then return p end
-    return (p:gsub("%.[eE][xX][eE]$", ".exe"))
-end
-
--- is mostly empty) is preserved; CC/CXX/PATH keys win.
+--- is mostly empty) is preserved; CC/CXX/PATH keys win.
 --- @param base_env table<string, string>
 --- @param tool_data table|nil
 --- @return table<string, string>
 --- Exported so the meson TEST unit composes the identical environment: its
---- native runner rebuilds (§16.16), so it needs the same toolchain env a build
+--- native runner rebuilds, so it needs the same toolchain env a build
 --- gets (notably MSVC's vcvars) or the rebuild cannot find the compiler.
 local function compose_task_env(base_env, tool_data)
     local env = {}
@@ -831,7 +829,7 @@ local function option_value_type(meson_type)
     return "string"
 end
 
---- Toolchain runtime directories for launching built executables (§8.4): the
+--- Toolchain runtime directories for launching built executables: the
 --- pinned compiler's bin dir holds the C++ runtime DLLs (libstdc++-6.dll,
 --- libgcc_s_seh-1.dll, libwinpthread-1.dll, …). Core adds the build tree's own
 --- shared-library dirs generically, so only the toolchain dir is needed here.

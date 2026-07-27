@@ -344,10 +344,6 @@ function CTestUnit:_find_sources(entries)
     end
 end
 
---- Construct command to run a specific test.
---- @param test_id string
---- @param opts? table { gtest_filter?: string }
---- @return table { cmd, env, cwd, output_path }
 --- Find the execution spec for a test entry's executable.
 --- @param test_id string
 --- @return table|nil exec_spec { cmd, cwd, env, timeout }
@@ -473,7 +469,7 @@ function CTestUnit:test_command_all(opts)
     }
 end
 
---- Native ctest run: authoritative exit code, streaming output (spec §8.9.2).
+--- Native ctest run: authoritative exit code, streaming output.
 --- nil when the build dir has no configured test set (no CTestTestfile.cmake).
 --- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
 --- @return table|nil { cmd, cwd, env, junit_out }
@@ -487,7 +483,7 @@ function CTestUnit:run_command_all(opts)
         cmd[#cmd + 1] = opts.filter
     end
     -- ctest writes JUnit XML directly to the requested path (CMake ≥ 3.21), so
-    -- junit_out equals the request — the core copies nothing (§16.16).
+    -- junit_out equals the request — the core copies nothing.
     local junit_out
     if opts.junit then
         cmd[#cmd + 1] = "--output-junit"
@@ -499,12 +495,12 @@ function CTestUnit:run_command_all(opts)
     -- On Windows the test executables loaded by ctest must find their sibling
     -- DLLs (shared libraries built into subfolders of the tree); ctest does not
     -- set this up itself, so we prepend the same run environment a target launch
-    -- uses (§8.7). Nil on POSIX / when nothing needs adding — inherit as-is.
+    -- uses. Nil on POSIX / when nothing needs adding — inherit as-is.
     return { cmd = cmd, cwd = self._build_dir, env = self._config_unit:run_env(), junit_out = junit_out }
 end
 
 --- `ctest` does not build — it assumes an already-built tree — so a headless
---- test run (§16.16) must build this unit before running (the default, stated
+--- test run must build this unit before running (the default, stated
 --- explicitly here for contrast with the meson runner).
 --- @return boolean
 function CTestUnit:run_command_all_rebuilds()

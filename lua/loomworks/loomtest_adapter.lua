@@ -360,7 +360,6 @@ function M.setup()
             M.register()
             local ok, loomtest = pcall(require, "loomtest")
             if ok then
-                -- Clear old results and inline annotations
                 require("loomtest.inline").clear_all()
                 loomtest.refresh()
             end
@@ -381,7 +380,6 @@ function M.setup()
         end, 100)
     end)
 
-    -- Register immediately if workspace is already loaded
     if lw.get_workspace() and lw.get_active_profile() then
         M.register()
     end

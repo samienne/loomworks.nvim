@@ -31,6 +31,7 @@
 --- @field _action string|nil "configure" or "build" while running
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
+--- @field _last_progress_notify number|nil clock() value of last progress notify
 --- @field _deleting boolean
 --- @field _deleting_reason "deleting"|"cleaning"|nil
 --- @field _listeners function[]
@@ -299,11 +300,11 @@ function ConfigUnit:build_dir()
     return self.build_dir_value
 end
 
---- Compose the run environment for this unit's built executables (§8.7):
+--- Compose the run environment for this unit's built executables:
 --- prepend to `PATH` (1) the build tree's shared-library / module-library
 --- output directories — so a DLL-dependent executable finds its siblings —
 --- derived generically from parsed targets, and (2) any `runtime_path()`
---- directories the owning module supplies for the toolchain runtime (§8.4).
+--- directories the owning module supplies for the toolchain runtime.
 ---
 --- Windows only: on Linux/macOS shared libraries are resolved via the rpath the
 --- build system bakes into the tree, so nothing is prepended. Directories are
@@ -520,10 +521,8 @@ function ConfigUnit:plan_deletion()
 end
 
 --- Delete this config (plan + execute, no UI confirmation).
---- Creates a delete Operation to track progress.
+--- Creates a delete Operation to track progress. Returns a Future.
 --- @param on_done? function
---- Delete this config unit. Returns a Future.
---- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function ConfigUnit:delete(on_done)
     local plan = self:plan_deletion()

@@ -79,14 +79,12 @@ function M.run(spec, callbacks)
         config.args = spec.args
     end
 
-    -- Merge any extra adapter-specific fields
     if spec.extra then
         for k, v in pairs(spec.extra) do
             config[k] = v
         end
     end
 
-    -- Register per-session callbacks via unique listener keys
     if callbacks and callbacks.on_terminated then
         local key = "loomworks-session-" .. tostring(os.clock())
         local function cleanup()
@@ -107,7 +105,6 @@ function M.run(spec, callbacks)
         local pid_key = "loomworks-pid-" .. tostring(os.clock())
         local pid_found = false
         local function try_extract_pid()
-            -- Search all sessions for one with a term_buf
             for _, s in pairs(dap.sessions()) do
                 local cur = s
                 while cur do

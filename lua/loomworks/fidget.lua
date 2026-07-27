@@ -76,10 +76,8 @@ end
 --- @param data table event data with project_key, configuration_key
 --- @return string|nil key
 local function find_handle_for_task(data)
-    -- Check if this task's config unit belongs to an active operation
     local unit = data.unit
     if not unit then return nil end
-    -- Check active operations on referencing profiles
     local refs = unit:referencing_profiles()
     for _, profile in ipairs(refs) do
         for _, op in ipairs(profile:active_operations()) do
@@ -91,7 +89,6 @@ local function find_handle_for_task(data)
             end
         end
     end
-    -- Standalone task
     local task_key = "task:" .. data.task_id
     if handles[task_key] then
         return task_key
@@ -114,7 +111,6 @@ function M.setup(opts)
 
     local lw = require("loomworks")
 
-    -- Workspace initialization progress
     lw.on("workspace_initializing", function()
         create_handle("init", "", "Initializing...")
     end)
@@ -128,7 +124,6 @@ function M.setup(opts)
         end
     end)
 
-    -- Tool detection progress
     lw.on("tools_scanning", function()
         create_handle("tools", "", "Detecting tools...")
     end)
@@ -142,7 +137,6 @@ function M.setup(opts)
         end
     end)
 
-    -- All operations (build, configure, clean, delete) — keyed by operation ID
     lw.on("operation_started", function(data)
         local title = ACTION_TITLE[data.action] or data.action
         local key = data.operation and ("op:" .. data.operation.id) or data.profile_key
@@ -162,7 +156,6 @@ function M.setup(opts)
         end
     end)
 
-    -- Task-level events (covers both profile tasks and standalone tasks)
     lw.on("task_started", function(data)
         local handle_key = find_handle_for_task(data)
         if handle_key then

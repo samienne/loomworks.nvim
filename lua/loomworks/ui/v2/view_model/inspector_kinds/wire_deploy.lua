@@ -129,7 +129,6 @@ function M.build(workspace, ref, draft)
         subject_label = "editing " .. tostring(draft.existing and draft.existing.destination or "")
     end
 
-    -- Top-level destination field
     local editable_fields = {
         {
             id      = "destination",
@@ -140,7 +139,6 @@ function M.build(workspace, ref, draft)
         },
     }
 
-    -- Per-source rows
     local sources = draft.sources or {}
     local can_remove = #sources > 1
     local source_blocks = {}

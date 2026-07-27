@@ -1,8 +1,8 @@
 --- loomworks/ui/v2/view_model/inspector_kinds/configuration.lua
 ---
---- Read-only configuration inspector. Shows the canonical name,
---- inheritance chain, options (from cached state when available),
---- and source-missing flag. Belongs to a project.
+--- Configuration inspector. Shows the canonical name, inheritance chain,
+--- options (from cached state when available), and source-missing flag.
+--- Belongs to a project.
 ---
 --- ref: { kind = "configuration", project_key, config_name }
 

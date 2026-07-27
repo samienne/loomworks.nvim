@@ -50,7 +50,6 @@ local DEFAULT_CONFIG = {
 function M.setup(opts)
     _config = vim.tbl_deep_extend("force", DEFAULT_CONFIG, opts or {})
 
-    -- Register keymaps
     local keys = _config.keys
     if keys.toggle then
         vim.keymap.set("n", keys.toggle, M.toggle, { desc = "Toggle test explorer" })
@@ -76,7 +75,6 @@ function M.setup(opts)
         vim.keymap.set("n", keys.output, M.show_output, { desc = "Show test output" })
     end
 
-    -- Register commands
     vim.api.nvim_create_user_command("LoomtestToggle", M.toggle, {})
     vim.api.nvim_create_user_command("LoomtestRun", M.run_nearest, {})
     vim.api.nvim_create_user_command("LoomtestRunFile", M.run_file, {})
@@ -89,7 +87,6 @@ end
 --- Register a test adapter.
 --- @param adapter loomtest.TestAdapter
 function M.register_adapter(adapter)
-    -- Replace existing adapter with same name
     for i, a in ipairs(_adapters) do
         if a.name == adapter.name then
             _adapters[i] = adapter
@@ -157,7 +154,6 @@ function M.apply_results(results)
     local by_name = {}
     for _, node in ipairs(_node_list) do
         if node.type == "test" then
-            -- Store by the test name part (after last .)
             local short = node.id:match("^test:(.+)$") or node.id
             by_name[short] = by_name[short] or node
         end
@@ -166,7 +162,6 @@ function M.apply_results(results)
     for _, r in ipairs(results) do
         local node = _nodes[r.test_id]
         if not node then
-            -- Fuzzy: try matching by name
             local short = r.test_id:match("^test:(.+)$") or r.test_id
             node = by_name[short]
         end
@@ -231,9 +226,7 @@ function M.discover(callback)
             pending = pending - 1
             if pending == 0 then
                 M.set_nodes(all_nodes)
-                -- Update signs for open buffers
                 require("loomtest.signs").update_all()
-                -- Refresh explorer if open
                 local explorer = require("loomtest.explorer")
                 if explorer.is_open() then
                     explorer.refresh()
@@ -287,8 +280,6 @@ function M.run(test_id, node_type, opts)
     local ids = {}
 
     if ntype == "suite" then
-        -- Collect all matching test IDs by checking which tests
-        -- have names starting with the suite name
         local suite_name = test_id:match("::(.+)$")
         if suite_name then
             for _, n in ipairs(_node_list) do
@@ -457,7 +448,6 @@ function M.run_file()
 
     local norm_path = buf_path:gsub("\\", "/"):lower()
 
-    -- Find all tests in this file
     local file_ids = {}
     for _, node in ipairs(_node_list) do
         if node.file and node.file:gsub("\\", "/"):lower() == norm_path and node.type == "test" then
@@ -470,7 +460,6 @@ function M.run_file()
         return
     end
 
-    -- Use the first adapter's run_all with file filter
     local adapter = _adapters[1]
     if not adapter then return end
 
@@ -490,13 +479,11 @@ end
 function M.show_output()
     local explorer = require("loomtest.explorer")
 
-    -- If in the explorer, use its selected node
     if explorer.is_open() and vim.bo.filetype == "loomtest" then
         explorer.show_output()
         return
     end
 
-    -- Try to find test at cursor in source file
     local bufnr = vim.api.nvim_get_current_buf()
     local cursor = vim.api.nvim_win_get_cursor(0)
     local test_id = nil

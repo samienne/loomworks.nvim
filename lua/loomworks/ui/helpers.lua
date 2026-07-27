@@ -148,7 +148,7 @@ function M.resolve_unit_status(unit)
                 .. M.format_elapsed(unit:elapsed())
         return state, M.STATUS_HL[state] or "DiagnosticWarn", progress_str, true
     end
-    -- Map ConfigUnit state names back to cache state names for HL lookup
+    -- Map ConfigUnit state names back to cache state names for HL lookup.
     local cache_state = state
     if state == "configure_failed" then cache_state = "failed_configure" end
     if state == "build_failed" then cache_state = "failed_build" end
@@ -180,24 +180,20 @@ end
 --- node's header line (matching the profile-level "(status)" suffix)
 --- so the expansion doesn't repeat it.
 --- @param tree loomworks.Tree
---- @param config_status string (kept in the signature for call-site
----   parity; currently unused after status moved to the parent header)
+--- @param config_status string (kept for call-site parity; currently unused)
 --- @param status_hl string (likewise unused — see config_status)
 --- @param cached loomworks.CachedConfig|nil (deprecated, reads from unit when nil)
 --- @param fold_prefix? string prefix for foldable sub-nodes (e.g. "App:Debug:ninja-gcc-12")
 --- @param unit? loomworks.ConfigUnit for runtime-only data (targets) and first-class fields
 function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix, unit)
-    -- Read from cached table if provided, otherwise from ConfigUnit first-class fields
     local build_dir = cached and cached.build_dir or (unit and unit.build_dir_value)
 
     if build_dir then
         tree:leaf("Build dir: " .. build_dir, "Comment")
     end
-    -- The toolchain (generator/compiler/SDK kit) is shown once per
-    -- profile in the profile-level Toolchain row, so we don't repeat
-    -- it per config here.
+    -- The toolchain (generator/compiler/SDK kit) is shown once per profile in
+    -- the profile-level Toolchain row, so it's not repeated per config here.
 
-    -- Targets from ConfigUnit (runtime, not cached)
     local targets = unit and unit.targets or nil
     if targets and next(targets) then
         M.render_targets(tree, targets, fold_prefix)
@@ -228,7 +224,6 @@ local TARGET_TYPE_ORDER = {
 --- @param targets table<string, loomworks.CachedTarget>
 --- @param fold_prefix? string prefix for fold keys
 function M.render_targets(tree, targets, fold_prefix)
-    -- Group targets by type
     local by_type = {}
     local total = 0
     for name, tgt in pairs(targets) do
@@ -237,7 +232,6 @@ function M.render_targets(tree, targets, fold_prefix)
         by_type[t][#by_type[t] + 1] = { name = name, tgt = tgt }
         total = total + 1
     end
-    -- Sort each group alphabetically
     for _, list in pairs(by_type) do
         table.sort(list, function(a, b) return a.name < b.name end)
     end

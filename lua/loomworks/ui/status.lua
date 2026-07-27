@@ -40,13 +40,12 @@ local function render_fn(tree)
 
     tree._level = 1
 
-    -- Header
     tree:leaf("loomworks.nvim " .. lw._version, "Title")
     tree:blank()
     tree:leaf("Workspace: " .. ws.name, "Type")
     tree:leaf("Root:      " .. ws.root, "Comment")
-    -- Banner: loomworks.json missing on disk (specification.md §2.4).
-    -- The workspace continues to function from user.json; :w will publish.
+    -- Banner when loomworks.json is missing on disk: the workspace still
+    -- functions from user.json, and :w will publish it.
     local config_path = ws.root .. "/loomworks.json"
     if not (vim.uv or vim.loop).fs_stat(config_path) then
         tree:leaf("⚠ loomworks.json not on disk — :w to publish",
@@ -239,7 +238,6 @@ function M.open(win_overrides)
     end
 end
 function M.close()
-    -- Save cursor before closing
     if view:is_open() then
         local win = view._snacks_win and view._snacks_win.win
         if win and vim.api.nvim_win_is_valid(win) then

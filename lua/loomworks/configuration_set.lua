@@ -1,6 +1,6 @@
 --- loomworks/configuration_set.lua — ConfigurationSet object.
 --- Represents a named mapping of projects to configuration variants.
---- Owns activation: find_profile() + activate() replace Core:activate_new_profile.
+--- Owns activation via find_profile() + activate().
 
 --- @class loomworks.ConfigurationSet
 --- @field name string configuration set name
@@ -22,8 +22,8 @@ function ConfigurationSet.new(workspace, name, resolved_mappings)
     self.name = name
     self._removed = false
     self._source = "shared"
-    -- _intent left nil; data_model.refresh assigns and then sticks
-    -- (specification.md §2.4). Mutation methods set it explicitly.
+    -- _intent left nil; data_model.refresh assigns and then sticks. Mutation
+    -- methods set it explicitly.
     self._intent = nil
     self:_update(resolved_mappings)
     return self
@@ -31,8 +31,8 @@ end
 
 --- Mark this configuration set as in the user.json working copy.
 --- Called when any mutation is about to write to user.json. Implements
---- the implicit cascade rule (specification.md §2.4): using a `shared`
---- item materializes it into the working copy with intent local+shared.
+--- the implicit cascade rule: using a `shared` item materializes it into
+--- the working copy with intent local+shared.
 function ConfigurationSet:_mark_user_owned()
     if self._intent == "shared" then
         self._intent = "local+shared"
@@ -140,8 +140,8 @@ function ConfigurationSet:update_mapping(project, configuration)
 
     local old = self.mappings[project]
     self.mappings[project] = configuration
-    -- Implicit cascade on use (specification.md §2.4): editing a set's
-    -- mapping materializes the set, the project, and the new config.
+    -- Implicit cascade on use: editing a set's mapping materializes the set,
+    -- the project, and the new config.
     self:_mark_user_owned()
     project:_mark_user_owned()
     if configuration and configuration._mark_user_owned then
@@ -269,7 +269,7 @@ function ConfigurationSet:ensure_profile(tool_entry)
     -- Find matching profile
     local profile = self:find_profile(tool_entry)
     if not profile then
-        -- Create a new pinned profile for this config set + tool combination
+        -- Create a new pinned profile for this config set + tool combination.
         local Profile = require("loomworks.profile").Profile
 
         -- Build tools dict and SDK from tool_entry

@@ -22,6 +22,7 @@ local M = {}
 ---   profile: loomworks.Profile|nil — active profile for deploy target resolution
 ---   workspace: loomworks.Workspace|nil — for deploy destination preview
 ---   launch_project: loomworks.Project|nil — the project owning this launch config
+---   debug: string[]|nil — debug languages (first = primary, rest = attach)
 ---   on_accept: fun(result: { name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table<string, table>|nil })
 ---   on_cancel: fun()
 function M.open(opts)
@@ -72,7 +73,6 @@ function M.open(opts)
         t:leaf(opts.title or "Launch Configuration", "Title")
         t:blank()
 
-        -- Name
         local name_val = name ~= "" and name or "(empty)"
         local name_hl = name_error and "DiagnosticError"
                 or (name ~= "" and "LoomworksActionable" or "Comment")
@@ -90,7 +90,6 @@ function M.open(opts)
             t:leaf(name_error, "DiagnosticError")
         end
 
-        -- Command
         local cmd_val = command ~= "" and command or "(empty)"
         t:item("Command    " .. cmd_val .. " ▸", {
             hl = command ~= "" and "LoomworksActionable" or "Comment",
@@ -100,7 +99,6 @@ function M.open(opts)
             end,
         })
 
-        -- Args (structured list)
         if #args > 0 then
             t:leaf("Args:", "Comment")
             local n_args = #args
@@ -120,7 +118,6 @@ function M.open(opts)
                     on_enter = function()
                         local eq_pos = args[captured_ai]:find("=")
                         if eq_pos then
-                            -- Key=value: offer to edit key, value (text), or value (path)
                             local key = args[captured_ai]:sub(1, eq_pos - 1)
                             local val = args[captured_ai]:sub(eq_pos + 1)
                             vim.ui.select({ "Edit value as text", "Edit value as path", "Edit key", "Edit whole arg" }, {
@@ -155,7 +152,6 @@ function M.open(opts)
                                 end
                             end)
                         else
-                            -- Plain arg: edit as text or path
                             vim.ui.select({ "Edit as text", "Edit as path" }, {
                                 prompt = "Edit argument:",
                             }, function(choice)
@@ -256,7 +252,6 @@ function M.open(opts)
             end,
         })
 
-        -- Working directory (opens path editor)
         local wd_val = working_dir ~= "" and working_dir or "(default)"
         t:item("Work dir   " .. wd_val .. " ▸", {
             hl = working_dir ~= "" and "LoomworksActionable" or "Comment",
@@ -283,7 +278,6 @@ function M.open(opts)
 
         t:blank()
 
-        -- Environment variables
         local env_keys = {}
         for k in pairs(env) do env_keys[#env_keys + 1] = k end
         table.sort(env_keys)
@@ -330,7 +324,6 @@ function M.open(opts)
             end,
         })
 
-        -- "Add from project variable" — maps a project variable to an env var
         local proj = opts.launch_project
         if proj and proj.variables and next(proj.variables) then
             t:item("  ▸ Add from project variable", {
@@ -359,7 +352,6 @@ function M.open(opts)
 
         t:blank()
 
-        -- Deploy steps (sources can be single or array)
         local deploy_mod = require("loomworks.deploy")
         local deploy_keys = {}
         for k in pairs(deploy) do deploy_keys[#deploy_keys + 1] = k end
@@ -380,7 +372,6 @@ function M.open(opts)
                 local sources = deploy_mod.normalize_sources(deploy[dest])
                 local captured_dest = dest
 
-                -- Destination on its own line (may be long)
                 t:leaf("  " .. dest, "Comment")
                 for si, src in ipairs(sources) do
                     local captured_si = si
@@ -401,7 +392,6 @@ function M.open(opts)
                                     local cur = deploy_mod.normalize_sources(deploy[captured_dest])
                                     cur[captured_si] = new_source
                                     if new_dest ~= captured_dest then
-                                        -- Destination changed: remove from old, add to new
                                         table.remove(cur, captured_si)
                                         if #cur == 0 then
                                             deploy[captured_dest] = nil
@@ -410,7 +400,6 @@ function M.open(opts)
                                         else
                                             deploy[captured_dest] = cur
                                         end
-                                        -- Add to new destination
                                         local new_existing = deploy[new_dest]
                                         if new_existing then
                                             local new_arr = deploy_mod.normalize_sources(new_existing)
@@ -420,7 +409,6 @@ function M.open(opts)
                                             deploy[new_dest] = new_source
                                         end
                                     else
-                                        -- Same destination: update in place
                                         if #cur == 1 then
                                             deploy[captured_dest] = cur[1]
                                         else
@@ -466,7 +454,6 @@ function M.open(opts)
                     on_accept = function(new_dest, new_source)
                         local existing = deploy[new_dest]
                         if existing then
-                            -- Append to existing destination
                             local arr = deploy_mod.normalize_sources(existing)
                             arr[#arr + 1] = new_source
                             deploy[new_dest] = arr
@@ -480,7 +467,6 @@ function M.open(opts)
             end,
         })
 
-        -- Debug languages
         t:blank()
         if #debug_langs > 0 then
             t:leaf("Debug:", "Comment")
@@ -518,17 +504,14 @@ function M.open(opts)
             hl = "LoomworksActionable",
             direct = true,
             on_enter = function()
-                -- Collect available languages from workspace modules
                 local available = {}
                 local seen = {}
-                -- Add languages from debug.lua known list
                 for _, lang in ipairs(require("loomworks.debug").known_languages()) do
                     if not seen[lang] then
                         seen[lang] = true
                         available[#available + 1] = lang
                     end
                 end
-                -- Add languages from workspace modules
                 if opts.workspace and opts.workspace._modules then
                     for _, mod in ipairs(opts.workspace._modules) do
                         for _, lang in ipairs(mod.languages) do
@@ -539,7 +522,6 @@ function M.open(opts)
                         end
                     end
                 end
-                -- Filter out already-added languages
                 local filtered = {}
                 local added = {}
                 for _, l in ipairs(debug_langs) do added[l] = true end

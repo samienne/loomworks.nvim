@@ -25,6 +25,10 @@ local activity  = require("loomworks.ui.v2.view_model.activity")
 --- @field _workspace_provider fun(): loomworks.Workspace|nil
 --- @field _selection loomworks.uiv2.Selection
 --- @field _section_state table<string, boolean>  -- explicit user collapsed choices
+--- @field _wire_draft table|nil
+--- @field _recent_results table[]
+--- @field _recent_results_max integer
+--- @field _activity_mode "live"|"plan"
 --- @field _subscribers function[]
 --- @field _event_handlers table[]   { event, fn } pairs to off() on destroy
 local ViewModel = {}
@@ -153,9 +157,8 @@ function ViewModel:presentation()
     local ws = self._workspace_provider()
     local ov = overview.build(ws, self._section_state)
 
-    -- Inspector subject is whatever has been explicitly selected (pinned).
-    -- Cursor movement no longer drives the inspector — selection is
-    -- explicit via `<CR>`/`select_under_cursor`.
+    -- Inspector subject is the explicitly pinned ref; cursor movement
+    -- doesn't drive it (selection is explicit via `<CR>`).
     local ref = self._selection:pinned()
     local insp = inspector.build(ws, ref, { wire_draft = self._wire_draft })
 
@@ -185,13 +188,10 @@ end
 --- @param payload? table
 function ViewModel:dispatch(action, payload)
     if action == "cursor_to" then
-        -- Cursor changes are visual-only and target action keys (b/c/D/C/a).
-        -- They no longer drive the inspector subject and skip the notify
-        -- loop to avoid re-rendering on every j/k.
+        -- Visual-only; skips the notify loop to avoid re-rendering on every j/k.
         assert(payload and payload.section and payload.row, "cursor_to requires { section, row }")
         self._selection:cursor_to(payload.section, payload.row)
     elseif action == "select_under_cursor" or action == "pin" then
-        -- Set inspector subject to whatever the cursor is on.
         local ws = self._workspace_provider()
         local ov = overview.build(ws, self._section_state)
         local c = self._selection:cursor()
@@ -204,9 +204,7 @@ function ViewModel:dispatch(action, payload)
         self._selection:unpin()
         self:_notify()
     elseif action == "toggle_pin" then
-        -- Legacy: toggle the explicit selection. Kept so callers using
-        -- the older name continue to work; cursor-driven flicker is no
-        -- longer the use case.
+        -- Toggle the explicit selection (alias for pin/unpin).
         if self._selection:pinned() then
             self._selection:unpin()
         else
@@ -436,7 +434,6 @@ function ViewModel:_cycle_publish_for_inspector_subject()
     local item = self:_resolve_publishable_subject()
     if not item then return end
     cycle_intent(item)
-    -- Persist via workspace's user.json save and trigger refresh.
     local ws = self._workspace_provider()
     if ws and ws._save_user then
         pcall(function() ws:_save_user() end)
@@ -613,8 +610,6 @@ function ViewModel:_set_field(subject, field_id, value)
         local cfg = proj:get_configuration(subject.config_name)
         if not cfg or not cfg.is_user then return false end
 
-        -- Build the user-override entry from the existing config and
-        -- mutate just the one option key.
         local entry = cfg:serialize_user_override() or {}
         local opts = entry.options and vim.deepcopy(entry.options) or {}
         if value == nil or value == "" then
@@ -661,7 +656,6 @@ function ViewModel:_add_item(kind, parent, name, extra)
     if kind == "wire_source" then
         return self:_add_wire_source()
     end
-    -- Workspace-level adds: project, configuration set.
     if parent.kind == "workspace" then
         if kind == "project" then
             local proj_type = extra and extra.type or "cmake"
@@ -963,7 +957,6 @@ end
 --- Discard the current wire draft.
 function ViewModel:_wire_cancel()
     if not self._wire_draft then return end
-    -- If editing an existing step, return focus to it; otherwise unpin.
     local existing = self._wire_draft.existing
     self._wire_draft = nil
     if existing then
@@ -990,7 +983,6 @@ function ViewModel:_add_deploy_step(parent, destination, extra)
     local launch = proj.launch and proj.launch[parent.launch_name]
     if not launch then return false end
 
-    -- Build the source descriptor.
     local descriptor = { project = extra.source_project }
     if extra.target then descriptor.target = extra.target end
     if extra.path   then descriptor.path   = extra.path end
@@ -1015,7 +1007,7 @@ function ViewModel:_add_deploy_step(parent, destination, extra)
 end
 
 --- Delete the item the inspector is currently showing.
---- Currently supports: deploy_step, variable, launch, configuration.
+--- Supports: deploy_step, variable, launch, configuration, config_set, profile.
 --- @return boolean ok
 function ViewModel:_delete_inspector_subject()
     local ws = self._workspace_provider()
@@ -1098,9 +1090,7 @@ function ViewModel:_delete_inspector_subject()
 end
 
 --- Rename the item the inspector is currently showing.
---- Currently supports: configuration, launch, variable. Other kinds
---- (project, config_set, profile) need atomic propagation across cache /
---- profiles / sets and are deferred to a follow-up slice.
+--- Supports: configuration, launch, project, config_set, variable.
 --- @param new_name string
 --- @return boolean ok
 function ViewModel:_rename_inspector_subject(new_name)

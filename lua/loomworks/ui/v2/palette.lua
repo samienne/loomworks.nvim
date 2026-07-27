@@ -2,16 +2,7 @@
 ---
 --- Builds a list of action entries from the current workspace state and
 --- presents them via `vim.ui.select` (Snacks intercepts when its UI is
---- enabled, otherwise default Neovim picker). Reachable from any buffer
---- via `<leader>wp`.
----
---- v0 covers the most-used commands: build / configure / switch active
---- profile, add project / configuration set, inspect any item, toggle
---- the UI, rescan tools / devices.
----
---- Per spec/ui-v2.md §2.3 — palette is the canonical surface for
---- creation actions, cross-cutting sweeps, and action-from-anywhere
---- shortcuts that don't have dedicated keybindings.
+--- enabled, otherwise default Neovim picker). Reachable from any buffer.
 
 local M = {}
 
@@ -20,9 +11,6 @@ local M = {}
 local function open_and_drill(ref)
     local v2 = require("loomworks.ui.v2")
     v2.open()
-    -- The view model is constructed on first open; dispatching against
-    -- a freshly-opened UI is safe because the layout subscribes before
-    -- the first refresh.
     local vm = v2._view_model_for_palette()
     if vm then
         vm:dispatch("drill_in", { ref = ref })
@@ -36,7 +24,6 @@ function M.build_entries()
     local ws = lw.get_workspace and lw.get_workspace() or nil
     local entries = {}
 
-    -- Always-available
     entries[#entries + 1] = {
         label = "Open loomworks v2 UI",
         run = function() require("loomworks.ui.v2").toggle() end,
@@ -60,7 +47,6 @@ function M.build_entries()
 
     local active = ws._active_profile
 
-    -- Active profile actions
     if active then
         entries[#entries + 1] = {
             label = "Build active profile (" .. active.key .. ")",
@@ -72,7 +58,6 @@ function M.build_entries()
         }
     end
 
-    -- Switch profile (one entry per profile that isn't already active)
     for _, p in pairs(ws._profiles or {}) do
         if p.key ~= (active and active.key or nil) then
             local key = p.key
@@ -90,7 +75,6 @@ function M.build_entries()
         end
     end
 
-    -- Inspect a project / profile / config set: opens v2 + drills in.
     for _, p in pairs(ws._projects or {}) do
         local key = p.key
         entries[#entries + 1] = {
@@ -113,8 +97,6 @@ function M.build_entries()
         }
     end
 
-    -- Workspace-level adds. These open prompts via the same flows as the
-    -- overview sentinels.
     entries[#entries + 1] = {
         label = "Add project",
         run = function()

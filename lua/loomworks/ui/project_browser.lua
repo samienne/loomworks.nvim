@@ -188,7 +188,6 @@ function M.open(root)
         local types = entry.types
         local has_types = types and #types > 0
 
-        -- Build type tag chunks for post-patch highlighting
         local tag_chunks = {}
         if has_types then
             for _, ti in ipairs(types) do
@@ -206,7 +205,6 @@ function M.open(root)
             tag_chunks[#tag_chunks + 1] = { "[shell: custom]", "DiagnosticOk" }
         end
 
-        -- Check if any type is already added
         local any_added = false
         if has_types and added[rel] then
             for _, ti in ipairs(types) do
@@ -234,7 +232,6 @@ function M.open(root)
             tag_chunks[#tag_chunks + 1] = { "✓", "DiagnosticOk" }
         end
 
-        -- Build full display text for the node
         local suffix_parts = {}
         for _, chunk in ipairs(tag_chunks) do
             suffix_parts[#suffix_parts + 1] = chunk[1]
@@ -244,7 +241,6 @@ function M.open(root)
         -- Capture the line number where node() will add its line
         local node_ln = #t.lines + 1
 
-        -- Build picker items: add actions for unadded types, remove for added
         local picker_items = {}
         if has_types then
             for _, ti in ipairs(types) do
@@ -298,7 +294,6 @@ function M.open(root)
             }
         end
 
-        -- Build on_enter: always show picker when items exist
         local on_enter_fn = #picker_items > 0 and function()
             vim.ui.select(picker_items, {
                 prompt = entry.name .. ":",
@@ -308,7 +303,6 @@ function M.open(root)
             end)
         end or nil
 
-        -- Foldable node for directories (can have children)
         t:node(display, {
             fold_key = "browser:" .. entry.abs_path,
             hl = has_types and nil or "Comment",
@@ -338,7 +332,6 @@ function M.open(root)
         -- Apply per-chunk highlights on the node line (after fold prefix + name)
         if #tag_chunks > 0 then
             local line_text = t.lines[node_ln]
-            -- Find where the name starts by locating it after the fold prefix
             local name_start = line_text:find(entry.name, 1, true)
             if name_start then
                 local col = name_start - 1 + #entry.name
@@ -369,7 +362,6 @@ function M.open(root)
             t._folds[root_fold_key] = true
         end
 
-        -- Treat root as a proper entry with detection
         local root_entry = {
             name = root_name,
             abs_path = root,
@@ -383,7 +375,6 @@ function M.open(root)
 
     tree = Tree.new(render_fn)
 
-    -- Capture the current window so we can refocus it when the browser closes
     local parent_win = vim.api.nvim_get_current_win()
 
     view = View.new({
@@ -415,7 +406,6 @@ function M.open(root)
         end,
     })
 
-    -- Add custom action for refresh
     local orig_on_key = tree.on_key
     function tree:on_key(action, line)
         if action == "refresh_browser" then
@@ -425,7 +415,6 @@ function M.open(root)
             return { refresh = true }
         end
         if action == "delete" then
-            -- Walk up to find entry with on_delete
             for l = line, 1, -1 do
                 local w = self.line_meta[l]
                 if w and w.on_delete then
@@ -440,7 +429,6 @@ function M.open(root)
 
     view:open()
 
-    -- Kick off initial scan
     scan_dir(root)
 end
 

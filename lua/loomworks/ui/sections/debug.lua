@@ -13,7 +13,6 @@ return function(tree, ctx)
     local ws = lw.get_workspace()
     if not ws then return end
 
-    -- Collect unique languages from all modules
     local modules = ws._modules
     if not modules or #modules == 0 then return end
 
@@ -38,7 +37,6 @@ return function(tree, ctx)
         local current = debug_mod.resolve_adapter(ws, lang)
         local default = debug_mod.default_adapter(lang)
 
-        -- Skip languages with no known adapter
         if not current and not default then goto next_lang end
 
         local is_default = (current == default)
@@ -47,7 +45,6 @@ return function(tree, ctx)
             label = label .. "  (default)"
         end
 
-        -- Check if adapter is available in nvim-dap
         local installed = false
         local ok, dap = pcall(require, "dap")
         if ok and dap.adapters[current] then

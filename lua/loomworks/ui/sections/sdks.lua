@@ -15,7 +15,6 @@ return function(tree, ctx)
 
     local sdks = ws:sdks()
 
-    -- Only show section if there are SDKs or providers available
     local providers = sdk_registry.list()
     if #sdks == 0 and #providers == 0 then return end
 
@@ -64,14 +63,11 @@ return function(tree, ctx)
         end)
     end
 
-    -- Add SDK action
     if #providers > 0 then
         tree:item("▸ Add SDK", {
             hl = "LoomworksActionable",
             direct = true,
             on_enter = function()
-                -- Collect all detected installations from all providers,
-                -- plus a "Browse..." option per provider for manual path
                 local candidates = {}
                 local existing_paths = {}
                 for _, s in ipairs(sdks) do
@@ -82,11 +78,9 @@ return function(tree, ctx)
                     local p = sdk_registry.get(id)
                     if not p then goto next_provider end
                     local display = p.display_name or id
-                    -- Detect installations
                     local ok, installations = pcall(p.detect_all)
                     if ok then
                         for _, inst in ipairs(installations) do
-                            -- Skip already-added SDKs
                             if not existing_paths[(inst.path or ""):lower()] then
                                 local label = display
                                 if inst.version then label = label .. " " .. inst.version end
@@ -100,7 +94,6 @@ return function(tree, ctx)
                             end
                         end
                     end
-                    -- Manual path option
                     candidates[#candidates + 1] = {
                         provider_id = id,
                         browse = true,

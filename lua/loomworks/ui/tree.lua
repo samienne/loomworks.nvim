@@ -102,14 +102,12 @@ function Tree:on_key(action, line)
         return { refresh = true, restore_fold = w.fold_key }
 
     elseif action == "close_fold" then
-        -- If current line is foldable, fold it
         local w = self.line_meta[line]
         if w and w.fold_key then
             if not self._folds[w.fold_key] then return {} end -- already closed
             self._folds[w.fold_key] = false
             return { refresh = true, restore_fold = w.fold_key }
         end
-        -- Otherwise walk upward to find the nearest foldable node
         for l = line - 1, 1, -1 do
             local parent = self.line_meta[l]
             if parent and parent.fold_key then
@@ -127,7 +125,6 @@ function Tree:on_key(action, line)
         return { refresh = true, restore_fold = fk }
 
     elseif action == "enter" then
-        -- Walk up from cursor to find nearest widget with on_* callbacks
         local w
         for l = line, 1, -1 do
             if self.line_meta[l] then
@@ -137,7 +134,6 @@ function Tree:on_key(action, line)
         end
         if not w then return {} end
 
-        -- Collect available actions
         local items = {}
         for _, entry in ipairs(ACTION_ORDER) do
             local cb = w["on_" .. entry.action]
@@ -222,7 +218,6 @@ function Tree:on_key(action, line)
         return {}
 
     else
-        -- Walk upward from line to find nearest widget with the action callback.
         local action_key = "on_" .. action
         for l = line, 1, -1 do
             local w = self.line_meta[l]

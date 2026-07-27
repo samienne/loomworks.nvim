@@ -1,4 +1,4 @@
--- Release acquisition / self-update for the host bootstrap (spec §16.13).
+-- Release acquisition / self-update for the host bootstrap.
 --
 -- Flow: fetch manifest.json + manifest.json.sig -> verify signature -> check
 -- host compatibility -> download the bundle zip -> verify its hash against the

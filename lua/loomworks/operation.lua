@@ -43,7 +43,6 @@ local function format_duration(seconds)
     return h .. "h" .. string.format("%02d", m) .. "m"
 end
 
---- Determine completion mode from action type.
 local DELETION_ACTIONS = { clean = true, delete = true }
 
 --- Create a new Operation.
@@ -105,7 +104,6 @@ function Operation:_check_unit(unit)
     if self._unit_done[unit] then return end
 
     if self._mode == "deletion" then
-        -- Deletion mode: done when the deleting flag clears
         if not unit:is_deleting() then
             local state = unit:state()
             self._unit_done[unit] = true
@@ -115,7 +113,6 @@ function Operation:_check_unit(unit)
         return
     end
 
-    -- Rank mode: state hierarchy check
     local state = unit:state()
     local target = self.target_states[unit]
 
@@ -168,7 +165,6 @@ function Operation:_check_completion()
 
     if not all_done then return end
 
-    -- All units done — determine overall success
     local all_ok = true
     for _, unit in ipairs(self.units) do
         if not self._unit_ok[unit] then
@@ -195,18 +191,15 @@ function Operation:_check_completion()
     end
     self.message = verb .. " in " .. format_duration(elapsed)
 
-    -- Clean up listeners
     for _, unsub in ipairs(self._unsubscribers) do
         unsub()
     end
     self._unsubscribers = {}
 
-    -- Call completion callback (Core uses this to clean up registries)
     if self._on_complete then
         self._on_complete(self)
     end
 
-    -- Emit event
     self._workspace._core._deps.events.emit("operation_finished", {
         profile_key = self.profile and self.profile.key or nil,
         success = all_ok,

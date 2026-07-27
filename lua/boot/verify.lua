@@ -1,4 +1,4 @@
--- Release-bundle verifier for the host bootstrap (spec §16.12).
+-- Release-bundle verifier for the host bootstrap.
 --
 -- Trust chain: an embedded public key verifies a detached ECDSA-P256 + SHA-256
 -- signature over the exact bytes of `manifest.json`; the (now-trusted) manifest
@@ -18,8 +18,8 @@ local json = require("boot.json")
 local M = {}
 
 -- The capability version this host provides. A bundle whose `min_host_version`
--- exceeds this is refused (spec §16.14); bump when the host's runtime surface
--- changes in a way bundles can rely on.
+-- exceeds this is refused; bump when the host's runtime surface changes in a
+-- way bundles can rely on.
 M.HOST_VERSION = 1
 
 -- Trusted public key, embedded at build time. THIS IS A TEST KEY — the release
@@ -74,7 +74,7 @@ end
 
 --- Verify `manifest_bytes` against `sig_bytes`, then decode + validate it.
 --- The signature check happens on the raw bytes BEFORE decoding, so parsing
---- only ever runs on trusted input (spec §16.12).
+--- only ever runs on trusted input.
 --- @return table|nil manifest, string|nil err
 function M.load_manifest(manifest_bytes, sig_bytes, pubkey_pem)
   local ok, err = M.verify_detached(manifest_bytes, sig_bytes, pubkey_pem)
@@ -84,7 +84,7 @@ function M.load_manifest(manifest_bytes, sig_bytes, pubkey_pem)
   return validate_manifest(decoded)
 end
 
---- Whether this host can run `manifest` (spec §16.14).
+--- Whether this host can run `manifest`.
 --- @return boolean ok, string|nil err
 function M.host_compatible(manifest)
   if manifest.min_host_version > M.HOST_VERSION then

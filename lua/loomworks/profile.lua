@@ -47,7 +47,6 @@ end
 --- (profile, configuration) pair, if any. Non-nil means this
 --- profile's resolved tool can't honor the configuration's
 --- contract — build actions on this profile-project are blocked.
---- See spec §3 `validate_config_tool`.
 --- @return string|nil reason
 function ProfileProject:tool_compat_error()
     return self._tool_compat_error
@@ -201,8 +200,8 @@ function Profile.new(workspace, data)
     local self = setmetatable({}, Profile)
     self._workspace = workspace
     self._removed = false
-    -- _intent left nil; data_model.refresh assigns and then sticks
-    -- (specification.md §2.4). Mutation methods set it explicitly.
+    -- _intent left nil; data_model.refresh assigns and then sticks. Mutation
+    -- methods set it explicitly.
     self._intent = nil
     if data then self:_apply(data) end
     return self
@@ -210,9 +209,9 @@ end
 
 --- Mark this profile as in the user.json working copy.
 --- Called when any mutation is about to write to user.json. Profiles
---- default to local intent (per spec §2.4 — profiles are personal by
---- default), but a `shared` profile that's being used must be promoted
---- to `local+shared` so its data lands in the working copy.
+--- default to local intent (profiles are personal by default), but a
+--- `shared` profile that's being used must be promoted to `local+shared`
+--- so its data lands in the working copy.
 function Profile:_mark_user_owned()
     if self._intent == "shared" then
         self._intent = "local+shared"
@@ -406,12 +405,12 @@ local function find_module(workspace, mod_type)
     return nil
 end
 
---- Legacy compat shim: synthesize the per-module `tools` dict from
---- the new `_tool_keys` array. For each key in the array, find every
+--- Compatibility shim: synthesize the per-module `tools` dict from
+--- the `_tool_keys` array. For each key in the array, find every
 --- module that has a Tool by that key in its registry; emit one
 --- dict entry per (module, key) pair (first key per module wins so
---- the shape matches the historic invariant of "one tool per module
---- type"). Callers should migrate to `Profile:tools_for(configuration)`
+--- the shape matches the invariant of "one tool per module type").
+--- Callers should prefer `Profile:tools_for(configuration)`
 --- (language-aware) or read `_tool_keys` directly.
 --- @return table<string, loomworks.ToolRef>|nil
 function Profile:tools_data()
@@ -613,9 +612,8 @@ end
 function Profile:activate()
     self._workspace._active_profile = self
     self._workspace._active_profile_key = self.key
-    -- Implicit cascade on use (specification.md §2.4): activating a
-    -- profile materializes it and the items it transitively references
-    -- into the working copy.
+    -- Implicit cascade on use: activating a profile materializes it and the
+    -- items it transitively references into the working copy.
     self:_mark_user_owned()
     if self._config_set_ref then
         self._config_set_ref:_mark_user_owned()
@@ -698,7 +696,7 @@ end
 --- @param project loomworks.Project
 --- @param target_id? string opaque target identifier (module targets)
 --- @param launch_name? string launch config name (command launches)
---- @param working_dir? string optional persistent working-dir override (§8.7)
+--- @param working_dir? string optional persistent working-dir override
 function Profile:set_default_target(project, target_id, launch_name, working_dir)
     local descriptor = { project = project.key }
     if target_id then descriptor.target = target_id end
@@ -962,8 +960,7 @@ end
 --- * a project's module needs a tool but no entry in `_tool_keys`
 ---   resolves under that module's registry. This second check
 ---   handles modules that haven't declared `languages` yet or
----   profiles whose configurations aren't resolved yet — the
----   pre-language fallback that keeps existing tests passing.
+---   profiles whose configurations aren't resolved yet.
 --- @return boolean
 function Profile:is_complete()
     if #self:language_gaps() > 0 then return false end
@@ -1107,7 +1104,7 @@ function Profile:is_valid()
             .. table.concat(legacy_missing, ", ")
     end
 
-    -- Abstract configurations (spec §1.4): a configuration with no variant —
+    -- Abstract configurations: a configuration with no variant —
     -- declared or inherited — is a mixin, usable only as a base. Building one
     -- is not a partial success: the module has nothing to derive a build type
     -- from and quietly falls back to its own default (meson picks
@@ -1320,10 +1317,8 @@ function Profile:plan_deletion()
 end
 
 --- Delete this profile (plan + execute, no UI confirmation).
---- Creates a delete Operation to track progress.
+--- Creates a delete Operation to track progress. Returns a Future.
 --- @param on_done? function
---- Delete this profile. Returns a Future.
---- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function Profile:delete(on_done)
     local plan = self:plan_deletion()

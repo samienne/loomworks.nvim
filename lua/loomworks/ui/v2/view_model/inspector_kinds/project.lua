@@ -1,6 +1,6 @@
 --- loomworks/ui/v2/view_model/inspector_kinds/project.lua
 ---
---- Build the project inspector content (read-only in this slice).
+--- Build the project inspector content.
 
 local M = {}
 
@@ -72,9 +72,8 @@ local function launch_block(project)
     return out
 end
 
---- Read the module's editable_type_config_fields (when declared) and
---- expand them into UI-friendly entries. v0 supports env_dict only;
---- other kinds (string, path) are surfaced as text fields.
+--- Expand the module's editable_type_config_fields (when declared) into
+--- UI-friendly entries. Only env_dict fields are handled.
 --- @param project loomworks.Project
 --- @return table[]   { name, label, kind, entries|value, add, edits }
 local function type_config_fields_block(project)
@@ -174,7 +173,6 @@ function M.build(workspace, ref)
         type_config_fields = type_config_fields_block(project),
         intent = project._intent or "local",
         publishable = true,
-        -- Items the user can add into this project.
         add_actions = {
             configuration = { kind = "configuration", parent = subject_ref, label = "+ Add user configuration" },
             launch        = { kind = "launch",        parent = subject_ref, label = "+ Add launch" },

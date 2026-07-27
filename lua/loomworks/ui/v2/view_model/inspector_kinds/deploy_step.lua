@@ -1,9 +1,7 @@
 --- loomworks/ui/v2/view_model/inspector_kinds/deploy_step.lua
 ---
---- Read-only deploy-step inspector. Shows destination, source
---- descriptors (one or more, list shape), phase per source, and a
---- placeholder for live freshness state. Wire mode (edit) is a later
---- slice — this kind only displays.
+--- Deploy-step inspector. Shows destination, source descriptors (one or
+--- more, list shape), and phase per source.
 ---
 --- A deploy step is identified by the launch (or project) it belongs
 --- to plus the destination key:
@@ -74,13 +72,11 @@ end
 --- @return table[]
 local function source_rows(descriptor)
     if type(descriptor) ~= "table" then return {} end
-    -- Array of descriptors?
     if descriptor[1] ~= nil then
         local out = {}
         for i, d in ipairs(descriptor) do out[i] = source_row(d) end
         return out
     end
-    -- Single descriptor
     return { source_row(descriptor) }
 end
 

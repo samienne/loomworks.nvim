@@ -6,9 +6,6 @@
 --- is drillable to the orphan ref so the standard delete affordance
 --- applies. A "+ Delete all" sentinel removes the entire list with
 --- confirmation in the layer above.
----
---- v0 doesn't enumerate stray build directories — that needs filesystem
---- traversal under workspace root. Listed here as a deferred extension.
 
 local M = {}
 

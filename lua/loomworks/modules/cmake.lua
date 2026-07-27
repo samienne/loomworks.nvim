@@ -17,11 +17,6 @@ M.languages = { "c", "c++" }
 
 local uv = vim.uv or vim.loop
 
---- Wrap a command with vcvarsall.bat for MSVC Ninja builds.
---- @param cmd string[] command array
---- @param kit table|nil tool data with optional vcvarsall/arch
---- @param generator string|nil cmake generator name
---- @return string[]
 --- Write a .bat file for MSVC+Ninja builds into the build directory.
 --- Using a .bat file instead of inline cmd /C avoids issues with
 --- Git Bash environment inheritance and quoting on Windows.
@@ -474,17 +469,6 @@ local function is_multi_config(generator)
     return false
 end
 
---- Resolve the build directory for a project.
---- For preset-based configs, uses the preset's binaryDir.
---- Multi-config generators share one build dir per kit.
---- Single-config generators get per-config per-kit dirs.
---- @param project_name string
---- @param config_name string|nil only used for single-config
---- @param config_info loomworks.ConfigurationInfo|nil
---- @param workspace_root string
---- @param multi_config boolean
---- @param kit loomworks.CmakeKit|nil
---- @return string absolute build directory path
 --- Sanitize a string for use as a directory name.
 --- Replaces characters that are invalid in Windows paths (: * ? " < > |).
 --- Note: this function is NOT injective — "a:b" and "a_b" produce the same
@@ -592,7 +576,6 @@ function M.tasks(project, active_config)
     end
 
     -- Configure task
-    -- Use SDK-provided cmake if available, otherwise system cmake
     local cmake_cmd = (kit and kit.cmake_path) or "cmake"
     local configure_cmd = { cmake_cmd }
 
@@ -1337,9 +1320,7 @@ local CMAKE_LANG_CANONICAL = {
     Java   = "java",
 }
 
---- Detect the set of languages a cmake configuration actually
---- enabled. Walks every target's compileGroups in the file-api
---- Toolchain runtime directories for launching built executables (§8.4).
+--- Toolchain runtime directories for launching built executables.
 --- cmake tool_data carries `compiler_path` (the compiler executable); its
 --- directory holds the runtime DLLs for gcc/clang toolchains. Core adds the
 --- build tree's own shared-library dirs generically.
@@ -1355,10 +1336,11 @@ function M.runtime_path(ctx)
     return nil
 end
 
---- codemodel reply, unions the `language` fields, and normalizes
---- to canonical strings. The configuration must have been
---- successfully configured at least once (file-api reply must
---- exist on disk).
+--- Detect the set of languages a cmake configuration actually enabled.
+--- Walks every target's compileGroups in the file-api codemodel reply,
+--- unions the `language` fields, and normalizes to canonical strings. The
+--- configuration must have been successfully configured at least once
+--- (file-api reply must exist on disk).
 --- @param ctx { build_dir: string, config_name?: string }
 --- @return string[]|nil canonical language list, or nil when no reply exists
 function M.detect_languages(ctx)

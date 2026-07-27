@@ -17,7 +17,6 @@ local M = {}
 function M.show(opts)
     local lines = opts.lines
 
-    -- Auto-calculate width from content
     local width = 0
     for _, l in ipairs(lines) do
         if #l > width then width = #l end
@@ -27,7 +26,6 @@ function M.show(opts)
     local max_height = opts.max_height or math.floor(vim.o.lines * 0.8)
     local height = math.min(#lines, max_height)
 
-    -- Build keys: always include q and Esc to close
     local keys = { q = "close", ["<Esc>"] = "close" }
     if opts.keys then
         for k, v in pairs(opts.keys) do

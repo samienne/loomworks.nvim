@@ -43,7 +43,6 @@ function M.write_file_atomic(path, data)
     uv.fs_fsync(fd)
     uv.fs_close(fd)
 
-    -- Rotate existing file to .bak (best-effort)
     if uv.fs_stat(path) then
         uv.fs_rename(path, path .. ".bak")
     end
@@ -76,7 +75,6 @@ function M.read_json(path)
         end
     end
 
-    -- Try .bak fallback
     local bak = path .. ".bak"
     local bak_content, bak_err = M.read_file(bak)
     if not bak_content then
@@ -108,7 +106,6 @@ function M._pretty_json(json)
         if in_string then
             buf[#buf + 1] = c
             if c == "\\" then
-                -- skip escaped character
                 i = i + 1
                 buf[#buf + 1] = json:sub(i, i)
             elseif c == '"' then
@@ -150,7 +147,6 @@ end
 function M.write_json(path, tbl)
     local ok, encoded = pcall(vim.json.encode, tbl)
     if not ok then return false, "json encode: " .. tostring(encoded) end
-    -- Pretty-print: 2-space indentation
     local pretty = M._pretty_json(encoded)
     return M.write_file_atomic(path, pretty)
 end
@@ -204,11 +200,8 @@ function M.rm_rf(dir)
     return true, nil
 end
 
---- Recursively remove a directory tree asynchronously via subprocess.
---- Uses rm -rf on Unix, cmd /c rd /s /q on Windows.
---- @param dir string
---- @param callback fun(ok: boolean, err: string|nil)
---- Remove directory/file asynchronously. Returns a Future.
+--- Recursively remove a directory/file asynchronously via subprocess.
+--- Uses rm -rf on Unix, cmd /c rd /s /q (or del) on Windows. Returns a Future.
 --- @param dir string
 --- @param callback? fun(ok: boolean, err: string|nil) legacy callback (deprecated)
 --- @return loomworks.Future

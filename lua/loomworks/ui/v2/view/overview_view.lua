@@ -234,7 +234,6 @@ local RENDERERS = {
 function M.render(overview, selection)
     local ctx = new_ctx()
 
-    -- Header
     ctx:add(overview.workspace_name or "loomworks")
     ctx:hl_last_line("Title")
     ctx:add(string.rep("─", 60))
@@ -251,14 +250,12 @@ function M.render(overview, selection)
         end
     end
 
-    -- Pin marker on the row matching the pinned ref, if visible.
+    -- Pin marker resolution happens in the layout, not here: this map holds
+    -- { section, row } indices rather than refs, so the pinned ref can't be
+    -- compared without re-resolving.
     if selection and selection.pinned then
         for line_no, ref in pairs(ctx.selectable_at_line) do
             if ref.section ~= nil then
-                -- Selectable refs in this map are { section, row } indices, not the
-                -- ref itself. We can't compare here without re-resolving — skip
-                -- pin markers in the renderer; the inspector subject already
-                -- reflects the pinned ref.
             end
         end
     end

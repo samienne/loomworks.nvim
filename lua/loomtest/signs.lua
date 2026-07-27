@@ -58,10 +58,8 @@ function M.update_buf(bufnr)
 
     local norm_path = buf_path:gsub("\\", "/"):lower()
 
-    -- Clear existing signs
     vim.fn.sign_unplace(SIGN_GROUP, { buffer = bufnr })
 
-    -- Collect tests per line
     local loomtest = require("loomtest")
     local by_line = {}
     for _, node in ipairs(loomtest.nodes()) do
@@ -71,7 +69,6 @@ function M.update_buf(bufnr)
         end
     end
 
-    -- Place signs
     for line, statuses in pairs(by_line) do
         local status = aggregate_status(statuses)
         local sign_name = "loomtest_" .. status

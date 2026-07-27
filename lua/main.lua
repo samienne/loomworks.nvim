@@ -1,4 +1,4 @@
--- Universal luvi entry point — the host **bootstrap** (spec §16.11–16.14).
+-- Universal luvi entry point — the host bootstrap.
 --
 -- The only Lua fused into the host binary. It carries no behavioral logic; it
 -- (1) resolves where *system Lua* (the loomworks implementation) comes from,
@@ -6,7 +6,7 @@
 -- work even with no bundle installed), and (3) runs the CLI from the resolved
 -- source.
 --
--- System-Lua source precedence (spec §16.11):
+-- System-Lua source precedence:
 --   LOOMWORKS_LUA env > `--dev[=PATH]` > config `default-source=dev`
 --     > newest verified release bundle (<data>/loomworks/lua-<ver>/)
 --     > fused luvi bundle (a full-fused dev exe / `luvi . --` source run).
@@ -15,7 +15,7 @@
 -- Bootstrap-only modules live under `lua/boot/` (verify, download, update,
 -- json, paths); they load from the fused host regardless of the chosen source,
 -- via the boot searcher below. They are NOT part of the release bundle they
--- verify (spec §16.12).
+-- verify.
 
 local uv_ok, uv = pcall(require, "uv")
 if not uv_ok then uv = require("luv") end
@@ -51,7 +51,7 @@ for _, v in ipairs({ ... }) do
   end
 end
 
--- ---- resolve the system-Lua source (spec §16.11) ----------------------------
+-- ---- resolve the system-Lua source -----------------------------------------
 local cfg = paths.read_config()
 local env_lua = paths.norm(os.getenv("LOOMWORKS_LUA"))
 local dev_opt_in = env_lua ~= nil or dev_flag or cfg["default-source"] == "dev"
@@ -184,7 +184,7 @@ else
   end)
 end
 
--- ---- acquired modules: resolve alongside system Lua (spec §16.20) -----------
+-- ---- acquired modules: resolve alongside system Lua ------------------------
 -- Modules installed by `lw module install` live under <data>/loomworks/modules/
 -- <name>/lua, separate from the release source so a self-update never disturbs
 -- them. Expose their roots to both resolvers — the require searcher below and

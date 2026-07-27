@@ -24,6 +24,7 @@ local M = {}
 ---   has_keyed_tools: boolean|nil — whether this module has keyed tools
 ---   inherited_tool: table|nil — tool already in use by existing profiles
 ---   no_tool_profiles: string[]|nil — cached profile keys without tool
+---   ws: loomworks.Workspace|nil — for profile upgrade preview
 ---   on_accept: fun(result: { mappings: table, tool_entry: table|nil })
 ---   on_cancel: fun()
 function M.open(opts)
@@ -35,34 +36,26 @@ function M.open(opts)
     local inherited_tool = opts.inherited_tool
     local no_tool_profiles = opts.no_tool_profiles or {}
 
-    -- Tool is inherited from existing profiles — no picker needed
     local tool_inherited = inherited_tool ~= nil
-    -- Whether the tool picker should be shown (keyed module, no inherited tool)
     local show_tool_picker = has_keyed_tools and not tool_inherited and #tools > 0
 
-    -- Sorted config set names for stable ordering
     local set_names = {}
     for name in pairs(config_sets) do
         set_names[#set_names + 1] = name
     end
     table.sort(set_names)
 
-    -- Compute max set name width for alignment
     local max_name_len = 0
     for _, name in ipairs(set_names) do
         if #name > max_name_len then max_name_len = #name end
     end
 
-    -- Initialize mappings via auto-detection
     local mappings = workspace_view.compute_initial_mappings(mod, set_names, available_configs)
 
-    -- Tool selection state
     local selected_tool = nil -- index into tools array
 
-    -- Track accept vs cancel
     local accepted = false
 
-    -- Whether mappings should be shown
     local function show_mappings()
         if not has_keyed_tools then return true end
         if tool_inherited then return true end
@@ -74,13 +67,11 @@ function M.open(opts)
     local function render_fn(t)
         t._level = 1
 
-        -- Title
         local title_suffix = show_mappings() and not show_tool_picker
             and " — Map configurations" or ""
         t:leaf('Add "' .. opts.project_key .. '" [' .. opts.project_type .. ']' .. title_suffix, "Title")
         t:blank()
 
-        -- Tool selection (keyed modules without inherited tool)
         if show_tool_picker then
             local tool_label = selected_tool
                 and (tools[selected_tool].tool_label or tools[selected_tool].tool_key)
@@ -113,7 +104,6 @@ function M.open(opts)
             t:blank()
         end
 
-        -- Configuration set mapping rows (conditional for keyed modules)
         if show_mappings() then
             for _, set_name in ipairs(set_names) do
                 local variant = mappings[set_name]
@@ -143,7 +133,6 @@ function M.open(opts)
                 })
             end
 
-            -- Profile upgrade preview (tool picker mode only)
             if selected_tool and #no_tool_profiles > 0 and opts.ws then
                 local tool = tools[selected_tool]
                 local tool_entry = {
@@ -163,7 +152,6 @@ function M.open(opts)
                 end
             end
         else
-            -- No tool selected — show descriptive text
             t:leaf("Project will be added without configuration mappings.", "Comment")
         end
 
@@ -173,14 +161,12 @@ function M.open(opts)
 
     tree = Tree.new(render_fn)
 
-    -- Custom accept action
     local orig_on_key = tree.on_key
     function tree:on_key(action, line)
         if action == "accept" then
             accepted = true
             view:close()
 
-            -- Build tool_entry from selection or inheritance
             local tool_entry = nil
             if inherited_tool then
                 tool_entry = inherited_tool
@@ -203,10 +189,8 @@ function M.open(opts)
         return orig_on_key(self, action, line)
     end
 
-    -- Capture parent window for focus restore
     local parent_win = vim.api.nvim_get_current_win()
 
-    -- Compute window dimensions (generous — content may vary with tool selection)
     local content_rows = #set_names + 6 -- title + blanks + rows + footer + margin
     if show_tool_picker then
         content_rows = content_rows + 3 -- tool row + blanks
