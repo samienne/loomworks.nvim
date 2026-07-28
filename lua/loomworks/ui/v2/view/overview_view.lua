@@ -253,12 +253,6 @@ function M.render(overview, selection)
     -- Pin marker resolution happens in the layout, not here: this map holds
     -- { section, row } indices rather than refs, so the pinned ref can't be
     -- compared without re-resolving.
-    if selection and selection.pinned then
-        for line_no, ref in pairs(ctx.selectable_at_line) do
-            if ref.section ~= nil then
-            end
-        end
-    end
 
     return ctx.lines, ctx.highlights,
         ctx.selectable_at_line, ctx.section_at_line, ctx.add_at_line

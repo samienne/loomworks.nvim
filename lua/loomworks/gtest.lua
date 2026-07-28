@@ -57,11 +57,8 @@ function M.parse_list_tests(output, executable, target_id)
             end
         end
 
-        -- Unrecognized line — skip silently for known patterns
-        -- (gtest prints a header line "Running main() from ..." sometimes)
-        if not line:match("^Running main") and not line:match("^$") then
-            -- Unknown format — could log for debugging
-        end
+        -- Unrecognized line — skip silently (e.g. gtest's
+        -- "Running main() from ..." header line).
 
         ::continue::
     end

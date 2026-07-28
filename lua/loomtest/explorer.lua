@@ -816,7 +816,6 @@ function M._show_output_float(title, output, errors)
         end
     end
 
-    local output_start = #errors > 0 and (error_line_start + #errors + 2) or 0
     for i, l in ipairs(lines) do
         if not jump_targets[i] then
             local file, lnum = l:match("([%w_/\\%.%-:]+%.[ch]pp?):(%d+)")

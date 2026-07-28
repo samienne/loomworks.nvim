@@ -193,7 +193,7 @@ function M.detect()
             local cp = probe(cpp_name)
             if cp then cpp_path = cp end
         end
-        local c_path = c_counterpart(name:match("%+%+") and name or name, cpp_path)
+        local c_path = c_counterpart(name, cpp_path)
 
         compilers[#compilers + 1] = {
             id = id,

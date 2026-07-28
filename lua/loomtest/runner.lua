@@ -137,7 +137,7 @@ function M.execute(adapter, spec, test_ids, opts)
     local loomtest = require("loomtest")
     local explorer = require("loomtest.explorer")
 
-    local stale_count = clear_stale_tests(test_ids, loomtest)
+    clear_stale_tests(test_ids, loomtest)
 
     for _, id in ipairs(test_ids) do
         local node = loomtest.get_node(id)

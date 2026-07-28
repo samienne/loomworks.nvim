@@ -106,12 +106,8 @@ function M.parse_segments(dest)
         ::continue::
     end
 
-    -- A trailing empty literal is intentionally preserved: it represents a
-    -- trailing / (directory destination).
-    if #segments > 0 and segments[#segments].type == "literal"
-            and segments[#segments].value == "" then
-    end
-
+    -- A trailing empty literal (from a trailing /) is intentionally kept: it
+    -- marks a directory destination.
     return segments
 end
 
