@@ -640,7 +640,7 @@ function adapter.build_spec(args)
                 request = "launch",
                 program = executable,
                 args = { "--gtest_filter=" .. filter },
-                cwd = bd,
+                cwd = test_cmd.cwd,
             }
             spec.command = nil
         end
