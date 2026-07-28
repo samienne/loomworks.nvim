@@ -692,42 +692,6 @@ Actions walk upward from the cursor to find the nearest actionable node.
 Pressing `b` on a detail line triggers the build action of the parent
 profile or configuration.
 
-### v2 UI (preview, opt-in)
-
-A redesigned three-pane workbench is available alongside the existing
-status page. It runs in parallel — v1 (`<leader>ww`) is unchanged and
-remains the default; v2 is opt-in.
-
-| Key | Action |
-|---|---|
-| `<leader>wW` | Toggle the v2 workbench |
-| `<leader>wp` | Open the v2 command palette (works from any buffer) |
-
-The workbench has three panes — a workspace overview, a per-item
-inspector, and an activity strip with both a live-task view and a
-plan view of the active profile's execution chain. Editing happens
-in place (no modal dialog chains): `<CR>` selects, `e` edits the
-field at cursor, `E` opens wire mode for deploy steps, `D` deletes
-with confirmation, `R` renames.
-
-Layout configuration:
-
-```lua
-require("loomworks.ui.v2").setup({
-    layout = "float",  -- or "tabpage"
-    float = {
-        margin = 2,
-        overview_width = 0.4,
-        activity_height = 0.25,
-        pane_gap = 0,
-        border = "rounded",
-    },
-})
-```
-
-See `spec/ui-v2.md` for the full design and key reference. v2 will be
-promoted to default once it has been validated in real-world use.
-
 ## clangd / LSP Integration
 
 loomworks ships a plugin-style LSP integration layer. By default, calling
