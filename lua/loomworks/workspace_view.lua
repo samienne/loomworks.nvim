@@ -1409,7 +1409,7 @@ end
 --- Context for editing a launch config.
 --- @param project loomworks.Project
 --- @param launch_name string|nil nil for new config
---- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string> }
+--- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table, debug: table }
 function M.compute_edit_launch_context(project, launch_name)
     local config = {}
     if launch_name then
@@ -1434,7 +1434,7 @@ end
 --- @param project loomworks.Project
 --- @param old_name string|nil nil for new config
 --- @param new_name string
---- @param data { command: string, args: string[], working_dir: string, env: table<string, string> }
+--- @param data { command: string, args: string[], working_dir: string, env: table<string, string>, deploy?: table, debug?: string[] }
 --- @return boolean ok, string|nil err
 function M.execute_save_launch_config(project, old_name, new_name, data)
     -- Build config table (omit empty fields)

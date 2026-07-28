@@ -15,6 +15,7 @@
 --- @field parse_results fun(output_path: string): loomtest.TestResult[]|nil
 --- @field invalidate fun()
 --- @field get_cursor_test fun(bufnr: number, line: number): string|nil
+--- @field ensure_built? fun(test_ids: string[], callback: fun(ok: boolean)) optional: build test targets before running
 
 --- @class loomtest.TestNode
 --- @field id string unique identifier
@@ -27,6 +28,8 @@
 --- @field status string|nil "passed"|"failed"|"skipped"|"errored"|nil
 --- @field message string|nil last failure message
 --- @field duration number|nil last duration in milliseconds
+--- @field _output string|nil captured stdout/stderr from the last run
+--- @field _errors loomtest.TestError[]|nil assertion error locations from the last run
 
 --- @class loomtest.RunSpec
 --- @field cmd string[] command and arguments

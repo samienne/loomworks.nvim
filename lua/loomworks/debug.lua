@@ -153,7 +153,7 @@ end
 --- Checks workspace debug settings (from user.json) first, falls back to defaults.
 --- @param workspace loomworks.Workspace
 --- @param language string language name (e.g. "c++", "typescript")
---- @return string adapter_type
+--- @return string|nil adapter_type
 function M.resolve_adapter(workspace, language)
     local settings = workspace._debug_settings
     if settings and settings.adapters and settings.adapters[language] then

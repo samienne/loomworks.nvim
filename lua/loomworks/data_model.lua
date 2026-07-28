@@ -206,13 +206,6 @@ local function sync_projects(ctx, workspace, active_set)
     return arr
 end
 
---- Sync the config sets registry with current config data.
---- Runs after sync_projects so Project objects are available.
---- Pre-resolves project_key -> Project before calling _update.
---- @param ctx table deserialization context with O(1) lookups
---- @param workspace table workspace reference for domain object constructors
---- @param config table parsed config (loomworks.json)
---- @return table[] config_sets array
 --- Once-per-session dedup for stale config_set mapping warnings.
 --- Keyed by `<set_name>|<project_key>|<variant>` so a remerge or
 --- file refresh doesn't repeat the notification. Cleared on
@@ -221,6 +214,13 @@ end
 --- @type table<string, boolean>
 local _reported_stale_mappings = {}
 
+--- Sync the config sets registry with current config data.
+--- Runs after sync_projects so Project objects are available.
+--- Pre-resolves project_key -> Project before calling _update.
+--- @param ctx table deserialization context with O(1) lookups
+--- @param workspace table workspace reference for domain object constructors
+--- @param config table parsed config (loomworks.json)
+--- @return table[] config_sets array
 local function sync_config_sets(ctx, workspace, config)
     local defs = config.configuration_sets or {}
 

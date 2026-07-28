@@ -129,10 +129,10 @@ end
 --- Async: calls callback with results.
 --- @param executable string absolute path to the test binary
 --- @param target_id string the target id for parenting discovered tests
---- @param opts_or_cb table|fun(framework: string|nil, test_list: table[]|nil)
+--- @param opts_or_cb table|fun(framework: string|nil, test_list: table[]|nil, diag: string|nil)
 ---        When a table: `{ env?, cwd? }`. When a function: legacy
 ---        signature `(executable, target_id, callback)`.
---- @param callback? fun(framework: string|nil, test_list: table[]|nil)
+--- @param callback? fun(framework: string|nil, test_list: table[]|nil, diag: string|nil)
 function M.probe(executable, target_id, opts_or_cb, callback)
     local opts
     if type(opts_or_cb) == "function" then
@@ -166,7 +166,7 @@ end
 --- @param executable string
 --- @param target_id string
 --- @param opts? { env?: table<string, string>, cwd?: string }
---- @return string|nil framework, table[]|nil test_list
+--- @return string|nil framework, table[]|nil test_list, string|nil diag
 function M.probe_sync(executable, target_id, opts)
     local result = vim.system(
         { executable, "--gtest_list_tests" },

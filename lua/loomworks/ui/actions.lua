@@ -231,7 +231,7 @@ function M.delete_config(unit)
     end
 end
 
---- @param unit loomworks.ConfigUnit
+--- @param orphan { project_key: string, config_key: string, build_dir_key: string }
 function M.delete_orphaned_config(orphan)
     return function()
         local ws = require("loomworks").get_workspace()
