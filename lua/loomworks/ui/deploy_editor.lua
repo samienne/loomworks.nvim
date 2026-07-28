@@ -197,7 +197,7 @@ end
 --- Open the deploy step editor.
 --- @param opts table
 ---   destination: string — destination path template
----   source: table|nil — { project: string, target?: string, path?: string, configuration?: string }
+---   source: table|nil — { project: string, target?: string, path?: string, configuration?: string, pre_build?: boolean }
 ---   projects: loomworks.Project[] — available projects (domain objects)
 ---   profile: loomworks.Profile|nil — active profile for resolving config units
 ---   workspace: loomworks.Workspace|nil — for destination preview resolution

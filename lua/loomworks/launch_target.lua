@@ -27,7 +27,7 @@ LaunchTarget.__index = LaunchTarget
 --- Create a new LaunchTarget from a descriptor.
 --- @param workspace loomworks.Workspace
 --- @param profile loomworks.Profile
---- @param descriptor { project: string, target?: string, launch?: string, device_target?: string, device_target_label?: string }
+--- @param descriptor { project: string, target?: string, launch?: string, device_target?: string, device_target_label?: string, working_dir?: string }
 --- @return loomworks.LaunchTarget
 function LaunchTarget.new(workspace, profile, descriptor)
     local self = setmetatable({}, LaunchTarget)
@@ -40,7 +40,7 @@ function LaunchTarget.new(workspace, profile, descriptor)
 end
 
 --- Resolve references from descriptor (disk data → object references).
---- @param descriptor { project: string, target?: string, launch?: string, device_target?: string, device_target_label?: string }
+--- @param descriptor { project: string, target?: string, launch?: string, device_target?: string, device_target_label?: string, working_dir?: string }
 function LaunchTarget:_update(descriptor)
     self._target_id = descriptor.target
     self._launch_name = descriptor.launch
@@ -701,7 +701,7 @@ end
 
 --- Build the resolved spec data for debug from a command-type launch config.
 --- Returns adapter-agnostic data. Adapter-specific transforms happen in debug.run().
---- @return table spec_data { command, args, cwd, env }
+--- @return table spec_data { program, args, cwd, env }
 --- @return string adapter resolved adapter type
 function LaunchTarget:_resolve_debug_spec()
     local cfg = self._launch_config

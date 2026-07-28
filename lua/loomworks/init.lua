@@ -85,7 +85,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then

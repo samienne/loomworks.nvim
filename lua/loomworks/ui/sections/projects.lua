@@ -215,7 +215,7 @@ end
 --- @param proj loomworks.Project
 --- @param variant string
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @return table[] entries { unit?, tool_key, display_label, cached }
+--- @return table[] entries { unit?, tool_key, display_label, has_cache?, cached? }
 local function collect_tool_entries(proj, variant, tools_by_type)
     local entries = {}
     local seen_tool_keys = {}
@@ -587,7 +587,7 @@ end
 
 --- Render the projects section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, projects, active_profile_key }
+--- @param ctx table { lw, projects, active_profile }
 return function(tree, ctx)
     local lw = ctx.lw
     local projects = ctx.projects

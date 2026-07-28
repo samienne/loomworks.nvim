@@ -13,12 +13,19 @@
 --- @field _keymaps table<string, string> key → action name
 --- @field _events string[] event names that trigger refresh
 --- @field _win_opts table Snacks.win config overrides
+--- @field _on_close fun()|nil
+--- @field _on_write fun()|nil
+--- @field _on_revert fun()|nil
+--- @field _is_modified (fun(): boolean)|nil
+--- @field _lock_to_items boolean
 --- @field _filetype string buffer filetype
 --- @field _timer_interval number milliseconds between animation frames
 --- @field _bufnr number|nil
 --- @field _snacks_win snacks.win|nil
 --- @field _timer number|nil
 --- @field _refresh_scheduled boolean
+--- @field _snapping boolean
+--- @field _cursor_autocmd number|nil
 --- @field _event_handlers table[] { event_name, handler } for cleanup
 --- @field _ns number namespace id
 --- @field _cursor_storage { get: fun():integer?, set: fun(row: integer) }|nil

@@ -464,6 +464,11 @@ end
 --- @field _delete_waiters function[]
 --- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
+--- @field _build_dirs loomworks.BuildDir[] all BuildDir objects (including orphaned)
+--- @field _deploy_records table<string, table> normalized dest path -> deploy freshness record
+--- @field _sdks loomworks.SDK[] SDK domain objects
+--- @field _devices table<string, loomworks.Device> serial -> Device (runtime-only)
+--- @field _device_scan_state "idle"|"scanning"|"done"
 --- @field _user_config_overlay table|nil user.json project/configuration_set overlay
 --- @field _user_project_keys table<string, boolean> project keys from user.json
 --- @field _user_cs_names table<string, boolean> config_set names from user.json

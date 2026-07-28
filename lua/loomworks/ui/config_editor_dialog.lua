@@ -13,8 +13,11 @@ local M = {}
 ---   title: string
 ---   name: string — configuration name (editable for custom, read-only for defaults)
 ---   variant: string — CMAKE_BUILD_TYPE or equivalent
----   inherits: string — base config name (empty = none)
+---   inherits: string|string[] — base config name(s) (empty = none)
 ---   options: table<string, string> — editable key=value options
+---   variables: table<string, string>|nil — editable variable overrides
+---   languages: string[]|nil — explicit languages override (nil = inherit module default)
+---   module_languages: string[]|nil — module's default languages (display fallback)
 ---   toolchain: string — toolchain path
 ---   generator: string — generator override
 ---   is_default: boolean — if true, name is read-only
@@ -22,6 +25,11 @@ local M = {}
 ---   available_configs: string[] — for inherits picker
 ---   project_options: table<string, string> — project-wide options (display only)
 ---   inherited_options: table<string, { value: string, source: string }> — resolved inherited options
+---   variant_source: string|nil — provenance hint for the variant (display only)
+---   build_dir: string|nil — computed build dir (display only)
+---   project_variables: table|nil — project-wide variable declarations (display only)
+---   resolved_variables: table|nil — resolved variable values (display only)
+---   rename_effects?: fun(name: string) — compute cascade effects of a rename
 ---   validate?: fun(result): boolean, string|nil
 ---   on_accept: fun(result)
 ---   on_cancel: fun()

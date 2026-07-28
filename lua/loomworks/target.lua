@@ -15,7 +15,7 @@ Target.__index = Target
 --- Create a new Target from raw parse data.
 --- @param config_unit loomworks.ConfigUnit owning unit
 --- @param id string opaque target identifier
---- @param raw { type: string, dependencies?: string[], artifact?: string }
+--- @param raw { type: string, dependencies?: string[], artifact?: string, sources?: string[] }
 --- @return loomworks.Target
 function Target.new(config_unit, id, raw)
     local self = setmetatable({}, Target)

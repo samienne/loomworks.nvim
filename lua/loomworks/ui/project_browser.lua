@@ -15,7 +15,6 @@ local M = {}
 --- @field name string directory basename
 --- @field abs_path string absolute path
 --- @field types { type: string, marker: string }[]
---- @field scanning boolean
 
 --- Build the set of project keys currently in loomworks.json.
 --- Returns a set keyed by (relative_path, type) for checking "already added".
