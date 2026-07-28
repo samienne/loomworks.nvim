@@ -472,41 +472,6 @@ status.lua's `render_fn`.
 **Adding a new action**: Add a factory function in `ui/actions.lua`. Attach
 it to a tree node via `on_<action>` in the section's render function.
 
-### UI v2 (preview, alongside v1)
-
-`lua/loomworks/ui/v2/` ships a redesigned three-pane workbench (overview
-+ inspector + activity strip) alongside the v1 status page. The two
-coexist: v1 owns `<leader>ww`, v2 owns `<leader>wW`. v2 is opt-in
-until it has been validated in real-world use.
-
-The v2 architecture differs from v1 by adding a clean view-model
-boundary:
-
-1. **View model** (`ui/v2/view_model/`) is pure Lua — no `vim.api.*`
-   UI calls, no Snacks. It builds a presentation tree from workspace
-   state, owns selection / wire-form draft / activity-mode state,
-   subscribes to core events, and routes dispatch (cursor moves, edits,
-   adds, renames, deletes). Per-inspector-kind builders live under
-   `inspector_kinds/`.
-
-2. **View** (`ui/v2/view/`) is a thin renderer. It holds a reference
-   to the view model, opens windows (tabpage or float), translates
-   the presentation tree to buffer lines + extmarks, and forwards
-   keys + cursor events to the view model. No business logic.
-
-3. **Palette** (`ui/v2/palette.lua`) builds dynamic action entries
-   from the workspace state and presents via `vim.ui.select` (Snacks
-   intercepts when configured). Reachable from any buffer via
-   `<leader>wp`.
-
-The view model is testable headlessly without opening any nvim
-windows; tests under `tests/ui_v2/view_model_spec.lua` exercise the
-full edit / dispatch surface against real Workspace instances. Layout
-behaviour (window opening, cursor, resize) has its own tests under
-`tests/ui_v2/layout_spec.lua`.
-
-Spec: [`spec/ui-v2.md`](spec/ui-v2.md).
-
 ---
 
 ## Object Model

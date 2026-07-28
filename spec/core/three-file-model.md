@@ -219,7 +219,7 @@ resolves explicitly:
   publication wish.
 - **Delete** — remove the item from the workspace.
 
-The exact glyph is a UI-spec choice (see `spec/ui.md` and `spec/ui-v2.md`).
+The exact glyph is a UI-spec choice (see `spec/ui.md`).
 The indicator is a **session** affordance: it requires knowing the
 previous baseline to detect "was there, isn't now," so it shows only after
 an external change within the running session. After Neovim restarts, the
