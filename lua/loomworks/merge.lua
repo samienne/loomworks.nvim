@@ -4,7 +4,7 @@ local modules = require("loomworks.modules")
 local cache_mod = require("loomworks.cache")
 
 --- Build a profile key from configuration set name and tools dict.
---- Single keyed module: "set_name:tool_key" (same as before).
+--- Single keyed module: "set_name:tool_key".
 --- Multi keyed modules: "set_name:tool_key1+tool_key2" (sorted by module type).
 --- @param set_name string
 --- @param tools table<string, { key: string }>|nil tools dict keyed by module type
@@ -25,7 +25,7 @@ end
 -- never crosses into a different segment.
 local PROFILE_BOUNDARY = { [":"] = true, ["-"] = true, ["."] = true, ["+"] = true }
 
---- Match a profile selector against a list of profile keys (spec §16.3).
+--- Match a profile selector against a list of profile keys.
 --- Exact key wins; otherwise the selector must occur aligned to segment
 --- boundaries on both sides — so `Debug:ninja-clang-18` resolves to
 --- `Debug:ninja-clang-18.1.7` (the `.` boundary) and `…-clang-1` never matches
@@ -138,7 +138,6 @@ function M.detect_tools_async(config, cache, callback)
     local module_types = collect_module_types(config, cache)
     local tools_by_type = {}
 
-    -- Collect types into a list for sequential iteration
     local type_list = {}
     for mod_type in pairs(module_types) do
         type_list[#type_list + 1] = mod_type
@@ -225,13 +224,12 @@ end
 local function resolve_tool(tools_by_type, cache, tool_key)
     if not tool_key then return nil, nil, nil end
 
-    -- Check detected tools (same session)
     local dt, mod_type = M.resolve_detected_tool(tools_by_type, tool_key)
     if dt then
         return dt.tool_data, dt.tool_label, mod_type
     end
 
-    -- Check cache build_dirs for tool data (tool may no longer be detected)
+    -- Fall back to cache: the tool may no longer be detected
     if cache and cache.build_dirs then
         for _, cc in pairs(cache.build_dirs) do
             if cc.tool_key == tool_key and cc.type then
@@ -344,7 +342,6 @@ function M.get_tool_entries(config, cache, tools_by_type)
         local entries = {}
         if #keyed_tools > 0 then
             for _, tool in ipairs(keyed_tools) do
-                -- Build tools dict for profile_key computation
                 local tools_dict = { [keyed_mod_type] = { key = tool.tool_key } }
                 local pkey = M.profile_key(set_name, tools_dict)
                 entries[#entries + 1] = {
@@ -353,7 +350,7 @@ function M.get_tool_entries(config, cache, tools_by_type)
                     tool_data = tool.tool_data,
                     tool_label = tool.tool_label,
                     tool_mod_type = keyed_mod_type,
-                    cached = true, -- All profiles now exist as runtime objects
+                    cached = true, -- profiles exist as runtime objects
                 }
             end
         end
@@ -395,10 +392,8 @@ end
 function M.merge(config, active_profile_key_input, cache, root, tools_by_type, user_data)
     tools_by_type = tools_by_type or {}
 
-    -- Get all available profiles (derived from config_sets × tools + pinned + explicit)
     local all_profiles = M.get_all_profiles(config, cache, tools_by_type, user_data)
 
-    -- Determine active profile
     local active_profile_key = active_profile_key_input
     local active_profile = nil
 
@@ -408,19 +403,16 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
         active_profile_key = nil
     end
 
-    -- Resolve configuration set mappings
     local set_name = active_profile and active_profile.configuration_set or nil
     local set_mappings = nil
     if set_name and config.configuration_sets and config.configuration_sets[set_name] then
         set_mappings = config.configuration_sets[set_name]
     end
 
-    -- Resolve tools dict for active profile
     local active_tools = active_profile and active_profile.tools or nil
 
     local projects = {}
 
-    -- Process configured projects
     for key, project in pairs(config.projects) do
         local mod = modules.get(project.type)
         local abs_path = root .. "/" .. project.path
@@ -470,7 +462,6 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
         local cached_config_data = nil
         local status = "unconfigured"
 
-        -- Find matching cache entry by project_key + variant + tool_key
         if cache.build_dirs and active_configuration then
             for _, cc in pairs(cache.build_dirs) do
                 if cc.project_key == key and cc.variant == active_configuration
@@ -482,12 +473,10 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
             status = resolve_status(cached_config_data)
         end
 
-        -- Collect all cached configs for this project from the flat dict
         local cached_configurations = {}
         if cache.build_dirs then
             for _, cc in pairs(cache.build_dirs) do
                 if cc.project_key == key then
-                    -- Build a config_key for backward compat with callers
                     local ck = M.build_config_key(cc.variant, cc.tool_key)
                     cached_configurations[ck] = cc
                 end
@@ -533,9 +522,8 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
         end
     end
 
-    -- Find orphaned projects (in cache but not in config)
+    -- Projects in cache but no longer in config: surface them as orphaned
     if cache.build_dirs then
-        -- Collect unique project_keys from cache that aren't in config
         local orphaned_projects = {} -- project_key -> { type, status }
         for _, cc in pairs(cache.build_dirs) do
             local pk = cc.project_key

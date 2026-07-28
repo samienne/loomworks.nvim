@@ -1,4 +1,4 @@
--- Minimal JSON codec for the host bootstrap (spec §16.11–16.13, §16.20).
+-- Minimal JSON codec for the host bootstrap.
 --
 -- The bootstrap parses the release manifest *before* any system Lua exists, so
 -- it cannot use the shim's `vim.json` (that lives in the very bundle being

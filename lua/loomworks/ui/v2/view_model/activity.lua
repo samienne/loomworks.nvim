@@ -160,7 +160,6 @@ local function build_plan_steps(workspace)
     local profile = workspace._active_profile
     if not profile then return steps end
 
-    -- Build steps per project in the active profile.
     for _, pp in ipairs(profile:projects()) do
         steps[#steps + 1] = {
             kind        = "build",
@@ -176,7 +175,6 @@ local function build_plan_steps(workspace)
     local descriptor = profile._default_target_descriptor
     if not descriptor or not descriptor.project then return steps end
 
-    -- Look up the launch project + launch config.
     local target_project
     for _, p in pairs(workspace._projects or {}) do
         if p.key == descriptor.project then target_project = p; break end
@@ -207,7 +205,6 @@ local function build_plan_steps(workspace)
         for _, e in ipairs(post) do steps[#steps + 1] = e end
     end
 
-    -- Launch step
     local launch_label = descriptor.project ..
         (descriptor.launch and ("." .. descriptor.launch) or
          descriptor.target and ("/" .. descriptor.target) or "")

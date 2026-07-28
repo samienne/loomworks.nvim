@@ -49,6 +49,8 @@ end
 --- @field is_user boolean from loomworks.json user override
 --- @field from_preset boolean from CMakePresets.json
 --- @field variables table<string, string>|nil variable overrides (name → value)
+--- @field _derived table|nil module fields inherited from a base rather than
+---        declared here; kept at runtime but skipped by serialization
 --- @field languages string[]|nil explicit list of languages this
 ---        configuration needs (e.g. {"c", "c++", "rust"}). When nil,
 ---        falls through to `Project._module.languages` at resolution.
@@ -84,9 +86,8 @@ function Configuration.new(project, name, data)
     self.prefix = prefix
     self.base_name = base
     self._removed = false
-    -- _intent left nil; data_model.refresh assigns and then sticks
-    -- (specification.md §2.4). Mutation methods set it explicitly when
-    -- creating outside refresh.
+    -- _intent left nil; data_model.refresh assigns and then sticks. Mutation
+    -- methods set it explicitly when creating outside refresh.
     self._intent = nil
     self:_update(data)
     return self
@@ -103,8 +104,8 @@ end
 
 --- Mark this configuration as in the user.json working copy.
 --- Called when any mutation is about to write to user.json. Implements
---- the implicit cascade rule (specification.md §2.4): using a `shared`
---- item materializes it into the working copy with intent local+shared.
+--- the implicit cascade rule: using a `shared` item materializes it into
+--- the working copy with intent local+shared.
 function Configuration:_mark_user_owned()
     if self._intent == "shared" then
         self._intent = "local+shared"
@@ -131,9 +132,8 @@ Configuration.split_canonical = split_canonical
 ---     type_config.configurations dict. Keys must already be
 ---     validated free of `:` (enforced in config.validate). Each
 ---     entry becomes a standalone user config in the output, keyed
----     by its bare name — it no longer silently shadows an auto-gen
----     that happens to share a name, which was the whole point of
----     the strict-separation design.
+---     by its bare name — it does not shadow an auto-gen that
+---     happens to share a name.
 ---   * `module_id` string, used as the default prefix when an
 ---     auto-gen entry has no explicit `prefix`.
 ---
@@ -260,9 +260,7 @@ end
 --- Return the list of `inherits` base names that couldn't be
 --- resolved — the caller asked us to inherit from names that don't
 --- exist in the project's configuration registry. Empty list on
---- success. The reference usually stayed valid until someone
---- renamed (e.g. auto-gen became canonical-keyed) or removed the
---- base config; orphaned names are actionable at the UI layer via
+--- success. Orphaned names are actionable at the UI layer via
 --- rename / rebase.
 --- @return string[]
 function Configuration:unresolved_inherits_names()

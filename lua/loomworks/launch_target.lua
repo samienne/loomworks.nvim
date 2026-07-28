@@ -14,9 +14,9 @@ local debug_mod = require("loomworks.debug")
 --- @field _target loomworks.Target|nil direct reference (module targets)
 --- @field _target_id string|nil fallback identifier for re-resolution
 --- @field _launch_config table|nil launch config from loomworks.json
---- @field _config_target loomworks.Target|nil target a target-backed launch config references (§8.7)
+--- @field _config_target loomworks.Target|nil target a target-backed launch config references
 --- @field _launch_name string|nil name of the launch config
---- @field _working_dir string|nil descriptor working-dir override (module targets, §8.7)
+--- @field _working_dir string|nil descriptor working-dir override (module targets)
 --- @field _device_target_id string|nil device target ID (module-generated)
 --- @field _device_target_label string|nil display label for device target
 --- @field _launch_task_id number|nil overseer task ID of running launch
@@ -71,7 +71,7 @@ function LaunchTarget:_update(descriptor)
     end
 
     -- Resolve launch config from project domain object. A launch config may be
-    -- command-type (`command`) or target-backed (`target`, §8.7); resolve the
+    -- command-type (`command`) or target-backed (`target`); resolve the
     -- referenced target for the latter.
     self._launch_config = nil
     self._config_target = nil
@@ -184,12 +184,10 @@ function LaunchTarget:assert_valid()
         .. table.concat(reasons, "; ")
 end
 
---- Build this target, including dependencies.
---- Builds dependency projects first (in order), then builds this target.
---- @param on_complete? fun(success: boolean) called when build finishes
 --- Build this target and all its dependencies. Returns a Future.
---- Dependencies include explicit (depends_on) and implicit (deploy sources).
---- @param on_complete? fun(success: boolean) legacy callback (deprecated)
+--- Builds dependency projects first (explicit depends_on + implicit deploy
+--- sources), then builds this target.
+--- @param on_complete? fun(success: boolean) called when build finishes
 --- @return loomworks.Future
 function LaunchTarget:build(on_complete)
     local future_mod = require("loomworks.future")
@@ -414,12 +412,11 @@ end
 
 --- Execute deploy steps for a single phase. Returns a Future.
 --- @param phase "pre_build"|"post_build"
---- @return loomworks.Future
---- @param phase "pre_build"|"post_build"
 --- @param on_complete? fun(ok: boolean, err?: string) invoked synchronously
 ---   (deploy is synchronous). Lets the headless runner drive deploy without
 ---   depending on Future scheduling, which needs an event loop the CLI does
 ---   not pump. The editor omits it and consumes the returned Future.
+--- @return loomworks.Future
 function LaunchTarget:_deploy_phase(phase, on_complete)
     local future_mod = require("loomworks.future")
     local deploy = self:_resolved_deploy()
@@ -460,8 +457,8 @@ function LaunchTarget:_deploy_phase(phase, on_complete)
     return f
 end
 
---- Run every deploy phase synchronously and return (ok, err). Headless seam
---- (§16.17): the editor drives pre-build deploy inside build() and post-build
+--- Run every deploy phase synchronously and return (ok, err). Headless seam:
+--- the editor drives pre-build deploy inside build() and post-build
 --- deploy via deploy(); a headless run has already built the profile, so it
 --- runs both phases here. Funnels through the same _deploy_phase code path.
 --- @return boolean ok, string|nil err
@@ -504,7 +501,7 @@ end
 --- Resolve a command-type launch config to a run spec (command, args,
 --- working directory, environment) with all variables expanded. Pure —
 --- spawns no task. Shared seam for `_launch_command` (editor) and the
---- headless runner (§16.17).
+--- headless runner.
 --- @return { cmd: string, args: string[], cwd: string, env: table }|nil spec
 --- @return string|nil err
 function LaunchTarget:resolve_command_spec()
@@ -515,7 +512,7 @@ function LaunchTarget:resolve_command_spec()
     local ctx = expand.launch_context(ws, self._profile, self._project)
 
     -- A launch config is either command-type (`command`) or target-backed
-    -- (`target`, §8.7). For target-backed, the command is the target's built
+    -- (`target`). For target-backed, the command is the target's built
     -- artifact and we inherit the build-tree run environment (DLL paths); the
     -- config's args/env/working_dir layer on top.
     local cmd, base_env, default_cwd
@@ -566,8 +563,8 @@ function LaunchTarget:resolve_command_spec()
     return { cmd = cmd, args = args, cwd = cwd, env = env }
 end
 
---- Resolve the effective working directory for a **module-target** launch
---- (§8.7): per-invocation `override` → the descriptor's `working_dir` → nil
+--- Resolve the effective working directory for a **module-target** launch:
+--- per-invocation `override` → the descriptor's `working_dir` → nil
 --- (let the target default to the project directory). Variable-expanded in the
 --- launch context; an absolute result is used as-is, otherwise it is taken
 --- relative to the workspace root. Returns an absolute path, or nil.
@@ -593,14 +590,14 @@ end
 
 --- Effective working directory of a module-target launch, for display and the
 --- editor path: the descriptor's `working_dir` (expanded) or the project
---- directory default (§8.7). Absolute, or nil if unresolvable.
+--- directory default. Absolute, or nil if unresolvable.
 --- @return string|nil
 function LaunchTarget:working_directory()
     return self:_effective_cwd() or (self._project and self._project:abs_path()) or nil
 end
 
 --- Whether this launch target carries an explicit `working_dir` override (vs
---- defaulting to the project directory, §8.7).
+--- defaulting to the project directory).
 --- @return boolean
 function LaunchTarget:has_working_dir_override()
     return self._working_dir ~= nil and self._working_dir ~= ""
@@ -621,7 +618,7 @@ end
 --- Resolve this launch target to a normalized run spec, dispatching between a
 --- command launch configuration and an executable build target. Pure — spawns
 --- no task. `opts.extra_args` are appended to the argument list (the headless
---- runner forwards `-- args` here, §16.17; a command config's own declared
+--- runner forwards `-- args` here; a command config's own declared
 --- arguments precede them). `opts.working_dir` overrides the working directory
 --- for a module-target launch. The editor calls with no extra args.
 --- @param opts? { extra_args?: string[], working_dir?: string }
@@ -738,7 +735,6 @@ function LaunchTarget:_resolve_debug_spec()
     }, adapter
 end
 
---- Debug from a command-type config (loomworks.json launch section).
 --- Check if this launch target has a multi-adapter debug config.
 --- @return boolean
 function LaunchTarget:is_multi_adapter()
@@ -1029,12 +1025,6 @@ function LaunchTarget:device_resolve_pid(device_serial, bundle_name, opts)
         try_once()
     end)
 end
-
--- Note: `device_log_start` used to live here. It was replaced by
--- `session_tracker` driving `loomworks.device_log.start` directly —
--- the log view + its overseer task now live in the device_log
--- module so they can share a ring buffer and a dedicated split,
--- rather than relying on overseer's default output-to-buffer view.
 
 --- Stop the app on a device. Returns a Future.
 --- Delegates to the module's `device_stop` RPC. Session tracker calls

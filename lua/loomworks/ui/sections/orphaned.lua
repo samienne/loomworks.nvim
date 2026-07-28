@@ -72,9 +72,7 @@ return function(tree, ctx)
     tree:leaf({{"Orphaned Build Dirs  ", "Title"}, {"[D] delete", "Comment"}})
     tree:blank()
 
-    -- Collect all paths into a single flat list.
-    -- Track which paths come from orphaned cache entries (so delete uses the right action).
-    -- Use lowercased paths for dedup (Windows has case-insensitive filesystems).
+    -- Dedup on lowercased paths — Windows filesystems are case-insensitive.
     local seen_paths = {}
     local is_win = vim.fn.has("win32") == 1
 
@@ -83,10 +81,8 @@ return function(tree, ctx)
         return is_win and n:lower() or n
     end
 
-    -- Orphaned cache entries (BuildDir objects with state but no ConfigUnit)
     local ws_root = ws and ws.root or ""
     for _, orphan in ipairs(orphans) do
-        -- Show as relative to workspace root (e.g. .nvim/build/App/Debug)
         local display = ".nvim/" .. (orphan.build_dir_key or orphan.config_key)
         tree:item(display, {
             hl = "Comment",

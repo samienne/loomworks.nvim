@@ -79,12 +79,11 @@
 --- Parsed loomworks.user.json structure.
 --- @class loomworks.UserData
 --- @field _meta { version: number }
---- @field name? string workspace name override (working copy wins; see spec §2.2)
+--- @field name? string workspace name override (working copy wins)
 --- @field active_profile? string
 --- @field default_target? table<string, table> profile_key -> descriptor
 --- @field lsp? table<string, table> per-server option overrides
----     (server name -> options). Schema per server lives in
----     spec/integrations/lsp/<server>.md. See spec §2.2.
+---     (server name -> options; schema is server-specific).
 
 --- Parsed loomworks.cache.json structure.
 --- @class loomworks.CacheData

@@ -243,7 +243,6 @@ function M.delete_orphaned_config(orphan)
             prompt = "Delete orphaned build dir: " .. pkey .. "/" .. ckey .. "?",
         }, function(choice)
             if choice ~= "Yes" then return end
-            -- Delete the build dir from cache and optionally from disk
             if build_dir_key then
                 ws:delete_orphaned_build_dir(build_dir_key, function()
                     vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
@@ -299,8 +298,6 @@ function M.open_task(unit)
         end)
     end
 end
-
---- @param unit loomworks.ConfigUnit
 
 -- ---------------------------------------------------------------------------
 -- Profile creation flow
@@ -358,7 +355,6 @@ function M._create_profile_step2(cs, set_name, activate)
     local ws = lw.get_workspace()
     if not ws then return end
 
-    -- If tools are still scanning, wait and retry
     if ws._tool_state == "scanning" then
         vim.notify("loomworks: waiting for tool detection...", vim.log.levels.INFO)
         ws._tool_waiters[#ws._tool_waiters + 1] = function()
@@ -369,25 +365,17 @@ function M._create_profile_step2(cs, set_name, activate)
 
     local wv = require("loomworks.workspace_view")
 
-    -- Fetch fresh tool entries (not the stale render-time snapshot)
+    -- Re-fetch tool entries at call time; the render-time snapshot may
+    -- predate tool detection completing.
     local tool_entries = lw.get_tool_entries()
     local entries = tool_entries[set_name] or {}
 
-    -- Always offer an explicit "no tool" pick. Two reasons:
-    --
-    --  1. Even when no tools are detected, the user may genuinely
-    --     want to create a profile without a tool (e.g., to share
-    --     the workspace via loomworks.json with collaborators on a
-    --     host that doesn't have the SDK installed). Silently
-    --     committing to "no tool" here used to hide that as an
-    --     accidental side-effect of detection failure.
-    --
-    --  2. The build path now refuses to start an incomplete
-    --     profile (Profile:assert_buildable). The picker
-    --     entry is the user's explicit opt-in to that state.
-    --
-    -- The synthetic entry has _none = true so execute_create_profile
-    -- can identify it and pass nil to the tool argument.
+    -- Always offer an explicit "no tool" pick so the user can deliberately
+    -- create a tool-less profile (e.g. to share the workspace with
+    -- collaborators on a host without the SDK installed). The build path
+    -- refuses to start an incomplete profile, so this entry is the explicit
+    -- opt-in. The synthetic entry carries _none = true so
+    -- execute_create_profile passes nil for the tool argument.
     local picker_items = {}
     for _, e in ipairs(entries) do picker_items[#picker_items + 1] = e end
     picker_items[#picker_items + 1] = {
@@ -425,7 +413,6 @@ function M.show_options(unit)
             return
         end
 
-        -- Render function for the options tree
         local function render_options(tree)
             tree._level = 1
 
@@ -459,7 +446,6 @@ function M.show_options(unit)
             --- Recursively render option tree nodes.
             local function render_node(node, fold_prefix)
                 if node.children then
-                    -- It's a group
                     local count = 0
                     local function count_leaves(n)
                         if n.children then
@@ -479,7 +465,6 @@ function M.show_options(unit)
                         end
                     end)
                 else
-                    -- It's an option
                     render_option(node, fold_prefix)
                 end
             end

@@ -12,7 +12,6 @@ local M = {}
 --- @return "load"|"prompt"|"prompt_switch"|"notify"|"skip"
 function M.decide(opts)
     if opts.mode == false then return "skip" end
-    -- Either loomworks.json or user.json is sufficient
     local has_workspace = opts.config_exists or opts.user_exists
     if not has_workspace then return "skip" end
     if opts.loaded_root then
@@ -86,7 +85,6 @@ function M.check_cwd()
             end
         )
     end
-    -- "skip" = do nothing
 end
 
 return M

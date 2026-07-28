@@ -32,8 +32,7 @@ function M.open(opts)
     local name = opts.name
     local name_error = nil
 
-    -- Compute max label width for alignment (include "Name" as a label)
-    local max_name_len = 4 -- "Name"
+    local max_name_len = 4 -- len("Name")
     for _, project in ipairs(projects) do
         if #project.key > max_name_len then max_name_len = #project.key end
     end
@@ -61,7 +60,6 @@ function M.open(opts)
         t:leaf(opts.title or "Configuration Set", "Title")
         t:blank()
 
-        -- Editable name row
         local padded_label = "Name" .. string.rep(" ", max_name_len - 4)
         local name_value = name ~= "" and name or "(empty)"
         local name_display = padded_label .. "  " .. name_value .. " ▸"
@@ -114,7 +112,6 @@ function M.open(opts)
                             if choice == "None" then
                                 mappings[project] = nil
                             else
-                                -- Find the Configuration object by name
                                 for _, cfg in ipairs(configs) do
                                     if cfg.name == choice then
                                         mappings[project] = cfg
@@ -135,7 +132,6 @@ function M.open(opts)
 
     tree = Tree.new(render_fn)
 
-    -- Custom accept action
     local orig_on_key = tree.on_key
     function tree:on_key(action, line)
         if action == "accept" then

@@ -194,7 +194,6 @@ local function render_profile_details(tree, profile, lw)
                         vim.notify("loomworks: no devices found", vim.log.levels.INFO)
                         return
                     end
-                    -- Include a "clear" option if a device is currently set
                     local items = vim.list_extend({}, online)
                     if profile:device_serial() then
                         items[#items + 1] = { clear = true }
@@ -220,11 +219,9 @@ local function render_profile_details(tree, profile, lw)
         })
     end
 
-    -- (Last-operation message is already shown in the profile header
-    -- line — see the `display` assembly in the profiles section's main
-    -- render function — so we don't repeat it here.)
+    -- The last-operation message is already shown in the profile header
+    -- line, so it is not repeated here.
 
-    -- Default target line
     local launch_target = profile:default_target()
     local target_display, target_hl
     if launch_target and launch_target:is_valid() then
@@ -376,8 +373,6 @@ local function render_profile_details(tree, profile, lw)
         end)
     end
 
-    -- Trailing blank line gives unfolded profiles visual breathing
-    -- room before the next profile (or sentinel) begins.
     tree:blank()
 end
 
@@ -388,7 +383,6 @@ return function(tree, ctx)
     local lw = ctx.lw
     local all_profiles = ctx.all_profiles
 
-    -- All profiles are shown
     local profiles = {}
     for _, profile in pairs(all_profiles) do
         profiles[#profiles + 1] = profile
@@ -399,7 +393,6 @@ return function(tree, ctx)
     tree:leaf("[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete", "Comment")
     tree:blank()
 
-    -- Check if we have projects at all
     local has_projects = false
     local projects = lw.get_projects()
     if projects then
@@ -513,7 +506,6 @@ return function(tree, ctx)
         end)
     end)
 
-    -- Sentinel line for profile creation
     if not has_projects then
         tree:leaf("No projects yet. Add projects first.", "Comment")
     else

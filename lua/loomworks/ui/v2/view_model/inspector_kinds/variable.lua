@@ -1,6 +1,6 @@
 --- loomworks/ui/v2/view_model/inspector_kinds/variable.lua
 ---
---- Read-only variable inspector. Shows the variable's declaration plus
+--- Variable inspector. Shows the variable's declaration plus
 --- per-configuration overrides found across the project's configurations.
 ---
 --- ref: { kind = "variable", project_key, var_name }

@@ -4,12 +4,10 @@ local io_mod = require("loomworks.io")
 local modules = require("loomworks.modules")
 
 --- Live check whether a project type maps to a registered module.
---- Built lazily, NOT cached at file-load: third-party plugins that
---- ship modules (e.g. loomworks-module-ohos's harmony) get added to
---- runtimepath AFTER loomworks.config is required — a snapshot here
---- was stale forever and falsely warned about legitimate project
---- types. `modules.get` caches successful lookups internally so the
---- per-call cost is a single registry-table read after the first hit.
+--- Must not be cached at file-load time: third-party plugins that ship
+--- modules get added to runtimepath AFTER loomworks.config is required,
+--- so a snapshot would miss them and falsely warn about legitimate
+--- project types. `modules.get` caches successful lookups internally.
 --- @param ptype string
 --- @return boolean
 local function is_known_type(ptype)
@@ -21,11 +19,7 @@ local NON_TYPE_KEYS = {
     depends_on = true,
     launch = true,
     variables = true,
-    deploy = true,  -- project-level deploy (pre-build phase). Missing
-                    -- this made config.validate reject any project that
-                    -- carried both a module type key AND a deploy dict
-                    -- with "multiple type keys" since the validator
-                    -- treated `deploy` as another module-type candidate.
+    deploy = true,  -- project-level deploy dict, not a module-type key
 }
 
 --- Extract project type from the project definition table.
@@ -118,7 +112,6 @@ function M.validate(raw, root)
             vim.notify("loomworks: project '" .. key .. "' directory not found: " .. abs_path, vim.log.levels.WARN)
         end
 
-        -- Validate deploy definitions on launch configs
         if def.launch then
             local deploy_mod = require("loomworks.deploy")
             for launch_name, launch_def in pairs(def.launch) do
@@ -132,8 +125,6 @@ function M.validate(raw, root)
             end
         end
 
-        -- Validate project-level deploy definitions (same shape as
-        -- launch-level — `pre_build` distinguishes the phase).
         if def.deploy then
             local deploy_mod = require("loomworks.deploy")
             local ok, deploy_err = deploy_mod.validate_deploy_definitions(def.deploy)
@@ -142,22 +133,11 @@ function M.validate(raw, root)
             end
         end
 
-        -- User-declared configuration names cannot contain `:` —
-        -- that character is reserved as the tier separator for
-        -- auto-generated configs (e.g. `variant:Debug`,
-        -- `preset:debug-custom`). Collision-proofing the namespace
-        -- upfront removes a whole class of "user config shadows the
-        -- module's default" confusion that the strict-separation
-        -- design is meant to eliminate.
-        --
-        -- We strip rather than error here. Older versions of the
-        -- plugin had a serialization bug that wrote auto-gens
-        -- (`auto:...`, `cmake:...`, etc.) into loomworks.json;
-        -- failing the load would leave users with a workspace that
-        -- can't open at all and needs manual editing. Stripping plus
-        -- a one-shot warning lets the workspace load, the next `:w`
-        -- cleans the file, and any genuine user-typed `:` is still
-        -- caught — just non-fatally.
+        -- User-declared configuration names cannot contain `:` — that
+        -- character is reserved as the tier separator for auto-generated
+        -- configs (e.g. `variant:Debug`). Strip rather than error so a
+        -- file carrying stray reserved-prefix names still loads; the
+        -- next `:w` cleans it.
         if type_config and type_config.configurations then
             local stripped = {}
             for cfg_name in pairs(type_config.configurations) do
@@ -181,7 +161,6 @@ function M.validate(raw, root)
             end
         end
 
-        -- Validate project-level variable declarations
         local project_variables = nil
         if def.variables then
             local vars_mod = require("loomworks.variables")
@@ -191,7 +170,6 @@ function M.validate(raw, root)
             end
             project_variables = def.variables
 
-            -- Validate configuration-level variable overrides
             if type_config and type_config.configurations then
                 for cfg_name, cfg_def in pairs(type_config.configurations) do
                     if type(cfg_def) == "table" and cfg_def.variables then
@@ -231,12 +209,11 @@ function M.validate(raw, root)
         end
     end
 
-    -- Validate configuration_sets references
     if raw.configuration_sets then
         if type(raw.configuration_sets) ~= "table" then
             return nil, "'configuration_sets' must be a table"
         end
-        -- Warn about case-colliding config set names
+        -- Case-colliding names cause profile key collisions
         local cs_lower = {}
         for set_name in pairs(raw.configuration_sets) do
             local lk = set_name:lower()
@@ -263,7 +240,6 @@ function M.validate(raw, root)
         end
     end
 
-    -- Validate profiles
     local profiles = nil
     if raw.profiles then
         if type(raw.profiles) ~= "table" then
@@ -282,7 +258,7 @@ function M.validate(raw, root)
                 sdk = profile_def.sdk,
                 default_target = profile_def.default_target,
                 kit_id = profile_def.kit_id,
-                -- Legacy support: cmake.kit_id
+                -- back-compat: older files nested kit_id under `cmake`
                 cmake = profile_def.cmake,
             }
         end

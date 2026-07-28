@@ -1,6 +1,6 @@
 --- loomworks/cli.lua — headless entry point for the standalone runner.
 ---
---- Fulfils specification.md §16. v1 hosted under Neovim
+--- Hosted under Neovim
 --- (`nvim --headless -u NONE -l lua/loomworks/cli.lua <cmd> [args]`); the
 --- luvi + shim host is layered on later without changing this file.
 ---
@@ -82,7 +82,7 @@ local function find_root(start)
   local dir = (start or uv.cwd()):gsub("\\", "/"):gsub("/+$", "")
   while dir ~= "" do
     -- A workspace is recognized by the published snapshot OR the working copy
-    -- (spec §2.2/§2.4) — a not-yet-published `lw init` has only the latter.
+    -- — a not-yet-published `lw init` has only the latter.
     if uv.fs_stat(dir .. "/loomworks.json")
         or uv.fs_stat(dir .. "/.nvim/loomworks.user.json") then
       return dir
@@ -94,7 +94,7 @@ local function find_root(start)
     -- and isn't created by `git worktree add`) would silently walk past the
     -- worktree and bind to the PARENT checkout's workspace, operating on the
     -- wrong build dir. Returning nil here surfaces the "run `lw init`" hint
-    -- instead (spec §16.2).
+    -- instead.
     if uv.fs_stat(dir .. "/.git") then
       return nil
     end
@@ -177,10 +177,10 @@ end
 local force_noninteractive = false
 
 --- Creation intent for `add`/`create` commands. nil = the per-kind default,
---- `local+shared` for most items (spec §2.4: the CLI authors the shared
---- contract). Callers pass `default` to override that — profiles create
---- `local`, since a profile pins toolchains resolved on this machine. Set to
---- `local` by `--local` or to `local+shared` by `--shared` in main().
+--- `local+shared` for most items (the CLI authors the shared contract).
+--- Callers pass `default` to override that — profiles create `local`, since a
+--- profile pins toolchains resolved on this machine. Set to `local` by
+--- `--local` or to `local+shared` by `--shared` in main().
 local create_intent = nil
 local function created_intent(default)
   return create_intent or default or "local+shared"
@@ -428,15 +428,15 @@ function M.cmd_profiles(ws)
   return 0
 end
 
---- Resolve which profile to operate on (spec §16.3): explicit name (exact,
---- then unambiguous substring) → user.json active → single → error.
+--- Resolve which profile to operate on: explicit name (exact, then
+--- unambiguous substring) → user.json active → single → error.
 --- @param ws table
 --- @param name string|nil
 --- @return table profile
 local function resolve_profile(ws, name)
   local profiles = ws._profiles or {}
   if name then
-    -- Boundary-anchored selector (spec §16.3): exact key, else a segment-aligned
+    -- Boundary-anchored selector: exact key, else a segment-aligned
     -- match, so `Debug:ninja-clang-18` deterministically resolves the highest
     -- matching patch and `clang-1` never crosses into `clang-18`.
     local keys, by_key = {}, {}
@@ -471,16 +471,15 @@ local function resolve_profile(ws, name)
   die("no profile specified and no unambiguous default — run `lw profile select`")
 end
 
---- Spawn one step's command, streaming output; return its exit code.
+--- Spawn `step` and wait for it. Default: capture stdout/stderr and print them
+--- (build/test steps). `opts.launch`: attach the child to this terminal
+--- (inherited stdio, window shown) so a launched program streams output live,
+--- reads stdin, and shows its GUI window — like a direct launch, not the
+--- hidden/captured spawn used for build tools.
 --- @param step table { cmd, cwd, env }
 --- @param root string
---- @return integer code
---- Spawn `step` and wait for it. Default: capture stdout/stderr and print them
---- (build/test steps). `opts.launch` (spec §16.17): attach the child to this
---- terminal (inherited stdio, window shown) so a launched program streams
---- output live, reads stdin, and shows its GUI window — like a direct launch,
---- not the hidden/captured spawn used for build tools.
 --- @param opts? { launch?: boolean }
+--- @return integer code
 local function run_spec(step, root, opts)
   -- An empty env table would wipe PATH; inherit the parent env instead.
   local env = (step.env and next(step.env)) and step.env or nil
@@ -528,8 +527,8 @@ end
 --- Resolve the profile to build. When no profile exists yet, onboard one from a
 --- configuration set (interactively): pick a set, create+activate a profile
 --- (prompting for the tool), then build it. Non-interactive/CI never creates —
---- it defers to resolve_profile's strict, explicit error (spec §16.9: builds
---- are read-only there). Returns (profile, ws); ws may be a fresh reload.
+--- it defers to resolve_profile's strict, explicit error (builds are read-only
+--- there). Returns (profile, ws); ws may be a fresh reload.
 local function resolve_build_target(ws, name)
   local profiles = ws._profiles or {}
 
@@ -612,8 +611,8 @@ end
 
 --- Persist a headless step's outcome (state + config snapshot for staleness)
 --- to the cache via Workspace:record_task_result, so a later invocation skips
---- an already-done, unchanged configure (headless builds may write the cache,
---- spec §16.6). build_dir is set on the unit but not passed as result.build_dir
+--- an already-done, unchanged configure (headless builds may write the cache).
+--- build_dir is set on the unit but not passed as result.build_dir
 --- (that triggers the post-configure parse_targets scan the CLI opts out of).
 local function record_step(ws, step, ok)
   if not step.unit then return end
@@ -626,14 +625,14 @@ end
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
 --- @param opts? table { for_test?: boolean, extra_args?: string[] } for_test
----   skips building units whose native test runner rebuilds itself (§16.16);
+---   skips building units whose native test runner rebuilds itself;
 ---   extra_args are forwarded to the build tool.
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
   -- The CLI plans steps directly, so without this an unbuildable profile —
   -- e.g. one mapping an abstract configuration — would build anyway, on
-  -- whatever default the module picked (spec §1.4).
+  -- whatever default the module picked.
   if profile.assert_buildable then
     local buildable, why = profile:assert_buildable()
     if not buildable then die(tostring(why)) end
@@ -670,7 +669,7 @@ local function profile_build_dirs(profile)
   return dirs
 end
 
---- Hold a cross-process lock (spec §16.6) on every build directory of `profile`
+--- Hold a cross-process lock on every build directory of `profile`
 --- for the duration of `fn`, then release. Fail-fast: if any dir is in use by
 --- another process, dies with a clear message (releasing any already held). A
 --- release is also registered as an exit hook so a `die()` inside `fn` frees
@@ -753,7 +752,7 @@ function M.cmd_clean(ws, profile_name)
   return 0
 end
 
---- `lw unlock <profile> | --all` — force-remove build-dir locks (§16.6),
+--- `lw unlock <profile> | --all` — force-remove build-dir locks,
 --- for recovery after a crash left a stale lock. Warns before clearing a lock
 --- that still looks active (fresh heartbeat).
 function M.cmd_unlock(ws, args)
@@ -824,8 +823,8 @@ local function ensure_unit_targets(ws, unit)
 end
 
 --- `lw test [profile] [--junit <file>] [-- <args>]` — build a profile, then run
---- its tests via each module's native runner, reporting a real exit code (spec
---- §16.16). Args after `--` are forwarded to the native batch runner (e.g.
+--- its tests via each module's native runner, reporting a real exit code.
+--- Args after `--` are forwarded to the native batch runner (e.g.
 --- `-- -j 4` / `-- --num-processes 4`). `--junit <file>` writes JUnit XML for CI
 --- (one file per unit — a label suffix when a profile runs several).
 function M.cmd_test(ws, args)
@@ -858,14 +857,14 @@ function M.cmd_test(ws, args)
   profile, ws = resolve_build_target(ws, profile_name)
   -- Hold the build-dir lock across build AND test: a native runner like
   -- `meson test` rebuilds, so the whole run must be exclusive of other
-  -- processes touching the same build dir (§16.6).
+  -- processes touching the same build dir.
   with_build_locks(profile, "build", function()
     -- Ensure configured + built, but skip building units whose native test
-    -- runner rebuilds itself (§16.16) — e.g. `meson test`. Dies on build failure.
+    -- runner rebuilds itself — e.g. `meson test`. Dies on build failure.
     run_build_steps(profile, ws, { for_test = true })
 
     -- Parse build targets before planning: the test step's run environment
-    -- (§8.7 — sibling DLL dirs on Windows) is derived from parsed targets, and
+    -- (sibling DLL dirs on Windows) is derived from parsed targets, and
     -- ctest, unlike `meson test`, does not set that up itself. Without this a
     -- DLL-dependent test executable fails in the loader (0xc0000135).
     for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
@@ -979,8 +978,8 @@ end
 --- `lw run <profile> [target] [-- prog-args…]` — resolve a profile and a
 --- launch target (the profile's default when unnamed, else a named build
 --- target or command launch config), then build → deploy → execute. Args
---- after `--` are forwarded to the program. Returns its exit code (spec
---- §16.17). Routes through the editor's LaunchTarget seams (resolve_launch_spec
+--- after `--` are forwarded to the program. Returns its exit code.
+--- Routes through the editor's LaunchTarget seams (resolve_launch_spec
 --- / deploy_sync) so headless and editor launches stay identical.
 function M.cmd_run(ws, args)
   -- Split on `--`: everything after is forwarded verbatim to the program.
@@ -991,7 +990,7 @@ function M.cmd_run(ws, args)
     else pre[#pre + 1] = args[i] end
   end
   -- Disambiguation flags (`--project <key>`, `--target`, `--launch`) and a
-  -- per-invocation `--cwd <dir>` (§8.7); remaining pre-`--` tokens are
+  -- per-invocation `--cwd <dir>`; remaining pre-`--` tokens are
   -- positional (profile, then optional target).
   local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
   local i = 1
@@ -1145,7 +1144,7 @@ end
 
 --- `lw launch add <project> <name> <command> [args…] [--working-dir D] [--env K=V]`
 --- or  `lw launch add <project> <name> --from-target <target> [args…] [flags]`
---- (target-backed launch config, §8.7 — runs the target's built artifact with
+--- (target-backed launch config — runs the target's built artifact with
 --- the build-tree run environment; args/env/working_dir layer on top).
 function M.cmd_launch_add(root, args)
   local proj_name, name = args[3], args[4]
@@ -1194,7 +1193,7 @@ function M.cmd_launch_add(root, args)
 end
 
 --- `lw launch set <project> <name> [flags]` — modify an existing launch config
---- in place (§8.7). Reads the config, applies only the given changes, saves it
+--- in place. Reads the config, applies only the given changes, saves it
 --- back to the project's working copy.
 ---   --working-dir D | --clear-working-dir
 ---   --env K=V (add/update, repeatable) | --unset-env K (remove, repeatable)
@@ -1300,10 +1299,10 @@ function M.cmd_launch(sub, root, args)
   die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|set|show|remove")
 end
 
---- loomworks.json is written later by `lw publish` (working-copy model, §2.4).
+--- loomworks.json is written later by `lw publish` (working-copy model).
 function M.cmd_init(args)
   local dir = (os.getenv("LW_ROOT") or uv.cwd()):gsub("\\", "/"):gsub("/+$", "")
-  -- Optional `--name <name>` overrides the directory-basename default (§2.2).
+  -- Optional `--name <name>` overrides the directory-basename default.
   local name
   local i = 2
   while args and args[i] do
@@ -1361,8 +1360,7 @@ end
 
 --- `lw publish` — regenerate the shared loomworks.json from the working copy.
 --- `lw migrate [--check] [-y]` — rewrite the workspace files from a still-valid
---- older shape into the current recommended one (spec §16.19). Form changes,
---- meaning does not.
+--- older shape into the current recommended one. Form changes, meaning does not.
 function M.cmd_migrate(root, args)
   local check, yes = false, false
   for _, v in ipairs(args or {}) do
@@ -1400,8 +1398,7 @@ function M.cmd_migrate(root, args)
     return 1
   end
 
-  -- A management write, so it needs explicit consent when it cannot ask
-  -- (spec §16.9 / §16.19).
+  -- A management write, so it needs explicit consent when it cannot ask.
   if not yes then
     if not interactive() then
       die("refusing to rewrite the workspace files without confirmation.\n"
@@ -1418,7 +1415,7 @@ function M.cmd_migrate(root, args)
   local applied, err = migrate.apply(plan)
   if err then die("migration failed after " .. applied .. " change(s): " .. err) end
 
-  -- The published snapshot is regenerated from the working copy (§2.4), so a
+  -- The published snapshot is regenerated from the working copy, so a
   -- migration that touches published items rewrites it wholesale.
   local pub_ok, pub_err = ws:publish()
   if not pub_ok then
@@ -1432,7 +1429,7 @@ function M.cmd_migrate(root, args)
 end
 
 -- ---------------------------------------------------------------------------
--- Module acquisition (spec §16.20)
+-- Module acquisition
 -- ---------------------------------------------------------------------------
 
 --- boot.* is resolvable only on the standalone luvi host (main.lua installs a
@@ -1518,7 +1515,7 @@ function M.cmd_module_install(args)
     die(eerr .. (#names > 0 and ("\n  available: " .. table.concat(names, ", ")) or ""))
   end
 
-  -- Interface-version gate, before any download (spec §16.20).
+  -- Interface-version gate, before any download.
   if not mods.compatible(entry, host_api) then
     die(mods.incompatible_reason(entry, host_api))
   end
@@ -1568,7 +1565,7 @@ function M.cmd_module_update(args)
     if not entry then
       out("skip  " .. name .. " — no longer in the index")
     elseif not mods.compatible(entry, host_api) then
-      -- Skip-and-warn: one stale module must not block the rest (spec §16.20).
+      -- Skip-and-warn: one stale module must not block the rest.
       out("skip  " .. mods.incompatible_reason(entry, host_api))
     else
       local cur
@@ -1633,7 +1630,7 @@ end
 
 --- Mark `item` shared (local+shared) and regenerate loomworks.json. The
 --- publishability closure pulls transitive dependencies (a profile's set +
---- projects), so publishing a profile writes everything it needs (spec §2.4).
+--- projects), so publishing a profile writes everything it needs.
 local function publish_item(ws, item, label)
   item._intent = "local+shared"
   local ok, err = ws:publish()
@@ -1698,7 +1695,7 @@ local function split_csv(s)
 end
 
 -- ---------------------------------------------------------------------------
--- Projects (add / remove / list / show) — explicit management, user.json (§16.9)
+-- Projects (add / remove / list / show) — explicit management, user.json
 -- ---------------------------------------------------------------------------
 
 --- Pick a module type interactively. `detected` is the detect_all_types result
@@ -2036,7 +2033,7 @@ end
 --- not by naming one itself: the built-in `variant:*` configurations are the
 --- declared source of build types, and a hand-written copy duplicates one with
 --- nothing to check it against. Reading a declared `variant` still works, so
---- existing hand-written files keep resolving (spec 1.4).
+--- existing hand-written files keep resolving.
 --- @param proj loomworks.Project
 --- @param value string|nil the variant the caller tried to set
 local function reject_variant_param(proj, value)
@@ -2440,7 +2437,7 @@ function M.cmd_cset(sub, root, args)
 end
 
 --- `lw profile select` — interactive picker that sets the active profile.
---- Writes user.json (explicit management, spec §16.9).
+--- Writes user.json (explicit management).
 function M.select_profile(ws)
   local profiles = ws._profiles or {}
   if #profiles == 0 then die("no profiles to select — run `lw profiles`") end
@@ -2593,7 +2590,7 @@ function M.cmd_profile_create(root, args)
   for i = 2, #order do profile:add_tool(resolved[order[i]].key) end
   -- Profiles default to `local`: the toolchains they pin were resolved on
   -- this machine, so publishing one by default would push a build environment
-  -- into the shared contract that other machines may not have (spec §2.4).
+  -- into the shared contract that other machines may not have.
   profile._intent = created_intent("local")
   if activate then profile:activate() else ws:_save_user() end
 
@@ -2612,7 +2609,7 @@ function M.cmd_profile_create(root, args)
 end
 
 --- `lw profile publish <key>` — mark a profile shared and write loomworks.json
---- (pulls its configuration set + projects via the closure, spec §2.4).
+--- (pulls its configuration set + projects via the closure).
 function M.cmd_profile_publish(root, name)
   if not name then die("usage: lw profile publish <key>") end
   local ws = load_workspace(root, false)
@@ -2622,7 +2619,7 @@ end
 
 --- `lw profile <list|select|create|publish|target>`
 --- `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
---- profile's default launch target (spec §16.17, §8.6). With no target name,
+--- profile's default launch target. With no target name,
 --- prints the current default. Resolves a build target or command launch
 --- config the same way `lw run` does (parsing targets on demand — build the
 --- profile first so its build targets are known).
@@ -2833,8 +2830,8 @@ function M.cmd_profile_remove(root, args)
 end
 
 --- `lw profile query <profile> <project> <field>` — print a single machine-
---- readable fact about a project within a resolved profile (spec §16.18). Read-
---- only introspection for scripting (e.g. locating CI artifacts). Fields:
+--- readable fact about a project within a resolved profile. Read-only
+--- introspection for scripting (e.g. locating CI artifacts). Fields:
 --- build-dir | config | state | tool.
 function M.cmd_profile_query(root, args)
   -- args: { "profile", "query", <profile>, <project>, <field> }
@@ -4078,7 +4075,7 @@ local function main()
   if command == "completion" then
     finish(M.cmd_completion(a[2]))
   end
-  -- `module` acquires third-party modules (spec §16.20) — no workspace needed.
+  -- `module` acquires third-party modules — no workspace needed.
   if command == "module" or command == "mod" then
     finish(M.cmd_module(a[2], a))
   end

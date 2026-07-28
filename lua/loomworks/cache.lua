@@ -62,7 +62,6 @@ end
 --- @param root string workspace root path
 --- @return string absolute path
 function M.absolute_build_dir(rel_key, root)
-    -- If already absolute, return as-is
     if rel_key:sub(1, 1) == "/" or rel_key:match("^%a:") then
         return rel_key
     end
@@ -80,9 +79,7 @@ function M.default()
 end
 
 --- One-way transparent migration v7 → v8: rename build_dir entry field
---- `cmake` to `module_info`. Lets pre-existing caches load after the
---- cmake_info→module_info rename without a nuke. Safe to remove after
---- all dev caches have been rewritten at v8.
+--- `cmake` to `module_info`, so pre-existing caches load without a nuke.
 --- TODO: remove once all tracked dev workspaces have migrated.
 --- @param raw table parsed cache
 --- @return boolean migrated true if a migration happened

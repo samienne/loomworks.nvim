@@ -279,7 +279,7 @@ local function build_config_sets_section(workspace, section_state)
     }
 end
 
---- Cleanup candidates section. Stub: orphaned configs only (stray dirs deferred).
+--- Cleanup candidates section — orphaned cached configs.
 --- @param workspace loomworks.Workspace
 --- @param section_state table<string, boolean>
 --- @return table|nil

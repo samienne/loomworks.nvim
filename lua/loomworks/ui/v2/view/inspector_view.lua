@@ -1,7 +1,7 @@
 --- loomworks/ui/v2/view/inspector_view.lua — Inspector rendering.
 ---
---- Plain-text rendering with extmark highlights. Read-only in this
---- slice — no edit affordances, no fields editable in place.
+--- Plain-text rendering with extmark highlights. Emits per-line drill /
+--- edit / add maps consumed by the layout for keybound actions.
 
 local M = {}
 
@@ -267,11 +267,8 @@ local function render_config_set(insp, ctx)
         ctx:comment("  (none)")
     else
         for _, m in ipairs(insp.mappings) do
-            -- Editable: e changes the variant; <CR> drills into the
-            -- configuration. The renderer can only attach one descriptor
-            -- per line, so prefer the edit descriptor (more useful in the
-            -- mapping table); the drill ref is exposed via the inspector
-            -- content for any callers that want it.
+            -- Only one descriptor can attach per line; prefer the edit
+            -- descriptor (variant change) over the drill ref here.
             ctx:add_editable(
                 string.format("  %-16s → %s", m.project_key, m.variant_name or "—"),
                 m.edit)
@@ -542,7 +539,6 @@ local function render_wire_deploy(insp, ctx)
     end
     ctx:add("")
 
-    -- One block per source.
     for _, block in ipairs(insp.source_blocks or {}) do
         local i = block.index
         ctx:section(string.format("Source %d", i))

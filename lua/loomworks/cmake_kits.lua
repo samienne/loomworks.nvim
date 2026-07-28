@@ -106,7 +106,6 @@ local function find_sibling_clangd(compiler_path)
     if not dir then return nil end
     local candidate = dir .. "/clangd"
     if vim.fn.executable(candidate) == 1 then return candidate end
-    -- Try with .exe on Windows
     candidate = dir .. "/clangd.exe"
     if uv.fs_stat(candidate) then return candidate end
     return nil
@@ -114,8 +113,7 @@ end
 
 --- Detect C/C++ compilers in PATH. Delegates to the shared
 --- `loomworks.cpp_compilers` module, shaping the result into the
---- `{path=...}` fields cmake_kits has historically used. Keeping the
---- adapter thin makes the shared detector the single source of truth.
+--- `{path=...}` fields this adapter uses.
 --- @return { id: string, display: string, path: string, version: string, family: string, clangd_path: string|nil }[]
 local function detect_compilers()
     local shared = require("loomworks.cpp_compilers").detect()
@@ -140,13 +138,11 @@ function M.detect()
 
     local kits = {}
 
-    -- MSVC kits (Visual Studio generator, compiler implicit)
     local msvc = detect_msvc_kits()
     for _, kit in ipairs(msvc) do
         kits[#kits + 1] = kit
     end
 
-    -- Ninja kits (one per detected compiler)
     local ninja_available = vim.fn.executable("ninja") == 1
     if ninja_available then
         local compilers = detect_compilers()
@@ -162,7 +158,7 @@ function M.detect()
             }
         end
 
-        -- Ninja + MSVC kits (needs vcvarsall environment)
+        -- Ninja + MSVC kits need the vcvarsall environment.
         for _, msvc_kit in ipairs(msvc) do
             if msvc_kit.vcvarsall then
                 kits[#kits + 1] = {
@@ -182,8 +178,7 @@ function M.detect()
     return kits
 end
 
---- Forward the shared compiler-cache clear so callers who already had
---- `cmake_kits.clear_cache()` wired up continue to work.
+--- Clear the detection cache (also clears the shared compiler cache).
 function M.clear_cache()
     M._cached = nil
     require("loomworks.cpp_compilers").clear_cache()
@@ -257,7 +252,6 @@ end
 --- async vim.system() calls for --version probes sequentially.
 --- @param callback fun(compilers: table[])
 local function detect_compilers_async(callback)
-    -- Build candidate list and filter by executability (sync, fast PATH lookup)
     local candidates = {}
     for _, base in ipairs({ "gcc", "g++", "clang", "clang++" }) do
         candidates[#candidates + 1] = base
@@ -289,7 +283,6 @@ local function detect_compilers_async(callback)
     local function next_probe()
         idx = idx + 1
         if idx > #executable_names then
-            -- Sort and return
             table.sort(compilers, function(a, b)
                 if a.family ~= b.family then return a.family < b.family end
                 return a.version > b.version
@@ -336,7 +329,6 @@ local function detect_compilers_async(callback)
                 seen[compound_id] = true
                 seen[path] = true
 
-                -- For C compiler, try to find the C++ counterpart (sync, fast)
                 local is_cpp = name:match("%+%+")
                 local cpp_path = path
                 if not is_cpp then
@@ -378,12 +370,10 @@ function M.detect_async(callback)
         detect_compilers_async(function(compilers)
             local kits = {}
 
-            -- MSVC kits (Visual Studio generator)
             for _, kit in ipairs(msvc) do
                 kits[#kits + 1] = kit
             end
 
-            -- Ninja kits (one per detected compiler)
             local ninja_available = vim.fn.executable("ninja") == 1
             if ninja_available then
                 for _, comp in ipairs(compilers) do
@@ -398,7 +388,6 @@ function M.detect_async(callback)
                     }
                 end
 
-                -- Ninja + MSVC kits
                 for _, msvc_kit in ipairs(msvc) do
                     if msvc_kit.vcvarsall then
                         kits[#kits + 1] = {

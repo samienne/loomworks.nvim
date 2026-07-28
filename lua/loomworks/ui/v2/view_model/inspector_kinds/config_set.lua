@@ -1,8 +1,7 @@
 --- loomworks/ui/v2/view_model/inspector_kinds/config_set.lua
 ---
---- Read-only configuration-set inspector. Shows the set name and its
---- mappings (project → configuration). Identifies whether any profile
---- references this set.
+--- Configuration-set inspector. Shows the set name and its mappings
+--- (project → configuration) and which profiles reference this set.
 
 local M = {}
 

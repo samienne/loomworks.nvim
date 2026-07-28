@@ -13,7 +13,7 @@
 ---        Defaults to the owning module's static `languages` when the
 ---        tool's source data doesn't override.
 --- @field _module loomworks.Module owning module domain object
---- @field mod_type string module type (computed from _module.id, backward compat)
+--- @field mod_type string module type (from _module.id)
 --- @field _removed boolean
 local Tool = {}
 Tool.__index = Tool
@@ -90,7 +90,7 @@ function Tool:is_keyed()
     return self.key ~= nil
 end
 
---- Produce a ToolRef table for serialization/legacy compatibility.
+--- Produce a ToolRef table for serialization.
 --- @return loomworks.ToolRef
 function Tool:to_ref()
     return {

@@ -127,8 +127,7 @@ local function c_counterpart(name, path)
     if not name:match("%+%+") then return path end
     -- Order matters: substitute `clang%+%+` BEFORE `g%+%+`. "clang++" contains
     -- the substring "g++", so a g++→gcc pass first corrupts it to "clangcc"
-    -- (probe fails → wrong fallback to the C++ driver, i.e. CC=clang++). Same
-    -- rationale as the from_probe() path below.
+    -- (probe fails → wrong fallback to the C++ driver, i.e. CC=clang++).
     local c_name = name:gsub("clang%+%+", "clang"):gsub("g%+%+", "gcc")
     local p = probe(c_name)
     return p or path

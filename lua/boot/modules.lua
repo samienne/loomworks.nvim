@@ -1,14 +1,14 @@
--- Module acquisition for the host bootstrap (spec §16.20).
+-- Module acquisition for the host bootstrap.
 --
--- Extends the host's set of available modules (§16.8) by installing third-party
+-- Extends the host's set of available modules by installing third-party
 -- module packages named in a curated index. Flow, mirroring boot.update but
 -- anchored on a hash the index pins rather than a signed manifest:
---   fetch index -> look up entry -> gate on interface version (§8.0)
+--   fetch index -> look up entry -> gate on interface version
 --   -> download the pinned-tag archive -> verify sha256 against the index
 --   -> extract to a staging dir -> keep the shipped `lua/` tree, atomically
 --      rename it into <data>/loomworks/modules/<name>/lua.
 --
--- The index is trusted because it arrives through a trusted channel (§16.20);
+-- The index is trusted because it arrives through a trusted channel;
 -- the *artifact* is trusted because its bytes match the hash the index records.
 -- Transport is never trusted (boot.download): a MITM'd archive whose hash does
 -- not match is rejected.
@@ -29,9 +29,9 @@ local update = require("boot.update")
 local M = {}
 
 -- Where the curated index is fetched from. Raw from the repo's default branch,
--- so the available-module list is not chained to a core release (spec §16.20:
--- module availability is decoupled from the host's own version). Overridable
--- via LOOMWORKS_MODULE_INDEX or the `module-index` config key; a local path or
+-- so the available-module list is not chained to a core release (module
+-- availability is decoupled from the host's own version). Overridable via
+-- LOOMWORKS_MODULE_INDEX or the `module-index` config key; a local path or
 -- file:// works as an offline mirror (and is what the tests use).
 M.DEFAULT_INDEX_URL =
   "https://raw.githubusercontent.com/samienne/loomworks.nvim/master/modules.json"
@@ -48,7 +48,7 @@ end
 --- feeds rm_rf, so it must not contain a separator or `..` that could escape.
 --- Must start alphanumeric, then only [A-Za-z0-9._-]; this also rules out ".",
 --- "..", "", and dotfiles. Names come from an OVERRIDABLE index and from CLI
---- args, so neither is trusted (spec §16.20 trusts the artifact's hash, not its
+--- args, so neither is trusted (trust is in the artifact's hash, not its
 --- name) — this is the deletion/traversal boundary.
 --- @param name any
 --- @return boolean
@@ -111,7 +111,7 @@ function M.entry(idx, name)
 end
 
 --- Whether an index entry is compatible with the running host's module
---- interface version (§8.0). Strict equality — no backwards compatibility.
+--- interface version. Strict equality — no backwards compatibility.
 --- @param entry table
 --- @param host_api number the host's loomworks.api_versions.module
 function M.compatible(entry, host_api)
@@ -119,7 +119,7 @@ function M.compatible(entry, host_api)
 end
 
 --- A human message for an incompatible entry, distinguishing "update the host"
---- from "the module has no compatible release yet" (spec §16.20).
+--- from "the module has no compatible release yet".
 --- @param entry table
 --- @param host_api number
 function M.incompatible_reason(entry, host_api)
@@ -157,7 +157,7 @@ local function sole_top_dir(stage)
   return only
 end
 
---- Install (or reinstall) a module from its index entry (spec §16.20). The
+--- Install (or reinstall) a module from its index entry. The
 --- artifact is verified against `entry.sha256` before any of its Lua lands on
 --- disk; a mismatch installs nothing. Does NOT gate on interface version — the
 --- caller does that (via M.compatible) so it can shape the message.

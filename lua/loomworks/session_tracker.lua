@@ -15,6 +15,10 @@ local M = {}
 --- @field multi_adapter boolean
 --- @field fidget_handle table|nil
 --- @field started_at number
+--- @field device_serial string|nil
+--- @field device_bundle string|nil
+--- @field device_pid number|nil
+--- @field pidof_timer uv_timer_t|nil
 
 --- @type loomworks.TrackedRun|nil
 local _active_run = nil
@@ -219,14 +223,11 @@ end
 
 --- Register dap listeners to finish fidget and clean up tracked run on session end.
 ---
---- The fidget handle was previously finished only on
---- `event_initialized` (the happy path). If the dap session
---- terminated or exited before initialising — adapter crashed,
---- attach failed, debuggee died at startup — neither listener
---- finished the handle and the popup spun forever, even after
---- every overseer task had already completed. The `finished`
---- flag plus the explicit finish in `on_end` close that gap:
---- whichever event fires first wins, the second is a no-op.
+--- Both `event_initialized` (the happy path) and session end must finish
+--- the fidget handle. If the dap session terminates or exits before
+--- initialising — adapter crashed, attach failed, debuggee died at startup —
+--- only the end listener fires; without it the popup would spin forever. The
+--- `finished` flag makes whichever event fires first win, the second a no-op.
 --- @param handle table fidget handle
 --- @param multi boolean multi-adapter run
 local function register_debug_listeners(handle, multi)

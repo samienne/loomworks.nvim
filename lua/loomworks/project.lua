@@ -12,12 +12,14 @@ local Configuration = require("loomworks.configuration")
 --- @field deploy? table<string, table|table[]> project-level deploy steps
 --- @field variables? table<string, { type: string, default: string }> user-defined variable declarations
 --- @field configuration? string active configuration name
+--- @field _module? loomworks.Module direct reference to Module domain object
 --- @field _tool? loomworks.Tool direct reference to Tool domain object
 --- @field status loomworks.Status
 --- @field orphaned boolean
 --- @field needs_refresh boolean
 --- @field refresh_reasons string[]
 --- @field configurations table<string, loomworks.ConfigurationInfo>
+--- @field preset_configurations? table<string, loomworks.ConfigurationInfo>
 --- @field cached? loomworks.CachedConfig active configuration's cached state
 --- @field cached_configurations table<string, loomworks.CachedConfig>
 --- @field module_info? table opaque module-specific project-level info
@@ -45,9 +47,9 @@ function Project.new(workspace, key, data)
     self._source = "shared"
     -- _intent is intentionally nil here. data_model.refresh assigns the
     -- default from file presence on first sync, then preserves it across
-    -- subsequent remerges (specification.md §2.4 "Intent stickiness").
-    -- Mutation methods that create a project outside refresh (e.g.,
-    -- workspace.add_project) set _intent explicitly before saving.
+    -- subsequent remerges (intent stickiness). Mutation methods that create a
+    -- project outside refresh (e.g., workspace.add_project) set _intent
+    -- explicitly before saving.
     self._intent = nil
     self._configurations = {}
     if data then self:_update(data) end

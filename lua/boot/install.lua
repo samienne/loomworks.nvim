@@ -1,6 +1,6 @@
 -- `lw install` — the host binary places itself where it can be invoked, and
--- ensures that location is on PATH (spec §16.15). A host command: it runs
--- before any bundle exists and depends only on luv + boot helpers.
+-- ensures that location is on PATH. A host command: it runs before any bundle
+-- exists and depends only on luv + boot helpers.
 --
 -- Install location (per-user, no admin):
 --   Windows:  %LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe  (already on PATH)

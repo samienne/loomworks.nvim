@@ -97,14 +97,12 @@ function M.add_project_with_mappings(root, project_key, type, path, set_mappings
         return false, "project '" .. project_key .. "' already exists"
     end
 
-    -- Add project entry
     local entry = { [type] = vim.empty_dict() }
     if path and path ~= project_key then
         entry.path = path
     end
     data.projects[project_key] = entry
 
-    -- Update existing configuration sets with mappings
     if set_mappings and data.configuration_sets then
         for set_name, variant in pairs(set_mappings) do
             if variant and data.configuration_sets[set_name] then
@@ -134,13 +132,11 @@ function M.remove_project(root, project_key)
 
     data.projects[project_key] = nil
 
-    -- Clean up configuration_sets references
     if data.configuration_sets then
         local empty_sets = {}
         for set_name, mappings in pairs(data.configuration_sets) do
             if type(mappings) == "table" then
                 mappings[project_key] = nil
-                -- Check if set is now empty
                 if not next(mappings) then
                     empty_sets[#empty_sets + 1] = set_name
                 end
@@ -149,7 +145,6 @@ function M.remove_project(root, project_key)
         for _, set_name in ipairs(empty_sets) do
             data.configuration_sets[set_name] = nil
         end
-        -- Remove configuration_sets entirely if empty
         if not next(data.configuration_sets) then
             data.configuration_sets = nil
         end
@@ -224,7 +219,6 @@ function M.generate_default_config_sets(root)
     local modules = require("loomworks.modules")
     local config_mod = require("loomworks.config")
 
-    -- Gather project info
     local project_infos = {} -- { key, type, config_names[] }
     for project_key, project_def in pairs(data.projects) do
         local ptype = config_mod._extract_type(project_def)
@@ -255,7 +249,6 @@ function M.generate_default_config_sets(root)
         return nil, "no projects with detectable configurations"
     end
 
-    -- Standard set candidates
     local candidates = {
         { set_name = "Debug", variant_type = "debug" },
         { set_name = "Release", variant_type = "release" },

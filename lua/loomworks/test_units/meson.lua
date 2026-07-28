@@ -144,7 +144,7 @@ local function compose_env(base_env, extra_paths, compiler_bin_dir)
     -- Prefix: compiler bin dir FIRST (for runtime DLLs), then extra_paths (for
     -- the project's shared libs). Both prepended so they win over inherited
     -- PATH. Shared PATH-composition lives in loomworks.runenv (also used by
-    -- build-target launches, §8.7).
+    -- build-target launches).
     local prefix_parts = {}
     if compiler_bin_dir and compiler_bin_dir ~= "" then
         prefix_parts[#prefix_parts + 1] = compiler_bin_dir
@@ -665,8 +665,8 @@ function MesonTestUnit:test_command_all(opts)
     return self:_build_plain_run(exe)
 end
 
---- Native meson test run: authoritative exit code, streaming output
---- (spec §8.9.2). `meson test -C <build_dir>` runs every declared test.
+--- Native meson test run: authoritative exit code, streaming output.
+--- `meson test -C <build_dir>` runs every declared test.
 --- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
 --- @return table|nil { cmd, env, cwd, junit_out }
 function MesonTestUnit:run_command_all(opts)
@@ -683,7 +683,7 @@ function MesonTestUnit:run_command_all(opts)
     if opts.filter then cmd[#cmd + 1] = opts.filter end  -- meson filters by test name
     -- Caller args (from `lw test -- …`, e.g. `--num-processes N`) go last.
     if opts.extra_args then vim.list_extend(cmd, opts.extra_args) end
-    -- `meson test` REBUILDS stale targets before running (§16.16 — which is why
+    -- `meson test` REBUILDS stale targets before running (which is why
     -- a headless test run skips building this unit itself), so it needs the
     -- same toolchain environment a build gets. Composed by the module so both
     -- paths agree: without MSVC's vcvars env (INCLUDE / LIB / PATH-to-cl) the
@@ -698,13 +698,13 @@ function MesonTestUnit:run_command_all(opts)
         cwd = self._build_dir,
         -- meson has no output-path flag: it always writes JUnit to this fixed
         -- location under the build dir. Reported only when JUnit was requested,
-        -- so the core copies it to the caller's path (§16.16).
+        -- so the core copies it to the caller's path.
         junit_out = opts.junit and (self._build_dir .. "/meson-logs/testlog.junit.xml") or nil,
     }
 end
 
 --- `meson test` rebuilds test dependencies before running, so a headless test
---- run (§16.16) need not build this unit separately.
+--- run need not build this unit separately.
 --- @return boolean
 function MesonTestUnit:run_command_all_rebuilds()
     return true

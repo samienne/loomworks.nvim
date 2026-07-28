@@ -130,17 +130,14 @@ return function(tree, ctx)
             fold_key = "lsp:" .. entry.project_key,
             hl = hl,
         }, function()
-            -- Show resolved command (from our cmd wrapper)
             if entry.resolved_cmd then
                 tree:leaf("cmd: " .. table.concat(entry.resolved_cmd, " "), "Comment")
             end
 
-            -- Show each matched client
             for _, client in ipairs(entry.clients) do
                 tree:leaf(client.name .. " (#" .. client.id .. ")", "Comment")
             end
 
-            -- cmake-specific: compile_commands resolution
             if entry.extra and entry.extra.compile_commands_dir then
                 tree:leaf("compile_commands_dir: " .. entry.extra.compile_commands_dir, "Comment")
             elseif entry.project_type == "cmake" then

@@ -1,12 +1,9 @@
---- loomworks/ui/v2/view/layout.lua — Two-pane vertical layout.
+--- loomworks/ui/v2/view/layout.lua — Three-pane workbench layout.
 ---
---- Opens a new tab with two windows side by side: overview (left) and
---- inspector (right). Each pane has its own scratch buffer. Subscribes
---- to the view model and re-renders on change. Tracks cursor moves on
---- the overview window and dispatches `cursor_to` to the view model.
----
---- Read-only in this slice. No editing, no extmarks, no highlights.
---- Filetype is `loomworks-v2` so users can target it for syntax later.
+--- Overview (left), inspector (right) and an activity strip (bottom), each
+--- with its own scratch buffer. Subscribes to the view model and re-renders
+--- on change. Tracks cursor moves on the overview window and dispatches
+--- `cursor_to` to the view model. Filetype is `loomworks-v2`.
 
 local overview_view  = require("loomworks.ui.v2.view.overview_view")
 local inspector_view = require("loomworks.ui.v2.view.inspector_view")
@@ -32,6 +29,7 @@ local activity_view  = require("loomworks.ui.v2.view.activity_view")
 --- @field _refresh_scheduled boolean
 --- @field _autocmd_group integer|nil
 --- @field _suppress_cursor boolean
+--- @field _ns integer|nil
 local Layout = {}
 Layout.__index = Layout
 
@@ -131,10 +129,8 @@ function Layout:_setup_keymaps(buf, kind)
     end
     map("q", function() self:close() end)
 
-    -- Pane navigation — keeps focus inside the workbench. Useful in float
-    -- mode where vim's default <C-w>w cycles into the underlying editor
-    -- window; in tabpage mode these stay consistent with vim's directional
-    -- semantics.
+    -- Pane navigation keeps focus inside the workbench; vim's default
+    -- <C-w>w would cycle into the underlying editor window in float mode.
     map("<Tab>",   function() self:_cycle_pane(kind, "forward") end)
     map("<S-Tab>", function() self:_cycle_pane(kind, "back") end)
     map("<C-w>w",  function() self:_cycle_pane(kind, "forward") end)
@@ -209,7 +205,6 @@ function Layout:_confirm_then_delete_inspector_subject()
     local p = self._vm:presentation()
     local insp = p.inspector
     if not insp or insp.kind == "empty" or insp.missing then return end
-    -- Limit to kinds the view model can delete.
     local supported = {
         deploy_step   = true,
         variable      = true,
@@ -252,7 +247,6 @@ function Layout:_edit_inspector_under_cursor()
     local field = self._inspector_edit_map[row]
     if field then
         if field.kind == "boolean" then
-            -- Toggle directly without prompting.
             local current = field.value
             local was_true = current == true or current == "true" or current == "1"
             self._vm:dispatch("set_field", {
@@ -265,7 +259,7 @@ function Layout:_edit_inspector_under_cursor()
         if field.kind == "picker" and type(field.choices) == "table" and #field.choices > 0 then
             local prompt = "Pick " .. (field.label or field.id or "value")
             vim.ui.select(field.choices, { prompt = prompt }, function(choice)
-                if choice == nil then return end -- cancelled
+                if choice == nil then return end
                 self._vm:dispatch("set_field", {
                     subject  = field.subject,
                     field_id = field.id,
@@ -276,7 +270,7 @@ function Layout:_edit_inspector_under_cursor()
         end
         local prompt = (field.label or field.id or "value") .. ": "
         vim.ui.input({ prompt = prompt, default = tostring(field.value or "") }, function(input)
-            if input == nil then return end -- cancelled
+            if input == nil then return end
             self._vm:dispatch("set_field", {
                 subject  = field.subject,
                 field_id = field.id,
@@ -285,8 +279,6 @@ function Layout:_edit_inspector_under_cursor()
         end)
         return
     end
-    -- No editable field under cursor → fall back to publish cycle
-    -- when the inspector subject is publishable.
     self._vm:dispatch("cycle_publish")
 end
 
@@ -338,7 +330,6 @@ end
 --- Defaults are sensible; user can edit other fields with `e` afterward.
 --- @param descriptor table { kind, parent }
 function Layout:_handle_add(descriptor)
-    -- Wire-form commit actions emitted as sentinels with synthetic kinds.
     if descriptor.kind == "wire_save" then
         self._vm:dispatch("wire_save")
         return
@@ -346,7 +337,6 @@ function Layout:_handle_add(descriptor)
         self._vm:dispatch("wire_cancel")
         return
     elseif descriptor.kind == "wire_source" then
-        -- No prompt — just append an empty source the user can fill via `e`.
         self._vm:dispatch("add_item", {
             kind   = "wire_source",
             parent = descriptor.parent or { kind = "wire_draft" },
@@ -363,11 +353,9 @@ function Layout:_handle_add(descriptor)
         return
     end
     if descriptor.kind == "deploy_step" then
-        -- + Add deploy step now opens wire mode instead of chaining prompts.
         self._vm:dispatch("open_wire_deploy_add", { parent = descriptor.parent })
         return
     end
-    -- Workspace-level adds with extra picker chains.
     if descriptor.kind == "project" and descriptor.parent and descriptor.parent.kind == "workspace" then
         self:_handle_add_project(descriptor)
         return
@@ -421,7 +409,6 @@ function Layout:_handle_add_config_set_mapping(descriptor)
     local ws_lib = require("loomworks")
     local ws = ws_lib.get_workspace and ws_lib.get_workspace()
     if not ws then return end
-    -- Build the set of project keys already mapped in this set.
     local set
     for _, c in pairs(ws._config_sets or {}) do
         if c.name == descriptor.parent.key then set = c; break end
@@ -607,7 +594,7 @@ function Layout:open(opts)
     end
     opts = opts or {}
 
-    -- Buffers are created up front so both modes share the same set.
+    -- Buffers created up front so both float and tabpage modes share them.
     self._overview_buf = vim.api.nvim_create_buf(false, true)
     set_buf_options(self._overview_buf, "loomworks://overview")
     self._inspector_buf = vim.api.nvim_create_buf(false, true)
@@ -636,9 +623,7 @@ function Layout:open(opts)
     self:_install_cursor_autocmd()
     self:refresh()
 
-    -- On first open, snap the cursor to the first selectable line in the
-    -- overview (typically the active-profile row). Without this the cursor
-    -- lands on the workspace-name header which is not selectable.
+    -- Without this the cursor lands on the non-selectable workspace-name header.
     self:_snap_to_first_selectable()
 end
 
@@ -647,18 +632,15 @@ function Layout:_open_tabpage()
     vim.cmd("tabnew")
     self._tabpage = vim.api.nvim_get_current_tabpage()
 
-    -- Replace the empty buffer of the new tab with our overview buffer.
     self._overview_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(self._overview_win, self._overview_buf)
     set_win_options(self._overview_win)
 
-    -- Vertical split for inspector on the right.
     vim.cmd("rightbelow vsplit")
     self._inspector_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(self._inspector_win, self._inspector_buf)
     set_win_options(self._inspector_win)
 
-    -- Bottom-spanning horizontal split for the activity strip.
     vim.cmd("botright split")
     self._activity_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(self._activity_win, self._activity_buf)
@@ -666,7 +648,6 @@ function Layout:_open_tabpage()
     local strip_h = math.min(12, math.max(6, math.floor(vim.o.lines * 0.25)))
     pcall(vim.api.nvim_win_set_height, self._activity_win, strip_h)
 
-    -- Width split for the top: focus overview, set ~40/60.
     vim.api.nvim_set_current_win(self._overview_win)
     local total = vim.o.columns
     local target = math.floor(total * 0.40)
@@ -812,8 +793,6 @@ function Layout:_snap_to_first_selectable()
         self._suppress_cursor = true
         pcall(vim.api.nvim_win_set_cursor, self._overview_win, { first, 0 })
         self._suppress_cursor = false
-        -- Sync the view model's cursor and explicitly select that row so
-        -- the inspector populates on first open.
         self:_on_cursor_moved()
         self._vm:dispatch("select_under_cursor")
     end
@@ -849,7 +828,6 @@ function Layout:close()
             end
         end
     end
-    -- Wipeout buffers if they still exist.
     if valid_buf(self._overview_buf) then
         pcall(vim.api.nvim_buf_delete, self._overview_buf, { force = true })
     end
@@ -951,7 +929,6 @@ function Layout:refresh()
     local p = self._vm:presentation()
     local ns = self:_namespace()
 
-    -- Render overview
     local lines, highlights, line_map, section_line_map, add_line_map =
         overview_view.render(p.overview, p.selection)
     self._line_map = line_map
@@ -960,7 +937,6 @@ function Layout:refresh()
     set_buf_content(self._overview_buf, lines, highlights,
         p.overview and p.overview.hint_bar, ns)
 
-    -- Pin marker: locate the line whose ref matches the pinned ref.
     if p.selection and p.selection.pinned and valid_buf(self._overview_buf) then
         for line_no, sec_row in pairs(line_map) do
             local section = p.overview.sections[sec_row.section]
@@ -975,7 +951,6 @@ function Layout:refresh()
         end
     end
 
-    -- Render inspector
     local insp_lines, insp_highlights, insp_drill_map, insp_edit_map, insp_add_map =
         inspector_view.render(p.inspector)
     self._inspector_drill_map = insp_drill_map or {}
@@ -1002,7 +977,6 @@ function Layout:refresh()
     end
     set_buf_content(self._inspector_buf, insp_lines, insp_highlights, insp_hint, ns)
 
-    -- Render activity strip
     local act_lines, act_highlights = activity_view.render(p.activity)
     set_buf_content(self._activity_buf, act_lines, act_highlights,
         p.activity and p.activity.hint_bar, ns)

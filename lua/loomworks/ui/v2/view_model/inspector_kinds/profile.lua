@@ -1,6 +1,6 @@
 --- loomworks/ui/v2/view_model/inspector_kinds/profile.lua
 ---
---- Build the profile inspector content (read-only in this slice).
+--- Build the profile inspector content.
 
 local M = {}
 
@@ -27,7 +27,6 @@ local function mappings_block(profile)
             variant     = variant,
             state       = pp:status(),
             running     = pp:running_action(),
-            -- Drill targets:
             project_ref = { kind = "project", key = pkey },
             config_ref  = variant and {
                 kind = "configuration", project_key = pkey, config_name = variant,

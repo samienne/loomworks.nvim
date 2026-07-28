@@ -1,7 +1,7 @@
 --- loomworks/ui/v2/view_model/inspector_kinds/launch.lua
 ---
---- Read-only launch inspector. Shows command, args, env, working_dir,
---- debug adapter list, deploy steps (count only — wire mode comes later).
+--- Launch inspector. Shows command, args, env, working_dir, debug
+--- adapter list, and deploy steps.
 ---
 --- ref: { kind = "launch", project_key, launch_name }
 

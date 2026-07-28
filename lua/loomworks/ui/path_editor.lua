@@ -10,7 +10,6 @@ local expand = require("loomworks.expand")
 
 local M = {}
 
--- Built-in variable definitions
 local BUILTIN_VARIABLES = {
     { var = "workspace_root", label = "Workspace root",     root_only = true },
     { var = "build_dir",      label = "Build directory",    root_only = true },
@@ -245,7 +244,6 @@ function M.open(opts)
             end,
         })
 
-        -- Preview
         if ws and profile and project then
             local template = M.compose_segments(segments)
             if template ~= "" then

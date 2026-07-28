@@ -467,7 +467,7 @@ end
 -- ---------------------------------------------------------------------------
 
 -- No `inspect` — shell module never auto-reconfigures based on file
--- changes. See spec/modules/shell.md §8.
+-- changes.
 
 -- No `parse_targets` — users with a known target list declare a launch
 -- configuration with an explicit `program` path.

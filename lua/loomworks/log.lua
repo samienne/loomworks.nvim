@@ -40,7 +40,6 @@ end
 --- @param root string workspace root path
 function Logger:set_root(root)
     self._path = root .. "/.nvim/loomworks.log"
-    -- Truncate on workspace load
     local f = io.open(self._path, "w")
     if f then
         f:write("-- loomworks log started " .. os.date("!%Y-%m-%dT%H:%M:%SZ") .. "\n")

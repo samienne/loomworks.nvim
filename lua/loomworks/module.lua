@@ -59,7 +59,7 @@ function Module:primary_language()
     return self.languages[1]
 end
 
---- Look up a Tool by key (spec §1.5.2). Exact match first, then a coarse-pin
+--- Look up a Tool by key. Exact match first, then a coarse-pin
 --- fallback: a truncated key matches any registered tool that extends it on a
 --- SEGMENT BOUNDARY — either a dotted version (`ninja-clang-19` →
 --- `ninja-clang-19.1.5`) or a dashed segment (`msvc-17` →

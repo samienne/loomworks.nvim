@@ -65,7 +65,6 @@ function View:open(win_overrides)
         return
     end
 
-    -- Create buffer if needed
     if not self._bufnr or not vim.api.nvim_buf_is_valid(self._bufnr) then
         self._bufnr = vim.api.nvim_create_buf(false, true)
         if self._on_write then
@@ -73,14 +72,12 @@ function View:open(win_overrides)
         end
     end
 
-    -- Build Snacks.win keys from our keymap table
     local keys = { q = "close" }
     for key, action in pairs(self._keymaps) do
         local a = action
         keys[key] = function() self:_dispatch(a) end
     end
 
-    -- lock_to_items: j/k navigate between actionable items only
     if self._lock_to_items then
         keys["j"] = function() self:_dispatch("next_item") end
         keys["k"] = function() self:_dispatch("prev_item") end
@@ -219,7 +216,6 @@ function View:refresh()
         vim.bo[self._bufnr].modified = self._is_modified and self._is_modified() or false
     end
 
-    -- Apply highlights
     vim.api.nvim_buf_clear_namespace(self._bufnr, self._ns, 0, -1)
     for _, hl in ipairs(highlights) do
         vim.api.nvim_buf_add_highlight(
@@ -244,12 +240,10 @@ function View:refresh()
         pcall(vim.api.nvim_win_set_cursor, win, cursor)
     end
 
-    -- Snap to nearest actionable line when locked
     if self._lock_to_items then
         self:_snap_cursor()
     end
 
-    -- Manage animation timer based on needs_frame
     if needs_frame and not self._timer then
         self._timer = vim.fn.timer_start(self._timer_interval, function()
             vim.schedule(function() self:refresh() end)
@@ -377,7 +371,6 @@ function View:_nearest_item(line)
     local meta = self._widget.line_meta
     if meta[line] then return line end
 
-    -- Search outward from current line
     local total = #self._widget.lines
     for offset = 1, total do
         local down = line + offset

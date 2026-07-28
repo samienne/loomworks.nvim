@@ -1,7 +1,6 @@
 --- loomworks/data_model.lua — Deserialization module.
---- Extracts the _sync_* deserialization logic from workspace.lua into a
---- standalone, pure-data module. Exposes a single entry point: M.refresh().
---- Also exposes sync_build_dir_refs() for use by mutation methods.
+--- Pure-data _sync_* logic. Entry point: M.refresh(). Also exposes
+--- sync_build_dir_refs() for use by mutation methods.
 
 local M = {}
 
@@ -47,7 +46,7 @@ local function build_ctx(current)
 end
 
 -- ===========================================================================
--- Sync functions (extracted from Workspace methods)
+-- Sync functions
 -- ===========================================================================
 
 --- Sync Module domain objects from config projects and cache.
@@ -239,15 +238,10 @@ local function sync_config_sets(ctx, workspace, config)
             if project then
                 local cfg = project:get_configuration(variant)
                 if not cfg then
-                    -- Stale mapping: the configuration_set names a
-                    -- variant that no longer exists on the project
-                    -- (e.g. an old loomworks.json from before a
-                    -- canonical-prefix refactor, or a typo). We
-                    -- create a `_source_missing` stub so references
-                    -- don't break, but warn once so the user knows
-                    -- to clean up loomworks.json. Without this the
-                    -- stub propagated silently and produced
-                    -- malformed build dirs / phantom abstract
+                    -- Stale mapping: the configuration_set names a variant
+                    -- the project no longer has. Create a `_source_missing`
+                    -- stub so references don't break, and warn once — left
+                    -- silent it produces malformed build dirs / phantom
                     -- configurations on the status page.
                     local key = name .. "|" .. project_key .. "|" .. tostring(variant)
                     if not _reported_stale_mappings[key] then
@@ -333,7 +327,6 @@ local function sync_profiles(ctx, workspace, all_defs, cache, default_target_dat
             data._config_set_ref = ctx.config_sets[data.configuration_set]
         end
 
-        -- Resolve SDK reference from key
         data._sdk = nil
         if data.sdk then
             data._sdk = workspace:find_sdk(data.sdk)
@@ -380,13 +373,11 @@ local function sync_build_dirs(ctx, workspace, cache)
     local cache_mod = require("loomworks.cache")
     local seen = {}
 
-    -- Create/update BuildDirs from cache entries
     if cache and cache.build_dirs then
         for rel_path, entry in pairs(cache.build_dirs) do
             if entry.state and entry.state ~= "unconfigured" then
                 local existing = ctx.build_dirs[rel_path]
                 if existing then
-                    -- Update existing BuildDir with fresh cache data
                     existing.state = entry.state
                     existing.last_configured = entry.last_configured
                     existing.last_built = entry.last_built
@@ -412,14 +403,12 @@ local function sync_build_dirs(ctx, workspace, cache)
         end
     end
 
-    -- Mark removed BuildDirs (cache entry disappeared)
     for rel_path, bd in pairs(ctx.build_dirs) do
         if not seen[rel_path] then
             bd._removed = true
         end
     end
 
-    -- Build result array (exclude removed)
     local arr = {}
     for _, bd in pairs(ctx.build_dirs) do
         if not bd._removed then
@@ -432,7 +421,6 @@ end
 --- Sync profile projects and config units together.
 --- ConfigUnits are created from profile resolution (what profiles need),
 --- NOT from cache entries. Cache entries are linked afterward by build_dir match.
---- This replaces the old sync_config_units + sync_profile_projects pair.
 --- @param ctx table deserialization context with O(1) lookups
 --- @param workspace table workspace reference for domain object constructors
 --- @param cache table parsed cache data
@@ -488,7 +476,6 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                     end
                 end
 
-                -- Compute expected build_dir
                 local build_dir_id = nil
                 local abs_path = nil
                 if project and deps.compute_build_dir then
@@ -515,8 +502,7 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 -- on the ProfileProject, not the ConfigUnit — the
                 -- same unit can be valid in one profile and invalid
                 -- in another (each profile picks its own tool).
-                -- Module-agnostic via `validate_config_tool` hook
-                -- (see spec §3).
+                -- Module-agnostic via `validate_config_tool` hook.
                 local tool_compat_error = M.compute_tool_compat_error(
                     project, configuration, tool)
 
@@ -529,7 +515,6 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 local config_unit_ref = nil
                 if build_dir_id then
                     if not expected_units[build_dir_id] then
-                        -- Look up cache entry by build_dir key
                         local cache_entry = cache and cache.build_dirs
                             and cache.build_dirs[build_dir_id] or nil
                         local enriched = nil
@@ -539,7 +524,6 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                             })
                         end
 
-                        -- Link to BuildDir domain object if one exists
                         local build_dir_obj = ctx.build_dirs[build_dir_id]
 
                         expected_units[build_dir_id] = {
@@ -555,7 +539,6 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                     config_unit_ref = build_dir_id
                 end
 
-                -- Accumulate ProfileProject data
                 local reg_key = profile.key .. "\0" .. project_key
                 expected_pps[reg_key] = {
                     project_key = project_key,
@@ -601,7 +584,6 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
     end
 
     for reg_key, data in pairs(expected_pps) do
-        -- Resolve config_unit reference
         data.config_unit = data.config_unit_ref and ctx.config_units[data.config_unit_ref] or nil
         data.config_unit_ref = nil
 
@@ -723,9 +705,8 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
 
     --- Compute default intent from file presence.
     --- Used only when an item has no prior intent — for newly-created objects
-    --- on first refresh. After that, intent is sticky (see specification.md
-    --- §2.4 "Intent stickiness"): explicit overrides win, then prior intent,
-    --- then default-from-presence as a last resort.
+    --- on first refresh. After that intent is sticky: explicit overrides win,
+    --- then prior intent, then default-from-presence as a last resort.
     local function default_intent(in_user, in_baseline)
         if in_user and in_baseline then return "local+shared" end
         if in_user then return "local" end
@@ -780,7 +761,6 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
             or default_intent(in_user, in_baseline)
     end
 
-    -- Resolve active profile from the active set name
     local active_profile = nil
     if active_set and active_set.name then
         for _, p in pairs(profiles) do

@@ -35,12 +35,10 @@ function M.update_buf(bufnr)
     if buf_path == "" then return end
     local norm_path = buf_path:gsub("\\", "/"):lower()
 
-    -- Clear existing extmarks
     vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
 
     local line_count = vim.api.nvim_buf_line_count(bufnr)
 
-    -- Place test-level annotations
     if show_test then
         for _, node in ipairs(loomtest.nodes()) do
             if node.file and node.file:gsub("\\", "/"):lower() == norm_path
@@ -50,7 +48,6 @@ function M.update_buf(bufnr)
                     local st = STATUS_TEXT[node.status]
                     if st then
                         local virt = { { "  " .. st.text, st.hl } }
-                        -- Add duration
                         if node.duration then
                             local dur
                             if node.duration < 1000 then
@@ -100,7 +97,6 @@ function M.update_buf(bufnr)
                 and node.file and node.file:gsub("\\", "/"):lower() == norm_path
                 and node.line then
                 local line = node.line - 1
-                -- Only add if we don't already have an error at this line
                 local has_error_at_line = false
                 for _, d in ipairs(diagnostics) do
                     if d.lnum == line then has_error_at_line = true; break end

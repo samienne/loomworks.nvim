@@ -23,10 +23,7 @@ function M.parse_list_tests(output, executable, target_id)
     for line in output:gmatch("[^\r\n]+") do
         line_num = line_num + 1
 
-        -- Strip trailing whitespace
         line = line:match("^(.-)%s*$")
-
-        -- Skip empty lines
         if line == "" then goto continue end
 
         -- Strip inline comments: "  # TypeParam = ..." or "  # GetParam() = ..."
@@ -230,7 +227,6 @@ function M.find_source_locations(test_entries, source_files)
     -- two arguments (suite, name) are found.
     local function try_match(suite, name, canonical_path, macro_line)
         local full = suite .. "." .. name
-        -- Exact match
         local entry = by_exact[full]
         if entry and not entry.file then
             entry.file = canonical_path
@@ -367,7 +363,6 @@ function M.parse_xml_results(output_path)
         if in_testcase then
             in_testcase = in_testcase .. "\n" .. line
             if line:match("</testcase>") then
-                -- Process accumulated testcase
                 local attrs = in_testcase:match("<testcase%s(.-[^/])>")
                 local body = in_testcase:match("<testcase[^>]*>(.-)</testcase>") or ""
                 if attrs then

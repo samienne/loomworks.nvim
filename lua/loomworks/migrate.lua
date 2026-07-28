@@ -1,4 +1,4 @@
---- loomworks/migrate.lua — convention migration (spec §16.19).
+--- loomworks/migrate.lua — convention migration.
 ---
 --- Rewrites workspace files from a still-valid older shape into the current
 --- recommended one. Form changes, meaning does not: a migrated workspace must
@@ -73,9 +73,9 @@ local function config_data(cfg)
 end
 
 --- A configuration becomes concrete by inheriting a base that provides a
---- variant, so the build type has a single declared source (spec §1.4). Files
---- written before that rule declared `variant` directly; rewrite those onto
---- the matching `variant:*` base.
+--- variant, so the build type has a single declared source. Files that
+--- declared `variant` directly get rewritten onto the matching `variant:*`
+--- base.
 local variant_inherits = {
     name = "variant-inherits",
     summary = "declare the build type by inheriting variant:*, not by naming it",
