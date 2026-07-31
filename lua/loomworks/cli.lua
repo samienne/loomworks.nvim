@@ -471,42 +471,30 @@ local function resolve_profile(ws, name)
   die("no profile specified and no unambiguous default — run `lw profile select`")
 end
 
---- Spawn `step` and wait for it. Default: capture stdout/stderr and print them
---- (build/test steps). `opts.launch`: attach the child to this terminal
---- (inherited stdio, window shown) so a launched program streams output live,
---- reads stdin, and shows its GUI window — like a direct launch, not the
---- hidden/captured spawn used for build tools.
+--- Spawn `step` attached to this terminal — inherited stdin/stdout/stderr and,
+--- on Windows, not hidden — and wait for it. Output streams live and
+--- progress-aware tools (e.g. ninja) see a real terminal; nothing is captured,
+--- so callers rely on the exit code alone.
 --- @param step table { cmd, cwd, env }
 --- @param root string
---- @param opts? { launch?: boolean }
 --- @return integer code
-local function run_spec(step, root, opts)
+local function run_spec(step, root)
   -- An empty env table would wipe PATH; inherit the parent env instead.
   local env = (step.env and next(step.env)) and step.env or nil
-  if opts and opts.launch then
-    -- Flush our own buffered output first: the child inherits the terminal and
-    -- writes directly, so anything we printed must land before its output
-    -- (otherwise our block-buffered stdout flushes only at exit, after the
-    -- child's live output).
-    io.stdout:flush(); io.stderr:flush()
-    local res = vim.system(step.cmd, {
-      cwd = step.cwd or root,
-      env = env,
-      stdio = "inherit",
-      hide = false,
-    }):wait()
-    return res.code
-  end
+  -- Flush our own buffered output first: the child inherits the terminal and
+  -- writes directly, so anything we printed must land before its output
+  -- (otherwise our block-buffered stdout flushes only at exit, after the
+  -- child's live output).
+  io.stdout:flush(); io.stderr:flush()
   local res = vim.system(step.cmd, {
     cwd = step.cwd or root,
     env = env,
-    text = true,
+    stdio = "inherit",
+    hide = false,
   }):wait()
-  io.write(res.stdout or "")
-  local err = res.stderr or ""
-  if err ~= "" then io.stderr:write(err) end
   return res.code
 end
+M._run_spec = run_spec
 
 --- Interactive picker among the workspace's configuration sets.
 local function pick_config_set(ws)
@@ -1081,7 +1069,7 @@ function M.cmd_run(ws, args)
   for _, a in ipairs(spec.args or {}) do full[#full + 1] = a end
   out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
     table.concat(full, " ")))
-  return run_spec({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root, { launch = true })
+  return run_spec({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
 end
 
 --- `lw launch list [project]` — list command-type launch configs.
@@ -4156,4 +4144,11 @@ local function main()
   end
 end
 
-main()
+-- Both hosts load this file as their entry and rely on this side effect to run.
+-- Tests set the global to require the module (for its helpers) without executing.
+M.main = main
+if not _G.LOOMWORKS_CLI_NO_AUTORUN then
+  main()
+end
+
+return M
