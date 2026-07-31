@@ -471,27 +471,39 @@ local function resolve_profile(ws, name)
   die("no profile specified and no unambiguous default — run `lw profile select`")
 end
 
---- Spawn `step` attached to this terminal — inherited stdin/stdout/stderr and,
---- on Windows, not hidden — and wait for it. Output streams live and
---- progress-aware tools (e.g. ninja) see a real terminal; nothing is captured,
---- so callers rely on the exit code alone.
+--- Spawn `step` and wait for it, returning its exit code. Output handling
+--- depends on the host: the standalone shim streams (the child inherits this
+--- terminal, so progress-aware tools like ninja see a real terminal); real
+--- Neovim's `vim.system` has no `stdio` option, so there we capture and write
+--- the tool output ourselves (buffered, dumped once the step exits).
 --- @param step table { cmd, cwd, env }
 --- @param root string
 --- @return integer code
 local function run_spec(step, root)
   -- An empty env table would wipe PATH; inherit the parent env instead.
   local env = (step.env and next(step.env)) and step.env or nil
-  -- Flush our own buffered output first: the child inherits the terminal and
-  -- writes directly, so anything we printed must land before its output
-  -- (otherwise our block-buffered stdout flushes only at exit, after the
-  -- child's live output).
-  io.stdout:flush(); io.stderr:flush()
+  if vim._loomworks_shim then
+    -- Flush our own buffered output first: the child inherits the terminal and
+    -- writes directly, so anything we printed must land before its output
+    -- (otherwise our block-buffered stdout flushes only at exit, after the
+    -- child's live output).
+    io.stdout:flush(); io.stderr:flush()
+    local res = vim.system(step.cmd, {
+      cwd = step.cwd or root,
+      env = env,
+      stdio = "inherit",
+      hide = false,
+    }):wait()
+    return res.code
+  end
   local res = vim.system(step.cmd, {
     cwd = step.cwd or root,
     env = env,
-    stdio = "inherit",
-    hide = false,
+    text = true,
   }):wait()
+  io.write(res.stdout or "")
+  local err = res.stderr or ""
+  if err ~= "" then io.stderr:write(err) end
   return res.code
 end
 M._run_spec = run_spec

@@ -239,11 +239,14 @@ The launched process's exit status is the invocation's exit status. It runs
 **attached to the invoking terminal** — inherited standard input/output/error,
 and (on Windows) not hidden — so its output streams live, it can read input,
 and a GUI window appears, exactly like launching the binary directly. The
-build, clean, and test steps attach to the terminal the same way, so their
-tool output streams live and progress-aware tools (e.g. ninja) render against
-a real terminal; the run differs only in being the user's own program. The run
-is read-only toward configuration (§16.9) and, like the editor's non-debug
-launch, excludes debugger attachment and device targets (both deferred).
+build, clean, and test steps send their tool output to standard output and
+error the same way (§16.7); a host able to attach them to the terminal streams
+it live, so progress-aware tools (e.g. ninja) see a real terminal, while a host
+that can only capture emits the same output once the step exits. The run
+differs in being the user's own program — interactive and (where applicable)
+windowed. The run is read-only toward configuration (§16.9) and, like the
+editor's non-debug launch, excludes debugger attachment and device targets
+(both deferred).
 
 **Launch target selection.** The launch target is one of:
 

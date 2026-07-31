@@ -12,6 +12,10 @@ local json = require("loomworks.shim.json")
 
 local vim = _G.vim or {}
 
+-- Marks this as the standalone shim (not real Neovim) so hosts can pick the
+-- streaming vs captured spawn path — see cli.lua run_spec.
+vim._loomworks_shim = true
+
 vim.uv = uv
 vim.loop = uv
 vim.NIL = json.NIL
