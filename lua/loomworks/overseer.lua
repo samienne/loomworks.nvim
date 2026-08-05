@@ -312,8 +312,6 @@ local function collect_profile_tasks(profile)
 end
 
 --- Collect clean task definitions for a single configuration.
---- @param project_key string
---- @param config_key string
 --- @param unit loomworks.ConfigUnit
 --- @return table[]|nil clean_tasks
 local function collect_configuration_clean_tasks(unit)
@@ -416,18 +414,13 @@ local function lock_type_for_action(action)
     return action == "build" and "shared" or "exclusive"
 end
 
---- Build and start a single overseer task from a task definition.
---- Acquires a build dir lock before starting. If the lock can't be acquired
---- immediately, the task is queued and started when the lock becomes available.
---- Uses event subscriptions (not a component) for loomworks integration —
---- the overseer task stays pure and the ConfigUnit is captured directly.
+--- Build and start a single overseer task from a task definition. Acquires a
+--- build dir lock before starting; if it can't be acquired immediately the task
+--- is queued and started when the lock frees. Uses event subscriptions (not a
+--- component) so the overseer task stays pure and the ConfigUnit is captured
+--- directly. Returns a Future that resolves with boolean success.
 --- @param overseer table overseer module
 --- @param task_def table task definition with .builder and .loomworks
---- @param on_complete? function called with boolean success when task completes
---- Start a single overseer task. Returns a Future that resolves with
---- boolean success when the task completes.
---- @param overseer table overseer module
---- @param task_def table task definition
 --- @param on_complete? function legacy callback (deprecated, use Future)
 --- @return loomworks.Future
 local function start_one_task(overseer, task_def, on_complete)
@@ -442,8 +435,8 @@ local function start_one_task(overseer, task_def, on_complete)
                 return
             end
 
-            -- Cross-process gate (§16.6): in addition to the in-process lock,
-            -- hold a lockfile so a CLI (or another editor) can't build the same
+            -- Cross-process gate: in addition to the in-process lock, hold a
+            -- lockfile so a CLI (or another editor) can't build the same
             -- directory concurrently. Fail-fast — release the in-process lock
             -- and reject if another live process holds it.
             if lw_meta.build_dir then
@@ -468,7 +461,6 @@ local function start_one_task(overseer, task_def, on_complete)
             build_result.name = task_def.name
             local task = overseer.new_task(build_result)
 
-            -- Register cancel callback to stop the overseer task
             token:on_cancel(function()
                 if task and not task:is_complete() then
                     task:stop()
@@ -548,8 +540,7 @@ local function start_one_task(overseer, task_def, on_complete)
         -- Surface the error to the user too — without this, a throw between
         -- `overseer.new_task()` and `task:start()` leaves the task wedged in
         -- PENDING with no visible signal (the Future rejects but Operations
-        -- only observe ConfigUnit state changes, which never happen). The
-        -- silent failure made the original `progress_parser` bug invisible.
+        -- only observe ConfigUnit state changes, which never happen).
         local function safe_start()
             local ok, err = pcall(do_start)
             if not ok then
@@ -561,7 +552,6 @@ local function start_one_task(overseer, task_def, on_complete)
             end
         end
 
-        -- Acquire build dir lock if task has a build directory
         if lw_meta.build_dir then
             local ws = unit._workspace
             if ws then
@@ -574,7 +564,6 @@ local function start_one_task(overseer, task_def, on_complete)
         safe_start()
     end)
 
-    -- Legacy callback support
     if on_complete then
         f:next(function() on_complete(true) end)
          :catch(function() on_complete(false) end)
@@ -623,7 +612,6 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
     local future_mod = require("loomworks.future")
     local force = opts and opts.force or false
 
-    -- Classify each task
     local to_launch, to_defer = {}, {}
     for _, task_def in ipairs(task_defs) do
         if not task_def.loomworks then goto next end
@@ -655,7 +643,6 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
         return future_mod.resolved(true), 0
     end
 
-    -- Collect Futures for all tasks (immediate + deferred)
     local task_futures = {}
 
     for _, task_def in ipairs(to_launch) do
@@ -676,7 +663,6 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
                 deferred_f:_reject("configure failed")
                 return
             end
-            -- Start the deferred task, chain its Future to ours
             start_one_task(overseer, task_def):next(
                 function(...) deferred_f:_resolve(...) end,
                 function(err) deferred_f:_reject(err) end
@@ -684,7 +670,6 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
         end)
     end
 
-    -- Combine all task Futures — resolve when all complete
     local result_f = future_mod.when_all_settled(task_futures):next(function(results)
         local all_ok = true
         for _, r in ipairs(results) do
@@ -694,7 +679,6 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
         else error("one or more tasks failed") end
     end)
 
-    -- Legacy callback support
     if on_all_done then
         result_f:next(function() on_all_done(true) end)
                :catch(function() on_all_done(false) end)
@@ -747,10 +731,10 @@ end
 
 --- Whether a unit's tests build themselves when run headlessly — true iff the
 --- unit has at least one native batch runner and every such runner reports
---- `run_command_all_rebuilds()`. When true, a headless test run (§16.16) can
---- skip its separate build of the unit as redundant. Runners without a native
---- batch command (no `run_command_all`) don't run headlessly and so don't
---- count toward "self-rebuilding".
+--- `run_command_all_rebuilds()`. When true, a headless test run can skip its
+--- separate build of the unit as redundant. Runners without a native batch
+--- command (no `run_command_all`) don't run headlessly and so don't count
+--- toward "self-rebuilding".
 --- @param unit loomworks.ConfigUnit
 --- @return boolean
 function M._unit_tests_self_rebuild(unit)
@@ -772,12 +756,12 @@ end
 --- Build an ordered, overseer-free execution plan for a profile "build".
 --- Mirrors run_profile_action("build") sequencing: configure the units that
 --- need it (unconfigured / failed / stale), then build. Each step carries a
---- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners
---- (specification.md §16) — it requires no overseer.nvim and launches nothing.
+--- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
+--- requires no overseer.nvim and launches nothing.
 --- @param profile loomworks.Profile
 --- @param opts? table { for_test?: boolean } for_test drops the build step of
----   any unit whose native test runner self-rebuilds (§16.16) — configuration
----   is still planned for every unit.
+---   any unit whose native test runner self-rebuilds — configuration is still
+---   planned for every unit.
 --- @return table[]|nil steps list of { kind, name, unit, cmd, cwd, env }
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
@@ -824,7 +808,7 @@ end
 --- Build an overseer-free "clean" plan for a profile: one step per project's
 --- module clean task (e.g. `meson compile --clean`, `cmake --build --target
 --- clean`). Skips build dirs that don't exist on disk (nothing to clean —
---- e.g. never configured). Intended for the headless runner (§16). Each step
+--- e.g. never configured). Intended for the headless runner. Each step
 --- carries a ready-to-spawn `{cmd, cwd, env}`.
 --- @param profile loomworks.Profile
 --- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env }
@@ -853,8 +837,8 @@ function M.plan_profile_clean(profile)
     return steps
 end
 
---- Resolve the per-unit JUnit output path (spec §16.16). One unit → the caller's
---- path verbatim; several → insert a sanitized label before the extension so the
+--- Resolve the per-unit JUnit output path. One unit → the caller's path
+--- verbatim; several → insert a sanitized label before the extension so the
 --- files don't clobber (result.xml → result.app-Debug.xml).
 --- @param base string caller-supplied JUnit path (absolute)
 --- @param label string unit label (e.g. "app:Debug")
@@ -872,8 +856,8 @@ end
 M._junit_dest_for = junit_dest_for  -- exported for tests
 
 --- Build a headless "run all tests" plan for a profile: one step per buildable
---- unit's native test runner (TestUnit:run_command_all, spec §16.16). Assumes
---- the profile has already been built. Returns the test steps plus the number
+--- unit's native test runner (TestUnit:run_command_all). Assumes the profile
+--- has already been built. Returns the test steps plus the number
 --- of buildable units seen, so a caller can tell "all passed" from "no tests".
 --- `opts.extra_args` forwards caller args to each runner; `opts.junit` (an
 --- absolute path) requests JUnit output — each step carries `junit_dest` (where
@@ -886,7 +870,6 @@ function M.plan_profile_test(profile, opts)
     local all_tasks = collect_profile_tasks(profile)
     if not all_tasks then return nil, 0 end
 
-    -- Unique ConfigUnits from the build tasks.
     local seen, units = {}, {}
     for _, td in ipairs(all_tasks.build or {}) do
         local unit = td.loomworks and td.loomworks.unit
@@ -938,17 +921,13 @@ function M.plan_profile_test(profile, opts)
     return steps, #units
 end
 
---- Run an action for a single project configuration.
---- Creates a pinned profile entry if needed, then launches overseer tasks.
---- If building and the configuration is unconfigured, configures first.
---- @param unit loomworks.ConfigUnit
---- @param action string "configure" or "build"
---- @param on_complete? fun(success: boolean) called when all tasks finish
---- Run a configure or build action on a single ConfigUnit.
---- Returns a Future that resolves on success, rejects on failure.
+--- Run a configure or build action on a single ConfigUnit. If building and the
+--- unit is unconfigured, configures first. Returns a Future that resolves on
+--- success, rejects on failure.
 --- @param unit loomworks.ConfigUnit
 --- @param action "configure"|"build"
 --- @param on_complete? function legacy callback (deprecated)
+--- @param opts? table { parallel_jobs?: integer }
 --- @return loomworks.Future
 function M.run_configuration_action(unit, action, on_complete, opts)
     local future_mod = require("loomworks.future")
@@ -1014,7 +993,6 @@ function M.run_configuration_action(unit, action, on_complete, opts)
         end
 
         if action == "build" then
-            -- Apply parallel_jobs override
             if opts and opts.parallel_jobs then
                 local jobs = tostring(opts.parallel_jobs)
                 for _, task_def in ipairs(all_tasks.build or {}) do
@@ -1060,7 +1038,6 @@ function M.run_configuration_action(unit, action, on_complete, opts)
         do_action()
     end
 
-    -- Legacy callback support
     if on_complete then
         f:next(function() on_complete(true) end)
          :catch(function() on_complete(false) end)
@@ -1076,11 +1053,10 @@ end
 function M.run_configuration_clean(unit, on_complete)
     local future_mod = require("loomworks.future")
 
-    -- Clean invokes the module's build system, which needs the
-    -- right SDK env to know where it's pointing. A
-    -- mismatched tool would clean the wrong tree or fail opaquely.
-    -- ConfigUnit:delete (rm-rf of the cached dir) is independent and
-    -- remains allowed — see spec §3 `validate_config_tool`.
+    -- Clean invokes the module's build system, which needs the right SDK env
+    -- to know where it's pointing. A mismatched tool would clean the wrong tree
+    -- or fail opaquely. ConfigUnit:delete (rm-rf of the cached dir) is
+    -- independent and remains allowed.
     local compat_err = unit and unit.tool_compat_error
         and unit:tool_compat_error() or nil
     if compat_err then
@@ -1357,14 +1333,10 @@ function M.run_streaming_task(opts)
     return task
 end
 
---- Launch a single task definition via overseer.
+--- Launch a single task definition via overseer. Returns a Future.
 --- Used by ConfigUnit:build_target for per-target builds.
 --- @param task_def table task definition with .builder and .loomworks
 --- @param unit loomworks.ConfigUnit the configuration unit being built
---- @param on_complete? function called with boolean success
---- Launch a single task definition via overseer. Returns a Future.
---- @param task_def table task definition
---- @param unit loomworks.ConfigUnit
 --- @param on_complete? function legacy callback (deprecated)
 --- @return loomworks.Future
 function M.launch_single_task(task_def, unit, on_complete)
@@ -1419,6 +1391,7 @@ end
 --- Creates an Operation to track progress and completion.
 --- @param profile loomworks.Profile
 --- @param action string "configure" or "build"
+--- @param opts? table { parallel_jobs?: integer }
 --- @return loomworks.Future
 function M.run_profile_action(profile, action, opts)
     local future_mod = require("loomworks.future")

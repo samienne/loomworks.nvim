@@ -23,18 +23,15 @@ local io_mod = require("loomworks.io")
 --- @param config_entry? { tsconfig?: string } explicit config from type_config
 --- @return string|nil tsconfig_path relative to project
 local function resolve_tsconfig(project_path, variant, config_entry)
-    -- 1. Explicit tsconfig from loomworks.json
     if config_entry and config_entry.tsconfig then
         if uv.fs_stat(project_path .. "/" .. config_entry.tsconfig) then
             return config_entry.tsconfig
         end
     end
-    -- 2. Variant-specific tsconfig
     local variant_tsconfig = "tsconfig." .. variant .. ".json"
     if uv.fs_stat(project_path .. "/" .. variant_tsconfig) then
         return variant_tsconfig
     end
-    -- 3. Base tsconfig.json
     if uv.fs_stat(project_path .. "/tsconfig.json") then
         return "tsconfig.json"
     end
@@ -94,11 +91,9 @@ end
 --- @param action string "configure"|"build"|"clean"
 --- @return string|nil script name (nil means use direct command, not npm run)
 local function resolve_script(config, action)
-    -- Explicit mapping: typescript.scripts.build = "compile"
     if config.scripts and config.scripts[action] then
         return config.scripts[action]
     end
-    -- Convention: action name matches script name
     return action == "configure" and nil or action
 end
 
@@ -160,11 +155,6 @@ function M.validate(path, config)
     return { valid = true, warnings = warnings }
 end
 
---- Return what the module knows about the project.
---- Detects configurations from tsconfig.*.json files or type_config overrides.
---- @param path string absolute project path
---- @param config table type_config from loomworks.json
---- @return table info
 --- Return the default configurations for this module.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
@@ -180,7 +170,6 @@ function M.info(path, config)
     local Configuration = require("loomworks.configuration")
     local auto = {}
 
-    -- Auto-detect defaults from tsconfig.*.json files
     local variants = scan_tsconfig_variants(path)
     if #variants > 0 then
         for _, name in ipairs(variants) do
@@ -193,7 +182,6 @@ function M.info(path, config)
             }
         end
     else
-        -- Fallback: single default configuration using tsconfig.json
         auto["default"] = {
             prefix = "variant",
             variant = "default",
@@ -202,7 +190,6 @@ function M.info(path, config)
         }
     end
 
-    -- Apply canonical prefix and collect user overrides.
     local configurations = Configuration.canonicalize(
         auto, config and config.configurations, M.id)
 
@@ -303,14 +290,12 @@ function M.tasks(project, active_config)
     local config = project.type_config or {}
     local scripts = read_package_scripts(abs_path)
 
-    -- Resolve tsconfig for this variant
     local config_info = project.configurations and project.configurations[active_config]
     local tsconfig = resolve_tsconfig(abs_path, active_config, config_info)
 
     -- Configure command: always npm install (not a script)
     local configure_cmd = { "npm", "install" }
 
-    -- Build command: prefer npm run <script>, fall back to direct tsc
     local build_script = resolve_script(config, "build")
     local build_cmd
     if build_script and scripts and scripts[build_script] then
@@ -412,7 +397,6 @@ end
 function M.inspect(path, config, cached)
     local reasons = {}
 
-    -- Check if package.json is newer than any cached config
     local pkg_stat = uv.fs_stat(path .. "/package.json")
     local tsconfig_stat = uv.fs_stat(path .. "/tsconfig.json")
 

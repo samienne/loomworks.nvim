@@ -23,14 +23,12 @@ end
 --- @return table migrated v2 data
 local function migrate_v1(raw)
     local data = { _meta = { version = CURRENT_VERSION } }
-    -- Convert active_profile string key to structural active selection
     if raw.active_profile then
         data.active_profile = raw.active_profile
     end
     if raw.default_target then
         data.default_target = raw.default_target
     end
-    -- Copy user projects and configuration_sets
     if raw.projects then data.projects = raw.projects end
     if raw.configuration_sets then data.configuration_sets = raw.configuration_sets end
     return data
@@ -50,14 +48,13 @@ function M.parse(content)
     if not raw._meta then
         return M.default(), true
     end
-    -- Accept v1 with migration
     if raw._meta.version == 1 then
         return migrate_v1(raw), false
     end
     if raw._meta.version ~= CURRENT_VERSION then
         return M.default(), true
     end
-    -- Migrate pinned_profiles → profiles (transparent, no version bump)
+    -- back-compat: pinned_profiles was renamed to profiles
     if raw.pinned_profiles and not raw.profiles then
         raw.profiles = raw.pinned_profiles
         raw.pinned_profiles = nil
@@ -80,7 +77,6 @@ function M.load(root)
         return M.default()
     end
 
-    -- Accept v1 with migration
     if data._meta.version == 1 then
         return migrate_v1(data)
     end

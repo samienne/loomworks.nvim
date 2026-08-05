@@ -1,11 +1,10 @@
 --- loomworks/shim/init.lua — a minimal `vim` shim for the standalone
 --- (luvi / LuaJIT + libuv) host. Installs `_G.vim` and returns it.
 ---
---- Fulfils spec §16.1 (runtime-host neutrality). Provides only what the
---- headless build/detect path touches: JSON (with nvim empty_dict/NIL
---- fidelity), libuv as vim.uv, process spawning, PATH probing, table/string
---- helpers, an event-loop-drained scheduler, and vim.wait over uv.run().
---- No editor surface (buffers, windows, autocommands).
+--- Provides only what the headless build/detect path touches: JSON (with nvim
+--- empty_dict/NIL fidelity), libuv as vim.uv, process spawning, PATH probing,
+--- table/string helpers, an event-loop-drained scheduler, and vim.wait over
+--- uv.run(). No editor surface (buffers, windows, autocommands).
 
 local ok_uv, uv = pcall(require, "uv")
 if not ok_uv then uv = require("luv") end
@@ -142,9 +141,8 @@ local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 local function which(exe)
   if exe:find("[/\\]") then return exe end
   -- Platform-specific PATH search: Windows splits PATH on ";" and tries PATHEXT
-  -- extensions; POSIX splits on ":" and uses the bare name. (Splitting a POSIX
-  -- PATH on ";" collapsed it into a single bogus entry, so no binary — gcc,
-  -- clang, cmake, meson — ever resolved, and tool detection found nothing.)
+  -- extensions; POSIX splits on ":" and uses the bare name. Splitting a POSIX
+  -- PATH on ";" would collapse it into one bogus entry, so no binary resolves.
   local sep = IS_WINDOWS and ";" or ":"
   local exts = { "" }
   if IS_WINDOWS then
@@ -279,7 +277,7 @@ local function build_spawn_env(env, clear_env)
   return list
 end
 
---- Extension over nvim's `vim.system` for the headless launcher (spec §16.17):
+--- Extension over nvim's `vim.system` for the headless launcher:
 --- `opts.stdio == "inherit"` connects the child to this process's own
 --- stdin/stdout/stderr (fds 0/1/2) instead of capturing into pipes — so a
 --- launched program streams output live, reads stdin, and (with `opts.hide =
@@ -342,7 +340,7 @@ function vim.system(cmd, opts, on_exit)
 end
 
 -- ---------------------------------------------------------------------------
--- scheduling + event-loop draining (spec §16.1)
+-- scheduling + event-loop draining
 -- ---------------------------------------------------------------------------
 
 local sched_q, idle = {}, nil
@@ -452,7 +450,7 @@ local function runtime_files(pattern)
     end
   end
 
-  -- Acquired modules (spec §16.20): each contributes a `lua/` root, so a glob
+  -- Acquired modules: each contributes a `lua/` root, so a glob
   -- like `lua/loomworks/modules/*.lua` must also scan `<root>/<dir>`. Kept in
   -- lockstep with the require searcher in main.lua via the same global — a
   -- module found by one resolver but not the other would half-load.

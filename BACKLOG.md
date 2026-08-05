@@ -82,28 +82,6 @@ ninja already answers that in milliseconds.
 
 ---
 
-## UI v2 redesign (in design phase)
-
-The current status-page UI evolved feature-by-feature and accumulated
-IA debt: one tree for all topics, dialog-heavy editing, modal traps,
-no visualization of cross-project relationships. Multi-project flows
-(deploy steps especially) are tedious to define and easy to get
-wrong.
-
-Design phase artifacts:
-
-- [`spec/v2-design-brief.md`](spec/v2-design-brief.md) — pain
-  inventory, capability wishes, directional ideas, constraints
-- [`spec/v2-design-scenarios.md`](spec/v2-design-scenarios.md) —
-  concrete user-flow scenarios to design against and (later) test
-  against
-
-Both are throwaway design inputs, intended to be consumed by a
-fresh-context design session. They die when v2 ships (or when the
-effort is dropped). Do not maintain them as living docs.
-
----
-
 ## LSP auto-restart on crash (integration-declared)
 
 Generalize the clangd-specific restart loop that sami had in their personal
@@ -630,29 +608,6 @@ single SDK selection.
 - Remove all tool fallback guessing from modules
 - Serialization: sdk_key in user.json profiles section
 - Status page: show SDK on profile, incomplete state
-
----
-
-## UI v2: hardcoded "cmake" fallbacks
-
-Deferred from the incomplete-profile-policy work. UI v1 is the main
-interface; UI v2 is still under design. These should be cleaned up
-when UI v2 reaches active development, but are not blockers today.
-
-Three call sites silently default to `"cmake"` when the module list
-isn't available or zero modules are detected:
-
-- `lua/loomworks/ui/v2/palette.lua:124` —
-  `local types = ok and modules.list and modules.list() or { "cmake" }`
-- `lua/loomworks/ui/v2/view_model/init.lua:667` —
-  `local proj_type = extra and extra.type or "cmake"`
-- `lua/loomworks/ui/v2/view/layout.lua:478` —
-  `extra = { type = "cmake" }`
-
-Right behavior is to refuse the action with "no project types
-available — install or enable a module first" rather than committing
-the user to cmake. Will surface noisily once android lands and a user
-on a non-cmake codebase tries to add a project from UI v2.
 
 ---
 

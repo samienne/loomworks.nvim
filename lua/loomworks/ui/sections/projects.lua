@@ -215,7 +215,7 @@ end
 --- @param proj loomworks.Project
 --- @param variant string
 --- @param tools_by_type table<string, loomworks.DetectedTool[]>
---- @return table[] entries { unit?, tool_key, display_label, cached }
+--- @return table[] entries { unit?, tool_key, display_label, has_cache?, cached? }
 local function collect_tool_entries(proj, variant, tools_by_type)
     local entries = {}
     local seen_tool_keys = {}
@@ -279,7 +279,6 @@ local function edit_launch_config(project, launch_name)
 
     local ctx = workspace_view.compute_edit_launch_context(project, launch_name)
 
-    -- Get workspace projects and active profile for deploy editor pickers
     local lw = require("loomworks")
     local ws = lw.get_workspace()
 
@@ -483,7 +482,6 @@ local function edit_project_configuration(project, config_name)
         rename_effects = config_name and function(new_name)
             if new_name == config_name or new_name == "" then return nil end
             local effects = {}
-            -- Config sets that reference this variant
             for _, cs_obj in pairs(ws._config_sets) do
                 if cs_obj.mappings then
                     for proj, config in pairs(cs_obj.mappings) do
@@ -493,7 +491,6 @@ local function edit_project_configuration(project, config_name)
                     end
                 end
             end
-            -- Sibling configs that inherit from this name
             for _, cfg in ipairs(project:get_configurations()) do
                 if cfg.name ~= config_name and cfg.inherits_names then
                     for _, base in ipairs(cfg.inherits_names) do
@@ -590,7 +587,7 @@ end
 
 --- Render the projects section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, projects, active_profile_key }
+--- @param ctx table { lw, projects, active_profile }
 return function(tree, ctx)
     local lw = ctx.lw
     local projects = ctx.projects
@@ -700,7 +697,6 @@ return function(tree, ctx)
 
             if proj.configurations and next(proj.configurations) then
                 t:group("Configurations:", "LoomworksSection", function()
-                    -- Build sorted config list with Configuration objects for grouping
                     local config_list = {}
                     for cname, cdata in pairs(proj.configurations) do
                         local cfg_obj = proj:get_configuration(cname)
@@ -720,7 +716,6 @@ return function(tree, ctx)
                         local tool_entries = collect_tool_entries(proj, cname, tools_by_type)
                         local has_tool_entries = #tool_entries > 0
 
-                        -- Check running state across all ConfigUnits for this configuration
                         local config_has_running = false
                         if cname_cfg then
                             for _, cu in ipairs(proj:config_units_for_configuration(cname_cfg) or {}) do
@@ -865,7 +860,6 @@ return function(tree, ctx)
                                 tree:leaf("Abstract mixin — not directly buildable", "Comment")
                             end
 
-                            -- Inherits: full list with ⚠ on unresolved names.
                             if cdata.inherits then
                                 tree:leaf("Inherits: " .. format_inherits(cdata.inherits),
                                     has_unresolved and "WarningMsg" or "Comment")
@@ -895,7 +889,6 @@ return function(tree, ctx)
                             if cdata.generator then
                                 tree:leaf("Generator: " .. cdata.generator, "Comment")
                             end
-                            -- Show all resolved options (own + inherited) with source
                             local mod_impl = proj._module and proj._module.impl or nil
                             if mod_impl and mod_impl.resolve_options_with_sources then
                                 local tc = proj:_type_config_for_module()
@@ -924,7 +917,6 @@ return function(tree, ctx)
                                     tree:leaf(k .. "=" .. cdata.options[k], "Comment")
                                 end
                             end
-                            -- Show resolved variables for this configuration
                             if proj.variables and next(proj.variables) then
                                 local vars_mod = require("loomworks.variables")
                                 local cfg_obj = proj:get_configuration(cname)
@@ -950,7 +942,6 @@ return function(tree, ctx)
                                     end
                                 end
                             end
-                            -- Show cached tool count for keyed-tool modules
                             if has_tool_entries then
                                 local cached_count = 0
                                 for _, entry in ipairs(tool_entries) do
@@ -962,7 +953,6 @@ return function(tree, ctx)
                             end
                         end)
                     end)
-                    -- "Add configuration" sentinel
                     if not proj.orphaned then
                         local project = proj
                         tree:item("▸ Add configuration", {
@@ -974,7 +964,6 @@ return function(tree, ctx)
                 end)
             end
 
-            -- Preset configurations (separate, read-only group)
             if proj.preset_configurations and next(proj.preset_configurations) then
                 tree:group("Presets:", "LoomworksSection", function()
                     local preset_names = {}
@@ -994,7 +983,6 @@ return function(tree, ctx)
                 end)
             end
 
-            -- Launch configurations
             local launches = workspace_view.get_launch_configs(proj)
             if #launches > 0 or not proj.orphaned then
                 local project = proj  -- capture for closure
@@ -1023,7 +1011,6 @@ return function(tree, ctx)
                 end)
             end
 
-            -- Project-level deploy steps
             local deploy = proj.deploy
             local has_deploy = deploy and next(deploy) ~= nil
             if has_deploy or not proj.orphaned then
@@ -1058,7 +1045,6 @@ return function(tree, ctx)
                     for _, dest in ipairs(dest_keys) do
                         local sources = deploy_mod.normalize_sources(deploy[dest])
                         local captured_dest = dest
-                        -- Destination on its own line (may be long)
                         tree:leaf("  " .. dest, "Comment")
                         for si, src in ipairs(sources) do
                             local captured_si = si
@@ -1158,7 +1144,6 @@ return function(tree, ctx)
                 end)
             end
 
-            -- Project variables
             local vars = workspace_view.get_variables(proj)
             if #vars > 0 or not proj.orphaned then
                 local project = proj  -- capture for closure
@@ -1184,7 +1169,6 @@ return function(tree, ctx)
                 end)
             end
 
-            -- Generic module-declared editable type_config fields
             local mod_impl = proj._module and proj._module.impl or nil
             local field_defs = mod_impl and mod_impl.editable_type_config_fields
                 and mod_impl.editable_type_config_fields() or {}

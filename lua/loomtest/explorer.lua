@@ -77,7 +77,6 @@ local function build_grouped_nodes(nodes)
     local seen_ids = {}
     for _, node in ipairs(nodes) do
         if node.parent and targets[node.parent] then
-            -- Deduplicate: skip if we've already seen this test ID
             if seen_ids[node.id] then goto continue end
             seen_ids[node.id] = true
 
@@ -160,13 +159,11 @@ local function build_tree()
     local highlights = {}
     local line_data = {}
 
-    -- Header line 1: adapter description
     local adapter = loomtest.adapters()[1]
     local desc = adapter and adapter.description() or "Tests"
     lines[#lines + 1] = " " .. desc
     highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines], hl_group = "Title" }
 
-    -- Header line 2: counts with per-status colors
     local counts = { passed = 0, failed = 0, skipped = 0, unknown = 0, running = 0, pending = 0 }
     local total = 0
     for _, node in ipairs(grouped) do
@@ -205,7 +202,6 @@ local function build_tree()
     end
     lines[#lines + 1] = count_line
 
-    -- Blank separator
     lines[#lines + 1] = ""
 
     -- Build parent → children map and propagate status to targets
@@ -220,7 +216,6 @@ local function build_tree()
         end
     end
 
-    -- Propagate status to target nodes from their children
     for _, node in ipairs(top_level) do
         local kids = children_of[node.id]
         if kids then
@@ -251,18 +246,15 @@ local function build_tree()
 
         local display = prefix .. fold_char .. icon .. " " .. node.name
 
-        -- Suite: show count
         if node._test_count then
             display = display .. " (" .. node._test_count .. ")"
         end
 
-        -- Failed: inline error
         if node.status == "failed" and node.message then
             local short_msg = node.message:gsub("\n.*", ""):sub(1, 40)
             display = display .. "  — " .. short_msg
         end
 
-        -- Duration
         if node.duration then
             if node.duration < 1000 then
                 display = display .. "  " .. string.format("%dms", node.duration)
@@ -271,7 +263,6 @@ local function build_tree()
             end
         end
 
-        -- Filter passed
         if not config.show_passed and node.status == "passed" and node.type == "test" then
             return
         end
@@ -279,7 +270,6 @@ local function build_tree()
         lines[#lines + 1] = display
         line_data[#lines] = node
 
-        -- Highlight status icon
         local icon_start = #prefix + #fold_char
         highlights[#highlights + 1] = {
             line = #lines,
@@ -287,7 +277,6 @@ local function build_tree()
             col_end = icon_start + #icon,
             hl_group = hl,
         }
-        -- Highlight fold char
         if has_kids then
             highlights[#highlights + 1] = {
                 line = #lines,
@@ -296,7 +285,6 @@ local function build_tree()
                 hl_group = "NonText",
             }
         end
-        -- Highlight name for targets/suites
         if node.type == "target" then
             highlights[#highlights + 1] = {
                 line = #lines,
@@ -379,7 +367,6 @@ function M.refresh()
             _bufnr, _ns, hl.hl_group, hl.line - 1, hl.col_start, hl.col_end)
     end
 
-    -- Restore cursor
     if saved_cursor and win and vim.api.nvim_win_is_valid(win) then
         local line = math.min(saved_cursor[1], #lines)
         pcall(vim.api.nvim_win_set_cursor, win, { line, 0 })
@@ -417,7 +404,6 @@ local function fold_close()
     local win = _win and type(_win) == "table" and _win.win or nil
     if not win then return end
 
-    -- If on an expanded foldable node, collapse it
     if not _folds[node.id] and (node.type == "target" or node.type == "suite") then
         _fold_cursor[node.id] = node.id
         _folds[node.id] = true
@@ -425,12 +411,10 @@ local function fold_close()
         return
     end
 
-    -- Otherwise, move to parent and collapse the parent
     if node.parent then
         _fold_cursor[node.parent] = node.id
         _folds[node.parent] = true
         M.refresh()
-        -- Move cursor to the parent node
         local parent_line = find_line_for_node(node.parent)
         if parent_line then
             pcall(vim.api.nvim_win_set_cursor, win, { parent_line, 0 })
@@ -448,7 +432,6 @@ local function fold_open()
         _folds[node.id] = nil
         _fold_cursor[node.id] = nil
         M.refresh()
-        -- Restore cursor to the saved node
         if saved_node_id then
             local target_line = find_line_for_node(saved_node_id)
             if target_line then
@@ -531,7 +514,6 @@ function M.open()
             -- Jump to test source in the previous window
             local node = node_at_cursor()
             if not node or not node.file or not node.line then return end
-            -- Find a non-explorer window to open in
             local target_win = nil
             for _, w in ipairs(vim.api.nvim_list_wins()) do
                 local buf = vim.api.nvim_win_get_buf(w)
@@ -672,10 +654,8 @@ end
 function M.reveal(test_id)
     if not M.is_open() then return end
 
-    -- Unfold any parent that contains this test
-    -- The test_id format is "test:Suite.TestName"
-    -- Suite nodes have IDs like "target:Runner::SuiteName"
-    -- We need to unfold any collapsed parent
+    -- test_id format is "test:Suite.TestName"; suite fold IDs look like
+    -- "target:Runner::SuiteName".
     local suite_name = test_id:match("^test:([^%.]+)%.")
     if suite_name then
         for fold_id in pairs(_folds) do
@@ -683,7 +663,6 @@ function M.reveal(test_id)
                 _folds[fold_id] = nil
             end
         end
-        -- Also unfold the target
         for fold_id in pairs(_folds) do
             if fold_id:match("^target:") then
                 _folds[fold_id] = nil
@@ -693,7 +672,6 @@ function M.reveal(test_id)
 
     M.refresh()
 
-    -- Find the line for this test
     local target_line = nil
     for line, node in pairs(_line_data) do
         if node and node.id == test_id then
@@ -721,7 +699,6 @@ function M._find_current_test()
     local cursor_line = cursor[1]
     local norm_path = buf_path:gsub("\\", "/"):lower()
 
-    -- Find the nearest test at or above cursor
     local loomtest = require("loomtest")
     local best_id, best_line = nil, 0
     for _, node in ipairs(loomtest.nodes()) do
@@ -745,7 +722,6 @@ function M.show_output()
         return
     end
 
-    -- Look up the canonical node
     local node = loomtest.get_node(_selected_id)
 
     -- For suite/target nodes, find a failed child
@@ -785,7 +761,6 @@ function M._show_output_float(title, output, errors)
     local lines = {}
     local hl_lines = {}  -- { line_num (0-based), hl_group }
 
-    -- Error section at top
     if #errors > 0 then
         lines[#lines + 1] = "Errors:"
         hl_lines[#hl_lines + 1] = { #lines - 1, "DiagnosticError" }
@@ -795,7 +770,6 @@ function M._show_output_float(title, output, errors)
             if err.file and err.line then
                 loc = vim.fn.fnamemodify(err.file, ":t") .. ":" .. err.line .. "  "
             end
-            -- Split multi-line messages into separate lines
             local msg = (err.message or ""):gsub("\r", "")
             local first = true
             for msg_line in (msg .. "\n"):gmatch("([^\n]*)\n") do
@@ -818,7 +792,6 @@ function M._show_output_float(title, output, errors)
     output = output:gsub("\r", "")
     for _, l in ipairs(vim.split(output, "\n")) do
         lines[#lines + 1] = l
-        -- Highlight failure-related lines
         if l:match("^%s*Expected") or l:match("^%s*Actual")
             or l:match("^%s*Value of") or l:match("ASSERT_")
             or l:match("EXPECT_") then
@@ -831,14 +804,11 @@ function M._show_output_float(title, output, errors)
     -- Build a lookup of line_num → { file, line } for jump-to-error
     local jump_targets = {}  -- 1-based line → { file, line }
 
-    -- Scan all lines for file:line patterns and store full paths
-    -- Also check errors array for full paths on error section lines
     local error_line_start = 0
     if #errors > 0 then
         error_line_start = 3  -- after "Errors:" and blank line
         for i, err in ipairs(errors) do
             if err.file and err.line then
-                -- Error lines start at line 3 (1-based)
                 jump_targets[error_line_start + (i - 1)] = {
                     file = err.file, line = err.line,
                 }
@@ -846,8 +816,6 @@ function M._show_output_float(title, output, errors)
         end
     end
 
-    -- Also scan output lines for file:line patterns
-    local output_start = #errors > 0 and (error_line_start + #errors + 2) or 0
     for i, l in ipairs(lines) do
         if not jump_targets[i] then
             local file, lnum = l:match("([%w_/\\%.%-:]+%.[ch]pp?):(%d+)")
@@ -860,7 +828,6 @@ function M._show_output_float(title, output, errors)
     local buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 
-    -- Apply highlights
     local ns = vim.api.nvim_create_namespace("loomtest_output")
     for _, hl in ipairs(hl_lines) do
         pcall(vim.api.nvim_buf_add_highlight, buf, ns, hl[2], hl[1], 0, -1)

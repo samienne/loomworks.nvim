@@ -609,11 +609,6 @@ function LogView:_flush()
     self:_maybe_scroll()
 end
 
--- `LogView:_render` intentionally removed — use `M.render(record,
--- self._layout)` instead. Rendering is layout-dependent, and both
--- the view and match_filter need to agree on the output form for
--- full-line regex matching to work.
-
 local LEVEL_HL = {
     F = "ErrorMsg",
     E = "ErrorMsg",

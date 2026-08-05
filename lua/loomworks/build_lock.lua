@@ -1,8 +1,8 @@
 --- loomworks/build_lock.lua — cross-process advisory lock for build directories.
 ---
 --- Serializes configure/build/clean across separate processes (editor + CLI,
---- or two CLIs) that share a build directory (spec §16.6 — advisory,
---- host-provided exclusion). The primitive is an O_EXCL lockfile
+--- or two CLIs) that share a build directory — advisory, host-provided
+--- exclusion. The primitive is an O_EXCL lockfile
 --- (`uv.fs_open(path, "wx")`): an atomic create-if-absent that works across
 --- processes, unlike a `building=true` flag in a JSON file (a read-check-write
 --- of a shared file is a TOCTOU race — two processes can both see "free").
@@ -83,7 +83,7 @@ local function busy_reason(info)
         tostring(info.age or "?"))
 end
 
---- Acquire the lock for `build_dir`. Fail-fast (spec §16.6): returns a handle on
+--- Acquire the lock for `build_dir`. Fail-fast: returns a handle on
 --- success, or `(nil, reason)` if a live process holds it. A stale (crashed)
 --- holder's lock is reclaimed automatically.
 --- @param build_dir string

@@ -70,14 +70,12 @@ function M.parse_segments(dest)
     local len = #dest
 
     while pos <= len do
-        -- Check for variable reference
         if dest:sub(pos, pos + 1) == "${" then
             local close = dest:find("}", pos + 2, true)
             if close then
                 local var_name = dest:sub(pos + 2, close - 1)
                 segments[#segments + 1] = { type = "var", var = var_name }
                 pos = close + 1
-                -- Skip trailing /
                 if pos <= len and dest:sub(pos, pos) == "/" then
                     pos = pos + 1
                 end
@@ -85,7 +83,6 @@ function M.parse_segments(dest)
             end
         end
 
-        -- Literal segment: collect until next ${
         local next_var = dest:find("${", pos, true)
         local literal
         if next_var then
@@ -96,14 +93,12 @@ function M.parse_segments(dest)
             pos = len + 1
         end
 
-        -- Split literal by / into multiple segments
-        -- e.g. "Plugins/lib.node" → ["Plugins", "lib.node"]
         for part in literal:gmatch("[^/]+") do
             segments[#segments + 1] = { type = "literal", value = part }
         end
-        -- Preserve trailing / only if this is the end of the entire string
-        -- (directory destination marker). Internal trailing slashes before
-        -- the next ${var} are just separators and should not create empty segments.
+        -- Preserve trailing / only at the very end of the string (directory
+        -- destination marker). Internal trailing slashes before the next
+        -- ${var} are separators and must not create empty segments.
         if literal:sub(-1) == "/" and pos > len then
             segments[#segments + 1] = { type = "literal", value = "" }
         end
@@ -111,12 +106,8 @@ function M.parse_segments(dest)
         ::continue::
     end
 
-    -- Remove empty trailing literal if it's the only artifact of splitting
-    if #segments > 0 and segments[#segments].type == "literal"
-            and segments[#segments].value == "" then
-        -- Keep it — represents trailing / (directory destination)
-    end
-
+    -- A trailing empty literal (from a trailing /) is intentionally kept: it
+    -- marks a directory destination.
     return segments
 end
 
@@ -133,7 +124,6 @@ function M.compose_segments(segments)
         end
     end
     local result = table.concat(parts, "/")
-    -- If last segment was empty literal (trailing /), add it
     if #segments > 0 and segments[#segments].type == "literal"
             and segments[#segments].value == "" then
         if result ~= "" then result = result .. "/" end
@@ -207,7 +197,7 @@ end
 --- Open the deploy step editor.
 --- @param opts table
 ---   destination: string — destination path template
----   source: table|nil — { project: string, target?: string, path?: string, configuration?: string }
+---   source: table|nil — { project: string, target?: string, path?: string, configuration?: string, pre_build?: boolean }
 ---   projects: loomworks.Project[] — available projects (domain objects)
 ---   profile: loomworks.Profile|nil — active profile for resolving config units
 ---   workspace: loomworks.Workspace|nil — for destination preview resolution
@@ -229,11 +219,9 @@ function M.open(opts)
     local launch_project = opts.launch_project
     local all_variables = build_variable_list(launch_project)
 
-    -- Parse destination into segments
     local dest_segments = M.parse_segments(opts.destination or "")
     local dest_error = nil
 
-    -- Build set of existing destinations for duplicate detection
     local existing_set = {}
     for _, d in ipairs(opts.existing_destinations or {}) do
         existing_set[d] = true
@@ -246,7 +234,6 @@ function M.open(opts)
             dest_error = nil  -- empty will be caught on accept
             return
         end
-        -- Allow if it's the same destination being edited
         if current_dest and composed == current_dest then
             dest_error = nil
             return
@@ -314,15 +301,13 @@ function M.open(opts)
         end)
     end
 
-    --- Show the segment picker at a given position.
-    --- @param idx number position to insert/replace (0-based: 0 = first)
+    --- Show the segment picker.
     --- @param is_first boolean whether this will be the first segment
     --- @param on_done fun(seg: table) callback with the new segment
     local function pick_segment(is_first, on_done)
         local choices = {}
         local choice_map = {}
 
-        -- Variable choices (built-in + user-defined)
         for _, vdef in ipairs(all_variables) do
             if not vdef.root_only or is_first then
                 local label = vdef.label .. "  (${" .. vdef.var .. "})"
@@ -331,7 +316,6 @@ function M.open(opts)
             end
         end
 
-        -- Custom text option
         choices[#choices + 1] = "Custom text..."
 
         vim.ui.select(choices, { prompt = "Path segment:" }, function(choice)
@@ -362,7 +346,6 @@ function M.open(opts)
         t:leaf("Deploy Step", "Title")
         t:blank()
 
-        -- Destination segments
         t:leaf("Destination:", "Comment")
 
         for i, seg in ipairs(dest_segments) do
@@ -381,10 +364,8 @@ function M.open(opts)
                             end
                         end)
                     else
-                        -- Re-pick variable
                         pick_segment(captured_i == 1, function(new_segs)
                             dest_segments[captured_i] = new_segs[1]
-                            -- If custom text was multi-part, insert extras
                             for j = 2, #new_segs do
                                 table.insert(dest_segments, captured_i + j - 1, new_segs[j])
                             end
@@ -413,7 +394,6 @@ function M.open(opts)
             end,
         })
 
-        -- Destination preview and validation
         validate_destination()
         local dest_preview = resolve_dest_preview(
             dest_segments, ws, profile, launch_project)
@@ -427,7 +407,6 @@ function M.open(opts)
         t:blank()
         t:leaf("Source:", "Comment")
 
-        -- Project picker
         local proj_val = source_project_key ~= "" and source_project_key or "(none)"
         t:item("  Project        " .. proj_val .. " ▸", {
             hl = source_project_key ~= "" and "LoomworksActionable" or "Comment",
@@ -453,7 +432,6 @@ function M.open(opts)
             end,
         })
 
-        -- Configuration picker
         local cfg_val = source_configuration ~= ""
             and source_configuration or "(profile default)"
         t:item("  Configuration  " .. cfg_val .. " ▸", {
@@ -485,7 +463,6 @@ function M.open(opts)
             end,
         })
 
-        -- Pre-build toggle (runs before target build)
         local pre_val = source_pre_build and "yes" or "no"
         t:item("  Pre-build      " .. pre_val .. " ▸", {
             hl = source_pre_build and "LoomworksActionable" or "Comment",
@@ -496,7 +473,6 @@ function M.open(opts)
             end,
         })
 
-        -- Source type toggle
         t:item("  Type           " .. source_type .. " ▸", {
             hl = "LoomworksActionable",
             direct = true,
@@ -517,7 +493,6 @@ function M.open(opts)
             end,
         })
 
-        -- Target picker or path input
         if source_type == "target" then
             local tgt_val = source_target ~= "" and source_target or "(none)"
             t:item("  Target         " .. tgt_val .. " ▸", {
@@ -574,7 +549,6 @@ function M.open(opts)
             t:leaf("  (relative to source build directory)", "NonText")
         end
 
-        -- Source preview
         local src_project = find_project(source_project_key)
         local src_preview = resolve_source_preview(
             profile, src_project, source_configuration,

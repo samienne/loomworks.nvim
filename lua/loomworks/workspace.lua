@@ -122,8 +122,8 @@ function M.init_workspace(root, name, write_json)
     end
 
     local data = { _meta = { version = 2 } }
-    -- Persist the name only when it overrides the directory basename default
-    -- (§2.2); otherwise the name stays dynamic and follows the directory.
+    -- Persist the name only when it overrides the directory basename default;
+    -- otherwise the name stays dynamic and follows the directory.
     local dir_name = root:match("([^/]+)$") or root
     if name and #name > 0 and name ~= dir_name then
         data.name = name
@@ -421,7 +421,7 @@ function M.assemble(root, config_content, user_content, cache_content)
 
     return {
         root = root,
-        -- The working copy wins over the published snapshot (§1.1/§2.2); both
+        -- The working copy wins over the published snapshot; both
         -- fall back to the directory basename.
         name = (user_data and user_data.name) or config.name or dir_name,
         config = config,
@@ -464,6 +464,11 @@ end
 --- @field _delete_waiters function[]
 --- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
+--- @field _build_dirs loomworks.BuildDir[] all BuildDir objects (including orphaned)
+--- @field _deploy_records table<string, table> normalized dest path -> deploy freshness record
+--- @field _sdks loomworks.SDK[] SDK domain objects
+--- @field _devices table<string, loomworks.Device> serial -> Device (runtime-only)
+--- @field _device_scan_state "idle"|"scanning"|"done"
 --- @field _user_config_overlay table|nil user.json project/configuration_set overlay
 --- @field _user_project_keys table<string, boolean> project keys from user.json
 --- @field _user_cs_names table<string, boolean> config_set names from user.json
@@ -1394,7 +1399,7 @@ function Workspace:release_build_dir_lock(dir, lock_type)
     self:_dequeue_build_dir_lock(dir)
 end
 
---- Acquire the cross-process file lock (spec §16.6) for a build dir, refcounted
+--- Acquire the cross-process file lock for a build dir, refcounted
 --- per dir so concurrent same-process shared builds share one OS-level lock
 --- (a second acquire of our own lockfile would otherwise get EEXIST). This
 --- complements the in-process queue lock above — together they serialize a
@@ -3107,8 +3112,7 @@ end
 --- Serialize a project for loomworks.json — only includes effectively-published
 --- configurations. When `publishable_configs` is provided, it is used as the
 --- authoritative set of configs to publish (handles transitive promotion via
---- effective intent, specification.md §2.4). Otherwise falls back to
---- per-config explicit intent.
+--- effective intent). Otherwise falls back to per-config explicit intent.
 --- @param project loomworks.Project
 --- @param publishable_configs? table<loomworks.Configuration, boolean>
 --- @return table entry raw JSON-compatible project entry
@@ -3118,9 +3122,9 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     local configs_dict = {}
     for _, cfg in ipairs(project._configurations) do
         -- Auto-gens are emitted by the module on every load
-        -- (see Configuration:is_auto_gen / spec/modules). Persisting
-        -- them to loomworks.json is dead weight at best and a drift
-        -- hazard if the module's emitted set changes between sessions.
+        -- (see Configuration:is_auto_gen). Persisting them to
+        -- loomworks.json is dead weight at best and a drift hazard
+        -- if the module's emitted set changes between sessions.
         --
         -- Source-missing stubs are kept in the configurations registry
         -- to preserve identity across reference breakage (branch
@@ -3206,8 +3210,7 @@ end
 --- Compute the set of items that must be written to loomworks.json.
 --- An item is "publishable" when its explicit intent includes shared
 --- (`shared` or `local+shared`), OR when its effective intent is forced
---- to include shared by a publishable parent (transitive promotion per
---- specification.md §2.4 "Effective intent").
+--- to include shared by a publishable parent (transitive promotion).
 ---
 --- Currently, only `local+shared`/`shared` configuration sets propagate
 --- — they force the referenced project + configuration to also be
@@ -3272,8 +3275,8 @@ end
 --- Flag items that were present in the previous baseline but are absent
 --- from the current one, when the user still has them as effective
 --- local+shared. The flag is consumed by the UI to render a distinct
---- "removed upstream" indicator (specification.md §2.4) and by the per-item
---- conflict resolution actions.
+--- "removed upstream" indicator and by the per-item conflict resolution
+--- actions.
 ---
 --- The flag is transient: it sticks until the next external change either
 --- restores the item upstream (clears the flag) or until the user resolves
@@ -3361,7 +3364,7 @@ function Workspace:_serialize_config()
     end
     if next(sets) then raw.configuration_sets = sets end
 
-    -- Profiles: those with effective intent shared (spec §2.4). A profile pins
+    -- Profiles: those with effective intent shared. A profile pins
     -- a machine-specific tool, so config-sets are the primary shared unit and
     -- profiles default to local; but a profile MAY be published (it degrades to
     -- an "incomplete profile" for anyone lacking the tool). Prefer a preserved
@@ -3748,8 +3751,7 @@ end
 --- Called from the status page :w handler.
 --- @return boolean ok, string|nil err
 --- Publish a single item to loomworks.json without regenerating the rest
---- of the file (specification.md §2.4 "Per-item conflict resolution").
---- Reads the existing loomworks.json content (if any), splices in the
+--- of the file. Reads the existing loomworks.json content (if any), splices in the
 --- serialized form of the named item, and writes back. Other items
 --- present in loomworks.json are preserved verbatim.
 ---
@@ -3856,8 +3858,7 @@ function Workspace:publish_one(item)
     return true
 end
 
---- Revert a single item's content to the published baseline
---- (specification.md §2.4 "Per-item conflict resolution"). Intent is
+--- Revert a single item's content to the published baseline. Intent is
 --- unchanged unless the item is flagged removed-upstream, in which case
 --- intent demotes to `local`. Other items are unaffected.
 ---
@@ -3962,8 +3963,7 @@ function Workspace:revert_one(item)
     return false, "unsupported item type for revert_one"
 end
 
---- Revert the working copy to match the published baseline (`:e!` semantic).
---- Per specification.md §2.4 "Reverting":
+--- Revert the working copy to match the published baseline (`:e!` semantic):
 ---   - Items with effective intent including `shared` that exist in baseline:
 ---     content reverts to baseline.
 ---   - Items with effective intent including `shared` that are not in baseline
@@ -4075,7 +4075,7 @@ function Workspace:publish()
     self._shared_baseline = vim.deepcopy(self:_serialize_config_internal())
 
     -- Removed-upstream flags are cleared after publish: items are now back
-    -- in the published baseline (specification.md §2.4).
+    -- in the published baseline.
     for _, p in pairs(self._projects) do
         p._removed_upstream = false
         for _, cfg in ipairs(p._configurations or {}) do
@@ -4213,8 +4213,8 @@ function Workspace:_serialize_user()
     local data = { _meta = { version = 2 } }
 
     -- Workspace name: persist only an explicit override (differs from the
-    -- directory basename), so a defaulted name stays dynamic (§1.1/§2.2) and a
-    -- genuine override round-trips (and reaches loomworks.json on publish).
+    -- directory basename), so a defaulted name stays dynamic and a genuine
+    -- override round-trips (and reaches loomworks.json on publish).
     local dir_name = self.root and self.root:match("([^/]+)$")
     if self.name and self.name ~= dir_name then
         data.name = self.name
@@ -4718,7 +4718,7 @@ end
 --- @return loomworks.SDK|nil sdk, string|nil error
 --- Declare an SDK installation. `opts.force` registers a path that fails
 --- identification, using `opts.family` / `opts.version` for the facts probing
---- could not supply (spec §8) — such an SDK forfeits version-based selection.
+--- could not supply — such an SDK forfeits version-based selection.
 --- @param sdk_type string provider id (e.g. "cpp_compiler")
 --- @param path string|nil installation path (nil = auto-detect the first)
 --- @param opts? table { force?: boolean, family?: string, version?: string }
@@ -5000,7 +5000,7 @@ function Workspace:remove_profile(profile)
     return true
 end
 
---- Set the workspace display name (§1.1). Stored in the working copy and
+--- Set the workspace display name. Stored in the working copy and
 --- written to loomworks.json on publish. Rolls back on save failure.
 --- @param new_name string non-empty display name
 --- @return boolean ok, string|nil err
@@ -5112,9 +5112,8 @@ function Workspace:add_configuration_set(name, mappings)
     cs._source = "user"
     self._config_sets[#self._config_sets + 1] = cs
 
-    -- Implicit cascade on use (specification.md §2.4): adding a config set
-    -- materializes its referenced projects and configurations into the
-    -- working copy.
+    -- Implicit cascade on use: adding a config set materializes its
+    -- referenced projects and configurations into the working copy.
     for project, cfg in pairs(resolved) do
         project:_mark_user_owned()
         if cfg and cfg._mark_user_owned then
@@ -5713,7 +5712,7 @@ function Workspace:teardown()
 
     self._build_dir_locks = {}
 
-    -- Release any held cross-process file locks (§16.6) so a workspace swap /
+    -- Release any held cross-process file locks so a workspace swap /
     -- shutdown doesn't leave lockfiles behind.
     if self._build_dir_file_locks then
         local build_lock = require("loomworks.build_lock")
@@ -5744,8 +5743,7 @@ function Workspace:_on_file_changed(path, content)
         if data then
             local ok, val_err = self._core:_validate_projects(data.config, data.root)
             if ok then
-                -- Capture old baseline for removed-upstream detection
-                -- (specification.md §2.4 "Removed-upstream indicator").
+                -- Capture old baseline for removed-upstream detection.
                 local old_baseline = self._shared_baseline
                 -- Auto-update synced items: if user.json had items that matched
                 -- the old baseline, update them to match the new shared config
@@ -5764,7 +5762,7 @@ function Workspace:_on_file_changed(path, content)
                 -- removed-upstream.
                 self:_mark_removed_upstream(old_baseline)
                 -- Persist user.json after every baseline change so sticky
-                -- intent survives Neovim restarts (specification.md §2.4).
+                -- intent survives Neovim restarts.
                 -- _serialize_user records any intent that differs from the
                 -- new baseline's default, including overrides that became
                 -- necessary because upstream removed an item.

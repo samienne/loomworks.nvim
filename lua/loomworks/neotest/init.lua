@@ -29,9 +29,6 @@ end
 local get_test_file_set
 local get_test_dir_set
 
---- Find the workspace root for a directory.
---- @param dir string absolute directory path
---- @return string|nil root path (using the same format as the input dir)
 --- Cached native root path (computed once to ensure consistency).
 local _cached_native_root = nil
 
@@ -61,8 +58,8 @@ end
 --- directories under .nvim/. Skip everything else.
 --- @param name string directory basename
 --- @param rel_path string path relative to root
+--- @param root string root directory
 --- @return boolean true to search inside
-
 function adapter.filter_dir(name, rel_path, root)
     local ok, result = pcall(function()
         if not root or not rel_path then return false end
@@ -643,7 +640,7 @@ function adapter.build_spec(args)
                 request = "launch",
                 program = executable,
                 args = { "--gtest_filter=" .. filter },
-                cwd = bd,
+                cwd = test_cmd.cwd,
             }
             spec.command = nil
         end

@@ -13,8 +13,11 @@ local M = {}
 ---   title: string
 ---   name: string — configuration name (editable for custom, read-only for defaults)
 ---   variant: string — CMAKE_BUILD_TYPE or equivalent
----   inherits: string — base config name (empty = none)
+---   inherits: string|string[] — base config name(s) (empty = none)
 ---   options: table<string, string> — editable key=value options
+---   variables: table<string, string>|nil — editable variable overrides
+---   languages: string[]|nil — explicit languages override (nil = inherit module default)
+---   module_languages: string[]|nil — module's default languages (display fallback)
 ---   toolchain: string — toolchain path
 ---   generator: string — generator override
 ---   is_default: boolean — if true, name is read-only
@@ -22,13 +25,17 @@ local M = {}
 ---   available_configs: string[] — for inherits picker
 ---   project_options: table<string, string> — project-wide options (display only)
 ---   inherited_options: table<string, { value: string, source: string }> — resolved inherited options
+---   variant_source: string|nil — provenance hint for the variant (display only)
+---   build_dir: string|nil — computed build dir (display only)
+---   project_variables: table|nil — project-wide variable declarations (display only)
+---   resolved_variables: table|nil — resolved variable values (display only)
+---   rename_effects?: fun(name: string) — compute cascade effects of a rename
 ---   validate?: fun(result): boolean, string|nil
 ---   on_accept: fun(result)
 ---   on_cancel: fun()
 function M.open(opts)
     local name = opts.name
     local variant = opts.variant or ""
-    -- Normalize inherits to array
     local inherits = opts.inherits or {}
     if type(inherits) == "string" then
         inherits = inherits ~= "" and { inherits } or {}
@@ -78,7 +85,6 @@ function M.open(opts)
         t:leaf(opts.title or "Configuration", "Title")
         t:blank()
 
-        -- Name
         if opts.is_default then
             t:leaf("Name       " .. name, "Comment")
         else
@@ -99,7 +105,6 @@ function M.open(opts)
             if name_error then
                 t:leaf(name_error, "DiagnosticError")
             end
-            -- Show rename side-effects when name has changed
             if not name_error and opts.rename_effects then
                 local effects = opts.rename_effects(name)
                 if effects then
@@ -111,7 +116,6 @@ function M.open(opts)
             end
         end
 
-        -- Inherits (for custom configs, not for defaults)
         if not opts.is_default and #opts.available_configs > 0 then
             local is_abstract = #inherits == 0
             if is_abstract then
@@ -122,7 +126,6 @@ function M.open(opts)
             t:leaf("Inherits:  " .. inh_display,
                 #inherits > 0 and "LoomworksActionable" or "Comment")
 
-            -- Show each base with move/remove actions
             local n_bases = #inherits
             for i, base in ipairs(inherits) do
                 local idx = i
@@ -133,7 +136,6 @@ function M.open(opts)
                         inherits[idx], inherits[idx - 1] = inherits[idx - 1], inherits[idx]
                         if view then
                             view:refresh()
-                            -- Move cursor with the item (one line up)
                             local win = view._snacks_win and view._snacks_win.win
                             if win then
                                 local cursor = vim.api.nvim_win_get_cursor(win)
@@ -145,7 +147,6 @@ function M.open(opts)
                         inherits[idx], inherits[idx + 1] = inherits[idx + 1], inherits[idx]
                         if view then
                             view:refresh()
-                            -- Move cursor with the item (one line down)
                             local win = view._snacks_win and view._snacks_win.win
                             if win then
                                 local cursor = vim.api.nvim_win_get_cursor(win)
@@ -160,12 +161,10 @@ function M.open(opts)
                 })
             end
 
-            -- Add base button
             t:item("  ▸ Add base", {
                 hl = "LoomworksActionable",
                 direct = true,
                 on_enter = function()
-                    -- Filter out already-inherited and self
                     local already = {}
                     for _, b in ipairs(inherits) do already[b] = true end
                     local items = {}
@@ -231,7 +230,6 @@ function M.open(opts)
             })
         end
 
-        -- Toolchain (cmake-specific)
         if opts.has_options and (toolchain ~= "" or opts.is_default) then
             t:item("Toolchain  " .. (toolchain ~= "" and toolchain or "(none)") .. " ▸", {
                 hl = toolchain ~= "" and "LoomworksActionable" or "Comment",
@@ -245,7 +243,6 @@ function M.open(opts)
             })
         end
 
-        -- Generator (cmake-specific)
         if opts.has_options and (generator ~= "" or opts.is_default) then
             t:item("Generator  " .. (generator ~= "" and generator or "(default)") .. " ▸", {
                 hl = generator ~= "" and "LoomworksActionable" or "Comment",
@@ -259,7 +256,6 @@ function M.open(opts)
             })
         end
 
-        -- Variant (read-only, derived from inheritance)
         if opts.has_options then
             local var_display = variant ~= "" and variant or "(none)"
             local var_hint = opts.variant_source
@@ -267,22 +263,18 @@ function M.open(opts)
             t:leaf("Variant    " .. var_display .. var_hint, "Comment")
         end
 
-        -- Build dir (read-only, computed from cache)
         if opts.build_dir then
             t:leaf("Build dir  " .. opts.build_dir .. "  (computed)", "Comment")
         end
 
-        -- Unified options section
         if opts.has_options then
             t:blank()
 
-            -- Build merged view: all option keys with source info
             local inherited = opts.inherited_options or {}
             local proj_opts = opts.project_options or {}
             local all_keys = {}
             local seen = {}
 
-            -- Collect all unique keys
             for k in pairs(options) do
                 if not seen[k] then seen[k] = true; all_keys[#all_keys + 1] = k end
             end
@@ -303,7 +295,6 @@ function M.open(opts)
                     local proj_val = proj_opts[k]
 
                     if is_own then
-                        -- Own option (editable)
                         local override_hint = ""
                         if inh_info then
                             override_hint = "  (overrides " .. inh_info.value .. " from " .. inh_info.source .. ")"
@@ -329,7 +320,6 @@ function M.open(opts)
                             end,
                         })
                     else
-                        -- Inherited or project option (dimmed, Enter to override)
                         local value = inh_info and inh_info.value or proj_val
                         local source = inh_info and inh_info.source or "project"
                         t:item("  " .. k .. "=" .. value .. "  (" .. source .. ")", {
@@ -356,7 +346,6 @@ function M.open(opts)
                 on_enter = function()
                     vim.ui.input({ prompt = "Option name: " }, function(key)
                         if not key or key == "" then return end
-                        -- Pre-fill with inherited value if exists
                         local default_val = ""
                         if inherited[key] then default_val = inherited[key].value
                         elseif proj_opts[key] then default_val = proj_opts[key] end
@@ -371,7 +360,6 @@ function M.open(opts)
             })
         end
 
-        -- Variables section (overrides for project-declared variables)
         local project_vars = opts.project_variables or {}
         local resolved_vars = opts.resolved_variables or {}
         if next(project_vars) then
@@ -383,13 +371,12 @@ function M.open(opts)
 
             t:leaf("Variables:", "Comment")
             for _, vk in ipairs(var_names) do
-                local evk = vk  -- capture
+                local evk = vk
                 local decl = project_vars[vk]
                 local is_own = variables[vk] ~= nil
                 local resolved = resolved_vars[vk]
 
                 if is_own then
-                    -- Own override (editable)
                     local source_hint = ""
                     if resolved and resolved.source_config then
                         source_hint = "  (overrides " .. resolved.source_config.name .. ")"
@@ -416,7 +403,6 @@ function M.open(opts)
                         end,
                     })
                 else
-                    -- Inherited or project default (dimmed, Enter to override)
                     local value = resolved and resolved.value or decl.default
                     local source
                     if resolved and resolved.source_config then
@@ -464,8 +450,8 @@ function M.open(opts)
                 variables = variables,
                 toolchain = toolchain ~= "" and toolchain or nil,
                 generator = generator ~= "" and generator or nil,
-                -- nil = inherit from module; non-nil array (possibly
-                -- empty) = explicit override.
+                -- nil = inherit from module; non-nil array (possibly empty)
+                -- = explicit override.
                 languages = languages,
             })
             return {}

@@ -55,7 +55,6 @@ function M.open(opts)
         t:leaf(opts.title or "Variable", "Title")
         t:blank()
 
-        -- Name
         local name_val = name ~= "" and name or "(empty)"
         local name_hl = name_error and "DiagnosticError"
                 or (name ~= "" and "LoomworksActionable" or "Comment")
@@ -73,7 +72,6 @@ function M.open(opts)
             t:leaf(name_error, "DiagnosticError")
         end
 
-        -- Type
         t:item("Type     " .. var_type .. " ▸", {
             hl = "LoomworksActionable",
             direct = true,
@@ -89,7 +87,6 @@ function M.open(opts)
             end,
         })
 
-        -- Default value
         local def_val = default ~= "" and default or "(empty)"
         t:item("Default  " .. def_val .. " ▸", {
             hl = default ~= "" and "LoomworksActionable" or "Comment",

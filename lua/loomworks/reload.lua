@@ -1,22 +1,11 @@
 --- loomworks/reload.lua — Dev-only reload orchestrator.
 ---
---- Sequence:
----   1. Tear down the active workspace via `core:shutdown()`. Stops the
----      file tracker, cancels in-flight overseer tasks (fire-and-forget),
----      detaches event subscribers, drops build_dir_locks.
----   2. Ask lazy.nvim to reload this plugin + any sibling plugins.
----      lazy clears `package.loaded` entries for those plugins and
----      re-runs their `init`/`config` callbacks. The config callbacks
----      call `setup()` again with the user's original opts.
+--- Tears down the active workspace via `core:shutdown()`, then asks
+--- lazy.nvim to reload this plugin + siblings (clears `package.loaded`,
+--- re-runs init/config which re-calls `setup()`).
 ---
---- Out of scope (accepted leakage):
----   * Overseer task_tracker on_complete subscribers stay registered.
----     They fire against the torn-down workspace and fail fast.
----   * Plugin-global augroups (`loomworks.lsp.*`, `loomworks_auto_load`)
----     are re-created with `clear = true` on setup re-run, self-healing.
----   * User commands declared in `plugin/loomworks.lua` are re-registered
----     with `force = true` so re-running setup doesn't error on dup.
----
+--- Accepted leakage: overseer task_tracker on_complete subscribers stay
+--- registered and fire against the torn-down workspace (they fail fast).
 --- This is a dev hatch — when a reload misbehaves, restart Neovim.
 
 local M = {}
@@ -59,10 +48,6 @@ function M.reload()
         return false
     end
 
-    -- Delegate to lazy: clears package.loaded + re-runs init/config
-    -- per plugin. Config functions re-call setup(), which idempotently
-    -- re-registers augroups (clear = true), user commands (force = true
-    -- per our registration), and keymaps (vim.keymap.set overwrites).
     require("lazy").reload({ plugins = installed })
     vim.notify("loomworks: reloaded " .. table.concat(installed, ", "),
         vim.log.levels.INFO)

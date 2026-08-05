@@ -15,7 +15,7 @@ Target.__index = Target
 --- Create a new Target from raw parse data.
 --- @param config_unit loomworks.ConfigUnit owning unit
 --- @param id string opaque target identifier
---- @param raw { type: string, dependencies?: string[], artifact?: string }
+--- @param raw { type: string, dependencies?: string[], artifact?: string, sources?: string[] }
 --- @return loomworks.Target
 function Target.new(config_unit, id, raw)
     local self = setmetatable({}, Target)
@@ -102,10 +102,10 @@ end
 
 --- Resolve the run spec (artifact path, working directory, and run
 --- environment) for this executable target. Pure — expands nothing, spawns no
---- task. Shared seam for `Target:launch` (editor) and the headless runner
---- (§16.17): both resolve the same spec, then execute it via their own runner.
+--- task. Shared seam for `Target:launch` (editor) and the headless runner:
+--- both resolve the same spec, then execute it via their own runner.
 --- @param opts? { working_dir?: string } working_dir is a pre-resolved
----   absolute cwd override (§8.7); absent → the owning project's directory.
+---   absolute cwd override; absent → the owning project's directory.
 --- @return { cmd: string, cwd: string, name: string, env: table|nil }|nil spec
 --- @return string|nil err
 function Target:resolve_run_spec(opts)
@@ -126,7 +126,7 @@ function Target:resolve_run_spec(opts)
     end
     local project = unit._project
     local project_name = project and project.key or unit._init_project_key or "?"
-    -- Working directory (§8.7): explicit override, else the project directory
+    -- Working directory: explicit override, else the project directory
     -- (consistent with command-type launches), falling back to the build dir
     -- only if the project dir can't be resolved.
     local cwd = opts.working_dir
@@ -143,7 +143,7 @@ end
 
 --- Launch this target (run the built artifact).
 --- Only works for executables with an artifact path.
---- @param opts? { working_dir?: string } pre-resolved absolute cwd override (§8.7)
+--- @param opts? { working_dir?: string } pre-resolved absolute cwd override
 function Target:launch(opts)
     local spec, err = self:resolve_run_spec(opts)
     if not spec then

@@ -43,12 +43,7 @@ local function setup_keymaps(opts)
     if opts and opts.keys == false then return end
 
     local map = vim.keymap.set
-    -- Workspace
     map("n", "<leader>ww", function() M.toggle() end, { desc = "Loomworks info" })
-    map("n", "<leader>wW", function() require("loomworks.ui.v2").toggle() end,
-        { desc = "Loomworks v2 UI (preview)" })
-    map("n", "<leader>wp", function() require("loomworks.ui.v2.palette").open() end,
-        { desc = "Loomworks command palette (v2)" })
     map("n", "<leader>wb", function() M.build_target() end, { desc = "Build default target" })
     map("n", "<leader>wB", function() M.build_profile() end, { desc = "Build active profile" })
     map("n", "<leader>wr", function() M.debug_target() end, { desc = "Debug target" })
@@ -86,7 +81,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -101,7 +96,6 @@ function M.setup(opts)
         task_output_win = opts.task_output_win
     end
 
-    -- Configure log level
     if opts and opts.log_level then
         local log = require("loomworks.log")
         local levels = { error = log.ERROR, warn = log.WARN, info = log.INFO, debug = log.DEBUG }
@@ -111,7 +105,6 @@ function M.setup(opts)
 
     setup_keymaps(opts)
 
-    -- Optional fidget.nvim integration for progress notifications (registers listeners, fast)
     local fidget_opts = nil
     if opts and opts.progress_max_width ~= nil then
         if type(opts.progress_max_width) == "number" and opts.progress_max_width > 0 then
@@ -537,20 +530,17 @@ function M.build_target()
 
     local launch_target = profile:default_target()
 
-    -- Valid default target: build it
     if launch_target and launch_target:is_valid() then
         do_build(launch_target)
         return
     end
 
-    -- Stale target: notify and show picker
     if launch_target and not launch_target:is_valid() then
         vim.notify("loomworks: target '" .. launch_target:display_name()
             .. "' no longer available", vim.log.levels.WARN)
         profile:clear_default_target()
     end
 
-    -- No default or stale: show picker
     M._pick_target(profile, function(project, target_id)
         if project and target_id then
             profile:set_default_target(project, target_id)
@@ -590,14 +580,12 @@ function M.pick_profile()
 
     local active = M.get_active_profile()
 
-    -- Sort profiles alphabetically
     local sorted = {}
     for _, profile in pairs(all) do
         sorted[#sorted + 1] = profile
     end
     table.sort(sorted, function(a, b) return a.key < b.key end)
 
-    -- Build picker items
     local items = {}
     for _, profile in ipairs(sorted) do
         local status_label = profile:status()
@@ -608,7 +596,6 @@ function M.pick_profile()
         }
     end
 
-    -- Add "None" option if a profile is active
     if active then
         items[#items + 1] = {
             label = "  None (deactivate)",
@@ -647,7 +634,6 @@ function M.pick_target_action(profile)
     end
     local current = profile:default_target()
     if not current or not current:is_valid() then
-        -- Nothing to build → straight to the target picker.
         M.pick_target(profile)
         return
     end
@@ -693,16 +679,14 @@ function M._pick_target(profile, on_select)
     local ws = M.get_workspace()
     local items = {}
 
-    -- "None" option to clear the default target
     items[#items + 1] = {
         label = "None (clear target)",
         action = "clear",
     }
 
-    -- "Default" option if the profile's config defines a default and user has overridden
     if ws then
         local user_has_override = profile:has_default_target_override()
-        local config_default = nil -- default targets from shared config (not supported after pinned removal)
+        local config_default = nil -- default targets from shared config are not currently supported
         if user_has_override and config_default then
             items[#items + 1] = {
                 label = "Default (" .. config_default.project .. ": " .. config_default.target .. ")",
@@ -711,7 +695,6 @@ function M._pick_target(profile, on_select)
         end
     end
 
-    -- Collect launch configs from loomworks.json projects
     if ws then
         for _, pp in ipairs(profile:projects()) do
             local project = pp._project
@@ -730,7 +713,6 @@ function M._pick_target(profile, on_select)
         end
     end
 
-    -- Collect executable targets from all projects in the profile
     for _, pp in ipairs(profile:projects()) do
         local unit = pp._config_unit
         if unit and unit.targets then
@@ -750,7 +732,6 @@ function M._pick_target(profile, on_select)
         end
     end
 
-    -- Collect device targets from modules that support devices
     for _, pp in ipairs(profile:projects()) do
         local project = pp._project
         if not project then goto next_device_pp end
@@ -824,14 +805,12 @@ local function resolve_and_start(mode)
         return
     end
 
-    -- Stale target
     if launch_target and not launch_target:is_valid() then
         vim.notify("loomworks: target '" .. launch_target:display_name()
             .. "' no longer available", vim.log.levels.WARN)
         profile:clear_default_target()
     end
 
-    -- No default or stale: show picker, then start the selection
     M._pick_target(profile, function(project, target_id)
         if project and target_id then
             profile:set_default_target(project, target_id)

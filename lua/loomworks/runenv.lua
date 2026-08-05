@@ -2,8 +2,8 @@
 --- to PATH.
 ---
 --- Shared by the meson test runner (DLL/rpath setup for tests) and build-target
---- launches (§8.7): a Windows executable whose shared libraries live in the
---- build tree hangs / fails in the loader unless those directories are on PATH.
+--- launches: a Windows executable whose shared libraries live in the build tree
+--- hangs / fails in the loader unless those directories are on PATH.
 
 local M = {}
 

@@ -1,4 +1,4 @@
--- Shared path/config/version helpers for the host bootstrap (spec §16.11–16.13).
+-- Shared path/config/version helpers for the host bootstrap.
 -- Used by main.lua (source resolution) and boot.update (acquisition). Depends
 -- only on luv + boot.json; never on the vim shim.
 
@@ -109,7 +109,7 @@ function M.newest_release_root()
   return rels[1] and rels[1].dir or nil
 end
 
---- Directory holding acquired modules (spec §16.20). A sibling of the
+--- Directory holding acquired modules. A sibling of the
 --- `lua-<ver>/` release roots, so a self-update never disturbs it and
 --- `installed_releases` (which matches only `lua-*`) never lists it.
 function M.modules_dir()
@@ -158,8 +158,7 @@ function M.installed_modules()
 end
 
 --- The `lua/` roots of all acquired modules, for the host's require/runtime
---- searchers (spec §16.20 "resolvable to the host together"). Cheap list used
---- at startup by main.lua and the vim shim.
+--- searchers. Cheap list used at startup by main.lua and the vim shim.
 function M.module_lua_roots()
   local roots = {}
   for _, m in ipairs(M.installed_modules()) do roots[#roots + 1] = m.lua_root end

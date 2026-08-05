@@ -1,11 +1,11 @@
--- Downloader for the host bootstrap (spec §16.13).
+-- Downloader for the host bootstrap.
 --
 -- HTTP(S) is fetched with the system `curl` — it handles TLS, redirects,
 -- corporate proxies (via the usual env vars), and enterprise cert stores far
 -- more robustly than a hand-rolled client, and integrity does not depend on it:
 -- every artifact is signature/hash-verified by boot.verify, so a MITM'd or
--- cert-relaxed transport cannot inject code (spec §16.12). Set
--- LOOMWORKS_INSECURE_TLS=1 to add `curl -k` for TLS-intercepting proxies.
+-- cert-relaxed transport cannot inject code. Set LOOMWORKS_INSECURE_TLS=1 to
+-- add `curl -k` for TLS-intercepting proxies.
 --
 -- A "URL" that is a local path or file:// is read directly — the offline-mirror
 -- path (LOOMWORKS_RELEASE_URL=<dir>) and what the tests use.

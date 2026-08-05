@@ -358,7 +358,7 @@ function M.wrap_on_exit(server, user_on_exit)
         local root_dir = record and record.root_dir or nil
         if not root_dir then return end
 
-        -- Our own restart_clients() path. Don't react.
+        -- We initiated this stop (mark_managed_stop). Don't react.
         if managed then return end
 
         -- Clean external stop (`:LspStop`, normal shutdown). Suppress
@@ -534,7 +534,6 @@ function M.get_status()
                 end
             end
 
-            -- Delegate per-server status extras to the integration.
             local integration = _integrations[server]
             if integration and integration.status_extras then
                 local e = integration.status_extras(entry) or {}
@@ -607,7 +606,6 @@ end
 function M.setup_servers(lsp_opts)
     lsp_opts = lsp_opts or {}
 
-    -- Resolve excludes and ensure the detach autocmd is wired.
     _excludes = resolve_excludes(lsp_opts.excludes)
     if _excludes ~= false then
         ensure_exclude_autocmd()

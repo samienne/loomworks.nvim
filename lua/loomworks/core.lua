@@ -144,7 +144,6 @@ function Core:_on_files_read(root, paths, results)
     local user_content = results[paths.user]
     local cache_content = results[paths.cache]
 
-    -- Initialize logger with workspace root
     self._deps.log:set_root(root)
     self._deps.log:info("Loading workspace from %s", root)
 
@@ -155,28 +154,24 @@ function Core:_on_files_read(root, paths, results)
         return
     end
 
-    -- Assemble workspace data from raw content
     local data, err = ws_mod.assemble(root, config_content, user_content, cache_content)
     if not data then
         fail(err)
         return
     end
 
-    -- Refuse to load when cache has incompatible version
     if data.cache_version_mismatch then
         fail("Cache version mismatch. Press <C-n> to reset.",
             { root = root, message = "Cache version mismatch. Press <C-n> to reset." })
         return
     end
 
-    -- Refuse to load when cache is internally inconsistent
     if data.cache_inconsistent then
         fail("Cache is internally inconsistent. Press <C-n> to reset.",
             { root = root, message = "Cache is internally inconsistent. Press <C-n> to reset." })
         return
     end
 
-    -- Refuse to load when user.json has incompatible version
     if data.user_version_mismatch then
         fail("user.json version mismatch. Press U to delete user preferences and reload.",
             { root = root, message = "user.json version mismatch. Press U to delete user preferences and reload.",
@@ -194,7 +189,6 @@ function Core:_on_files_read(root, paths, results)
         return
     end
 
-    -- Validate projects
     local ok, val_err = self:_validate_projects(data.config, data.root)
     if not ok then
         fail(val_err)
@@ -208,7 +202,6 @@ function Core:_on_files_read(root, paths, results)
         self._workspace:teardown()
     end
 
-    -- Create Workspace instance with registries
     self._workspace = Workspace.new(self, data)
 
     self._workspace:_cleanup_orphaned_skeletons(data.cache)
@@ -216,7 +209,6 @@ function Core:_on_files_read(root, paths, results)
     self._state = "initialized"
     self._deps.events.emit("workspace_changed", self._workspace)
 
-    -- Start file tracking (owned by Workspace)
     self._workspace:_start_tracking(paths)
 
     self._deps.log:info("Workspace '%s' loaded: %d projects, %d profiles",
@@ -236,7 +228,6 @@ function Core:_on_files_read(root, paths, results)
     end
     self._deps.notify("loomworks: workspace '" .. self._workspace.name .. "' loaded (" .. self._workspace.root .. ")", vim.log.levels.INFO)
 
-    -- Start async tool detection
     self._workspace:_scan_tools_async()
 end
 
@@ -300,7 +291,6 @@ function Core:nuke_cache(root)
         return
     end
 
-    -- Build absolute paths
     local build_dir = norm_root .. "/.nvim/build"
     local cache_path = self._deps.cache.filepath(norm_root)
     local cache_bak = cache_path .. ".bak"
@@ -314,17 +304,14 @@ function Core:nuke_cache(root)
         end
     end
 
-    -- Delete build directory
     local ok, err = self._deps.io.rm_rf(build_dir)
     if not ok then
         self._deps.notify("loomworks: failed to delete build dir: " .. err, vim.log.levels.ERROR)
     end
 
-    -- Delete cache file and backup
     self._deps.io.rm_rf(cache_path)
     self._deps.io.rm_rf(cache_bak)
 
-    -- Re-setup from scratch
     self:setup({ root = norm_root })
 end
 

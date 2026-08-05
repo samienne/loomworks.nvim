@@ -35,7 +35,6 @@ local function clear_stale_tests(test_ids, loomtest)
         local file = node.file
         if not file then goto continue end
 
-        -- Check file mtime (cached per file)
         if file_changed[file] == nil then
             local stat = uv.fs_stat(file)
             if stat then
@@ -138,10 +137,8 @@ function M.execute(adapter, spec, test_ids, opts)
     local loomtest = require("loomtest")
     local explorer = require("loomtest.explorer")
 
-    -- Clear stale tests (source changed since last run)
-    local stale_count = clear_stale_tests(test_ids, loomtest)
+    clear_stale_tests(test_ids, loomtest)
 
-    -- Mark tests as pending, clear old results
     for _, id in ipairs(test_ids) do
         local node = loomtest.get_node(id)
         if node then
@@ -157,7 +154,6 @@ function M.execute(adapter, spec, test_ids, opts)
     end
     require("loomtest.signs").update_all()
 
-    -- Auto-build if adapter supports it (unless skip_build is set)
     if adapter.ensure_built and not opts.skip_build then
         fidget_update("building...")
         adapter.ensure_built(test_ids, function(ok)
@@ -184,7 +180,6 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
     local overseer = require("overseer")
     fidget_update("0% ✔ 0")
 
-    -- Dispose previous test task
     if _last_task_id then
         pcall(function()
             for _, t in ipairs(overseer.list_tasks()) do
@@ -196,8 +191,6 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
         end)
     end
 
-    -- Create and start the task.
-    -- Use minimal components to suppress overseer's default notifications.
     -- Wrap the cmd in nice/ionice so a long test run yields CPU/IO to
     -- the editor; resolve the display name from the original program
     -- name first so the wrapper binary doesn't leak into the title.
@@ -218,7 +211,6 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
 
     _last_task_id = task.id
 
-    -- Streaming state
     local output_bufnr = nil
     local processed_lines = 0
     local task_complete = false
@@ -283,7 +275,6 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
         local end_line = task_complete and line_count or math.max(processed_lines, line_count - 1)
         if end_line <= processed_lines then return false end
 
-        -- Read a batch
         local batch_end = math.min(processed_lines + BATCH_SIZE, end_line)
         local lines = vim.api.nvim_buf_get_lines(output_bufnr, processed_lines, batch_end, false)
         processed_lines = batch_end
@@ -292,7 +283,6 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
             process_line(line)
         end
 
-        -- More lines available?
         return batch_end < end_line
     end
 
@@ -314,7 +304,6 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
             end
         end
 
-        -- Schedule next tick if task is running or there are unprocessed lines
         if has_more or not task_complete then
             vim.defer_fn(tick, TICK_MS)
         end
@@ -322,7 +311,6 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
 
     task:subscribe("on_start", function()
         output_bufnr = task:get_bufnr()
-        -- Start the processing loop
         vim.defer_fn(tick, TICK_MS)
     end)
 
@@ -330,10 +318,8 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
         vim.schedule(function()
             task_complete = true
 
-            -- Process any remaining lines
             while process_batch() do end
 
-            -- Parse gtest XML for authoritative results
             local results
             if spec.output_path then
                 results = adapter.parse_results(spec.output_path)
@@ -354,7 +340,6 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
             -- Record completion time for staleness checks
             _last_run_time = os.time()
 
-            -- Final UI update
             require("loomtest.signs").update_all()
             require("loomtest.inline").update_all()
             if explorer.is_open() then
@@ -389,7 +374,6 @@ function M.debug(adapter, spec, test_ids, opts)
         local lw = require("loomworks")
         local ws = lw.get_workspace()
 
-        -- Mark tests as pending
         for _, id in ipairs(test_ids) do
             local node = loomtest.get_node(id)
             if node then
@@ -409,7 +393,6 @@ function M.debug(adapter, spec, test_ids, opts)
             args[#args + 1] = spec.cmd[i]
         end
 
-        -- Resolve adapter type from workspace module
         local adapter_type = "codelldb"
         if ws then
             adapter_type = debug_mod.resolve_adapter(ws, "c++")
@@ -425,7 +408,6 @@ function M.debug(adapter, spec, test_ids, opts)
         }, {
             on_terminated = function()
                 vim.schedule(function()
-                    -- Parse gtest XML for authoritative results
                     if spec.output_path then
                         local results = adapter.parse_results(spec.output_path)
                         if results then
@@ -451,7 +433,6 @@ function M.debug(adapter, spec, test_ids, opts)
         })
     end
 
-    -- Auto-build if adapter supports it
     if adapter.ensure_built and not opts.skip_build then
         adapter.ensure_built(test_ids, function(ok)
             if not ok then

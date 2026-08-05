@@ -41,8 +41,6 @@ local function render_set_details(tree, cs, tool_entries, active_profile, lw)
         end
     end)
 
-    -- Trailing blank line gives unfolded config sets breathing room
-    -- before the next set or the `▸ Create configuration set` sentinel.
     tree:blank()
 end
 
@@ -187,13 +185,11 @@ local function create_config_set()
     local ws = lw.get_workspace()
     if not ws then return end
 
-    -- Collect existing set names for filtering
     local existing_names = {}
     for _, cs in pairs(ws._config_sets) do
         existing_names[cs.name] = true
     end
 
-    -- Generate auto-detected templates
     local auto_sets = ws:generate_default_config_sets()
     local choices = {}
     local template_data = {}
@@ -201,7 +197,6 @@ local function create_config_set()
     if auto_sets then
         for name, mappings in pairs(auto_sets) do
             if not existing_names[name] then
-                -- Build description from mappings
                 local parts = {}
                 local keys = {}
                 for k in pairs(mappings) do keys[#keys + 1] = k end
@@ -217,12 +212,11 @@ local function create_config_set()
         table.sort(choices)
     end
 
-    -- Always offer custom option
     local custom_label = "Custom..."
     choices[#choices + 1] = custom_label
 
     if #choices == 1 then
-        -- Only custom option — go straight to editor
+        -- Only the custom option remains — go straight to the editor.
         create_custom_config_set(ws)
         return
     end
@@ -247,7 +241,7 @@ return function(tree, ctx)
     local config_sets = ctx.config_sets
     local has_sets = config_sets and next(config_sets)
 
-    -- Show section when sets exist OR when projects exist (to offer create)
+    -- Show the section when sets exist, or when projects exist so create is offered.
     local lw_for_check = ctx.lw
     local has_projects = false
     local projects = lw_for_check.get_projects()

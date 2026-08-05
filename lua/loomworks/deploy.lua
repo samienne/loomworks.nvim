@@ -386,21 +386,14 @@ function M.check_freshness(resolved, deploy_records, normalize)
     return false
 end
 
---- Execute all deploy steps for a launch target.
+--- Execute all deploy steps for a launch target. Returns a Future.
 --- Resolves all steps first (fail-fast), then copies as needed.
 --- Source values can be a single descriptor or an array of descriptors.
 --- @param deploy_dict table<string, table|table[]> deploy definitions from launch config
 --- @param ctx table { workspace, profile, launch_project }
 --- @param deploy_records table<string, table> workspace deploy records (mutated on copy)
 --- @param normalize fun(p: string): string path normalizer
---- @param on_complete fun(ok: boolean, err?: string)
---- Execute all deploy steps for a launch target. Returns a Future.
---- Resolves all steps first (fail-fast), then copies as needed.
---- @param deploy_dict table<string, table|table[]> deploy definitions
---- @param ctx table { workspace, profile, launch_project }
---- @param deploy_records table<string, table> workspace deploy records (mutated on copy)
---- @param normalize fun(p: string): string path normalizer
---- @param on_complete? fun(ok: boolean, err?: string) legacy callback (deprecated)
+--- @param on_complete? fun(ok: boolean, err?: string)
 --- @return loomworks.Future
 function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_complete)
     local future_mod = require("loomworks.future")
