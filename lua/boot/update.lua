@@ -12,6 +12,7 @@ local miniz = require("miniz")
 local paths = require("boot.paths")
 local verify = require("boot.verify")
 local download = require("boot.download")
+local pin = require("boot.pin")
 
 local M = {}
 
@@ -45,6 +46,10 @@ end
 --- self_update already assumes. So the pin's per-version fetches resolve on
 --- GitHub and against an offline mirror alike.
 function M.versioned_base(version, opts)
+  -- Defense in depth: never interpolate an unvalidated version into a URL.
+  if not pin.valid_version(version) then
+    error("unsafe release version: " .. tostring(version))
+  end
   local base = release_base(opts)
   if not is_local_base(base) then
     local root = base:match("^(.-)/releases/latest/download$")
@@ -58,6 +63,9 @@ end
 --- file whose hash matches is reused; a mismatch deletes the bad file. Reuses
 --- boot.download + boot.verify + rename_with_retry. Returns true, dest or nil, err.
 function M.ensure_host_binary(version, asset, sha256, dest, opts)
+  if not pin.valid_version(version) then
+    return nil, "unsafe release version '" .. tostring(version) .. "'"
+  end
   if type(sha256) ~= "string" or not sha256:match("^%x+$") then
     return nil, "no pinned sha256 for '" .. tostring(asset) .. "'"
   end
@@ -92,6 +100,11 @@ function M.ensure_version(version, opts)
   opts = opts or {}
   local root = opts.root
   if not root then return nil, "ensure_version needs a repo root" end
+  -- Trust boundary: `version` becomes an rm_rf'd path below, so refuse a
+  -- traversal before touching the filesystem.
+  if not pin.valid_version(version) then
+    return nil, "unsafe release version '" .. tostring(version) .. "'"
+  end
   local dest = root .. "/.nvim/cache/lua-" .. version
   -- Already provisioned? The CLI entry existing is the marker.
   if uv.fs_stat(dest .. "/loomworks/cli.lua") then return dest end
@@ -143,7 +156,8 @@ function M.extract_zip(zip_path, dest_dir)
   if ok then
     for i = 1, reader:get_num_files() do
       local name = reader:get_filename(i)
-      if name:find("%.%.", 1, true) or name:match("^/") or name:match("^%a:") then
+      if name:find("%.%.", 1, true) or name:match("^/") or name:match("^%a:")
+          or name:match("^\\") then  -- also reject a leading backslash / UNC
         err = "unsafe zip entry '" .. name .. "'"; break
       end
       local target = dest_dir .. "/" .. name

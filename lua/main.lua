@@ -127,11 +127,18 @@ if pinned_sentinel and not dev_opt_in then
 end
 
 -- ---- host commands: version / self-update (work without a bundle) -----------
-local command = forwarded[1]
+-- Detect the subcommand tolerant of a leading global flag (e.g.
+-- `lw --no-input update`), the same way the redirect classifies it — otherwise a
+-- flag-prefixed host command would fall through to the nvim-hosted CLI.
+local command = subcommand(forwarded)
 -- `--version` / `-v` are the conventional spellings; accept them as aliases so
 -- they don't fall through to workspace resolution and error about a missing
 -- loomworks.json.
-if command == "--version" or command == "-v" then command = "version" end
+if not command then
+  for _, v in ipairs(forwarded) do
+    if v == "--version" or v == "-v" then command = "version"; break end
+  end
+end
 if command == "version" then
   local info = require("boot.update").version_info(luaroot, source_kind)
   io.write(string.format("lw — host v%d · source: %s · bundle: %s\n",
@@ -223,7 +230,7 @@ do
     and luaroot:match("lua%-(.+)$") or nil
   local p = pin_root and pin.read(pin_root)
   local action = pin.decide({
-    command = subcommand(forwarded),
+    command = command,
     pin = p,
     self_version = self_version,
     pinned_sentinel = pinned_sentinel,

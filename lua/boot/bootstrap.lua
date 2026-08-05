@@ -61,6 +61,12 @@ version=$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*//p' "$pin" | h
 want=$(sed -n "s/^[[:space:]]*sha256_$asset[[:space:]]*=[[:space:]]*//p" "$pin" | head -n1)
 [ -n "$version" ] || { echo "lw: lw.pin has no version" >&2; exit 1; }
 [ -n "$want" ] || { echo "lw: lw.pin has no sha256 for $asset" >&2; exit 1; }
+# Reject a malicious pinned version before it reaches a download URL: a repo
+# cannot redirect the fetch (a traversal like /../ would leave the origin).
+case "$version" in
+  *..*|*[!0-9A-Za-z._+-]*)
+    echo "lw: invalid pinned version '$version'" >&2; exit 1 ;;
+esac
 want=$(printf '%s' "$want" | tr 'A-Z' 'a-z')
 
 cache="$here/.nvim/cache"
@@ -148,7 +154,7 @@ rem provisions the pinned bundle itself. Regenerate with `lw update`.
 
 if not "%LOOMWORKS_LW%"=="" (
   "%LOOMWORKS_LW%" %*
-  exit /b %ERRORLEVEL%
+  exit /b !ERRORLEVEL!
 )
 
 set "here=%~dp0"
@@ -170,26 +176,26 @@ for /f "usebackq tokens=1,* delims== " %%A in ("%pin%") do (
 )
 if "!version!"=="" ( echo lw: lw.pin has no version 1>&2 & exit /b 1 )
 if "!want!"=="" ( echo lw: lw.pin has no sha256 for %asset% 1>&2 & exit /b 1 )
+rem reject a malicious pinned version before it reaches a URL (a repo must not
+rem be able to redirect the fetch): forbid anything outside [-0-9A-Za-z._+] or `..`
+echo(!version!| findstr /r /c:"[^-0-9A-Za-z._+]" >nul && ( echo lw: invalid pinned version !version! 1>&2 & exit /b 1 )
+echo(!version!| findstr /c:".." >nul && ( echo lw: invalid pinned version !version! 1>&2 & exit /b 1 )
 
 set "cache=%here%.nvim\cache"
 set "bin=%cache%\lw-!version!-%asset%"
 
+rem detect launcher-only flags without shifting (so phase 2 still sees all args)
 set "insecure=0"
 if "%LOOMWORKS_INSECURE%"=="1" set "insecure=1"
 set "do_verify=0"
-set "fwd="
-:parse
-if "%~1"=="" goto parsed
-if /I "%~1"=="--insecure" ( set "insecure=1" & shift & goto parse )
-if /I "%~1"=="--verify" ( set "do_verify=1" & shift & goto parse )
-set "fwd=!fwd! %1"
-shift
-goto parse
-:parsed
+for %%A in (%*) do (
+  if /I "%%~A"=="--insecure" set "insecure=1"
+  if /I "%%~A"=="--verify" set "do_verify=1"
+)
 
 set "ok=0"
 if exist "%bin%" ( call :sha "%bin%" & if /I "!got!"=="!want!" set "ok=1" )
-if "!ok!"=="1" goto run
+if "!ok!"=="1" goto forward
 
 del /f /q "%bin%" 2>nul
 if not exist "%cache%" mkdir "%cache%"
@@ -223,7 +229,7 @@ move /y "%tmp%" "%bin%" >nul
   echo sha256=!want!
 )
 
-:run
+:forward
 if "!do_verify!"=="1" (
   where gh >nul 2>nul
   if errorlevel 1 (
@@ -232,9 +238,23 @@ if "!do_verify!"=="1" (
     gh attestation verify "%bin%" --repo samienne/loomworks.nvim || exit /b 1
   )
 )
-set "LOOMWORKS_PINNED=!version!"
+rem Forward args with delayed expansion OFF so a forwarded arg containing `!`
+rem survives; re-peel the launcher-only flags from the untouched arg list.
+set "PINVER=!version!"
+set "PINBIN=!bin!"
+setlocal DisableDelayedExpansion
+set "LOOMWORKS_PINNED=%PINVER%"
 set "LW_ROOT=%CD%"
-"%bin%"!fwd!
+set "fwd="
+:peel
+if "%~1"=="" goto peeled
+if /I "%~1"=="--insecure" ( shift & goto peel )
+if /I "%~1"=="--verify" ( shift & goto peel )
+set "fwd=%fwd% %1"
+shift
+goto peel
+:peeled
+"%PINBIN%"%fwd%
 exit /b %ERRORLEVEL%
 
 :sha
@@ -263,6 +283,9 @@ end
 --- Verifies SHA256SUMS.sig against the embedded release key before trusting any
 --- hash (spec §16.24). Returns map or nil, err.
 function M.fetch_hashes(version, opts)
+  if not pin.valid_version(version) then
+    return nil, "unsafe release version '" .. tostring(version) .. "'"
+  end
   local base = update.versioned_base(version, opts)
   local sums, e1 = download.fetch(base .. "/SHA256SUMS")
   if not sums then return nil, "fetch SHA256SUMS: " .. e1 end
@@ -310,10 +333,19 @@ end
 -- File writers
 -- ---------------------------------------------------------------------------
 
+--- Atomic write: temp file + rename (rename_with_retry rides out Windows
+--- AV/indexer locks), matching the codebase's temp-then-rename convention so a
+--- crash mid-write never leaves a half-written lw.pin / launcher / .gitignore.
 local function write_file(path, content)
-  local f, e = io.open(path, "wb")
-  if not f then return nil, "cannot write '" .. path .. "': " .. tostring(e) end
+  local tmp = path .. ".tmp"
+  local f, e = io.open(tmp, "wb")
+  if not f then return nil, "cannot write '" .. tmp .. "': " .. tostring(e) end
   f:write(content); f:close()
+  local ok, er = update.rename_with_retry(tmp, path)
+  if not ok then
+    paths.rm_rf(tmp)
+    return nil, "rename '" .. tmp .. "' -> '" .. path .. "': " .. tostring(er)
+  end
   return true
 end
 
@@ -347,12 +379,13 @@ function M.ensure_gitignore(root)
     local l = line:gsub("%s+$", "")
     if l == entry or l == ".nvim/cache" then return "present" end
   end
-  local out, e = io.open(path, "a")
-  if not out then return nil, "cannot append to '" .. path .. "': " .. tostring(e) end
-  if existing ~= "" and existing:sub(-1) ~= "\n" then out:write("\n") end
-  out:write("\n# loomworks: pinned lw binaries + provisioned bundle (machine-local)\n")
-  out:write(entry .. "\n")
-  out:close()
+  -- Append-only: keep existing content verbatim, add our block, atomic-write.
+  local addition = (existing ~= "" and existing:sub(-1) ~= "\n") and "\n" or ""
+  addition = addition ..
+    "\n# loomworks: pinned lw binaries + provisioned bundle (machine-local)\n" ..
+    entry .. "\n"
+  local ok, e = write_file(path, existing .. addition)
+  if not ok then return nil, e end
   return "added"
 end
 

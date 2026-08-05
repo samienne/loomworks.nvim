@@ -30,6 +30,17 @@ M.REDIRECT_COMMANDS = {
   build = true, run = true, test = true, clean = true, configure = true,
 }
 
+--- Is `v` a safe release version? THE TRUST BOUNDARY: a version flows into
+--- download URLs and into rm_rf'd cache paths, so it must not carry path
+--- separators, `..`, or whitespace. Whitelist an alphanumeric-led token of
+--- `[%w._+-]` (semver-ish: `0.1.0`, `0.0.0-test`, `1.2.3+build`).
+function M.valid_version(v)
+  if type(v) ~= "string" or v == "" then return false end
+  if v:find("[/\\%s]") then return false end
+  if v:find("..", 1, true) then return false end  -- plain search for literal ".."
+  return v:match("^%w[%w%.%+%-]*$") ~= nil
+end
+
 --- The bundle asset name for a release version.
 function M.bundle_asset(version) return "loomworks-lua-" .. version .. ".zip" end
 
@@ -98,6 +109,11 @@ function M.parse(text)
     end
   end
   if not version or version == "" then return nil, "pin missing 'version'" end
+  -- Reject a malicious/garbled version here so it never reaches a URL or an
+  -- rm_rf'd path (a repo cannot redirect the fetch — spec §16.23).
+  if not M.valid_version(version) then
+    return nil, "pin has an unsafe version '" .. version .. "'"
+  end
   return { version = version, hashes = hashes }
 end
 

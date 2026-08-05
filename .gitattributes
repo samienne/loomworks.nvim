@@ -1,3 +1,7 @@
 # Shell scripts must be LF on every platform — a CRLF `#!/usr/bin/env bash\r`
 # or `\r`-terminated line breaks execution on Linux/macOS (and in CI).
 *.sh text eol=lf
+
+# Windows batch launchers must be CRLF — a LF-only .cmd breaks cmd.exe
+# label/goto handling.
+*.cmd text eol=crlf

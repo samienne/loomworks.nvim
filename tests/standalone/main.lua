@@ -699,5 +699,62 @@ do
   paths.rm_rf(sb)
 end
 
+print("SECURITY — malicious lw.pin version cannot redirect the fetch or rm outside cache")
+do
+  local pin = require("boot.pin")
+  local bootstrap = require("boot.bootstrap")
+
+  -- valid_version whitelist (the trust boundary)
+  ok(pin.valid_version("0.1.0"), "accepts 0.1.0")
+  ok(pin.valid_version("0.0.0-test"), "accepts a prerelease tag")
+  ok(pin.valid_version("1.2.3+build.5"), "accepts build metadata")
+  ok(not pin.valid_version("/../../../attacker/evil/releases/download/v1"),
+    "rejects a path-traversal version")
+  ok(not pin.valid_version("1..2"), "rejects `..`")
+  ok(not pin.valid_version("1.0\\evil"), "rejects a backslash")
+  ok(not pin.valid_version("1 0"), "rejects whitespace")
+  ok(not pin.valid_version(""), "rejects empty")
+  ok(not pin.valid_version("../x"), "rejects a leading ../")
+
+  -- pin.parse refuses a malicious version outright (never yields it downstream)
+  local evil = "version = /../../../../attacker/evil/releases/download/v1\n" ..
+    "sha256_lw-linux-x86_64 = " .. string.rep("a", 64) .. "\n"
+  ok(select(1, pin.parse(evil)) == nil, "pin.parse refuses a traversal version")
+  ok(select(1, pin.parse("version = a\\b\n")) == nil, "pin.parse refuses a backslash version")
+  ok(select(1, pin.parse("version = a b\n")) == nil, "pin.parse refuses a whitespace version")
+
+  -- A committed malicious lw.pin: pin.read -> nil, so the redirect makes no fetch
+  local sb = root .. "/tests/.tmp-sec"; paths.rm_rf(sb); paths.mkdirp(sb)
+  do local f = assert(io.open(sb .. "/lw.pin", "wb")); f:write(evil); f:close() end
+  ok(pin.read(sb) == nil, "pin.read refuses a malicious committed pin")
+  eq(pin.decide({ command = "build", pin = pin.read(sb), self_version = "9.9.9" }),
+    "no-pin", "redirect refuses: a malicious pin yields no redirect (no fetch)")
+
+  -- versioned_base never emits a traversal URL
+  ok(not pcall(update.versioned_base, "/../../evil", { url = update.DEFAULT_RELEASE_URL }),
+    "versioned_base errors on a traversal version (URL never built)")
+
+  -- ensure_version / ensure_host_binary refuse BEFORE any fetch or rm: a victim
+  -- dir OUTSIDE .nvim/cache survives (deletion-safety).
+  local repo = sb .. "/repo"; paths.mkdirp(repo .. "/.nvim/cache")
+  local victim = sb .. "/victim"; paths.mkdirp(victim)
+  do local f = assert(io.open(victim .. "/keep.txt", "wb")); f:write("KEEP"); f:close() end
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", sb .. "/mirror")
+  local d, e = update.ensure_version("../../victim",
+    { root = repo, bundle_sha256 = string.rep("a", 64) })
+  ok(d == nil and type(e) == "string", "ensure_version refuses a traversal version")
+  ok(uv.fs_stat(victim .. "/keep.txt") ~= nil,
+    "victim dir OUTSIDE .nvim/cache is untouched (no traversal rm)")
+  local b, be = update.ensure_host_binary("x/../../evil", "lw-linux-x86_64",
+    string.rep("a", 64), repo .. "/.nvim/cache/x")
+  ok(b == nil and type(be) == "string", "ensure_host_binary refuses a traversal version")
+
+  -- authoring refuses a bad version too
+  ok(select(1, bootstrap.fetch_hashes("/../../evil")) == nil,
+    "fetch_hashes refuses a bad version (no SHA256SUMS fetch)")
+
+  paths.rm_rf(sb)
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
