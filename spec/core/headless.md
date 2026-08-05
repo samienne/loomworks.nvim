@@ -367,3 +367,128 @@ The operation MUST:
 Acquisition applies to the standalone host. In an editor host, modules arrive
 through the editor's own plugin mechanism (§16.8); the index is informational
 there.
+
+### 16.21 Repo-local launcher and version pin
+
+A repository MAY commit a **launcher and version pin** so that contributors and
+CI run a fixed, verified host without a prior global install. Three files at the
+repository root carry this: a POSIX launcher, a Windows launcher, and a **pin**.
+Downloaded host binaries and the provisioned bundle (§16.22) live under a
+machine-local cache directory that is ignored by version control, so nothing
+fetched is ever committed.
+
+The pin declares a release **version** and, for every host binary and for the
+release bundle, the **content hash** of that artifact. It is a trivially
+parseable key/value list (not JSON) so a launcher can read it with a system
+shell alone — one `version` entry, one hashed entry per host binary keyed by the
+binary's asset identity, and one hashed entry for the bundle. The pin carries a
+version and hashes **only, never a location**: the download origin is fixed by
+the host and overridable solely by the user's environment or host configuration,
+never by repository content (§16.23).
+
+### 16.22 Launcher behavior and pinned-release provisioning
+
+A launcher selects the host-binary asset for the current operating system and
+architecture, reads the pinned version and that asset's hash, and — unless the
+binary is already cached — downloads it from the fixed origin, verifies its hash
+against the pin, and executes it, forwarding all arguments unchanged. A platform
+for which the pin names no binary is an error, never a fetch of a different
+platform's asset. Hash verification against the pinned hash is **mandatory and
+unconditional**. Transport (TLS) verification of the download MAY be relaxed —
+for an intercepting proxy — precisely because integrity does not rest on the
+transport (§16.12) but on the independent, mandatory hash check; relaxing the
+hash check is never permitted. A launcher MAY additionally run a stronger
+provenance check when that tooling is present, and MUST degrade gracefully —
+with a note, not a failure — when it is absent.
+
+Because a host binary carries only the runtime bootstrap and not the behavioral
+system Lua (§16.11), a host running in **pinned context** — launched by the repo
+launcher, or re-exec'd by the redirect (§16.23) — MUST **provision** the pinned
+release's bundle before it resolves system Lua: acquire the bundle for the pinned
+version, verify it against the pinned bundle hash, and extract it to a
+**repo-local** location under the machine-local cache directory, then resolve
+system Lua from there rather than from any machine-global install. Provisioning
+is idempotent: an already-extracted, matching bundle is reused without
+re-downloading, and a failed or partial provision leaves any prior state intact
+(§16.13). Keeping the bundle repo-local makes a pinned run reproducible — host
+and bundle are the same pinned version — and leaves the machine-global
+installation (§16.13) untouched. The trust anchor for provisioning is the
+**committed pin hash**: the pin reached the runner through the repository, a
+trusted channel, consistent with §16.15/§16.20 anchoring integrity to something
+other than the served artifact.
+
+A launcher never downloads or extracts the bundle itself — it fetches and execs
+only the host binary, and the exec'd host self-provisions the bundle as above,
+so the launcher depends on nothing beyond a system downloader and a hash tool.
+
+### 16.23 Global pin-aware redirect
+
+A globally-installed host, invoked for a **workspace operation** (build, run,
+test, configure, clean) inside a repository that carries a pin, MUST honor the
+pin. It resolves the pinned version from the workspace root — the same root
+discovery that locates the workspace files (§2). When the pinned version equals
+the running host's own release version it runs the operation **in-process**: no
+download and no redirect (the fast path). When they differ it MUST acquire and
+verify the pinned host binary, provision the pinned bundle (§16.22), and
+**re-exec** the pinned binary with the same arguments, so the operation runs
+under exactly the pinned release.
+
+Redirection applies only to workspace operations. **Host and management
+operations** — reporting the host version, self-update, install, and the pin
+operations (§16.24) — MUST NOT redirect; they always run as the invoked (global)
+host, so that, for example, updating the pin is never carried out by the old
+pinned version. Redirection MUST be guarded against recursion: once a host is
+running as the pinned version with the pinned bundle loaded, it never redirects
+or re-provisions again (a sentinel carried across the exec).
+
+The redirect has explicit **escapes**, all caller-owned: a *no-pin* flag runs
+the invoked host with no redirect; an environment override naming a host binary
+runs that binary and bypasses the pin entirely (the development / test-at-head
+path); and a development source (§16.11) likewise bypasses. The first redirect or
+provision of an invocation emits a one-line notice rather than stalling silently.
+
+The following invariants are normative:
+
+- **Fixed origin.** The download origin is fixed in the host, overridable only
+  by a user-set environment value or host configuration, never by repository
+  content.
+- **Version-and-hash pin, never a location.** A repository cannot redirect the
+  fetch; it can only name a version and the hashes the fetched artifacts must
+  match.
+- **Mandatory hash match.** Verification of every fetched artifact against its
+  pinned hash is unconditional — never waived, including when transport
+  verification is relaxed for a proxy (§16.22). An artifact whose hash does not
+  match the pin aborts the operation and is discarded.
+- **Never execute repository scripts.** The global host MUST NOT execute a
+  repository-provided launcher script. It resolves the pin **declaratively** and
+  runs the official binary it fetched and verified itself; auto-running a
+  repo-provided script would be an arbitrary-code-execution vector.
+- **Bounded residual risk.** A malicious pin can at worst force acquisition of an
+  authentic but **older / downgraded** official release; it cannot introduce
+  unofficial code, because every fetched artifact must match a hash the host
+  obtained from the fixed origin. Provenance anchored outside the project's
+  infrastructure (§16.15) applied at redirect time is possible future hardening.
+
+### 16.24 Pin management: bootstrap and update
+
+Two **management operations** (§16.9) maintain the launcher and pin; being
+management, they never redirect (§16.23).
+
+**Bootstrap** installs the launcher scripts and the pin into the repository —
+defaulting to the running host's release version, or an explicit version — and
+populates the pin with the content hashes of every host binary and of the bundle
+for that release. It appends the machine-local cache directory to the
+repository's ignore file idempotently, creating that file if absent, and never
+rewrites or discards unrelated ignore content. Re-running it MAY refresh the
+scripts and pin, but MUST NOT silently destroy user edits.
+
+**Update** rewrites the pin to a target version — explicit, or the latest release
+— fetching that release's hashes; it MUST validate that the target release is
+fetchable before writing, failing cleanly otherwise, and refreshes the launcher
+scripts when their format has changed.
+
+Both obtain the per-artifact hashes from the release's **signed** hash list
+(§16.15) and verify that signature before trusting any hash, so the pin's
+committed hashes are themselves anchored to the release key at authoring time.
+Runtime provisioning (§16.22) then trusts the committed pin hash directly, since
+the pin has itself reached the runner through the repository.
