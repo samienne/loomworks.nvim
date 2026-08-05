@@ -1,10 +1,12 @@
 --- loomworks/config_unit.lua — ConfigUnit: atomic unit of configuration state.
---- Identity is the relative build_dir path (e.g., "build/App/Debug").
+--- Identity is (project_key, config_key); the relative build_dir path is a
+--- derived value persisted in the cache, not the identity. Cache entries are
+--- matched back on that stable tuple, never on a recomputed path.
 --- Owns the running/deleting state and provides a single derived state value.
 --- Multiple profiles may reference the same ConfigUnit.
 
 --- @class loomworks.ConfigUnit
---- @field id string relative build_dir path (identity, e.g., "build/App/Debug")
+--- @field id string persisted relative build_dir path key (e.g., "build/App/Debug")
 --- @field _workspace loomworks.Workspace
 --- @field _init_project_key string|nil hint for project resolution
 --- References (resolved during _apply):

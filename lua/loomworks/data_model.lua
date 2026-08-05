@@ -420,7 +420,9 @@ end
 
 --- Sync profile projects and config units together.
 --- ConfigUnits are created from profile resolution (what profiles need),
---- NOT from cache entries. Cache entries are linked afterward by build_dir match.
+--- NOT from cache entries. A cache entry is linked back on the stable
+--- (project_key, config_key) identity, and the unit adopts that entry's
+--- persisted build-dir key — never a recomputed path (which can drift).
 --- @param ctx table deserialization context with O(1) lookups
 --- @param workspace table workspace reference for domain object constructors
 --- @param cache table parsed cache data
@@ -476,15 +478,29 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                     end
                 end
 
+                -- Anchor the ConfigUnit on its stable (project, config)
+                -- identity: adopt the persisted cache entry's stored build-dir
+                -- key when one exists, so a volatile recomputed path segment
+                -- can't orphan a built entry. Only mint a fresh path when
+                -- nothing was ever built for this identity.
                 local build_dir_id = nil
                 local abs_path = nil
-                if project and deps.compute_build_dir then
-                    -- Pass the effective tools list when we have one
-                    -- (multi-tool path); otherwise fall back to the
-                    -- legacy single-tool_data call.
-                    local arg = effective_tools and #effective_tools > 0
-                        and effective_tools or tool_data
-                    build_dir_id, abs_path = deps.compute_build_dir(project, variant, arg)
+                local matched_entry = nil
+                if project then
+                    local rel_key, entry = workspace:find_cache_entry_for(
+                        cache, project_key, variant, tool_key)
+                    if rel_key then
+                        build_dir_id = rel_key
+                        abs_path = entry.build_dir
+                        matched_entry = entry
+                    elseif deps.compute_build_dir then
+                        -- Pass the effective tools list when we have one
+                        -- (multi-tool path); otherwise fall back to the
+                        -- legacy single-tool_data call.
+                        local arg = effective_tools and #effective_tools > 0
+                            and effective_tools or tool_data
+                        build_dir_id, abs_path = deps.compute_build_dir(project, variant, arg)
+                    end
                 end
 
                 -- Resolve tool domain object (used for both the
@@ -515,11 +531,9 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 local config_unit_ref = nil
                 if build_dir_id then
                     if not expected_units[build_dir_id] then
-                        local cache_entry = cache and cache.build_dirs
-                            and cache.build_dirs[build_dir_id] or nil
                         local enriched = nil
-                        if cache_entry then
-                            enriched = vim.tbl_extend("keep", cache_entry, {
+                        if matched_entry then
+                            enriched = vim.tbl_extend("keep", matched_entry, {
                                 build_dir = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
                             })
                         end

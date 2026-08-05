@@ -541,7 +541,9 @@ through files.
 2. Projects (+ Configurations) — needs Modules
 3. ConfigSets — resolves Project + Configuration references
 4. Profiles — resolves ConfigurationSet + Tool references
-5. ConfigUnits — resolves Project + Tool + Configuration
+5. ConfigUnits — resolves Project + Tool + Configuration; a cached entry is
+   matched back on the `(project, config)` identity (its `config_key`), and the
+   unit adopts that entry's persisted `build_dir` rather than a recomputed path
 6. ProfileProjects — resolves Profile + Project + ConfigUnit references
 7. BuildDirs — domain objects for physical build directories with state
 8. BuildDirRefs — reverse index from BuildDir paths
