@@ -928,6 +928,48 @@ unpacking.
 `lw module` is standalone-only; it requires `boot.*` (the luvi host), so under
 the nvim-hosted fallback it errors with that hint.
 
+### Repo-local launcher & version pin
+
+`lw bootstrap` commits a launcher + pin so a repo runs a fixed, verified `lw`
+with no prior install (spec §16.21–16.24). Layers:
+
+- **`boot/pin.lua`** — pure logic: parse/serialize `lw.pin` (`key = value`, no
+  JSON), select the host-binary asset for the platform (`HOST_ASSETS` keyed by
+  `<os>/<arch>` → the real release asset names), walk up for the pin root, and
+  `decide{…}` the redirect action (`in-process` | `redirect` | `bypass` |
+  `no-pin`). No I/O beyond stat, so it is unit-tested exhaustively.
+- **`boot/bootstrap.lua`** — `bootstrap` / `update`: fetch the release's
+  **signed** `SHA256SUMS` (`versioned_base` → `…/releases/download/v<ver>/` on
+  GitHub, flat on a mirror), verify `.sig` against the embedded key, select the
+  host-binary + bundle hashes into `lw.pin`, write `lw.sh` / `lw.cmd` (templates
+  live here as the single source of truth), and append `.nvim/cache/` to
+  `.gitignore` idempotently (append-only — never rewrites existing content).
+- **`boot/update.lua`** — `ensure_host_binary` (fetch + pinned-hash-verify a
+  host binary into `.nvim/cache/`) and `ensure_version` (fetch + verify + extract
+  the bundle into **repo-local** `.nvim/cache/lua-<ver>/`). Both reuse
+  `download` + `verify.verify_file_sha256` + `extract_zip` + `rename_with_retry`;
+  the pinned committed hash is the trust anchor (no manifest needed at runtime).
+
+`main.lua` wires two entry points around the existing source resolution:
+
+- **Pinned context** — when the `LOOMWORKS_PINNED=<ver>` sentinel is set (by a
+  launcher script or the redirect), the host provisions the pinned bundle via
+  `ensure_version` and points `luaroot` at the repo-local `lua-<ver>/`, then runs
+  normally. The sentinel also blocks any further redirect (anti-recursion).
+- **Redirect** — a global host on a workspace op (`build`/`run`/`test`/`clean`/
+  `configure`) consults `pin.decide`; on `redirect` it `ensure_host_binary`s the
+  pinned binary, sets the sentinel + `LW_ROOT`, and `uv.spawn`s it with inherited
+  stdio, propagating the child's exit code. `--no-pin`, `LOOMWORKS_LW`, and a dev
+  source bypass; `version`/`self-update`/`install`/`bootstrap`/`update` are host
+  commands handled before the redirect, so they never redirect.
+
+Security: the origin is fixed in the host (user-overridable only via
+`LOOMWORKS_RELEASE_URL`); the pin carries a version + hashes, never a URL; the
+hash check is mandatory even under `--insecure` TLS; and the global host never
+executes the repo's `lw.sh`/`lw.cmd` — it resolves the pin declaratively and runs
+the official binary it fetched itself. Worst case a malicious pin forces an
+authentic older release, never unofficial code.
+
 ### Install security
 
 The host cannot verify itself (the verifier is inside it), so its own integrity
@@ -956,12 +998,15 @@ detects, never installs, C/C++ toolchains.
 `lua/main.lua` (bootstrap), `lua/boot/` (bootstrap-only modules: `paths.lua`
 data-dir/version/mkdir helpers + acquired-module enumeration, `json.lua`
 decode + small encode, `verify.lua` ECDSA-P256 manifest verifier, `download.lua`
-curl/local fetch, `update.lua` self-update + miniz extraction, `install.lua`
-self-install, `modules.lua` module acquisition), `lua/loomworks/shim/`,
-`modules.json` (the curated module index), `bin/lw`, `bin/lw.cmd` exist. The
-bootstrap intercepts the host commands `lw version` / `lw install` /
-`lw self-update`; `lw module` is a CLI command (system Lua) that calls into
-`boot.modules`.
+curl/local fetch, `update.lua` self-update + miniz extraction + pinned
+provisioning (`ensure_host_binary` / `ensure_version`), `install.lua`
+self-install, `modules.lua` module acquisition, `pin.lua` pin parse / asset
+selection / redirect decision, `bootstrap.lua` `lw bootstrap`/`update` + the
+launcher-script templates), `lua/loomworks/shim/`, `modules.json` (the curated
+module index), `bin/lw`, `bin/lw.cmd` exist. The bootstrap intercepts the host
+commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap` /
+`lw update`, and redirects workspace ops to a repo's pinned `lw`; `lw module` is
+a CLI command (system Lua) that calls into `boot.modules`.
 The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
 manifest) and `scripts/release/fuse_host.sh` (inject the production key + fuse
 one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix

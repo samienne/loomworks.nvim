@@ -398,6 +398,19 @@ These are implementation-specific details not covered by the spec or architectur
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still
   references it) are NOT errors — they are handled gracefully.
+- **Repo-local launcher + version pin** (spec §16.21–16.24): `lw bootstrap`
+  commits `lw.sh`/`lw.cmd`/`lw.pin` so a repo runs a pinned, verified `lw` with
+  no prior install. `boot/pin.lua` is pure (parse/serialize `lw.pin`, asset
+  selection via `HOST_ASSETS`, `decide{}` redirect action); `boot/bootstrap.lua`
+  authors the pin from a release's SIGNED `SHA256SUMS` and holds the launcher
+  templates; `boot/update.lua` adds `ensure_host_binary` + `ensure_version`
+  (bundle → repo-local `.nvim/cache/lua-<ver>/`). `main.lua` provisions on the
+  `LOOMWORKS_PINNED` sentinel and redirects workspace ops (build/run/test/clean/
+  configure) to the pinned release. Invariants: fixed origin (user-overridable
+  only via `LOOMWORKS_RELEASE_URL`), version+hash pin never a URL, mandatory
+  hash even under `--insecure`, global host never execs the repo scripts.
+  Escapes: `--no-pin`, `LOOMWORKS_LW`, dev source. Launcher scripts copy (not
+  curl) for a local-dir mirror, matching `boot.download`.
 
 ## Plugin API versioning
 

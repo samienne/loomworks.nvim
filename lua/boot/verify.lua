@@ -126,4 +126,17 @@ function M.verify_artifact_file(path, name, manifest)
   return M.verify_artifact(bytes, name, manifest)
 end
 
+--- Verify a file's SHA-256 against a known hex digest — the pinned-hash check
+--- (boot.pin's committed hash is the trust anchor, so no manifest is involved).
+--- @return boolean ok, string|nil err
+function M.verify_file_sha256(path, expected)
+  if type(expected) ~= "string" or not expected:match("^%x+$") then
+    return false, "no valid pinned sha256"
+  end
+  local bytes, err = M.read_file(path)
+  if not bytes then return false, "cannot read '" .. path .. "': " .. tostring(err) end
+  if M.sha256_hex(bytes):lower() ~= expected:lower() then return false, "sha256 mismatch" end
+  return true
+end
+
 return M

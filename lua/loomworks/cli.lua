@@ -3200,7 +3200,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
   "profiles", "profile", "tools", "build", "clean", "test", "run", "launch", "publish",
   "unlock", "config", "completion", "version", "install", "self-update", "help", "sdk",
-  "migrate", "module", "--no-input",
+  "migrate", "module", "bootstrap", "update", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -3234,6 +3234,9 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "tools" then
     if n == 1 then emit({ "--cached" }) end
+    return 0
+  elseif cmd == "bootstrap" or cmd == "update" then
+    if n == 1 then emit({ "--version" }) end
     return 0
   elseif cmd == "config" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
@@ -3824,6 +3827,47 @@ set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` config key,
 else the built-in default. A local directory works as an offline mirror.
 Not applicable to a development source. A host command (handled by lw itself).]],
+  bootstrap = [[lw bootstrap [--version <x.y.z>]
+
+Install a repo-local launcher + version pin so contributors and CI run a fixed,
+verified lw without a prior global install (spec §16.21–16.24). Writes three
+committed files at the repo root — lw.sh, lw.cmd, and lw.pin — and adds
+`.nvim/cache/` to .gitignore (created if absent, appended idempotently).
+
+The pin records the release version and the SHA-256 of every host binary and of
+the release bundle, taken from that release's SIGNED SHA256SUMS (its signature
+is verified against the key built into lw before any hash is trusted). Defaults
+to this host's release version; pass --version to pin a different release.
+
+  --version <x.y.z>   pin this release instead of the running host's version
+
+Run the launcher with `./lw.sh <cmd>` (or lw.cmd on Windows): it downloads the
+pinned host binary into .nvim/cache/, verifies its sha256 against the pin, and
+runs it — the host then provisions the pinned bundle, also repo-local. So a
+clean checkout goes from `./lw.sh build` to building, reproducibly.
+
+Proxies: the launcher honors HTTPS_PROXY/HTTP_PROXY. `--insecure` (or
+LOOMWORKS_INSECURE=1) relaxes TLS for an intercepting proxy — safe only because
+the sha256 check is independent and always enforced. `--verify` additionally
+runs `gh attestation verify` when gh is present (skipped with a note otherwise).
+Air-gapped: point LOOMWORKS_RELEASE_URL at a local mirror directory.
+
+A globally-installed `lw` also honors the pin: for build/run/test/clean it runs
+the pinned release (fetching + verifying it), unless the pin matches itself.
+Bypass with `--no-pin`, or LOOMWORKS_LW=<path> to run a specific binary (the
+dev / test-at-head override). A host command (handled by lw itself).]],
+  update = [[lw update [--version <x.y.z>]
+
+Repoint lw.pin at a target release (default: the latest), rewriting its version
+and the per-artifact SHA-256 hashes from that release's signed SHA256SUMS, and
+refreshing lw.sh / lw.cmd. Validates the target release is fetchable before
+touching the pin, so a bad version fails cleanly. Run it from a repo already set
+up with `lw bootstrap`.
+
+  --version <x.y.z>   pin this release instead of the latest
+
+A host command (handled by lw itself); like bootstrap it runs as the global lw
+and is never redirected by an existing pin.]],
   agent = [[lw help agent — driving lw from an automation agent
 
 Run EVERY command with --no-input (or export LW_NO_INPUT=1). In this mode lw
@@ -3985,6 +4029,8 @@ Usage: lw [command] [args]
   version           host version + which system-Lua source is in use
   install           install the lw binary on PATH + fetch the first bundle
   self-update       download + verify the latest release bundle
+  bootstrap         install a repo-local launcher + version pin (lw.sh/.cmd/.pin)
+  update            repoint lw.pin at a target/latest release
   help  [command]   this help, or details for a command
 
 Quickstart (empty dir -> first build -> shared config):
@@ -4049,9 +4095,10 @@ local function main()
       create_intent = "local+shared"
     elseif v == "--local" then
       create_intent = "local"
-    elseif v == "--dev" or v:sub(1, 6) == "--dev=" then
-      -- Source selection is resolved by the host bootstrap (main.lua) before
-      -- we run; ignore it here so the nvim-hosted path doesn't choke on it.
+    elseif v == "--dev" or v:sub(1, 6) == "--dev=" or v == "--no-pin" then
+      -- Source selection and pin redirect are resolved by the host bootstrap
+      -- (main.lua) before we run; ignore these here so the nvim-hosted path
+      -- doesn't choke on them.
     else
       a[#a + 1] = v
     end
@@ -4083,7 +4130,8 @@ local function main()
   -- (main.lua) intercepts them before we run. Reaching here means the
   -- nvim-hosted fallback, where they don't apply.
   if command == "version" or command == "--version" or command == "-v"
-      or command == "self-update" or command == "install" then
+      or command == "self-update" or command == "install"
+      or command == "bootstrap" or command == "update" then
     io.stderr:write("lw: `" .. command .. "` is provided by the standalone lw " ..
       "binary; it is not available in the nvim-hosted fallback.\n")
     finish(1)
