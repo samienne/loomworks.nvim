@@ -37,15 +37,35 @@ table.insert(loaders, function(modname)
 end)
 
 local paths = require("boot.paths")
+local pin = require("boot.pin")
 
--- ---- args: peel off the bootstrap-level `--dev[=PATH]` flag -----------------
+--- Exit, flushing stdout first (host-level bootstrap path; the CLI has its own).
+local function exit(code)
+  io.stdout:flush()
+  os.exit(code)
+end
+
+--- Env read via libuv's view (sees in-process uv.os_setenv; used for tests).
+local function getenv(name) return paths.getenv(name) end
+
+--- First non-flag token — the subcommand — ignoring leading global flags.
+local function subcommand(args)
+  for _, v in ipairs(args) do
+    if type(v) == "string" and v:sub(1, 1) ~= "-" then return v end
+  end
+  return nil
+end
+
+-- ---- args: peel off the bootstrap-level `--dev[=PATH]` / `--no-pin` flags ---
 local forwarded = {}
-local dev_flag, dev_flag_path = false, nil
+local dev_flag, dev_flag_path, no_pin = false, nil, false
 for _, v in ipairs({ ... }) do
   if v == "--dev" then
     dev_flag = true
   elseif type(v) == "string" and v:sub(1, 6) == "--dev=" then
     dev_flag, dev_flag_path = true, v:sub(7)
+  elseif v == "--no-pin" then
+    no_pin = true
   else
     forwarded[#forwarded + 1] = v
   end
@@ -78,17 +98,47 @@ else
   source_kind = luaroot and "release" or nil
 end
 
--- ---- host commands: version / self-update (work without a bundle) -----------
-local function exit(code)
-  io.stdout:flush()
-  os.exit(code)
+-- ---- pin: sentinel, override, and workspace root ----------------------------
+local pinned_sentinel = getenv("LOOMWORKS_PINNED")
+local lw_override = getenv("LOOMWORKS_LW") ~= nil
+-- The workspace root the pin (and the repo-local cache) live at — the same
+-- upward walk the CLI uses to bind a workspace, seeded from LW_ROOT when a
+-- launcher passes the user's cwd.
+local pin_root = pin.find_pin_root(paths.norm(getenv("LW_ROOT")) or uv.cwd())
+
+-- ---- pinned context: provision the pinned bundle repo-local -----------------
+-- Set by the launcher script or the redirect below. We are the pinned host;
+-- load system Lua from the repo-local bundle rather than any machine-global
+-- install, and never redirect again (the sentinel is our guard).
+if pinned_sentinel and not dev_opt_in then
+  local p = pin_root and pin.read(pin_root)
+  if p and p.version == pinned_sentinel then
+    local dir, err = require("boot.update").ensure_version(p.version, {
+      root = pin_root,
+      bundle_sha256 = p.hashes[pin.bundle_asset(p.version)],
+    })
+    if not dir then
+      io.stderr:write("lw: could not provision pinned bundle " .. p.version ..
+        ": " .. tostring(err) .. "\n")
+      exit(1)
+    end
+    luaroot, source_kind = dir, "release"
+  end
 end
 
-local command = forwarded[1]
+-- ---- host commands: version / self-update (work without a bundle) -----------
+-- Detect the subcommand tolerant of a leading global flag (e.g.
+-- `lw --no-input update`), the same way the redirect classifies it — otherwise a
+-- flag-prefixed host command would fall through to the nvim-hosted CLI.
+local command = subcommand(forwarded)
 -- `--version` / `-v` are the conventional spellings; accept them as aliases so
 -- they don't fall through to workspace resolution and error about a missing
 -- loomworks.json.
-if command == "--version" or command == "-v" then command = "version" end
+if not command then
+  for _, v in ipairs(forwarded) do
+    if v == "--version" or v == "-v" then command = "version"; break end
+  end
+end
 if command == "version" then
   local info = require("boot.update").version_info(luaroot, source_kind)
   io.write(string.format("lw — host v%d · source: %s · bundle: %s\n",
@@ -142,6 +192,83 @@ elseif command == "install" then
     exit(1)
   end
   exit(0)
+elseif command == "bootstrap" or command == "update" then
+  -- Pin management (spec §16.24): runs as the global host, never redirected.
+  local bootstrap = require("boot.bootstrap")
+  local ver_opt
+  for i, v in ipairs(forwarded) do if v == "--version" then ver_opt = forwarded[i + 1] end end
+  local self_version = (source_kind == "release" and luaroot)
+    and luaroot:match("lua%-(.+)$") or nil
+  local root = paths.norm(getenv("LW_ROOT")) or (uv.cwd():gsub("\\", "/"):gsub("/+$", ""))
+  local report, err
+  if command == "update" then
+    -- Update rewrites an existing pin; it must already be bootstrapped.
+    local existing = pin.find_pin_root(root)
+    if not existing then
+      io.stderr:write("lw: no lw.pin found (run `lw bootstrap` first)\n")
+      exit(1)
+    end
+    report, err = bootstrap.update(existing, { version = ver_opt })
+  else
+    report, err = bootstrap.bootstrap(root, self_version, { version = ver_opt })
+  end
+  if report then for _, line in ipairs(report) do io.write(line .. "\n") end end
+  if err then
+    io.stderr:write("lw: " .. command .. " failed: " .. tostring(err) .. "\n")
+    exit(1)
+  end
+  exit(0)
+end
+
+-- ---- pin: redirect a workspace operation to the pinned release --------------
+-- A global host in a pinned repo runs the pinned release. Fast path: the pin
+-- matches self, run in-process (no download). Otherwise fetch+verify the pinned
+-- host binary, set the sentinel, and re-exec it — that host then provisions the
+-- pinned bundle (above) and never redirects again.
+do
+  local self_version = (source_kind == "release" and luaroot)
+    and luaroot:match("lua%-(.+)$") or nil
+  local p = pin_root and pin.read(pin_root)
+  local action = pin.decide({
+    command = command,
+    pin = p,
+    self_version = self_version,
+    pinned_sentinel = pinned_sentinel,
+    no_pin = no_pin,
+    lw_override = lw_override,
+    dev = dev_opt_in,
+  })
+  if action == "redirect" then
+    local asset, aerr = pin.detect_asset()
+    if not asset then
+      io.stderr:write("lw: cannot honor lw.pin: " .. tostring(aerr) .. "\n")
+      exit(1)
+    end
+    local bin = pin.binary_path(pin_root, p.version, asset)
+    io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it…\n")
+    io.stdout:flush()
+    local ok, err = require("boot.update").ensure_host_binary(
+      p.version, asset, p.hashes[asset], bin)
+    if not ok then
+      io.stderr:write("lw: could not fetch pinned lw " .. p.version .. ": " ..
+        tostring(err) .. "\n")
+      exit(1)
+    end
+    -- Carry the sentinel + workspace root across the exec; the child inherits
+    -- our environment (uv.os_setenv is visible to spawned children).
+    uv.os_setenv("LOOMWORKS_PINNED", p.version)
+    uv.os_setenv("LW_ROOT", getenv("LW_ROOT") or uv.cwd())
+    local code
+    local handle = uv.spawn(bin, { args = forwarded, stdio = { 0, 1, 2 } },
+      function(c) code = c end)
+    if not handle then
+      io.stderr:write("lw: cannot exec pinned lw at " .. bin .. "\n")
+      exit(1)
+    end
+    uv.run()
+    handle:close()
+    exit(code or 0)
+  end
 end
 
 -- ---- install the loomworks searcher + run -----------------------------------

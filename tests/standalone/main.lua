@@ -466,5 +466,295 @@ do
     "vim.fn.exepath / getcwd present")
 end
 
+local function slurp(p)
+  local f = io.open(p, "rb"); if not f then return nil end
+  local s = f:read("*a"); f:close(); return s
+end
+
+print("boot.pin — parse / serialize / asset selection")
+do
+  local pin = require("boot.pin")
+  eq(pin.host_asset("Linux", "x86_64"), "lw-linux-x86_64", "linux/x86_64 asset")
+  eq(pin.host_asset("Darwin", "arm64"), "lw-macos-arm64", "macos/arm64 asset")
+  eq(pin.host_asset("MINGW64_NT-10.0", "x86_64"), "lw-windows-x86_64.exe", "windows/x86_64 asset")
+  eq(pin.host_asset("Linux", "amd64"), "lw-linux-x86_64", "amd64 normalizes to x86_64")
+  eq(pin.host_asset("Darwin", "aarch64"), "lw-macos-arm64", "aarch64 normalizes to arm64")
+  ok(select(1, pin.host_asset("Linux", "arm64")) == nil, "linux/arm64 unsupported (no wrong-asset)")
+  ok(select(1, pin.host_asset("Plan9", "x86_64")) == nil, "unknown OS rejected")
+
+  local text = "version = 1.2.3\nsha256_lw-linux-x86_64 = ABCDEF\n" ..
+    "# a comment\nsha256_loomworks-lua-1.2.3.zip = 00ff\n"
+  local p = pin.parse(text)
+  ok(p ~= nil, "parses a pin")
+  eq(p and p.version, "1.2.3", "version parsed")
+  eq(p and p.hashes["lw-linux-x86_64"], "abcdef", "host-binary hash lowercased")
+  eq(p and p.hashes["loomworks-lua-1.2.3.zip"], "00ff", "bundle hash parsed")
+  ok(select(1, pin.parse("sha256_x = y")) == nil, "pin without version rejected")
+
+  local rt = pin.parse(pin.serialize("9.9.9", { ["lw-linux-x86_64"] = "DEAD", b = "beef" }))
+  eq(rt.version, "9.9.9", "serialize round-trips version")
+  eq(rt.hashes["lw-linux-x86_64"], "dead", "serialize round-trips + lowercases")
+  eq(pin.bundle_asset("9.9.9"), "loomworks-lua-9.9.9.zip", "bundle asset name")
+end
+
+print("boot.pin — redirect decision")
+do
+  local pin = require("boot.pin")
+  local P = { version = "2.0.0", hashes = {} }
+  local function act(o) return (pin.decide(o)) end
+  eq(act({ command = "build", pin = P, self_version = "1.0.0" }), "redirect",
+    "pin != self -> redirect")
+  eq(act({ command = "build", pin = P, self_version = "2.0.0" }), "in-process",
+    "pin == self -> in-process (fast path, no download)")
+  eq(act({ command = "build", pin = P, self_version = "1.0.0", no_pin = true }), "bypass",
+    "--no-pin bypasses")
+  eq(act({ command = "build", pin = P, self_version = "1.0.0", lw_override = true }), "bypass",
+    "LOOMWORKS_LW bypasses")
+  eq(act({ command = "build", pin = P, self_version = "1.0.0", dev = true }), "bypass",
+    "dev source bypasses")
+  eq(act({ command = "build", pin = P, self_version = "1.0.0", pinned_sentinel = "2.0.0" }),
+    "in-process", "sentinel -> never redirect (anti-recursion)")
+  eq(act({ command = "version", pin = P, self_version = "1.0.0" }), "in-process",
+    "host command not redirected")
+  eq(act({ command = "status", pin = P, self_version = "1.0.0" }), "in-process",
+    "status not redirected")
+  eq(act({ command = "build", pin = nil, self_version = "1.0.0" }), "no-pin",
+    "no pin -> no redirect")
+  for _, c in ipairs({ "build", "run", "test", "clean", "configure" }) do
+    ok(pin.is_redirect_command(c), c .. " is a redirect command")
+  end
+  ok(not pin.is_redirect_command("publish"), "publish is not a redirect command")
+  ok(not pin.is_redirect_command("bootstrap"), "bootstrap is not a redirect command")
+end
+
+print("boot.update — versioned_base URL shapes")
+do
+  eq(update.versioned_base("1.2.3", { url = update.DEFAULT_RELEASE_URL }),
+    "https://github.com/samienne/loomworks.nvim/releases/download/v1.2.3",
+    "GitHub default -> versioned download path")
+  eq(update.versioned_base("1.2.3", { url = "/tmp/mirror" }), "/tmp/mirror",
+    "local mirror stays flat")
+  eq(update.versioned_base("1.2.3", { url = "https://example.com/mirror" }),
+    "https://example.com/mirror", "custom http mirror stays flat")
+end
+
+print("boot.update — ensure_version (repo-local bundle, flat mirror)")
+do
+  local sb = root .. "/tests/.tmp-ensure"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+  local repo = sb .. "/repo"; paths.mkdirp(repo)
+  local ver = "7.7.7-test"
+  local bundle = "loomworks-lua-" .. ver .. ".zip"
+  do
+    local w = miniz.new_writer()
+    w:add("loomworks/cli.lua", "return {}\n")
+    local f = assert(io.open(mirror .. "/" .. bundle, "wb")); f:write(w:finalize()); f:close()
+  end
+  local bundle_sha = verify.sha256_hex(readfile(mirror .. "/" .. bundle))
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+
+  eq(update.versioned_base(ver), mirror, "versioned_base(mirror) is flat")
+
+  local dir, err = update.ensure_version(ver, { root = repo, bundle_sha256 = bundle_sha })
+  ok(dir ~= nil, "ensure_version provisions" .. (err and (" — " .. err) or ""))
+  eq(dir, repo .. "/.nvim/cache/lua-" .. ver, "extracted to repo-local .nvim/cache/lua-<ver>")
+  ok(slurp(dir .. "/loomworks/cli.lua") ~= nil, "bundle extracted (cli.lua present)")
+
+  -- idempotent: a second call reuses without touching the mirror
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror .. "/gone")
+  local dir2 = update.ensure_version(ver, { root = repo, bundle_sha256 = bundle_sha })
+  eq(dir2, dir, "ensure_version idempotent (no refetch)")
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+
+  -- hash mismatch aborts and leaves nothing behind
+  local repo2 = sb .. "/repo2"; paths.mkdirp(repo2)
+  local bad, berr = update.ensure_version(ver, { root = repo2, bundle_sha256 = string.rep("0", 64) })
+  ok(bad == nil and type(berr) == "string", "bundle hash mismatch aborts")
+  ok(not uv.fs_stat(repo2 .. "/.nvim/cache/lua-" .. ver .. "/loomworks/cli.lua"),
+    "a rejected provision leaves nothing behind")
+
+  paths.rm_rf(sb)
+end
+
+print("boot.update — ensure_host_binary (pinned host binary, flat mirror)")
+do
+  local sb = root .. "/tests/.tmp-hostbin"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+  local asset = "lw-linux-x86_64"
+  local body = "FAKE-LW-BINARY\n"
+  do local f = assert(io.open(mirror .. "/" .. asset, "wb")); f:write(body); f:close() end
+  local sha = verify.sha256_hex(body)
+  local dest = sb .. "/cache/lw-1.0.0-" .. asset
+
+  local ok1 = update.ensure_host_binary("1.0.0", asset, sha, dest)
+  ok(ok1 == true, "ensure_host_binary downloads + verifies")
+  ok(slurp(dest) == body, "cached binary bytes match")
+
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror .. "/gone")
+  ok(update.ensure_host_binary("1.0.0", asset, sha, dest) == true, "idempotent when cached")
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+
+  local dest2 = sb .. "/cache/lw-1.0.0-bad"
+  local bad, berr = update.ensure_host_binary("1.0.0", asset, string.rep("0", 64), dest2)
+  ok(bad == nil and type(berr) == "string", "host-binary hash mismatch aborts")
+  ok(not uv.fs_stat(dest2), "bad download deleted")
+
+  ok(select(1, update.ensure_host_binary("1.0.0", asset, nil, dest2)) == nil,
+    "refuses with no pinned sha256 (hash is always mandatory)")
+
+  paths.rm_rf(sb)
+end
+
+print("boot.bootstrap — pin authoring (flat mirror, signed SHA256SUMS)")
+do
+  local bootstrap = require("boot.bootstrap")
+  local pin = require("boot.pin")
+  local ossl = require("openssl")
+  local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+  local function sign(data) return priv:sign(data, "sha256") end
+
+  local sb = root .. "/tests/.tmp-bootstrap"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+  local repo = sb .. "/repo"; paths.mkdirp(repo)
+  local ver = "3.4.5-test"
+
+  local function stage(version, tag)
+    local exp, lines = {}, {}
+    local list = { "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe",
+      pin.bundle_asset(version) }
+    for _, a in ipairs(list) do
+      local bodyv = tag .. ":" .. a .. "\n"
+      local f = assert(io.open(mirror .. "/" .. a, "wb")); f:write(bodyv); f:close()
+      local h = verify.sha256_hex(bodyv); exp[a] = h
+      lines[#lines + 1] = h .. "  " .. a
+    end
+    local sums = table.concat(lines, "\n") .. "\n"
+    do local f = assert(io.open(mirror .. "/SHA256SUMS", "wb")); f:write(sums); f:close() end
+    do local f = assert(io.open(mirror .. "/SHA256SUMS.sig", "wb")); f:write(sign(sums)); f:close() end
+    return exp
+  end
+
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+  local exp = stage(ver, "V1")
+
+  local map, ferr = bootstrap.fetch_hashes(ver)
+  ok(map ~= nil, "fetch_hashes (signed) returns the map" .. (ferr and (" — " .. ferr) or ""))
+  eq(map and map["lw-linux-x86_64"], exp["lw-linux-x86_64"], "hash comes from SHA256SUMS")
+
+  -- a bad signature on the hash list is rejected (nothing trusted)
+  do local f = assert(io.open(mirror .. "/SHA256SUMS.sig", "wb"))
+     f:write(readfile(FX .. "manifest.json.sig")); f:close() end
+  ok(select(1, bootstrap.fetch_hashes(ver)) == nil, "wrong SHA256SUMS signature rejected")
+  stage(ver, "V1")  -- restore the good, matching signed list
+
+  local rep, berr = bootstrap.bootstrap(repo, nil, { version = ver })
+  ok(rep ~= nil, "bootstrap succeeds" .. (berr and (" — " .. berr) or ""))
+  local p = pin.read(repo)
+  ok(p ~= nil, "lw.pin written + parseable")
+  eq(p and p.version, ver, "pin version")
+  eq(p and p.hashes["lw-windows-x86_64.exe"], exp["lw-windows-x86_64.exe"],
+    "pin carries the windows host-binary hash")
+  eq(p and p.hashes[pin.bundle_asset(ver)], exp[pin.bundle_asset(ver)],
+    "pin carries the BUNDLE hash")
+  ok(slurp(repo .. "/lw.sh") ~= nil and slurp(repo .. "/lw.cmd") ~= nil, "launchers written")
+  local gi = slurp(repo .. "/.gitignore")
+  ok(gi ~= nil and gi:find(".nvim/cache/", 1, true) ~= nil, "gitignore has the cache entry")
+
+  -- idempotent gitignore append that preserves existing content
+  do local f = assert(io.open(repo .. "/.gitignore", "wb")); f:write("build/\n.nvim/cache/\n"); f:close() end
+  eq(bootstrap.ensure_gitignore(repo), "present", "gitignore append is idempotent")
+  local gi2 = slurp(repo .. "/.gitignore")
+  ok(gi2:find("build/", 1, true) ~= nil, "existing .gitignore content preserved")
+  eq(select(2, gi2:gsub("%.nvim/cache/", "")), 1, "cache entry not duplicated")
+
+  -- a release missing a required asset is a clean error (no partial pin)
+  do
+    local m2 = sb .. "/mirror2"; paths.mkdirp(m2)
+    local partial = exp["lw-linux-x86_64"] .. "  lw-linux-x86_64\n"
+    do local f = assert(io.open(m2 .. "/SHA256SUMS", "wb")); f:write(partial); f:close() end
+    do local f = assert(io.open(m2 .. "/SHA256SUMS.sig", "wb")); f:write(sign(partial)); f:close() end
+    uv.os_setenv("LOOMWORKS_RELEASE_URL", m2)
+    ok(select(1, bootstrap.bootstrap(sb .. "/repo3", nil, { version = ver })) == nil,
+      "bootstrap errors when the release lacks a required asset")
+    uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+  end
+
+  -- update repoints the pin at a new version
+  local ver2 = "3.5.0-test"
+  local exp2 = stage(ver2, "V2")
+  local urep, uerr = bootstrap.update(repo, { version = ver2 })
+  ok(urep ~= nil, "update rewrites the pin" .. (uerr and (" — " .. uerr) or ""))
+  local p2 = pin.read(repo)
+  eq(p2 and p2.version, ver2, "pin updated to the new version")
+  eq(p2 and p2.hashes[pin.bundle_asset(ver2)], exp2[pin.bundle_asset(ver2)],
+    "pin bundle hash updated")
+
+  -- update to an unfetchable release fails cleanly, leaving the pin intact
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", sb .. "/nope")
+  ok(select(1, bootstrap.update(repo, { version = "9.9.9-nope" })) == nil,
+    "update to an unfetchable release fails cleanly")
+  eq(pin.read(repo).version, ver2, "failed update leaves the pin intact")
+
+  paths.rm_rf(sb)
+end
+
+print("SECURITY — malicious lw.pin version cannot redirect the fetch or rm outside cache")
+do
+  local pin = require("boot.pin")
+  local bootstrap = require("boot.bootstrap")
+
+  -- valid_version whitelist (the trust boundary)
+  ok(pin.valid_version("0.1.0"), "accepts 0.1.0")
+  ok(pin.valid_version("0.0.0-test"), "accepts a prerelease tag")
+  ok(pin.valid_version("1.2.3+build.5"), "accepts build metadata")
+  ok(not pin.valid_version("/../../../attacker/evil/releases/download/v1"),
+    "rejects a path-traversal version")
+  ok(not pin.valid_version("1..2"), "rejects `..`")
+  ok(not pin.valid_version("1.0\\evil"), "rejects a backslash")
+  ok(not pin.valid_version("1 0"), "rejects whitespace")
+  ok(not pin.valid_version(""), "rejects empty")
+  ok(not pin.valid_version("../x"), "rejects a leading ../")
+
+  -- pin.parse refuses a malicious version outright (never yields it downstream)
+  local evil = "version = /../../../../attacker/evil/releases/download/v1\n" ..
+    "sha256_lw-linux-x86_64 = " .. string.rep("a", 64) .. "\n"
+  ok(select(1, pin.parse(evil)) == nil, "pin.parse refuses a traversal version")
+  ok(select(1, pin.parse("version = a\\b\n")) == nil, "pin.parse refuses a backslash version")
+  ok(select(1, pin.parse("version = a b\n")) == nil, "pin.parse refuses a whitespace version")
+
+  -- A committed malicious lw.pin: pin.read -> nil, so the redirect makes no fetch
+  local sb = root .. "/tests/.tmp-sec"; paths.rm_rf(sb); paths.mkdirp(sb)
+  do local f = assert(io.open(sb .. "/lw.pin", "wb")); f:write(evil); f:close() end
+  ok(pin.read(sb) == nil, "pin.read refuses a malicious committed pin")
+  eq(pin.decide({ command = "build", pin = pin.read(sb), self_version = "9.9.9" }),
+    "no-pin", "redirect refuses: a malicious pin yields no redirect (no fetch)")
+
+  -- versioned_base never emits a traversal URL
+  ok(not pcall(update.versioned_base, "/../../evil", { url = update.DEFAULT_RELEASE_URL }),
+    "versioned_base errors on a traversal version (URL never built)")
+
+  -- ensure_version / ensure_host_binary refuse BEFORE any fetch or rm: a victim
+  -- dir OUTSIDE .nvim/cache survives (deletion-safety).
+  local repo = sb .. "/repo"; paths.mkdirp(repo .. "/.nvim/cache")
+  local victim = sb .. "/victim"; paths.mkdirp(victim)
+  do local f = assert(io.open(victim .. "/keep.txt", "wb")); f:write("KEEP"); f:close() end
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", sb .. "/mirror")
+  local d, e = update.ensure_version("../../victim",
+    { root = repo, bundle_sha256 = string.rep("a", 64) })
+  ok(d == nil and type(e) == "string", "ensure_version refuses a traversal version")
+  ok(uv.fs_stat(victim .. "/keep.txt") ~= nil,
+    "victim dir OUTSIDE .nvim/cache is untouched (no traversal rm)")
+  local b, be = update.ensure_host_binary("x/../../evil", "lw-linux-x86_64",
+    string.rep("a", 64), repo .. "/.nvim/cache/x")
+  ok(b == nil and type(be) == "string", "ensure_host_binary refuses a traversal version")
+
+  -- authoring refuses a bad version too
+  ok(select(1, bootstrap.fetch_hashes("/../../evil")) == nil,
+    "fetch_hashes refuses a bad version (no SHA256SUMS fetch)")
+
+  paths.rm_rf(sb)
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

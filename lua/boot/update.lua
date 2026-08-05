@@ -12,6 +12,7 @@ local miniz = require("miniz")
 local paths = require("boot.paths")
 local verify = require("boot.verify")
 local download = require("boot.download")
+local pin = require("boot.pin")
 
 local M = {}
 
@@ -25,6 +26,115 @@ local function release_base(opts)
     or paths.read_config()["release-url"]
     or M.DEFAULT_RELEASE_URL
   return (base:gsub("/+$", ""))
+end
+
+--- The `latest`/override release base (holds manifest.json + `latest` assets).
+function M.release_base(opts) return release_base(opts) end
+
+--- Is `base` a local path / offline mirror (flat layout) rather than the
+--- versioned GitHub origin? Mirrors boot.download's scheme test.
+local function is_local_base(base)
+  local scheme = base:match("^(%a[%w+.-]*)://")
+  if scheme == "file" then return true end
+  if not scheme then return true end
+  return false
+end
+
+--- The base URL holding a SPECIFIC version's assets. The default GitHub origin
+--- serves them under a versioned path (…/releases/download/v<ver>/); a local or
+--- overridden mirror is flat — the version's assets sit at the base directly, as
+--- self_update already assumes. So the pin's per-version fetches resolve on
+--- GitHub and against an offline mirror alike.
+function M.versioned_base(version, opts)
+  -- Defense in depth: never interpolate an unvalidated version into a URL.
+  if not pin.valid_version(version) then
+    error("unsafe release version: " .. tostring(version))
+  end
+  local base = release_base(opts)
+  if not is_local_base(base) then
+    local root = base:match("^(.-)/releases/latest/download$")
+    if root then return root .. "/releases/download/v" .. version end
+  end
+  return base
+end
+
+--- Ensure the host binary `asset` for `version` is cached at `dest`, verified
+--- against the pinned `sha256` (mandatory, unconditional). Idempotent: a present
+--- file whose hash matches is reused; a mismatch deletes the bad file. Reuses
+--- boot.download + boot.verify + rename_with_retry. Returns true, dest or nil, err.
+function M.ensure_host_binary(version, asset, sha256, dest, opts)
+  if not pin.valid_version(version) then
+    return nil, "unsafe release version '" .. tostring(version) .. "'"
+  end
+  if type(sha256) ~= "string" or not sha256:match("^%x+$") then
+    return nil, "no pinned sha256 for '" .. tostring(asset) .. "'"
+  end
+  if uv.fs_stat(dest) and verify.verify_file_sha256(dest, sha256) then
+    return true, dest
+  end
+  paths.rm_rf(dest)
+  local parent = dest:match("^(.*)/[^/]*$")
+  if parent then
+    local ok, err = paths.mkdirp(parent)
+    if not ok then return nil, "prepare cache dir: " .. tostring(err) end
+  end
+  local tmp = dest .. ".dl"
+  paths.rm_rf(tmp)
+  local url = M.versioned_base(version, opts) .. "/" .. asset
+  local okd, ed = download.fetch_to_file(url, tmp)
+  if not okd then paths.rm_rf(tmp); return nil, "fetch " .. asset .. ": " .. ed end
+  local okv, ev = verify.verify_file_sha256(tmp, sha256)
+  if not okv then paths.rm_rf(tmp); return nil, "verify " .. asset .. ": " .. (ev or "mismatch") end
+  local okr, er = M.rename_with_retry(tmp, dest)
+  if not okr then paths.rm_rf(tmp); return nil, "activate " .. asset .. ": " .. tostring(er) end
+  if not paths.is_windows then pcall(uv.fs_chmod, dest, tonumber("755", 8)) end
+  return true, dest
+end
+
+--- Provision the pinned release bundle for `version` into a REPO-LOCAL cache at
+--- `<opts.root>/.nvim/cache/lua-<version>/`, verified against the pinned
+--- `opts.bundle_sha256`. Idempotent (an already-extracted bundle is reused);
+--- a failed/partial provision leaves prior state intact. Repo-local so a pinned
+--- run never pollutes the machine-global install. Returns the lua-root or nil, err.
+function M.ensure_version(version, opts)
+  opts = opts or {}
+  local root = opts.root
+  if not root then return nil, "ensure_version needs a repo root" end
+  -- Trust boundary: `version` becomes an rm_rf'd path below, so refuse a
+  -- traversal before touching the filesystem.
+  if not pin.valid_version(version) then
+    return nil, "unsafe release version '" .. tostring(version) .. "'"
+  end
+  local dest = root .. "/.nvim/cache/lua-" .. version
+  -- Already provisioned? The CLI entry existing is the marker.
+  if uv.fs_stat(dest .. "/loomworks/cli.lua") then return dest end
+
+  local bundle = "loomworks-lua-" .. version .. ".zip"
+  local sha = opts.bundle_sha256
+  if type(sha) ~= "string" or not sha:match("^%x+$") then
+    return nil, "no pinned sha256 for '" .. bundle .. "'"
+  end
+  local cache = root .. "/.nvim/cache"
+  local okm, em = paths.mkdirp(cache)
+  if not okm then return nil, "prepare cache dir: " .. tostring(em) end
+
+  local tmpzip = cache .. "/.dl-" .. version .. ".zip"
+  paths.rm_rf(tmpzip)
+  local url = M.versioned_base(version, opts) .. "/" .. bundle
+  local okd, ed = download.fetch_to_file(url, tmpzip)
+  if not okd then paths.rm_rf(tmpzip); return nil, "fetch bundle: " .. ed end
+  local okv, ev = verify.verify_file_sha256(tmpzip, sha)
+  if not okv then paths.rm_rf(tmpzip); return nil, "bundle verify: " .. (ev or "mismatch") end
+
+  local stage = cache .. "/.stage-" .. version
+  paths.rm_rf(stage)
+  local okx, ex = M.extract_zip(tmpzip, stage)
+  paths.rm_rf(tmpzip)
+  if not okx then paths.rm_rf(stage); return nil, "extract: " .. ex end
+  if uv.fs_stat(dest) then paths.rm_rf(dest) end
+  local okr, er = M.rename_with_retry(stage, dest)
+  if not okr then paths.rm_rf(stage); return nil, "activate: " .. tostring(er) end
+  return dest
 end
 
 --- Extract the zip at `zip_path` into `dest_dir` (created). Rejects unsafe
@@ -46,7 +156,8 @@ function M.extract_zip(zip_path, dest_dir)
   if ok then
     for i = 1, reader:get_num_files() do
       local name = reader:get_filename(i)
-      if name:find("%.%.", 1, true) or name:match("^/") or name:match("^%a:") then
+      if name:find("%.%.", 1, true) or name:match("^/") or name:match("^%a:")
+          or name:match("^\\") then  -- also reject a leading backslash / UNC
         err = "unsafe zip entry '" .. name .. "'"; break
       end
       local target = dest_dir .. "/" .. name

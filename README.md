@@ -562,6 +562,77 @@ release bundle. `--dry-run` shows what it would do; `--no-bundle` skips the
 fetch. No admin required. Then enable completion with `lw completion bash`
 (see [above](#standalone-lw-runner) / `lw help completion`).
 
+### Repo-local launcher (`lw bootstrap`)
+
+For a project where every contributor and CI runner should use the **same,
+pinned** `lw` — with no prior global install — commit a repo-local launcher.
+From the repo root:
+
+```sh
+lw bootstrap                 # pins this host's release; or: lw bootstrap --version 0.1.0
+git add lw.sh lw.cmd lw.pin  # commit the three files
+```
+
+`bootstrap` writes three committed files and gitignores the machine-local cache:
+
+| File | What it is |
+|---|---|
+| `lw.pin` | the pinned release **version** + the SHA-256 of every host binary and of the release bundle (plain `key = value`, no JSON) |
+| `lw.sh` | POSIX launcher (Linux/macOS, and Git-Bash/MSYS on Windows) |
+| `lw.cmd` | native Windows launcher (cmd/PowerShell) |
+
+The hashes come from that release's **signed** `SHA256SUMS` (its signature is
+verified against the key built into `lw` before any hash is trusted). Downloaded
+binaries and the provisioned bundle live under `.nvim/cache/`, which `bootstrap`
+appends to `.gitignore` idempotently.
+
+Then anyone with a checkout runs the launcher — no global `lw` needed:
+
+```sh
+./lw.sh build Debug:ninja-gcc-14      # Linux/macOS/Git-Bash
+lw.cmd build Debug:ninja-gcc-14       # Windows cmd/PowerShell
+./lw.sh --no-interaction test --junit results.xml   # CI: forwards args verbatim
+```
+
+The launcher selects the host binary for the platform, downloads it from the
+official release (**verifying its sha256 against the pin — always**), caches it
+under `.nvim/cache/`, and execs it; that host then provisions the pinned bundle,
+also into `.nvim/cache/`. So a clean checkout goes from `./lw.sh build` to
+building, **reproducibly** — host and bundle are the exact pinned release, and
+the machine-global install is left untouched.
+
+- **Proxies / air-gapped.** The launcher honors `HTTPS_PROXY` / `HTTP_PROXY`.
+  `--insecure` (or `LOOMWORKS_INSECURE=1`) relaxes TLS for an intercepting
+  proxy — safe only because the sha256 check is independent and **always**
+  enforced. Point `LOOMWORKS_RELEASE_URL` at a local mirror directory (holding
+  the release assets + `SHA256SUMS`) for an offline runner.
+- **Dev / test-at-head.** `LOOMWORKS_LW=<path>` makes the launcher run that
+  binary and bypass the pin entirely — the override CI uses to test a freshly
+  built `lw` against a pinned repo.
+- **Optional stronger check.** `--verify` additionally runs
+  `gh attestation verify` when `gh` is present; it is skipped with a note (never
+  a failure) when `gh` is absent.
+
+**A globally-installed `lw` also honors the pin.** Run inside a pinned repo, a
+global `lw` resolves the pin for `build` / `run` / `test` / `clean`: if the pin
+matches its own version it runs in-process (no download); otherwise it fetches +
+verifies the pinned release and re-execs it, so you always get the pinned
+behavior. Bypass with `--no-pin` (run the global as-is) or `LOOMWORKS_LW=<path>`.
+Management commands (`version`, `self-update`, `install`, `bootstrap`, `update`)
+never redirect. The global host never executes the repo's `lw.sh`/`lw.cmd` — it
+resolves the pin declaratively and runs the official binary it fetched itself.
+
+Move the pin forward with `lw update` (from a repo already bootstrapped):
+
+```sh
+lw update                 # repoint lw.pin at the latest release
+lw update --version 0.2.0 # or a specific one
+```
+
+`update` rewrites `lw.pin` with the target release's signed hashes (failing
+cleanly if that release isn't fetchable) and refreshes the launcher scripts. See
+`lw help bootstrap` / `lw help update`.
+
 ### Commands
 
 `lw` with no command prints workspace status and the active profile. Every
@@ -585,6 +656,8 @@ command has detail under `lw help <command>`.
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw config <...>` | Get/set `lw`'s own configuration |
+| `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
+| `lw update [--version <x.y.z>]` | Repoint `lw.pin` at a target (or the latest) release |
 
 A first run, from an empty directory:
 
@@ -632,6 +705,11 @@ don't use this — install the module plugin the usual way.)
 
 `lw help ci` is the full guide. The essentials:
 
+- **Pin `lw` itself** with a repo-local launcher (see
+  [Repo-local launcher](#repo-local-launcher-lw-bootstrap)): commit `lw.sh` /
+  `lw.cmd` / `lw.pin` with `lw bootstrap`, then run `./lw.sh --no-interaction
+  build …` on the runner — it fetches + verifies the pinned host and bundle, so
+  every cell runs the same reproducible `lw` with no separate install step.
 - Pass `--no-input` (or set `CI=1`, which implies it) so a missing value errors
   instead of blocking on a prompt. In non-interactive mode `lw build` also
   ignores the active profile — name the profile explicitly.
