@@ -561,6 +561,34 @@ function Workspace:find_build_dir(rel_path)
     return nil
 end
 
+--- Find the cached build_dir entry for a config unit's stable identity.
+--- A ConfigUnit's identity is (project_key, config_key); a cache entry is
+--- matched on that identity, never on a recomputed build-dir path. The stored
+--- path segment can be volatile across processes (e.g. a cache entry written
+--- without tool_data can't reproduce a compiler segment), so recomputing it
+--- would orphan a genuinely-built entry. The config_key is derived from the
+--- configuration name (the config-set mapping value) and the resolved tool key,
+--- both of which persist independently of tool_data. Returns the entry's stored
+--- dict key (the persisted rel-path) alongside the entry so callers adopt the
+--- persisted build-dir identity rather than minting a fresh one.
+--- @param cache table|nil parsed cache data
+--- @param project_key string
+--- @param variant string|nil configuration name (config-set mapping value)
+--- @param tool_key string|nil resolved tool key (nil for non-keyed modules)
+--- @return string|nil rel_key stored build_dirs dict key
+--- @return table|nil entry matched cache entry
+function Workspace:find_cache_entry_for(cache, project_key, variant, tool_key)
+    if not (cache and cache.build_dirs) then return nil end
+    if not variant then return nil end
+    local config_key = require("loomworks.merge").build_config_key(variant, tool_key)
+    for rel_key, cc in pairs(cache.build_dirs) do
+        if cc.project_key == project_key and cc.config_key == config_key then
+            return rel_key, cc
+        end
+    end
+    return nil
+end
+
 --- Compute the expected build directory for a project configuration.
 --- Delegates to the module's resolve_build_dir, then relativizes.
 ---

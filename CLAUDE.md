@@ -264,6 +264,11 @@ These are implementation-specific details not covered by the spec or architectur
   `last_configured`, `last_built`, `cmake_info`, `_variant`, `_tool_key`,
   `_tool_data` as individual fields, plus `_build_dir` (BuildDir reference).
   `serialize()` produces cache-shaped table on demand. No `_cached` bag.
+  ConfigUnit↔cache matching anchors on the stable `(project_key, config_key)`
+  identity (`Workspace:find_cache_entry_for`), never a recomputed build-dir
+  path — the unit adopts the persisted entry's build_dir, so a volatile path
+  segment (e.g. a cache entry written without tool_data) can't orphan a built
+  entry and force a needless reconfigure.
 - **DataModel** (`data_model.lua`): deserialization orchestrator. Receives raw
   file data + current domain object arrays (never accesses Workspace directly).
   Builds deserialization context with resolver methods (`ctx:project(key)`,
