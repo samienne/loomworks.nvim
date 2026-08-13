@@ -292,6 +292,11 @@ a build directory is a per-project coordinate; the reported facts a caller MAY
 request include the build directory, the pinned configuration, the last known
 build state, and the resolved toolchain.
 
+The human status overview is likewise read-only, and when no workspace resolves
+here (§1.1) it MAY note that the invocation sits in a linked git worktree and
+whether the main checkout holds a workspace — a best-effort hint that never
+fails or delays the report when git is absent or slow.
+
 ### 16.19 Convention migration
 
 Recommended shapes for the workspace files change over time while older

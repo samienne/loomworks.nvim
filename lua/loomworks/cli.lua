@@ -2974,11 +2974,68 @@ local function status_section(title, items, max, row_fn, more_hint, help)
   out("  " .. help)
 end
 
+--- Best-effort, time-bounded git query for the no-workspace status hint. Never
+--- throws and never hangs status: a missing binary, non-zero exit, or a git
+--- that runs long past the timeout all collapse to nil. Returns trimmed stdout
+--- only on a clean (code 0) run. `cwd` nil runs git unanchored (for `--version`).
+local GIT_HINT_TIMEOUT_MS = 1500
+local function git_query(cwd, args)
+  local cmd = { "git" }
+  if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
+  for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+  local done, res = false, nil
+  local ok, proc = pcall(vim.system, cmd, { text = true }, function(r)
+    res = r; done = true
+  end)
+  if not ok or not proc then return nil end
+  vim.wait(GIT_HINT_TIMEOUT_MS, function() return done end, 20)
+  if not done then
+    pcall(function() proc:kill(9) end)
+    if proc.pid then pcall(uv.kill, proc.pid, 9) end
+    return nil
+  end
+  if not res or res.code ~= 0 then return nil end
+  return ((res.stdout or ""):gsub("%s+$", ""))
+end
+
+--- When there's no workspace here, detect whether we sit in a linked git
+--- worktree and, if so, whether the main checkout has a loomworks workspace.
+--- Read-only and non-fatal. Returns a (possibly empty) list of note lines.
+--- `opts.git`/`opts.stat`/`opts.dir` are injectable for tests.
+function M._worktree_hint(opts)
+  opts = opts or {}
+  local git = opts.git or git_query
+  local stat = opts.stat or uv.fs_stat
+  local dir = opts.dir or user_cwd()
+  -- Probe git itself first: its absence and "not a repo" both fail the queries
+  -- below, but only the former warrants a note.
+  if not git(nil, { "--version" }) then
+    return { "(git not available — can't check for a parent worktree)" }
+  end
+  local top = git(dir, { "rev-parse", "--show-toplevel" })
+  if not top or top == "" then return {} end -- not a git repo: no note (common)
+  local list = git(dir, { "worktree", "list", "--porcelain" })
+  if not list then return {} end
+  local main = list:match("^worktree ([^\n]+)")
+  if not main or main == "" then return {} end
+  if norm_cmp(main) == norm_cmp(top) then return {} end -- we are the main worktree
+  local has_ws = stat(main .. "/loomworks.json")
+      or stat(main .. "/.nvim/loomworks.user.json")
+  if has_ws then
+    return {
+      "You're in a git worktree; the main checkout at " .. main .. " has a loomworks workspace.",
+      "Per-worktree profile sharing isn't wired up yet.",
+    }
+  end
+  return { "(in a git worktree; the main checkout has no loomworks workspace either)" }
+end
+
 --- `lw status` (also bare `lw`) — one-screen workspace overview. Works outside
 --- a workspace too. Every section is capped to keep it to a single page.
 function M.cmd_status(root)
   if not root then
     out("loomworks — no workspace here (no loomworks.json / .nvim/loomworks.user.json)")
+    for _, line in ipairs(M._worktree_hint()) do out(line) end
     out("")
     out("Run `lw init` to start one, or `lw help` for commands.")
     return 0
