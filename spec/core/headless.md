@@ -294,8 +294,9 @@ build state, and the resolved toolchain.
 
 The human status overview is likewise read-only, and when no workspace resolves
 here (§1.1) it MAY note that the invocation sits in a linked git worktree and
-whether the main checkout holds a workspace — a best-effort hint that never
-fails or delays the report when git is absent or slow.
+whether the main checkout holds a workspace — a best-effort, time-bounded hint:
+it never fails the report, and a slow or absent git only adds a small bounded
+delay.
 
 ### 16.19 Convention migration
 
