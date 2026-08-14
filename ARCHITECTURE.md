@@ -798,10 +798,14 @@ replaces it, which would drop `PATH`).
   reads the foreign `user.json` with the stateless `loomworks.user` loader (the
   in-process workspace is untouched), and `cli._pull_merge` unions the two
   working copies **item-level, source-wins** — the deliberate opposite winner
-  from `workspace.merge_configs` (target-wins). It excludes the active profile
-  and all cache/build state, then writes via the atomic `user.save` path only;
-  it never publishes. Runs before the workspace-required guard so it works in a
-  worktree that has no workspace of its own yet.
+  from `workspace.merge_configs` (target-wins). Synced set: projects,
+  configuration_sets, profiles, sdks, default_target, and the nested debug/lsp
+  settings maps (those two `pull_deep_union`'d per key so siblings survive).
+  Excluded (target keeps its own): the active profile, the workspace `name`, the
+  per-machine `device` map, and all cache/build state. It then writes via the
+  atomic `user.save` path only; it never publishes. Runs before the
+  workspace-required guard so it works in a worktree that has no workspace of its
+  own yet.
 - **Convention migration** (spec §16.19): `lua/loomworks/migrate.lua` holds a
   registry of named rules, each separating `plan` (what would change) from
   `apply` (change it), so `lw migrate --check` can lint without write access
