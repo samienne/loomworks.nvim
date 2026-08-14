@@ -3025,16 +3025,47 @@ end
 -- captured / piped / redirected output, so it is emitted only to a stdout tty.
 local ANSI_CMD, ANSI_RESET = "\27[36m", "\27[0m"
 
---- Whether to color stdout. Windows would leak raw escapes unless the console
---- has virtual-terminal processing on, and there is no safe way to enable or
---- detect that across both hosts (nvim and the luvi shim) — so we stay plain
---- there. Elsewhere: a real stdout tty with NO_COLOR (the convention) unset.
+-- On Windows a console only renders ANSI once virtual-terminal processing is
+-- on. Enable it once via LuaJIT FFI (kernel32) — available on both hosts (nvim
+-- and the luvi luajit shim). Memoized, Windows-only, and every step is
+-- pcall-guarded: no ffi, a redirected stdout, or a denied syscall all yield
+-- false and we stay plain. Never touches kernel32 off Windows.
+local _win_vt_memo -- nil = undecided, then true/false
+local function windows_vt_enabled()
+  if _win_vt_memo ~= nil then return _win_vt_memo end
+  local enabled = false
+  pcall(function()
+    local ffi = require("ffi")
+    if ffi.os ~= "Windows" then return end
+    ffi.cdef([[
+      void* GetStdHandle(unsigned long nStdHandle);
+      int GetConsoleMode(void* hConsoleHandle, unsigned long* lpMode);
+      int SetConsoleMode(void* hConsoleHandle, unsigned long dwMode);
+    ]])
+    local STD_OUTPUT_HANDLE = 0xFFFFFFF5 -- (DWORD)-11
+    local ENABLE_VT = 0x0004 -- ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    local h = ffi.C.GetStdHandle(STD_OUTPUT_HANDLE)
+    local mode = ffi.new("unsigned long[1]")
+    if ffi.C.GetConsoleMode(h, mode) == 0 then return end -- redirected / not a console
+    if ffi.C.SetConsoleMode(h, bit.bor(tonumber(mode[0]), ENABLE_VT)) == 0 then return end
+    enabled = true
+  end)
+  _win_vt_memo = enabled
+  return _win_vt_memo
+end
+
+--- Whether to color stdout: NO_COLOR (the convention) unset AND stdout is a
+--- real terminal AND, on Windows, VT processing could be turned on. The tty
+--- gate runs before the Windows probe, so a piped / redirected / captured run
+--- (every test) returns false without ever touching the FFI path.
 local function stdout_supports_color()
   if os.getenv("NO_COLOR") then return false end
-  if is_windows() then return false end
   local ok, h = pcall(uv.guess_handle, 1)
-  return ok and h == "tty"
+  if not ok or h ~= "tty" then return false end
+  if is_windows() then return windows_vt_enabled() end
+  return true
 end
+M._stdout_supports_color = stdout_supports_color
 
 --- Return a token painter: wraps a command in cyan when `color`, else identity.
 local function painter(color)

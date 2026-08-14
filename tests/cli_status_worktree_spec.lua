@@ -123,25 +123,57 @@ describe("lw status worktree hint (_worktree_hint)", function()
 end)
 
 describe("lw status hint color gating", function()
-    it("emits no ANSI escape on the default (non-tty) captured path", function()
-        -- Every branch: the default path must be plain text for capture.
-        local branches = {
-            { git = fake_git({ version = false }), stat = never_stat },
-            { git = fake_git({ version = true, toplevel = nil }), stat = never_stat },
-            {
-                git = fake_git({
-                    version = true,
-                    toplevel = "/repo/wt",
-                    list = "worktree /repo/main\n\nworktree /repo/wt\n",
-                }),
-                stat = always_stat,
-            },
-        }
-        for _, b in ipairs(branches) do
-            b.dir = "/repo/wt"
-            local text = joined(cli._worktree_hint(b))
-            assert.is_false(has_escape(text))
-        end
+    -- Force stdout to look like a non-tty for the duration of `fn`, on every
+    -- platform, so the default color decision is deterministic regardless of
+    -- how the test host is launched (piped, redirected, or a real terminal).
+    local function with_non_tty(fn)
+        local real = uv.guess_handle
+        uv.guess_handle = function(fd) return fd == 1 and "file" or real(fd) end
+        local ok, err = pcall(fn)
+        uv.guess_handle = real
+        assert(ok, err)
+    end
+
+    it("emits no ANSI escape on the default (non-tty) path, every branch", function()
+        with_non_tty(function()
+            local branches = {
+                { git = fake_git({ version = false }), stat = never_stat },
+                { git = fake_git({ version = true, toplevel = nil }), stat = never_stat },
+                {
+                    git = fake_git({
+                        version = true,
+                        toplevel = "/repo/wt",
+                        list = "worktree /repo/main\n\nworktree /repo/wt\n",
+                    }),
+                    stat = always_stat,
+                },
+            }
+            for _, b in ipairs(branches) do
+                b.dir = "/repo/wt"
+                -- No opts.color: exercises the real stdout_supports_color gate.
+                assert.is_false(has_escape(joined(cli._worktree_hint(b))))
+            end
+        end)
+    end)
+
+    it("stdout_supports_color() is false on a non-tty, all platforms", function()
+        -- The tty gate short-circuits before the Windows FFI path, so on Linux
+        -- CI this both stays plain AND never reaches kernel32.
+        with_non_tty(function()
+            assert.is_false(cli._stdout_supports_color())
+        end)
+    end)
+
+    it("respects NO_COLOR even when stdout is a tty", function()
+        local real = uv.guess_handle
+        uv.guess_handle = function(fd) return fd == 1 and "tty" or real(fd) end
+        local saved = vim.env.NO_COLOR
+        vim.env.NO_COLOR = "1"
+        local ok, res = pcall(cli._stdout_supports_color)
+        vim.env.NO_COLOR = saved
+        uv.guess_handle = real
+        assert.is_true(ok)
+        assert.is_false(res)
     end)
 
     it("wraps command tokens in color codes only when color is forced on", function()
