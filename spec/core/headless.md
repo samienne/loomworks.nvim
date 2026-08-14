@@ -557,3 +557,29 @@ no working copy at all, the pull creates one from the source's config in full.
 Pull writes the working copy through the same atomic, non-clobbering path as any
 other management write (§2.3), and reports what it added, updated, and kept. It
 MAY offer a **preview** mode that reports the same plan without writing.
+
+### 16.26 Worktree listing
+
+Because a working copy is machine-local and per-checkout (§2.2, §16.25),
+configuration commonly lives in one checkout while a sibling git worktree has
+none. A host MAY **list the worktrees** of the current git repository so the
+user can see, before pulling (§16.25), which checkouts already hold a workspace.
+The listing is read-only: it inspects no build or cache state and authors
+nothing.
+
+For each worktree the listing reports its path, its checked-out branch (or that
+it is a detached HEAD or a bare entry), which entry is the repository's **main
+worktree** and which is the **current** one, and whether loomworks is
+**initialised** there — the same presence test used elsewhere: a workspace is
+present when the published snapshot (§2.4) or the working copy (§2.2) exists at
+that checkout. The set of worktrees and their order come from the same
+read-only, time-bounded git detection the status hint and pull use (§16.18,
+§16.25); the main worktree is the first entry.
+
+Unlike the status hint — which treats git as a best-effort convenience and
+degrades silently when it is absent (§16.18) — worktree listing is **inherently
+git-based** and therefore reports an explicit error, with a non-zero status,
+when git is unavailable or the current directory is not within a git repository,
+rather than producing an empty or misleading list (§16.3). A request for a
+sub-operation the host does not recognise is likewise an explicit error, not a
+silent fall-through to the listing.
