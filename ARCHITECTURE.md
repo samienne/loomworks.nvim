@@ -791,6 +791,17 @@ replaces it, which would drop `PATH`).
   `lw launch <add|set|remove>`, and per-item `lw <kind> publish`. Each delegates
   to the same atomic `Workspace` mutation the editor uses (e.g. project rename →
   `Workspace:rename_project`, workspace name → `Workspace:rename_workspace`).
+- **Working-copy pull** (spec §16.25): `lw pull [<source>] [--dry-run]` folds
+  another checkout's working copy into the current one so a fresh `git worktree`
+  inherits its config. `cli._plan_pull` resolves the source (default = the main
+  worktree via the extracted `cli._main_worktree`, reused from the status hint),
+  reads the foreign `user.json` with the stateless `loomworks.user` loader (the
+  in-process workspace is untouched), and `cli._pull_merge` unions the two
+  working copies **item-level, source-wins** — the deliberate opposite winner
+  from `workspace.merge_configs` (target-wins). It excludes the active profile
+  and all cache/build state, then writes via the atomic `user.save` path only;
+  it never publishes. Runs before the workspace-required guard so it works in a
+  worktree that has no workspace of its own yet.
 - **Convention migration** (spec §16.19): `lua/loomworks/migrate.lua` holds a
   registry of named rules, each separating `plan` (what would change) from
   `apply` (change it), so `lw migrate --check` can lint without write access
