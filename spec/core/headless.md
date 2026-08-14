@@ -521,18 +521,22 @@ and asks for an explicit source; a source that resolves to the current checkout
 itself is refused; and a source that holds no working copy is reported as having
 nothing to pull.
 
-**What is pulled.** The source's entire working config — its projects (with
+**What is pulled.** The source's shared configuration items: its projects (with
 their configurations, launch configurations, deploy steps, and variables), its
-configuration sets, its profiles, and the remaining working-copy configuration
-it carries. Because the full state is pulled, every cross-reference a pulled item
-makes (a configuration set to its projects and configurations, a profile to its
-set) is satisfied by the pull itself, so the result contains no dangling
-references.
+configuration sets, its profiles, its declared toolchains (§10.1), its per-profile
+default targets, and its workspace-level integration settings (debugger-adapter
+and language-server option maps). When the source's working config is internally
+consistent, every cross-reference a pulled item makes (a configuration set to its
+projects and configurations, a profile to its set) resolves against the pulled
+result. Pull propagates configuration but does not itself validate references — a
+source that already contains a dangling reference produces one in the target too.
 
-**What is excluded.** The **active-profile selection** (§4.2) is never pulled:
-each checkout keeps its own active profile, the one piece of working-copy state a
-contributor sets per-checkout. Build and cache state (§2.3) is not part of the
-working copy and so is never involved.
+**What is excluded.** Three pieces of working-copy state are **per-checkout** and
+never pulled — the target keeps its own: the **active-profile selection** (§4.2),
+the **workspace name** (each checkout keeps its own identity — pulling it would
+silently alias one checkout as another), and any **per-machine device selection**
+(§12), which is the same category of local choice as the active profile. Build and
+cache state (§2.3) is not part of the working copy and so is never involved.
 
 **Merge semantics.** The pull is a **non-destructive, item-level union in which
 the source wins on collision**: an item present only in the current checkout is
@@ -540,8 +544,11 @@ preserved; an item present in both is replaced by the source's version; an item
 present only in the source is added. This is deliberately the opposite winner
 from the published-snapshot fold (§2.4), where the working copy wins so external
 changes never clobber local edits — here the caller is explicitly asking for the
-source's configuration. When the current checkout has no working copy at all, the
-pull creates one from the source's config in full.
+source's configuration. The workspace-level integration settings are the one
+exception to whole-item replacement: they are **unioned key by key** (source wins
+per key), so pulling one debugger adapter or one language-server option keeps the
+target's sibling entries rather than dropping them. When the current checkout has
+no working copy at all, the pull creates one from the source's config in full.
 
 Pull writes the working copy through the same atomic, non-clobbering path as any
 other management write (§2.3), and reports what it added, updated, and kept. It

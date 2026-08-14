@@ -134,6 +134,52 @@ describe("cli._pull_merge (SOURCE wins, non-destructive)", function()
         assert.is_not_nil(merged.profiles["Dev:ninja-gcc"])
         assert.same({}, dangling_refs(merged))
     end)
+
+    it("never pulls the workspace name — target keeps its own identity", function()
+        local merged = cli._pull_merge({ name = "target-ws" }, { name = "source-ws", projects = { a = {} } })
+        assert.equals("target-ws", merged.name)
+    end)
+
+    it("keeps a nil name when neither the merge nor the target sets one", function()
+        local merged = cli._pull_merge({}, { name = "source-ws", projects = { a = {} } })
+        assert.is_nil(merged.name)
+    end)
+
+    it("never pulls the per-machine device selection — target keeps its own map", function()
+        local target = { device = { ["P"] = { serial = "t-serial" } } }
+        local source = { device = { ["P"] = { serial = "s-serial" }, ["Q"] = { serial = "q" } },
+            projects = { a = {} } }
+        local merged = cli._pull_merge(target, source)
+        assert.equals("t-serial", merged.device.P.serial) -- unchanged
+        assert.is_nil(merged.device.Q)                    -- source device NOT added
+    end)
+
+    it("unions debug adapters per key (source wins on collision, siblings survive)", function()
+        local target = { debug = { adapters = { ["c++"] = "codelldb", typescript = "pwa-node" } } }
+        local source = { debug = { adapters = { ["c++"] = "cppdbg", rust = "codelldb" } } }
+        local merged = cli._pull_merge(target, source)
+        assert.equals("cppdbg", merged.debug.adapters["c++"])       -- collision -> source
+        assert.equals("pwa-node", merged.debug.adapters.typescript) -- target-only kept
+        assert.equals("codelldb", merged.debug.adapters.rust)       -- source-only added
+    end)
+
+    it("unions lsp options per key (server -> option, siblings survive)", function()
+        local target = { lsp = { clangd = { clang_tidy = true, background_index = true } } }
+        local source = { lsp = { clangd = { clang_tidy = false }, luals = { hint = true } } }
+        local merged = cli._pull_merge(target, source)
+        assert.equals(false, merged.lsp.clangd.clang_tidy)       -- collision -> source
+        assert.equals(true, merged.lsp.clangd.background_index)  -- target-only kept
+        assert.equals(true, merged.lsp.luals.hint)               -- source-only server added
+    end)
+
+    it("keeps default_target (travels with the profile), source-wins per profile", function()
+        local target = { default_target = { P = "t", R = "keep" } }
+        local source = { default_target = { P = "s", Q = "add" } }
+        local merged = cli._pull_merge(target, source)
+        assert.equals("s", merged.default_target.P)    -- source wins
+        assert.equals("keep", merged.default_target.R) -- target-only kept
+        assert.equals("add", merged.default_target.Q)  -- source-only added
+    end)
 end)
 
 -- ---------------------------------------------------------------------------
@@ -184,6 +230,21 @@ describe("cli._plan_pull", function()
         assert.same({ "only_here" }, plan.summary.projects.kept)
         -- Active profile is the target's own, untouched.
         assert.equals("Local:x", plan.merged.active_profile)
+    end)
+
+    it("reports non-itemized (settings) changes when only debug/lsp differ", function()
+        write_user(target, { projects = { app = { cmake = {}, path = "app" } } })
+        write_user(source, {
+            projects = { app = { cmake = {}, path = "app" } }, -- identical -> no item change
+            debug = { adapters = { rust = "codelldb" } },
+        })
+        local plan = assert(cli._plan_pull({ cwd = target, git = fake_git(target, source) }))
+        assert.is_true(plan.changed)
+        -- No itemized project change...
+        assert.same({}, plan.summary.projects.added)
+        assert.same({}, plan.summary.projects.updated)
+        -- ...but the settings change is reported, so the summary is never blank.
+        assert.is_truthy(vim.tbl_contains(plan.settings, "debug adapters"))
     end)
 
     it("reports no change when the source adds nothing new", function()
@@ -271,6 +332,24 @@ describe("cli.cmd_pull", function()
         assert.equals(0, code)
         assert.is_nil(uv.fs_stat(user.filepath(target)), "dry run must not write user.json")
         assert.is_truthy(table.concat(wrote):find("dry run", 1, true))
+    end)
+
+    it("--dry-run reports a settings-only change and still writes nothing", function()
+        write_user(target, { projects = { app = { cmake = {}, path = "app" } } })
+        write_user(source, {
+            projects = { app = { cmake = {}, path = "app" } },
+            debug = { adapters = { rust = "codelldb" } },
+        })
+        local before = user.load(target)
+        local code = cli.cmd_pull({ "pull", "--dry-run" }, { cwd = target, git = fake_git(target, source) })
+        io.write = real_write
+        assert.equals(0, code)
+        local text = table.concat(wrote)
+        assert.is_truthy(text:find("debug adapters", 1, true)) -- non-blank summary
+        assert.is_truthy(text:find("dry run", 1, true))
+        -- Nothing written: the target's working copy is byte-for-byte unchanged.
+        assert.same(before, user.load(target))
+        assert.is_nil(user.load(target).debug)
     end)
 end)
 

@@ -3142,11 +3142,13 @@ end
 -- item's own identity (project key, set name, profile key, …). Pull unions
 -- these per item-key with the SOURCE winning on collision, target-only kept.
 local PULL_ITEM_MAPS = {
-  "projects", "configuration_sets", "profiles", "sdks", "default_target", "device",
+  "projects", "configuration_sets", "profiles", "sdks", "default_target",
 }
--- Opaque workspace-level settings: taken from the source wholesale when it has
--- them, else the target's are kept.
-local PULL_OPAQUE = { "name", "debug", "lsp" }
+-- Nested settings maps (debug: adapters -> language -> adapter; lsp: server ->
+-- option -> value). Unioned per key at EVERY level so a source's entry for one
+-- key never drops the target's siblings — pulling a `c++` debug adapter keeps
+-- the target's `typescript` one. NOT wholesale-replaced.
+local PULL_DEEP_MAPS = { "debug", "lsp" }
 -- The sub-maps of `intent`, unioned one level deeper (per item key).
 local PULL_INTENT_SUBS = { "projects", "configurations", "configuration_sets", "profiles" }
 -- Which item maps a human summary reports on, and how each is labelled.
@@ -3156,12 +3158,44 @@ local PULL_SUMMARY = {
   { key = "profiles", label = "Profiles" },
   { key = "sdks", label = "SDKs" },
 }
+-- Non-itemized keys whose changes the summary reports as one grouped line, so a
+-- write (or --dry-run) that only touches settings is never blank about it.
+local PULL_SETTINGS_REPORT = {
+  { key = "default_target", label = "default targets" },
+  { key = "debug", label = "debug adapters" },
+  { key = "lsp", label = "lsp options" },
+  { key = "intent", label = "publish intent" },
+}
+
+-- A non-empty sequence is a list (replaced wholesale on collision); dict-like
+-- tables (including empty ones) are unioned key by key.
+local function pull_is_list(t) return type(t) == "table" and #t > 0 end
+
+-- Recursive per-key union: target-only keys survive, the source wins at leaves
+-- and for lists, and two colliding dict values recurse so nested siblings are
+-- preserved. Used for the nested settings maps (debug adapters, lsp options).
+local function pull_deep_union(target, source)
+  local r = {}
+  if type(target) == "table" then for k, v in pairs(target) do r[k] = v end end
+  for k, sv in pairs(source) do
+    local tv = r[k]
+    if type(tv) == "table" and type(sv) == "table"
+        and not pull_is_list(tv) and not pull_is_list(sv) then
+      r[k] = pull_deep_union(tv, sv)
+    else
+      r[k] = sv
+    end
+  end
+  return r
+end
 
 --- Item-level union of two user.json tables with the SOURCE winning on a key
 --- collision, non-destructive toward target-only items. Deliberately the
 --- OPPOSITE winner from workspace.merge_configs (target/user-wins) — pull's
---- caller is explicitly asking for the source's config. The active profile is
---- never pulled: the target keeps its own selection. Returns the merged table
+--- caller is explicitly asking for the source's config. The target keeps its
+--- own workspace identity and per-machine selections — the active profile, the
+--- workspace `name`, and the `device` map are never pulled (they are carried
+--- over from the target and never overwritten). Returns the merged table
 --- (sharing sub-table references with the inputs — safe, since callers write it
 --- out and discard the inputs).
 --- @param target table|nil target (current) working copy
@@ -3174,8 +3208,9 @@ function M._pull_merge(target, source)
   for k, v in pairs(target) do merged[k] = v end
   merged._meta = nil -- re-stamped by user.save; irrelevant to the merge
 
-  -- active_profile is carried over from the target above and never overwritten
-  -- by the source — each checkout keeps its own active selection.
+  -- active_profile, name, and device are carried over from the target above and
+  -- never overwritten — each checkout keeps its own identity and per-machine
+  -- selections.
 
   for _, map in ipairs(PULL_ITEM_MAPS) do
     local s = source[map]
@@ -3206,8 +3241,10 @@ function M._pull_merge(target, source)
     merged.intent = dst
   end
 
-  for _, key in ipairs(PULL_OPAQUE) do
-    if source[key] ~= nil then merged[key] = source[key] end
+  for _, key in ipairs(PULL_DEEP_MAPS) do
+    if type(source[key]) == "table" then
+      merged[key] = pull_deep_union(merged[key], source[key])
+    end
   end
 
   return merged
@@ -3303,6 +3340,15 @@ function M._plan_pull(opts)
     summary[cat.key] = pull_classify(tgt_data, src_data, cat.key)
   end
 
+  -- Non-itemized keys (default targets, debug adapters, lsp options, publish
+  -- intent) — reported as a grouped line so a settings-only pull is never blank.
+  local settings = {}
+  for _, s in ipairs(PULL_SETTINGS_REPORT) do
+    if not vim.deep_equal(merged[s.key], tgt_data[s.key]) then
+      settings[#settings + 1] = s.label
+    end
+  end
+
   return {
     source_root = source_root,
     target_root = target_root,
@@ -3311,6 +3357,7 @@ function M._plan_pull(opts)
     merged = merged,
     changed = changed,
     summary = summary,
+    settings = settings,
   }
 end
 
@@ -3360,6 +3407,9 @@ function M.cmd_pull(args, opts)
       if #c.kept > 0 then parts[#parts + 1] = #c.kept .. " kept local-only (" .. names(c.kept, 6) .. ")" end
       out(string.format("  %-19s %s", cat.label .. ":", table.concat(parts, ", ")))
     end
+  end
+  if #plan.settings > 0 then
+    out(string.format("  %-19s %s updated", "Settings:", table.concat(plan.settings, ", ")))
   end
 
   if not plan.changed then
@@ -3968,19 +4018,22 @@ without re-authoring it.
               working copy, or when it resolves to this same checkout.
   --dry-run   Report the plan (added / updated / kept) without writing.
 
-What it pulls: the source's whole working config — projects (with their
+What it pulls: the source's working config — projects (with their
 configurations, launch configs, deploy steps, variables), configuration sets,
-and profiles. Because the full state comes across, every reference (set ->
-projects/configs, profile -> set) stays satisfied.
+profiles, SDK declarations, per-profile default targets, and the debug-adapter /
+lsp-option maps. When the source's config is internally consistent, every
+reference (set -> projects/configs, profile -> set) stays satisfied.
 
-What it does NOT pull: the ACTIVE PROFILE (each checkout keeps its own), and all
-build/cache state (that lives in .nvim/loomworks.cache.json, never the working
-copy).
+What it does NOT pull: the ACTIVE PROFILE, the workspace NAME, and the per-machine
+DEVICE selection (each checkout keeps its own), plus all build/cache state (that
+lives in .nvim/loomworks.cache.json, never the working copy).
 
 Merge: a non-destructive, item-level union where the SOURCE wins on a name
 collision — items only here are kept, items in both take the source's version,
-items only in the source are added. It writes the working copy only; it never
-publishes loomworks.json and never touches the cache or build dirs.]],
+items only in the source are added. The debug-adapter and lsp-option maps are
+unioned per key (a pulled `c++` adapter keeps your `typescript` one). It writes
+the working copy only; it never publishes loomworks.json and never touches the
+cache or build dirs.]],
   project = [[lw project <add|remove|rename|list|show|publish>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);

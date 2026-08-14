@@ -653,7 +653,7 @@ command has detail under `lw help <command>`.
 | `lw run <profile> [target]` | Build, then execute a launch target (omit `target` for the profile default) |
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
 | `lw publish` | Write `loomworks.json` from the working copy |
-| `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile). Source defaults to the main git worktree |
+| `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw config <...>` | Get/set `lw`'s own configuration |
@@ -694,9 +694,13 @@ lw pull /path/to/other/checkout  # or pull from an explicit checkout
 
 It is a **source-wins, non-destructive** item-level merge: items only in this
 worktree are kept, items in both take the source's version, items only in the
-source are added. It never pulls the **active profile** (each worktree keeps its
-own) and never touches build/cache state; it writes the working copy only and
-never publishes `loomworks.json`.
+source are added. It pulls projects, configuration sets, profiles, SDK
+declarations, per-profile default targets, and the debug-adapter / lsp-option
+maps (those two are unioned per key, so a pulled `c++` adapter keeps your
+`typescript` one). It never pulls the **active profile**, the **workspace name**,
+or the per-machine **device** selection — each worktree keeps its own — and never
+touches build/cache state; it writes the working copy only and never publishes
+`loomworks.json`.
 
 ### Installing modules
 
