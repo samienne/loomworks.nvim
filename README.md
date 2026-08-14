@@ -655,6 +655,7 @@ command has detail under `lw help <command>`.
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
+| `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw config <...>` | Get/set `lw`'s own configuration |
@@ -706,6 +707,23 @@ touches build/cache state; it writes the working copy only and never publishes
 `lw worktree` lists every git worktree of the repo — its branch, which is the
 main and current worktree, and whether loomworks is inited in each — so you can
 see where a config already lives before pulling.
+
+`lw worktree add <branch> [<start-point>]` rolls the two steps above into one:
+it creates a worktree at `<main>/.worktrees/<branch>` (the full branch path is
+mirrored, so `feature/x` lands at `.worktrees/feature/x`) and then runs `lw pull`
+from the main checkout into it, so the new worktree is ready to build:
+
+```sh
+lw worktree add feature/x         # new branch feature/x + pull main's config
+lw worktree add hotfix v1.2.0     # new branch hotfix off the v1.2.0 tag
+lw worktree add existing-branch   # check out an existing branch + pull
+lw worktree add scratch --no-pull # create the worktree only, no pull
+```
+
+A new `<branch>` is created (from `<start-point>`, else main's `HEAD`); an
+existing one is checked out. It requires git and is non-destructive: it never
+overwrites, and if the auto-pull fails after the worktree is created the worktree
+is kept (run `lw pull` inside it by hand) and the exit is non-zero.
 
 ### Installing modules
 

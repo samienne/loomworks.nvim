@@ -2998,6 +2998,38 @@ local function git_query(cwd, args)
   return ((res.stdout or ""):gsub("%s+$", ""))
 end
 
+-- Timeout for the one MUTATING git call the CLI makes (`git worktree add`, via
+-- `lw worktree add`). It checks out a tree, so it is slower than git_query's
+-- read-only probes and needs a longer budget.
+local GIT_MUTATE_TIMEOUT_MS = 60000
+
+--- Like git_query but for a MUTATING git command whose stderr the user must see
+--- on failure. Returns the raw vim.system result `{ code, stdout, stderr }`, or
+--- nil when the process could not be spawned or timed out. (git_query collapses
+--- failure to nil and discards stderr — fine for read-only probes, but a create
+--- must surface git's own message.)
+--- @param cwd string|nil
+--- @param args string[]
+--- @param timeout_ms? number
+--- @return table|nil result
+local function git_exec(cwd, args, timeout_ms)
+  local cmd = { "git" }
+  if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
+  for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+  local done, res = false, nil
+  local ok, proc = pcall(vim.system, cmd, { text = true }, function(r)
+    res = r; done = true
+  end)
+  if not ok or not proc then return nil end
+  vim.wait(timeout_ms or GIT_MUTATE_TIMEOUT_MS, function() return done end, 20)
+  if not done then
+    pcall(function() proc:kill(9) end)
+    if proc.pid then pcall(uv.kill, proc.pid, 9) end
+    return nil
+  end
+  return res
+end
+
 --- Parse `git worktree list --porcelain` into a record per worktree, in order
 --- (the first is the main worktree). Each record has `path`, and optionally
 --- `head`, `branch` (short — `refs/heads/` stripped), `detached`, `bare`,
@@ -3494,6 +3526,36 @@ function M._plan_pull(opts)
   }
 end
 
+--- The head of `list`, capped at `cap` items, with a `, +N more` tail when the
+--- list is longer. Shared by the pull summary renderers.
+local function pull_names(list, cap)
+  local head = {}
+  for i = 1, math.min(#list, cap) do head[#head + 1] = list[i] end
+  local s = table.concat(head, ", ")
+  if #list > cap then s = s .. ", +" .. (#list - cap) .. " more" end
+  return s
+end
+
+--- Print the per-category (Projects / sets / profiles / SDKs) and settings
+--- change lines of a pull `plan`, each indented two spaces. Shared by `lw pull`
+--- and `lw worktree add`'s auto-pull so both report identically.
+local function print_pull_changes(plan)
+  for _, cat in ipairs(PULL_SUMMARY) do
+    local c = plan.summary[cat.key]
+    if #c.added + #c.updated + #c.unchanged + #c.kept > 0 then
+      local parts = {}
+      if #c.added > 0 then parts[#parts + 1] = #c.added .. " added (" .. pull_names(c.added, 6) .. ")" end
+      if #c.updated > 0 then parts[#parts + 1] = #c.updated .. " updated (" .. pull_names(c.updated, 6) .. ")" end
+      if #c.unchanged > 0 then parts[#parts + 1] = #c.unchanged .. " unchanged" end
+      if #c.kept > 0 then parts[#parts + 1] = #c.kept .. " kept local-only (" .. pull_names(c.kept, 6) .. ")" end
+      out(string.format("  %-19s %s", cat.label .. ":", table.concat(parts, ", ")))
+    end
+  end
+  if #plan.settings > 0 then
+    out(string.format("  %-19s %s updated", "Settings:", table.concat(plan.settings, ", ")))
+  end
+end
+
 --- `lw pull [<source>] [--dry-run]` — fold another checkout's working config
 --- into this one so a fresh worktree inherits its profiles / sets / projects.
 --- Source-wins, non-destructive, item-level; never publishes, never touches the
@@ -3519,31 +3581,10 @@ function M.cmd_pull(args, opts)
   local plan, err = M._plan_pull({ source = source, cwd = opts.cwd, git = opts.git })
   if not plan then die(err) end
 
-  local function names(list, cap)
-    local head = {}
-    for i = 1, math.min(#list, cap) do head[#head + 1] = list[i] end
-    local s = table.concat(head, ", ")
-    if #list > cap then s = s .. ", +" .. (#list - cap) .. " more" end
-    return s
-  end
-
   out((dry_run and "pull (dry run) from " or "pull from ") .. plan.source_root)
   out("  into " .. plan.target_root)
   out("")
-  for _, cat in ipairs(PULL_SUMMARY) do
-    local c = plan.summary[cat.key]
-    if #c.added + #c.updated + #c.unchanged + #c.kept > 0 then
-      local parts = {}
-      if #c.added > 0 then parts[#parts + 1] = #c.added .. " added (" .. names(c.added, 6) .. ")" end
-      if #c.updated > 0 then parts[#parts + 1] = #c.updated .. " updated (" .. names(c.updated, 6) .. ")" end
-      if #c.unchanged > 0 then parts[#parts + 1] = #c.unchanged .. " unchanged" end
-      if #c.kept > 0 then parts[#parts + 1] = #c.kept .. " kept local-only (" .. names(c.kept, 6) .. ")" end
-      out(string.format("  %-19s %s", cat.label .. ":", table.concat(parts, ", ")))
-    end
-  end
-  if #plan.settings > 0 then
-    out(string.format("  %-19s %s updated", "Settings:", table.concat(plan.settings, ", ")))
-  end
+  print_pull_changes(plan)
 
   if not plan.changed then
     out("")
@@ -3595,9 +3636,12 @@ end
 function M.cmd_worktree(args, opts)
   opts = opts or {}
   local sub = args and args[2]
+  if sub == "add" then
+    return M.cmd_worktree_add(args, opts)
+  end
   if sub and sub ~= "list" then
     die("unknown worktree subcommand '" .. tostring(sub) ..
-      "' — usage: lw worktree [list]")
+      "' — usage: lw worktree [list|add]")
   end
   local git = opts.git or git_query
   local stat = opts.stat or uv.fs_stat
@@ -3645,6 +3689,146 @@ function M.cmd_worktree(args, opts)
       "  " .. padr(row.branch, branchw) ..
       "  " .. status)
   end
+  return 0
+end
+
+--- `lw worktree add <branch> [<start-point>] [--no-pull]` — create a git
+--- worktree and, unless `--no-pull`, fold the MAIN checkout's working config
+--- into it (§16.25/§16.27) so the new tree is ready to build.
+---
+--- Path: `<main>/.worktrees/<branch>` with the FULL branch path mirrored as
+--- directories (git creates the nested dirs), so `feature/x` lands at
+--- `.worktrees/feature/x`. `<main>` is resolved via `_main_worktree`, so `add`
+--- works from ANY worktree and the new tree always registers under the main
+--- repo. A NEW branch is created with an explicit `-b <branch>` (never git's
+--- basename default, which would mis-name a slashed branch); an EXISTING branch
+--- is checked out.
+---
+--- Git-required and NON-DESTRUCTIVE: it never deletes or overwrites; a
+--- pre-existing target path is refused, and if the auto-pull fails AFTER the
+--- worktree is created the worktree is KEPT (the user runs `lw pull` by hand),
+--- with a non-zero exit so the partial state is visible.
+--- @param args string[] full argv (args[1]=="worktree", args[2]=="add", ...)
+--- @param opts? table injectable `{ dir, git, git_exec, color }` for tests
+function M.cmd_worktree_add(args, opts)
+  opts = opts or {}
+  local git = opts.git or git_query
+  local git_run = opts.git_exec or git_exec
+  local dir = opts.dir or user_cwd()
+  local color = opts.color
+  if color == nil then color = stdout_supports_color() end
+  local paint = painter(color)
+  local usage = "usage: lw worktree add <branch> [<start-point>] [--no-pull]"
+
+  -- Parse `<branch> [<start-point>]` with a `--no-pull` flag anywhere.
+  local no_pull, branch, start_point = false, nil, nil
+  for i = 3, #args do
+    local v = args[i]
+    if v == "--no-pull" then
+      no_pull = true
+    elseif v == "--pull" then
+      no_pull = false
+    elseif v:sub(1, 1) == "-" then
+      die("unknown option '" .. v .. "' — " .. usage)
+    elseif not branch then
+      branch = v
+    elseif not start_point then
+      start_point = v
+    else
+      die("unexpected argument '" .. v .. "' — " .. usage)
+    end
+  end
+  if not branch or branch == "" then
+    die("missing <branch> — " .. usage)
+  end
+
+  -- Resolve the MAIN worktree (works from any linked worktree). Git-required:
+  -- unlike the status hint, an absent git or non-repo cwd is an explicit error.
+  local main, _, reason = M._main_worktree({ dir = dir, git = git })
+  if not main then
+    if reason == "git-missing" then
+      die("git is not available — `lw worktree add` needs git")
+    end
+    die("not in a git repository — run `lw worktree add` inside a git worktree")
+  end
+  main = (main:gsub("\\", "/"):gsub("/+$", ""))
+
+  -- Target: `<main>/.worktrees/<branch>`, the full branch path mirrored as
+  -- directories. Normalize any backslashes a user typed in the branch to '/'.
+  local rel = branch:gsub("\\", "/"):gsub("^/+", ""):gsub("/+$", "")
+  local path = main .. "/.worktrees/" .. rel
+
+  -- Never clobber: refuse a pre-existing target (git also refuses, but a
+  -- pre-check yields a clean message and never risks touching existing content).
+  if uv.fs_stat(path) then
+    die("target path already exists: " .. path .. " — refusing to clobber it")
+  end
+
+  -- Does the branch already exist? rev-parse returns the sha (truthy) or nil.
+  local exists = git(main, { "rev-parse", "--verify", "--quiet", "refs/heads/" .. branch }) ~= nil
+
+  -- NEW branch: create it explicitly with `-b` so a slashed name stays whole
+  -- (git's basename default would name `feature/x` just `x`). EXISTING branch:
+  -- check it out (git errors if it is already checked out elsewhere).
+  local gargs
+  if exists then
+    gargs = { "worktree", "add", path, branch }
+  else
+    gargs = { "worktree", "add", "-b", branch, path }
+    if start_point and start_point ~= "" then gargs[#gargs + 1] = start_point end
+  end
+
+  local res = git_run(main, gargs)
+  if not res then
+    die("`git worktree add` did not complete (git missing or timed out)")
+  end
+  if res.code ~= 0 then
+    local msg = (res.stderr or ""):gsub("%s+$", "")
+    if msg == "" then msg = "git exited " .. tostring(res.code) end
+    die("git worktree add failed:\n" .. msg)
+  end
+
+  out("created worktree " .. paint(path))
+  out("  branch " .. branch .. (exists and " (existing)" or " (new)"))
+
+  if no_pull then
+    out("  pull skipped (--no-pull) — run `lw pull` here to fold in main's config")
+    return 0
+  end
+
+  -- Auto-pull: fold MAIN's working config into the fresh worktree (source =
+  -- main, target = the new path). A main with NO working copy is "nothing to
+  -- pull" — not a failure; the worktree stays and we succeed.
+  local user = require("loomworks.user")
+  if not uv.fs_stat(user.filepath(main)) then
+    out("  pull skipped — " .. main .. " has no working config to pull")
+    return 0
+  end
+
+  local plan, perr = M._plan_pull({ cwd = path, source = main, git = git })
+  if not plan then
+    -- The worktree exists; a pull failure must NOT remove it (non-destructive).
+    out("  worktree kept — auto-pull could not run")
+    die("auto-pull failed: " .. tostring(perr) ..
+      "\n  the worktree was created at " .. path ..
+      "\n  run `lw pull` inside it to fold in main's config")
+  end
+
+  out("")
+  out("pulled config from " .. main .. ":")
+  if not plan.changed then
+    out("  nothing to pull (main's config is empty)")
+    return 0
+  end
+  print_pull_changes(plan)
+  local ok, serr = user.save(plan.target_root, plan.merged)
+  if not ok then
+    out("  worktree kept — auto-pull could not write the working copy")
+    die("auto-pull failed: could not write working copy: " .. tostring(serr) ..
+      "\n  the worktree was created at " .. path ..
+      "\n  run `lw pull` inside it to retry")
+  end
+  out("wrote " .. plan.target_user_path)
   return 0
 end
 
@@ -3849,7 +4033,10 @@ function M.cmd_complete(cword, words)
     if n == 1 then out("__dirs__") end
     return 0
   elseif cmd == "worktree" then
-    if n == 1 then emit({ "list" }) end
+    if n == 1 then emit({ "list", "add" }) end
+    -- `add <branch> [<start-point>] [--no-pull]`: the branch/start-point are free
+    -- values (a new branch has no ref to complete); only offer the flag.
+    if sub == "add" and n >= 2 then emit({ "--no-pull" }) end
     return 0
   elseif cmd == "run" then
     if n == 1 then
@@ -4254,23 +4441,37 @@ unioned per key (a pulled `c++` adapter keeps your `typescript` one). It writes
 the working copy only; it never publishes loomworks.json and never touches the
 cache or build dirs.]],
   worktree = [[lw worktree [list]
+       lw worktree add <branch> [<start-point>] [--no-pull]
 
-List every git worktree of the current repository and whether loomworks is
-initialised in each (a workspace file — loomworks.json or the working copy
-.nvim/loomworks.user.json — is present). Read-only; works from a worktree that
-has no workspace of its own yet, so use it to see where a config already lives
-before `lw pull` (spec §16.26).
+Inspect or create the git worktrees of the current repository (spec §16.26/§16.27).
 
-Each row shows the worktree path, its branch (`[branch]`, `[detached <sha>]`,
-or `(bare)`), a `main` marker on the repository's main worktree, a `*` marker
-on the worktree you are in, and `workspace` / `no workspace`.
+  list  (also bare `lw worktree`)
+        List every worktree and whether loomworks is initialised in each (a
+        workspace file — loomworks.json or the working copy
+        .nvim/loomworks.user.json — is present). Read-only; works from a
+        worktree that has no workspace of its own yet. Each row shows the
+        worktree path, its branch (`[branch]`, `[detached <sha>]`, or `(bare)`),
+        a `main` marker on the repository's main worktree, a `*` marker on the
+        worktree you are in, and `workspace` / `no workspace`.
 
-  list   the explicit form; bare `lw worktree` does the same.
+  add <branch> [<start-point>] [--no-pull]
+        Create a worktree at <main>/.worktrees/<branch> — the FULL branch path
+        is mirrored as directories, so `feature/x` lands at
+        `.worktrees/feature/x`. <main> is the repository's main worktree, so
+        `add` works from any worktree. A new <branch> is created (from
+        <start-point>, else main's HEAD); an existing <branch> is checked out
+        (git errors if it is already checked out elsewhere). Then, unless
+        --no-pull, it folds the main checkout's working config into the new
+        worktree (`lw pull`, spec §16.25) so it is ready to build.
+
+        Non-destructive: it never overwrites — a pre-existing target path is
+        refused, and if the auto-pull fails after the worktree is created the
+        worktree is KEPT (run `lw pull` inside it by hand) and the exit is
+        non-zero. --no-pull creates the worktree only.
 
 Requires git: unlike the status hint, `lw worktree` errors (non-zero) when git
 is unavailable or the current directory is not a git repository, rather than
-degrading silently. An unknown subcommand (e.g. `lw worktree add`) is an error,
-reserving that space for future subcommands.]],
+degrading silently. An unknown subcommand is an error.]],
   project = [[lw project <add|remove|rename|list|show|publish>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
@@ -4664,7 +4865,7 @@ Usage: lw [command] [args]
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
-  worktree [list]   list the repo's git worktrees + whether each is inited
+  worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
   migrate [--check] bring the workspace files up to current conventions
   module <sub>      install | update | remove | list acquirable modules (mod)
   config <...>      get/set lw configuration
