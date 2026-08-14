@@ -654,6 +654,7 @@ command has detail under `lw help <command>`.
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
+| `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw config <...>` | Get/set `lw`'s own configuration |
@@ -701,6 +702,10 @@ maps (those two are unioned per key, so a pulled `c++` adapter keeps your
 or the per-machine **device** selection — each worktree keeps its own — and never
 touches build/cache state; it writes the working copy only and never publishes
 `loomworks.json`.
+
+`lw worktree` lists every git worktree of the repo — its branch, which is the
+main and current worktree, and whether loomworks is inited in each — so you can
+see where a config already lives before pulling.
 
 ### Installing modules
 
