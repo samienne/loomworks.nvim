@@ -653,6 +653,7 @@ command has detail under `lw help <command>`.
 | `lw run <profile> [target]` | Build, then execute a launch target (omit `target` for the profile default) |
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
 | `lw publish` | Write `loomworks.json` from the working copy |
+| `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile). Source defaults to the main git worktree |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw config <...>` | Get/set `lw`'s own configuration |
@@ -677,6 +678,25 @@ your machine. Share the configuration set instead and let each machine create
 its own profile, or pass `--shared` when a profile really is portable. See
 `lw help publish` for the intent model and
 [Workspace File Layout](#workspace-file-layout).
+
+The working copy (`.nvim/loomworks.user.json`) is machine-local and gitignored,
+so a fresh `git worktree` starts with no profiles. `lw pull` copies another
+checkout's working config into the current one — with no argument it pulls from
+the repo's main worktree:
+
+```sh
+git worktree add ../feature      # fresh worktree: no .nvim/, no profiles
+cd ../feature
+lw pull                          # inherit the main checkout's config
+lw pull --dry-run                # preview what it would add/update/keep
+lw pull /path/to/other/checkout  # or pull from an explicit checkout
+```
+
+It is a **source-wins, non-destructive** item-level merge: items only in this
+worktree are kept, items in both take the source's version, items only in the
+source are added. It never pulls the **active profile** (each worktree keeps its
+own) and never touches build/cache state; it writes the working copy only and
+never publishes `loomworks.json`.
 
 ### Installing modules
 
