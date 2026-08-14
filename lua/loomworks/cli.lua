@@ -3021,38 +3021,85 @@ function M._main_worktree(opts)
   return main, top, nil
 end
 
---- When there's no workspace here, detect whether we sit in a linked git
---- worktree and, if so, whether the main checkout has a loomworks workspace.
---- Read-only and non-fatal. Returns a (possibly empty) list of note lines.
---- `opts.git`/`opts.stat`/`opts.dir` are injectable for tests.
+-- Command tokens in the hint are cyan on a real terminal. ANSI would corrupt
+-- captured / piped / redirected output, so it is emitted only to a stdout tty.
+local ANSI_CMD, ANSI_RESET = "\27[36m", "\27[0m"
+
+--- Whether to color stdout. Windows would leak raw escapes unless the console
+--- has virtual-terminal processing on, and there is no safe way to enable or
+--- detect that across both hosts (nvim and the luvi shim) — so we stay plain
+--- there. Elsewhere: a real stdout tty with NO_COLOR (the convention) unset.
+local function stdout_supports_color()
+  if os.getenv("NO_COLOR") then return false end
+  if is_windows() then return false end
+  local ok, h = pcall(uv.guess_handle, 1)
+  return ok and h == "tty"
+end
+
+--- Return a token painter: wraps a command in cyan when `color`, else identity.
+local function painter(color)
+  if not color then return function(s) return s end end
+  return function(s) return ANSI_CMD .. s .. ANSI_RESET end
+end
+
+-- Visible width of the command field so descriptions line up in a column.
+local HINT_CMD_FIELD = 13
+local function hint_cmd_line(paint, cmd, desc)
+  local pad = string.rep(" ", math.max(2, HINT_CMD_FIELD - #cmd))
+  return "  " .. paint(cmd) .. pad .. desc
+end
+
+--- The no-workspace status block. When we sit in a linked git worktree whose
+--- main checkout holds a workspace, it offers `lw pull` (fold that config in)
+--- alongside `lw init`; otherwise only `lw init`. Read-only and non-fatal —
+--- git is best-effort. Command tokens are colored only on a real terminal.
+--- `opts.git`/`opts.stat`/`opts.dir` are injectable for tests; `opts.color`
+--- overrides tty detection.
 function M._worktree_hint(opts)
   opts = opts or {}
   local stat = opts.stat or uv.fs_stat
+  local color = opts.color
+  if color == nil then color = stdout_supports_color() end
+  local paint = painter(color)
   local main, top, reason = M._main_worktree(opts)
-  if reason == "git-missing" then
-    return { "(git not available — can't check for a parent worktree)" }
-  end
-  if not main then return {} end -- not a repo / no worktree data: no note (common)
-  if norm_cmp(main) == norm_cmp(top) then return {} end -- we are the main worktree
-  local has_ws = stat(main .. "/loomworks.json")
-      or stat(main .. "/.nvim/loomworks.user.json")
-  if has_ws then
+
+  -- A linked worktree: main resolved cleanly and distinct from this checkout.
+  if main and reason == nil and norm_cmp(main) ~= norm_cmp(top) then
+    local has_ws = stat(main .. "/loomworks.json")
+        or stat(main .. "/.nvim/loomworks.user.json")
+    if has_ws then
+      return {
+        "loomworks — no workspace here (git worktree).",
+        "main checkout " .. main .. " has a workspace:",
+        "",
+        hint_cmd_line(paint, "lw pull", "copy its config into this worktree"),
+        hint_cmd_line(paint, "lw init", "start a fresh workspace here instead"),
+      }
+    end
     return {
-      "You're in a git worktree; the main checkout at " .. main .. " has a loomworks workspace.",
-      "Per-worktree profile sharing isn't wired up yet.",
+      "loomworks — no workspace here (git worktree).",
+      "",
+      hint_cmd_line(paint, "lw init", "start a workspace here"),
     }
   end
-  return { "(in a git worktree; the main checkout has no loomworks workspace either)" }
+
+  -- Not a linked worktree: a plain repo, the main checkout, or not a repo.
+  local lines = {
+    "loomworks — no workspace here.",
+    "",
+    hint_cmd_line(paint, "lw init", "start a workspace here"),
+  }
+  if reason == "git-missing" then
+    lines[#lines + 1] = "(git unavailable — couldn't check for a parent worktree)"
+  end
+  return lines
 end
 
 --- `lw status` (also bare `lw`) — one-screen workspace overview. Works outside
 --- a workspace too. Every section is capped to keep it to a single page.
 function M.cmd_status(root)
   if not root then
-    out("loomworks — no workspace here (no loomworks.json / .nvim/loomworks.user.json)")
     for _, line in ipairs(M._worktree_hint()) do out(line) end
-    out("")
-    out("Run `lw init` to start one, or `lw help` for commands.")
     return 0
   end
   local ws = load_workspace(root, false) -- pinned info only; skip tool detection
