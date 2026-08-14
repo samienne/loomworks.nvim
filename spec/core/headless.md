@@ -498,3 +498,51 @@ Both obtain the per-artifact hashes from the release's **signed** hash list
 committed hashes are themselves anchored to the release key at authoring time.
 Runtime provisioning (§16.22) then trusts the committed pin hash directly, since
 the pin has itself reached the runner through the repository.
+
+### 16.25 Working-copy pull across checkouts
+
+The working copy (§2.2) is machine-local and version-control-ignored, so a fresh
+checkout — most commonly a linked git worktree — starts with no working copy and
+therefore no profiles, configuration sets, or projects to build. A **management
+operation** (§16.9) MAY **pull** another checkout's working config into the
+current one, so a new checkout inherits a ready-to-build configuration without
+re-authoring it.
+
+Pull is a management write (§16.9): it authors the current working copy only,
+never the published snapshot (§2.4) and never any build or cache state (§2.3).
+It is never part of a build.
+
+**Source resolution.** The source is another checkout directory. Absent an
+explicit source, the operation resolves the **main worktree** of the current git
+worktree — the same read-only, time-bounded detection the status hint uses
+(§16.18). Resolution is explicit and never guessed (§16.3): if no source is
+given and the current directory is not a linked worktree, the operation errors
+and asks for an explicit source; a source that resolves to the current checkout
+itself is refused; and a source that holds no working copy is reported as having
+nothing to pull.
+
+**What is pulled.** The source's entire working config — its projects (with
+their configurations, launch configurations, deploy steps, and variables), its
+configuration sets, its profiles, and the remaining working-copy configuration
+it carries. Because the full state is pulled, every cross-reference a pulled item
+makes (a configuration set to its projects and configurations, a profile to its
+set) is satisfied by the pull itself, so the result contains no dangling
+references.
+
+**What is excluded.** The **active-profile selection** (§4.2) is never pulled:
+each checkout keeps its own active profile, the one piece of working-copy state a
+contributor sets per-checkout. Build and cache state (§2.3) is not part of the
+working copy and so is never involved.
+
+**Merge semantics.** The pull is a **non-destructive, item-level union in which
+the source wins on collision**: an item present only in the current checkout is
+preserved; an item present in both is replaced by the source's version; an item
+present only in the source is added. This is deliberately the opposite winner
+from the published-snapshot fold (§2.4), where the working copy wins so external
+changes never clobber local edits — here the caller is explicitly asking for the
+source's configuration. When the current checkout has no working copy at all, the
+pull creates one from the source's config in full.
+
+Pull writes the working copy through the same atomic, non-clobbering path as any
+other management write (§2.3), and reports what it added, updated, and kept. It
+MAY offer a **preview** mode that reports the same plan without writing.
