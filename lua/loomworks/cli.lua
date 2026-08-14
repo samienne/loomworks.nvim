@@ -2998,26 +2998,41 @@ local function git_query(cwd, args)
   return ((res.stdout or ""):gsub("%s+$", ""))
 end
 
+--- The **main worktree** of the git worktree containing `opts.dir`, resolved
+--- from `git worktree list --porcelain` (first entry = main). Read-only,
+--- time-bounded, and never throws. Returns `(main, top, reason)`: `main` is the
+--- main worktree's path and `top` the current worktree's toplevel; both nil
+--- when there is no answer, with `reason` one of "git-missing" | "not-git" |
+--- "no-list" | "no-main" for the caller to phrase. When `main == top` the caller
+--- is already in the main worktree. `opts.git`/`opts.dir` are injectable for tests.
+function M._main_worktree(opts)
+  opts = opts or {}
+  local git = opts.git or git_query
+  local dir = opts.dir or user_cwd()
+  -- Probe git itself first: its absence and "not a repo" both fail the queries
+  -- below, but only the former is distinguishable as a real "no git" note.
+  if not git(nil, { "--version" }) then return nil, nil, "git-missing" end
+  local top = git(dir, { "rev-parse", "--show-toplevel" })
+  if not top or top == "" then return nil, nil, "not-git" end
+  local list = git(dir, { "worktree", "list", "--porcelain" })
+  if not list then return nil, nil, "no-list" end
+  local main = list:match("^worktree ([^\n]+)")
+  if not main or main == "" then return nil, nil, "no-main" end
+  return main, top, nil
+end
+
 --- When there's no workspace here, detect whether we sit in a linked git
 --- worktree and, if so, whether the main checkout has a loomworks workspace.
 --- Read-only and non-fatal. Returns a (possibly empty) list of note lines.
 --- `opts.git`/`opts.stat`/`opts.dir` are injectable for tests.
 function M._worktree_hint(opts)
   opts = opts or {}
-  local git = opts.git or git_query
   local stat = opts.stat or uv.fs_stat
-  local dir = opts.dir or user_cwd()
-  -- Probe git itself first: its absence and "not a repo" both fail the queries
-  -- below, but only the former warrants a note.
-  if not git(nil, { "--version" }) then
+  local main, top, reason = M._main_worktree(opts)
+  if reason == "git-missing" then
     return { "(git not available — can't check for a parent worktree)" }
   end
-  local top = git(dir, { "rev-parse", "--show-toplevel" })
-  if not top or top == "" then return {} end -- not a git repo: no note (common)
-  local list = git(dir, { "worktree", "list", "--porcelain" })
-  if not list then return {} end
-  local main = list:match("^worktree ([^\n]+)")
-  if not main or main == "" then return {} end
+  if not main then return {} end -- not a repo / no worktree data: no note (common)
   if norm_cmp(main) == norm_cmp(top) then return {} end -- we are the main worktree
   local has_ws = stat(main .. "/loomworks.json")
       or stat(main .. "/.nvim/loomworks.user.json")
@@ -3116,6 +3131,254 @@ function M.cmd_status(root)
 
   out("")
   out("`lw help` for commands · `lw help <command>` for details.")
+  return 0
+end
+
+-- ---------------------------------------------------------------------------
+-- pull — fold another checkout's working copy into this one (SOURCE wins)
+-- ---------------------------------------------------------------------------
+
+-- user.json top-level keys carrying a map of independent items keyed by the
+-- item's own identity (project key, set name, profile key, …). Pull unions
+-- these per item-key with the SOURCE winning on collision, target-only kept.
+local PULL_ITEM_MAPS = {
+  "projects", "configuration_sets", "profiles", "sdks", "default_target", "device",
+}
+-- Opaque workspace-level settings: taken from the source wholesale when it has
+-- them, else the target's are kept.
+local PULL_OPAQUE = { "name", "debug", "lsp" }
+-- The sub-maps of `intent`, unioned one level deeper (per item key).
+local PULL_INTENT_SUBS = { "projects", "configurations", "configuration_sets", "profiles" }
+-- Which item maps a human summary reports on, and how each is labelled.
+local PULL_SUMMARY = {
+  { key = "projects", label = "Projects" },
+  { key = "configuration_sets", label = "Configuration sets" },
+  { key = "profiles", label = "Profiles" },
+  { key = "sdks", label = "SDKs" },
+}
+
+--- Item-level union of two user.json tables with the SOURCE winning on a key
+--- collision, non-destructive toward target-only items. Deliberately the
+--- OPPOSITE winner from workspace.merge_configs (target/user-wins) — pull's
+--- caller is explicitly asking for the source's config. The active profile is
+--- never pulled: the target keeps its own selection. Returns the merged table
+--- (sharing sub-table references with the inputs — safe, since callers write it
+--- out and discard the inputs).
+--- @param target table|nil target (current) working copy
+--- @param source table|nil source working copy
+--- @return table merged
+function M._pull_merge(target, source)
+  target = target or {}
+  source = source or {}
+  local merged = {}
+  for k, v in pairs(target) do merged[k] = v end
+  merged._meta = nil -- re-stamped by user.save; irrelevant to the merge
+
+  -- active_profile is carried over from the target above and never overwritten
+  -- by the source — each checkout keeps its own active selection.
+
+  for _, map in ipairs(PULL_ITEM_MAPS) do
+    local s = source[map]
+    if type(s) == "table" then
+      local dst = {}
+      if type(merged[map]) == "table" then
+        for k, v in pairs(merged[map]) do dst[k] = v end -- target-only kept
+      end
+      for k, v in pairs(s) do dst[k] = v end             -- SOURCE wins
+      merged[map] = dst
+    end
+  end
+
+  if type(source.intent) == "table" then
+    local dst = {}
+    if type(merged.intent) == "table" then
+      for k, v in pairs(merged.intent) do dst[k] = v end
+    end
+    for _, sub in ipairs(PULL_INTENT_SUBS) do
+      local sv = source.intent[sub]
+      if type(sv) == "table" then
+        local sd = {}
+        if type(dst[sub]) == "table" then for k, v in pairs(dst[sub]) do sd[k] = v end end
+        for k, v in pairs(sv) do sd[k] = v end
+        dst[sub] = sd
+      end
+    end
+    merged.intent = dst
+  end
+
+  for _, key in ipairs(PULL_OPAQUE) do
+    if source[key] ~= nil then merged[key] = source[key] end
+  end
+
+  return merged
+end
+
+--- Classify one item map into added / updated / unchanged / target-only (kept)
+--- name lists, comparing the source against the target working copy.
+local function pull_classify(target, source, map)
+  local s = (type(source[map]) == "table") and source[map] or {}
+  local t = (type(target[map]) == "table") and target[map] or {}
+  local added, updated, unchanged, kept = {}, {}, {}, {}
+  for k, sv in pairs(s) do
+    if t[k] == nil then added[#added + 1] = k
+    elseif vim.deep_equal(sv, t[k]) then unchanged[#unchanged + 1] = k
+    else updated[#updated + 1] = k end
+  end
+  for k in pairs(t) do if s[k] == nil then kept[#kept + 1] = k end end
+  table.sort(added); table.sort(updated); table.sort(unchanged); table.sort(kept)
+  return { added = added, updated = updated, unchanged = unchanged, kept = kept }
+end
+
+--- Resolve the source and target checkouts, load both working copies, and
+--- compute the source-wins merge — all without writing or exiting. Returns
+--- `(plan, err)`; on success `plan` carries source_root, target_root, the
+--- target user.json path, the merged table, a `changed` flag, and per-category
+--- summaries. `opts.git` is injectable for tests (same contract as git_query).
+--- @param opts { cwd?: string, source?: string, git?: function }
+--- @return table|nil plan, string|nil err
+function M._plan_pull(opts)
+  opts = opts or {}
+  local cwd = opts.cwd or user_cwd()
+  local git = opts.git or git_query
+  local user = require("loomworks.user")
+
+  -- TARGET = the current checkout's root. Prefer the git worktree top (it
+  -- resolves in a fresh worktree that has no workspace files yet); fall back to
+  -- an already-initialized workspace root when not in a git repo.
+  local target_root = git(cwd, { "rev-parse", "--show-toplevel" })
+  target_root = (target_root and target_root ~= "")
+      and (target_root:gsub("\\", "/"):gsub("/+$", "")) or find_root(cwd)
+  if not target_root then
+    return nil, "cannot determine the current checkout — run `lw pull` inside a " ..
+      "git worktree or an initialized workspace"
+  end
+
+  -- SOURCE: an explicit directory, else the auto-detected main worktree.
+  local source_root
+  if opts.source and opts.source ~= "" then
+    local abs = resolve_abs(opts.source, cwd)
+    if not abs then return nil, "source directory does not exist: " .. opts.source end
+    local st = uv.fs_stat(abs)
+    if not (st and st.type == "directory") then
+      return nil, "source is not a directory: " .. opts.source
+    end
+    source_root = abs
+  else
+    local main = M._main_worktree({ dir = cwd, git = git })
+    if not main then
+      return nil, "no source given and this is not a linked git worktree.\n" ..
+        "  pass the checkout to pull from:  lw pull <path>"
+    end
+    source_root = (main:gsub("\\", "/"):gsub("/+$", ""))
+  end
+
+  if norm_cmp(source_root) == norm_cmp(target_root) then
+    return nil, "source and target are the same checkout (" .. source_root ..
+      ") — nothing to pull"
+  end
+
+  -- The source must carry a working copy. user.load returns defaults for a
+  -- missing file, so test the file itself for a precise error.
+  local src_user_path = user.filepath(source_root)
+  if not uv.fs_stat(src_user_path) then
+    return nil, "nothing to pull from " .. source_root ..
+      " (no .nvim/loomworks.user.json)"
+  end
+  local src_data = user.load(source_root)
+
+  local tgt_user_path = user.filepath(target_root)
+  local tgt_data = uv.fs_stat(tgt_user_path) and user.load(target_root) or {}
+
+  local merged = M._pull_merge(tgt_data, src_data)
+
+  -- "Changed?" is a whole-file comparison so every pulled key (items, intent,
+  -- settings) counts; nothing is written when the merge is a no-op.
+  local tgt_cmp = {}
+  for k, v in pairs(tgt_data) do tgt_cmp[k] = v end
+  tgt_cmp._meta = nil
+  local changed = not vim.deep_equal(merged, tgt_cmp)
+
+  local summary = {}
+  for _, cat in ipairs(PULL_SUMMARY) do
+    summary[cat.key] = pull_classify(tgt_data, src_data, cat.key)
+  end
+
+  return {
+    source_root = source_root,
+    target_root = target_root,
+    target_user_path = tgt_user_path,
+    src_user_path = src_user_path,
+    merged = merged,
+    changed = changed,
+    summary = summary,
+  }
+end
+
+--- `lw pull [<source>] [--dry-run]` — fold another checkout's working config
+--- into this one so a fresh worktree inherits its profiles / sets / projects.
+--- Source-wins, non-destructive, item-level; never publishes, never touches the
+--- cache, never pulls the active profile. `--dry-run` reports the plan only.
+--- @param args string[]
+--- @param opts? table injectable `{ cwd, git }` for tests (nil in production).
+function M.cmd_pull(args, opts)
+  opts = opts or {}
+  local dry_run, source = false, nil
+  for i = 2, #args do
+    local v = args[i]
+    if v == "--dry-run" or v == "-n" then
+      dry_run = true
+    elseif v:sub(1, 1) == "-" then
+      die("unknown pull option '" .. v .. "' — usage: lw pull [<source>] [--dry-run]")
+    elseif not source then
+      source = v
+    else
+      die("unexpected argument '" .. v .. "' — usage: lw pull [<source>] [--dry-run]")
+    end
+  end
+
+  local plan, err = M._plan_pull({ source = source, cwd = opts.cwd, git = opts.git })
+  if not plan then die(err) end
+
+  local function names(list, cap)
+    local head = {}
+    for i = 1, math.min(#list, cap) do head[#head + 1] = list[i] end
+    local s = table.concat(head, ", ")
+    if #list > cap then s = s .. ", +" .. (#list - cap) .. " more" end
+    return s
+  end
+
+  out((dry_run and "pull (dry run) from " or "pull from ") .. plan.source_root)
+  out("  into " .. plan.target_root)
+  out("")
+  for _, cat in ipairs(PULL_SUMMARY) do
+    local c = plan.summary[cat.key]
+    if #c.added + #c.updated + #c.unchanged + #c.kept > 0 then
+      local parts = {}
+      if #c.added > 0 then parts[#parts + 1] = #c.added .. " added (" .. names(c.added, 6) .. ")" end
+      if #c.updated > 0 then parts[#parts + 1] = #c.updated .. " updated (" .. names(c.updated, 6) .. ")" end
+      if #c.unchanged > 0 then parts[#parts + 1] = #c.unchanged .. " unchanged" end
+      if #c.kept > 0 then parts[#parts + 1] = #c.kept .. " kept local-only (" .. names(c.kept, 6) .. ")" end
+      out(string.format("  %-19s %s", cat.label .. ":", table.concat(parts, ", ")))
+    end
+  end
+
+  if not plan.changed then
+    out("")
+    out("already up to date — nothing to pull.")
+    return 0
+  end
+  if dry_run then
+    out("")
+    out("(dry run — nothing written; re-run without --dry-run to apply)")
+    return 0
+  end
+
+  local ok, serr = require("loomworks.user").save(plan.target_root, plan.merged)
+  if not ok then die("could not write working copy: " .. tostring(serr)) end
+  out("")
+  out("wrote " .. plan.target_user_path)
+  out("Active profile is unchanged (not pulled). " ..
+    "`lw profiles` to list, `lw build <profile>` to build.")
   return 0
 end
 
@@ -3256,8 +3519,8 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
   "profiles", "profile", "tools", "build", "clean", "test", "run", "launch", "publish",
-  "unlock", "config", "completion", "version", "install", "self-update", "help", "sdk",
-  "migrate", "module", "bootstrap", "update", "--no-input",
+  "pull", "unlock", "config", "completion", "version", "install", "self-update", "help",
+  "sdk", "migrate", "module", "bootstrap", "update", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -3314,6 +3577,10 @@ function M.cmd_complete(cword, words)
       local names = comp_profile_names(comp_ws(root)); names[#names + 1] = "--all"
       emit(sorted_unique(names))
     end
+    return 0
+  elseif cmd == "pull" then
+    -- The source is a checkout directory; let the shell complete paths.
+    if n == 1 then out("__dirs__") end
     return 0
   elseif cmd == "run" then
     if n == 1 then
@@ -3687,6 +3954,33 @@ and each CI runner — pick a local tool and create their own profile
 resolves as incomplete for anyone without that tool.
 
 Bare `lw publish` warns if the result is empty (nothing is shared yet).]],
+  pull = [[lw pull [<source>] [--dry-run]
+
+Fold another checkout's working config into THIS checkout's working copy
+(.nvim/loomworks.user.json), so a fresh `git worktree` — which starts with no
+.nvim/ and therefore no profiles — inherits a ready-to-build configuration
+without re-authoring it.
+
+  <source>    A checkout/worktree directory to pull from. Omitted, the main
+              worktree of the current git worktree is used (the same detection
+              `lw status` hints with). Errors, never guesses, when no source is
+              given and you're not in a linked worktree, when the source has no
+              working copy, or when it resolves to this same checkout.
+  --dry-run   Report the plan (added / updated / kept) without writing.
+
+What it pulls: the source's whole working config — projects (with their
+configurations, launch configs, deploy steps, variables), configuration sets,
+and profiles. Because the full state comes across, every reference (set ->
+projects/configs, profile -> set) stays satisfied.
+
+What it does NOT pull: the ACTIVE PROFILE (each checkout keeps its own), and all
+build/cache state (that lives in .nvim/loomworks.cache.json, never the working
+copy).
+
+Merge: a non-destructive, item-level union where the SOURCE wins on a name
+collision — items only here are kept, items in both take the source's version,
+items only in the source are added. It writes the working copy only; it never
+publishes loomworks.json and never touches the cache or build dirs.]],
   project = [[lw project <add|remove|rename|list|show|publish>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
@@ -4079,6 +4373,7 @@ Usage: lw [command] [args]
   run <profile> [target]  build, then execute a launch target
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
+  pull [<source>]   fold another checkout's working config into this one
   migrate [--check] bring the workspace files up to current conventions
   module <sub>      install | update | remove | list acquirable modules (mod)
   config <...>      get/set lw configuration
@@ -4201,6 +4496,13 @@ local function main()
   -- Bare `lw` and `lw status` → status (also fine outside a workspace).
   if not command or command == "status" then
     finish(M.cmd_status(root))
+  end
+
+  -- `pull` folds another checkout's working copy into this one; it works in a
+  -- fresh worktree that has no workspace of its own yet, so it must run before
+  -- the workspace-required guard below.
+  if command == "pull" then
+    finish(M.cmd_pull(a))
   end
 
   -- Workspace commands.
