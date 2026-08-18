@@ -280,6 +280,33 @@ describe("cli._plan_pull", function()
         assert.is_truthy(err:find("same checkout", 1, true))
     end)
 
+    it("refuses when the git top-level and realpath'd source spell the same dir differently", function()
+        -- Regression for the CI-Windows self-pull miss: the git top-level
+        -- (target_root) is NOT realpath'd while resolve_abs(source) IS, so a
+        -- symlink/junction/short-name divergence made norm_cmp alone miss the
+        -- guard. Reproduce with a directory symlink: the "git" top-level is the
+        -- LINK spelling, resolve_abs realpaths it to the real dir -> the two
+        -- roots diverge pre-fix. Symlink creation needs privilege on Windows;
+        -- skip cleanly there rather than hard-fail.
+        local realdir = target .. "/real"
+        assert(uv.fs_mkdir(realdir, 448))
+        write_user(realdir, sample_source())
+        local linkpath = target .. "/link"
+        local ok = uv.fs_symlink(realdir, linkpath, { dir = true })
+        if not ok then
+            pending("requires symlink support (privileged on Windows)")
+            return
+        end
+        -- git top-level = the LINK spelling; resolve_abs(source) -> realdir.
+        local plan, err = cli._plan_pull({
+            cwd = linkpath,
+            source = linkpath,
+            git = fake_git(linkpath, source),
+        })
+        assert.is_nil(plan)
+        assert.is_truthy(err:find("same checkout", 1, true))
+    end)
+
     it("errors when the current checkout can't be determined", function()
         -- Not a git repo (rev-parse nil) and cwd holds no workspace.
         local nogit = function(_, args)
