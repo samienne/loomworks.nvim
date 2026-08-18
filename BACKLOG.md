@@ -647,3 +647,18 @@ config changes. Reverted to always-configure for correctness. A proper fix needs
 the load path to reliably populate `_cached_options` / `_cached_module_config`
 from the cache and freeze them across processes. The re-configure is a fast
 near-no-op (`cmake` reconfigure / `meson setup --reconfigure`).
+
+---
+
+## Multi-config preset with no CMAKE_BUILD_TYPE builds silently
+
+For a multi-config preset (Ninja Multi-Config / Visual Studio / Xcode) that
+declares no `cacheVariables.CMAKE_BUILD_TYPE`, `cmake.multi_config_variant`
+returns nil and the build step omits `--config` — cmake then builds the
+generator's default configuration (typically Debug). This is correct-but-silent:
+the user gets a Debug build from a preset that never said Debug, with no signal.
+A small improvement would be a user-facing warning at build time (or in
+`M.validate`) telling the user to add a build type to the preset or pick one,
+rather than silently defaulting. Deferred — the current behavior does not crash
+or corrupt anything; it just isn't self-explaining. (Single-config presets are
+unaffected: their build type is mined into `variant`.)

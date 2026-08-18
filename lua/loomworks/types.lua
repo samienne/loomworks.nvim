@@ -209,6 +209,7 @@
 
 --- Configuration info from module.info().
 --- @class loomworks.ConfigurationInfo
+--- @field variant? string build variant (cmake CMAKE_BUILD_TYPE); for a preset, mined from cacheVariables.CMAKE_BUILD_TYPE
 --- @field generator? string cmake -G value
 --- @field binary_dir? string preset binaryDir
 --- @field toolchain_locked? boolean
@@ -230,7 +231,7 @@
 --- @field type string module type
 --- @field configuration string active configuration name
 --- @field configuration_key string cache key
---- @field configurations table<string, loomworks.ConfigurationInfo>
+--- @field configurations table<string, loomworks.ConfigurationInfo> regular + preset configurations, keyed by canonical name (presets under `preset:<name>`)
 --- @field tool_data? table opaque module-specific tool data
 --- @field workspace_root string absolute path
 --- @field env table<string, string>

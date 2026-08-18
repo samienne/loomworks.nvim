@@ -304,6 +304,11 @@ end
 --- Check if this configuration is abstract (no variant — mixin only).
 --- @return boolean
 function Configuration:is_abstract()
+    -- Presets are module-emitted and self-contained: cmake fully
+    -- specifies the build via `--preset`, so a missing loomworks
+    -- variant is expected, not a mixin. Per spec, no module emits
+    -- an abstract configuration.
+    if self.from_preset then return false end
     return not self.module_config or self.module_config.variant == nil
 end
 

@@ -574,3 +574,29 @@ describe("record_task_result state protection", function()
     end)
 end)
 
+describe("overseer task_configurations (preset merge)", function()
+    local overseer = require("loomworks.overseer")
+
+    it("merges preset_configurations into the task-context configurations", function()
+        -- The task path must see presets under their canonical key, or
+        -- config_info is nil in module.tasks and the --preset path is dead.
+        local merged = overseer._task_configurations({
+            configurations = { ["variant:Debug"] = { variant = "Debug" } },
+            preset_configurations = {
+                ["preset:dev"] = { from_preset = true, base_name = "dev" },
+            },
+        })
+        assert.is_not_nil(merged["variant:Debug"])
+        assert.is_not_nil(merged["preset:dev"])
+        assert.is_true(merged["preset:dev"].from_preset)
+    end)
+
+    it("is a no-op for modules without presets", function()
+        local merged = overseer._task_configurations({
+            configurations = { Debug = { variant = "Debug" } },
+        })
+        assert.is_not_nil(merged.Debug)
+        assert.is_nil(merged["preset:dev"])
+    end)
+end)
+

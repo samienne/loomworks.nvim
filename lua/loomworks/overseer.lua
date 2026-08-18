@@ -48,6 +48,25 @@ local function resolve_project_variables(project, configuration)
     return out
 end
 
+--- Build the configuration map a module's task generator (`mod.tasks`) sees.
+--- Merges the module's regular configurations with its preset configurations,
+--- which arrive under a separate `preset_configurations` key but are keyed by
+--- the same canonical `preset:<name>` that `unit:variant()` resolves to for a
+--- mapped preset. Without this merge, `config_info` is nil for a preset and the
+--- module can't take its `--preset` path. Generic and module-agnostic:
+--- `preset_configurations` is nil for modules that have none (meson/shell/ts),
+--- so the second loop is a no-op there. Presets and regular configs occupy
+--- disjoint key spaces, so a plain union is correct — neither clobbers the other.
+--- @param mod_info loomworks.ModuleInfo
+--- @return table<string, loomworks.ConfigurationInfo>
+local function task_configurations(mod_info)
+    local configs = {}
+    for k, v in pairs(mod_info.configurations or {}) do configs[k] = v end
+    for k, v in pairs(mod_info.preset_configurations or {}) do configs[k] = v end
+    return configs
+end
+M._task_configurations = task_configurations  -- exported for tests
+
 --- Collect task definitions for a single project configuration, grouped by action.
 --- @param unit loomworks.ConfigUnit
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
@@ -84,7 +103,7 @@ local function collect_configuration_tasks(unit)
         type = project.type,
         configuration = variant,
         configuration_key = unit:config_key(),
-        configurations = mod_info.configurations or {},
+        configurations = task_configurations(mod_info),
         type_config = tc_for_module,
         tool_data = tool_data,
         workspace_root = ws.root,
@@ -164,7 +183,7 @@ function M.build_spec_for(unit, target_id)
         type = project.type,
         configuration = variant,
         configuration_key = unit:config_key(),
-        configurations = mod_info.configurations or {},
+        configurations = task_configurations(mod_info),
         type_config = tc_for_module,
         tool_data = tool_data,
         workspace_root = ws.root,
@@ -340,7 +359,7 @@ local function collect_configuration_clean_tasks(unit)
         type = project.type,
         configuration = variant,
         configuration_key = unit:config_key(),
-        configurations = mod_info.configurations or {},
+        configurations = task_configurations(mod_info),
         tool_data = tool_data,
         type_config = project.type_config,
         workspace_root = ws.root,
