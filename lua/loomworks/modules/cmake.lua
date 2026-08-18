@@ -149,6 +149,20 @@ local function load_presets(project_path)
     return #result > 0 and result or nil
 end
 
+--- Read a single preset `cacheVariables` entry as a string, tolerating both
+--- CMakePresets forms: a bare string, or an object `{ type = "STRING",
+--- value = "…" }` (the form CMake's own GUI and templates emit). Returns nil
+--- when the key is absent or its value is not a usable string.
+--- @param cache_vars table|nil  a preset's `cacheVariables`
+--- @param key string
+--- @return string|nil
+local function cache_var(cache_vars, key)
+    local v = cache_vars and cache_vars[key]
+    if type(v) == "table" then v = v.value end
+    if type(v) == "string" then return v end
+    return nil
+end
+
 --- Extract configurations from CMakeLists.txt by looking for
 --- CMAKE_CONFIGURATION_TYPES or common patterns.
 --- @param project_path string
@@ -204,6 +218,40 @@ function M.validate(path, config)
                 -- Absolute paths forbidden in loomworks.json
                 if cfg.toolchain:match("^[A-Z]:[/\\]") or cfg.toolchain:match("^/[^$]") then
                     warnings[#warnings + 1] = "configuration '" .. name .. "': absolute toolchain path is forbidden in loomworks.json"
+                end
+            end
+        end
+    end
+
+    -- Warn (non-blocking) when a configuration inherits from a preset. A
+    -- preset is a self-contained unit invoked via `cmake --preset`; an
+    -- inheriting config is built through the manual `-G/-S/-B/-D...` path
+    -- (from_preset = false), so it silently drops the preset's cacheVariables
+    -- and binaryDir. Only the canonical `preset:<name>` inherits form resolves
+    -- to a preset (get_configuration matches on the canonical name), so that
+    -- is the only form worth catching.
+    if config.configurations then
+        local presets = load_presets(path)
+        if presets and next(presets) then
+            local Configuration = require("loomworks.configuration")
+            local preset_names = {}
+            for _, p in ipairs(presets) do preset_names[p.name] = true end
+            for name, cfg in pairs(config.configurations) do
+                local inherits = cfg.inherits
+                if type(inherits) == "string" then inherits = { inherits } end
+                if type(inherits) == "table" then
+                    for _, base in ipairs(inherits) do
+                        local prefix, base_name = Configuration.split_canonical(base)
+                        if prefix == "preset" and preset_names[base_name] then
+                            warnings[#warnings + 1] = "configuration '" .. name
+                                .. "': inherits from preset '" .. base_name
+                                .. "'; presets are self-contained and the "
+                                .. "inheriting configuration drops the preset's "
+                                .. "cacheVariables/binaryDir. Add a derived preset "
+                                .. "in CMakeUserPresets.json, or inherit from a "
+                                .. "variant:* configuration instead."
+                        end
+                    end
                 end
             end
         end
@@ -413,20 +461,25 @@ function M.info(path, config)
     local presets = load_presets(path)
     if presets then
         for _, preset in ipairs(presets) do
-            local has_toolchain = preset.toolchainFile ~= nil
-                    or (preset.cacheVariables and preset.cacheVariables.CMAKE_TOOLCHAIN_FILE ~= nil)
+            -- cacheVariables entries may be strings or `{type,value}` objects —
+            -- read every one through cache_var so a table never reaches a string
+            -- op downstream (variant → --config / module_config, toolchain → gsub).
+            local toolchain = preset.toolchainFile
+                    or cache_var(preset.cacheVariables, "CMAKE_TOOLCHAIN_FILE")
 
             local canonical = Configuration.canonical("preset", preset.name)
             preset_configurations[canonical] = {
                 prefix = "preset",
                 base_name = preset.name,
+                -- A single-config preset's build type IS its variant. Other
+                -- cacheVariables are applied by cmake itself via `--preset` —
+                -- we never re-pass them. nil when absent (multi-config presets
+                -- select their variant at build time; don't guess one).
+                variant = cache_var(preset.cacheVariables, "CMAKE_BUILD_TYPE"),
                 generator = preset.generator,
                 binary_dir = preset.binaryDir,
-                toolchain_locked = has_toolchain,
-                toolchain = has_toolchain
-                        and (preset.toolchainFile
-                            or (preset.cacheVariables and preset.cacheVariables.CMAKE_TOOLCHAIN_FILE))
-                        or nil,
+                toolchain_locked = toolchain ~= nil,
+                toolchain = toolchain,
                 from_preset = true,
                 is_default = true,  -- auto-gens from CMakePresets.json
             }
@@ -467,6 +520,23 @@ local function is_multi_config(generator)
         if generator:find(prefix, 1, true) then return true end
     end
     return false
+end
+
+--- Resolve the `--config <variant>` value for a multi-config build / clean /
+--- target invocation, or nil when none should be passed. Never returns a
+--- canonical `preset:<name>`: a preset with no mined CMAKE_BUILD_TYPE has no
+--- single variant to select for a multi-config generator, so we omit `--config`
+--- and let cmake build the generator's default configuration.
+--- KNOWN LIMITATION: choosing a variant for a multi-config preset that declares
+--- no build type is not solved here.
+--- @param config_info table|nil
+--- @param active_config string
+--- @return string|nil
+local function multi_config_variant(config_info, active_config)
+    if config_info and config_info.from_preset and not config_info.variant then
+        return nil
+    end
+    return (config_info and config_info.variant) or active_config
 end
 
 --- Sanitize a string for use as a directory name.
@@ -539,6 +609,7 @@ function M.tasks(project, active_config)
     local tasks = {}
     local abs_path = project.workspace_root .. "/" .. project.path
     local config_info = project.configurations and project.configurations[active_config] or nil
+    local from_preset = config_info and config_info.from_preset or false
     local kit = project.tool_data
     local env = project.env or {}
 
@@ -548,9 +619,19 @@ function M.tasks(project, active_config)
             or nil
 
     -- Generator is required — no fallback to platform default
-    if not generator and not (config_info and config_info.from_preset) then
+    if not generator and not from_preset then
         error("cmake: no generator specified for " .. project.name .. "/" .. active_config
             .. ". Select a tool/SDK with a generator in the profile.")
+    end
+
+    -- A preset configures into cmake's own binaryDir; loomworks builds
+    -- `<build_dir>` separately and must know that path. If the preset omits
+    -- binaryDir we can't know where cmake configured, so refuse rather than
+    -- build a mismatched, unconfigured directory.
+    if from_preset and not (config_info and config_info.binary_dir) then
+        error("cmake: preset '" .. (config_info.base_name or active_config)
+            .. "' does not declare binaryDir; loomworks cannot locate its build "
+            .. "directory. Add binaryDir to the preset in CMakePresets.json.")
     end
 
     local multi_config = is_multi_config(generator)
@@ -579,9 +660,16 @@ function M.tasks(project, active_config)
     local cmake_cmd = (kit and kit.cmake_path) or "cmake"
     local configure_cmd = { cmake_cmd }
 
-    if config_info and config_info.from_preset then
+    if from_preset then
+        -- cmake wants the bare preset name (`dev`), not our canonical
+        -- `preset:dev` key. cmake reads CMakePresets.json and applies the
+        -- preset's generator, binaryDir, toolchain and cacheVariables itself,
+        -- so we pass ONLY `--preset <name>` here — none of the manual
+        -- -G/-S/-B/-DCMAKE_BUILD_TYPE/-DCMAKE_TOOLCHAIN_FILE flags. (User-declared
+        -- project `options` are still appended below as `-D…` augmentation,
+        -- which cmake accepts alongside --preset.)
         configure_cmd[#configure_cmd + 1] = "--preset"
-        configure_cmd[#configure_cmd + 1] = active_config
+        configure_cmd[#configure_cmd + 1] = config_info.base_name or active_config
     else
         if generator then
             configure_cmd[#configure_cmd + 1] = "-G"
@@ -613,19 +701,25 @@ function M.tasks(project, active_config)
         end
     end
 
-    -- Toolchain file: kit.toolchain (from SDK) or config_info.toolchain (from user)
-    local toolchain = (kit and kit.toolchain) or (config_info and config_info.toolchain)
-    if toolchain then
-        local tc = toolchain
-        tc = tc:gsub("%${([^}]+)}", function(var)
-            return os.getenv(var) or "${" .. var .. "}"
-        end)
-        configure_cmd[#configure_cmd + 1] = "-DCMAKE_TOOLCHAIN_FILE=" .. tc
-    end
+    -- Manual toolchain / SDK args. Skipped entirely for a preset: cmake applies
+    -- the preset's toolchain via `--preset`, and re-passing -DCMAKE_TOOLCHAIN_FILE
+    -- here would (a) be redundant and (b) append an UNEXPANDED `${sourceDir}/…`
+    -- (only `${ENV}` is expanded below), overriding the preset's resolved path.
+    if not from_preset then
+        -- Toolchain file: kit.toolchain (from SDK) or config_info.toolchain (from user)
+        local toolchain = (kit and kit.toolchain) or (config_info and config_info.toolchain)
+        if toolchain then
+            local tc = toolchain
+            tc = tc:gsub("%${([^}]+)}", function(var)
+                return os.getenv(var) or "${" .. var .. "}"
+            end)
+            configure_cmd[#configure_cmd + 1] = "-DCMAKE_TOOLCHAIN_FILE=" .. tc
+        end
 
-    -- SDK-provided extra cmake args (e.g., -DCMAKE_TOOLCHAIN_FILE=<path>)
-    if kit and kit.extra_args then
-        vim.list_extend(configure_cmd, kit.extra_args)
+        -- SDK-provided extra cmake args (e.g., -DCMAKE_TOOLCHAIN_FILE=<path>)
+        if kit and kit.extra_args then
+            vim.list_extend(configure_cmd, kit.extra_args)
+        end
     end
 
     -- User-defined options (project-wide + inherited + config-specific)
@@ -705,15 +799,20 @@ function M.tasks(project, active_config)
     -- combination ("This project doesn't contain the Configuration
     -- and Platform combination of debug-with-addon|x64..."). The task
     -- name still uses `active_config` so the user sees their chosen
-    -- identity in the overseer task list and cache.
-    local build_variant = (config_info and config_info.variant) or active_config
-
+    -- identity in the overseer task list and cache. A preset with no
+    -- mined build type yields nil here → `--config` is omitted.
     if multi_config then
+        local build_variant = multi_config_variant(config_info, active_config)
+        local build_cmd = { cmake_cmd, "--build", build_dir }
+        if build_variant then
+            build_cmd[#build_cmd + 1] = "--config"
+            build_cmd[#build_cmd + 1] = build_variant
+        end
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap({ cmake_cmd, "--build", build_dir, "--config", build_variant }),
+                    cmd = wrap(build_cmd),
                     cwd = abs_path,
                     env = env,
                 }
@@ -778,10 +877,13 @@ function M.clean_tasks(project, active_config)
     local clean_cmd = { cmake_cmd, "--build", build_dir, "--target", "clean" }
     if multi_config then
         -- Multi-config: --config takes the underlying variant, not the
-        -- user's configuration key. See M.tasks for the rationale.
-        local build_variant = (config_info and config_info.variant) or active_config
-        clean_cmd[#clean_cmd + 1] = "--config"
-        clean_cmd[#clean_cmd + 1] = build_variant
+        -- user's configuration key. See M.tasks for the rationale. nil for a
+        -- preset without a mined build type → omit --config.
+        local build_variant = multi_config_variant(config_info, active_config)
+        if build_variant then
+            clean_cmd[#clean_cmd + 1] = "--config"
+            clean_cmd[#clean_cmd + 1] = build_variant
+        end
     end
 
     return {
@@ -827,10 +929,13 @@ function M.build_target_task(project, target_id)
     local cmd = { cmake_cmd, "--build", build_dir, "--target", target_id }
     if multi_config then
         -- Multi-config: --config takes the underlying variant, not the
-        -- user's configuration key. See M.tasks for the rationale.
-        local build_variant = (config_info and config_info.variant) or active_config
-        cmd[#cmd + 1] = "--config"
-        cmd[#cmd + 1] = build_variant
+        -- user's configuration key. See M.tasks for the rationale. nil for a
+        -- preset without a mined build type → omit --config.
+        local build_variant = multi_config_variant(config_info, active_config)
+        if build_variant then
+            cmd[#cmd + 1] = "--config"
+            cmd[#cmd + 1] = build_variant
+        end
     end
 
     return {

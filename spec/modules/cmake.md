@@ -30,10 +30,38 @@ The module reads `CMakePresets.json` + `CMakeUserPresets.json` with
 full preset inheritance:
 
 - Each non-hidden configure preset becomes a loomworks configuration.
-- Preset's `binaryDir` is used as the build directory (wins over
-  defaults).
+- A directly mapped preset is configured with `cmake --preset <name>`
+  using the bare preset name (not the internal `preset:<name>` key).
+  cmake reads `CMakePresets.json` and applies the preset's generator,
+  `binaryDir`, toolchain, and cache variables itself; loomworks adds
+  none of the manual `-G` / `-S` / `-B` / `-D…` flags for a preset. For
+  a multi-config preset that declares no `CMAKE_BUILD_TYPE`, the build
+  step omits `--config` (cmake builds the generator's default) rather
+  than pass a name it cannot resolve.
+- Preset's `binaryDir` is used as the build directory for a directly
+  mapped preset (wins over defaults). It is NOT propagated to
+  configurations that inherit from the preset — build directories are
+  per-configuration, so a base and its derived configs never share one.
+  A mapped preset MUST declare `binaryDir`: cmake configures into its own
+  directory, and loomworks builds that directory separately, so without it
+  loomworks cannot locate the build. A preset that omits `binaryDir` is
+  refused with a clear error rather than built into a mismatched directory.
+- Preset's `cacheVariables.CMAKE_BUILD_TYPE`, when present, provides the
+  configuration's variant. All other `cacheVariables` are applied by
+  cmake itself when the preset is configured via `--preset`; the module
+  never re-passes them on the command line. Each `cacheVariables` entry is
+  read tolerant of both CMakePresets forms — a bare string or an object
+  `{ "type": …, "value": … }`.
 - Preset's `toolchainFile` / `CMAKE_TOOLCHAIN_FILE` maps to
   `toolchain_locked = true`.
+- A configuration whose `inherits` names a `preset:*` configuration
+  produces a validation warning (non-blocking): presets are
+  self-contained units invoked via `cmake --preset`, whereas an
+  inheriting configuration is built through the manual configure path
+  and silently drops the preset's `cacheVariables` and `binaryDir`. The
+  warning directs the user to add a derived preset in
+  `CMakeUserPresets.json` (full fidelity) or to inherit from a
+  `variant:*` configuration instead.
 - Debug/Release/RelWithDebInfo are auto-generated **only if no presets
   exist and no configurations are declared in the workspace config**.
 - Overrides in the `configurations` block of the workspace config add
@@ -116,6 +144,10 @@ Custom configurations inherit from one or more bases. Variant
 Options merge depth-first left-to-right: project-wide → bases → own
 (later values override). Configs without a variant-providing base are
 abstract mixins — not directly buildable, only usable as bases.
+Presets are not intended as inheritance bases: inheriting from a
+`preset:*` configuration is permitted but warned (see §3), because the
+derived configuration bypasses `--preset` and loses the preset's
+cache variables and binary directory.
 
 **Variant flows through to the build tool.** For multi-config
 generators (Visual Studio, Ninja Multi-Config), the cmake `--build`

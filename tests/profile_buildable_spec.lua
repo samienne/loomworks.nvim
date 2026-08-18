@@ -213,3 +213,41 @@ describe("Profile:is_valid — abstract configurations", function()
         assert.is_falsy(table.concat(reasons, "; "):lower():find("abstract", 1, true))
     end)
 end)
+
+describe("Profile:is_valid — cmake presets are not abstract", function()
+    local Configuration = require("loomworks.configuration")
+
+    --- A cmake preset configuration as `cmake.info` emits it: module-emitted
+    --- (`from_preset = true`) and self-contained — configured with
+    --- `cmake --preset <name>`, so it carries no loomworks `variant`. A missing
+    --- variant here is expected, not a mixin. Uses the REAL
+    --- `Configuration:is_abstract` so the from_preset guard is exercised.
+    local function preset_configuration(name)
+        return {
+            name = name,
+            _removed = false,
+            from_preset = true,
+            module_config = {},  -- no variant: cmake owns the build type
+            is_abstract = Configuration.is_abstract,
+            effective_languages = function() return {} end,
+        }
+    end
+
+    -- spec/core/data-model.md §1.4: an abstract mixin is a no-variant
+    -- configuration that "no module ever emits". A preset IS module-emitted,
+    -- so by the spec's own definition it cannot be abstract — the buildability
+    -- gate must not refuse it.
+    it("accepts a profile whose configuration is a cmake preset", function()
+        local profile = make_profile({
+            { type = "cmake", mod = module({ id = "cmake" }), has_tool = true,
+              configuration = preset_configuration("preset:default") },
+        })
+        local ok, reasons = profile:is_valid()
+        assert.is_true(ok, "a cmake preset is fully buildable, got reasons: "
+            .. table.concat(reasons, "; "))
+        assert.is_falsy(
+            table.concat(reasons, "; "):lower():find("abstract", 1, true),
+            "no reason may call the preset abstract, got: "
+            .. table.concat(reasons, "; "))
+    end)
+end)
