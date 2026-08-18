@@ -293,10 +293,14 @@ request include the build directory, the pinned configuration, the last known
 build state, and the resolved toolchain.
 
 The human status overview is likewise read-only, and when no workspace resolves
-here (§1.1) it MAY note that the invocation sits in a linked git worktree and
-whether the main checkout holds a workspace — a best-effort, time-bounded hint:
-it never fails the report, and a slow or absent git only adds a small bounded
-delay.
+here (§1.1) it points the user at how to start one, with each suggested command
+on its own line. When the invocation sits in a linked git worktree whose main
+checkout holds a workspace, the hint offers to **pull** that config into the
+current worktree (§16.25) as well as to initialise a fresh workspace here; when
+the main checkout has no workspace — or the invocation is not in a linked
+worktree — it offers only to initialise one. Detecting the parent worktree is a
+best-effort, time-bounded hint: it never fails the report, and a slow or absent
+git only adds a small bounded delay.
 
 ### 16.19 Convention migration
 

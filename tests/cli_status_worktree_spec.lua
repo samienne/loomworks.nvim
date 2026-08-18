@@ -1,6 +1,8 @@
--- `lw status` in a directory with no workspace: the linked-git-worktree hint.
--- The detection is read-only, non-fatal, and time-bounded — a missing or hung
--- git must never break status. Branch matrix is exercised with a stubbed git
+-- `lw status` in a directory with no workspace: the no-workspace hint block.
+-- It points the user at `lw init`, and — only when this is a linked git
+-- worktree whose main checkout already has a workspace — at `lw pull`. The
+-- detection is read-only, non-fatal, and time-bounded: a missing or hung git
+-- must never break status. Branch matrix is exercised with a stubbed git
 -- runner; a real temp repo + linked worktree covers the end-to-end path.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
@@ -25,27 +27,40 @@ end
 local function always_stat(_) return { type = "file" } end
 local function never_stat(_) return nil end
 
+-- Join a hint's lines so substring assertions can span the whole block.
+local function joined(lines) return table.concat(lines, "\n") end
+
+-- Any raw ANSI escape (color leak) in the captured/plain path.
+local function has_escape(s) return s:find("\27[", 1, true) ~= nil end
+
 describe("lw status worktree hint (_worktree_hint)", function()
-    it("notes a missing git binary once, nothing more", function()
+    it("offers only `lw init` when git is missing, plus a note", function()
         local lines = cli._worktree_hint({
             dir = "/somewhere",
             git = fake_git({ version = false }),
             stat = never_stat,
         })
-        assert.equals(1, #lines)
-        assert.is_truthy(lines[1]:find("git not available", 1, true))
+        local text = joined(lines)
+        assert.is_truthy(text:find("no workspace here", 1, true))
+        assert.is_truthy(text:find("lw init", 1, true))
+        assert.is_truthy(text:find("git unavailable", 1, true))
+        assert.is_nil(text:find("lw pull", 1, true))
     end)
 
-    it("adds no note when the dir is not a git repo", function()
+    it("offers only `lw init` when the dir is not a git repo", function()
         local lines = cli._worktree_hint({
             dir = "/plain",
             git = fake_git({ version = true, toplevel = nil }),
             stat = never_stat,
         })
-        assert.same({}, lines)
+        local text = joined(lines)
+        assert.is_truthy(text:find("lw init", 1, true))
+        assert.is_nil(text:find("lw pull", 1, true))
+        assert.is_nil(text:find("git worktree", 1, true))
+        assert.is_nil(text:find("git unavailable", 1, true))
     end)
 
-    it("adds no note in the main worktree (toplevel == main)", function()
+    it("offers only `lw init` in the main worktree (toplevel == main)", function()
         local lines = cli._worktree_hint({
             dir = "/repo/main",
             git = fake_git({
@@ -55,10 +70,13 @@ describe("lw status worktree hint (_worktree_hint)", function()
             }),
             stat = always_stat,
         })
-        assert.same({}, lines)
+        local text = joined(lines)
+        assert.is_truthy(text:find("lw init", 1, true))
+        assert.is_nil(text:find("lw pull", 1, true))
+        assert.is_nil(text:find("git worktree", 1, true))
     end)
 
-    it("points at the main checkout when it has a workspace", function()
+    it("offers `lw pull` and `lw init` when the main checkout has a workspace", function()
         local lines = cli._worktree_hint({
             dir = "/repo/wt",
             git = fake_git({
@@ -69,14 +87,14 @@ describe("lw status worktree hint (_worktree_hint)", function()
             }),
             stat = always_stat,
         })
-        assert.equals(2, #lines)
-        assert.is_truthy(lines[1]:find("git worktree", 1, true))
-        assert.is_truthy(lines[1]:find("/repo/main", 1, true))
-        assert.is_truthy(lines[1]:find("has a loomworks workspace", 1, true))
-        assert.is_truthy(lines[2]:find("isn't wired up", 1, true))
+        local text = joined(lines)
+        assert.is_truthy(text:find("git worktree", 1, true))
+        assert.is_truthy(text:find("/repo/main", 1, true))
+        assert.is_truthy(text:find("lw pull", 1, true))
+        assert.is_truthy(text:find("lw init", 1, true))
     end)
 
-    it("says so when the main checkout has no workspace either", function()
+    it("offers ONLY `lw init` when the main checkout has no workspace either", function()
         local lines = cli._worktree_hint({
             dir = "/repo/wt",
             git = fake_git({
@@ -86,17 +104,96 @@ describe("lw status worktree hint (_worktree_hint)", function()
             }),
             stat = never_stat,
         })
-        assert.equals(1, #lines)
-        assert.is_truthy(lines[1]:find("no loomworks workspace either", 1, true))
+        local text = joined(lines)
+        assert.is_truthy(text:find("git worktree", 1, true))
+        assert.is_truthy(text:find("lw init", 1, true))
+        assert.is_nil(text:find("lw pull", 1, true))
     end)
 
-    it("degrades to no note when `git worktree list` fails", function()
+    it("offers only `lw init` when `git worktree list` fails", function()
         local lines = cli._worktree_hint({
             dir = "/repo/wt",
             git = fake_git({ version = true, toplevel = "/repo/wt", list = nil }),
             stat = always_stat,
         })
-        assert.same({}, lines)
+        local text = joined(lines)
+        assert.is_truthy(text:find("lw init", 1, true))
+        assert.is_nil(text:find("lw pull", 1, true))
+    end)
+end)
+
+describe("lw status hint color gating", function()
+    -- Force stdout to look like a non-tty for the duration of `fn`, on every
+    -- platform, so the default color decision is deterministic regardless of
+    -- how the test host is launched (piped, redirected, or a real terminal).
+    local function with_non_tty(fn)
+        local real = uv.guess_handle
+        uv.guess_handle = function(fd) return fd == 1 and "file" or real(fd) end
+        local ok, err = pcall(fn)
+        uv.guess_handle = real
+        assert(ok, err)
+    end
+
+    it("emits no ANSI escape on the default (non-tty) path, every branch", function()
+        with_non_tty(function()
+            local branches = {
+                { git = fake_git({ version = false }), stat = never_stat },
+                { git = fake_git({ version = true, toplevel = nil }), stat = never_stat },
+                {
+                    git = fake_git({
+                        version = true,
+                        toplevel = "/repo/wt",
+                        list = "worktree /repo/main\n\nworktree /repo/wt\n",
+                    }),
+                    stat = always_stat,
+                },
+            }
+            for _, b in ipairs(branches) do
+                b.dir = "/repo/wt"
+                -- No opts.color: exercises the real stdout_supports_color gate.
+                assert.is_false(has_escape(joined(cli._worktree_hint(b))))
+            end
+        end)
+    end)
+
+    it("stdout_supports_color() is false on a non-tty, all platforms", function()
+        -- The tty gate short-circuits before the Windows FFI path, so on Linux
+        -- CI this both stays plain AND never reaches kernel32.
+        with_non_tty(function()
+            assert.is_false(cli._stdout_supports_color())
+        end)
+    end)
+
+    it("respects NO_COLOR even when stdout is a tty", function()
+        local real = uv.guess_handle
+        uv.guess_handle = function(fd) return fd == 1 and "tty" or real(fd) end
+        local saved = vim.env.NO_COLOR
+        vim.env.NO_COLOR = "1"
+        local ok, res = pcall(cli._stdout_supports_color)
+        vim.env.NO_COLOR = saved
+        uv.guess_handle = real
+        assert.is_true(ok)
+        assert.is_false(res)
+    end)
+
+    it("wraps command tokens in color codes only when color is forced on", function()
+        local opts = {
+            dir = "/repo/wt",
+            color = true,
+            git = fake_git({
+                version = true,
+                toplevel = "/repo/wt",
+                list = "worktree /repo/main\n\nworktree /repo/wt\n",
+            }),
+            stat = always_stat,
+        }
+        local text = joined(cli._worktree_hint(opts))
+        assert.is_truthy(has_escape(text))
+        assert.is_truthy(text:find("\27[36mlw pull\27[0m", 1, true))
+        assert.is_truthy(text:find("\27[36mlw init\27[0m", 1, true))
+
+        opts.color = false
+        assert.is_false(has_escape(joined(cli._worktree_hint(opts))))
     end)
 end)
 
@@ -129,8 +226,10 @@ describe("lw status never breaks when git fails", function()
         assert.equals(0, code)
         local text = table.concat(wrote)
         assert.is_truthy(text:find("no workspace here", 1, true))
-        -- A failed --version probe surfaces the git-not-available note, no crash.
-        assert.is_truthy(text:find("git not available", 1, true))
+        -- A failed --version probe surfaces the git-unavailable note, no crash.
+        assert.is_truthy(text:find("git unavailable", 1, true))
+        -- Captured output is plain text, never raw escapes.
+        assert.is_false(text:find("\27[", 1, true) ~= nil)
     end)
 end)
 
@@ -169,8 +268,9 @@ describe("lw status worktree hint (real git)", function()
         local lines = cli._worktree_hint({ dir = wt })
         vim.fn.delete(base, "rf")
 
-        assert.equals(2, #lines)
-        assert.is_truthy(lines[1]:find("has a loomworks workspace", 1, true))
-        assert.is_truthy(lines[1]:find("git worktree", 1, true))
+        local text = joined(lines)
+        assert.is_truthy(text:find("git worktree", 1, true))
+        assert.is_truthy(text:find("lw pull", 1, true))
+        assert.is_truthy(text:find("lw init", 1, true))
     end)
 end)
