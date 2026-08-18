@@ -583,3 +583,43 @@ when git is unavailable or the current directory is not within a git repository,
 rather than producing an empty or misleading list (§16.3). A request for a
 sub-operation the host does not recognise is likewise an explicit error, not a
 silent fall-through to the listing.
+
+### 16.27 Worktree creation
+
+Because a fresh checkout starts with no working copy (§16.25), the two steps a
+user takes to begin work in a sibling worktree — create the git worktree, then
+pull the existing configuration into it — are a single common motion. A host MAY
+offer a **worktree-creation operation** that performs both: it creates a git
+worktree for a named branch and then, by default, pulls the main checkout's
+working config (§16.25) into the new worktree so it is immediately buildable.
+
+**Placement.** The new worktree is created under the repository's **main
+worktree** — the same first-entry detection listing and pull use (§16.26,
+§16.25) — so the operation works when invoked from any worktree and the result
+always registers under the main repository. The branch identifier is reflected
+into the worktree's location in full, so a hierarchically-named branch produces
+a correspondingly nested directory rather than a flattened one.
+
+**Branch handling.** When the named branch does not yet exist it is created —
+from an explicit start point if given, otherwise from the main worktree's
+current commit — and the created branch carries the full name as given, never a
+truncated or last-segment form. When the branch already exists it is checked out
+into the new worktree; a branch already checked out in another worktree is a git
+constraint the operation surfaces as an explicit error (§16.3) rather than
+working around.
+
+**Git-required and non-destructive.** Like listing (§16.26) the operation is
+inherently git-based: an absent git or a non-repository directory is an explicit
+error with a non-zero status. It is a mutation but never a deletion (§2.3, §16.9)
+— it creates a worktree and authors the new checkout's working copy, and it MUST
+NOT overwrite or remove existing files: a target location that already exists is
+refused rather than clobbered.
+
+**Auto-pull is best-effort over a committed worktree.** The pull step follows
+§16.25 exactly (source-wins, non-destructive, item-level, excluding the
+per-checkout state). A main checkout that holds no working copy is simply
+"nothing to pull" and not a failure. If the worktree is created but the pull
+then fails, the worktree is **kept** — undoing it would be a deletion — and the
+operation reports the partial success (worktree created, pull to be re-run by
+hand via §16.25) with a non-zero status so the incomplete state is visible. A
+mode that **skips the pull** and creates the worktree alone MAY be offered.
