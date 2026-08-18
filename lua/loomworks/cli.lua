@@ -2998,14 +2998,46 @@ local function git_query(cwd, args)
   return ((res.stdout or ""):gsub("%s+$", ""))
 end
 
---- The **main worktree** of the git worktree containing `opts.dir`, resolved
---- from `git worktree list --porcelain` (first entry = main). Read-only,
---- time-bounded, and never throws. Returns `(main, top, reason)`: `main` is the
---- main worktree's path and `top` the current worktree's toplevel; both nil
---- when there is no answer, with `reason` one of "git-missing" | "not-git" |
---- "no-list" | "no-main" for the caller to phrase. When `main == top` the caller
---- is already in the main worktree. `opts.git`/`opts.dir` are injectable for tests.
-function M._main_worktree(opts)
+--- Parse `git worktree list --porcelain` into a record per worktree, in order
+--- (the first is the main worktree). Each record has `path`, and optionally
+--- `head`, `branch` (short — `refs/heads/` stripped), `detached`, `bare`,
+--- `locked`, `prunable`. Records are separated by blank lines.
+local function parse_worktrees(text)
+  local records, cur = {}, nil
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    if line == "" then
+      if cur then records[#records + 1] = cur; cur = nil end
+    else
+      local key, rest = line:match("^(%S+)%s*(.*)$")
+      cur = cur or {}
+      if key == "worktree" then cur.path = rest
+      elseif key == "HEAD" then cur.head = rest
+      elseif key == "branch" then cur.branch = (rest:gsub("^refs/heads/", ""))
+      elseif key == "detached" then cur.detached = true
+      elseif key == "bare" then cur.bare = true
+      elseif key == "locked" then cur.locked = true
+      elseif key == "prunable" then cur.prunable = true
+      end
+    end
+  end
+  if cur then records[#records + 1] = cur end
+  return records
+end
+
+--- Whether checkout `root` carries a workspace — the published snapshot OR the
+--- working copy. The same presence test the status hint and `lw worktree` use.
+local function stat_has_workspace(stat, root)
+  return stat(root .. "/loomworks.json")
+      or stat(root .. "/.nvim/loomworks.user.json")
+end
+
+--- All worktrees of the git worktree containing `opts.dir`, from
+--- `git worktree list --porcelain`. Read-only, time-bounded, never throws.
+--- Returns `(records, top, reason)`: `records` is the ordered list (first =
+--- main), `top` the current worktree's toplevel; both nil when there is no
+--- answer, with `reason` one of "git-missing" | "not-git" | "no-list" |
+--- "no-main" for the caller to phrase. `opts.git`/`opts.dir` inject for tests.
+function M._worktree_list(opts)
   opts = opts or {}
   local git = opts.git or git_query
   local dir = opts.dir or user_cwd()
@@ -3016,9 +3048,21 @@ function M._main_worktree(opts)
   if not top or top == "" then return nil, nil, "not-git" end
   local list = git(dir, { "worktree", "list", "--porcelain" })
   if not list then return nil, nil, "no-list" end
-  local main = list:match("^worktree ([^\n]+)")
-  if not main or main == "" then return nil, nil, "no-main" end
-  return main, top, nil
+  local records = parse_worktrees(list)
+  if #records == 0 or not records[1].path then return nil, nil, "no-main" end
+  return records, top, nil
+end
+
+--- The **main worktree** of the git worktree containing `opts.dir` (the first
+--- `git worktree list --porcelain` entry). Read-only, time-bounded, never
+--- throws. Returns `(main, top, reason)`: `main` is the main worktree's path
+--- and `top` the current worktree's toplevel; both nil when there is no answer,
+--- with `reason` as for `_worktree_list`. When `main == top` the caller is
+--- already in the main worktree. `opts.git`/`opts.dir` are injectable for tests.
+function M._main_worktree(opts)
+  local records, top, reason = M._worktree_list(opts)
+  if not records then return nil, nil, reason end
+  return records[1].path, top, nil
 end
 
 -- Command tokens in the hint are cyan on a real terminal. ANSI would corrupt
@@ -3096,8 +3140,7 @@ function M._worktree_hint(opts)
 
   -- A linked worktree: main resolved cleanly and distinct from this checkout.
   if main and reason == nil and norm_cmp(main) ~= norm_cmp(top) then
-    local has_ws = stat(main .. "/loomworks.json")
-        or stat(main .. "/.nvim/loomworks.user.json")
+    local has_ws = stat_has_workspace(stat, main)
     if has_ws then
       return {
         "loomworks — no workspace here (git worktree).",
@@ -3522,6 +3565,89 @@ function M.cmd_pull(args, opts)
   return 0
 end
 
+--- The bracketed branch label for a worktree record: `[branch]`, `(bare)` for a
+--- bare entry, or `[detached <sha>]` when a detached HEAD; a locked worktree
+--- gets a trailing `(locked)`.
+local function worktree_branch_label(r)
+  local label
+  if r.bare then
+    label = "(bare)"
+  elseif r.branch then
+    label = "[" .. r.branch .. "]"
+  elseif r.detached then
+    label = r.head and ("[detached " .. r.head:sub(1, 7) .. "]") or "[detached]"
+  else
+    label = "[unknown]"
+  end
+  if r.locked then label = label .. " (locked)" end
+  return label
+end
+
+--- `lw worktree [list]` — list every git worktree of the current repo, its
+--- branch, whether it is the main / current worktree, and whether loomworks is
+--- initialised there (a workspace file present). Read-only; runs before the
+--- workspace guard so it works from a worktree with no workspace of its own.
+--- Requires git — unlike the status hint it errors (non-zero) when git is
+--- unavailable or the cwd is not a git repo, rather than degrading silently.
+--- `opts.{dir,git,stat,color}` are injectable for tests.
+--- @param args string[]
+--- @param opts? table
+function M.cmd_worktree(args, opts)
+  opts = opts or {}
+  local sub = args and args[2]
+  if sub and sub ~= "list" then
+    die("unknown worktree subcommand '" .. tostring(sub) ..
+      "' — usage: lw worktree [list]")
+  end
+  local git = opts.git or git_query
+  local stat = opts.stat or uv.fs_stat
+  local dir = opts.dir or user_cwd()
+  local color = opts.color
+  if color == nil then color = stdout_supports_color() end
+  local paint = painter(color)
+
+  local records, top, reason = M._worktree_list({ dir = dir, git = git })
+  if not records then
+    if reason == "git-missing" then
+      die("git is not available — `lw worktree` needs git to list worktrees")
+    end
+    die("not in a git repository — run `lw worktree` inside a git worktree")
+  end
+
+  -- Build plain rows first so the column widths are computed from visible text,
+  -- never from color escapes.
+  local rows = {}
+  for i, r in ipairs(records) do
+    rows[#rows + 1] = {
+      current = norm_cmp(r.path) == norm_cmp(top),
+      path = r.path,
+      main = (i == 1) and "main" or "",
+      branch = worktree_branch_label(r),
+      inited = stat_has_workspace(stat, r.path) and true or false,
+    }
+  end
+
+  local pathw, branchw = 0, 0
+  for _, row in ipairs(rows) do
+    if #row.path > pathw then pathw = #row.path end
+    if #row.branch > branchw then branchw = #row.branch end
+  end
+  local function padr(s, w) return s .. string.rep(" ", math.max(0, w - #s)) end
+
+  out(string.format("%d worktree%s", #rows, #rows == 1 and "" or "s"))
+  for _, row in ipairs(rows) do
+    -- Color-safe: the current marker is a fixed-width 1 char and the status is
+    -- the last column, so wrapping either in escapes never shifts a column.
+    local cur = row.current and paint("*") or " "
+    local status = row.inited and paint("workspace") or "no workspace"
+    out("  " .. cur .. " " .. padr(row.path, pathw) ..
+      "  " .. padr(row.main, 4) ..
+      "  " .. padr(row.branch, branchw) ..
+      "  " .. status)
+  end
+  return 0
+end
+
 --- Human-readable age, e.g. "45s", "12m", "3h", "2d".
 local function human_age(secs)
   if secs < 60 then return secs .. "s" end
@@ -3659,7 +3785,7 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
   "profiles", "profile", "tools", "build", "clean", "test", "run", "launch", "publish",
-  "pull", "unlock", "config", "completion", "version", "install", "self-update", "help",
+  "pull", "worktree", "unlock", "config", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "module", "bootstrap", "update", "--no-input",
 }
 
@@ -3721,6 +3847,9 @@ function M.cmd_complete(cword, words)
   elseif cmd == "pull" then
     -- The source is a checkout directory; let the shell complete paths.
     if n == 1 then out("__dirs__") end
+    return 0
+  elseif cmd == "worktree" then
+    if n == 1 then emit({ "list" }) end
     return 0
   elseif cmd == "run" then
     if n == 1 then
@@ -4124,6 +4253,24 @@ items only in the source are added. The debug-adapter and lsp-option maps are
 unioned per key (a pulled `c++` adapter keeps your `typescript` one). It writes
 the working copy only; it never publishes loomworks.json and never touches the
 cache or build dirs.]],
+  worktree = [[lw worktree [list]
+
+List every git worktree of the current repository and whether loomworks is
+initialised in each (a workspace file — loomworks.json or the working copy
+.nvim/loomworks.user.json — is present). Read-only; works from a worktree that
+has no workspace of its own yet, so use it to see where a config already lives
+before `lw pull` (spec §16.26).
+
+Each row shows the worktree path, its branch (`[branch]`, `[detached <sha>]`,
+or `(bare)`), a `main` marker on the repository's main worktree, a `*` marker
+on the worktree you are in, and `workspace` / `no workspace`.
+
+  list   the explicit form; bare `lw worktree` does the same.
+
+Requires git: unlike the status hint, `lw worktree` errors (non-zero) when git
+is unavailable or the current directory is not a git repository, rather than
+degrading silently. An unknown subcommand (e.g. `lw worktree add`) is an error,
+reserving that space for future subcommands.]],
   project = [[lw project <add|remove|rename|list|show|publish>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
@@ -4517,6 +4664,7 @@ Usage: lw [command] [args]
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
+  worktree [list]   list the repo's git worktrees + whether each is inited
   migrate [--check] bring the workspace files up to current conventions
   module <sub>      install | update | remove | list acquirable modules (mod)
   config <...>      get/set lw configuration
@@ -4646,6 +4794,12 @@ local function main()
   -- the workspace-required guard below.
   if command == "pull" then
     finish(M.cmd_pull(a))
+  end
+
+  -- `worktree` lists the repo's git worktrees; it is about worktrees, not the
+  -- current workspace, so it runs before the workspace-required guard.
+  if command == "worktree" then
+    finish(M.cmd_worktree(a))
   end
 
   -- Workspace commands.
