@@ -349,7 +349,7 @@ function ConfigUnit:run_env()
     local lib_dirs = {}
     for _, t in pairs(self.targets or {}) do
         if (t.type == "shared_library" or t.type == "module_library") and t.artifact then
-            local full = (build_dir .. "/" .. t.artifact):gsub("\\", "/")
+            local full = require("loomworks.paths").artifact_path(build_dir, t.artifact):gsub("\\", "/")
             local d = full:match("^(.*)/[^/]*$")
             if d then lib_dirs[#lib_dirs + 1] = d end
         end

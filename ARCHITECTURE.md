@@ -1083,6 +1083,7 @@ loomworks.nvim/
 │   │   ├── device_log.lua              Client-side device-log view (parser, filter, ring buffer, bottom-split)
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
 │   │   ├── overseer.lua               Overseer template provider + launching
+│   │   ├── paths.lua                  Path helpers: is_absolute + artifact_path (joins build_dir+artifact, passes an absolute artifact through unchanged)
 │   │   ├── lsp.lua                    LSP registry + dispatcher (runtime-path discovery, setup_servers, get_status)
 │   │   ├── integrations/
 │   │   │   └── lsp/

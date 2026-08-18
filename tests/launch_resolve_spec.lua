@@ -28,6 +28,26 @@ describe("Target:resolve_run_spec", function()
         assert.equals("app: run app", spec.name)
     end)
 
+    it("does not double an absolute artifact path (cmake output outside build dir, §8.7)", function()
+        -- cmake's file-API emits an ABSOLUTE artifact path when the target
+        -- output lives outside the top-level build directory (e.g. a
+        -- RUNTIME_OUTPUT_DIRECTORY pointing elsewhere). The join must return
+        -- that path as-is, never prepend build_dir again — the reported bug
+        -- produced "C:/b/app/C:/out/bin/app.exe".
+        local t = Target.new(stub_unit("C:/b/app", "app"), "app",
+            { type = "executable", artifact = "C:/out/bin/app.exe" })
+        local spec, err = t:resolve_run_spec()
+        assert.is_nil(err)
+        assert.equals("C:/out/bin/app.exe", spec.cmd)
+    end)
+
+    it("does not double a POSIX-absolute artifact path", function()
+        local t = Target.new(stub_unit("/b/app", "app"), "app",
+            { type = "executable", artifact = "/out/bin/app" })
+        local spec = t:resolve_run_spec()
+        assert.equals("/out/bin/app", spec.cmd)
+    end)
+
     it("errors for a non-executable target", function()
         local t = Target.new(stub_unit("/b", "app"), "lib",
             { type = "static_library", artifact = "libx.a" })

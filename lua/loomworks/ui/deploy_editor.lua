@@ -184,7 +184,7 @@ local function resolve_source_preview(prof, project, config_name, source_type, s
         if unit.targets and unit.targets[source_target] then
             local artifact = unit.targets[source_target].artifact
             if artifact then
-                return build_dir .. "/" .. artifact
+                return require("loomworks.paths").artifact_path(build_dir, artifact)
             end
         end
         return build_dir .. "/" .. source_target .. " (?)"
