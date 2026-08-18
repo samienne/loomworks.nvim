@@ -3309,7 +3309,19 @@ function M._plan_pull(opts)
     source_root = (main:gsub("\\", "/"):gsub("/+$", ""))
   end
 
-  if norm_cmp(source_root) == norm_cmp(target_root) then
+  -- Same-checkout guard. The two roots reach here canonicalized INCONSISTENTLY:
+  -- target_root is the git top-level (forward-slashed only), while an explicit
+  -- source_root comes through resolve_abs -> uv.fs_realpath (and the auto-
+  -- detected main worktree is likewise not realpath'd). On some checkouts the
+  -- git top-level and the realpath'd source spell the SAME directory
+  -- differently — short (8.3) names, junctions, or symlinks — which norm_cmp
+  -- (slashes/case only) cannot reconcile. CI Windows under D:\a\... exposes
+  -- this. Realpath BOTH sides (falling back to the raw string, preserving the
+  -- normal case) before comparing.
+  local function canon_root(r)
+    return norm_cmp(uv.fs_realpath(r) or r)
+  end
+  if canon_root(source_root) == canon_root(target_root) then
     return nil, "source and target are the same checkout (" .. source_root ..
       ") — nothing to pull"
   end
