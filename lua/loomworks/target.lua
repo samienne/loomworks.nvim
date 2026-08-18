@@ -6,7 +6,9 @@
 --- @field id string opaque target identifier (module-specific)
 --- @field type string "executable"|"static_library"|"shared_library"|"module_library"|"object_library"|"interface_library"
 --- @field dependencies? string[] project-owned targets this links against
---- @field artifact? string output file path (relative to build dir)
+--- @field artifact? string output file path (normally relative to build dir;
+---   may be absolute when cmake's file-API reports an output outside it —
+---   join via loomworks.paths.artifact_path, never a bare `build_dir .. artifact`)
 --- @field sources? string[] absolute source file paths (for test source mapping)
 --- @field _config_unit loomworks.ConfigUnit back-reference to owning unit
 local Target = {}
@@ -134,7 +136,7 @@ function Target:resolve_run_spec(opts)
         cwd = (project and project.abs_path and project:abs_path()) or build_dir
     end
     return {
-        cmd = build_dir .. "/" .. self.artifact,
+        cmd = require("loomworks.paths").artifact_path(build_dir, self.artifact),
         cwd = cwd,
         name = project_name .. ": run " .. self.id,
         env = unit:run_env(),

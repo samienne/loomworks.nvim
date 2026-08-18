@@ -797,7 +797,7 @@ function LaunchTarget:_debug_target()
         return
     end
 
-    local artifact_path = build_dir .. "/" .. target.artifact
+    local artifact_path = require("loomworks.paths").artifact_path(build_dir, target.artifact)
     local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
     local lang = unit._project and unit._project._module and unit._project._module:primary_language() or "c++"
 
