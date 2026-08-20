@@ -17,16 +17,48 @@ M.languages = { "c", "c++" }
 
 local uv = vim.uv or vim.loop
 
+--- Deterministic 32-bit hash of a command's joined argv (pure Lua djb2).
+--- Used to give each wrapped command its own .bat filename. Arithmetic
+--- only (no bitwise ops) so it runs identically under Neovim's LuaJIT and
+--- the standalone CLI, without `vim.fn.sha256` or the `bit` library. The
+--- product stays well under 2^53, so double precision holds it exactly.
+--- @param cmd string[]
+--- @return string hex 8-char hash
+local function hash_argv(cmd)
+    local s = table.concat(cmd, "\0")
+    local h = 5381
+    for i = 1, #s do
+        h = (h * 33 + s:byte(i)) % 4294967291
+    end
+    return string.format("%08x", h)
+end
+
 --- Write a .bat file for MSVC+Ninja builds into the build directory.
 --- Using a .bat file instead of inline cmd /C avoids issues with
 --- Git Bash environment inheritance and quoting on Windows.
+--- The filename is `loomworks_<tag>_<hash>.bat`, where <tag> is a caller
+--- supplied action label (configure/build/clean) and <hash> is a content
+--- hash of the command's argv. INVARIANT: two distinct wrapped commands
+--- never share a bat filename. Both task builders (configure + build) are
+--- materialized before any task runs, and build_target_task wraps a
+--- `--target` build into the SAME build_dir as the plain build — so a
+--- fixed name (or a tag-only name) would let one command's .bat clobber
+--- another's, and the configure task would end up executing the build
+--- command ("could not load cache"). The content hash makes the name a
+--- pure function of the command, so distinct commands stay distinct even
+--- when their tags coincide.
 --- @param build_dir string absolute path to the build directory
 --- @param vcvarsall string path to vcvarsall.bat
 --- @param arch string architecture (e.g., "x64")
 --- @param cmd string[] command to run after vcvarsall
+--- @param tag string|nil short action label for the filename (e.g. "build")
 --- @return string bat_path
-local function write_vcvarsall_bat(build_dir, vcvarsall, arch, cmd)
-    local bat_path = build_dir .. "/loomworks_build.bat"
+local function write_vcvarsall_bat(build_dir, vcvarsall, arch, cmd, tag)
+    -- Sanitize inline (sanitize_path_component is defined further down);
+    -- tags are literals today, but keep the name filesystem-safe anyway.
+    local safe_tag = (tag or "cmd"):gsub("[^%w_%-]", "_")
+    local bat_path = build_dir
+        .. "/loomworks_" .. safe_tag .. "_" .. hash_argv(cmd) .. ".bat"
     local f = io.open(bat_path, "w")
     if not f then return nil end
     f:write("@echo off\r\n")
@@ -54,11 +86,12 @@ end
 --- @param kit table|nil tool data with optional vcvarsall/arch
 --- @param generator string|nil cmake generator name
 --- @param build_dir string|nil build directory for .bat file placement
+--- @param tag string|nil short action label for the .bat filename
 --- @return string[]
-local function wrap_cmd(cmd, kit, generator, build_dir)
+local function wrap_cmd(cmd, kit, generator, build_dir, tag)
     if kit and kit.vcvarsall and generator == "Ninja" and build_dir then
         local bat_path = write_vcvarsall_bat(
-            build_dir, kit.vcvarsall, kit.arch or "x64", cmd)
+            build_dir, kit.vcvarsall, kit.arch or "x64", cmd, tag)
         if bat_path then
             return { "cmd", "/C", bat_path }
         end
@@ -745,9 +778,11 @@ function M.tasks(project, active_config)
         end
     end
 
-    -- Closure to wrap commands with vcvarsall for this project's kit+generator
-    local function wrap(cmd)
-        return wrap_cmd(cmd, kit, generator, build_dir)
+    -- Closure to wrap commands with vcvarsall for this project's kit+generator.
+    -- `tag` labels the generated .bat (configure/build) so the two builders
+    -- write distinct files instead of clobbering a shared name.
+    local function wrap(cmd, tag)
+        return wrap_cmd(cmd, kit, generator, build_dir, tag)
     end
 
     -- Build the configuration key for cache tracking
@@ -770,7 +805,7 @@ function M.tasks(project, active_config)
                 end
             end
             return {
-                cmd = wrap(configure_cmd),
+                cmd = wrap(configure_cmd, "configure"),
                 cwd = abs_path,
                 env = env,
             }
@@ -812,7 +847,7 @@ function M.tasks(project, active_config)
             name = project.name .. ": build " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap(build_cmd),
+                    cmd = wrap(build_cmd, "build"),
                     cwd = abs_path,
                     env = env,
                 }
@@ -830,7 +865,7 @@ function M.tasks(project, active_config)
             name = project.name .. ": build " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap({ cmake_cmd, "--build", build_dir }),
+                    cmd = wrap({ cmake_cmd, "--build", build_dir }, "build"),
                     cwd = abs_path,
                     env = env,
                 }
@@ -869,8 +904,8 @@ function M.clean_tasks(project, active_config)
             or resolve_build_dir(project.name, active_config, config_info, project.workspace_root, multi_config, kit)
     local configuration_key = project.configuration_key or active_config
 
-    local function wrap(cmd)
-        return wrap_cmd(cmd, kit, generator, build_dir)
+    local function wrap(cmd, tag)
+        return wrap_cmd(cmd, kit, generator, build_dir, tag)
     end
 
     local cmake_cmd = (kit and kit.cmake_path) or "cmake"
@@ -891,7 +926,7 @@ function M.clean_tasks(project, active_config)
             name = project.name .. ": clean " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap(clean_cmd),
+                    cmd = wrap(clean_cmd, "clean"),
                     cwd = abs_path,
                     env = env,
                 }
@@ -942,7 +977,7 @@ function M.build_target_task(project, target_id)
         name = project.name .. ": build " .. target_id,
         builder = function()
             return {
-                cmd = wrap_cmd(cmd, kit, generator, build_dir),
+                cmd = wrap_cmd(cmd, kit, generator, build_dir, "build"),
                 cwd = abs_path,
                 env = env,
             }
