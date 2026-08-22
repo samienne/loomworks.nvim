@@ -143,6 +143,17 @@ function M.resolve_configurations(defaults, config)
                 end
             end
         end
+        -- A concrete config with an explicit variant but no buildtype maps its
+        -- variant to the meson buildtype (variant values match BUILDTYPE_BY_NAME
+        -- keys). Without this, buildtype resolution in M.tasks() falls back to
+        -- the config NAME, so a user config named e.g. "Tracy" with variant
+        -- "Release" would silently build as debug. Mark it derived so it is not
+        -- written back as if the user had declared it (same as the inherits pass).
+        if cfg.variant and not cfg.buildtype and BUILDTYPE_BY_NAME[cfg.variant] then
+            cfg._derived = cfg._derived or {}
+            cfg.buildtype = BUILDTYPE_BY_NAME[cfg.variant]
+            cfg._derived.buildtype = true
+        end
         -- Store normalised inherits array for downstream callers.
         if cfg.inherits and type(cfg.inherits) == "string" then
             cfg.inherits = { cfg.inherits }

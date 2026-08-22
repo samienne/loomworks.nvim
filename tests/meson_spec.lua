@@ -148,6 +148,43 @@ describe("meson module", function()
             assert.equals("Debug", cfgs["Debug-asan"].variant)
             assert.equals("debug", cfgs["Debug-asan"].buildtype)
         end)
+
+        -- Regression: a user config whose NAME differs from its variant
+        -- (e.g. "Tracy" with variant "Release"), declaring no `inherits` and
+        -- no explicit `buildtype`, must derive its buildtype from the variant.
+        -- Previously buildtype stayed nil, so M.tasks() fell back to the
+        -- config NAME ("Tracy"), missed BUILDTYPE_BY_NAME, and built debug.
+        it("user config with explicit variant derives buildtype from the variant", function()
+            local cfgs = meson.resolve_configurations(
+                meson.default_configurations("/tmp/x", {}),
+                { configurations = {
+                    Tracy = { variant = "Release" },
+                } })
+            assert.is_not_nil(cfgs.Tracy)
+            assert.equals("Release", cfgs.Tracy.variant)
+            assert.equals("release", cfgs.Tracy.buildtype)
+            -- Derived, not user-declared, so it is not written back to disk.
+            assert.is_true(cfgs.Tracy._derived and cfgs.Tracy._derived.buildtype)
+        end)
+
+        -- End-to-end through M.tasks(): the derived buildtype must reach the
+        -- `meson setup --buildtype=` argument.
+        it("M.tasks() emits --buildtype=release for a variant-Release config", function()
+            local cfgs = meson.resolve_configurations(
+                meson.default_configurations("/tmp/x", {}),
+                { configurations = {
+                    Tracy = { variant = "Release" },
+                } })
+            local t = meson.tasks({
+                name = "App",
+                path = "app",
+                workspace_root = "/root",
+                tool_data = { meson = { "/usr/bin/meson" } },
+                configurations = cfgs,
+                env = {},
+            }, "Tracy")
+            assert.equals("--buildtype=release", t[1].builder().cmd[4])
+        end)
     end)
 
     describe("map_variant", function()
