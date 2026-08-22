@@ -10,7 +10,7 @@
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
 ---           profile <list|select|create|remove|publish|target|query> |
 ---           tools | build [profile] |
----           clean [profile] | run <profile> [target] | publish | test [profile] |
+---           clean [profile] | run [target] | run <profile> <target> | publish | test [profile] |
 ---           unlock <profile>|--all | config <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
@@ -975,12 +975,71 @@ local function candidate_launch_target(ws, profile, c)
   return require("loomworks.launch_target").new(ws, profile, descriptor)
 end
 
---- `lw run <profile> [target] [-- prog-args…]` — resolve a profile and a
---- launch target (the profile's default when unnamed, else a named build
---- target or command launch config), then build → deploy → execute. Args
---- after `--` are forwarded to the program. Returns its exit code.
---- Routes through the editor's LaunchTarget seams (resolve_launch_spec
---- / deploy_sync) so headless and editor launches stay identical.
+--- Match a run operand `name` against a profile's launchable targets, honoring
+--- an explicit `--project` scope, a `project:name` prefix (only when the prefix
+--- is a known project in this profile — target ids may themselves contain ':'),
+--- and a `--target`/`--launch` kind filter. Pure and non-dying: returns the
+--- matching candidates (0 = none, 1 = unique, >1 = ambiguous) plus the full
+--- candidate list for error messages. Shared by the one- and two-operand
+--- named-target paths (spec §16.17); runs after the build, so build targets
+--- are enumerated. `all` (the candidate list) defaults to `launchable_targets`
+--- and is injectable for testing.
+--- @return table matches, table all
+local function match_targets(ws, profile, name, proj_scope, kind, all)
+  local scope, bare = proj_scope, name
+  if not scope then
+    local pfx, rest = name:match("^([^:]+):(.+)$")
+    if pfx and profile:project(pfx) then scope, bare = pfx, rest end
+  end
+  all = all or launchable_targets(ws, profile)
+  local matches = {}
+  for _, c in ipairs(all) do
+    if c.name == bare and (not scope or c.project.key == scope)
+      and (not kind or c.kind == kind) then matches[#matches + 1] = c end
+  end
+  return matches, all
+end
+M._match_targets = match_targets
+
+--- Resolve the (profile, target_name) for a `lw run` invocation from its parsed
+--- operands, implementing the positional grammar of spec §16.17:
+---   0 operands → resolved profile (§16.3) + its default target (target = nil);
+---   1 operand  → the SAME resolved profile (§16.3) + the operand as a target
+---                on it — a single operand is always a target, never a profile
+---                selector;
+---   2 operands → the named target on the named profile.
+--- The named target is matched by the caller AFTER the build, so build targets
+--- are visible. `resolve_build_target` is injectable via `deps.resolve` for
+--- testing; production uses the module local. May die() when the profile can't
+--- be resolved (§16.3). Returns (profile, target_name, ws) — ws may be a fresh
+--- reload from resolve_build_target's onboarding path.
+--- @param deps? { resolve?: function }
+--- @return table profile, string|nil target_name, table ws
+function M._run_selection(ws, positionals, deps)
+  deps = deps or {}
+  local resolve = deps.resolve or resolve_build_target
+  local profile
+  if #positionals >= 2 then
+    profile, ws = resolve(ws, positionals[1])
+    return profile, positionals[2], ws
+  elseif #positionals == 1 then
+    -- One operand is always a target on the resolved profile (the same profile
+    -- a bare `lw run` would pick), never a profile selector.
+    profile, ws = resolve(ws, nil)
+    return profile, positionals[1], ws
+  end
+  profile, ws = resolve(ws, nil)
+  return profile, nil, ws
+end
+
+--- `lw run [<target>] [-- prog-args…]` / `lw run <profile> <target>` — resolve a
+--- profile and a launch target, then build → deploy → execute. The pre-`--`
+--- operands follow the §16.17 grammar: none → the resolved profile's default
+--- target; one → that target on the resolved profile (never a profile selector);
+--- two → the named target on the named profile. Args after `--` are forwarded to
+--- the program. Returns its exit code. Routes through the editor's LaunchTarget
+--- seams (resolve_launch_spec / deploy_sync) so headless
+--- and editor launches stay identical.
 function M.cmd_run(ws, args)
   -- Split on `--`: everything after is forwarded verbatim to the program.
   local pre, extra_args, seen_sep = {}, {}, false
@@ -990,8 +1049,8 @@ function M.cmd_run(ws, args)
     else pre[#pre + 1] = args[i] end
   end
   -- Disambiguation flags (`--project <key>`, `--target`, `--launch`) and a
-  -- per-invocation `--cwd <dir>`; remaining pre-`--` tokens are
-  -- positional (profile, then optional target).
+  -- per-invocation `--cwd <dir>`; remaining pre-`--` tokens are positional and
+  -- follow the §16.17 operand grammar (0/1/2).
   local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
   local i = 1
   while pre[i] do
@@ -1001,10 +1060,12 @@ function M.cmd_run(ws, args)
     elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then cwd_override = pre[i + 1]; i = i + 2
     else positionals[#positionals + 1] = pre[i]; i = i + 1 end
   end
-  local profile_name, target_name = positionals[1], positionals[2]
 
-  local profile
-  profile, ws = resolve_build_target(ws, profile_name)
+  -- Determine (profile, target) from the operand count (§16.17). The profile is
+  -- resolved here; a named target is matched AFTER the build below, so build
+  -- targets are enumerated.
+  local profile, target_name
+  profile, target_name, ws = M._run_selection(ws, positionals)
 
   -- Build the profile first (configures + builds); dies on failure. Build
   -- targets and the default target's artifact resolve against the built tree.
@@ -1016,24 +1077,13 @@ function M.cmd_run(ws, args)
 
   local lt
   if target_name then
-    -- Optional `project:name` scoping — split only when the prefix is a known
-    -- project in this profile (target ids may themselves contain ':').
-    local scope, bare = proj_scope, target_name
-    if not scope then
-      local pfx, rest = target_name:match("^([^:]+):(.+)$")
-      if pfx and profile:project(pfx) then scope, bare = pfx, rest end
-    end
-    local all = launchable_targets(ws, profile)
-    local matches = {}
-    for _, c in ipairs(all) do
-      if c.name == bare and (not scope or c.project.key == scope)
-        and (not kind or c.kind == kind) then matches[#matches + 1] = c end
-    end
+    local matches, all = match_targets(ws, profile, target_name, proj_scope, kind)
     if #matches == 0 then
       local labels = {}
       for _, c in ipairs(all) do labels[#labels + 1] = fmt_cand(c) end
       die("no launch target '" .. target_name .. "' in profile '" .. profile.key .. "'.\n" ..
-        "  available: " .. (next(labels) and table.concat(labels, ", ") or "(none)"))
+        "  available: " .. (next(labels) and table.concat(labels, ", ") or "(none)") .. "\n" ..
+        "  a target on a different profile: lw run <profile> <target>")
     elseif #matches > 1 then
       local labels = {}
       for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
@@ -3221,7 +3271,7 @@ function M.cmd_status(root)
   if ap then
     out("Active profile   " .. trunc(ap.key, 44) ..
       "   (set " .. (ap._configuration_set_name or "?") .. ")")
-    -- The active profile's default launch target (what `lw run <profile>` runs
+    -- The active profile's default launch target (what a bare `lw run` runs
     -- with no target named). Descriptor-based, so it shows without a build.
     local ok_lt, lt = pcall(function() return ap:default_target() end)
     if ok_lt and lt then
@@ -4040,10 +4090,12 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "run" then
     if n == 1 then
-      emit(comp_profile_names(comp_ws(root)))                    -- <profile>
+      -- First operand is a target (1-operand form) or a profile (2-operand
+      -- form); offer both. Build targets need a build, so only launch configs.
+      local ws_c = comp_ws(root)
+      emit(sorted_unique(vim.list_extend(comp_launch_names(ws_c), comp_profile_names(ws_c))))
     elseif n == 2 then
-      emit(sorted_unique(comp_launch_names(comp_ws(root))))      -- [target] (launch configs;
-                                                                 -- build targets need a build)
+      emit(sorted_unique(comp_launch_names(comp_ws(root))))      -- <target> on the named profile
     end
     return 0
   elseif cmd == "launch" then
@@ -4221,7 +4273,7 @@ its heartbeat goes stale (~20s). Use `unlock` to clear one immediately.
 
 Warns (on stderr) before clearing a lock that still looks active — meaning a
 build may really be running elsewhere.]],
-  run = [[lw run <profile> [target] [-- prog-args…]
+  run = [[lw run [<target>] [-- prog-args…]   |   lw run <profile> <target> [-- …]
 
 Resolve a profile and a launch target, then build -> deploy -> execute (spec
 §16.17). The target is EITHER a build target (its executable) OR a command
@@ -4229,17 +4281,20 @@ launch configuration declared with `lw launch add`; variables are expanded in
 the profile's context. The launched process's exit code becomes lw's exit
 code; output streams through.
 
-  profile      required (a unique substring works), like `lw build`.
-  target       which target to launch. Omit to use the profile's DEFAULT
-               target (`lw profile target`); if none is set and exactly one
-               target is in scope, that one runs, else it errors.
+Operands (before `--`) — the count picks the form:
+  (none)               the resolved profile's DEFAULT target. The profile is
+                       the active one (interactive) or the sole one, else error.
+  <target>             that target on the resolved profile. A single operand is
+                       ALWAYS a target, never a profile — to run another
+                       profile use the two-operand form or `lw profile select`.
+  <profile> <target>   the named target on the named profile.
   --cwd <dir>  working directory for this run (absolute or workspace-root-
                relative, variable-expanded). Overrides the target's stored /
                default working dir just for this invocation. Default: the
                owning project's directory.
   -- args…     everything after `--` is forwarded verbatim to the program
                (a command config's own declared args come first). Required to
-               pass args, so a target name is never mistaken for one.
+               pass args, so the operands are never mistaken for one.
 
 Disambiguating a name present more than once:
   <project>:<target>     scope to a project
@@ -4572,7 +4627,7 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
             loomworks.json, including the set and projects it needs.
   target <profile> [<target>|--clear] [--cwd <dir>]
             Show, set, or clear a profile's DEFAULT launch target — what
-            `lw run <profile>` runs with no target named. With no target, prints
+            a bare `lw run` runs on it (no target named). With no target, prints
             the current default and its working directory; `--clear` unsets it.
             Resolves a build target or command launch config like `lw run`
             (build the profile first so its build targets are known);
@@ -4861,7 +4916,8 @@ Usage: lw [command] [args]
   sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
   test  [profile]   build a profile, then run its tests (real exit code)
-  run <profile> [target]  build, then execute a launch target
+  run [target]      build, then execute a target on the active profile
+  run <profile> <target>  same, on a named profile
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one

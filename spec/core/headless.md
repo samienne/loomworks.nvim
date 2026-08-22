@@ -263,11 +263,24 @@ explicit throughout: with no named target and no default set, the invocation
 errors unless exactly one launchable target is in scope — the system never
 guesses.
 
+**Positional grammar.** Before any `--`, a run takes zero, one, or two
+positional operands:
+
+- **none** — the resolved profile's default target. The profile is resolved
+  per §16.3 (the active profile in an interactive host; otherwise the sole
+  profile, or an error).
+- **one** `<target>` — the named target on the resolved profile (§16.3). A
+  single operand is always a target on the resolved profile, never a profile
+  selector; run a different profile's target with the two-operand form, or
+  select that profile first (§16.9).
+- **two** `<profile> <target>` — the named target on the named profile.
+
+Operand count alone distinguishes the one- and two-operand forms.
+
 **Argument forwarding.** Positional arguments after a `--` separator are
 forwarded verbatim to the launched program (a command configuration's own
 declared arguments precede them). The separator is required to pass arguments,
-so the optional target-name positional is never ambiguous with program
-arguments.
+so the optional operands are never ambiguous with program arguments.
 
 **Shared code paths.** Resolution, dependency build, deploy, and the launch
 command/spec are the same seams the editor drives; the headless runner differs
