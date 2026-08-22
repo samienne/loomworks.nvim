@@ -650,7 +650,7 @@ command has detail under `lw help <command>`.
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
-| `lw run <profile> [target]` | Build, then execute a launch target (omit `target` for the profile default) |
+| `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both |
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
