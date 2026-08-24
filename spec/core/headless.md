@@ -305,9 +305,26 @@ a build directory is a per-project coordinate; the reported facts a caller MAY
 request include the build directory, the pinned configuration, the last known
 build state, and the resolved toolchain.
 
+Introspection MAY also **list a resolved profile's launchable targets** — the
+runnable things a launch (§16.17) can name: each project's **command launch
+configurations** (§8.7) and its **build targets** (their executable artifacts).
+Listing is read-only and performs no build. A command launch configuration is
+always enumerable from configuration, but a build target is known only once its
+project is **configured** (its artifacts are read from the build tree), so the
+listing is complete only for the profile's configured projects and MAY be empty
+or partial otherwise; the operation reports that the list is incomplete — and
+which project must be configured to complete it — rather than guessing the
+missing targets (§16.3). The listing marks the profile's **default target**
+(§16.17) among the results. Because it neither builds nor writes, the listing MAY
+resolve the **active profile** as its default even in a non-interactive host,
+unlike the operations that build or manage state (§16.3, §16.9).
+
 The human status overview is likewise read-only, and when no workspace resolves
 here (§1.1) it points the user at how to start one, with each suggested command
-on its own line. When the invocation sits in a linked git worktree whose main
+on its own line. When a workspace does resolve, the overview MAY present the
+active profile's launchable targets, marking its default target and — when the
+list is incomplete because a project is not yet configured — pointing the user
+at how to configure it. When the invocation sits in a linked git worktree whose main
 checkout holds a workspace, the hint offers to **pull** that config into the
 current worktree (§16.25) as well as to initialise a fresh workspace here; when
 the main checkout has no workspace — or the invocation is not in a linked

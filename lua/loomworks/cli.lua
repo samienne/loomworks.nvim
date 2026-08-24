@@ -8,9 +8,10 @@
 ---           project <add|remove|rename|list|show> |
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
----           profile <list|select|create|remove|publish|target|query> |
+---           profile <list|select|create|remove|publish|query> |
 ---           tools | build [profile] |
----           clean [profile] | run [target] | run <profile> <target> | publish | test [profile] |
+---           clean [profile] | run [target] | run <profile> <target> |
+---           target <list|set|clear> [profile] | launch <sub> | publish | test [profile] |
 ---           unlock <profile>|--all | config <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
@@ -370,8 +371,11 @@ local function load_workspace(root, wait_tools)
       io.stderr:write(tostring(msg) .. "\n")
     end
   end
-  -- The CLI never surfaces build targets, so skip target introspection — it can
-  -- spawn a per-build-dir meson/python subprocess (~2s) on every load.
+  -- Skip the automatic background target scan — it can spawn a per-build-dir
+  -- meson/python subprocess (~2s) on every load. Commands that need targets
+  -- (`lw run`, `lw target`, the status Targets section) parse them on demand for
+  -- just the resolved profile via ensure_unit_targets, which is independent of
+  -- this flag and only reads an already-configured build tree.
   core._deps.scan_targets = false
   -- Serve tools from the machine-level cache. A load that won't wait for tools
   -- never probes — serve cache only (never spend seconds for a command that
@@ -1106,7 +1110,7 @@ function M.cmd_run(ws, args)
         local labels = {}
         for _, c in ipairs(cands) do labels[#labels + 1] = fmt_cand(c) end
         die("no default target set for profile '" .. profile.key .. "'.\n" ..
-          "  set one:      lw profile target " .. profile.key .. " <target>\n" ..
+          "  set one:      lw target set " .. profile.key .. " <target>\n" ..
           "  or name one:  lw run " .. profile.key .. " <target>\n" ..
           "  candidates:   " .. table.concat(labels, ", "))
       end
@@ -2667,61 +2671,129 @@ function M.cmd_profile_publish(root, name)
   return publish_item(ws, profile, "profile '" .. profile.key .. "'")
 end
 
---- `lw profile <list|select|create|publish|target>`
---- `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
---- profile's default launch target. With no target name,
---- prints the current default. Resolves a build target or command launch
---- config the same way `lw run` does (parsing targets on demand — build the
---- profile first so its build targets are known).
-function M.cmd_profile_target(root, args)
-  -- args: { "profile", "target", <profile>, <target?>, flags… }
-  local pos, scope, clear, kind, working_dir = {}, nil, false, nil, nil
+-- A launchable-target candidate's short kind label for display.
+local function target_kind_label(kind) return kind == "target" and "exe" or "launch" end
+
+--- Does a launchable-target candidate `c` match a profile's stored default-target
+--- descriptor? Matches by (project, target-id) for build targets and
+--- (project, name) for command launch configs.
+local function candidate_is_default(desc, c)
+  if not desc or desc.project ~= c.project.key then return false end
+  if desc.target then return c.kind == "target" and c.target_id == desc.target end
+  if desc.launch then return c.kind == "launch" and c.name == desc.launch end
+  return false
+end
+
+--- Gather a profile's launchable targets for display (read-only; never builds).
+--- Returns `rows` (each { label, kind_label, is_default, cand?, suffix? }, the
+--- default first if it isn't otherwise enumerable), `unconfigured` (project keys
+--- that could contribute build targets once configured), and `incomplete`.
+--- @return { rows: table[], unconfigured: string[], incomplete: boolean }
+local function collect_targets(ws, profile)
+  local cands = launchable_targets(ws, profile)
+  local desc = profile._default_target_descriptor
+  local rows, seen_default = {}, false
+  for _, c in ipairs(cands) do
+    local is_default = candidate_is_default(desc, c)
+    if is_default then seen_default = true end
+    rows[#rows + 1] = {
+      label = c.project.key .. ":" .. c.name,
+      kind_label = target_kind_label(c.kind),
+      is_default = is_default,
+      cand = c,
+    }
+  end
+  -- The default points at a target we couldn't enumerate (e.g. an unconfigured
+  -- build target). Show it anyway from the descriptor so it is never hidden.
+  if desc and desc.project and not seen_default and (desc.target or desc.launch) then
+    table.insert(rows, 1, {
+      label = desc.project .. ":" .. (desc.target or desc.launch),
+      kind_label = desc.target and "exe" or "launch",
+      is_default = true,
+      suffix = "  (unresolved — build to confirm)",
+    })
+  end
+  -- Projects that could contribute build targets but aren't configured yet, so
+  -- the caller can say the list is incomplete (spec §16.18).
+  local unconfigured = {}
+  for _, pp in ipairs(profile:projects()) do
+    local unit = pp._config_unit
+    local project = unit and unit._project
+    local mod = project and project._module and project._module.impl
+    if mod and mod.parse_targets then
+      local st = unit:state()
+      if st ~= "configured" and st ~= "built" then unconfigured[#unconfigured + 1] = project.key end
+    end
+  end
+  table.sort(unconfigured)
+  return { rows = rows, unconfigured = unconfigured, incomplete = #unconfigured > 0 }
+end
+
+--- Resolve a profile for the READ-ONLY target listing. Unlike resolve_profile,
+--- it may fall back to the active profile even in a non-interactive host (the
+--- listing neither builds nor writes, so the CI-determinism guard does not
+--- apply — spec §16.18). Named → that profile; else active; else the sole one.
+local function resolve_profile_for_listing(ws, name)
+  if name then return resolve_profile(ws, name) end
+  local profiles = ws._profiles or {}
+  if #profiles == 0 then die("no profiles yet — `lw profile create <set> <tool>`") end
+  local active = ws._active_profile_key
+  if active then
+    for _, p in ipairs(profiles) do if p.key == active then return p end end
+  end
+  if #profiles == 1 then return profiles[1] end
+  die("no active profile — name one (`lw target <profile>`) or `lw profile select`")
+end
+
+--- `lw target [list] [profile]` — print a profile's launchable targets, default
+--- marked `*`, with a note when the list is incomplete (a project not yet
+--- configured). Read-only.
+local function print_target_list(ws, profile)
+  local info = collect_targets(ws, profile)
+  out("targets — profile '" .. profile.key .. "':")
+  if #info.rows == 0 then
+    out("  (none" .. (info.incomplete and " yet)" or ")"))
+  else
+    for _, r in ipairs(info.rows) do
+      out(string.format("  %s %s (%s)%s", r.is_default and "*" or " ",
+        r.label, r.kind_label, r.suffix or ""))
+    end
+  end
+  if info.incomplete then
+    out("  build targets for " .. table.concat(info.unconfigured, ", ") ..
+      " appear after `lw build`.")
+  end
+  return 0
+end
+
+--- `lw target set [<profile>] <target>` — set a profile's default launch target
+--- (what a bare `lw run` executes). One operand is the target on the active
+--- profile (non-interactive requires the explicit <profile>, spec §16.9); two
+--- operands name the profile. Resolves the target the same way `lw run` does.
+local function target_set(root, args)
+  -- args: { "target", "set", <positionals & flags…> }
+  local pos, scope, kind, working_dir = {}, nil, nil, nil
   local i = 3
   while args[i] do
-    if args[i] == "--clear" then clear = true; i = i + 1
-    elseif args[i] == "--project" then scope = args[i + 1]; i = i + 2
+    if args[i] == "--project" then scope = args[i + 1]; i = i + 2
     elseif args[i] == "--target" then kind = "target"; i = i + 1
     elseif args[i] == "--launch" then kind = "launch"; i = i + 1
     elseif args[i] == "--cwd" or args[i] == "--working-dir" then working_dir = args[i + 1]; i = i + 2
     else pos[#pos + 1] = args[i]; i = i + 1 end
   end
-  local profile_name, target_name = pos[1], pos[2]
-  if not profile_name then
-    die("usage: lw profile target <profile> [<target>|--clear]")
-  end
+  local profile_name, target_name
+  if #pos >= 2 then profile_name, target_name = pos[1], pos[2]
+  elseif #pos == 1 then target_name = pos[1]
+  else die("usage: lw target set [<profile>] <target>") end
 
   local ws = load_workspace(root, false)
-  local profile = resolve_profile(ws, profile_name)
-
-  if clear then
-    profile:clear_default_target()
-    out("cleared default target for profile '" .. profile.key .. "'")
-    return 0
-  end
-
-  if not target_name then
-    if not profile:has_default_target_override() then
-      out("profile '" .. profile.key .. "' has no default target set.")
-      return 0
-    end
-    local lt = profile:default_target()
-    if not lt then
-      out("default target for '" .. profile.key .. "': (set but unresolved — build the profile?)")
-      return 0
-    end
-    out("default target for '" .. profile.key .. "': " .. tostring(lt))
-    if lt:is_module_target() then
-      out("  working dir: " .. (lt:working_directory() or "?") ..
-        (lt:has_working_dir_override() and "" or "  (default: project dir)"))
-    end
-    return 0
-  end
+  local profile = resolve_profile(ws, profile_name) -- nil → active (interactive) / dies in CI
 
   -- Resolve <target> to a candidate (same rules as `lw run`).
   local bare = target_name
   if not scope then
-    local pfx, rest = target_name:match("^([^:]+):(.+)$")
-    if pfx and profile:project(pfx) then scope, bare = pfx, rest end
+    local pfx = target_name:match("^([^:]+):(.+)$")
+    if pfx and profile:project(pfx) then scope, bare = pfx, target_name:match("^[^:]+:(.+)$") end
   end
   local all = launchable_targets(ws, profile)
   local matches = {}
@@ -2760,6 +2832,33 @@ function M.cmd_profile_target(root, args)
   end
   return 0
 end
+
+--- `lw target clear [profile]` — clear a profile's default target.
+local function target_clear(root, args)
+  local ws = load_workspace(root, false)
+  local profile = resolve_profile(ws, args[3]) -- nil → active (interactive) / dies in CI
+  profile:clear_default_target()
+  out("cleared default target for profile '" .. profile.key .. "'")
+  return 0
+end
+
+--- `lw target [list] [profile]` | `lw target set [<profile>] <target>` |
+--- `lw target clear [profile]` — list a profile's launchable targets (default
+--- marked `*`), or set/clear its default target. Bare `lw target` lists the
+--- active profile's targets. `set`/`clear` are reserved sub-keywords; list a
+--- profile literally named `set`/`clear` with `lw target list <name>`.
+function M.cmd_target(root, args)
+  local sub = args[2]
+  if sub == "set" then return target_set(root, args) end
+  if sub == "clear" then return target_clear(root, args) end
+  local name = (sub == "list") and args[3] or sub
+  local ws = load_workspace(root, false)
+  local profile = resolve_profile_for_listing(ws, name)
+  return print_target_list(ws, profile)
+end
+
+M._collect_targets = collect_targets
+M._resolve_profile_for_listing = resolve_profile_for_listing
 
 -- ---------------------------------------------------------------------------
 -- SDKs (user-declared toolchain installations)
@@ -2942,14 +3041,11 @@ function M.cmd_profile(sub, root, args)
   if sub == "publish" then
     return M.cmd_profile_publish(root, args[3])
   end
-  if sub == "target" then
-    return M.cmd_profile_target(root, args)
-  end
   if sub == nil or sub == "list" then
     return M.cmd_profiles(load_workspace(root))
   end
   die("unknown profile subcommand '" .. tostring(sub) ..
-    "' — use list|select|create|remove|publish|target|query")
+    "' — use list|select|create|remove|publish|query (target moved to `lw target`)")
 end
 
 --- The value a config key falls back to when unset, so `lw config get` can
@@ -3008,21 +3104,70 @@ function M.cmd_config(sub, key, value)
   die("unknown config subcommand '" .. tostring(sub) .. "' — use list|get|set|unset")
 end
 
---- Print a capped section: a blank line, "Title (N)", up to `max` rows via
---- `row_fn`, then a "+K more · <more_hint>" line when the list was truncated,
---- and always a short `help` line (how to add — doubles as the empty-state
---- hint, like the active-profile line shows with no profiles).
-local function status_section(title, items, max, row_fn, more_hint, help)
+-- Command tokens are cyan on a real terminal; the rest of the status palette is
+-- bold titles, dim secondary prose (counts, help, "+N more"), green for the
+-- active profile. ANSI would corrupt captured / piped / redirected output, so
+-- it is emitted only to a stdout tty (see status_palette / stdout_supports_color).
+local ANSI_CMD, ANSI_RESET = "\27[36m", "\27[0m"
+local ANSI_TITLE, ANSI_DIM, ANSI_ACTIVE = "\27[1m", "\27[2m", "\27[32m"
+
+--- A named set of painters for `lw status`. When `color` is false every field
+--- is the identity function, so the exact same rendering code produces plain
+--- text on a pipe/redirect (every test) and colored text on a real terminal.
+--- `.cmd` matches the hint block's cyan so command tokens read the same across
+--- the whole CLI.
+local function status_palette(color)
+  local function mk(seq)
+    if not color then return function(s) return s end end
+    return function(s) return seq .. s .. ANSI_RESET end
+  end
+  return {
+    title = mk(ANSI_TITLE),
+    dim = mk(ANSI_DIM),
+    active = mk(ANSI_ACTIVE),
+    cmd = mk(ANSI_CMD),
+    -- A command mentioned inline in prose: dim on a terminal (it is secondary
+    -- guidance, not data), backticked on a pipe/redirect so it stays visually
+    -- delimited without color (matching the footer's `lw help` style).
+    inline = color and mk(ANSI_DIM) or function(s) return "`" .. s .. "`" end,
+  }
+end
+
+--- Paint a status help line — secondary guidance ("<prose> · <lw command>" or a
+--- bare command hint). Dimmed whole on a terminal so it recedes behind the data;
+--- plain on a pipe/redirect. `pal` is a status_palette().
+local function paint_help(pal, help)
+  return pal.dim(help)
+end
+
+M._status_palette = status_palette
+M._paint_help = paint_help
+
+--- Print a capped section: a blank line, "Title (N)" (title bold, count dim),
+--- up to `max` rows via `row_fn`, then a "+K more · <more_hint>" line when the
+--- list was truncated, a blank separator, and one or more short `help` lines
+--- (how to act — doubles as the empty-state hint, like the active-profile line
+--- shows with no profiles). `help` is a single string or a list of them, each on
+--- its own line. The blank line before them keeps them from blending into the
+--- entries. `pal` is a status_palette(); with color off it renders plain.
+local function status_section(pal, title, items, max, row_fn, more_hint, help)
+  local help_lines = type(help) == "table" and help or { help }
   out("")
-  out(string.format("%s (%d)", title, #items))
-  if #items == 0 then out("  " .. help); return end
+  out(pal.title(title) .. " " .. pal.dim("(" .. #items .. ")"))
+  if #items == 0 then
+    for _, h in ipairs(help_lines) do out("  " .. paint_help(pal, h)) end
+    return
+  end
   local shown = math.min(#items, max)
   for i = 1, shown do out(row_fn(items[i])) end
   if #items > shown then
-    out(string.format("  +%d more · %s", #items - shown, more_hint))
+    out("  " .. pal.dim("+" .. (#items - shown) .. " more · " .. more_hint))
   end
-  out("  " .. help)
+  out("")
+  for _, h in ipairs(help_lines) do out("  " .. paint_help(pal, h)) end
 end
+
+M._status_section = status_section
 
 --- Best-effort, time-bounded git query for the no-workspace status hint. Never
 --- throws and never hangs status: a missing binary, non-zero exit, or a git
@@ -3147,10 +3292,6 @@ function M._main_worktree(opts)
   return records[1].path, top, nil
 end
 
--- Command tokens in the hint are cyan on a real terminal. ANSI would corrupt
--- captured / piped / redirected output, so it is emitted only to a stdout tty.
-local ANSI_CMD, ANSI_RESET = "\27[36m", "\27[0m"
-
 -- On Windows a console only renders ANSI once virtual-terminal processing is
 -- on. Enable it once via LuaJIT FFI (kernel32) — available on both hosts (nvim
 -- and the luvi luajit shim). Memoized, Windows-only, and every step is
@@ -3259,7 +3400,8 @@ function M.cmd_status(root)
     return 0
   end
   local ws = load_workspace(root, false) -- pinned info only; skip tool detection
-  out(string.format("loomworks — %s  (%s)", ws.name or "?", ws.root))
+  local pal = status_palette(stdout_supports_color())
+  out(pal.title("loomworks — " .. (ws.name or "?")) .. "  " .. pal.dim("(" .. ws.root .. ")"))
 
   local MAX = 6
   local profiles = ws._profiles or {}
@@ -3269,25 +3411,43 @@ function M.cmd_status(root)
 
   out("")
   if ap then
-    out("Active profile   " .. trunc(ap.key, 44) ..
-      "   (set " .. (ap._configuration_set_name or "?") .. ")")
-    -- The active profile's default launch target (what a bare `lw run` runs
-    -- with no target named). Descriptor-based, so it shows without a build.
+    out(pal.title("Active profile") .. "   " .. pal.active(trunc(ap.key, 44)) ..
+      "   " .. pal.dim("(set " .. (ap._configuration_set_name or "?") .. ")"))
+
+    -- Targets: the active profile's launchable targets (the same list
+    -- `lw target` shows), default marked `*`+green. Build-free — a build target
+    -- is listed only once its project is configured, so the list may be
+    -- incomplete; a hint says how to complete it. Never let it break status.
+    local ok_t, tinfo = pcall(collect_targets, ws, ap)
+    if not ok_t or not tinfo then tinfo = { rows = {}, unconfigured = {}, incomplete = false } end
+    -- cwd for the default module target (descriptor-based; no build needed).
+    local default_cwd
     local ok_lt, lt = pcall(function() return ap:default_target() end)
-    if ok_lt and lt then
-      local line = "Default target   " .. lt:describe()
-      if lt:is_module_target() then
-        local cwd = lt:working_directory()
-        if cwd then line = line .. "   cwd: " .. trunc(cwd, 34) end
-      end
-      out(line)
-    else
-      out("Default target   (none) — `lw profile target " .. trunc(ap.key, 26) .. " <target>`")
+    if ok_lt and lt and lt:is_module_target() then default_cwd = lt:working_directory() end
+
+    local target_help = {
+      "run a target · lw run <target>",
+      "set this profile's default · lw target set <target>",
+    }
+    if tinfo.incomplete then
+      table.insert(target_help, 1, "configure to list build targets · lw build")
     end
+    status_section(pal, "Targets", tinfo.rows, MAX, function(r)
+      local base = string.format("%s %-30s (%s)", r.is_default and "*" or " ",
+        trunc(r.label, 30), r.kind_label)
+      if r.is_default then
+        local line = pal.active(base)
+        if default_cwd then line = line .. "   " .. pal.dim("cwd: " .. trunc(default_cwd, 30)) end
+        if r.suffix then line = line .. pal.dim(r.suffix) end
+        return line
+      end
+      return base .. (r.suffix and pal.dim(r.suffix) or "")
+    end, "lw target", target_help)
   elseif #profiles > 0 then
-    out("Active profile   (none) — `lw profile select`")
+    out(pal.title("Active profile") .. "   " .. pal.dim("(none) — ") .. pal.inline("lw profile select"))
   else
-    out("Active profile   (no profiles) — `lw profile create <set> <tool>`")
+    out(pal.title("Active profile") .. "   " .. pal.dim("(no profiles) — ") ..
+      pal.inline("lw profile create <set> <tool>"))
   end
 
   -- Profiles: active first (so it's always visible under the cap), then the
@@ -3298,29 +3458,36 @@ function M.cmd_status(root)
   for _, p in ipairs(profiles) do if p ~= ap then rest[#rest + 1] = p end end
   table.sort(rest, function(a, b) return a.key < b.key end)
   for _, p in ipairs(rest) do plist[#plist + 1] = p end
-  status_section("Profiles", plist, MAX, function(p)
-    local mark = (p.key == active_key) and "*" or " "
-    return string.format(" %s %-38s set=%s", mark, trunc(p.key, 38),
-      trunc(p._configuration_set_name or "?", 22))
-  end, "lw profiles", "create a profile · lw profile create <set> <tool>")
+  -- Switching only makes sense with more than one profile; offer it above the
+  -- create hint in that case.
+  local profile_help = { "create a profile · lw profile create <set> <tool>" }
+  if #profiles > 1 then
+    table.insert(profile_help, 1, "switch the profile · lw profile select")
+  end
+  status_section(pal, "Profiles", plist, MAX, function(p)
+    local is_active = (p.key == active_key)
+    local row = string.format("%s %-38s set=%s", is_active and "*" or " ",
+      trunc(p.key, 38), trunc(p._configuration_set_name or "?", 22))
+    return is_active and pal.active(row) or row
+  end, "lw profiles", profile_help)
 
   -- Configuration sets: name + compact mappings.
   local sets = {}
   for _, cs in ipairs(ws._config_sets or {}) do sets[#sets + 1] = cs end
   table.sort(sets, function(a, b) return a.name < b.name end)
-  status_section("Configuration sets", sets, MAX, function(cs)
+  status_section(pal, "Configuration sets", sets, MAX, function(cs)
     local rows = {}
     for project, cfg in pairs(cs.mappings or {}) do rows[#rows + 1] = project.key .. "→" .. cfg.name end
     table.sort(rows)
     return string.format("  %-14s %s", trunc(cs.name, 14),
       trunc(next(rows) and table.concat(rows, ", ") or "(empty)", 56))
-  end, "lw cs list", "create a set · lw configuration-set create <name> [project=config …]")
+  end, "lw cs list", "create a set · lw cs create <name> [project=config …]")
 
   -- Projects with their configurations (first few names, then +K).
   local projs = {}
   for _, p in ipairs(ws._projects or {}) do projs[#projs + 1] = p end
   table.sort(projs, function(a, b) return a.key < b.key end)
-  status_section("Projects", projs, MAX, function(p)
+  status_section(pal, "Projects", projs, MAX, function(p)
     local t = p.type or (p._module and p._module.id) or "?"
     local names = {}
     for _, c in ipairs(p:get_configurations()) do names[#names + 1] = c.name end
@@ -3333,7 +3500,8 @@ function M.cmd_status(root)
   end, "lw project list", "add a project · lw project add <path> [type]")
 
   out("")
-  out("`lw help` for commands · `lw help <command>` for details.")
+  out(pal.inline("lw help") .. pal.dim(" for commands · ") ..
+    pal.inline("lw help <command>") .. pal.dim(" for details."))
   return 0
 end
 
@@ -4018,7 +4186,7 @@ end
 
 local COMP_COMMANDS = {
   "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
-  "profiles", "profile", "tools", "build", "clean", "test", "run", "launch", "publish",
+  "profiles", "profile", "tools", "build", "clean", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "config", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "module", "bootstrap", "update", "--no-input",
 }
@@ -4117,7 +4285,7 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "profile" then
-    if n == 1 then emit({ "list", "select", "create", "publish", "target" }); return 0 end
+    if n == 1 then emit({ "list", "select", "create", "publish", "query", "remove" }); return 0 end
     if sub == "create" then
       if n == 2 then emit(comp_set_names(comp_ws(root)))       -- <config-set>
       elseif n >= 3 then                                       -- [tool ...] / --activate
@@ -4125,10 +4293,25 @@ function M.cmd_complete(cword, words)
       end
     elseif sub == "publish" and n == 2 then
       emit(comp_profile_names(comp_ws(root)))                  -- <key>
-    elseif sub == "target" then
-      if n == 2 then emit(comp_profile_names(comp_ws(root)))   -- <profile>
-      elseif n == 3 then emit(sorted_unique(comp_launch_names(comp_ws(root)))) -- [target]
-      end
+    end
+    return 0
+  elseif cmd == "target" then
+    -- `target [list] [profile]` | `target set [<profile>] <target>` |
+    -- `target clear [profile]`.
+    if n == 1 then
+      local ws_c = comp_ws(root)
+      emit(sorted_unique(vim.list_extend({ "list", "set", "clear" },
+        comp_profile_names(ws_c))))                            -- sub-keyword or profile
+      return 0
+    end
+    if sub == "set" and n == 2 then
+      -- <profile> (2-operand form) or <target> (1-operand); offer both.
+      local ws_c = comp_ws(root)
+      emit(sorted_unique(vim.list_extend(comp_launch_names(ws_c), comp_profile_names(ws_c))))
+    elseif sub == "set" and n == 3 then
+      emit(sorted_unique(comp_launch_names(comp_ws(root))))    -- <target> on named profile
+    elseif (sub == "list" or sub == "clear") and n == 2 then
+      emit(comp_profile_names(comp_ws(root)))                  -- [profile]
     end
     return 0
   elseif cmd == "configuration" or cmd == "cfg" then
@@ -4206,10 +4389,12 @@ end
 local HELP = {
   status = [[lw status   (also: bare `lw`)
 
-One-screen workspace overview: the active profile, then capped lists of
-profiles (active marked `*`), configuration sets, and projects with their
-configurations. Each section is limited to fit a page — use `lw profiles`,
-`lw cs list`, or `lw project list` for the full lists.]],
+One-screen workspace overview: the active profile and its launchable targets
+(default marked `*`), then capped lists of profiles (active marked `*`),
+configuration sets, and projects with their configurations. Each section is
+limited to fit a page — use `lw target`, `lw profiles`, `lw cs list`, or
+`lw project list` for the full lists. Build targets appear only once a project
+is configured; a hint shows when the target list is incomplete.]],
   profiles = [[lw profiles
 
 List the workspace's profiles, marking the active one with `*` and flagging
@@ -4304,6 +4489,37 @@ Disambiguating a name present more than once:
 
 Deploy steps declared on the target run before launch. Debug (DAP) and device
 launches are editor-only.]],
+  target = [[lw target [list] [profile]
+lw target set [<profile>] <target>   |   lw target clear [profile]
+
+List a profile's LAUNCHABLE TARGETS, or set/clear which one a bare `lw run`
+defaults to. A target is either a build target (its executable) or a command
+launch configuration (`lw launch add`). Bare `lw target` lists the active
+profile. The default is marked `*`.
+
+Listing is READ-ONLY and performs no build. A command launch config always
+lists; a build target lists only once its project is configured (its targets
+are read from the build tree). When a project isn't configured yet the list
+says so and names it — `lw build` to complete it.
+
+  list [profile]        List targets (default: the active/sole profile). Listing
+                        uses the active profile even in --no-input (read-only).
+  set [<profile>] <target>
+                        Set the default target. One operand is a target on the
+                        active profile (--no-input requires the explicit
+                        <profile>, §16.9); two operands name the profile.
+  clear [profile]       Clear the default target.
+
+Disambiguating a name present more than once (on `set`):
+  <project>:<target>    scope to a project
+  --project <key>       same, as a flag
+  --target | --launch   force the kind when a build target and a launch config
+                        share a name
+  --cwd <dir>           persistent working-dir override for a build-target
+                        default (variable-expanded)
+
+`lw launch` manages the launch-config declarations; `lw target` is the resolved
+runnable view over both kinds. `lw run` runs one.]],
   launch = [[lw launch <list|add|show|remove>
 
 Define and manage a project's launch configurations (the runners `lw run`
@@ -4600,7 +4816,7 @@ cross-project selection a profile builds. Managed in the working copy;
 
 <config> is a configuration name (an unambiguous base name works, so `Debug`
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
-  profile = [[lw profile <list|select|create|remove|publish|target|query>
+  profile = [[lw profile <list|select|create|remove|publish|query>
 
   list      same as `lw profiles`
   select    interactive picker; sets the active profile (writes user.json)
@@ -4625,15 +4841,6 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
   publish <profile>
             Mark the profile shared (local+shared) and regenerate
             loomworks.json, including the set and projects it needs.
-  target <profile> [<target>|--clear] [--cwd <dir>]
-            Show, set, or clear a profile's DEFAULT launch target — what
-            a bare `lw run` runs on it (no target named). With no target, prints
-            the current default and its working directory; `--clear` unsets it.
-            Resolves a build target or command launch config like `lw run`
-            (build the profile first so its build targets are known);
-            `--target`/`--launch`/`--project` disambiguate. `--cwd <dir>` stores
-            a persistent working directory for a build-target default (absolute
-            or workspace-root-relative); default is the project directory.
   query <profile> <project> <field>
             Print one machine-readable fact for scripting (e.g. CI artifact
             collection). Read-only; no build. Fields:
@@ -4911,13 +5118,15 @@ Usage: lw [command] [args]
   configuration     add | set | get | show | ... project configurations
   configuration-set create | map | show | ... sets  (cs)
   profiles          list profiles and their buildability
-  profile <sub>     list | select | create | remove | publish | target | query
+  profile <sub>     list | select | create | remove | publish | query
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
   test  [profile]   build a profile, then run its tests (real exit code)
   run [target]      build, then execute a target on the active profile
   run <profile> <target>  same, on a named profile
+  target [profile]  list a profile's launchable targets (default marked *)
+  target set|clear  set / clear a profile's default target
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
@@ -5097,6 +5306,11 @@ local function main()
   -- `launch` manages launch configs in the working copy (no tools needed).
   if command == "launch" then
     finish(M.cmd_launch(a[2], root, a))
+  end
+  -- `target` lists a profile's launchable targets / sets its default. Manages
+  -- its own workspace load (build-free, like status) — no tool detection.
+  if command == "target" then
+    finish(M.cmd_target(root, a))
   end
 
   local ws = load_workspace(root)
