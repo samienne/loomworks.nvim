@@ -766,8 +766,14 @@ replaces it, which would drop `PATH`).
   and the test runners use it, so a DLL/`.so`-dependent executable resolves its
   siblings identically whether run or tested. `ctest`, unlike `meson test`, does
   not set this up itself, so `lw test` must parse targets before planning.
-- `lw profile target <profile> [<target>|--clear]` — show, set, or clear a
-  profile's default launch target (writes `user.json`; spec §16.9 authoring).
+- `lw target [list] [profile]` / `lw target set [<profile>] <target>` /
+  `lw target clear [profile]` — list a profile's launchable targets (read-only
+  introspection, spec §16.18: command launch configs plus configured build
+  targets, default marked `*`), or set/clear its default launch target (writes
+  `user.json`; spec §16.9 authoring). Listing defaults to the active profile
+  even in `--no-input`; `set`/`clear` keep the CI-determinism guard (one-operand
+  = active profile interactively, explicit `<profile>` required non-interactively).
+  Shared seam `collect_targets` also feeds the `lw status` Targets section.
 - `lw sdk <types|list|add|remove>` — declare toolchain installations that
   detection cannot find (a compiler at an arbitrary path, a cross-compiler).
   Thin wrappers over `Workspace:add_sdk` / `remove_sdk`; the declared SDK

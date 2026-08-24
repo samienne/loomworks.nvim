@@ -318,6 +318,14 @@ Define how to run a project after building:
 Variables available: `${workspace_root}`, `${build_dir}`, `${variant}`,
 `${config_set}`, `${project_path}`, plus user-defined project variables.
 
+A launch configuration is one kind of **target**. `lw target` lists all the
+runnable targets of a profile — the launch configurations above **plus** the
+build system's executable targets (the latter appear only once the project is
+configured, since they are read from the build tree). `lw run` runs one; `lw
+target set <target>` picks which one a bare `lw run` defaults to. (`lw launch`
+manages the launch-config declarations themselves; `lw target` is the resolved,
+runnable view over both kinds.)
+
 ### Deploy steps
 
 Copy build artifacts between projects before launch:
@@ -645,12 +653,13 @@ command has detail under `lw help <command>`.
 | `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` |
 | `lw configuration <sub>` | `add` \| `set` \| `get` \| `show` project configurations |
 | `lw configuration-set <sub>` | `create` \| `map` \| `show` (alias `cs`) |
-| `lw profile <sub>` | `list` \| `select` \| `create` \| `remove` \| `publish` \| `target` \| `query` |
+| `lw profile <sub>` | `list` \| `select` \| `create` \| `remove` \| `publish` \| `query` |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both |
+| `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |

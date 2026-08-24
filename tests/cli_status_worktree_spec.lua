@@ -274,3 +274,107 @@ describe("lw status worktree hint (real git)", function()
         assert.is_truthy(text:find("lw init", 1, true))
     end)
 end)
+
+-- The `lw status` overview palette: colors the workspace overview on a real
+-- terminal and stays byte-for-byte plain on a pipe/redirect. paint_help splits
+-- a "<prose> · <lw command>" help line into dim prose + cyan command.
+describe("lw status overview palette", function()
+    it("is the identity on every field when color is off (no escapes)", function()
+        local pal = cli._status_palette(false)
+        for _, k in ipairs({ "title", "dim", "active", "cmd" }) do
+            assert.equals("x", pal[k]("x"))
+        end
+        -- inline delimits with backticks (not color) so a pipe keeps the cue.
+        assert.equals("`lw run`", pal.inline("lw run"))
+        assert.is_false(has_escape(pal.title("x") .. pal.dim("y") .. pal.inline("z")))
+    end)
+
+    it("wraps fields in their ANSI codes when color is on", function()
+        local pal = cli._status_palette(true)
+        assert.equals("\27[1mHi\27[0m", pal.title("Hi"))
+        assert.equals("\27[2mHi\27[0m", pal.dim("Hi"))
+        assert.equals("\27[32mHi\27[0m", pal.active("Hi"))
+        assert.equals("\27[36mHi\27[0m", pal.cmd("Hi"))
+        -- inline is dim on a terminal (secondary guidance) — no backticks, the
+        -- color carries the "this is a hint" cue instead.
+        assert.equals("\27[2mlw run\27[0m", pal.inline("lw run"))
+    end)
+
+    it("paint_help dims the whole help line (prose + command), color on", function()
+        local pal = cli._status_palette(true)
+        local out = cli._paint_help(pal, "create a profile · lw profile create <set> <tool>")
+        assert.equals("\27[2mcreate a profile · lw profile create <set> <tool>\27[0m", out)
+    end)
+
+    it("paint_help dims a bare command hint (no ' · ') whole", function()
+        local pal = cli._status_palette(true)
+        assert.equals("\27[2mlw profiles\27[0m", cli._paint_help(pal, "lw profiles"))
+    end)
+
+    it("paint_help is plain text when color is off", function()
+        local pal = cli._status_palette(false)
+        assert.equals("create a profile · lw profile create <set> <tool>",
+            cli._paint_help(pal, "create a profile · lw profile create <set> <tool>"))
+    end)
+
+    -- Capture what status_section writes via io.write (how the CLI's out() emits).
+    local function capture(fn)
+        local real = io.write
+        local buf = {}
+        io.write = function(s) buf[#buf + 1] = s end
+        local ok, err = pcall(fn)
+        io.write = real
+        assert(ok, err)
+        return table.concat(buf)
+    end
+
+    it("status_section renders rows and separates the help line by a blank line", function()
+        local pal = cli._status_palette(false)
+        local text = capture(function()
+            cli._status_section(pal, "Profiles", { "a", "b" }, 6,
+                function(x) return "  " .. x end, "lw profiles",
+                "create a profile · lw profile create <set> <tool>")
+        end)
+        -- The bug this guards: status_section calling paint_help — a local
+        -- declared LATER in cli.lua — must resolve, not blow up as a nil global.
+        assert.is_truthy(text:find("Profiles (2)", 1, true))
+        assert.is_truthy(text:find("  a\n  b\n", 1, true))
+        -- Rows, then a blank line, then the help line.
+        assert.is_truthy(text:find("  b\n\n  create a profile", 1, true))
+    end)
+
+    it("status_section colors title/count/help when color is on", function()
+        local pal = cli._status_palette(true)
+        local text = capture(function()
+            cli._status_section(pal, "Projects", { "x" }, 6,
+                function(v) return "  " .. v end, "lw project list",
+                "add a project · lw project add <path> [type]")
+        end)
+        assert.is_truthy(text:find("\27[1mProjects\27[0m \27[2m(1)\27[0m", 1, true))
+        -- Help line is dimmed whole, not cyan-highlighted.
+        assert.is_truthy(text:find("\27[2madd a project · lw project add <path> [type]\27[0m", 1, true))
+    end)
+
+    it("status_section on an empty list shows only the help hint, no blank pad", function()
+        local pal = cli._status_palette(false)
+        local text = capture(function()
+            cli._status_section(pal, "Projects", {}, 6, function(v) return v end,
+                "lw project list", "add a project · lw project add <path> [type]")
+        end)
+        assert.is_truthy(text:find("Projects (0)\n  add a project", 1, true))
+    end)
+
+    it("status_section renders each help line when given a list", function()
+        local pal = cli._status_palette(false)
+        local text = capture(function()
+            cli._status_section(pal, "Profiles", { "a", "b" }, 6,
+                function(x) return "  " .. x end, "lw profiles",
+                { "switch the profile · lw profile select",
+                  "create a profile · lw profile create <set> <tool>" })
+        end)
+        -- Both hints, in order, after the blank separator.
+        assert.is_truthy(text:find(
+            "\n\n  switch the profile · lw profile select\n" ..
+            "  create a profile · lw profile create <set> <tool>\n", 1, true))
+    end)
+end)
