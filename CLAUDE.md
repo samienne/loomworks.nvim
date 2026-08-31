@@ -436,7 +436,9 @@ data is never lost when a plugin is missing or version-mismatched
 ## v1 Scope
 
 **V1 modules:**
-- `cmake` — full implementation
+- `cmake` — full implementation (emits clangd + qmlls via lsp_configs;
+  qmlls is profile-aware — `-b <active build dir>` + optional `-I` import
+  paths, binary overridable via `type_config.qmlls`)
 - `meson` — full implementation (detection, default Debug/Release/RelWithDebInfo
   configs mapping to buildtype, setup+compile+clean tasks, introspect-based
   parse_targets and get_options, clangd via lsp_configs with auto-generated
