@@ -716,8 +716,12 @@ function M.tasks(project, active_config)
         -- For Ninja kits with a specific compiler, set CMAKE_C/CXX_COMPILER
         if kit and kit.compiler_path and generator == "Ninja" then
             local compiler_path = kit.compiler_path
-            -- Derive C compiler from C++ compiler path
+            -- Derive the C compiler from the C++ compiler path (g++ → gcc,
+            -- clang++ → clang).
             local c_path = compiler_path:gsub("clang%+%+", "clang"):gsub("g%+%+", "gcc")
+            if compiler_path:match("clang%-cl") then
+                c_path = compiler_path -- clang-cl is both the C and the C++ driver
+            end
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_CXX_COMPILER=" .. compiler_path
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_C_COMPILER=" .. c_path
         end

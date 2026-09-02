@@ -13,6 +13,32 @@ How the cmake module implements the core module contract
   produce distinct build artifacts.
 - **Languages**: `"c++"`.
 
+## 1a. Kit (tool) detection
+
+`detect_tools` enumerates build kits from `cmake_kits`, which combines
+PATH-scanned GCC/Clang toolchains with Visual Studio installations. MSVC
+and clang-cl discovery is **owned by the shared `loomworks.msvc` module**
+(the single source of truth for VS installs + clang-cl across all
+modules — cmake no longer duplicates the `vswhere` scan). Per detected VS
+install, the following kits are produced:
+
+- **`Visual Studio <major> <line>` generator kit** — always. Builds via
+  MSBuild in the install's `vcvarsall` environment.
+- **`Ninja - <install>` (cl.exe) kit** — when `ninja` is on PATH.
+- **`Ninja - clang-cl (<install>)` kit** — when `ninja` is on PATH and a
+  clang-cl paired to that install exists. clang-cl is Clang's
+  MSVC-compatible driver: it has no STL / Windows SDK / linker of its own
+  and reuses the paired install's via `vcvarsall`, so there is **exactly
+  one clang-cl kit per install**. The driver is taken from the VS-bundled
+  clang-cl (`<install>/VC/Tools/Llvm/x64/bin/clang-cl.exe`, the "C++ Clang
+  tools for Windows" component) when present, otherwise a standalone /
+  PATH clang-cl. Kit id `ninja-clang-cl-<major>-<product>`; compiler id
+  `clang-cl-<version>`. Any sibling `clangd.exe` is forwarded to clangd
+  (§9). At configure time clang-cl is passed as **both**
+  `-DCMAKE_C_COMPILER` and `-DCMAKE_CXX_COMPILER` (it is a single driver
+  for C and C++), the build runs Ninja inside the paired `vcvarsall`
+  environment, and `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` is set.
+
 ## 2. Variant mapping
 
 | Variant type | Configuration name |

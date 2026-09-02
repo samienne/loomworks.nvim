@@ -525,3 +525,100 @@ describe("meson module", function()
         end)
     end)
 end)
+
+describe("meson clang-cl (per MSVC install)", function()
+    local msvc = require("loomworks.msvc")
+    local cpp = require("loomworks.cpp_compilers")
+
+    local INSTALLS = {
+        {
+            id = "msvc-17-2022-community", display = "MSVC 17 2022 (Community)",
+            vs_major = "17", version_line = "2022", product = "Community",
+            vcvarsall = "C:/VS/Community/VC/Auxiliary/Build/vcvarsall.bat",
+            arch = "x64", install_path = "C:/VS/Community",
+        },
+        {
+            id = "msvc-17-2022-buildtools", display = "MSVC 17 2022 (BuildTools)",
+            vs_major = "17", version_line = "2022", product = "BuildTools",
+            vcvarsall = "C:/VS/BuildTools/VC/Auxiliary/Build/vcvarsall.bat",
+            arch = "x64", install_path = "C:/VS/BuildTools",
+        },
+    }
+    -- Both installs fall back to the SAME standalone driver on purpose, to prove
+    -- the per-install identity keeps them distinct tools.
+    local CC = {
+        path = "C:/LLVM/bin/clang-cl.exe", version = "18.1.7",
+        clangd_path = "C:/LLVM/bin/clangd.exe",
+    }
+
+    local saved
+    before_each(function()
+        saved = {
+            has = vim.fn.has, exepath = vim.fn.exepath,
+            detect = msvc.detect, clang_cl_for = msvc.clang_cl_for,
+            cpp_detect = cpp.detect,
+        }
+        ---@diagnostic disable: duplicate-set-field
+        vim.fn.has = function(f) return f == "win32" and 1 or 0 end
+        vim.fn.exepath = function(n) return n == "meson" and "C:/py/Scripts/meson.exe" or "" end
+        msvc.detect = function() return INSTALLS end
+        msvc.clang_cl_for = function(_inst) return CC end
+        cpp.detect = function() return {} end
+        ---@diagnostic enable: duplicate-set-field
+    end)
+    after_each(function()
+        vim.fn.has = saved.has
+        vim.fn.exepath = saved.exepath
+        msvc.detect = saved.detect
+        msvc.clang_cl_for = saved.clang_cl_for
+        cpp.detect = saved.cpp_detect
+    end)
+
+    local function clang_tools()
+        local out = {}
+        for _, t in ipairs(meson.detect_tools()) do
+            if t.tool_data.compiler_family == "clang-cl" then out[#out + 1] = t.tool_data end
+        end
+        return out
+    end
+
+    it("emits one clang-cl tool per install, distinct ids, carrying clangd_path", function()
+        local clang = clang_tools()
+        assert.equals(2, #clang)
+
+        local by_id = {}
+        for _, td in ipairs(clang) do by_id[td.compiler_id] = td end
+        local com = by_id["clang-cl-18.1.7-17-community"]
+        local bt = by_id["clang-cl-18.1.7-17-buildtools"]
+        assert.is_not_nil(com)
+        assert.is_not_nil(bt)
+
+        -- Same driver, different vcvars env.
+        assert.equals("C:/LLVM/bin/clang-cl.exe", com.compiler_path)
+        assert.equals("C:/LLVM/bin/clang-cl.exe", com.cc)
+        assert.equals("C:/LLVM/bin/clang-cl.exe", com.cxx)
+        assert.equals("C:/LLVM/bin/clangd.exe", com.clangd_path)
+        assert.equals("C:/VS/Community/VC/Auxiliary/Build/vcvarsall.bat", com.vcvarsall)
+        assert.equals("C:/VS/BuildTools/VC/Auxiliary/Build/vcvarsall.bat", bt.vcvarsall)
+        assert.equals("clang-cl 18.1.7 (MSVC 17 2022 (Community))", com.compiler_display)
+    end)
+
+    it("tools_match keeps same-driver clang-cl tools distinct via vcvarsall", function()
+        local clang = clang_tools()
+        assert.is_false(meson.tools_match(clang[1], clang[2]))
+        assert.is_true(meson.tools_match(clang[1], clang[1]))
+    end)
+
+    it("clang-cl tool_data.clangd_path reaches lsp_configs as the clangd binary", function()
+        local project = {
+            key = "App", path = "app",
+            _workspace = { root = "/root" },
+            cached = { build_dir = "/root/.nvim/build/App/clang-cl" },
+            type_config = {},
+            tool_data = { clangd_path = "C:/LLVM/bin/clangd.exe" },
+        }
+        local entries = meson.lsp_configs(project)
+        assert.equals(1, #entries)
+        assert.equals("C:/LLVM/bin/clangd.exe", entries[1].binary)
+    end)
+end)

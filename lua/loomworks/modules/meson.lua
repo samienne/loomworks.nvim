@@ -316,22 +316,32 @@ function M.detect_tools()
                     },
                 }
             end
-            -- clang-cl needs an MSVC install for the SDK/libs; pin the newest.
-            local clang_cl = msvc.clang_cl()
-            if clang_cl and installs[1] then
-                tools[#tools + 1] = {
-                    tool_data = {
-                        meson = meson,
-                        compiler_id = "clang-cl-" .. clang_cl.version,
-                        compiler_display = "clang-cl " .. clang_cl.version,
-                        compiler_path = clang_cl.path,
-                        compiler_family = "clang-cl",
-                        cc = clang_cl.path,
-                        cxx = clang_cl.path,
-                        vcvarsall = installs[1].vcvarsall,
-                        arch = installs[1].arch,
-                    },
-                }
+            -- clang-cl needs an MSVC install for the SDK/libs, so there's one
+            -- clang-cl tool per install (VS-bundled clang-cl preferred,
+            -- standalone/PATH as fallback). Several installs may fall back to
+            -- the SAME standalone driver; the per-install compiler_id — and the
+            -- vcvarsall in tools_match — keep them distinct tools (same driver,
+            -- different vcvars env).
+            for _, inst in ipairs(installs) do
+                local clang_cl = msvc.clang_cl_for(inst)
+                if clang_cl then
+                    tools[#tools + 1] = {
+                        tool_data = {
+                            meson = meson,
+                            compiler_id = "clang-cl-" .. clang_cl.version
+                                .. "-" .. inst.vs_major .. "-" .. inst.product:lower(),
+                            compiler_display = "clang-cl " .. clang_cl.version
+                                .. " (" .. inst.display .. ")",
+                            compiler_path = clang_cl.path,
+                            compiler_family = "clang-cl",
+                            cc = clang_cl.path,
+                            cxx = clang_cl.path,
+                            clangd_path = clang_cl.clangd_path,
+                            vcvarsall = inst.vcvarsall,
+                            arch = inst.arch,
+                        },
+                    }
+                end
             end
         end
     end
@@ -381,6 +391,12 @@ end
 --- Compare two meson tool_data objects by compiler identity. Two
 --- tools are the same iff they point at the same compiler binary;
 --- meson binary churn doesn't change toolchain identity.
+---
+--- The compiler path is the primary identity, but clang-cl tools paired to
+--- different MSVC installs can share the SAME standalone driver while carrying
+--- different vcvars environments — disambiguate on vcvarsall so they stay
+--- distinct tools. (GNU-driver tools have no vcvarsall; cl.exe tools set both
+--- fields to the same vcvarsall, so neither is affected.)
 --- @param a table
 --- @param b table
 --- @return boolean
@@ -388,6 +404,7 @@ function M.tools_match(a, b)
     if a == nil and b == nil then return true end
     if a == nil or b == nil then return false end
     return (a.compiler_path or "") == (b.compiler_path or "")
+        and (a.vcvarsall or "") == (b.vcvarsall or "")
 end
 
 --- Resolve the build directory for a meson configuration:
