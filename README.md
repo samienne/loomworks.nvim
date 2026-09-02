@@ -887,7 +887,26 @@ require("loomworks").setup({
 require("loomworks").setup({
   lsp = { clangd = false },                -- skip only clangd
 })
+
+require("loomworks").setup({
+  lsp = { qmlls = false },                 -- skip only qmlls
+})
 ```
+
+### QML (qmlls)
+
+For CMake projects, loomworks also auto-configures the QML language
+server (`qmlls`) for `.qml` buffers — default-enabled and profile-aware:
+it passes the active profile's CMake build directory via `-b` so qmlls
+resolves QML imports against the built tree, and restarts when a profile
+switch moves that directory. Because qmlls only ever attaches to the
+`qml` filetype, auto-enabling is harmless on non-Qt projects (no `.qml`
+buffers, no client).
+
+Set `type_config.qmlls` on a project to override the binary
+(`${ENV_VAR}` expansion supported); otherwise stock `qmlls` on PATH is
+used. `type_config.qml_import_paths` (a list) adds extra `-I` import
+paths. Opt out per-server with `{ lsp = { qmlls = false } }`.
 
 ### Buffer excludes
 

@@ -1777,9 +1777,14 @@ function M.create_test_unit(config_unit)
 end
 
 --- Return LSP configs for this project.
---- Emits a single clangd entry whose root_dir is the project source path
---- and whose compile_commands_dir is the active configuration's build dir
---- (or the build dir referenced by `compile_commands_from` if set).
+--- Emits two entries, both rooted at the project source path and both
+--- keyed to the active configuration's build dir (or the build dir
+--- referenced by `compile_commands_from` if set):
+---   1. clangd — `compile_commands_dir` = the build dir.
+---   2. qmlls  — `build_dir` = the same build dir, so qmlls resolves QML
+---      imports against the profile's CMake build tree. Emitted
+---      unconditionally (no QML detection); it stays inert on non-QML
+---      projects because no `.qml` buffers exist to attach to.
 --- @param project loomworks.Project
 --- @return loomworks.LspConfigEntry[]
 function M.lsp_configs(project)
@@ -1841,12 +1846,36 @@ function M.lsp_configs(project)
         end
     end
 
+    -- qmlls binary: type_config.qmlls wins (env-expanded by the integration,
+    -- as with clangd), else nil so the integration falls back to `qmlls` on
+    -- PATH. There is no tool-provided qmlls path in this cut, so
+    -- binary_required only comes from an explicit type_config.qmlls_required.
+    -- Optional type_config.qml_import_paths (a list) becomes extra `-I` import
+    -- paths for qmlls.
+    local qmlls_binary = nil
+    if type(tc.qmlls) == "string" and tc.qmlls ~= "" then
+        qmlls_binary = tc.qmlls
+    end
+    local qmlls_required = tc.qmlls_required == true
+    local import_paths = nil
+    if type(tc.qml_import_paths) == "table" then
+        import_paths = tc.qml_import_paths
+    end
+
     return {
         {
             server = "clangd",
             binary = binary,
             binary_required = binary_required,
             compile_commands_dir = build_dir,
+            root_dir = root_dir,
+        },
+        {
+            server = "qmlls",
+            binary = qmlls_binary,          -- nil ⇒ integration uses "qmlls" on PATH
+            binary_required = qmlls_required,
+            build_dir = build_dir,          -- same dir as clangd's compile_commands_dir
+            import_paths = import_paths,    -- optional list, may be nil
             root_dir = root_dir,
         },
     }

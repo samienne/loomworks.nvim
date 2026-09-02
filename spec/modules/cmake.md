@@ -339,18 +339,28 @@ Strip `test:` prefix from test ID for `--gtest_filter` value.
 
 ## 9. LSP integration
 
-Emits `lsp_configs` entries for clangd. The integration-specific
-fields (`binary`, `binary_required`, `compile_commands_dir`) are
-documented in
-[`spec/integrations/lsp/clangd.md`](../integrations/lsp/clangd.md).
+Emits two `lsp_configs` entries, both rooted at the project source path
+and both keyed to the active ConfigUnit's build directory:
+
+1. **clangd** — integration-specific fields (`binary`,
+   `binary_required`, `compile_commands_dir`) documented in
+   [`spec/integrations/lsp/clangd.md`](../integrations/lsp/clangd.md).
+2. **qmlls** — emitted unconditionally (no QML detection); inert on
+   non-QML projects since no `.qml` buffers exist to attach to.
+   Integration-specific fields (`binary`, `binary_required`,
+   `build_dir`, `import_paths`) documented in
+   [`spec/integrations/lsp/qmlls.md`](../integrations/lsp/qmlls.md).
 
 When the active profile carries an SDK-supplied clangd path (via the
 SDK capability query for this module), the cmake module propagates it
 as `binary` + `binary_required = true`. Otherwise `binary` is
 unspecified and clangd falls back to stock PATH.
 
-`compile_commands_dir` resolves to the active ConfigUnit's build
-directory.
+`compile_commands_dir` (clangd) and `build_dir` (qmlls) both resolve to
+the active ConfigUnit's build directory. The qmlls `binary` comes from
+`type_config.qmlls` (else stock PATH `qmlls`), `binary_required` from
+`type_config.qmlls_required`, and optional extra QML import paths from
+the `type_config.qml_import_paths` list.
 
 ## 10. Debug integration
 

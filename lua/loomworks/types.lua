@@ -183,6 +183,8 @@
 --- @field binary? string               override server executable (env expansion supported)
 --- @field binary_required? boolean     refuse to start when `binary` is missing — use when stock PATH server would be actively wrong
 --- @field compile_commands_dir? string (clangd) directory containing compile_commands.json
+--- @field build_dir? string            (qmlls) build directory passed via `-b` for QML import resolution
+--- @field import_paths? string[]       (qmlls) extra QML import paths, each passed via `-I`
 
 --- Merged project data from merge.merge().
 --- @class loomworks.MergedProjectData
