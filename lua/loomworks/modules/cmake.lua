@@ -503,6 +503,31 @@ function M.resolve_variant_source(configurations, config_name)
     return find_source(config_name, {})
 end
 
+--- Whether a cmake generator emits `compile_commands.json` on its own.
+--- Only the Ninja and Makefile generators do; Visual Studio and Xcode
+--- never do (§12). Matches cmake's own generator naming case-sensitively.
+--- A nil / unknown generator is treated as non-emitting-unknown by the
+--- caller, never as emitting.
+--- @param generator string|nil
+--- @return boolean
+function M.generator_emits_compile_commands(generator)
+    if type(generator) ~= "string" then return false end
+    return generator:find("Ninja", 1, true) ~= nil
+        or generator:find("Makefiles", 1, true) ~= nil
+end
+
+--- Default value of a configuration's `compile_commands_generated` flag
+--- for a given (possibly nil) generator. `true` means loomworks must
+--- reconstruct compile_commands.json itself. An unknown generator yields
+--- `false` — we never generate blindly when we can't confirm the
+--- generator doesn't emit the database on its own.
+--- @param generator string|nil
+--- @return boolean
+local function compile_commands_generated_default(generator)
+    if type(generator) ~= "string" or generator == "" then return false end
+    return not M.generator_emits_compile_commands(generator)
+end
+
 --- Return what the module knows about the project from its own files.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
@@ -543,6 +568,22 @@ function M.info(path, config)
     -- Build loomworks-managed configurations: defaults + user overrides
     local defaults = M.default_configurations(path, config)
     local configurations = M.resolve_configurations(defaults, config)
+
+    -- Stamp each configuration with the default `compile_commands_generated`
+    -- flag (§12), computed from whatever generator the configuration itself
+    -- knows about (a user/preset override). Plain `variant:*` configs get
+    -- their generator from the profile's kit at build time, so their
+    -- info-time default is false; lsp_configs recomputes the effective flag
+    -- from the active kit's generator. The flag is module-specific data —
+    -- it lands in the Configuration's `module_config`.
+    for _, cfg in pairs(configurations) do
+        cfg.compile_commands_generated =
+            compile_commands_generated_default(cfg.generator)
+    end
+    for _, cfg in pairs(preset_configurations) do
+        cfg.compile_commands_generated =
+            compile_commands_generated_default(cfg.generator)
+    end
 
     local module_info = nil
     if config.compile_commands_from or config.clangd then
@@ -843,7 +884,10 @@ function M.tasks(project, active_config)
             -- Ensure file-api query markers exist so cmake writes reply data
             local query_dir = build_dir .. "/.cmake/api/v1/query"
             vim.fn.mkdir(query_dir, "p")
-            for _, marker in ipairs({ "codemodel-v2", "cache-v2" }) do
+            -- toolchains-v1 gives per-language compiler paths, used to
+            -- reconstruct compile_commands.json for non-emitting generators
+            -- (Visual Studio / Xcode). See §12.
+            for _, marker in ipairs({ "codemodel-v2", "cache-v2", "toolchains-v1" }) do
                 local query_file = query_dir .. "/" .. marker
                 if not uv.fs_stat(query_file) then
                     local fd = uv.fs_open(query_file, "w", 420) -- 0644
@@ -1777,6 +1821,307 @@ function M.get_options(build_dir, config)
     return build_option_tree(flat, option_groups)
 end
 
+-- ============= Generated compile_commands.json (§12) =============
+
+--- Whether a compiler drives with MSVC (`/`-prefixed) flag syntax.
+--- True for the `cl` and `clang-cl` drivers (matched on basename,
+--- case-insensitively, with an optional `.exe`), false otherwise (gcc,
+--- clang, …). Determines `/I` vs `-I`, `/D` vs `-D`, etc.
+--- @param compiler string compiler path or bare name
+--- @return boolean
+local function compiler_is_msvc(compiler)
+    if type(compiler) ~= "string" then return false end
+    local base = compiler:gsub("\\", "/"):match("[^/]+$") or compiler
+    base = base:lower():gsub("%.exe$", "")
+    return base == "cl" or base == "clang-cl"
+end
+
+--- Split a single compileCommandFragment into argv tokens, honouring
+--- double quotes (a fragment can carry several flags, e.g.
+--- `-DFOO=1 -DBAR="a b"`). Backslashes are left verbatim — Windows paths
+--- in fragments are literal. Quotes group whitespace; they are stripped
+--- from the emitted token.
+--- @param fragment string
+--- @return string[]
+local function tokenize_fragment(fragment)
+    local tokens = {}
+    local cur, has = {}, false
+    local i, n = 1, #fragment
+    while i <= n do
+        local c = fragment:sub(i, i)
+        if c == '"' then
+            has = true
+            i = i + 1
+            while i <= n do
+                local d = fragment:sub(i, i)
+                if d == '"' then break end
+                cur[#cur + 1] = d
+                i = i + 1
+            end
+        elseif c == " " or c == "\t" then
+            if has then
+                tokens[#tokens + 1] = table.concat(cur)
+                cur, has = {}, false
+            end
+        else
+            has = true
+            cur[#cur + 1] = c
+        end
+        i = i + 1
+    end
+    if has then tokens[#tokens + 1] = table.concat(cur) end
+    return tokens
+end
+
+--- Expand a single fragment token, inlining a `@response-file` when it
+--- names a file that exists on disk (tokenizing its contents). A `@` token
+--- whose file is absent is kept verbatim. Non-`@` tokens pass through as a
+--- single-element list. Response files are rare from the file-api (the
+--- codemodel usually gives logical fragments) but are handled defensively.
+--- @param token string
+--- @return string[]
+local function expand_token(token)
+    if token:sub(1, 1) ~= "@" then return { token } end
+    local rsp = token:sub(2)
+    if not uv.fs_stat(rsp) then return { token } end
+    local content = io_mod.read_file(rsp)
+    if not content then return { token } end
+    return tokenize_fragment(content)
+end
+
+--- Resolve a file-api source path to an absolute, forward-slash path.
+--- Absolute paths (drive-letter or POSIX root) pass through; relative
+--- paths are resolved against the codemodel source root.
+--- @param path string
+--- @param source_root string|nil
+--- @return string
+local function abs_source_path(path, source_root)
+    local p = path:gsub("\\", "/")
+    if p:match("^%a:/") or p:match("^/") then return p end
+    if source_root and source_root ~= "" then
+        return (source_root:gsub("\\", "/"):gsub("/$", "")) .. "/" .. p
+    end
+    return p
+end
+
+--- Select the codemodel configuration matching `variant` (multi-config
+--- generators name one per build type), else the first. Mirrors
+--- `parse_targets` / `detect_languages`.
+--- @param codemodel table
+--- @param variant string|nil
+--- @return table|nil
+local function select_codemodel_config(codemodel, variant)
+    local configs = codemodel.configurations
+    if not configs then return nil end
+    if variant then
+        for _, c in ipairs(configs) do
+            if c.name == variant then return c end
+        end
+    end
+    return configs[1]
+end
+
+--- Build the `compile_commands.json` entry list from already-parsed
+--- file-api data. Pure (no cmake invocation) so it can be unit-tested
+--- against fixture JSON. One entry per source across every target's
+--- compileGroups.
+--- @param codemodel table parsed codemodel-v2 reply
+--- @param target_details table<string, table> jsonFile → parsed target detail
+--- @param toolchains table|nil parsed toolchains-v1 reply
+--- @param source_root string|nil codemodel.paths.source
+--- @param variant string|nil active configuration name to select
+--- @param build_dir string used as each entry's `directory`
+--- @param opts? { compiler?: string } fallback compiler when a language
+---        has no toolchain entry
+--- @return table[] entries
+function M._build_cc_entries(codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
+    opts = opts or {}
+    local entries = {}
+
+    -- Per-language compiler paths keyed by cmake's own language token
+    -- ("C", "CXX", …) — the same token compileGroups carry, so no
+    -- canonicalization is needed to match them up.
+    local compiler_by_lang = {}
+    if toolchains and toolchains.toolchains then
+        for _, tc in ipairs(toolchains.toolchains) do
+            local lang = tc.language
+            local cpath = tc.compiler and tc.compiler.path
+            if type(lang) == "string" and type(cpath) == "string" and cpath ~= "" then
+                compiler_by_lang[lang] = cpath
+            end
+        end
+    end
+
+    local cfg = select_codemodel_config(codemodel, variant)
+    if not cfg or not cfg.targets then return entries end
+
+    for _, tref in ipairs(cfg.targets) do
+        local detail = tref.jsonFile and target_details[tref.jsonFile]
+        if detail and detail.compileGroups then
+            local sources = detail.sources or {}
+            for _, cg in ipairs(detail.compileGroups) do
+                local lang = cg.language
+                -- Fallback chain: file-api toolchain → kit compiler → cl.exe
+                -- (this gap-fill feature targets MSVC/VS generators).
+                local compiler = compiler_by_lang[lang] or opts.compiler or "cl.exe"
+                local msvc = compiler_is_msvc(compiler)
+
+                -- Fragment tokens (compile flags), in file-api order.
+                local frag_tokens = {}
+                for _, f in ipairs(cg.compileCommandFragments or {}) do
+                    if type(f.fragment) == "string" then
+                        for _, tok in ipairs(tokenize_fragment(f.fragment)) do
+                            for _, ex in ipairs(expand_token(tok)) do
+                                frag_tokens[#frag_tokens + 1] = ex
+                            end
+                        end
+                    end
+                end
+
+                -- Include flags in the compiler's native syntax.
+                local inc_tokens = {}
+                for _, inc in ipairs(cg.includes or {}) do
+                    local p = inc.path
+                    if type(p) == "string" then
+                        if msvc then
+                            inc_tokens[#inc_tokens + 1] = inc.isSystem and "/external:I" or "/I"
+                            inc_tokens[#inc_tokens + 1] = p
+                        elseif inc.isSystem then
+                            inc_tokens[#inc_tokens + 1] = "-isystem"
+                            inc_tokens[#inc_tokens + 1] = p
+                        else
+                            inc_tokens[#inc_tokens + 1] = "-I" .. p
+                        end
+                    end
+                end
+
+                -- Define flags in the compiler's native syntax.
+                local def_tokens = {}
+                for _, d in ipairs(cg.defines or {}) do
+                    local def = d.define
+                    if type(def) == "string" then
+                        def_tokens[#def_tokens + 1] = (msvc and "/D" or "-D") .. def
+                    end
+                end
+
+                for _, si in ipairs(cg.sourceIndexes or {}) do
+                    local src = sources[si + 1] -- file-api indexes are 0-based
+                    if src and type(src.path) == "string" then
+                        local abs = abs_source_path(src.path, source_root)
+                        local args = { compiler }
+                        vim.list_extend(args, frag_tokens)
+                        vim.list_extend(args, inc_tokens)
+                        vim.list_extend(args, def_tokens)
+                        args[#args + 1] = abs
+                        entries[#entries + 1] = {
+                            directory = build_dir,
+                            file = abs,
+                            arguments = args,
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    return entries
+end
+
+--- Reconstruct a `compile_commands.json` from the cmake file-api and write
+--- it into `out_dir` (§12). Reads the codemodel + toolchains replies under
+--- `build_dir`, builds one entry per source, and writes the array. The
+--- project build directory is never written to.
+--- @param build_dir string absolute build directory (holds the file-api reply)
+--- @param out_dir string loomworks-owned directory to write into
+--- @param opts? { variant?: string, config_name?: string, compiler?: string }
+--- @return integer|nil count of entries written, nil when no codemodel reply
+function M.generate_compile_commands(build_dir, out_dir, opts)
+    opts = opts or {}
+    local codemodel = find_file_api_reply(build_dir, "codemodel", 2)
+    if not codemodel or not codemodel.configurations then return nil end
+
+    local variant = opts.variant or opts.config_name
+    local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+
+    -- Read the target detail files for the selected configuration, keyed by
+    -- jsonFile so _build_cc_entries can look them up while it re-selects.
+    local cfg = select_codemodel_config(codemodel, variant)
+    local target_details = {}
+    if cfg and cfg.targets then
+        for _, tref in ipairs(cfg.targets) do
+            if tref.jsonFile and not target_details[tref.jsonFile] then
+                local d = read_json_file(reply_dir .. "/" .. tref.jsonFile)
+                if d then target_details[tref.jsonFile] = d end
+            end
+        end
+    end
+
+    local toolchains = find_file_api_reply(build_dir, "toolchains", 1)
+    local source_root = codemodel.paths and codemodel.paths.source or nil
+
+    local entries = M._build_cc_entries(
+        codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
+
+    io_mod.ensure_dir(out_dir)
+    local out_file = out_dir .. "/compile_commands.json"
+    if #entries == 0 then
+        -- Preserve a valid (empty) JSON array — the JSON encoder can't tell
+        -- an empty Lua table from an object, and clangd needs an array.
+        local ok = io_mod.write_file_atomic(out_file, "[]\n")
+        return ok and 0 or nil
+    end
+    local ok = io_mod.write_json(out_file, entries)
+    return ok and #entries or nil
+end
+
+--- Most-recent mtime (seconds) of the file-api reply index under
+--- `build_dir`. The index is rewritten on every configure, so it is the
+--- cheapest freshness anchor for the generated database. nil when no reply
+--- directory / index exists.
+--- @param build_dir string
+--- @return integer|nil
+local function file_api_index_mtime(build_dir)
+    local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+    local handle = uv.fs_scandir(reply_dir)
+    if not handle then return nil end
+    local latest
+    while true do
+        local name, ftype = uv.fs_scandir_next(handle)
+        if not name then break end
+        if (ftype == "file" or ftype == nil) and name:match("^index%-.*%.json$") then
+            local st = uv.fs_stat(reply_dir .. "/" .. name)
+            if st and st.mtime and (not latest or st.mtime.sec > latest) then
+                latest = st.mtime.sec
+            end
+        end
+    end
+    return latest
+end
+
+--- Loomworks-owned directory holding the generated compile_commands.json
+--- for a given build directory. Mirrors the build dir's subpath under
+--- `.nvim/build/` into `.nvim/cache/cc/` so it is collision-free by
+--- construction (build dirs are already unique per project/kit/config) and
+--- never writes into the project build tree. A build dir outside the
+--- standard `.nvim/build/` root falls back to a sanitized copy of its path.
+--- @param workspace_root string
+--- @param build_dir string
+--- @return string
+local function generated_cc_dir(workspace_root, build_dir)
+    local root = workspace_root:gsub("\\", "/"):gsub("/$", "")
+    local nb = root .. "/.nvim/build/"
+    local bd = build_dir:gsub("\\", "/")
+    local tail
+    if bd:sub(1, #nb):lower() == nb:lower() then
+        tail = bd:sub(#nb + 1)
+    else
+        tail = bd:gsub("^%a:", ""):gsub("^/+", "")
+    end
+    -- Keep '/' (directory separators); scrub only path-illegal characters.
+    tail = tail:gsub('[:<>"|?*]', "_")
+    return root .. "/.nvim/cache/cc/" .. tail
+end
+
 -- ========================== Test integration ==========================
 
 --- Create a CTestUnit for test discovery and execution.
@@ -1810,22 +2155,29 @@ function M.lsp_configs(project)
     --   3. `project.cached.build_dir` fallback (legacy active-config summary)
     local tc = project.type_config or {}
     local build_dir = nil
+    -- Whether build_dir came from a `compile_commands_from` redirect (a
+    -- different configuration's build dir). Generation (§12) is skipped in
+    -- that case — the redirect target owns its own database.
+    local from_redirect = false
     if tc.compile_commands_from then
         local ref_cfg = project.get_configuration and project:get_configuration(tc.compile_commands_from)
         if ref_cfg and project.config_units_for_configuration then
             local ref_units = project:config_units_for_configuration(ref_cfg)
             for _, ref_unit in ipairs(ref_units) do
                 local bd = ref_unit:build_dir()
-                if bd then build_dir = bd break end
+                if bd then build_dir = bd; from_redirect = true; break end
             end
         end
     end
-    if not build_dir then
-        local active_profile = ws.get_active_profile and ws:get_active_profile()
-        if active_profile then
-            local pp = active_profile:project(project.key)
-            if pp then build_dir = pp:build_dir() end
-        end
+    -- Active profile's ProfileProject for this project, captured for both
+    -- build_dir resolution and the §12 generated-database decision below.
+    local active_pp = nil
+    local active_profile = ws.get_active_profile and ws:get_active_profile()
+    if active_profile then
+        active_pp = active_profile:project(project.key)
+    end
+    if not build_dir and active_pp then
+        build_dir = active_pp:build_dir()
     end
     if not build_dir and project.cached then
         build_dir = project.cached.build_dir
@@ -1874,12 +2226,74 @@ function M.lsp_configs(project)
         import_paths = tc.qml_import_paths
     end
 
+    -- §12: for a configuration whose generator does not emit
+    -- compile_commands.json (Visual Studio / Xcode), point clangd at a
+    -- loomworks-generated database instead of the (empty) build dir.
+    -- The effective decision uses the active config's own generator when it
+    -- has one, else the active kit's generator; an explicit config-level
+    -- `compile_commands_generated = true` (future user override / preset)
+    -- also forces generation.
+    local clangd_cc_dir = build_dir
+    if build_dir and not from_redirect then
+        local active_cfg = active_pp and active_pp.configuration and active_pp:configuration()
+        local cfg_mc = active_cfg and active_cfg.module_config or nil
+
+        -- Active kit's generator (the usual source for an MSVC profile).
+        local tool_gen = nil
+        do
+            local td = project.tool_data
+            if (not td or not td.generator) and active_profile and active_profile.tool_for then
+                local tref = active_profile:tool_for(project.type)
+                td = tref and tref.data or td
+            end
+            tool_gen = td and td.generator or nil
+        end
+
+        local generated
+        if cfg_mc and cfg_mc.compile_commands_generated == true then
+            generated = true
+        else
+            local gen = (cfg_mc and cfg_mc.generator) or tool_gen
+            generated = compile_commands_generated_default(gen)
+        end
+
+        if generated then
+            local out_dir = generated_cc_dir(ws.root, build_dir)
+            -- Regenerate only when the file-api reply is newer than the
+            -- generated file (or it doesn't exist yet) — this is our own
+            -- artifact's freshness vs the reply, not source-file staleness.
+            local reply_mtime = file_api_index_mtime(build_dir)
+            if reply_mtime then
+                local out_stat = uv.fs_stat(out_dir .. "/compile_commands.json")
+                local out_mtime = out_stat and out_stat.mtime and out_stat.mtime.sec or nil
+                if not out_mtime or reply_mtime > out_mtime then
+                    local variant = active_cfg
+                        and (cfg_mc and cfg_mc.variant or active_cfg.base_name) or nil
+                    local compiler = nil
+                    do
+                        local td = project.tool_data
+                        if (not td or not td.compiler_path) and active_profile and active_profile.tool_for then
+                            local tref = active_profile:tool_for(project.type)
+                            td = tref and tref.data or td
+                        end
+                        compiler = td and td.compiler_path or nil
+                    end
+                    pcall(M.generate_compile_commands, build_dir, out_dir, {
+                        variant = variant,
+                        compiler = compiler,
+                    })
+                end
+            end
+            clangd_cc_dir = out_dir
+        end
+    end
+
     return {
         {
             server = "clangd",
             binary = binary,
             binary_required = binary_required,
-            compile_commands_dir = build_dir,
+            compile_commands_dir = clangd_cc_dir,
             root_dir = root_dir,
         },
         {

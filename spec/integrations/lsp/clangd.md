@@ -26,6 +26,13 @@ internally (e.g., redirecting to another configuration's build dir for
 a `compile_commands_from` setting) — by the time the entry reaches
 this integration, all paths are fully resolved.
 
+The `compile_commands_dir` a module supplies may be a loomworks-generated
+directory rather than the build directory — e.g. the cmake module generates
+its own `compile_commands.json` for Visual Studio / MSVC configurations
+(which CMake doesn't emit one for). clangd consumes it identically; for MSVC
+the entries use `cl.exe` as the driver so clangd's cl-compatible mode
+applies.
+
 ## 3. Per-buffer cmd resolution
 
 The `cmd` function the integration installs into `vim.lsp.config`

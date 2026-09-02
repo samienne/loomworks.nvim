@@ -226,6 +226,7 @@
 --- @field toolchain? string toolchain file path
 --- @field from_preset? boolean derived from CMakePresets.json
 --- @field role? string e.g. "compile_commands"
+--- @field compile_commands_generated? boolean cmake §12: effective flag for whether loomworks reconstructs compile_commands.json (Visual Studio / Xcode generators, which CMake doesn't emit one for). Computed default, not user-authored — not serialized.
 
 --- Cmake's project-level module_info shape (documented as an example; core treats it as opaque).
 --- @class loomworks.CmakeProjectModuleInfo
