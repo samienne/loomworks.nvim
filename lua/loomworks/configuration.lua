@@ -443,6 +443,31 @@ function Configuration:diagnostic()
     }
 end
 
+--- Reserved compiler-selection keys this configuration carries in its own
+--- `options`/`env`. The profile's tool owns the compiler (spec §15 /
+--- cmake.md §5b), so such keys are rejected at edit time; a hand-edited
+--- file can still smuggle them in, where they are stripped at build time.
+--- This surfaces the corresponding NON-blocking inline warning (the config
+--- stays buildable — the tool's compiler is used). Returns a sorted list of
+--- the offending key names, empty when clean.
+--- @return string[]
+function Configuration:compiler_override_warnings()
+    local reserved = require("loomworks.reserved_compiler")
+    local keys = {}
+    if type(self.options) == "table" then
+        for k in pairs(self.options) do
+            if reserved.is_reserved_option(k) then keys[#keys + 1] = k end
+        end
+    end
+    if type(self.env) == "table" then
+        for k in pairs(self.env) do
+            if reserved.is_reserved_env(k) then keys[#keys + 1] = k end
+        end
+    end
+    table.sort(keys)
+    return keys
+end
+
 --- Serialize the user-override portion for loomworks.json.
 --- Returns the entry that would appear under type_config.configurations[name].
 --- Returns nil for configs with no user customization. Includes default

@@ -1453,6 +1453,40 @@ describe("name validation and collision prevention", function()
         assert.same({}, cfg:unresolved_inherits_names(),
             "the base must resolve, not dangle")
     end)
+
+    -- The profile's tool owns the compiler (spec §15): a configuration may
+    -- not select one through its own options/env. Reject at edit time.
+    it("rejects a reserved CMAKE_<LANG>_COMPILER option", function()
+        local ws = make_ws()
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local ok, err = project:save_configuration("Debug-cc",
+            { options = { CMAKE_CXX_COMPILER = "clang++" } })
+        assert.is_false(ok)
+        assert.matches("chosen by the profile's tool", err)
+        assert.is_nil(project:get_configuration("Debug-cc"))
+    end)
+
+    it("rejects a reserved compiler-driver env var", function()
+        local ws = make_ws()
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local ok, err = project:save_configuration("Debug-env",
+            { env = { CXX = "clang++" } })
+        assert.is_false(ok)
+        assert.matches("chosen by the profile's tool", err)
+    end)
+
+    it("accepts a compiler launcher and *FLAGS (not reserved)", function()
+        local ws = make_ws()
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local ok, err = project:save_configuration("Debug-ok", {
+            options = {
+                CMAKE_CXX_COMPILER_LAUNCHER = "ccache",
+                CXXFLAGS = "-O2",
+            },
+        })
+        assert.is_true(ok, tostring(err))
+        assert.is_not_nil(project:get_configuration("Debug-ok"))
+    end)
 end)
 
 -- =========================================================================

@@ -740,6 +740,12 @@ return function(tree, ctx)
                         end
                         local dependents = cname_cfg
                             and cname_cfg:dependents() or {}
+                        -- Reserved compiler keys (options/env) smuggled in by
+                        -- a hand-edited file. Non-blocking: stripped at build,
+                        -- the tool's compiler is used. Surfaced as a ⚠ tag.
+                        local compiler_overrides = cname_cfg
+                            and cname_cfg:compiler_override_warnings() or {}
+                        local has_compiler_override = #compiler_overrides > 0
 
                         -- Variant-name color: `LoomworksVariant` for
                         -- buildable user configs; `Comment` for
@@ -795,6 +801,10 @@ return function(tree, ctx)
                         end
                         if cdata.toolchain_locked then brief[#brief + 1] = "toolchain-locked" end
                         if cdata.role then brief[#brief + 1] = "role:" .. cdata.role end
+                        if has_compiler_override then
+                            brief[#brief + 1] = "ignored compiler override ("
+                                .. table.concat(compiler_overrides, ", ") .. ")"
+                        end
                         local brief_str = #brief > 0
                                 and ("  (" .. table.concat(brief, ", ") .. ")") or ""
                         local cfg_modified_tag = ws and cname_cfg
@@ -802,7 +812,8 @@ return function(tree, ctx)
                         -- Leading ⚠ for warning states so the badge stays
                         -- visible at the left edge even on long overflow
                         -- lines where the tags would scroll out of view.
-                        local warn_prefix = (is_source_missing or has_unresolved)
+                        local warn_prefix = (is_source_missing or has_unresolved
+                                or has_compiler_override)
                             and "⚠ " or ""
 
                         local project = proj  -- capture for closure

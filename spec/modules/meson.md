@@ -56,6 +56,16 @@ disambiguates on `vcvarsall` for the same reason. Any sibling
 `clangd.exe` next to the clang-cl driver is carried as `clangd_path` and
 forwarded to clangd (§ LSP integration).
 
+The tool owns the compiler: a configuration's `env` may not override the
+tool's pinned `CC`/`CXX`. The compiler-driver variables (`CC`, `CXX`,
+`FC`, `CUDACXX`, `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`) are reserved —
+rejected at config-edit time and stripped when the task environment is
+composed (with a non-blocking inline diagnostic) — so the compiler stays
+consistent with the `compiler_id` that keys the build directory. The
+`*FLAGS` variables are not reserved. A meson machine/cross file
+(`machine_file`) is the analog of a cmake toolchain file and is out of
+scope (see core §15, invariant "The tool owns the compiler").
+
 ## 6. Target discovery (`parse_targets`)
 
 Uses `meson introspect --targets` + `meson introspect --target-sources`

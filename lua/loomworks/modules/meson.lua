@@ -21,6 +21,7 @@
 local M = {}
 
 local io_mod = require("loomworks.io")
+local reserved_compiler = require("loomworks.reserved_compiler")
 local uv = vim.uv or vim.loop
 local is_win = vim.fn.has("win32") == 1
 
@@ -547,14 +548,28 @@ end
 --- is mostly empty) is preserved; CC/CXX/PATH keys win.
 --- @param base_env table<string, string>
 --- @param tool_data table|nil
---- @return table<string, string>
+--- @return table<string, string> env, string[] stripped reserved driver vars
 --- Exported so the meson TEST unit composes the identical environment: its
 --- native runner rebuilds, so it needs the same toolchain env a build
 --- gets (notably MSVC's vcvars) or the rebuild cannot find the compiler.
+---
+--- The tool owns the compiler (spec §15 / meson.md §5): reserved
+--- compiler-driver vars (CC/CXX/…) from the config-sourced `base_env` are
+--- stripped BEFORE the tool pins its own CC/CXX, so a hand-edited override
+--- never shadows the tool's compiler. Stripped names are returned for a
+--- diagnostic (the test unit ignores the second value).
 local function compose_task_env(base_env, tool_data)
     local env = {}
-    for k, v in pairs(base_env or {}) do env[k] = v end
-    if type(tool_data) ~= "table" then return env end
+    local stripped = {}
+    for k, v in pairs(base_env or {}) do
+        if reserved_compiler.is_reserved_env(k) then
+            stripped[#stripped + 1] = k
+        else
+            env[k] = v
+        end
+    end
+    table.sort(stripped)
+    if type(tool_data) ~= "table" then return env, stripped end
 
     -- MSVC / clang-cl: layer the environment vcvarsall establishes (INCLUDE /
     -- LIB / LIBPATH / PATH-to-cl + the Windows SDK) so cl / clang-cl and the
@@ -576,7 +591,7 @@ local function compose_task_env(base_env, tool_data)
         -- casing stops meson recognising the MSVC driver.
         env.CC = normalize_exe(tool_data.cc or "cl")
         env.CXX = normalize_exe(tool_data.cxx or "cl")
-        return env
+        return env, stripped
     end
 
     if tool_data.compiler_c_path and env.CC == nil then
@@ -594,7 +609,7 @@ local function compose_task_env(base_env, tool_data)
         env.PATH = bin_dir .. (existing ~= "" and (sep .. existing) or "")
         if is_win then env.Path = nil end
     end
-    return env
+    return env, stripped
 end
 M.compose_task_env = compose_task_env  -- shared with the meson test unit
 
@@ -609,7 +624,7 @@ M.compose_task_env = compose_task_env  -- shared with the meson test unit
 function M.tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local config_info = project.configurations and project.configurations[active_config] or nil
-    local env = compose_task_env(project.env or {}, project.tool_data)
+    local env, stripped_env = compose_task_env(project.env or {}, project.tool_data)
     local meson_prefix = resolve_meson(project.tool_data)
 
     -- Build dir: core provides cached_build_dir (via M.resolve_build_dir) when a
@@ -672,6 +687,11 @@ function M.tasks(project, active_config)
             configuration_key = configuration_key,
             build_dir = build_dir,
             tool_data = cached_tool_data,
+            -- Reserved compiler-driver env vars dropped from this build
+            -- (hand-edited file); present only when non-empty. The tool's
+            -- pinned CC/CXX is used regardless.
+            stripped_compiler_keys = (#stripped_env > 0)
+                and { env = stripped_env } or nil,
             module_info = {
                 buildtype = buildtype,
                 source_dir = project.path,

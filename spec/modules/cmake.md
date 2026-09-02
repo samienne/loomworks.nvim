@@ -92,6 +92,13 @@ full preset inheritance:
   exist and no configurations are declared in the workspace config**.
 - Overrides in the `configurations` block of the workspace config add
   to or override preset-derived configurations.
+- A preset owns its own toolchain. loomworks never reads or re-passes a
+  preset's compiler settings (`cacheVariables.CMAKE_<LANG>_COMPILER`,
+  `toolchainFile`, or the preset's `environment`), and does not offer
+  tool-compiler selection for a `from_preset` configuration — the
+  compiler is preset-defined (or CMake-detected when the preset pins
+  none). §5b governs only loomworks-managed `options`/`env`, never the
+  preset file itself.
 
 ## 4. CMake File API integration
 
@@ -162,6 +169,48 @@ separated into a "CMake Options" group.
 Returns the directory of the kit's `compiler_path` (from `tool_data`) so
 build-target launches find the toolchain runtime DLLs for gcc/clang toolchains.
 Core adds the build tree's own shared-library dirs generically (core §8.7).
+
+## 5b. Reserved compiler keys (the tool owns the compiler)
+
+The profile's tool (kit) is the single source of truth for the C/C++
+compiler — its identity keys the build directory and selects the clangd
+binary. A project configuration therefore may not select a compiler
+through its own `options` or `env`. Two reserved sets are enforced (see
+core §15, invariant "The tool owns the compiler"):
+
+- **Option keys** — any CMake cache key matching `^CMAKE_<LANG>_COMPILER$`
+  (`CMAKE_C_COMPILER`, `CMAKE_CXX_COMPILER`, `CMAKE_Fortran_COMPILER`,
+  `CMAKE_CUDA_COMPILER`, …). The `_COMPILER` anchor excludes neighbours
+  that only start the same way — `CMAKE_<LANG>_COMPILER_LAUNCHER`,
+  `..._COMPILER_ID`, `..._COMPILER_TARGET`, `..._COMPILER_WORKS` are NOT
+  reserved. Compiler flags (`CFLAGS`, `CXXFLAGS`, …) are allowed.
+- **Env driver vars** — exactly `CC`, `CXX`, `FC`, `CUDACXX`,
+  `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`. The `*FLAGS` variables and
+  compiler launchers are not reserved.
+
+Enforcement is twofold:
+
+1. **Reject at edit time.** Configuration mutation paths
+   (`Project:save_configuration`) refuse a config whose `options` carries
+   a reserved cache key or whose `env` carries a reserved driver var,
+   returning an error that names the key and directs the user to pick a
+   tool instead (mirrors the reserved-variable-name rule). The reserved
+   key never reaches the working copy.
+2. **Strip at build time.** When assembling the configure command and
+   composing the task environment, loomworks drops any reserved key that
+   is present from a hand-edited file: reserved `-D…` options are not
+   emitted and reserved env vars are removed before the tool's compiler
+   is layered on. The build proceeds with the tool's compiler, and the
+   affected configuration surfaces a non-blocking inline diagnostic
+   (`⚠ ignored compiler override (<KEY>)`) alongside the Diagnostics
+   section. This applies even to a `from_preset` configuration, because
+   loomworks still appends its own `-D…`/env on top of `cmake --preset`;
+   the strip governs only those loomworks-managed additions and never the
+   preset file's own `cacheVariables`/`environment`.
+
+Toolchain files (`CMAKE_TOOLCHAIN_FILE`, whether kit- or user-supplied)
+are out of scope — they select a whole toolchain, not a bare compiler
+driver, and are handled by the toolchain path (§1a / §6), not §5b.
 
 ## 6. Inheritance model
 
