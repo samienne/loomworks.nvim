@@ -3110,6 +3110,9 @@ end
 -- it is emitted only to a stdout tty (see status_palette / stdout_supports_color).
 local ANSI_CMD, ANSI_RESET = "\27[36m", "\27[0m"
 local ANSI_TITLE, ANSI_DIM, ANSI_ACTIVE = "\27[1m", "\27[2m", "\27[32m"
+-- Diagnostic severities: red for errors, yellow for warnings. Same tty-only
+-- gating as the rest of the palette — plain on a pipe/redirect.
+local ANSI_ERR, ANSI_WARN = "\27[31m", "\27[33m"
 
 --- A named set of painters for `lw status`. When `color` is false every field
 --- is the identity function, so the exact same rendering code produces plain
@@ -3130,6 +3133,8 @@ local function status_palette(color)
     -- guidance, not data), backticked on a pipe/redirect so it stays visually
     -- delimited without color (matching the footer's `lw help` style).
     inline = color and mk(ANSI_DIM) or function(s) return "`" .. s .. "`" end,
+    err = mk(ANSI_ERR),
+    warn = mk(ANSI_WARN),
   }
 end
 
@@ -3168,6 +3173,92 @@ local function status_section(pal, title, items, max, row_fn, more_hint, help)
 end
 
 M._status_section = status_section
+
+--- Group workspace diagnostics (from `Workspace:diagnostics()`) for inline
+--- rendering. Returns `{ by_key = <target_fold_key → {diag,…}>, by_project =
+--- <project key → {diag,…}> }`. Entries with a nil `target_fold_key` are
+--- workspace-level and skipped (they show only in the top section). `by_project`
+--- is filled from `config:<proj>:<name>` keys so a configuration's diagnostic
+--- attaches to its project's row; the leading project segment can't contain a
+--- `:` (config names can, so match only up to the FIRST one after the key).
+--- A `profile_proj:<profile>:<project>` key (a per-project tool-compatibility
+--- error) is routed into the SAME `profile:<profile>` bucket the Profiles row
+--- reads, so it renders inline under its profile alongside that profile's own
+--- diagnostics — the profile key can't contain a `:`, so match up to the first.
+local function group_diagnostics(diags)
+  local by_key, by_project = {}, {}
+  local function bucket(key, d)
+    local g = by_key[key]; if not g then g = {}; by_key[key] = g end
+    g[#g + 1] = d
+  end
+  for _, d in ipairs(diags) do
+    local k = d.target_fold_key
+    if k then
+      bucket(k, d)
+      local proj = k:match("^config:([^:]+):")
+      if proj then
+        local p = by_project[proj]; if not p then p = {}; by_project[proj] = p end
+        p[#p + 1] = d
+      end
+      local prof = k:match("^profile_proj:([^:]+):")
+      if prof then bucket("profile:" .. prof, d) end
+    end
+  end
+  return { by_key = by_key, by_project = by_project }
+end
+M._group_diagnostics = group_diagnostics
+
+--- An inline marker block for a list of diagnostics, appended to a section row:
+--- a newline-prefixed, indented "✗ "/"⚠ " + message line per entry (message
+--- only — the row already names the item, and the source is redundant inline).
+--- "" when the list is nil/empty. `out()` writes the embedded newlines as
+--- separate lines. `pal` is a status_palette(); plain when color is off.
+local function inline_markers(pal, list)
+  if not list or #list == 0 then return "" end
+  local parts = {}
+  for _, d in ipairs(list) do
+    local marker = d.severity == "error" and pal.err("✗ ") or pal.warn("⚠ ")
+    parts[#parts + 1] = "\n    " .. marker .. (d.message or "")
+  end
+  return table.concat(parts)
+end
+M._inline_markers = inline_markers
+
+--- The top "Diagnostics" section for `lw status`. Emits NOTHING when the list
+--- is empty (no all-clear line). Otherwise: a leading blank line, a bold
+--- "Diagnostics (N)" header followed by a dim "X error(s), Y warning(s)"
+--- breakdown (a zero count is omitted), a blank line, then one indented line per
+--- diagnostic ("✗ "/"⚠ " + dim "[source] " + message). Draws from the same
+--- `Workspace:diagnostics()` the editor's Diagnostics section uses. `pal` is a
+--- status_palette(); plain on a pipe/redirect.
+local function render_diagnostics(pal, diags)
+  if #diags == 0 then return end
+  local errs, warns = 0, 0
+  for _, d in ipairs(diags) do
+    if d.severity == "error" then errs = errs + 1 else warns = warns + 1 end
+  end
+  local parts = {}
+  if errs > 0 then parts[#parts + 1] = errs .. (errs == 1 and " error" or " errors") end
+  if warns > 0 then parts[#parts + 1] = warns .. (warns == 1 and " warning" or " warnings") end
+  out("")
+  out(pal.title("Diagnostics") .. " " .. pal.dim("(" .. #diags .. ")")
+    .. "  " .. pal.dim(table.concat(parts, ", ")))
+  out("")
+  for _, d in ipairs(diags) do
+    local marker = d.severity == "error" and pal.err("✗ ") or pal.warn("⚠ ")
+    out("  " .. marker .. pal.dim("[" .. (d.source or "?") .. "] ") .. (d.message or ""))
+  end
+end
+M._render_diagnostics = render_diagnostics
+
+--- The exit code for `lw status`: 1 when `--check` was passed AND at least one
+--- diagnostic is present (for CI), else 0. Without `--check`, always 0 — the
+--- overview neither builds nor manages state (§16.9).
+local function check_exit_code(check, diags)
+  if check and #diags > 0 then return 1 end
+  return 0
+end
+M._check_exit_code = check_exit_code
 
 --- Best-effort, time-bounded git query for the no-workspace status hint. Never
 --- throws and never hangs status: a missing binary, non-zero exit, or a git
@@ -3394,7 +3485,10 @@ end
 
 --- `lw status` (also bare `lw`) — one-screen workspace overview. Works outside
 --- a workspace too. Every section is capped to keep it to a single page.
-function M.cmd_status(root)
+--- `opts.check` (from `lw status --check`) makes the invocation exit non-zero
+--- when any diagnostic is present, for CI; it never changes the rendering.
+function M.cmd_status(root, opts)
+  opts = opts or {}
   if not root then
     for _, line in ipairs(M._worktree_hint()) do out(line) end
     return 0
@@ -3402,6 +3496,14 @@ function M.cmd_status(root)
   local ws = load_workspace(root, false) -- pinned info only; skip tool detection
   local pal = status_palette(stdout_supports_color())
   out(pal.title("loomworks — " .. (ws.name or "?")) .. "  " .. pal.dim("(" .. ws.root .. ")"))
+
+  -- Workspace diagnostics — the SAME source the editor's Diagnostics section
+  -- uses. Rendered as a top section (when non-empty) and, per item, inline
+  -- under the relevant profile/config-set/project row. Never let it break
+  -- status: a broken diagnostics pass collapses to "no diagnostics".
+  local ok_d, diags = pcall(function() return ws:diagnostics() end)
+  if not ok_d or type(diags) ~= "table" then diags = {} end
+  local grouped = group_diagnostics(diags)
 
   local MAX = 6
   local profiles = ws._profiles or {}
@@ -3413,7 +3515,18 @@ function M.cmd_status(root)
   if ap then
     out(pal.title("Active profile") .. "   " .. pal.active(trunc(ap.key, 44)) ..
       "   " .. pal.dim("(set " .. (ap._configuration_set_name or "?") .. ")"))
+  elseif #profiles > 0 then
+    out(pal.title("Active profile") .. "   " .. pal.dim("(none) — ") .. pal.inline("lw profile select"))
+  else
+    out(pal.title("Active profile") .. "   " .. pal.dim("(no profiles) — ") ..
+      pal.inline("lw profile create <set> <tool>"))
+  end
 
+  -- Diagnostics section — right after the active-profile block, before Targets.
+  -- Renders nothing when there are none.
+  render_diagnostics(pal, diags)
+
+  if ap then
     -- Targets: the active profile's launchable targets (the same list
     -- `lw target` shows), default marked `*`+green. Build-free — a build target
     -- is listed only once its project is configured, so the list may be
@@ -3443,11 +3556,6 @@ function M.cmd_status(root)
       end
       return base .. (r.suffix and pal.dim(r.suffix) or "")
     end, "lw target", target_help)
-  elseif #profiles > 0 then
-    out(pal.title("Active profile") .. "   " .. pal.dim("(none) — ") .. pal.inline("lw profile select"))
-  else
-    out(pal.title("Active profile") .. "   " .. pal.dim("(no profiles) — ") ..
-      pal.inline("lw profile create <set> <tool>"))
   end
 
   -- Profiles: active first (so it's always visible under the cap), then the
@@ -3468,7 +3576,8 @@ function M.cmd_status(root)
     local is_active = (p.key == active_key)
     local row = string.format("%s %-38s set=%s", is_active and "*" or " ",
       trunc(p.key, 38), trunc(p._configuration_set_name or "?", 22))
-    return is_active and pal.active(row) or row
+    return (is_active and pal.active(row) or row)
+      .. inline_markers(pal, grouped.by_key["profile:" .. p.key])
   end, "lw profiles", profile_help)
 
   -- Configuration sets: name + compact mappings.
@@ -3481,6 +3590,7 @@ function M.cmd_status(root)
     table.sort(rows)
     return string.format("  %-14s %s", trunc(cs.name, 14),
       trunc(next(rows) and table.concat(rows, ", ") or "(empty)", 56))
+      .. inline_markers(pal, grouped.by_key["set:" .. cs.name])
   end, "lw cs list", "create a set · lw cs create <name> [project=config …]")
 
   -- Projects with their configurations (first few names, then +K).
@@ -3497,12 +3607,16 @@ function M.cmd_status(root)
     local cfgstr = (#names == 0) and "(no configs)" or table.concat(head, ", ")
     if #names > 3 then cfgstr = cfgstr .. " +" .. (#names - 3) end
     return string.format("  %-14s %-6s %s", trunc(p.key, 14), t, trunc(cfgstr, 50))
+      .. inline_markers(pal, grouped.by_project[p.key])
   end, "lw project list", "add a project · lw project add <path> [type]")
 
   out("")
   out(pal.inline("lw help") .. pal.dim(" for commands · ") ..
     pal.inline("lw help <command>") .. pal.dim(" for details."))
-  return 0
+
+  -- `--check` (CI): exit non-zero when ANY diagnostic is present. The rendering
+  -- above is unchanged; only the exit code differs. Without it, status is 0.
+  return check_exit_code(opts.check, diags)
 end
 
 -- ---------------------------------------------------------------------------
@@ -4220,6 +4334,9 @@ function M.cmd_complete(cword, words)
       emit(topics)
     end
     return 0
+  elseif cmd == "status" then
+    if n == 1 then emit({ "--check" }) end
+    return 0
   elseif cmd == "tools" then
     if n == 1 then emit({ "--cached" }) end
     return 0
@@ -4387,14 +4504,22 @@ end
 -- ---------------------------------------------------------------------------
 
 local HELP = {
-  status = [[lw status   (also: bare `lw`)
+  status = [[lw status [--check]   (also: bare `lw`)
 
 One-screen workspace overview: the active profile and its launchable targets
-(default marked `*`), then capped lists of profiles (active marked `*`),
-configuration sets, and projects with their configurations. Each section is
-limited to fit a page — use `lw target`, `lw profiles`, `lw cs list`, or
-`lw project list` for the full lists. Build targets appear only once a project
-is configured; a hint shows when the target list is incomplete.]],
+(default marked `*`), a Diagnostics section (shown only when non-empty), then
+capped lists of profiles (active marked `*`), configuration sets, and projects
+with their configurations. Each section is limited to fit a page — use
+`lw target`, `lw profiles`, `lw cs list`, or `lw project list` for the full
+lists. Build targets appear only once a project is configured; a hint shows
+when the target list is incomplete.
+
+Diagnostics come from the same source the editor's Diagnostics page uses:
+per-item warnings/errors also appear inline under the relevant profile,
+configuration set, or project.
+
+  --check   exit non-zero if any diagnostic is present (for CI); without it,
+            `lw status` always exits 0.]],
   profiles = [[lw profiles
 
 List the workspace's profiles, marking the active one with `*` and flagging
@@ -5252,7 +5377,11 @@ local function main()
 
   -- Bare `lw` and `lw status` → status (also fine outside a workspace).
   if not command or command == "status" then
-    finish(M.cmd_status(root))
+    -- `--check` (accepted anywhere in argv) makes status exit non-zero when any
+    -- diagnostic is present, for CI; it never changes the rendering.
+    local check = false
+    for _, v in ipairs(a) do if v == "--check" then check = true end end
+    finish(M.cmd_status(root, { check = check }))
   end
 
   -- `pull` folds another checkout's working copy into this one; it works in a

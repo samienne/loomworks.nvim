@@ -332,6 +332,15 @@ worktree — it offers only to initialise one. Detecting the parent worktree is 
 best-effort, time-bounded hint: it never fails the report, and a slow or absent
 git only adds a small bounded delay.
 
+The overview MAY also surface the workspace's **diagnostics** — the same set
+the interactive host presents — as a top section shown only when non-empty,
+with each per-item warning or error also shown inline under the profile,
+configuration set, or project it concerns. A `--check` flag makes the
+invocation report a non-zero exit status when any diagnostic is present (for
+CI); without it the overview always exits successfully, since it neither builds
+nor manages state (§16.9). `--check` never changes what is rendered — only the
+exit status.
+
 ### 16.19 Convention migration
 
 Recommended shapes for the workspace files change over time while older
